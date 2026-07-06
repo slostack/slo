@@ -1,0 +1,382 @@
+/* ============================================================================
+ * Slo HTML Design Language
+ * ----------------------------------------------------------------------------
+ * A self-contained design system for ALL HTML that Slo generates — single-page
+ * slide decks, multi-page reports, briefings, dashboards.
+ *
+ * Tokens mirror the two Slo TUI themes (src/tui/theme.py):
+ *   :root             → slo-default  (Tokyo Night — the PRIMARY identity)
+ *   [data-theme=dark] → slo-dark     (near-black / phosphor-green ALTERNATE)
+ *
+ * USAGE
+ *   1. Inline this file inside a <style> tag. Do NOT <link> it from a CDN or a
+ *      separate file — Slo HTML is frequently rendered under a strict CSP
+ *      (e.g. claude.ai Artifacts) that blocks external stylesheets, fonts, and
+ *      scripts. Everything here is dependency-free and uses only system fonts.
+ *   2. Default theme is Tokyo Night. To switch a page to the green alternate,
+ *      put data-theme="dark" on <html> or any container.
+ *   3. Build with the component classes below; do not invent ad-hoc colors —
+ *      reach for the --slo-* tokens so both themes stay in sync.
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * 1. Design tokens — slo-default (Tokyo Night), the primary identity
+ * ------------------------------------------------------------------------- */
+:root {
+  /* Grounds & surfaces */
+  --slo-bg:          #1a1b26;   /* deep night canvas        */
+  --slo-bg-2:        #16161e;   /* recessed (code wells)    */
+  --slo-surface:     #24283b;   /* lifted surface / cards   */
+  --slo-panel:       #1f2335;   /* panel background         */
+
+  /* Text — cool blues biased toward the accent, never pure grey */
+  --slo-fg:          #c0caf5;   /* body text                */
+  --slo-fg-bright:   #ffffff;   /* headings / emphasis      */
+  --slo-fg-muted:    #565f89;   /* captions, comments, dim  */
+  --slo-fg-faint:    #414868;   /* hairline-adjacent text   */
+
+  /* Lines */
+  --slo-hair:        #2f3549;   /* primary hairline border  */
+  --slo-hair-soft:   #232735;   /* faint internal divider   */
+
+  /* Signal palette (from the theme) */
+  --slo-accent:      #7aa2f7;   /* blue — primary accent    */
+  --slo-accent-2:    #7dcfff;   /* cyan — secondary         */
+  --slo-violet:      #bb9af7;   /* magenta — tertiary pop   */
+  --slo-success:     #9ece6a;   /* green                    */
+  --slo-warning:     #e0af68;   /* amber                    */
+  --slo-error:       #f7768e;   /* red                      */
+  --slo-orange:      #ff9e64;   /* orange — rare highlight  */
+
+  /* Translucent accent washes (for fills/glows, theme-aware) */
+  --slo-accent-wash:  rgba(122,162,247,.12);
+  --slo-success-wash: rgba(158,206,106,.12);
+  --slo-warning-wash: rgba(224,175,104,.12);
+  --slo-error-wash:   rgba(247,118,142,.12);
+
+  /* The one bold accent for a page; everything else stays quiet */
+  --slo-signal:       var(--slo-accent);
+  --slo-signal-wash:  var(--slo-accent-wash);
+
+  /* ---- Typography ---- */
+  --slo-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --slo-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Type scale (1.25 minor-third), fluid */
+  --slo-step--1: clamp(.78rem, .76rem + .15vw, .86rem);
+  --slo-step-0:  clamp(.95rem, .9rem + .3vw, 1.05rem);
+  --slo-step-1:  clamp(1.15rem, 1.05rem + .5vw, 1.35rem);
+  --slo-step-2:  clamp(1.4rem, 1.2rem + 1vw, 1.85rem);
+  --slo-step-3:  clamp(1.8rem, 1.4rem + 2vw, 2.6rem);
+  --slo-step-4:  clamp(2.3rem, 1.6rem + 3.6vw, 4rem);
+
+  /* ---- Spacing scale ---- */
+  --slo-space-1: .35rem;
+  --slo-space-2: .6rem;
+  --slo-space-3: 1rem;
+  --slo-space-4: 1.6rem;
+  --slo-space-5: 2.6rem;
+  --slo-space-6: 4rem;
+
+  /* ---- Radii & elevation ---- */
+  --slo-radius:    6px;
+  --slo-radius-sm: 3px;
+  --slo-shadow:    0 1px 0 rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.6);
+
+  --slo-measure:   65ch;   /* readable line length */
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. Alternate theme — slo-dark (near-black / phosphor green)
+ *    Apply with data-theme="dark" on <html> or any subtree.
+ * ------------------------------------------------------------------------- */
+[data-theme="dark"] {
+  --slo-bg:          #080808;
+  --slo-bg-2:        #0d0d0d;
+  --slo-surface:     #111111;
+  --slo-panel:       #181818;
+
+  --slo-fg:          #d8d8d8;
+  --slo-fg-bright:   #ffffff;
+  --slo-fg-muted:    #6a6a6a;
+  --slo-fg-faint:    #3a3a3a;
+
+  --slo-hair:        #242424;
+  --slo-hair-soft:   #1a1a1a;
+
+  --slo-accent:      #00ff7f;   /* bright phosphor green    */
+  --slo-accent-2:    #7ec8e3;   /* light blue               */
+  --slo-violet:      #b48ead;
+  --slo-success:     #00ff7f;
+  --slo-warning:     #f0a020;
+  --slo-error:       #ff5555;
+  --slo-orange:      #f0a020;
+
+  --slo-accent-wash:  rgba(0,255,127,.10);
+  --slo-success-wash: rgba(0,255,127,.10);
+  --slo-warning-wash: rgba(240,160,32,.12);
+  --slo-error-wash:   rgba(255,85,85,.12);
+
+  --slo-signal:      var(--slo-accent);
+  --slo-signal-wash: var(--slo-accent-wash);
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. Base / reset
+ * ------------------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--slo-bg);
+  color: var(--slo-fg);
+  font-family: var(--slo-font-sans);
+  font-size: var(--slo-step-0);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. Typography
+ * ------------------------------------------------------------------------- */
+h1, h2, h3, h4 {
+  color: var(--slo-fg-bright);
+  line-height: 1.1;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+  margin: 0 0 var(--slo-space-3);
+  font-weight: 660;
+}
+h1 { font-size: var(--slo-step-4); letter-spacing: -.03em; }
+h2 { font-size: var(--slo-step-3); }
+h3 { font-size: var(--slo-step-2); }
+h4 { font-size: var(--slo-step-1); }
+
+p, ul, ol { margin: 0 0 var(--slo-space-3); max-width: var(--slo-measure); }
+p { color: var(--slo-fg); }
+
+a {
+  color: var(--slo-accent);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--slo-accent) 35%, transparent);
+  transition: border-color .15s, color .15s;
+}
+a:hover { border-bottom-color: var(--slo-accent); }
+a:focus-visible { outline: 2px solid var(--slo-accent); outline-offset: 2px; border-radius: 1px; }
+
+strong, b { color: var(--slo-fg-bright); font-weight: 640; }
+small { font-size: var(--slo-step--1); color: var(--slo-fg-muted); }
+
+/* Eyebrow / kicker label — mono, tracked, signal-colored */
+.slo-eyebrow {
+  font-family: var(--slo-font-mono);
+  font-size: var(--slo-step--1);
+  letter-spacing: .26em;
+  text-transform: uppercase;
+  color: var(--slo-signal);
+  display: inline-flex;
+  align-items: center;
+  gap: .7rem;
+  margin: 0 0 var(--slo-space-2);
+}
+.slo-eyebrow::before {
+  content: "";
+  width: 1.6rem; height: 1px;
+  background: var(--slo-signal);
+  opacity: .7;
+}
+
+.slo-lede { font-size: var(--slo-step-1); color: var(--slo-fg); max-width: 60ch; }
+.slo-muted { color: var(--slo-fg-muted); }
+
+/* ---------------------------------------------------------------------------
+ * 5. Code
+ * ------------------------------------------------------------------------- */
+code, kbd, pre, samp { font-family: var(--slo-font-mono); }
+
+code {
+  font-size: .9em;
+  color: var(--slo-warning);
+  background: var(--slo-bg-2);
+  padding: .12em .4em;
+  border-radius: var(--slo-radius-sm);
+  border: 1px solid var(--slo-hair-soft);
+}
+
+kbd {
+  font-size: .82em;
+  color: var(--slo-fg);
+  background: var(--slo-surface);
+  border: 1px solid var(--slo-hair);
+  border-bottom-width: 2px;
+  border-radius: var(--slo-radius-sm);
+  padding: .1em .45em;
+}
+
+pre {
+  margin: var(--slo-space-3) 0;
+  background: var(--slo-bg-2);
+  border: 1px solid var(--slo-hair);
+  border-radius: var(--slo-radius);
+  overflow-x: auto;            /* never let code scroll the page sideways */
+  padding: var(--slo-space-3);
+  line-height: 1.7;
+  font-size: var(--slo-step--1);
+}
+pre code { background: none; border: 0; padding: 0; color: var(--slo-fg); font-size: inherit; }
+
+/* Optional code window with a title bar */
+.slo-code { margin: var(--slo-space-3) 0; background: var(--slo-bg-2); border: 1px solid var(--slo-hair); border-radius: var(--slo-radius); overflow: hidden; }
+.slo-code__bar { display: flex; align-items: center; gap: .5rem; padding: .5rem .9rem; border-bottom: 1px solid var(--slo-hair); font-family: var(--slo-font-mono); font-size: var(--slo-step--1); color: var(--slo-fg-muted); }
+.slo-code pre { margin: 0; border: 0; border-radius: 0; }
+
+/* Token classes for hand-highlighting code (no JS highlighter needed) */
+.tok-comment { color: var(--slo-fg-muted); font-style: italic; }
+.tok-keyword { color: var(--slo-violet); }
+.tok-string  { color: var(--slo-success); }
+.tok-fn      { color: var(--slo-accent); }
+.tok-num     { color: var(--slo-orange); }
+.tok-accent  { color: var(--slo-signal); }
+
+/* ---------------------------------------------------------------------------
+ * 6. Layout helpers
+ * ------------------------------------------------------------------------- */
+.slo-wrap { width: 100%; max-width: 1040px; margin-inline: auto; padding-inline: clamp(1.2rem, 5vw, 3rem); }
+.slo-stack > * + * { margin-top: var(--slo-space-3); }
+.slo-grid { display: grid; gap: var(--slo-space-3); }
+.slo-grid--2 { grid-template-columns: repeat(2, 1fr); }
+.slo-grid--3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 640px) { .slo-grid--2, .slo-grid--3 { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------------------------------
+ * 7. Components
+ * ------------------------------------------------------------------------- */
+
+/* Card / panel */
+.slo-card {
+  background: var(--slo-surface);
+  border: 1px solid var(--slo-hair-soft);
+  border-radius: var(--slo-radius);
+  padding: var(--slo-space-4);
+  box-shadow: var(--slo-shadow);
+}
+.slo-panel { background: var(--slo-panel); border: 1px solid var(--slo-hair-soft); border-radius: var(--slo-radius); padding: var(--slo-space-3); }
+
+/* Callout / note — left signal rule. Modifier sets the semantic hue. */
+.slo-note {
+  border-left: 3px solid var(--slo-signal);
+  background: var(--slo-signal-wash);
+  padding: var(--slo-space-3) var(--slo-space-4);
+  border-radius: 0 var(--slo-radius-sm) var(--slo-radius-sm) 0;
+  margin: var(--slo-space-3) 0;
+}
+.slo-note--success { border-left-color: var(--slo-success); background: var(--slo-success-wash); }
+.slo-note--warning { border-left-color: var(--slo-warning); background: var(--slo-warning-wash); }
+.slo-note--error   { border-left-color: var(--slo-error);   background: var(--slo-error-wash); }
+
+/* Pills / badges — semantic state, separate from the accent identity */
+.slo-badge {
+  display: inline-flex; align-items: center; gap: .35rem;
+  font-family: var(--slo-font-mono);
+  font-size: var(--slo-step--1);
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: .25rem .6rem; border-radius: 999px;
+  border: 1px solid var(--slo-hair); color: var(--slo-fg-muted);
+}
+.slo-badge--accent  { color: var(--slo-accent);  border-color: color-mix(in srgb, var(--slo-accent) 45%, transparent);  background: var(--slo-accent-wash); }
+.slo-badge--success { color: var(--slo-success); border-color: color-mix(in srgb, var(--slo-success) 45%, transparent); background: var(--slo-success-wash); }
+.slo-badge--warning { color: var(--slo-warning); border-color: color-mix(in srgb, var(--slo-warning) 45%, transparent); background: var(--slo-warning-wash); }
+.slo-badge--error   { color: var(--slo-error);   border-color: color-mix(in srgb, var(--slo-error) 45%, transparent);   background: var(--slo-error-wash); }
+
+/* Blockquote */
+blockquote {
+  margin: var(--slo-space-3) 0;
+  padding: var(--slo-space-2) var(--slo-space-4);
+  border-left: 3px solid var(--slo-hair);
+  color: var(--slo-fg);
+  font-size: var(--slo-step-1);
+}
+
+/* Lists */
+ul, ol { padding-left: 1.3em; }
+li { margin: .3em 0; }
+li::marker { color: var(--slo-signal); }
+
+/* Tables — data gets the same care as type */
+table { width: 100%; border-collapse: collapse; margin: var(--slo-space-3) 0; font-size: var(--slo-step-0); }
+.slo-table-scroll { overflow-x: auto; }       /* wrap wide tables in this */
+th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid var(--slo-hair-soft); }
+th { color: var(--slo-fg-bright); font-weight: 620; border-bottom-color: var(--slo-hair); font-size: var(--slo-step--1); letter-spacing: .04em; text-transform: uppercase; }
+tbody tr:hover { background: var(--slo-surface); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--slo-font-mono); }
+
+/* Horizontal rule */
+hr { border: 0; border-top: 1px solid var(--slo-hair); margin: var(--slo-space-4) 0; }
+
+/* Key/value definition rows */
+.slo-kv { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1.4rem; font-size: var(--slo-step-0); }
+.slo-kv dt { color: var(--slo-fg-muted); font-family: var(--slo-font-mono); font-size: var(--slo-step--1); }
+.slo-kv dd { margin: 0; color: var(--slo-fg-bright); }
+
+/* ---------------------------------------------------------------------------
+ * 8. Slide-deck scaffolding (single-page, scroll-snap)
+ *    Wrap slides in <main class="slo-deck">…<section class="slo-slide">.
+ * ------------------------------------------------------------------------- */
+.slo-deck {
+  height: 100vh;
+  overflow-y: scroll;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+}
+.slo-slide {
+  min-height: 100vh;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(2rem, 6vw, 6rem) clamp(1.4rem, 7vw, 8rem);
+  border-bottom: 1px solid var(--slo-hair-soft);
+}
+.slo-slide__inner { width: 100%; max-width: 960px; margin-inline: auto; }
+
+/* Fixed deck chrome */
+.slo-progress { position: fixed; top: 0; left: 0; height: 2px; width: 0; background: var(--slo-signal); z-index: 50; transition: width .15s ease-out; }
+.slo-dots { position: fixed; top: 50%; right: clamp(.7rem, 2vw, 1.6rem); transform: translateY(-50%); display: flex; flex-direction: column; gap: .7rem; z-index: 40; }
+.slo-dots button { width: 9px; height: 9px; padding: 0; border-radius: 50%; border: 1px solid var(--slo-fg-muted); background: transparent; cursor: pointer; transition: all .2s; }
+.slo-dots button:hover { border-color: var(--slo-signal); }
+.slo-dots button[aria-current="true"] { background: var(--slo-signal); border-color: var(--slo-signal); box-shadow: 0 0 0 4px var(--slo-signal-wash); }
+.slo-dots button:focus-visible { outline: 2px solid var(--slo-signal); outline-offset: 3px; }
+.slo-counter { position: fixed; bottom: 1.1rem; right: clamp(1rem, 3vw, 2rem); font-family: var(--slo-font-mono); font-size: var(--slo-step--1); color: var(--slo-fg-muted); z-index: 40; }
+.slo-counter b { color: var(--slo-signal); }
+.slo-hint { position: fixed; bottom: 1.1rem; left: 50%; transform: translateX(-50%); font-family: var(--slo-font-mono); font-size: var(--slo-step--1); color: var(--slo-fg-muted); z-index: 40; }
+@media (max-width: 600px) { .slo-dots { display: none; } }
+
+/* Slide entrance reveal (toggle .is-in via IntersectionObserver) */
+.slo-slide .slo-slide__inner > * { opacity: 0; transform: translateY(14px); transition: opacity .55s ease, transform .55s ease; }
+.slo-slide.is-in .slo-slide__inner > * { opacity: 1; transform: none; }
+.slo-slide.is-in .slo-slide__inner > *:nth-child(2) { transition-delay: .06s; }
+.slo-slide.is-in .slo-slide__inner > *:nth-child(3) { transition-delay: .12s; }
+.slo-slide.is-in .slo-slide__inner > *:nth-child(4) { transition-delay: .18s; }
+.slo-slide.is-in .slo-slide__inner > *:nth-child(5) { transition-delay: .24s; }
+
+/* ---------------------------------------------------------------------------
+ * 9. Multi-page document chrome (for paged reports/briefings)
+ * ------------------------------------------------------------------------- */
+.slo-doc { max-width: 760px; margin-inline: auto; padding: clamp(2rem, 5vw, 4rem) clamp(1.2rem, 5vw, 2rem); }
+.slo-doc > * { margin-left: auto; margin-right: auto; }
+.slo-pager { display: flex; justify-content: space-between; align-items: center; margin-top: var(--slo-space-5); padding-top: var(--slo-space-3); border-top: 1px solid var(--slo-hair); font-family: var(--slo-font-mono); font-size: var(--slo-step--1); }
+.slo-pager a { border: 0; }
+
+/* ---------------------------------------------------------------------------
+ * 10. Accessibility / motion
+ * ------------------------------------------------------------------------- */
+:focus-visible { outline: 2px solid var(--slo-signal); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+  .slo-slide .slo-slide__inner > * { opacity: 1; transform: none; }
+}

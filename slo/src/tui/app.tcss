@@ -1,0 +1,95 @@
+/* src/tui/app.tcss
+ *
+ * Minimal layout inspired by Claude Code's CLI:
+ *   - No frame around the transcript; conversation flows on the surface.
+ *   - Single rounded input at the bottom with a soft accent border.
+ *   - Subtle header/footer so the conversation is the focal point.
+ *
+ * Colours resolve through the active Textual theme (tokyo-night by
+ * default) via $surface / $accent, so runtime theme switches via the
+ * command palette stay coherent.
+ */
+
+Screen {
+    background: $surface;
+    padding: 0 1;
+}
+
+Header {
+    background: $surface;
+}
+
+Footer {
+    background: $surface;
+}
+
+#chat-shell {
+    height: 1fr;
+}
+
+#transcript-scroll {
+    height: 1fr;
+    border: none;
+    background: $surface;
+}
+
+#transcript-content {
+    width: 100%;
+    height: auto;
+    padding: 1 1 0 1;
+}
+
+#status-region {
+    height: auto;
+    min-height: 1;
+    margin: 1 0 0 0;
+}
+
+PromptInput {
+    border: round $accent;
+    background: $surface;
+    height: auto;
+    min-height: 3;
+    max-height: 17;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+
+.turn-separator {
+    color: $text-muted;
+}
+
+.user-line {
+    color: $accent;
+    text-style: bold;
+}
+
+.tool-line {
+    color: $success;
+    text-style: bold;
+}
+
+.tool-result {
+    color: $text-muted;
+}
+
+.assistant-aborted {
+    color: $warning;
+    text-style: italic;
+}
+
+.steer-pending {
+    color: $warning;
+    text-style: italic;
+}
+
+.tool-call-incomplete {
+    color: $warning;
+    text-style: italic;
+}
+
+.thinking-spinner {
+    color: $accent;
+    text-style: italic;
+    padding: 0 1;
+}

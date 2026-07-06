@@ -1,0 +1,3070 @@
+"""``SloAgentSession`` — in-process wrapper around ``SloAgent`` (sub-spec 02.a.1, extended in 05.c).
+
+Owns exactly one ``SloAgent`` instance plus the subscriber list the TUI
+and tests register against. Mirrors pi's ``AgentSession`` at
+``pi/packages/coding-agent/src/core/agent-session.ts:962``.
+
+Sub-spec 05.c makes the session the orchestrator of persistent
+history. Each accepted prompt now:
+
+1. ensures the on-disk session directory exists,
+2. loads prior projected ``BaseMessage`` history,
+3. persists ``run_started`` and ``user_message`` events before the
+   agent runs,
+4. forwards full-fidelity runtime trace events into the canonical
+   store via an injected trace handler,
+5. appends the terminal ``run_completed`` / ``run_aborted`` /
+   ``run_failed`` event before clearing the running flag.
+
+Unlike render subscribers, history writes are not best-effort:
+persistence failures propagate so runtime state cannot silently
+diverge from disk.
+
+Canonical location: sessions/service.py (spec 04 structural refactoring).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import tempfile
+import time
+from collections import deque
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, Optional, TYPE_CHECKING
+from uuid import uuid4
+
+from langchain_core.messages import BaseMessage
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, ConfigDict, Field
+
+from config.ai_model_config import MODEL_DEFAULTS
+from config.cfg import cfg
+from config.logger import log_error, log_info, log_warning
+from src.agents.providers.credit_exhaustion_policy import AllModelsExhaustedError
+from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.history.dao import (
+    SessionHistoryEventDAO,
+    SessionHistoryEventPayloadDAO,
+    SessionHistoryMetadataDAO,
+)
+from src.agents.slo_agent.workspace.dao import WorkspaceFolderDAO
+from src.agents.slo_agent.history.filesystem_store import (
+    FilesystemSessionHistoryStore,
+)
+from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
+from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
+from src.agents.slo_agent.history.projector import SessionHistoryProjector
+from src.agents.slo_agent.compaction.compaction_checker import CompactionChecker
+from src.agents.slo_agent.compaction.compacter import Compacter
+from src.agents.slo_agent.compaction.compacted_session_updater import (
+    CompactedSessionUpdater,
+)
+from src.agents.slo_agent.rate_limit.service import int_or_none
+from src.agents.slo_agent.rate_limit.dao import (
+    ModelRateLimitPolicyDAO,
+    RateLimitRetryPlanDAO,
+)
+from src.agents.slo_agent.rate_limit.service import (
+    IterationRetryPolicy,
+    estimate_request_tokens,
+    policy_for_model,
+    retry_plan_from_error,
+)
+from src.agents.slo_agent.recovery.dao import RecoveryDecisionDAO
+from src.agents.slo_agent.recovery.service import (
+    IterationRecoveryPolicy,
+    RecoveryPolicy,
+)
+from src.agents.slo_agent.events.runtime import (
+    AgentRuntimeEventDAO,
+    AgentRuntimeHandler,
+)
+from src.agents.slo_agent.sessions.dao import (
+    AgentEventSubscriber,
+    SessionConfigDAO,
+)
+from src.agents.slo_agent.sessions.usage import (
+    SessionUsageSnapshotDAO,
+    TokenUsageTotalsDAO,
+)
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.reasoning_capabilities import (
+    ReasoningLevel,
+    clamp_reasoning_level,
+    default_reasoning_level_for_model,
+    resolve_reasoning_config,
+)
+from src.agents.tools.bundles import create_extended_tools
+from src.auth.credential_dao import ProviderName
+from src.auth.credential_refresher import refresh_if_stale
+from src.auth.credential_resolver import CredentialResolver
+from src.auth.credential_store import CredentialStore
+from src.auth.provider_for_model import provider_for_model
+
+from src.agents.slo_agent.history.transcript import ReplayEntryProjector
+
+if TYPE_CHECKING:
+    from src.agents.providers.model_pool import ModelPoolDAO
+    from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+    from src.agents.slo_agent.orchestrator.pool import SubAgentPool
+
+__all__ = ["SloAgentSession"]
+
+
+_RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS: int = 8192
+"""Realistic per-turn output estimate for the local TPM pre-flight check.
+
+Deliberately decoupled from ``MODEL_DEFAULTS[...]["max_tokens"]``, which is the
+model's *hard output ceiling* (64K/128K after spec 02). Feeding that ceiling into
+the local token-window estimator would assume every turn emits the full ceiling and
+trip artificial multi-second waits after a few back-to-back turns. A typical turn
+emits far less; 8192 (the historical pre-02 value) keeps the local rate-limit
+behavior stable. The TUI usage snapshot still surfaces the true ceiling separately.
+"""
+
+_DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS: float = 300.0
+"""Maximum silence tolerated from the main agent stream before it is treated as hung.
+
+This mirrors the sub-agent child-process inactivity guard: if the model/tool lane
+stops producing events entirely after a prompt has started, the TUI should fail the
+turn rather than spin forever.
+"""
+
+
+def _stream_inactivity_timeout_seconds() -> float:
+    """Return the configured main-stream inactivity timeout.
+
+    ``SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS`` accepts any positive float value.
+    Invalid or non-positive values fall back to the built-in default.
+
+    Returns:
+        float: Seconds of tolerated silence before the stream is treated as hung.
+    """
+    raw_value: object = cfg(key="SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS")
+    try:
+        parsed: float = (
+            float(raw_value)  # type: ignore[arg-type]  # intentional broad coercion
+            if raw_value is not None
+            else _DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS
+        )
+    except (TypeError, ValueError):
+        return _DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS
+    if parsed <= 0:
+        return _DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS
+    return parsed
+
+
+class PromptAttemptPlanDAO(BaseModel):
+    """Plan describing how to run one attempt for one user prompt.
+
+    A prompt submission may involve more than one attempt. An initial attempt
+    runs the prompt normally. A future overflow-retry attempt would run the
+    same prompt again after compaction. This value object records the policy
+    for a single attempt.
+
+    Attributes:
+        attempt_kind (Literal["initial", "overflow_retry"]): Whether this
+            is the first attempt or a same-prompt retry after a failure.
+        text (str): The user prompt text to send to the agent.
+        persist_user_message (bool): Whether this attempt should write a
+            ``user_message`` event to durable history. The initial attempt
+            always writes one. A retry of the same prompt does not.
+        excluded_turn_ids (frozenset[str]): Completed turn ids that must be
+            ignored when rebuilding replay history for this attempt only.
+            Used so a retry does not immediately replay the turn that just
+            failed. Durable history is never changed; the exclusion is local
+            to this one history rebuild.
+        preflight_compaction_mode (Literal["respect_dirty_flag", "skip"]):
+            Controls whether the attempt runs the one-shot preflight
+            compaction check. ``"respect_dirty_flag"`` runs the check when
+            the active model/context window may have changed.
+            ``"skip"`` bypasses it, which is useful for retry attempts that
+            already performed a forced compaction.
+        source_failed_turn_id (Optional[str]): When this attempt is a retry,
+            the turn id of the failed attempt that produced it. ``None`` for
+            the initial attempt.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    attempt_kind: Literal["initial", "overflow_retry"] = Field(
+        description="Whether this is the first attempt or a same-prompt retry after a failure."
+    )
+    text: str = Field(description="The user prompt text to send to the agent.")
+    persist_user_message: bool = Field(
+        default=True,
+        description="Whether this attempt should write a user_message event to durable history.",
+    )
+    excluded_turn_ids: frozenset[str] = Field(
+        default_factory=frozenset,
+        description="Completed turn ids ignored when rebuilding replay history for this attempt.",
+    )
+    preflight_compaction_mode: Literal["respect_dirty_flag", "skip"] = Field(
+        default="respect_dirty_flag",
+        description="Controls whether the attempt runs the one-shot preflight compaction check.",
+    )
+    source_failed_turn_id: Optional[str] = Field(
+        default=None,
+        description="Turn id of the failed attempt that produced this retry, or None for initial.",
+    )
+
+
+class PreparedPromptAttemptDAO(BaseModel):
+    """Resolved runtime collaborators needed to execute one attempt.
+
+    This object is built from a ``PromptAttemptPlanDAO`` and contains every
+    dependency the execution phase needs: the turn id, the replay history,
+    the history trace handler, and the rate policy.
+
+    Attributes:
+        plan (PromptAttemptPlanDAO): The original attempt plan.
+        turn_id (str): UUID4 identifier for this attempt's turn.
+        message_history (list[BaseMessage]): Prior conversation messages to
+            pass into the agent's ``message_history`` argument.
+        runtime_handler (Optional[AgentRuntimeHandler]): Handler that maps
+            runtime agent trace events into canonical history events.
+        policy (ModelRateLimitPolicyDAO): Rate policy for the currently
+            routed model, used to derive the per-iteration retry plan.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    plan: PromptAttemptPlanDAO = Field(description="The original attempt plan.")
+    turn_id: str = Field(description="UUID4 identifier for this attempt's turn.")
+    message_history: list[BaseMessage] = Field(
+        default_factory=list,
+        description="Prior conversation messages to pass into the agent.",
+    )
+    runtime_handler: Optional[AgentRuntimeHandler] = Field(
+        default=None,
+        description="Handler that maps runtime agent trace events into canonical history events.",
+    )
+    policy: ModelRateLimitPolicyDAO = Field(
+        description="Rate policy for the currently routed model.",
+    )
+
+
+class PromptAttemptTrackerDAO(BaseModel):
+    """Mutable accumulator for one attempt while it streams.
+
+    The tracker is updated as events are yielded from the agent stream. After
+    the attempt finishes, its state is frozen into a
+    ``PromptAttemptResultDAO``.
+
+    Attributes:
+        turn_id (str): Turn id this tracker is watching.
+        final_response (str): Assistant text when the attempt ends with
+            ``run_completed``; ``"<aborted>"`` when it ends with
+            ``run_aborted``; empty string otherwise.
+        aborted (bool): True when the attempt ended in ``run_aborted``.
+        terminal_kind (Optional[Literal["run_completed", "run_aborted",
+            "run_failed"]]): Terminal outcome once known.
+        error (Optional[BaseException]): Captured exception when the attempt
+            failed.
+        terminal_event_appended (bool): Whether a terminal event has already
+            been written to durable history.
+        overflow_recovery_eligible (bool): True when the terminal failure was
+            a recognized provider context overflow. Used by
+            ``_derive_next_attempt_plan`` to decide whether a one-shot
+            recovery retry is warranted.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    turn_id: str = Field(description="Turn id this tracker is watching.")
+    final_response: str = Field(default="", description="Final assistant response text.")
+    aborted: bool = Field(default=False, description="True when the attempt ended in run_aborted.")
+    terminal_kind: Optional[Literal["run_completed", "run_aborted", "run_failed"]] = Field(
+        default=None,
+        description="Terminal outcome once known.",
+    )
+    error: Optional[BaseException] = Field(
+        default=None,
+        description="Captured exception when the attempt failed.",
+    )
+    terminal_event_appended: bool = Field(
+        default=False,
+        description="Whether a terminal event has already been written to durable history.",
+    )
+    overflow_recovery_eligible: bool = Field(
+        default=False,
+        description=(
+            "True when the terminal failure was a recognized provider context overflow. "
+            "Set in _finalize_failed_attempt; read by _derive_next_attempt_plan."
+        ),
+    )
+
+
+class PromptAttemptResultDAO(BaseModel):
+    """Frozen terminal summary of one prompt attempt.
+
+    This object is produced from a ``PromptAttemptTrackerDAO`` after the
+    attempt lifecycle completes. It is the only artifact the top-level
+    orchestrator uses to decide whether the submission is finished or needs
+    a follow-up attempt.
+
+    Attributes:
+        turn_id (str): Turn id of the attempt.
+        terminal_kind (Literal["run_completed", "run_aborted", "run_failed"]):
+            Final outcome of the attempt.
+        final_response (str): Response text or ``"<aborted>"`` surrogate.
+        aborted (bool): True when the attempt ended in ``run_aborted``.
+        error (Optional[BaseException]): Captured terminal exception.
+        overflow_recovery_eligible (bool): True when the failure was a
+            recognized provider context overflow on an initial attempt.
+            ``_derive_next_attempt_plan`` reads this to decide whether to
+            attempt same-submission overflow recovery.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    turn_id: str = Field(description="Turn id of the attempt.")
+    terminal_kind: Literal["run_completed", "run_aborted", "run_failed"] = Field(
+        description="Final outcome of the attempt."
+    )
+    final_response: str = Field(description="Response text or '<aborted>' surrogate.")
+    aborted: bool = Field(description="True when the attempt ended in run_aborted.")
+    error: Optional[BaseException] = Field(
+        default=None,
+        description="Captured terminal exception.",
+    )
+    overflow_recovery_eligible: bool = Field(
+        default=False,
+        description=(
+            "True when the failure was a recognized provider context overflow "
+            "on an initial attempt."
+        ),
+    )
+
+
+class SloAgentSession:
+    """One ``SloAgent`` per process, one in-flight prompt at a time."""
+
+    def __init__(
+        self,
+        *,
+        workdir: Path,
+        session_id: str,
+        config: Optional[SessionConfigDAO] = None,
+        agent: Optional[SloAgent] = None,
+        history_store: Optional[SessionHistoryStoreProtocol] = None,
+        history_projector: Optional[SessionHistoryProjector] = None,
+        enable_history: Optional[bool] = None,
+    ) -> None:
+        """Compose a session around a config (lazy) or a pre-built agent.
+
+        Args:
+            workdir (Path): Absolute workdir the agent operates in.
+            session_id (str): Stable session identifier (UUID4 or
+                caller-supplied for resume).
+            config (Optional[SessionConfigDAO]): Stored for the lazy
+                build path. Required when ``agent`` is ``None``.
+            agent (Optional[SloAgent]): A pre-built agent. When
+                supplied, no lazy construction happens.
+            history_store (Optional[SessionHistoryStoreProtocol]):
+                Optional explicit store collaborator (sub-spec 05.c).
+                When ``None`` and ``enable_history`` is ``True`` a
+                default ``TreeBasedFileSystemSessionHistoryStore`` is
+                constructed. Pass a ``FilesystemSessionHistoryStore``
+                explicitly to use the legacy flat-JSONL layout.
+            history_projector (Optional[SessionHistoryProjector]):
+                Optional explicit projector collaborator.
+            enable_history (bool): Persist history when ``True``. Tests
+                that inject a pre-built agent typically pass ``False``
+                to keep the workdir clean.
+
+        Raises:
+            ValueError: When neither ``config`` nor ``agent`` is given.
+        """
+        if config is None and agent is None:
+            raise ValueError(
+                "SloAgentSession requires either a SessionConfigDAO (for lazy "
+                "agent construction) or a pre-built SloAgent."
+            )
+        self._workdir: Path = workdir
+        self._session_id: str = session_id
+        self._config: Optional[SessionConfigDAO] = config
+        self._agent: Optional[SloAgent] = agent
+        self._subscribers: list[AgentEventSubscriber] = []
+        self._is_running: bool = False
+        self._lock: asyncio.Lock = asyncio.Lock()
+        # Default policy: persistent history is on by default for the
+        # production lazy-config path; tests that inject a pre-built
+        # agent (config=None) get history disabled by default so the
+        # workdir-scoped tests do not touch ``~/.slo``. An explicit
+        # ``enable_history`` argument always wins.
+        if enable_history is None:
+            self._enable_history: bool = config is not None
+        else:
+            self._enable_history = enable_history
+        # Register the internal history subscriber for sub-agent lifecycle
+        # events when history is enabled. This subscriber runs alongside
+        # external TUI/test subscribers and persists parent↔child links.
+        if self._enable_history:
+            self._subscribers.append(self._on_stream_event_for_history)
+        self._sub_agent_pool: Optional["SubAgentPool"] = None
+        self._history_store: Optional[SessionHistoryStoreProtocol] = history_store
+        if self._enable_history and self._history_store is None:
+            self._history_store = TreeBasedFilesystemSessionHistoryStore(
+                root=(config.resolved_history_root() if config is not None else None),
+            )
+        self._history_projector: SessionHistoryProjector = history_projector or SessionHistoryProjector()
+        self._history_session_ensured: bool = False
+        # Marks that the effective context window may have shrunk or has not yet
+        # been validated for the active model — set on every model switch and
+        # initialized True so the first turn after build/resume runs one
+        # pre-flight compaction check. Cleared after that check; steady-state
+        # turns rely solely on the post-turn check.
+        self._context_window_dirty: bool = True
+        self._active_model_name: Optional[str] = (
+            config.model_name or cfg("DEFAULT_MODEL_NAME")
+            if config is not None
+            else cfg("DEFAULT_MODEL_NAME")
+        )
+        self._active_reasoning_level: ReasoningLevel = self._seed_active_reasoning_level(
+            config=config,
+        )
+        self._allows_model_switching: bool = config is not None
+        self._session_usage_totals: TokenUsageTotalsDAO = TokenUsageTotalsDAO()
+        self._usage_snapshot_commit_version: int = 0
+        self._recent_request_times: deque[float] = deque()
+        self._recent_request_token_estimates: deque[tuple[float, int]] = deque()
+        self._cooldown_until: Optional[float] = None
+        self._cooldown_seconds_remaining: Optional[int] = None
+        self._startup_notice_shown_in_memory: bool = False
+        self._usage_snapshot: SessionUsageSnapshotDAO = self._build_usage_snapshot()
+        self._orchestrator_context_written: bool = False
+        log_info(msg=f"SloAgentSession built session_id={session_id[:8]} workdir={workdir}")
+
+    @classmethod
+    def build(cls, *, config: SessionConfigDAO) -> "SloAgentSession":
+        """Stash ``config`` for lazy agent construction on first invoke.
+
+        Honours ``config.session_id`` for resume and ``config.enable_history``
+        for the persistence opt-out.
+
+        Args:
+            config (SessionConfigDAO): Validated session config.
+
+        Returns:
+            SloAgentSession: A fresh session ready to ``invoke``.
+        """
+        session_id: str = config.session_id or str(uuid4())
+        return cls(
+            workdir=config.workdir,
+            session_id=session_id,
+            config=config,
+            enable_history=config.enable_history,
+        )
+
+    async def hydrate_transcript_entries(self) -> list["TranscriptEntryDAO"]:
+        """Load replay transcript entries for the session (sub-spec 05.e; feature 15).
+
+        Returns:
+            list[TranscriptEntryDAO]: Completed transcript entries in order,
+                or empty when history is disabled or the session has no
+                canonical events.
+        """
+        if not self._enable_history or self._history_store is None:
+            return []
+        if not await self._history_store.session_exists(session_id=self._session_id):
+            return []
+        events = await self._history_store.load_events(session_id=self._session_id)
+        return ReplayEntryProjector.build_entries(events=events)
+
+    def _build_agent(self) -> SloAgent:
+        """Construct the ``SloAgent`` from the stored config.
+
+        Threads ``session_id`` through so the ChatGPT-backend Responses
+        lane (feature 07) can attribute prompt-cache hits per session.
+
+        When ``config.extra_tools`` is non-empty, merges those tools into the
+        standard extended bundle so orchestrator sessions carry the
+        ``spawn_sub_agents`` tool alongside the default 9-tool set.
+        """
+        if self._config is None:
+            raise RuntimeError("SloAgentSession has no config to build a SloAgent from.")
+        resolved_workspace_file: Optional[Path] = self._resolve_workspace_file_for_agent()
+        extra: list = list(self._config.extra_tools or [])
+        all_tools = create_extended_tools() + extra if extra else None
+        return SloAgent(
+            model_name=self.active_model_name,
+            model_pool_dao=self._config.model_pool_dao,
+            reasoning_level=self.active_reasoning_level,
+            system_prompt=self._config.system_prompt,
+            should_stop_after_turn_hook=self._config.resolved_stop_hook(),
+            cwd=str(self._config.workdir),
+            workspace_file=resolved_workspace_file,
+            session_id=self._session_id,
+            tools=all_tools,
+            append_system_prompt=self._config.append_system_prompt,
+        )
+
+    def _resolve_workspace_file_for_agent(self) -> Optional[Path]:
+        """Return the workspace file to use for the lazy-built agent.
+
+        Prefers the explicit config value from the current invocation. When
+        resuming a persisted session without an explicit workspace file,
+        falls back to the value stored in ``session.json`` so workspace
+        context survives across restarts.
+
+        Returns:
+            Optional[Path]: Resolved workspace file path, or ``None`` when no
+                workspace file should be used.
+        """
+        if self._config is None:
+            return None
+        if self._config.workspace_file is not None:
+            return self._config.workspace_file
+        if not self._enable_history or self._history_store is None:
+            return None
+        session_json = self._history_store.root / self._session_id / "session.json"
+        if not session_json.exists():
+            return None
+        try:
+            metadata: SessionHistoryMetadataDAO = SessionHistoryMetadataDAO.model_validate(
+                json.loads(session_json.read_text(encoding="utf-8"))
+            )
+        except (FileNotFoundError, ValueError):
+            return None
+        return metadata.workspace_file
+
+    def _seed_active_reasoning_level(
+        self,
+        *,
+        config: Optional[SessionConfigDAO],
+    ) -> ReasoningLevel:
+        """Resolve the initial active reasoning level for this session.
+
+        Args:
+            config (Optional[SessionConfigDAO]): Optional build-time
+                config that may carry a startup override.
+
+        Returns:
+            ReasoningLevel: Seeded canonical reasoning level.
+        """
+        if config is not None and config.reasoning_level is not None:
+            return clamp_reasoning_level(
+                model_name=self.active_model_name,
+                requested_level=config.reasoning_level,
+            )
+        return default_reasoning_level_for_model(model_name=self.active_model_name)
+
+    def _build_usage_snapshot(self) -> SessionUsageSnapshotDAO:
+        """Build the current TUI-facing usage snapshot.
+
+        Reads the **routed** model name (the pool member currently active, or the
+        configured name when single-model / not yet built) so usage, reasoning,
+        defaults, and the rate policy all track the model that actually ran.
+
+        Returns:
+            SessionUsageSnapshotDAO: Current runtime usage snapshot.
+        """
+        routed_model_name: str = self._resolve_active_model_name() or self.active_model_name
+        resolved_reasoning = resolve_reasoning_config(
+            model_name=routed_model_name,
+            requested_level=self.active_reasoning_level,
+        )
+        model_defaults: dict[str, object] = dict(MODEL_DEFAULTS.get(routed_model_name, {}))
+        policy: ModelRateLimitPolicyDAO = policy_for_model(model_name=routed_model_name)
+        latest_turn: TokenUsageTotalsDAO = self._latest_turn_usage_totals()
+        return SessionUsageSnapshotDAO(
+            active_model_name=routed_model_name,
+            active_reasoning_level=self.active_reasoning_level,
+            provider_effort=resolved_reasoning.provider_effort,
+            provider_budget_tokens=resolved_reasoning.provider_budget_tokens,
+            output_cap_tokens=int_or_none(value=model_defaults.get("max_tokens")),
+            requests_per_minute_limit=policy.requests_per_minute,
+            tokens_per_minute_limit=policy.tokens_per_minute,
+            cooldown_seconds_remaining=self._cooldown_seconds_remaining,
+            latest_turn=latest_turn,
+            session_totals=self._session_usage_totals,
+            usage_available=self._usage_is_available(latest_turn=latest_turn),
+        )
+
+    @staticmethod
+    def _usage_is_available(*, latest_turn: TokenUsageTotalsDAO) -> bool:
+        """Return True when the latest turn has real token counts.
+
+        Args:
+            latest_turn (TokenUsageTotalsDAO): Latest completed-turn totals.
+
+        Returns:
+            bool: True when any provider-supplied token count is known.
+        """
+        return any(
+            value is not None
+            for value in (
+                latest_turn.input_tokens,
+                latest_turn.output_tokens,
+                latest_turn.total_tokens,
+            )
+        )
+
+    def _sync_usage_snapshot_commit(self) -> None:
+        """Commit the latest-turn usage into session totals when newly captured."""
+        if self._agent is None:
+            return
+        current_version: int = self._agent.usage_capture_version
+        if current_version == self._usage_snapshot_commit_version:
+            return
+        self._session_usage_totals = self._session_usage_totals.add(
+            other=self._agent.last_usage_totals,
+        )
+        self._usage_snapshot_commit_version = current_version
+
+    def _rebuild_usage_snapshot(self) -> SessionUsageSnapshotDAO:
+        """Recompute and store the session usage snapshot.
+
+        Returns:
+            SessionUsageSnapshotDAO: Freshly rebuilt usage snapshot.
+        """
+        self._usage_snapshot = self._build_usage_snapshot()
+        return self._usage_snapshot
+
+    def _latest_turn_usage_totals(self) -> TokenUsageTotalsDAO:
+        """Return the latest captured turn usage without forcing agent build.
+
+        Returns:
+            TokenUsageTotalsDAO: Latest captured usage totals, or empty totals.
+        """
+        if self._agent is None:
+            return TokenUsageTotalsDAO()
+        return self._agent.last_usage_totals
+
+    def _estimated_request_tokens(
+        self,
+        *,
+        text: str,
+        message_history: Sequence[BaseMessage] = (),
+    ) -> int:
+        """Return the history-aware local token estimate for the next attempt.
+
+        Counts the replayed ``message_history`` (including tool outputs) in
+        addition to the new prompt, so a resumed session's true request size —
+        dominated by replayed history — drives the preflight wait (spec 36/37).
+
+        Args:
+            text (str): User prompt text.
+            message_history (Sequence[BaseMessage]): Replayed history for this
+                turn. Defaults to empty (single-shot prompts).
+
+        Returns:
+            int: Conservative request-window token estimate including history.
+        """
+        resolved_reasoning = resolve_reasoning_config(
+            model_name=self._resolve_active_model_name() or self.active_model_name,
+            requested_level=self.active_reasoning_level,
+        )
+        # Use a realistic per-turn output estimate, NOT the model's hard ceiling
+        # (``MODEL_DEFAULTS[...]["max_tokens"]`` is 64K/128K after spec 02). Feeding
+        # the ceiling here would make the local TPM estimator assume every turn emits
+        # the full cap and inject artificial waits during normal tool turns.
+        return estimate_request_tokens(
+            prompt_text=text,
+            message_history=message_history,
+            output_cap_tokens=_RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS,
+            reasoning_budget_tokens=resolved_reasoning.provider_budget_tokens,
+        )
+
+    def _is_retryable_rate_limit_error(self, *, exc: BaseException) -> bool:
+        """Return True when ``exc`` is a retryable rate-limit failure.
+
+        Args:
+            exc (BaseException): Provider exception under inspection.
+
+        Returns:
+            bool: True when the exception reads like a rate-limit failure.
+        """
+        message: str = str(exc).lower()
+        return "rate limit" in message or "429" in message
+
+    def _prune_rate_window(self, *, now_seconds: float) -> None:
+        """Drop request-window entries older than sixty seconds.
+
+        Args:
+            now_seconds (float): Current monotonic timestamp.
+        """
+        cutoff: float = now_seconds - 60.0
+        while self._recent_request_times and self._recent_request_times[0] <= cutoff:
+            self._recent_request_times.popleft()
+        while self._recent_request_token_estimates and self._recent_request_token_estimates[0][0] <= cutoff:
+            self._recent_request_token_estimates.popleft()
+
+    def _preflight_wait_seconds(
+        self,
+        *,
+        policy: ModelRateLimitPolicyDAO,
+        estimated_tokens: int,
+        now_seconds: float,
+    ) -> int:
+        """Return the local request-window wait before the next attempt.
+
+        Args:
+            policy (ModelRateLimitPolicyDAO): Active model policy.
+            estimated_tokens (int): Estimated token pressure for the request.
+            now_seconds (float): Current monotonic timestamp.
+
+        Returns:
+            int: Seconds to wait before attempting the provider call.
+        """
+        self._prune_rate_window(now_seconds=now_seconds)
+        request_wait_seconds: int = self._request_window_wait_seconds(
+            policy=policy,
+            now_seconds=now_seconds,
+        )
+        token_wait_seconds: int = self._token_window_wait_seconds(
+            policy=policy,
+            estimated_tokens=estimated_tokens,
+            now_seconds=now_seconds,
+        )
+        return max(request_wait_seconds, token_wait_seconds)
+
+    def _request_window_wait_seconds(
+        self,
+        *,
+        policy: ModelRateLimitPolicyDAO,
+        now_seconds: float,
+    ) -> int:
+        """Return the local RPM wait for the next attempt.
+
+        Args:
+            policy (ModelRateLimitPolicyDAO): Active model policy.
+            now_seconds (float): Current monotonic timestamp.
+
+        Returns:
+            int: Seconds to wait for request-window capacity.
+        """
+        if policy.requests_per_minute is None:
+            return 0
+        if len(self._recent_request_times) < policy.requests_per_minute:
+            return 0
+        oldest_request_seconds: float = self._recent_request_times[0]
+        return max(1, round((oldest_request_seconds + 60.0) - now_seconds))
+
+    def _token_window_wait_seconds(
+        self,
+        *,
+        policy: ModelRateLimitPolicyDAO,
+        estimated_tokens: int,
+        now_seconds: float,
+    ) -> int:
+        """Return the local TPM wait for the next attempt.
+
+        Args:
+            policy (ModelRateLimitPolicyDAO): Active model policy.
+            estimated_tokens (int): Estimated request-window token pressure.
+            now_seconds (float): Current monotonic timestamp.
+
+        Returns:
+            int: Seconds to wait for token-window capacity.
+        """
+        if policy.tokens_per_minute is None:
+            return 0
+        current_window_tokens: int = sum(
+            tokens for _timestamp, tokens in self._recent_request_token_estimates
+        )
+        if current_window_tokens + estimated_tokens <= policy.tokens_per_minute:
+            return 0
+        oldest_token_seconds: float = self._recent_request_token_estimates[0][0]
+        return max(1, round((oldest_token_seconds + 60.0) - now_seconds))
+
+    def _record_request_attempt(self, *, estimated_tokens: int, now_seconds: float) -> None:
+        """Record one local request-window attempt.
+
+        Args:
+            estimated_tokens (int): Estimated token pressure for the attempt.
+            now_seconds (float): Current monotonic timestamp.
+        """
+        self._recent_request_times.append(now_seconds)
+        self._recent_request_token_estimates.append((now_seconds, estimated_tokens))
+
+    def _set_retry_cooldown(self, *, wait_seconds: int) -> None:
+        """Store cooldown state for the usage status surface.
+
+        Args:
+            wait_seconds (int): Seconds remaining until the next attempt.
+        """
+        self._cooldown_until = time.monotonic() + wait_seconds
+        self._cooldown_seconds_remaining = wait_seconds
+        self._rebuild_usage_snapshot()
+
+    def _clear_retry_cooldown(self) -> None:
+        """Clear any active retry cooldown state."""
+        self._cooldown_until = None
+        self._cooldown_seconds_remaining = None
+        self._rebuild_usage_snapshot()
+
+    def _cooldown_wait_seconds(self) -> int:
+        """Return the active retry cooldown remaining in whole seconds.
+
+        Returns:
+            int: Remaining wait, or ``0`` when there is no active cooldown.
+        """
+        if self._cooldown_until is None:
+            return 0
+        remaining_seconds: float = self._cooldown_until - time.monotonic()
+        if remaining_seconds <= 0:
+            return 0
+        return max(1, round(remaining_seconds))
+
+    # ---- Public surface ---------------------------------------------------
+
+    @property
+    def agent(self) -> SloAgent:
+        """Return the underlying ``SloAgent``, building it on first access."""
+        if self._agent is None:
+            self._agent = self._build_agent()
+        return self._agent
+
+    @property
+    def active_model_name(self) -> str:
+        """Return the current active model name for this session.
+
+        Returns:
+            str: Active model name for title rendering and lazy agent builds.
+
+        Raises:
+            RuntimeError: If the session has no active model configured.
+        """
+        if not self._active_model_name:
+            raise RuntimeError("SloAgentSession has no active model configured.")
+        return self._active_model_name
+
+    def _resolve_active_model_name(self) -> str:
+        """Return the name of the model the pool is currently routing to.
+
+        Falls back to ``_active_model_name`` when no pool is in use or when
+        the session's agent is not yet built. Uses duck typing
+        (``hasattr(llm, "active_model_name")``) to detect a ``ModelPool``
+        without importing that class into session.py.
+
+        Returns:
+            str: The active model name — pool-routed or static.
+        """
+        if self._agent is not None and self._agent.llm is not None:
+            injected_llm = self._agent.llm
+            if hasattr(injected_llm, "active_model_name"):
+                return injected_llm.active_model_name  # type: ignore[attr-defined]
+        return self._active_model_name or ""
+
+    @property
+    def active_reasoning_level(self) -> ReasoningLevel:
+        """Return the current active reasoning level for this session.
+
+        Returns:
+            ReasoningLevel: Active canonical reasoning level used for
+                title rendering and lazy agent builds.
+        """
+        return self._active_reasoning_level
+
+    @property
+    def workdir(self) -> Path:
+        """The resolved absolute workdir. Read-only."""
+        return self._workdir
+
+    @property
+    def model_pool_dao(self) -> Optional["ModelPoolDAO"]:
+        """The configured model pool, or ``None`` for a single-model session.
+
+        Read-only. Exposed so ``/new`` can carry the pool configuration into a
+        replacement session without reaching into private config state.
+
+        Returns:
+            Optional[ModelPoolDAO]: The session's configured pool, or ``None``.
+        """
+        return self._config.model_pool_dao if self._config is not None else None
+
+    @property
+    def routed_model_name(self) -> str:
+        """The model the pool is currently routing to (truthful identity).
+
+        Read-only. For a pooled session this follows route switches; for a
+        single-model session it equals the configured name. Title/status surfaces
+        read this so they never lie about which model actually ran. Falls back to
+        the configured name before the agent is built.
+
+        Returns:
+            str: The routed model name (or the configured name when no pool /
+                not yet built).
+        """
+        return self._resolve_active_model_name() or self.active_model_name
+
+    @property
+    def session_id(self) -> str:
+        """The per-process session identifier. Read-only."""
+        return self._session_id
+
+    @property
+    def is_running(self) -> bool:
+        """True while ``invoke`` is in flight."""
+        return self._is_running
+
+    @property
+    def history_store(self) -> Optional[SessionHistoryStoreProtocol]:
+        """The active history store (or ``None`` when history is disabled)."""
+        return self._history_store
+
+    @property
+    def history_projector(self) -> SessionHistoryProjector:
+        """The active history projector."""
+        return self._history_projector
+
+    @property
+    def history_root(self) -> Optional[Path]:
+        """Return the configured history root when history is enabled.
+
+        Returns:
+            Optional[Path]: Resolved history root, or ``None`` when history is disabled.
+        """
+        if self._history_store is None:
+            return None
+        return self._history_store.root
+
+    @property
+    def history_enabled(self) -> bool:
+        """Return whether persisted history is enabled for this session.
+
+        Returns:
+            bool: True when canonical on-disk history is enabled.
+        """
+        return self._enable_history
+
+    @property
+    def session_name(self) -> Optional[str]:
+        """Return the active persisted session name when present.
+
+        Returns:
+            Optional[str]: Human-readable session name, or ``None`` when unnamed.
+        """
+        if not self._enable_history or self._history_store is None:
+            return None
+        session_json = self._history_store.root / self._session_id / "session.json"
+        try:
+            metadata: SessionHistoryMetadataDAO = SessionHistoryMetadataDAO.model_validate(
+                json.loads(session_json.read_text(encoding="utf-8"))
+            )
+        except (FileNotFoundError, ValueError):
+            return None
+        return metadata.session_name
+
+    def usage_snapshot(self) -> SessionUsageSnapshotDAO:
+        """Return the current session-owned usage snapshot.
+
+        Returns:
+            SessionUsageSnapshotDAO: Deep-copied usage snapshot for the TUI.
+        """
+        return self._usage_snapshot.model_copy(deep=True)
+
+    def refresh_usage_snapshot(self) -> SessionUsageSnapshotDAO:
+        """Recompute and return the session-owned usage snapshot.
+
+        Returns:
+            SessionUsageSnapshotDAO: Fresh usage snapshot.
+        """
+        self._sync_usage_snapshot_commit()
+        return self._rebuild_usage_snapshot().model_copy(deep=True)
+
+    async def should_show_startup_notice(self) -> bool:
+        """Return True when the one-time startup notice should be shown.
+
+        Returns:
+            bool: True for a new session that has not yet recorded the marker.
+        """
+        if not self._enable_history or self._history_store is None:
+            return not self._startup_notice_shown_in_memory
+        if not await self._history_store.session_exists(session_id=self._session_id):
+            return True
+        metadata = await self._history_store.read_metadata(session_id=self._session_id)
+        return metadata.startup_notice_shown_at is None
+
+    async def mark_startup_notice_shown(self) -> None:
+        """Persist that the startup notice has been rendered once."""
+        if not self._enable_history or self._history_store is None:
+            self._startup_notice_shown_in_memory = True
+            return
+        await self._ensure_history_session()
+        metadata = await self._history_store.read_metadata(session_id=self._session_id)
+        now_utc: datetime = datetime.now(timezone.utc)
+        metadata.startup_notice_shown_at = metadata.startup_notice_shown_at or now_utc
+        metadata.updated_at = now_utc
+        await self._history_store.write_metadata(metadata=metadata)
+
+    async def rename_session(self, *, session_name: str) -> SessionHistoryMetadataDAO:
+        """Persist a human-readable session name for the active session.
+
+        Args:
+            session_name (str): Requested session name.
+
+        Returns:
+            SessionHistoryMetadataDAO: Persisted updated metadata.
+
+        Raises:
+            RuntimeError: When history is disabled for this session.
+            ValueError: When the name is blank or conflicts with another session.
+        """
+        if not self._enable_history or self._history_store is None:
+            raise RuntimeError("Cannot rename a session when history is disabled.")
+        await self._ensure_history_session()
+        return await self._history_store.rename_session(
+            session_id=self._session_id,
+            session_name=session_name,
+        )
+
+    def subscribe(self, *, handler: AgentEventSubscriber) -> None:
+        """Register an async event handler."""
+        self._subscribers.append(handler)
+
+    def unsubscribe(self, *, handler: AgentEventSubscriber) -> None:
+        """Remove a previously-registered handler. No-op if absent."""
+        try:
+            self._subscribers.remove(handler)
+        except ValueError:
+            pass
+
+    @property
+    def event_relay(self) -> AgentEventSubscriber:
+        """Return a relay callable matching the ``AgentEventSubscriber`` contract.
+
+        ``SubAgentPool`` and ``SubAgentProcess`` call the relay with the
+        ``AgentStreamEventDAO`` as a single **positional** argument, matching
+        the ``Callable[[AgentStreamEventDAO], Awaitable[None]]`` type alias.
+        ``_dispatch_event`` uses a keyword-only ``event`` parameter (``*, event``),
+        so returning ``self._dispatch_event`` directly would raise
+        ``TypeError: _dispatch_event() takes 1 positional argument but 2 were given``
+        the moment the pool invokes ``await relay(tagged_event)``.
+
+        This wrapper bridges the two calling conventions without changing the
+        internal ``_dispatch_event`` signature.
+
+        Returns:
+            AgentEventSubscriber: Coroutine that accepts one positional
+                ``AgentStreamEventDAO`` and dispatches it to all subscribers.
+        """
+        async def _positional_relay(event: AgentStreamEventDAO) -> None:
+            """Forward ``event`` to ``_dispatch_event`` using its keyword signature.
+
+            Args:
+                event (AgentStreamEventDAO): The event to dispatch.
+            """
+            await self._dispatch_event(event=event)
+
+        return _positional_relay
+
+    def attach_sub_agent_pool(
+        self,
+        *,
+        pool: "SubAgentPool",
+        spawn_tool: BaseTool,
+    ) -> None:
+        """Promote this session to orchestrator mode by attaching a pool and tool.
+
+        Merges ``spawn_tool`` into the session config's ``extra_tools`` list and
+        appends ``ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM`` to the config's
+        ``append_system_prompt`` so the next lazy agent build picks up both.
+
+        Must be called before the first prompt (i.e. before ``self._agent`` is
+        built). Raises ``RuntimeError`` if called after the agent has already
+        been constructed, since re-building it mid-session would discard the
+        conversation history held in the graph state.
+
+        Args:
+            pool (SubAgentPool): The pool that manages child processes for
+                this session.
+            spawn_tool (BaseTool): The bound ``spawn_sub_agents`` LangChain
+                tool closed over ``pool``.
+
+        Raises:
+            RuntimeError: When the lazy agent has already been built.
+        """
+        if self._agent is not None:
+            raise RuntimeError(
+                "attach_sub_agent_pool() must be called before the first prompt. "
+                "The agent has already been built for this session."
+            )
+        from src.agents.slo_agent.orchestrator.spawn_tool import (  # noqa: PLC0415
+            ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM,
+            DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
+        )
+        assert self._config is not None  # orchestrator sessions are always config-built
+        existing_extra: list[BaseTool] = list(self._config.extra_tools or [])
+        existing_append: str = self._config.append_system_prompt or ""
+        update: dict = {
+            "extra_tools": existing_extra + [spawn_tool],
+            "append_system_prompt": existing_append + ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM,
+        }
+        if self._config.system_prompt is None:
+            update["system_prompt"] = DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        self._config = self._config.model_copy(update=update)
+        self._sub_agent_pool = pool
+
+    def steer(self, *, message: str | BaseMessage) -> None:
+        """Queue a steering message for the next agent turn."""
+        self.agent.steer(message=message)
+
+    def abort(self) -> None:
+        """Request graceful cancellation of the in-flight run.
+
+        Aborts the active ``SloAgent`` turn and, when an orchestrator pool
+        is active, also cancels all child sub-agent processes via
+        ``cancel_all()``. Child cancellation is scheduled as a future so it
+        does not block the abort signal path.
+        """
+        if self._agent is not None:
+            self._agent.abort()
+        if self._sub_agent_pool is not None:
+            asyncio.ensure_future(self._sub_agent_pool.cancel_all())
+
+    def switch_model(self, *, model_name: str) -> None:
+        """Switch the active model and invalidate lazy-built agent state.
+
+        ``/model X`` is an explicit instruction to run model ``X``. On a pooled
+        session, switching therefore **clears the configured pool** and drops to
+        single-model mode with ``X`` — otherwise the pool branch would keep
+        routing by priority and silently ignore the operator's choice. Re-clamps
+        the active reasoning level against the new model's capability range so the
+        title bar and the next lazy build stay truthful. The new configured name
+        is persisted to ``session.json`` on the next turn via
+        ``_persist_routed_model_if_changed`` (this method is synchronous).
+
+        Args:
+            model_name (str): Supported model to activate.
+
+        Raises:
+            RuntimeError: If this session wraps a pre-built agent and
+                therefore cannot safely rebind models.
+        """
+        if not self._allows_model_switching:
+            raise RuntimeError(
+                "Cannot switch models on a pre-built SloAgentSession. "
+                "Build the session from SessionConfigDAO instead."
+            )
+        self._active_model_name = model_name
+        if self._config is not None and self._config.model_pool_dao is not None:
+            log_info(msg="model_switch_clears_pool", model_name=model_name)
+            self._config.model_pool_dao = None
+            self._config.model_name = model_name
+        self._active_reasoning_level = clamp_reasoning_level(
+            model_name=self.active_model_name,
+            requested_level=self.active_reasoning_level,
+        )
+        self._agent = None
+        # The new model may have a smaller context window than the one the
+        # post-turn check last validated against; flag a one-shot pre-flight
+        # compaction check on the next turn.
+        self._context_window_dirty = True
+        self._rebuild_usage_snapshot()
+
+    def switch_reasoning_level(
+        self,
+        *,
+        reasoning_level: ReasoningLevel,
+    ) -> ReasoningLevel:
+        """Switch the active reasoning level for future lazy agent builds.
+
+        Args:
+            reasoning_level (ReasoningLevel): Requested canonical
+                reasoning level.
+
+        Returns:
+            ReasoningLevel: Final clamped active reasoning level.
+
+        Raises:
+            RuntimeError: If this session wraps a pre-built agent and
+                therefore cannot safely rebuild with a new reasoning
+                configuration.
+        """
+        if not self._allows_model_switching:
+            raise RuntimeError(
+                "Cannot switch reasoning on a pre-built SloAgentSession. "
+                "Build the session from SessionConfigDAO instead."
+            )
+        clamped_level: ReasoningLevel = clamp_reasoning_level(
+            model_name=self.active_model_name,
+            requested_level=reasoning_level,
+        )
+        if clamped_level == self._active_reasoning_level:
+            return clamped_level
+        self._active_reasoning_level = clamped_level
+        self._agent = None
+        self._rebuild_usage_snapshot()
+        return clamped_level
+
+    async def invoke(
+        self,
+        *,
+        text: str,
+        history: Optional[list[dict]] = None,
+    ) -> AsyncGenerator[AgentStreamEventDAO, None]:
+        """Run one user prompt submission to completion.
+
+        A "submission" is the user's action of sending one prompt. A single
+        submission may execute multiple "attempts" (for example, an initial
+        attempt and a future retry after compaction), but the operator only
+        sees one coherent response.
+
+        Each attempt follows the same lifecycle:
+
+        1. Build a ``PromptAttemptPlanDAO`` describing what the attempt should do.
+        2. Prepare runtime context: allocate a turn id, ensure session/agent
+           readiness, run optional preflight compaction, load replay history,
+           and resolve rate policy.
+        3. Execute the attempt lifecycle: persist opening history events,
+           stream the agent response, and persist the terminal event.
+        4. Freeze the attempt outcome into a ``PromptAttemptResultDAO``.
+        5. Ask ``_derive_next_attempt_plan`` whether another attempt is needed.
+           For an initial attempt that failed with a recognized context-overflow
+           error, it runs forced compaction and returns a one-shot retry plan.
+           For all other outcomes it returns ``None``.
+        6. If no follow-up attempt exists, re-raise any captured failure or
+           return normally.
+
+        Opening history events are the records written before the agent runs:
+        ``run_started`` and ``user_message``. Terminal history events are the
+        records written after the agent finishes: ``run_completed``,
+        ``run_aborted``, or ``run_failed``.
+
+        Args:
+            text (str): User prompt text for this submission.
+            history (Optional[list[dict]]): Optional legacy caller-supplied
+                history used only by tests. The production path loads history
+                from the persistent store.
+
+        Yields:
+            AgentStreamEventDAO: Live stream events from the active attempt,
+                including thinking deltas, text deltas, tool calls, and
+                terminal events.
+
+        Raises:
+            RuntimeError: If another prompt is already in flight on this session.
+            BaseException: The terminal provider or runtime failure when the
+                attempt failed and no retry plan is available.
+        """
+        self._assert_no_prompt_in_flight()
+        async with self._session_run_scope():
+            plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
+                text=text,
+            )
+            while True:
+                prepared: PreparedPromptAttemptDAO = await self._prepare_attempt_context(
+                    plan=plan,
+                )
+                tracker: PromptAttemptTrackerDAO = self._build_attempt_tracker(
+                    turn_id=prepared.turn_id,
+                )
+                try:
+                    async for event in self._run_attempt_lifecycle(
+                        prepared=prepared,
+                        tracker=tracker,
+                        history=history,
+                    ):
+                        yield event
+                except Exception as exc:
+                    if self._should_reraise_attempt_exception(
+                        tracker=tracker,
+                    ):
+                        raise
+                    self._record_unhandled_attempt_exception(
+                        tracker=tracker,
+                        error=exc,
+                    )
+                result: PromptAttemptResultDAO = self._build_attempt_result(
+                    tracker=tracker,
+                )
+                next_plan: PromptAttemptPlanDAO | None = await self._derive_next_attempt_plan(
+                    plan=plan,
+                    result=result,
+                )
+                if next_plan is not None:
+                    plan = next_plan
+                    continue
+                self._raise_if_attempt_failed(
+                    result=result,
+                )
+                return
+
+
+    def _assert_no_prompt_in_flight(self) -> None:
+        """Raise if another prompt is already running on this session.
+
+        Checks ``self._is_running`` before lock acquisition so the caller gets
+        a clear error message without waiting.
+
+        Returns:
+            None: When no prompt is in flight.
+
+        Raises:
+            RuntimeError: When ``self._is_running`` is ``True``.
+        """
+        if not self._is_running:
+            return
+        raise RuntimeError(
+            "SloAgentSession already processing a prompt. Steer or follow_up "
+            "if you want to inject a message; or await completion first."
+        )
+
+    @asynccontextmanager
+    async def _session_run_scope(self) -> AsyncIterator[None]:
+        """Acquire the prompt lock and set ``_is_running`` for one submission.
+
+        This context manager guarantees that:
+
+        - only one prompt runs at a time,
+        - ``self._is_running`` is ``True`` while inside the scope,
+        - ``self._is_running`` is reset to ``False`` when the scope exits,
+          even if an exception escapes.
+
+        Yields:
+            None: The scope inside which one submission executes.
+        """
+        async with self._lock:
+            self._is_running = True
+            try:
+                yield
+            finally:
+                self._is_running = False
+
+    def _build_initial_attempt_plan(
+        self,
+        *,
+        text: str,
+    ) -> PromptAttemptPlanDAO:
+        """Return the plan for the first attempt of a prompt submission.
+
+        The initial attempt:
+
+        - persists a ``user_message`` event so the prompt appears in history,
+        - does not exclude any prior turns from replay,
+        - respects the ``_context_window_dirty`` flag when deciding whether to
+          run preflight compaction.
+
+        Args:
+            text (str): User-submitted prompt text.
+
+        Returns:
+            PromptAttemptPlanDAO: Plan describing the initial attempt.
+        """
+        return PromptAttemptPlanDAO(
+            attempt_kind="initial",
+            text=text,
+            persist_user_message=True,
+            excluded_turn_ids=frozenset(),
+            preflight_compaction_mode="respect_dirty_flag",
+            source_failed_turn_id=None,
+        )
+
+    async def _prepare_attempt_context(
+        self,
+        *,
+        plan: PromptAttemptPlanDAO,
+    ) -> PreparedPromptAttemptDAO:
+        """Resolve all runtime collaborators needed for one attempt.
+
+        This method performs setup in a strict order:
+
+        1. Allocate a fresh ``turn_id``. This id is used in every persisted
+           history event for this attempt and is required before compaction
+           runs, because a compaction summary must be anchored to the turn
+           that triggered it.
+        2. Ensure the on-disk session metadata exists.
+        3. Ensure the agent is built and its credentials are fresh.
+        4. Run the attempt's preflight compaction policy.
+        5. Load projected message history from durable events. Any turn ids
+           listed in ``plan.excluded_turn_ids`` are omitted from this replay
+           only; they remain on disk.
+        6. Build the runtime trace handler and resolve the rate policy.
+
+        Args:
+            plan (PromptAttemptPlanDAO): Plan describing the attempt to realize.
+
+        Returns:
+            PreparedPromptAttemptDAO: Container holding every collaborator the
+                execution phase needs.
+        """
+        turn_id: str = self._allocate_turn_id()
+        await self._ensure_history_session()
+        await self._ensure_agent_ready()
+        await self._run_plan_preflight_compaction(
+            plan=plan,
+            turn_id=turn_id,
+        )
+        message_history: list[BaseMessage] = await self._load_message_history(
+            excluded_turn_ids=set(plan.excluded_turn_ids),
+        )
+        runtime_handler: Optional[AgentRuntimeHandler] = self._build_runtime_handler_for_attempt(
+            turn_id=turn_id,
+        )
+        policy: ModelRateLimitPolicyDAO = self._resolve_attempt_policy()
+        return PreparedPromptAttemptDAO(
+            plan=plan,
+            turn_id=turn_id,
+            message_history=message_history,
+            runtime_handler=runtime_handler,
+            policy=policy,
+        )
+
+    def _allocate_turn_id(self) -> str:
+        """Return a new UUID4 turn identifier for one attempt.
+
+        Returns:
+            str: A fresh turn id that will be stamped onto every history event
+                belonging to this attempt.
+        """
+        return str(uuid4())
+
+    async def _run_plan_preflight_compaction(
+        self,
+        *,
+        plan: PromptAttemptPlanDAO,
+        turn_id: str,
+    ) -> None:
+        """Decide whether this attempt should run the preflight compaction check.
+
+        The preflight compaction check compacts the session history before the
+        turn starts when the effective context window may have changed (for
+        example, after a model switch or on the first turn after resume).
+
+        Conditions:
+
+        - If ``plan.preflight_compaction_mode`` is ``"skip"``, do nothing.
+        - Otherwise, delegate to ``_preflight_compaction_if_dirty``, which
+          compacts only when ``self._context_window_dirty`` is ``True``.
+
+        Args:
+            plan (PromptAttemptPlanDAO): Plan controlling preflight behavior.
+            turn_id (str): Turn id allocated for this attempt.
+        """
+        if plan.preflight_compaction_mode == "skip":
+            return
+        await self._preflight_compaction_if_dirty(
+            turn_id=turn_id,
+        )
+
+    def _build_runtime_handler_for_attempt(
+        self,
+        *,
+        turn_id: str,
+    ) -> Optional[AgentRuntimeHandler]:
+        """Return the history trace handler for one attempt.
+
+        The handler maps runtime agent trace events (assistant deltas, tool
+        calls, tool results, etc.) into canonical ``SessionHistoryEventDAO``
+        records and appends them to the store. It is only needed when history
+        persistence is enabled.
+
+        Args:
+            turn_id (str): Turn id for the current attempt.
+
+        Returns:
+            Optional[AgentRuntimeHandler]: The runtime trace handler when
+                history is enabled, otherwise ``None``.
+        """
+        if not self._enable_history:
+            return None
+        return self._runtime_handler_for_turn(
+            turn_id=turn_id,
+        )
+
+    def _resolve_attempt_policy(self) -> ModelRateLimitPolicyDAO:
+        """Return the rate policy for the active routed model.
+
+        The policy is used by ``_stream_prompt_with_retries`` to decide
+        preflight wait behavior and iteration retry budgets.
+
+        Returns:
+            ModelRateLimitPolicyDAO: Rate policy for ``self.active_model_name``
+                or the pool-routed model name when a model pool is active.
+        """
+        return policy_for_model(
+            model_name=self._resolve_active_model_name() or self.active_model_name,
+        )
+
+    def _build_attempt_tracker(
+        self,
+        *,
+        turn_id: str,
+    ) -> PromptAttemptTrackerDAO:
+        """Create a fresh mutable tracker for one attempt.
+
+        The tracker records the terminal outcome while the attempt streams.
+        It is later converted into an immutable ``PromptAttemptResultDAO``.
+
+        Args:
+            turn_id (str): Turn identifier for the attempt.
+
+        Returns:
+            PromptAttemptTrackerDAO: A tracker initialized with no terminal
+                state and an empty final response.
+        """
+        return PromptAttemptTrackerDAO(
+            turn_id=turn_id,
+        )
+
+    async def _run_attempt_lifecycle(
+        self,
+        *,
+        prepared: PreparedPromptAttemptDAO,
+        tracker: PromptAttemptTrackerDAO,
+        history: Optional[list[dict]],
+    ) -> AsyncGenerator[AgentStreamEventDAO, None]:
+        """Execute one prepared attempt and yield its live stream events.
+
+        Lifecycle steps:
+
+        1. Persist the opening history events (``run_started`` and optionally
+           ``user_message``) for this attempt.
+        2. Stream the agent response through ``_stream_prompt_with_retries``.
+           For each event, mirror terminal outcomes into the tracker and
+           persist any ``run_retrying`` diagnostics.
+        3. If the stream raises an exception, finalize the attempt as failed
+           and stop streaming.
+        4. If the stream ends normally, finalize the attempt as completed or
+           aborted.
+        5. In the ``finally`` block, write a fallback ``run_failed`` event if
+           no terminal event was successfully persisted.
+
+        Args:
+            prepared (PreparedPromptAttemptDAO): Resolved runtime context for
+                the attempt.
+            tracker (PromptAttemptTrackerDAO): Mutable tracker to update.
+            history (Optional[list[dict]]): Legacy caller-supplied history
+                forwarded to the agent stream when persistent history is empty.
+
+        Yields:
+            AgentStreamEventDAO: Live events produced by the agent during the
+                attempt.
+        """
+        try:
+            await self._persist_attempt_opening_events(
+                plan=prepared.plan,
+                turn_id=prepared.turn_id,
+            )
+            try:
+                async for event in self._stream_prompt_with_retries(
+                    text=prepared.plan.text,
+                    history=history,
+                    message_history=prepared.message_history,
+                    runtime_handler=prepared.runtime_handler,
+                    policy=prepared.policy,
+                ):
+                    self._record_attempt_stream_event(
+                        tracker=tracker,
+                        event=event,
+                    )
+                    if event.kind == "run_retrying":
+                        await self._persist_run_retrying_event(
+                            event=event,
+                            turn_id=prepared.turn_id,
+                        )
+                    elif event.kind == "recovery_started":
+                        await self._persist_recovery_events(
+                            event=event,
+                            turn_id=prepared.turn_id,
+                        )
+                    yield event
+            except Exception as exc:
+                await self._finalize_failed_attempt(
+                    tracker=tracker,
+                    turn_id=prepared.turn_id,
+                    error=exc,
+                )
+                return
+            await self._finalize_successful_attempt(
+                tracker=tracker,
+                turn_id=prepared.turn_id,
+            )
+        finally:
+            await self._append_fallback_terminal_event_if_needed(
+                tracker=tracker,
+            )
+
+    def _assembled_system_prompt(self) -> str:
+        """Compute the effective system prompt that will be passed to SloAgent.
+
+        Combines the base system prompt from config with any appended fragment
+        (e.g. the orchestrator addendum injected by ``attach_sub_agent_pool``).
+        Returns an empty string when no config is available (pre-built agent path).
+
+        Returns:
+            str: Assembled system prompt combining base and append fragments.
+        """
+        if self._config is None:
+            return ""
+        base: str = self._config.system_prompt or ""
+        append: str = self._config.append_system_prompt or ""
+        return base + append
+
+    async def _write_orchestrator_context(self, *, user_prompt: str) -> None:
+        """Persist the orchestrator invocation context to disk once.
+
+        Written once per session on the first user message. Best-effort:
+        ``OSError`` is logged but never propagated so the workflow continues
+        even if the capture write fails. Skipped when history is disabled.
+
+        Args:
+            user_prompt (str): Content of the first user message that triggered
+                this workflow run.
+        """
+        if self._sub_agent_pool is None:
+            return
+        if self._orchestrator_context_written:
+            return
+        if not self._enable_history or self._history_store is None:
+            return
+        self._orchestrator_context_written = True
+        context_path: Path = (
+            self._history_store.root / self._session_id / "orchestrator_context.json"
+        )
+        if context_path.exists():
+            return
+        try:
+            from src.agents.slo_agent.orchestrator.context_dao import (  # noqa: PLC0415
+                OrchestratorContextDAO,
+                dump_json_bytes,
+            )
+            context: OrchestratorContextDAO = OrchestratorContextDAO.build(
+                system_prompt=self._assembled_system_prompt(),
+                user_prompt=user_prompt,
+                model=self._resolve_active_model_name() or self._active_model_name,
+            )
+            data: bytes = dump_json_bytes(model=context)
+            context_dir: Path = context_path.parent
+            context_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=context_dir, delete=False) as tmp:
+                tmp.write(data)
+                tmp_name: str = tmp.name
+            os.replace(tmp_name, context_path)
+        except OSError as exc:
+            log_warning(
+                msg="orchestrator_context_write_failed",
+                session_id=self._session_id,
+                error=str(exc),
+            )
+
+    async def _persist_attempt_opening_events(
+        self,
+        *,
+        plan: PromptAttemptPlanDAO,
+        turn_id: str,
+    ) -> None:
+        """Persist the history events that open a turn.
+
+        Opening events are written before the agent starts executing. They are:
+
+        - ``run_started``: lifecycle marker carrying the prompt text and active
+          model name.
+        - ``user_message``: the user's prompt content as a conversational
+          message, written only when ``plan.persist_user_message`` is ``True``.
+
+        A retry attempt of the same prompt sets ``persist_user_message=False``
+        so the prompt is not duplicated in durable history.
+
+        Args:
+            plan (PromptAttemptPlanDAO): Plan governing what to persist.
+            turn_id (str): Turn identifier to stamp onto the events.
+
+        Returns:
+            None: Events are appended synchronously to the history store.
+
+        Raises:
+            Exception: Any exception raised by ``_append_history_event``
+                propagates and aborts the attempt.
+        """
+        await self._append_history_event(
+            event=self._build_event(
+                kind="run_started",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    content=plan.text,
+                    model_name=self._resolve_active_model_name(),
+                ),
+            ),
+        )
+        if not plan.persist_user_message:
+            return
+        await self._append_history_event(
+            event=self._build_event(
+                kind="user_message",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    role="user",
+                    content=plan.text,
+                ),
+            ),
+        )
+        await self._write_orchestrator_context(user_prompt=plan.text)
+
+    def _record_attempt_stream_event(
+        self,
+        *,
+        tracker: PromptAttemptTrackerDAO,
+        event: AgentStreamEventDAO,
+    ) -> None:
+        """Update the tracker when a terminal stream event is observed.
+
+        Only ``run_completed`` and ``run_aborted`` terminal outcomes are
+        mirrored here. Other events (thinking deltas, text deltas, tool calls)
+        pass through without mutating the tracker.
+
+        Args:
+            tracker (PromptAttemptTrackerDAO): Tracker to update.
+            event (AgentStreamEventDAO): One event yielded from the agent stream.
+
+        Returns:
+            None: The tracker is mutated in place.
+        """
+        if event.kind == "run_completed":
+            tracker.final_response = event.content or ""
+            tracker.aborted = False
+            tracker.terminal_kind = "run_completed"
+            return
+        if event.kind == "run_aborted":
+            tracker.final_response = "<aborted>"
+            tracker.aborted = True
+            tracker.terminal_kind = "run_aborted"
+
+    async def _finalize_successful_attempt(
+        self,
+        *,
+        tracker: PromptAttemptTrackerDAO,
+        turn_id: str,
+    ) -> None:
+        """Persist the terminal outcome for a successful or aborted attempt.
+
+        Steps:
+
+        1. Drain and persist any ModelPool route-switch audit records.
+        2. Sync the routed model name into session metadata if it changed.
+        3. Write ``run_aborted`` if the tracker is marked aborted, otherwise
+           write ``run_completed`` with the final assistant text.
+        4. Mark the tracker so the fallback guard knows a terminal event was
+           appended.
+        5. Run the post-turn compaction check.
+
+        Args:
+            tracker (PromptAttemptTrackerDAO): Tracker holding the observed
+                terminal state.
+            turn_id (str): Turn identifier for the attempt.
+
+        Returns:
+            None: Terminal event and optional compaction are persisted.
+        """
+        await self._drain_and_persist_route_switches(
+            turn_id=turn_id,
+        )
+        await self._persist_routed_model_if_changed()
+        if tracker.aborted:
+            await self._append_history_event(
+                event=self._build_event(
+                    kind="run_aborted",
+                    turn_id=turn_id,
+                ),
+            )
+            tracker.terminal_kind = "run_aborted"
+            tracker.terminal_event_appended = True
+        else:
+            await self._append_history_event(
+                event=self._build_event(
+                    kind="run_completed",
+                    turn_id=turn_id,
+                    payload=SessionHistoryEventPayloadDAO(
+                        content=tracker.final_response,
+                    ),
+                ),
+            )
+            tracker.terminal_kind = "run_completed"
+            tracker.terminal_event_appended = True
+        await self._run_compaction_if_needed(
+            turn_id=turn_id,
+        )
+
+    async def _finalize_failed_attempt(
+        self,
+        *,
+        tracker: PromptAttemptTrackerDAO,
+        turn_id: str,
+        error: BaseException,
+    ) -> None:
+        """Persist the terminal outcome for a failed attempt.
+
+        Steps:
+
+        1. Drain and persist any ModelPool route-switch audit records.
+        2. Sync the routed model name into session metadata if it changed.
+        3. Write ``run_failed`` with the exception type and message.
+        4. Mark the tracker as failed so the result builder can report it.
+        5. Record whether the failure was a provider context overflow so
+           ``_derive_next_attempt_plan`` can decide on recovery. Forced
+           compaction is no longer run here — it now runs in
+           ``_derive_next_attempt_plan`` where it is coupled to the retry
+           decision rather than running speculatively.
+
+        Args:
+            tracker (PromptAttemptTrackerDAO): Tracker to update.
+            turn_id (str): Turn identifier for the attempt.
+            error (BaseException): Exception that terminated the attempt.
+
+        Returns:
+            None: Terminal event is persisted; overflow eligibility is recorded.
+        """
+        await self._drain_and_persist_route_switches(
+            turn_id=turn_id,
+        )
+        await self._persist_routed_model_if_changed()
+        await self._append_history_event(
+            event=self._build_event(
+                kind="run_failed",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    error_message=f"{type(error).__name__}: {error}",
+                    model_name=self._resolve_active_model_name(),
+                ),
+            ),
+        )
+        tracker.error = error
+        tracker.aborted = False
+        tracker.terminal_kind = "run_failed"
+        tracker.terminal_event_appended = True
+        tracker.overflow_recovery_eligible = self._is_context_overflow_error(exc=error)
+
+    async def _append_fallback_terminal_event_if_needed(
+        self,
+        *,
+        tracker: PromptAttemptTrackerDAO,
+    ) -> None:
+        """Write a fallback ``run_failed`` if no terminal event was persisted.
+
+        This guard covers cases where an unexpected cancellation or helper
+        failure prevented ``_finalize_successful_attempt`` or
+        ``_finalize_failed_attempt`` from writing a terminal record. Without
+        this fallback, the turn would appear incomplete to the projector on
+        the next load.
+
+        Conditions:
+
+        - Skip if a terminal event was already appended.
+        - Skip when history persistence is disabled.
+        - Otherwise, append ``run_failed`` with a generic message.
+
+        Args:
+            tracker (PromptAttemptTrackerDAO): Tracker for the current attempt.
+
+        Returns:
+            None: A fallback terminal event may be appended to history.
+        """
+        if tracker.terminal_event_appended:
+            return
+        if not self._enable_history:
+            return
+        try:
+            await self._append_history_event(
+                event=self._build_event(
+                    kind="run_failed",
+                    turn_id=tracker.turn_id,
+                    payload=SessionHistoryEventPayloadDAO(
+                        error_message="turn terminated without explicit outcome",
+                        model_name=self._resolve_active_model_name(),
+                    ),
+                ),
+            )
+            tracker.terminal_kind = tracker.terminal_kind or "run_failed"
+            tracker.final_response = tracker.final_response or ""
+            tracker.terminal_event_appended = True
+        except Exception as exc:  # noqa: BLE001
+            log_error(
+                msg="SloAgentSession: failed to write fallback terminal event",
+                e=exc,
+                stack_trace=False,
+            )
+
+    def _record_unhandled_attempt_exception(
+        self,
+        *,
+        tracker: PromptAttemptTrackerDAO,
+        error: BaseException,
+    ) -> None:
+        """Capture an exception that escaped ``_run_attempt_lifecycle``.
+
+        This should rarely happen, because ``_run_attempt_lifecycle`` catches
+        stream exceptions and converts them into failed attempts. If an
+        exception escapes anyway (for example, from the fallback terminal
+        guard), this method records it on the tracker so the orchestrator
+        can still report a failed result.
+
+        Args:
+            tracker (PromptAttemptTrackerDAO): Tracker to update.
+            error (BaseException): The escaped exception.
+
+        Returns:
+            None: The tracker is mutated in place.
+        """
+        tracker.error = error
+        tracker.aborted = False
+        tracker.terminal_kind = tracker.terminal_kind or "run_failed"
+
+    def _should_reraise_attempt_exception(
+        self,
+        *,
+        tracker: PromptAttemptTrackerDAO,
+    ) -> bool:
+        """Return True when an escaped lifecycle exception must propagate.
+
+        An exception that escapes after a terminal event was already appended
+        is likely a post-terminal helper failure (for example, a compaction
+        error after ``run_completed``). In that case the original terminal
+        outcome is already recorded, and the new exception should propagate
+        so the caller sees it.
+
+        Conditions:
+
+        - Return ``False`` if no terminal event was appended yet; the
+          orchestrator will synthesize a failed result from the tracker.
+        - Return ``True`` if the attempt already ended in ``run_completed``
+          or ``run_aborted`` and a later helper raised.
+
+        Args:
+            tracker (PromptAttemptTrackerDAO): Tracker for the current attempt.
+
+        Returns:
+            bool: Whether the escaped exception should be re-raised.
+        """
+        if not tracker.terminal_event_appended:
+            return False
+        return tracker.terminal_kind in ("run_completed", "run_aborted")
+
+    def _build_attempt_result(
+        self,
+        *,
+        tracker: PromptAttemptTrackerDAO,
+    ) -> PromptAttemptResultDAO:
+        """Convert mutable tracker state into an immutable attempt result.
+
+        The result is the only object the top-level orchestrator uses to
+        decide whether to finish the submission or proceed to a follow-up
+        attempt.
+
+        Args:
+            tracker (PromptAttemptTrackerDAO): Tracker whose state should be
+                frozen.
+
+        Returns:
+            PromptAttemptResultDAO: Immutable terminal summary of the attempt.
+        """
+        terminal_kind: Literal["run_completed", "run_aborted", "run_failed"] = (
+            tracker.terminal_kind or "run_failed"
+        )
+        return PromptAttemptResultDAO(
+            turn_id=tracker.turn_id,
+            terminal_kind=terminal_kind,
+            final_response=tracker.final_response,
+            aborted=tracker.aborted,
+            error=tracker.error,
+            overflow_recovery_eligible=tracker.overflow_recovery_eligible,
+        )
+
+    async def _derive_next_attempt_plan(
+        self,
+        *,
+        plan: PromptAttemptPlanDAO,
+        result: PromptAttemptResultDAO,
+    ) -> Optional[PromptAttemptPlanDAO]:
+        """Decide whether the submission needs a follow-up attempt.
+
+        Returns a one-shot overflow-recovery plan when
+        ``_is_overflow_recovery_eligible`` returns ``True``, which requires:
+
+        1. The attempt was the initial one (``attempt_kind == "initial"``),
+           enforcing a one-retry budget so a second overflow cannot loop.
+        2. ``result.overflow_recovery_eligible`` is ``True``, which was set in
+           ``_finalize_failed_attempt`` when the error was a recognized context
+           overflow.
+
+        When both hold, this method emits compaction lifecycle events, runs
+        forced compaction, persists a diagnostic ``run_retrying`` event, and
+        returns the retry plan. The top-level orchestration loop then executes
+        the retry automatically.
+
+        If forced compaction itself raises, the original overflow error must
+        still reach the caller. This method therefore returns ``None`` on
+        compaction failure; ``_raise_if_attempt_failed`` then re-raises
+        ``result.error`` — the original provider overflow — unchanged.
+
+        Returns ``None`` in all other cases: normal completion, abort, non-
+        overflow failure, second overflow after retry budget spent.
+
+        Args:
+            plan (PromptAttemptPlanDAO): Plan for the attempt that just finished.
+            result (PromptAttemptResultDAO): Terminal result of that attempt.
+
+        Returns:
+            Optional[PromptAttemptPlanDAO]: Retry plan when overflow recovery
+                should continue, otherwise ``None``.
+        """
+        if not self._is_overflow_recovery_eligible(
+            plan=plan,
+            result=result,
+        ):
+            return None
+        await self._emit_compaction_event(kind="compaction_started")
+        try:
+            await self._run_compaction_if_needed(
+                turn_id=result.turn_id,
+                force=True,
+            )
+        except Exception as compaction_exc:  # noqa: BLE001
+            log_error(
+                msg="overflow_compaction_failed_before_retry",
+                e=compaction_exc,
+                stack_trace=False,
+            )
+            await self._emit_compaction_event(kind="compaction_failed")
+            return None
+        await self._emit_compaction_event(kind="compaction_completed")
+        await self._persist_overflow_retry_diagnostic_event(
+            failed_turn_id=result.turn_id,
+            text=plan.text,
+        )
+        await self._emit_compaction_event(kind="compaction_retrying")
+        return self._build_overflow_retry_attempt_plan(
+            text=plan.text,
+            failed_turn_id=result.turn_id,
+        )
+
+    def _is_overflow_recovery_eligible(
+        self,
+        *,
+        plan: PromptAttemptPlanDAO,
+        result: PromptAttemptResultDAO,
+    ) -> bool:
+        """Return True when this attempt qualifies for one-shot overflow recovery.
+
+        Both conditions must hold:
+
+        1. The attempt is the initial attempt — ``attempt_kind == "initial"``.
+           This enforces the one-retry budget: an overflow-retry attempt that
+           overflows again is terminal.
+        2. ``result.overflow_recovery_eligible`` is ``True``, which was set by
+           ``_finalize_failed_attempt`` when the error was a recognized context
+           overflow. Using the pre-computed flag avoids re-classifying the raw
+           exception here.
+
+        Args:
+            plan (PromptAttemptPlanDAO): The plan for the attempt that just failed.
+            result (PromptAttemptResultDAO): The frozen terminal result carrying
+                the pre-computed overflow eligibility flag.
+
+        Returns:
+            bool: True when recovery via compaction-and-retry should be attempted.
+        """
+        if plan.attempt_kind != "initial":
+            return False
+        return result.overflow_recovery_eligible
+
+    def _build_overflow_retry_attempt_plan(
+        self,
+        *,
+        text: str,
+        failed_turn_id: str,
+    ) -> PromptAttemptPlanDAO:
+        """Construct the retry attempt plan for an overflow recovery.
+
+        All retry-specific field values live here so ``_derive_next_attempt_plan``
+        reads as a table of contents rather than a plan constructor.
+
+        - ``attempt_kind="overflow_retry"`` marks it as the one-shot recovery
+          so a second overflow in this attempt cannot loop.
+        - ``persist_user_message=False`` prevents writing a duplicate
+          ``user_message`` event.
+        - ``excluded_turn_ids={failed_turn_id}`` ensures the projector omits the
+          just-failed turn from immediate replay context.
+        - ``preflight_compaction_mode="skip"`` avoids redundant compaction.
+        - ``source_failed_turn_id=failed_turn_id`` is the audit link.
+
+        Args:
+            text (str): The original user prompt text to re-submit.
+            failed_turn_id (str): Turn id of the failed overflow attempt.
+
+        Returns:
+            PromptAttemptPlanDAO: Retry plan for the same submission.
+        """
+        return PromptAttemptPlanDAO(
+            attempt_kind="overflow_retry",
+            text=text,
+            persist_user_message=False,
+            excluded_turn_ids=frozenset({failed_turn_id}),
+            preflight_compaction_mode="skip",
+            source_failed_turn_id=failed_turn_id,
+        )
+
+    async def _persist_overflow_retry_diagnostic_event(
+        self,
+        *,
+        failed_turn_id: str,
+        text: str,
+    ) -> None:
+        """Persist a diagnostic ``run_retrying`` event for overflow recovery.
+
+        Anchored to ``failed_turn_id`` so the record lives inside the turn
+        that already carries ``run_started`` and ``run_failed`` — no orphan
+        turn is created.  The event is excluded from model context by the
+        projector and is used only for diagnostics and session replay audit.
+
+        Args:
+            failed_turn_id (str): Turn id of the attempt that overflowed.
+                The ``run_retrying`` event is appended to this same turn.
+            text (str): Original user prompt text.
+        """
+        await self._append_history_event(
+            event=self._build_event(
+                kind="run_retrying",
+                turn_id=failed_turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    model_name=self._resolve_active_model_name(),
+                    message=f"Context overflow on turn {failed_turn_id[:8]}. Retrying after compaction.",
+                    metadata={
+                        "reason": "post_compaction_overflow_retry",
+                        "failed_turn_id": failed_turn_id,
+                        "text_preview": text[:120],
+                    },
+                ),
+            ),
+        )
+
+    async def _emit_compaction_event(
+        self,
+        *,
+        kind: Literal[
+            "compaction_started",
+            "compaction_completed",
+            "compaction_failed",
+            "compaction_retrying",
+        ],
+        content: Optional[str] = None,
+        metadata: Optional[dict[str, object]] = None,
+    ) -> None:
+        """Dispatch one live compaction lifecycle event to subscribers.
+
+        Args:
+            kind (Literal[...]): Compaction event kind.
+            content (Optional[str]): User-visible status text.
+            metadata (Optional[dict[str, object]]): Small debug metadata bag.
+        """
+        await self._dispatch_event(
+            event=AgentStreamEventDAO(
+                kind=kind,
+                content=content,
+                metadata=metadata or {},
+            ),
+        )
+
+    def _raise_if_attempt_failed(
+        self,
+        *,
+        result: PromptAttemptResultDAO,
+    ) -> None:
+        """Re-raise the captured failure if the attempt failed.
+
+        This is the terminal step of the orchestration loop when no retry
+        plan exists. Successful and aborted attempts return silently.
+
+        Args:
+            result (PromptAttemptResultDAO): Final result for the submission.
+
+        Returns:
+            None: When the result is ``run_completed`` or ``run_aborted``.
+
+        Raises:
+            BaseException: The captured error when the result is ``run_failed``
+                and an exception was recorded.
+            RuntimeError: When the result is ``run_failed`` but no exception
+                was recorded (defensive fallback).
+        """
+        if result.terminal_kind != "run_failed":
+            return
+        if result.error is not None:
+            raise result.error
+        raise RuntimeError("prompt attempt failed without a captured exception")
+
+    async def _stream_prompt_with_retries(
+        self,
+        *,
+        text: str,
+        history: Optional[list[dict]],
+        message_history: list[BaseMessage],
+        runtime_handler: Optional[AgentRuntimeHandler],
+        policy: ModelRateLimitPolicyDAO,
+    ) -> AsyncGenerator[AgentStreamEventDAO, None]:
+        """Run the prompt with local rate governance and bounded retries.
+
+        Args:
+            text (str): User prompt text.
+            history (Optional[list[dict]]): Legacy caller-supplied history.
+            message_history (list[BaseMessage]): Projected persisted history.
+            runtime_handler (Optional[AgentRuntimeHandler]): Optional canonical trace handler.
+            policy (ModelRateLimitPolicyDAO): Active model rate policy.
+
+        Yields:
+            AgentStreamEventDAO: Streamed prompt events plus retry-status events.
+
+        Raises:
+            BaseException: Re-raises non-retryable failures from the provider lane.
+        """
+        max_attempts: int = self._max_attempts(policy=policy)
+        # Layer 1 — history-aware preflight wait runs once here. Layers 2 (pool
+        # switch) and 3 (iteration retry) run inside the agent/pool: this method
+        # no longer wraps the whole run in a retry envelope; the agent retries
+        # per iteration via the injected policy.
+        async for retry_event in self._preflight_wait_events(
+            text=text,
+            message_history=message_history,
+            policy=policy,
+            attempt_number=1,
+            max_attempts=max_attempts,
+        ):
+            yield retry_event
+
+        iteration_retry_policy: IterationRetryPolicy = self._build_iteration_retry_policy(policy=policy)
+        iteration_recovery_policy: IterationRecoveryPolicy = self._build_iteration_recovery_policy()
+        stream_timeout_seconds: float = _stream_inactivity_timeout_seconds()
+        stream = self.agent.invoke(
+            query=text,
+            history=history if not message_history else None,
+            message_history=message_history or None,
+            runtime_handler=runtime_handler,
+            iteration_retry_policy=iteration_retry_policy,
+            iteration_recovery_policy=iteration_recovery_policy,
+        )
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        anext(stream),
+                        timeout=stream_timeout_seconds,
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as exc:
+                    raise TimeoutError(
+                        "main agent stream produced no events for "
+                        f"{stream_timeout_seconds:.0f}s; treated as hung"
+                    ) from exc
+                self._mirror_retry_cooldown(event=event)
+                await self._dispatch_event(event=event)
+                yield event
+        finally:
+            await stream.aclose()
+        self._clear_retry_cooldown()
+
+    def _build_iteration_retry_policy(
+        self,
+        *,
+        policy: ModelRateLimitPolicyDAO,
+    ) -> IterationRetryPolicy:
+        """Build the per-iteration retry decision for one prompt run.
+
+        The returned callable treats rate-limit errors and the pool's
+        ``AllModelsExhaustedError`` as retryable (cooldowns are timer-based, so a
+        wait can clear them) up to the attempt budget; everything else is
+        non-retryable. The wait is capped at the model's local retry-wait cap.
+
+        Args:
+            policy (ModelRateLimitPolicyDAO): Active routed-model rate policy.
+
+        Returns:
+            IterationRetryPolicy: Decision callable for ``react_streaming``.
+        """
+        max_attempts: int = self._max_attempts(policy=policy)
+
+        def _decide(
+            exc: BaseException,
+            saw_visible_output_this_iteration: bool,
+            attempt_number: int,
+        ) -> RateLimitRetryPlanDAO:
+            if not self._is_iteration_retryable_error(exc=exc):
+                return RateLimitRetryPlanDAO(retryable=False, wait_seconds=0, message=str(exc))
+            # Resolve the routed model at decision time, not at policy-construction
+            # time: a mid-run pool switch must name the member actually in play.
+            routed_name: str = self._resolve_active_model_name() or self.active_model_name
+            plan: RateLimitRetryPlanDAO = retry_plan_from_error(
+                model_name=routed_name,
+                exc=exc,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+            )
+            return RateLimitRetryPlanDAO(
+                retryable=plan.retryable,
+                wait_seconds=min(plan.wait_seconds, policy.local_retry_wait_cap_seconds),
+                message=plan.message,
+            )
+
+        return _decide
+
+    def _is_iteration_retryable_error(self, *, exc: BaseException) -> bool:
+        """Return True for errors an iteration retry should wait-and-retry.
+
+        Retryable: rate-limit/429 text matches (existing rule) OR the pool's
+        ``AllModelsExhaustedError`` (every member is cooling on a timer).
+        Non-retryable: everything else (programmer/validation/serialization).
+
+        Args:
+            exc (BaseException): The provider/pool exception under inspection.
+
+        Returns:
+            bool: True when a timed wait could plausibly let the iteration succeed.
+        """
+        if isinstance(exc, AllModelsExhaustedError):
+            return True
+        return self._is_retryable_rate_limit_error(exc=exc)
+
+    def _mirror_retry_cooldown(self, *, event: AgentStreamEventDAO) -> None:
+        """Mirror an agent-emitted ``run_retrying`` wait into the cooldown surface.
+
+        The agent now owns iteration retries and emits ``run_retrying`` events
+        during a wait; the session mirrors their ``wait_seconds`` into the usage
+        status bar's cooldown display and clears it on the next non-retry event.
+
+        Args:
+            event (AgentStreamEventDAO): The relayed stream event.
+        """
+        if event.kind == "run_retrying":
+            wait_seconds = event.metadata.get("wait_seconds") if event.metadata else None
+            if isinstance(wait_seconds, int) and wait_seconds > 0:
+                self._set_retry_cooldown(wait_seconds=wait_seconds)
+            return
+        if self._cooldown_seconds_remaining is not None:
+            self._clear_retry_cooldown()
+
+    def _max_attempts(self, *, policy: ModelRateLimitPolicyDAO) -> int:
+        """Return the total provider-attempt budget for one prompt.
+
+        Args:
+            policy (ModelRateLimitPolicyDAO): Active model rate policy.
+
+        Returns:
+            int: Total attempts including the initial attempt.
+        """
+        return max(1, policy.automatic_retry_attempts + 1)
+
+    async def _preflight_wait_events(
+        self,
+        *,
+        text: str,
+        message_history: Sequence[BaseMessage],
+        policy: ModelRateLimitPolicyDAO,
+        attempt_number: int,
+        max_attempts: int,
+    ) -> AsyncGenerator[AgentStreamEventDAO, None]:
+        """Yield any local rate-window waiting event before the provider call.
+
+        Uses the history-aware estimate so a resumed session's large replayed
+        history triggers a wait the prompt-only estimate would have missed.
+
+        Args:
+            text (str): User prompt text.
+            message_history (Sequence[BaseMessage]): Replayed history for this turn.
+            policy (ModelRateLimitPolicyDAO): Active model rate policy.
+            attempt_number (int): One-indexed attempt number.
+            max_attempts (int): Total attempt budget.
+
+        Yields:
+            AgentStreamEventDAO: Local waiting status event when needed.
+        """
+        wait_seconds: int = self._preflight_wait_duration(
+            text=text,
+            message_history=message_history,
+            policy=policy,
+        )
+        if wait_seconds <= 0:
+            self._clear_retry_cooldown()
+            self._record_request_attempt(
+                estimated_tokens=self._estimated_request_tokens(
+                    text=text, message_history=message_history
+                ),
+                now_seconds=time.monotonic(),
+            )
+            return
+        self._set_retry_cooldown(wait_seconds=wait_seconds)
+        retry_event: AgentStreamEventDAO = self._retrying_status_event(
+            message=(
+                f"Waiting {wait_seconds}s for {self.active_model_name} local rate window "
+                f"(attempt {attempt_number}/{max_attempts})."
+            ),
+            wait_seconds=wait_seconds,
+            attempt_number=attempt_number,
+        )
+        await self._dispatch_event(event=retry_event)
+        yield retry_event
+        await asyncio.sleep(wait_seconds)
+        self._clear_retry_cooldown()
+        self._record_request_attempt(
+            estimated_tokens=self._estimated_request_tokens(
+                text=text, message_history=message_history
+            ),
+            now_seconds=time.monotonic(),
+        )
+
+    def _preflight_wait_duration(
+        self,
+        *,
+        text: str,
+        message_history: Sequence[BaseMessage],
+        policy: ModelRateLimitPolicyDAO,
+    ) -> int:
+        """Return the local wait before the next provider attempt.
+
+        Args:
+            text (str): User prompt text.
+            message_history (Sequence[BaseMessage]): Replayed history for this turn.
+            policy (ModelRateLimitPolicyDAO): Active model rate policy.
+
+        Returns:
+            int: Local wait duration in seconds.
+        """
+        estimated_tokens: int = self._estimated_request_tokens(
+            text=text, message_history=message_history
+        )
+        now_seconds: float = time.monotonic()
+        cooldown_wait_seconds: int = self._cooldown_wait_seconds()
+        window_wait_seconds: int = self._preflight_wait_seconds(
+            policy=policy,
+            estimated_tokens=estimated_tokens,
+            now_seconds=now_seconds,
+        )
+        return min(
+            max(cooldown_wait_seconds, window_wait_seconds),
+            policy.local_retry_wait_cap_seconds,
+        )
+
+    @staticmethod
+    def _retrying_status_event(
+        *,
+        message: str,
+        wait_seconds: int,
+        attempt_number: int,
+    ) -> AgentStreamEventDAO:
+        """Build one transient retry-status event.
+
+        Args:
+            message (str): Operator-facing status message.
+            wait_seconds (int): Seconds until the next attempt.
+            attempt_number (int): Current one-indexed attempt number.
+
+        Returns:
+            AgentStreamEventDAO: Transient retrying status event.
+        """
+        return AgentStreamEventDAO(
+            kind="run_retrying",
+            content=message,
+            metadata={
+                "wait_seconds": wait_seconds,
+                "attempt": attempt_number,
+            },
+        )
+
+    # ---- Agent readiness + history orchestration helpers ------------------
+
+    async def _ensure_agent_ready(self) -> None:
+        """Refresh OAuth creds if needed, then lazy-build the agent.
+
+        ``invoke`` is already inside the session lock when it calls this
+        helper, so the refresh and the lazy build are both
+        single-flight for the session. Pre-built agents and already-
+        built lazy agents short-circuit immediately.
+
+        Returns:
+            None: The method refreshes credentials when needed and
+                ensures ``self._agent`` exists before returning.
+        """
+        if self._agent is not None:
+            return
+        await self._refresh_oauth_credential_if_needed()
+        self._agent = self._build_agent()
+
+    def _pool_providers(self) -> list[ProviderName]:
+        """Return the distinct providers the session must keep credential-ready.
+
+        Every provider in the configured pool when one exists; otherwise the
+        single active model's provider. Used by credential refresh so a fallback
+        member never hits a stale OAuth token.
+
+        Returns:
+            list[ProviderName]: Distinct providers to refresh, in priority order.
+        """
+        if self._config is not None and self._config.model_pool_dao is not None:
+            seen: dict[ProviderName, None] = {}
+            for entry in self._config.model_pool_dao.entries:
+                seen.setdefault(entry.provider, None)
+            return list(seen.keys())
+        return [provider_for_model(model_name=self.active_model_name)]
+
+    async def _refresh_oauth_credential_if_needed(self) -> None:
+        """Refresh persisted OAuth credentials for every provider this session may use.
+
+        The refresh runs only for lazy-config sessions. For a pooled session it
+        warms each distinct pool provider so a fallback member's token is not
+        stale; for a single-model session it warms the one provider.
+        Pre-built-agent sessions bypass the helper. Any ``ValueError`` raised by
+        ``CredentialResolver.require`` bubbles unchanged so the TUI can render
+        the existing configuration error line.
+
+        Returns:
+            None: The method persists each refreshed credential when a refresh
+                occurs and otherwise no-ops.
+        """
+        if self._config is None:
+            return
+        store: CredentialStore = CredentialStore()
+        for provider in self._pool_providers():
+            cred = CredentialResolver.require(provider=provider)
+            await refresh_if_stale(cred=cred, store=store)
+
+    # ---- History orchestration helpers -----------------------------------
+
+    async def _persist_run_retrying_event(
+        self,
+        *,
+        event: AgentStreamEventDAO,
+        turn_id: str,
+    ) -> None:
+        """Persist one ``run_retrying`` wait-and-retry decision to history.
+
+        Makes "retried and still failed" distinguishable from "no retry
+        attempted" when diagnosing a session from ``events.jsonl`` alone (37.a.6).
+
+        Args:
+            event (AgentStreamEventDAO): The relayed ``run_retrying`` stream event.
+            turn_id (str): The owning turn id.
+        """
+        await self._append_history_event(
+            event=self._build_event(
+                kind="run_retrying",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    model_name=self._resolve_active_model_name(),
+                    message=event.content,
+                    metadata=dict(event.metadata or {}),
+                ),
+            ),
+        )
+
+    def _resolve_active_provider(self) -> Optional[ProviderName]:
+        """Return the provider of the routed model, or None for a single model.
+
+        Duck-types ``active_provider`` on the bound LLM so a ``ModelPool``
+        reports the member actually in play after any mid-run route switch,
+        exactly as ``_resolve_active_model_name`` resolves the routed model
+        name. Called by the ``_build_iteration_recovery_policy`` closure at
+        decision time.
+
+        Returns:
+            Optional[ProviderName]: The active provider, or ``None`` when the
+                bound LLM is a single model that exposes no ``active_provider``.
+        """
+        if self._agent is None:
+            return None
+        return getattr(self._agent.llm, "active_provider", None)
+
+    def _build_iteration_recovery_policy(self) -> IterationRecoveryPolicy:
+        """Build the per-iteration LLM-recovery decision for one prompt run.
+
+        The returned callable classifies an escaped iteration exception via
+        ``RecoveryPolicy.classify`` against the active provider. Injected into
+        ``self.agent.invoke`` alongside the retry policy.
+
+        Returns:
+            IterationRecoveryPolicy: Decision callable for the agent loop.
+        """
+
+        def _decide(
+            exc: BaseException,
+            recoveries_used: int,
+        ) -> RecoveryDecisionDAO:
+            """Classify ``exc`` for LLM recovery against the current provider."""
+            return RecoveryPolicy.classify(
+                exc=exc,
+                provider=self._resolve_active_provider(),
+            )
+
+        return _decide
+
+    async def _persist_recovery_events(
+        self,
+        *,
+        event: AgentStreamEventDAO,
+        turn_id: str,
+    ) -> None:
+        """Persist the audit + observation history events for one recovery.
+
+        Writes a ``run_recovering`` audit event (excluded from model context by
+        the projector) and a ``recovery_observation`` event (re-projected as a
+        ``HumanMessage`` on replay). Invoked from the attempt stream loop when
+        the agent yields ``recovery_started``.
+
+        Args:
+            event (AgentStreamEventDAO): The relayed ``recovery_started`` event.
+                ``content`` is the observation text; ``metadata`` carries
+                ``reason`` / ``error`` / ``recovery_class``.
+            turn_id (str): The owning turn id (the attempt that failed).
+        """
+        await self._append_history_event(
+            event=self._build_event(
+                kind="run_recovering",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    model_name=self._resolve_active_model_name(),
+                    message=str(event.metadata.get("reason", "")),
+                    metadata=dict(event.metadata or {}),
+                ),
+            ),
+        )
+        await self._append_history_event(
+            event=self._build_event(
+                kind="recovery_observation",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    content=event.content,
+                ),
+            ),
+        )
+
+    async def _drain_and_persist_route_switches(self, *, turn_id: str) -> None:
+        """Persist one ``route_switched`` history event per pool switch this turn.
+
+        Duck-types the agent's bound LLM for ``drain_route_switch_log`` (present
+        only on a ``ModelPool``); single-model sessions no-op. Called after the
+        run so the audit trail records which member took over and why (37.a.6).
+
+        Args:
+            turn_id (str): The owning turn id.
+        """
+        if not self._enable_history or self._agent is None:
+            return
+        drain = getattr(self._agent.llm, "drain_route_switch_log", None)
+        if drain is None:
+            return
+        for record in drain():
+            await self._append_history_event(
+                event=self._build_event(
+                    kind="route_switched",
+                    turn_id=turn_id,
+                    payload=SessionHistoryEventPayloadDAO(
+                        model_name=record.to_model_name,
+                        error_message=record.error_text,
+                        metadata={
+                            "from_model": record.from_model_name,
+                            "to_model": record.to_model_name,
+                            "kind": record.kind,
+                        },
+                    ),
+                ),
+            )
+
+    async def _persist_routed_model_if_changed(self) -> None:
+        """Update ``session.json``'s model_name to the routed model when it changed.
+
+        Called after a turn completes. Ends the stale-identity drift where session
+        metadata reports the configured model while the pool routed elsewhere.
+        No-ops when history is disabled, the routed name is empty, or it already
+        matches the persisted value.
+        """
+        if not self._enable_history or self._history_store is None:
+            return
+        routed: str = self._resolve_active_model_name()
+        if not routed:
+            return
+        try:
+            metadata: SessionHistoryMetadataDAO = await self._history_store.read_metadata(
+                session_id=self._session_id,
+            )
+        except FileNotFoundError:
+            return
+        if metadata.model_name == routed:
+            return
+        await self._history_store.update_metadata_model_name(
+            session_id=self._session_id,
+            model_name=routed,
+        )
+        # The pool internally switched to a different model. The new model may
+        # have a smaller context window than the one the session was configured
+        # with, so the preflight compaction check must re-evaluate on the next
+        # turn. Setting the dirty flag here ensures _preflight_compaction_if_dirty
+        # runs and calls _run_compaction_if_needed with the correct window size.
+        self._context_window_dirty = True
+
+    async def _ensure_history_session(self) -> None:
+        """Create or validate the persisted session metadata.
+
+        Called once per submitted prompt. No-ops when history is
+        disabled. Cached after the first successful call so we do not
+        re-touch ``session.json`` on every turn.
+        """
+        if not self._enable_history or self._history_store is None:
+            return
+        if self._history_session_ensured:
+            return
+        await self._history_store.ensure_session(
+            session_id=self._session_id,
+            workdir=self._workdir,
+            model_name=self.active_model_name,
+            workspace_file=(self._config.workspace_file if self._config is not None else None),
+        )
+        self._history_session_ensured = True
+
+    async def _load_message_history(
+        self,
+        *,
+        excluded_turn_ids: Optional[set[str]] = None,
+    ) -> list[BaseMessage]:
+        """Load projected ``BaseMessage`` history for the next agent turn.
+
+        Args:
+            excluded_turn_ids (Optional[set[str]]): Completed turns omitted from
+                this one history build. Defaults to None.
+
+        Returns:
+            list[BaseMessage]: Empty when history is disabled or the
+                session has no completed turns yet.
+        """
+        if not self._enable_history or self._history_store is None:
+            return []
+        events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
+            session_id=self._session_id,
+        )
+        return await self._history_projector.build_message_history(
+            events=events,
+            excluded_turn_ids=excluded_turn_ids or set(),
+        )
+
+    async def _preflight_compaction_if_dirty(self, *, turn_id: str) -> None:
+        """Run a one-shot compaction check when the context window may have shrunk.
+
+        The post-turn check (``_run_compaction_if_needed`` after a completed
+        turn) guarantees the session stays within budget for the model it last
+        ran on, so a steady-state turn needs no pre-flight check. That invariant
+        only breaks when the effective window changes underneath it — a model
+        switch to a smaller window, or a freshly built / resumed session whose
+        history has not been validated for the active model. ``_context_window_dirty``
+        marks exactly those cases.
+
+        The flag is cleared before the check runs, so a transient compaction
+        failure can never turn this into a per-turn retry loop; the existing
+        post-turn and on-overflow-failure paths remain as backstops. Compaction
+        failures are logged and swallowed so a best-effort pre-flight never fails
+        the turn outright.
+
+        Args:
+            turn_id (str): The turn id to anchor any written
+                ``compaction_summary`` event to.
+        """
+        if not self._context_window_dirty:
+            return
+        self._context_window_dirty = False
+        try:
+            await self._run_compaction_if_needed(turn_id=turn_id)
+        except Exception as exc:  # noqa: BLE001
+            log_error(
+                msg="preflight_compaction_failed",
+                session_id=self._session_id[:8],
+                error=str(exc),
+            )
+
+    async def _run_compaction_if_needed(
+        self,
+        *,
+        turn_id: str,
+        force: bool = False,
+    ) -> None:
+        """Check context size and compact session history when needed.
+
+        Loads all current session events from the store, asks ``CompactionChecker``
+        whether the cumulative token total exceeds the model's compaction threshold,
+        and — when it does — runs ``Compacter`` to generate a summary then
+        ``CompactedSessionUpdater`` to persist the ``compaction_summary`` event.
+
+        When ``force=True``, the threshold check is bypassed and the compaction
+        pipeline runs immediately. This is used after a provider has already
+        rejected the request for context overflow: provider truth wins over the
+        local chars/4 estimator.
+
+        The next call to ``_load_message_history()`` will automatically pick up
+        the ``compaction_summary`` event. ``SessionHistoryProjector`` (sub-spec
+        01.a.5) skips pre-cut events and emits the summary as a ``HumanMessage``
+        so the agent receives a clean context on the following turn.
+
+        No-ops when history is disabled or when the store/agent is absent. With
+        ``force=False`` (the default), also no-ops when
+        ``CompactionChecker.should_compact()`` returns ``False``.
+
+        Args:
+            turn_id (str): The turn id that triggered the compaction check.
+                Forwarded to ``CompactedSessionUpdater.update()`` so the written
+                ``compaction_summary`` event is auditably anchored to the
+                originating turn.
+            force (bool, optional): When ``True``, bypass the threshold check
+                and compact immediately. Defaults to ``False``.
+        """
+        if not self._enable_history or self._history_store is None:
+            return
+        if self._agent is None or self._agent.llm is None:
+            return
+
+        events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
+            session_id=self._session_id,
+        )
+        model_name: str = self._resolve_active_model_name()
+
+        if not force:
+            should_compact: bool = await CompactionChecker.should_compact(
+                events=events,
+                model_name=model_name,
+            )
+            if not should_compact:
+                return
+
+        log_info(
+            msg="compaction_triggered",
+            session_id=self._session_id[:8],
+            event_count=len(events),
+            model_name=model_name,
+            force=force,
+        )
+
+        result = await Compacter.compact(
+            events=events,
+            model_name=model_name,
+            llm=self._agent.llm,
+        )
+        stamped: SessionHistoryEventDAO = await CompactedSessionUpdater.update(
+            session_id=self._session_id,
+            result=result,
+            store=self._history_store,
+            turn_id=turn_id,
+        )
+        await self._history_store.truncate_to_compaction_boundary(
+            session_id=self._session_id,
+            events=events,
+            first_kept_entry_id=result.first_kept_entry_id,
+            summary_event=stamped,
+        )
+
+        log_info(
+            msg="compaction_completed",
+            session_id=self._session_id[:8],
+            tokens_before=result.tokens_before,
+            tokens_after=result.tokens_after,
+        )
+
+    @staticmethod
+    def _is_context_overflow_error(*, exc: BaseException) -> bool:
+        """Return True when ``exc`` is a provider context-window overflow.
+
+        Checks typed exception classes where available (Anthropic SDK) and
+        falls back to a case-insensitive substring scan of the exception
+        message for other providers. The fallback ensures coverage for
+        providers whose SDK does not expose a typed context-window exception.
+
+        Args:
+            exc (BaseException): The exception to inspect.
+
+        Returns:
+            bool: True when the exception represents a hard context-length
+                violation that compaction can address.
+        """
+        _OVERFLOW_MARKERS: tuple[str, ...] = (
+            "prompt is too long",
+            "context_length_exceeded",
+            "maximum context length",
+            "too_many_tokens",
+            "prompt_too_long",
+            "input too long",
+            "your request exceeded model token limit",
+            # OpenAI / Codex responses-API error phrases — must be kept in sync
+            # with RecoveryPolicy._CONTEXT_OVERFLOW_MARKERS in recovery/service.py.
+            "your input exceeds",
+            "exceeds the context window",
+        )
+        exc_lower: str = str(exc).lower()
+        for marker in _OVERFLOW_MARKERS:
+            if marker in exc_lower:
+                return True
+        # Typed check for the Anthropic SDK — avoids a hard import at module
+        # level so session.py stays importable in environments without the SDK.
+        try:
+            import anthropic  # noqa: PLC0415
+
+            if isinstance(exc, anthropic.BadRequestError):
+                return True
+        except ImportError:
+            pass
+        return False
+
+    async def _append_history_event(
+        self,
+        *,
+        event: SessionHistoryEventDAO,
+    ) -> None:
+        """Persist one canonical history event.
+
+        Raises on failure so the session can enforce consistency. UI
+        renderer subscribers are intentionally not invoked here.
+        """
+        if not self._enable_history or self._history_store is None:
+            return
+        await self._history_store.append_event(event=event)
+
+    def _runtime_handler_for_turn(self, *, turn_id: str) -> AgentRuntimeHandler:
+        """Build the trace handler that maps runtime events → persisted events.
+
+        Args:
+            turn_id (str): The turn id allocated for this prompt.
+
+        Returns:
+            AgentRuntimeHandler: Async callback the agent invokes per
+                runtime trace event.
+        """
+
+        async def _handler(event: AgentRuntimeEventDAO) -> None:
+            """Append one runtime trace event to canonical history.
+
+            Args:
+                event (AgentRuntimeEventDAO): Runtime trace event.
+            """
+            if event.kind in ("run_started", "run_completed", "run_aborted", "run_failed"):
+                return
+
+            if event.kind == "assistant_delta":
+                await self._append_history_event(
+                    event=self._build_event(
+                        kind="assistant_delta",
+                        turn_id=turn_id,
+                        iteration=event.iteration,
+                        payload=SessionHistoryEventPayloadDAO(
+                            delta_kind=event.payload.delta_kind,
+                            block_id=event.payload.block_id,
+                            delta=event.payload.delta,
+                            content=event.payload.content,
+                            redacted=event.payload.redacted,
+                            tool_arguments_delta=event.payload.tool_arguments_delta,
+                            metadata=dict(event.payload.metadata),
+                        ),
+                    ),
+                )
+                return
+
+            await self._append_history_event(
+                event=self._build_event(
+                    kind=event.kind,
+                    turn_id=turn_id,
+                    iteration=event.iteration,
+                    payload=SessionHistoryEventPayloadDAO(
+                        content=event.payload.content,
+                        tool_name=event.payload.tool_name,
+                        tool_call_id=event.payload.tool_call_id,
+                        tool_calls=event.payload.tool_calls,
+                        tool_input=event.payload.tool_input,
+                        tool_output=event.payload.tool_output,
+                        error_message=event.payload.error_message,
+                        metadata=dict(event.payload.metadata or {}),
+                    ),
+                ),
+            )
+
+        return _handler
+
+    def _build_event(
+        self,
+        *,
+        kind: str,
+        turn_id: Optional[str],
+        payload: Optional[SessionHistoryEventPayloadDAO] = None,
+        iteration: int = 0,
+    ) -> SessionHistoryEventDAO:
+        """Construct a canonical history event for this session.
+
+        Args:
+            kind (str): The event kind discriminator.
+            turn_id (Optional[str]): The owning turn id.
+            payload (Optional[SessionHistoryEventPayloadDAO]): Payload to
+                attach. Defaults to an empty payload.
+            iteration (int): ReAct iteration counter.
+
+        Returns:
+            SessionHistoryEventDAO: A canonical event ready to append.
+        """
+        return SessionHistoryEventDAO(
+            session_id=self._session_id,
+            turn_id=turn_id,
+            kind=kind,  # type: ignore[arg-type]
+            iteration=iteration,
+            payload=payload or SessionHistoryEventPayloadDAO(),
+        )
+
+    # ---- Private helpers --------------------------------------------------
+
+    async def _on_stream_event_for_history(
+        self, event: AgentStreamEventDAO
+    ) -> None:
+        """Persist sub-agent lifecycle events to the orchestrator's history.
+
+        Internal subscriber registered at session construction when history is
+        enabled. Invoked on every dispatched event; only sub-agent lifecycle
+        kinds write history entries — all other events pass through without
+        writing.
+
+        ``sub_agent_spawned`` writes a ``sub_agent_spawned`` history event
+        carrying the child's ``session_id`` and ``task_id`` in
+        ``payload.metadata``.
+
+        ``sub_agent_completed``, ``sub_agent_failed``, and ``sub_agent_aborted``
+        all write a ``sub_agent_completed`` history event so the on-disk trace
+        records the terminal kind for future forensics.
+
+        Args:
+            event (AgentStreamEventDAO): Event to inspect and optionally persist.
+        """
+        if event.sub_agent_id is None:
+            return
+        if event.kind == "sub_agent_spawned":
+            await self._append_history_event(
+                event=self._build_event(
+                    kind="sub_agent_spawned",
+                    turn_id=None,
+                    payload=SessionHistoryEventPayloadDAO(
+                        metadata={
+                            "sub_agent_id": event.sub_agent_id,
+                            "task_id": event.task_id,
+                        }
+                    ),
+                ),
+            )
+        elif event.kind in ("sub_agent_completed", "sub_agent_failed", "sub_agent_aborted"):
+            await self._append_history_event(
+                event=self._build_event(
+                    kind="sub_agent_completed",
+                    turn_id=None,
+                    payload=SessionHistoryEventPayloadDAO(
+                        metadata={
+                            "sub_agent_id": event.sub_agent_id,
+                            "task_id": event.task_id,
+                            "terminal_kind": event.kind,
+                        }
+                    ),
+                ),
+            )
+
+    async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Forward ``event`` to every registered subscriber (failure-isolated)."""
+        for subscriber in list(self._subscribers):
+            try:
+                await subscriber(event)
+            except Exception as exc:  # noqa: BLE001 — protect the stream
+                log_error(
+                    msg=f"SloAgentSession: subscriber {subscriber!r} raised",
+                    e=exc,
+                    stack_trace=False,
+                )

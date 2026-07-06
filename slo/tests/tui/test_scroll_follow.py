@@ -1,0 +1,127 @@
+"""Tests for transcript follow-mode behavior."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from langchain_core.messages import AIMessage
+
+from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.providers.faux import FauxChatModel
+from src.tui.app import SloTUI
+
+
+def _build_session() -> SloAgentSession:
+    """Build a session suitable for scroll-follow tests.
+
+    Returns:
+        SloAgentSession: Session driven by a faux assistant response.
+    """
+    return SloAgentSession(
+        agent=SloAgent(
+            llm=FauxChatModel(responses=[AIMessage(content="unused")]),
+        ),
+        workdir=Path(".").resolve(),
+        session_id=str(uuid4()),
+    )
+
+
+async def _fill_transcript(*, app: SloTUI, pilot, line_count: int = 40) -> None:
+    """Write enough transcript lines to create scroll headroom.
+
+    Args:
+        app (SloTUI): App under test.
+        pilot: Textual pilot.
+        line_count (int, optional): Number of lines to append. Defaults to 40.
+    """
+    for index in range(line_count):
+        app._write_adapter_line(content=f"line {index}", classes="tool-result")
+    await pilot.pause()
+
+
+class TestTranscriptFollowMode:
+    """Viewport-follow behavior for flat lines and stream events."""
+
+    @pytest.mark.asyncio
+    async def test_flat_transcript_write_keeps_follow_mode_when_viewport_was_at_bottom(self) -> None:
+        """A flat transcript write keeps the viewport pinned when already at bottom."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await _fill_transcript(app=app, pilot=pilot)
+
+            assert app._transcript_scroll is not None
+            app._transcript_scroll.scroll_end(animate=False)
+            await pilot.pause()
+
+            app._write_adapter_line(content="tail", classes="tool-result")
+            await pilot.pause()
+
+            assert (app._transcript_scroll.max_scroll_y - app._transcript_scroll.scroll_y) <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_flat_transcript_write_does_not_jump_when_user_scrolled_up(self) -> None:
+        """A flat transcript write preserves scroll position when reading history."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await _fill_transcript(app=app, pilot=pilot)
+
+            assert app._transcript_scroll is not None
+            app._transcript_scroll.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            previous_scroll_y: float = app._transcript_scroll.scroll_y
+
+            app._write_adapter_line(content="tail", classes="tool-result")
+            await pilot.pause()
+
+            assert app._transcript_scroll.scroll_y == previous_scroll_y
+            assert app._transcript_scroll.scroll_y < app._transcript_scroll.max_scroll_y
+
+    @pytest.mark.asyncio
+    async def test_stream_event_does_not_jump_when_user_scrolled_up(self) -> None:
+        """Live stream events respect the user's scroll position."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await _fill_transcript(app=app, pilot=pilot)
+
+            assert app._transcript_scroll is not None
+            app._transcript_scroll.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            previous_scroll_y: float = app._transcript_scroll.scroll_y
+
+            await app._render_event(
+                AgentStreamEventDAO(kind="text_delta", delta="hello", iteration=0),
+            )
+            await pilot.pause()
+
+            assert app._transcript_scroll.scroll_y == previous_scroll_y
+            assert app._transcript_scroll.scroll_y < app._transcript_scroll.max_scroll_y
+
+    @pytest.mark.asyncio
+    async def test_stream_event_keeps_follow_mode_when_viewport_was_at_bottom(self) -> None:
+        """Live stream events keep the viewport pinned when already following."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await _fill_transcript(app=app, pilot=pilot)
+
+            assert app._transcript_scroll is not None
+            app._transcript_scroll.scroll_end(animate=False)
+            await pilot.pause()
+
+            await app._render_event(
+                AgentStreamEventDAO(kind="text_delta", delta="hello", iteration=0),
+            )
+            await pilot.pause()
+
+            assert (app._transcript_scroll.max_scroll_y - app._transcript_scroll.scroll_y) <= 1.0

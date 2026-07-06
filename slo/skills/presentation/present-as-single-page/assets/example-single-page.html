@@ -1,0 +1,226 @@
+<!--
+  Worked-example single-page document for the `present-as-single-page` skill.
+  Demonstrates: ONE scrolling page (no scroll-snap / no slides), hero + sticky TOC
+  + progress bar, Slo design language inlined (Tokyo Night primary), real verified
+  content, reduced-motion safe, fully self-contained.
+  Switch to the green alternate by adding data-theme="dark" to <html>.
+-->
+<title>Textual lifecycle — single-page Slo example</title>
+<style>
+/* --- Slo design language (subset used; tokens mirror src/tui/theme.py) --- */
+:root{
+  --slo-bg:#1a1b26; --slo-bg-2:#16161e; --slo-surface:#24283b; --slo-panel:#1f2335;
+  --slo-fg:#c0caf5; --slo-fg-bright:#fff; --slo-fg-muted:#565f89; --slo-fg-faint:#414868;
+  --slo-hair:#2f3549; --slo-hair-soft:#232735;
+  --slo-accent:#7aa2f7; --slo-accent-2:#7dcfff; --slo-violet:#bb9af7;
+  --slo-success:#9ece6a; --slo-warning:#e0af68; --slo-error:#f7768e; --slo-orange:#ff9e64;
+  --slo-accent-wash:rgba(122,162,247,.12); --slo-warning-wash:rgba(224,175,104,.12);
+  --slo-signal:var(--slo-accent); --slo-signal-wash:var(--slo-accent-wash);
+  --slo-font-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --slo-font-mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  --slo-step--1:clamp(.78rem,.76rem + .15vw,.86rem);
+  --slo-step-0:clamp(.95rem,.9rem + .3vw,1.05rem);
+  --slo-step-1:clamp(1.15rem,1.05rem + .5vw,1.35rem);
+  --slo-step-2:clamp(1.4rem,1.2rem + 1vw,1.85rem);
+  --slo-step-3:clamp(1.8rem,1.4rem + 2vw,2.6rem);
+  --slo-step-4:clamp(2.3rem,1.6rem + 3.6vw,3.6rem);
+  --slo-radius:6px; --slo-radius-sm:3px; --slo-measure:65ch;
+}
+[data-theme="dark"]{
+  --slo-bg:#080808; --slo-bg-2:#0d0d0d; --slo-surface:#111; --slo-panel:#181818;
+  --slo-fg:#d8d8d8; --slo-fg-muted:#6a6a6a; --slo-hair:#242424; --slo-hair-soft:#1a1a1a;
+  --slo-accent:#00ff7f; --slo-accent-2:#7ec8e3; --slo-violet:#b48ead;
+  --slo-success:#00ff7f; --slo-warning:#f0a020; --slo-error:#ff5555; --slo-orange:#f0a020;
+  --slo-accent-wash:rgba(0,255,127,.10); --slo-warning-wash:rgba(240,160,32,.12);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--slo-bg);color:var(--slo-fg);font-family:var(--slo-font-sans);
+  font-size:var(--slo-step-0);line-height:1.6;-webkit-font-smoothing:antialiased}
+h1{font-size:var(--slo-step-4);line-height:1.04;letter-spacing:-.03em;color:var(--slo-fg-bright);
+  margin:.2rem 0 .6rem;text-wrap:balance;font-weight:680}
+h2{font-size:var(--slo-step-3);line-height:1.1;letter-spacing:-.02em;color:var(--slo-fg-bright);
+  margin:0 0 1rem;text-wrap:balance;font-weight:650}
+h3{font-size:var(--slo-step-1);color:var(--slo-fg-bright);margin:1.6rem 0 .6rem;font-weight:620}
+p{max-width:var(--slo-measure);margin:0 0 1rem}
+code{font-family:var(--slo-font-mono);font-size:.9em;color:var(--slo-warning)}
+.sig{color:var(--slo-signal)} .dim{color:var(--slo-fg-muted)}
+.slo-wrap{width:100%;max-width:1040px;margin-inline:auto;padding-inline:clamp(1.2rem,5vw,3rem)}
+.slo-eyebrow{font-family:var(--slo-font-mono);font-size:var(--slo-step--1);letter-spacing:.26em;
+  text-transform:uppercase;color:var(--slo-signal);display:flex;align-items:center;gap:.7rem;margin:0 0 1rem}
+.slo-eyebrow::before{content:"";width:1.6rem;height:1px;background:var(--slo-signal);opacity:.7}
+.slo-lede{font-size:var(--slo-step-1);max-width:60ch;color:var(--slo-fg)}
+.slo-lede strong{color:var(--slo-fg-bright);font-weight:620}
+.slo-note{border-left:3px solid var(--slo-signal);background:var(--slo-signal-wash);
+  padding:.9rem 1.2rem;border-radius:0 var(--slo-radius-sm) var(--slo-radius-sm) 0;margin:1.4rem 0;max-width:64ch}
+.slo-note b{color:var(--slo-fg-bright)}
+.slo-card{background:var(--slo-surface);border:1px solid var(--slo-hair-soft);border-radius:var(--slo-radius);
+  padding:1.4rem;box-shadow:0 1px 0 rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6)}
+.slo-grid{display:grid;gap:1rem} .slo-grid--3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:720px){.slo-grid--3{grid-template-columns:1fr}}
+table{width:100%;border-collapse:collapse;margin:1.2rem 0;font-size:var(--slo-step-0)}
+.slo-table-scroll{overflow-x:auto}
+th,td{text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--slo-hair-soft)}
+th{color:var(--slo-fg-bright);font-weight:620;border-bottom-color:var(--slo-hair);
+  font-size:var(--slo-step--1);letter-spacing:.04em;text-transform:uppercase}
+tbody tr:hover{background:var(--slo-surface)}
+td code{color:var(--slo-warning)}
+.slo-badge{display:inline-block;font-family:var(--slo-font-mono);font-size:.66rem;letter-spacing:.1em;
+  text-transform:uppercase;padding:.2rem .5rem;border-radius:999px;color:var(--slo-success);
+  background:rgba(158,206,106,.12);border:1px solid color-mix(in srgb,var(--slo-success) 45%,transparent)}
+.slo-code{margin:1.2rem 0;background:var(--slo-bg-2);border:1px solid var(--slo-hair);
+  border-radius:var(--slo-radius);overflow:hidden}
+.slo-code .bar{padding:.5rem .9rem;border-bottom:1px solid var(--slo-hair);font-family:var(--slo-font-mono);
+  font-size:var(--slo-step--1);color:var(--slo-fg-muted)}
+.slo-code .bar .fn{color:var(--slo-fg)}
+pre{margin:0;padding:1rem 1.1rem;font-family:var(--slo-font-mono);font-size:.82rem;line-height:1.7;
+  color:var(--slo-fg);overflow-x:auto}
+.tok-comment{color:var(--slo-fg-muted)} .tok-keyword{color:var(--slo-violet)}
+.tok-string{color:var(--slo-success)} .tok-fn{color:var(--slo-accent)} .tok-accent{color:var(--slo-signal)}
+ol,ul{max-width:var(--slo-measure);padding-left:1.3em} li{margin:.35em 0} li::marker{color:var(--slo-signal)}
+.tree{font-family:var(--slo-font-mono);font-size:.86rem;line-height:1.85;margin:1.2rem 0}
+.tree .node{color:var(--slo-fg-bright)} .tree .id{color:var(--slo-fg-muted)}
+.tree .leaf{color:var(--slo-accent)} .tree .lf-amber{color:var(--slo-warning)} .tree .branch{color:var(--slo-hair)}
+
+/* --- page shell (single scrolling page; NO scroll-snap) --- */
+.slo-progress{position:fixed;top:0;left:0;height:2px;width:0;background:var(--slo-signal);z-index:50;transition:width .1s}
+.page-hero{padding:clamp(3rem,10vh,7rem) 0 clamp(2rem,5vh,3.5rem);border-bottom:1px solid var(--slo-hair)}
+.page-toc{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--slo-bg) 88%,transparent);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--slo-hair-soft)}
+.page-toc .slo-wrap{display:flex;gap:1.4rem;padding-block:.7rem;flex-wrap:wrap}
+.page-toc a{font-family:var(--slo-font-mono);font-size:var(--slo-step--1);color:var(--slo-fg-muted);
+  text-decoration:none;letter-spacing:.04em;transition:color .15s}
+.page-toc a:hover,.page-toc a[aria-current="true"]{color:var(--slo-signal)}
+.slo-doc{padding-bottom:2rem}
+.page-section{scroll-margin-top:4rem;padding-block:clamp(2rem,6vh,3.5rem);border-bottom:1px solid var(--slo-hair-soft)}
+.page-section:last-child{border-bottom:0}
+.page-foot{padding:2rem 0 3rem;color:var(--slo-fg-muted);font-family:var(--slo-font-mono);font-size:var(--slo-step--1)}
+:focus-visible{outline:2px solid var(--slo-signal);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+</style>
+
+<div class="slo-progress" id="progress"></div>
+
+<header class="page-hero">
+  <div class="slo-wrap">
+    <p class="slo-eyebrow">Lifecycle · verified vs textual 0.89.1</p>
+    <h1>What order does a Textual app call its methods in?</h1>
+    <p class="slo-lede">The real sequence — <code>__init__</code> → <code>compose</code> → child mount → <code>on_mount</code> — grounded in <strong>SloTUI</strong>, the app behind the <code>slo</code> default command. <span class="slo-badge">your guess: correct</span></p>
+  </div>
+</header>
+
+<nav class="page-toc" aria-label="On this page">
+  <div class="slo-wrap">
+    <a href="#order">The order</a>
+    <a href="#proof">Source proof</a>
+    <a href="#compose">compose()</a>
+    <a href="#onmount">on_mount()</a>
+    <a href="#rule">The rule</a>
+  </div>
+</nav>
+
+<main class="slo-doc">
+  <div class="slo-wrap">
+
+    <section id="order" class="page-section">
+      <h2>The order the source actually runs</h2>
+      <p class="slo-lede">Your four-step mental model holds up; the one refinement is that <code>on_mount</code> fires <span class="sig">per widget</span>, not once at the end.</p>
+      <table>
+        <thead><tr><th>#</th><th>Step</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>SloTUI.__init__</code></td><td>Sync construction — no DOM yet. Registers themes, stores <code>session</code>, sets widget handles to <code>None</code>.</td></tr>
+          <tr><td>2</td><td><code>events.Compose</code></td><td>Dispatched by the run loop first; drives <code>compose()</code>.</td></tr>
+          <tr><td>3</td><td><code>compose()</code></td><td>Yields the tree; each <code>yield</code> constructs a child and mounts it.</td></tr>
+          <tr><td>4</td><td><code>child.on_mount</code> ×N</td><td>Each child mounts recursively, leaf-first, posting its own <code>Mount</code>.</td></tr>
+          <tr><td>5</td><td><code>events.Mount → on_mount</code></td><td>App's own <code>on_mount</code> — only after the subtree is live and queryable.</td></tr>
+        </tbody>
+      </table>
+      <p class="slo-note"><b>Why it feels inverted:</b> a child's <code>on_mount</code> runs <i>before</i> the app's, because children finish mounting first. That's exactly why <code>on_mount</code> is the safe place to query the DOM.</p>
+    </section>
+
+    <section id="proof" class="page-section">
+      <h2><code>Compose</code> is dispatched <span class="sig">before</span> <code>Mount</code></h2>
+      <p>The ordering is fixed in <code>App._process_messages</code>, so <code>on_mount</code> always runs after the tree is built — verified against the installed Textual 0.89.1.</p>
+      <div class="slo-code">
+        <div class="bar">textual/app.py · <span class="fn">run_process_messages()</span> · ~L3073</div>
+<pre><span class="tok-comment"># the app's own mount sequence, in order:</span>
+await self._dispatch_message(events.<span class="tok-accent">Compose</span>())   <span class="tok-comment"># → compose() builds children</span>
+await self._dispatch_message(events.Resize.from_dimensions(...))
+self.stylesheet.apply(self)
+await self._dispatch_message(events.<span class="tok-keyword">Mount</span>())     <span class="tok-comment"># → on_mount() runs last</span></pre>
+      </div>
+    </section>
+
+    <section id="compose" class="page-section">
+      <h2>What <code>SloTUI.compose()</code> yields</h2>
+      <p>The exact tree from <code>app.py:313</code>. In <code>__init__</code> these are all <code>None</code>; they become live widgets here, but you shouldn't <i>touch</i> them until <code>on_mount</code>.</p>
+      <div class="tree">
+<div><span class="node">SloTUI</span></div>
+<div><span class="branch">├─</span> <span class="leaf">Header</span> <span class="id">(show_clock=False)</span></div>
+<div><span class="branch">├─</span> <span class="node">Vertical</span> <span class="id">#chat-shell</span></div>
+<div><span class="branch">│&nbsp;&nbsp;├─</span> <span class="node">VerticalScroll</span> <span class="id">#transcript-scroll → #transcript-content</span></div>
+<div><span class="branch">│&nbsp;&nbsp;├─</span> <span class="node">Vertical</span> <span class="id">#status-region</span> → <span class="lf-amber">SlashSuggestionMenu</span></div>
+<div><span class="branch">│&nbsp;&nbsp;├─</span> <span class="leaf">PromptInput</span> <span class="id">(focused in on_mount)</span></div>
+<div><span class="branch">│&nbsp;&nbsp;├─</span> <span class="lf-amber">SubAgentFleetPanel</span> <span class="id">(hidden until first spawn)</span></div>
+<div><span class="branch">│&nbsp;&nbsp;└─</span> <span class="leaf">UsageStatusBar</span></div>
+<div><span class="branch">└─</span> <span class="leaf">Footer</span></div>
+      </div>
+    </section>
+
+    <section id="onmount" class="page-section">
+      <h2>Inside <code>on_mount()</code> — order is load-bearing</h2>
+      <p>By here the whole tree exists, so the method orchestrates a precise startup (<code>app.py:341</code>):</p>
+      <ol>
+        <li><code>_hydrate_transcript_from_history()</code> — replay persisted events into the same widgets a live run uses.</li>
+        <li><code>_maybe_render_startup_notice()</code> — one-time tip line for new sessions.</li>
+        <li><code>session.subscribe(handler=…)</code> — subscribe the live renderer, strictly after hydration.</li>
+        <li><code>_refresh_title_bar()</code> / <code>_refresh_usage_status_bar()</code> — paint chrome now that widgets are queryable.</li>
+        <li><code>self._input.focus()</code> — hand the user a ready cursor.</li>
+        <li>push <code>AuthenticationScreen</code> if no credential for the active model.</li>
+      </ol>
+      <p class="slo-note"><b>Why 1 before 3 (sub-spec 05.e §7.2):</b> hydrate the replay tail before subscribing live events, so a fresh prompt's events can't interleave with the historical ones.</p>
+    </section>
+
+    <section id="rule" class="page-section">
+      <h2>The reliable rule</h2>
+      <div class="slo-grid slo-grid--3">
+        <div class="slo-card"><h3 style="margin-top:0"><code>__init__</code></h3><p style="margin:0">Stores config. No DOM. Don't query widgets.</p></div>
+        <div class="slo-card"><h3 style="margin-top:0"><code>compose</code></h3><p style="margin:0">Builds and yields the widget tree.</p></div>
+        <div class="slo-card"><h3 style="margin-top:0"><code>on_mount</code></h3><p style="margin:0">Fires per-widget once it's in the DOM. Wire up here.</p></div>
+      </div>
+      <div class="slo-code" style="margin-top:1.6rem">
+        <div class="bar">see it for yourself</div>
+<pre>self.log(<span class="tok-string">"compose: building tree"</span>)   <span class="tok-comment"># view in: textual console</span>
+
+$ textual console            <span class="tok-comment"># terminal A</span>
+$ textual run --dev app.py   <span class="tok-comment"># terminal B</span>
+
+self.<span class="tok-accent">call_after_refresh</span>(self._transcript_scroll.scroll_end)  <span class="tok-comment"># defer past paint</span></pre>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<footer class="page-foot"><div class="slo-wrap">Slo · single-page example · design language mirrors src/tui/theme.py</div></footer>
+
+<script>
+(function(){
+  const progress=document.getElementById('progress');
+  const links=[...document.querySelectorAll('.page-toc a')];
+  const sections=links.map(a=>document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  function onScroll(){
+    const h=document.documentElement;
+    const max=h.scrollHeight-h.clientHeight;
+    progress.style.width=(max>0?(h.scrollTop/max*100):0)+'%';
+  }
+  addEventListener('scroll',onScroll,{passive:true}); onScroll();
+  const io=new IntersectionObserver(es=>es.forEach(e=>{
+    if(e.isIntersecting){
+      const id='#'+e.target.id;
+      links.forEach(a=>a.setAttribute('aria-current',a.getAttribute('href')===id?'true':'false'));
+    }
+  }),{rootMargin:'-45% 0px -50% 0px'});
+  sections.forEach(s=>io.observe(s));
+})();
+</script>

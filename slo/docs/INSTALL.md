@@ -1,0 +1,232 @@
+# Installing, Updating & Hosting Slo
+
+This guide is the **authoritative reference** for getting Slo onto a machine,
+keeping it up to date, and hosting the one-line installer for end users. It
+documents the real flags in [`install.sh`](../install.sh) and the `slo update`
+command (`src/cli/update.py`).
+
+> The narrative "Chapter 1" in [`README.md`](../README.md) predates the current
+> installer (it describes an older clone-into-`~/.slo` editable flow). **This
+> document supersedes it** for anything install-related.
+
+---
+
+## 1. Mental model
+
+Slo installs as an **isolated [pipx](https://pipx.pypa.io) application**, built
+straight from the private GitLab repo:
+
+```
+pipx install --force --python <python3.11> "git+https://gitlab.com/core-27/slo.git@<ref>#subdirectory=slo"
+```
+
+Two things follow from this:
+
+- **Code vs. data are separate.** pipx owns the *code* (an isolated venv plus
+  the `slo` binary on your `PATH`). `~/.slo` (a.k.a. `SLO_HOME`) is *runtime
+  data only* — sessions, logs, and `global/authentication.json`. **Install,
+  upgrade, and uninstall never touch `~/.slo`.** The installer creates the
+  directory if missing but writes nothing into it.
+- **The project lives in a subdirectory.** The repo root has no
+  `pyproject.toml`; the Python package is under `slo/`. That is why the pip
+  requirement carries `#subdirectory=slo`.
+
+---
+
+## 2. `install.sh`
+
+The installer is self-bootstrapping and idempotent — re-running it upgrades in
+place, and every step is a no-op when already satisfied.
+
+**What it does**
+
+1. Ensures the toolchain pipx needs, using the native provider for the current OS:
+   - **macOS:** **Homebrew → pipx → pyenv → Python 3.11.x → git**
+   - **Debian / Ubuntu:** **apt (git + pyenv build deps) → pyenv (git clone) → Python 3.11.x → pipx (apt, with a `pip --user` fallback on older distros)**
+   Each step installs only when absent; git is needed for pip's VCS fetch.
+2. Resolves `SLO_HOME` (default `~/.slo`) and ensures it exists — as the data
+   dir, not a checkout.
+3. Runs `pipx install --force --python <interpreter> "git+…@<ref>#subdirectory=slo"`.
+
+**Configuration (environment variables)**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SLO_REPO_URL` | `https://gitlab.com/core-27/slo.git` | Git URL to install from |
+| `SLO_REF` | `main` | Branch / tag / commit to install |
+| `SLO_REPO_SUBDIR` | `slo` | Subdirectory holding `pyproject.toml` (set empty for a root-level project) |
+| `SLO_PYTHON_VERSION` | `3.11.7` | Pinned interpreter version |
+| `SLO_OS_RELEASE_FILE` | `/etc/os-release` | Linux distro-detection file (test-only override) |
+| `SLO_DEPLOY_TOKEN_USERNAME` | — | GitLab deploy-token username (with `SLO_DEPLOY_TOKEN`) |
+| `SLO_DEPLOY_TOKEN` | — | GitLab deploy-token secret (with the username above) |
+| `SLO_INSTALL_TOKEN` | — | Personal access token for a private HTTPS fetch |
+
+`bash install.sh --development` is an explicit alias for `SLO_REF=main`.
+
+### 2.1 Authentication for the private repo
+
+On an `https://` URL the installer injects a credential **for the fetch only**
+(it is not written to disk by the script). Precedence:
+
+1. **GitLab deploy token** — `SLO_DEPLOY_TOKEN_USERNAME` + `SLO_DEPLOY_TOKEN`,
+   injected as `https://<username>:<token>@…`. (Deploy tokens authenticate as
+   `username:token`, **not** `oauth2:token`.)
+2. **Personal access token** — `SLO_INSTALL_TOKEN`, injected as
+   `https://oauth2:<token>@…`.
+3. **Ambient git auth** — if neither is set, the URL is left untouched, so
+   `~/.netrc` (`machine gitlab.com login <user> password <token>`), an SSH
+   `SLO_REPO_URL`, or a credential helper is used.
+
+> Credentials containing URL-reserved characters (`:` `@` `/`) must be
+> percent-encoded by the caller.
+
+### 2.2 Direct local run (operator / testing)
+
+If you already have the toolchain and want to install with a deploy token:
+
+```bash
+SLO_DEPLOY_TOKEN_USERNAME='<deploy-token-username>' \
+SLO_DEPLOY_TOKEN='<deploy-token-secret>' \
+  bash install.sh
+```
+
+Pin a release by adding `SLO_REF=v0.3.2`.
+
+---
+
+## 3. Production install: `curl | bash`
+
+End users install with a single line. The catch for a **private** repo:
+
+> **A GitLab deploy token cannot fetch a raw file** (the Files API and the
+> `/-/raw/` web route both reject deploy tokens — they only authenticate
+> git-over-HTTPS and the container/package registries). So `install.sh` cannot
+> be served *from the private repo* to a deploy-token user.
+
+The standard pattern (rustup / nvm / Homebrew) applies: **the bootstrap script
+is hosted publicly** (it contains no secrets — the token arrives via env at
+runtime), and the token authenticates only the `pipx` git fetch.
+
+### 3.1 Hosted at `get-slo.sh` (Cloudflare Worker)
+
+`install.sh` is published as a Cloudflare Worker bound to `get-slo.sh`, serving
+the script at both `/` and `/install.sh`. End users run:
+
+```bash
+curl -fsSL https://get-slo.sh/install.sh \
+  | SLO_DEPLOY_TOKEN_USERNAME='<deploy-token-username>' \
+    SLO_DEPLOY_TOKEN='<deploy-token-secret>' bash
+```
+
+`curl -fsSL https://get-slo.sh | … bash` (no path) works too.
+
+### 3.2 Pinning a release
+
+- **Per install:** the user adds `SLO_REF=v0.3.2` to the command above.
+- **Hosted default:** the deploy step can bake a default `SLO_REF` into the
+  served script (`PUBLISH_SLO_REF=v0.3.2`), so `curl … | bash` installs that
+  release by default while a user can still override `SLO_REF`. Bump the
+  "stable channel" by re-deploying with a newer tag.
+
+### 3.3 The deploy helper
+
+`deploy-install-worker.sh` (operator tool) publishes the Worker via the
+Cloudflare API with `curl` (no `wrangler`/Node needed). At a high level it:
+
+1. Verifies the Cloudflare token can reach the account's Workers.
+2. Fetches the **canonical** `install.sh` from `core-27/slo@<SLO_SOURCE_REF>`
+   (default `main`) using an operator PAT (`GITLAB_TOKEN`) — or publishes a
+   local file when `INSTALL_SH` is set (testing).
+3. Optionally pins the hosted default install ref (`PUBLISH_SLO_REF`).
+4. base64-embeds the script in a Worker and uploads it.
+5. Binds it to your hostname (auto-creating proxied DNS) or enables a
+   `*.workers.dev` URL.
+
+**Three distinct credentials — don't conflate them:**
+
+| Credential | Used by | For |
+|---|---|---|
+| `CF_API_TOKEN` | operator (deploy script) | Deploying the Worker |
+| `GITLAB_TOKEN` (PAT) | operator (deploy script) | Fetching the canonical `install.sh` to publish (the Files API rejects deploy tokens) |
+| deploy token | **end user** | The `pipx` git fetch at `curl … \| bash` time |
+
+Required Cloudflare API token permissions: **Account → Workers Scripts: Edit**,
+and for a custom domain also **Zone → Zone: Read, DNS: Edit, Workers Routes:
+Edit** scoped to the target zone.
+
+---
+
+## 4. Updating
+
+`slo update` reinstalls via pipx using the **same mechanism and auth** as
+`install.sh` (no git checkout in `~/.slo`):
+
+| Command | Installs |
+|---|---|
+| `slo update` | The latest release tag (`vX.Y.Z`), resolved via `git ls-remote --tags` |
+| `slo update --development` | `main` |
+| `slo update --ref <ref>` | An explicit branch / tag / commit |
+
+It honours `SLO_DEPLOY_TOKEN_USERNAME`/`SLO_DEPLOY_TOKEN`, then
+`SLO_INSTALL_TOKEN`, then ambient git auth — identical to the installer. Your
+`~/.slo` data is untouched.
+
+You can always upgrade by simply re-running the installer
+(`curl -fsSL https://get-slo.sh/install.sh | … bash`) instead.
+
+> An already-installed copy carries whatever `update.py` shipped with it; after
+> a major installer change, run the installer once to pick up the new updater.
+
+---
+
+## 5. Uninstalling
+
+```bash
+pipx uninstall slo
+```
+
+This removes the code venv and the `slo` binary. **Your `~/.slo` runtime data
+(sessions, logs, credentials) survives** — delete it manually if you truly want
+a clean slate.
+
+> **pyenv shim shadowing.** If you also have a `slo` installed inside a pyenv
+> virtualenv (e.g. a developer checkout), `which slo` may resolve to
+> `~/.pyenv/shims/slo` *ahead* of pipx's `~/.local/bin/slo`, because pyenv's
+> shims sit earlier on `PATH`. To run the pipx install explicitly, use
+> `~/.local/bin/slo`, or remove the venv copy
+> (`<venv>/bin/pip uninstall slo && pyenv rehash`).
+
+---
+
+## 6. Troubleshooting
+
+Real failure modes (and fixes) seen while building this:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `curl … 401/403` fetching the script | Deploy tokens can't use the Files API / `/-/raw/` | Host the script publicly (§3); use a PAT only for operator fetches |
+| `Could not parse uv version … (rc=127)` | pipx auto-selects a `uv` backend but the `uv` on `PATH` is a broken pyenv shim | `install.sh`/`update.py` auto-fall back to `PIPX_DEFAULT_BACKEND=pip`; or set it yourself |
+| `pyenv: python3.11: command not found` during install | The bare `python3.11` shim only resolves when 3.11.x is the *active* pyenv version | Handled — the installer passes the **absolute** interpreter (`$(pyenv root)/versions/<ver>/bin/python3.11`) |
+| `ERROR: The Python ssl extension was not compiled` during `pyenv install` on Linux | pyenv build headers missing | Handled on Debian / Ubuntu — `slo_ensure_build_deps` apt-installs `libssl-dev` et al. before `pyenv install`; on non-Debian Linux, install pyenv's suggested build deps manually |
+| `does not appear to be a Python project: neither setup.py nor pyproject.toml found` | The package is in the `slo/` subdirectory, not the repo root | Handled by `#subdirectory=slo`; override via `SLO_REPO_SUBDIR` |
+| Cloudflare API `10000 Authentication error` on `/accounts/<id>/workers/...` | Valid token, but missing **Account → Workers Scripts: Edit** or the account isn't in the token's Account Resources | Add the permission + account scope to the token |
+| Installed but `slo` runs the wrong build | pyenv shim shadows pipx on `PATH` | See §5 |
+
+---
+
+## 7. Quick reference
+
+```bash
+# End user, latest release, deploy-token auth:
+curl -fsSL https://get-slo.sh/install.sh \
+  | SLO_DEPLOY_TOKEN_USERNAME='<u>' SLO_DEPLOY_TOKEN='<t>' SLO_REF=v0.3.2 bash
+
+# Update to the latest release:
+slo update
+
+# Update to main:
+slo update --development
+
+# Uninstall (keeps ~/.slo data):
+pipx uninstall slo
+```

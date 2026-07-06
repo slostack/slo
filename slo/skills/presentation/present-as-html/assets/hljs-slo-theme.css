@@ -1,0 +1,15 @@
+/* highlight.js theme mapped to Slo design tokens — works in both palettes.
+ * Inline this <style> alongside slo-design-language.css, pair it with
+ * assets/highlight.min.js, and call hljs.highlightAll() after the DOM is ready. */
+.hljs{color:var(--slo-fg);background:transparent;}
+.hljs-comment,.hljs-quote{color:var(--slo-fg-muted);font-style:italic;}
+.hljs-keyword,.hljs-selector-tag,.hljs-literal,.hljs-section,.hljs-doctag{color:var(--slo-violet);}
+.hljs-string,.hljs-regexp,.hljs-addition,.hljs-meta-string{color:var(--slo-success);}
+.hljs-title,.hljs-title.function_,.hljs-name,.hljs-selector-id,.hljs-selector-class{color:var(--slo-accent);}
+.hljs-built_in,.hljs-class .hljs-title,.hljs-title.class_,.hljs-type{color:var(--slo-accent-2);}
+.hljs-number,.hljs-symbol,.hljs-bullet,.hljs-link{color:var(--slo-orange);}
+.hljs-attr,.hljs-attribute,.hljs-variable,.hljs-template-variable,.hljs-params{color:var(--slo-fg);}
+.hljs-meta,.hljs-meta .hljs-keyword{color:var(--slo-accent-2);}
+.hljs-deletion{color:var(--slo-error);}
+.hljs-emphasis{font-style:italic;}
+.hljs-strong{font-weight:640;color:var(--slo-fg-bright);}

@@ -1,0 +1,57 @@
+# ---- Out of scope ----
+pi/
+specifications/
+feature-requests/
+feature-request/
+findings/
+slo/findings/
+specs/
+last-reasoning-markdown-bug.md
+PROJECT-STATUS.md
+pi-architecture-overview.md
+slo-coder-session.md
+slo-worktrees/
+/README.md
+*.code-workspace
+.agent_discussions.md
+.vscode/
+.claude/
+
+# ---- direnv ----
+.envrc
+
+# ---- Environment / secrets ----
+.env
+.env.local
+**/environments/*.env
+!**/environments/.env.template
+
+# ---- Python build artifacts ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+
+# ---- Logs / databases ----
+*.log
+logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- OS / editor ----
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/

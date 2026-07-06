@@ -1,0 +1,33 @@
+/* src/tui/authentication/auth_screen.tcss */
+
+AuthenticationScreen {
+    align: center middle;
+}
+
+#auth-modal-body {
+    background: $surface;
+    border: round $accent;
+    padding: 1 2;
+    width: 60;
+    height: auto;
+    max-height: 24;
+}
+
+.auth-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+.auth-error {
+    color: $error;
+    margin-top: 1;
+}
+
+RadioSet {
+    margin-bottom: 1;
+}
+
+Button {
+    margin: 0 1 0 0;
+}

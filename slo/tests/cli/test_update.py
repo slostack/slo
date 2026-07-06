@@ -1,0 +1,273 @@
+"""Unit tests for ``src.cli.update`` — the pipx-VCS self-updater.
+
+The ``Updater`` reinstalls slo via ``pipx install --force
+"git+<url>@<ref>#subdirectory=slo"``, mirroring ``install.sh``. These tests
+patch ``subprocess.run`` / ``shutil.which`` so no real git, pipx, pyenv, or
+network is touched, and assert on the exact ref resolution, requirement spec,
+auth-URL injection, interpreter resolution, and uv-backend fallback.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Optional
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.cli.update import Updater, main
+
+
+def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+    """Build a ``CompletedProcess`` stand-in for a patched ``subprocess.run``."""
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+
+class TestAuthUrl:
+    """``_auth_url`` injects a token for https only, else returns the URL clean."""
+
+    def test_no_token_returns_clean_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SLO_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_TOKEN", raising=False)
+        monkeypatch.delenv("SLO_DEPLOY_TOKEN_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_DEPLOY_TOKEN", raising=False)
+        assert Updater._auth_url() == "https://gitlab.com/core-27/slo.git"
+
+    def test_slo_username_and_token_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Public interface: SLO_USERNAME / SLO_TOKEN (same names install.sh advertises).
+        monkeypatch.delenv("SLO_DEPLOY_TOKEN_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_DEPLOY_TOKEN", raising=False)
+        monkeypatch.setenv("SLO_USERNAME", "slo-sid-deploy")
+        monkeypatch.setenv("SLO_TOKEN", "gldt-secret")
+        assert Updater._auth_url() == "https://slo-sid-deploy:gldt-secret@gitlab.com/core-27/slo.git"
+
+    def test_internal_alias_deploy_token_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Internal aliases work when the public names are absent.
+        monkeypatch.delenv("SLO_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_TOKEN", raising=False)
+        monkeypatch.setenv("SLO_DEPLOY_TOKEN_USERNAME", "gitlab+deploy-token-7")
+        monkeypatch.setenv("SLO_DEPLOY_TOKEN", "dt-secret")
+        assert Updater._auth_url() == "https://gitlab+deploy-token-7:dt-secret@gitlab.com/core-27/slo.git"
+
+    def test_public_names_take_precedence_over_internal_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # SLO_USERNAME / SLO_TOKEN win over the internal aliases.
+        monkeypatch.setenv("SLO_USERNAME", "public-user")
+        monkeypatch.setenv("SLO_TOKEN", "public-token")
+        monkeypatch.setenv("SLO_DEPLOY_TOKEN_USERNAME", "internal-user")
+        monkeypatch.setenv("SLO_DEPLOY_TOKEN", "internal-token")
+        url = Updater._auth_url()
+        assert url == "https://public-user:public-token@gitlab.com/core-27/slo.git"
+
+    def test_half_set_credential_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Username without a token must not produce a malformed URL; fall through.
+        monkeypatch.setenv("SLO_USERNAME", "slo-sid-deploy")
+        monkeypatch.delenv("SLO_TOKEN", raising=False)
+        monkeypatch.delenv("SLO_DEPLOY_TOKEN_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_DEPLOY_TOKEN", raising=False)
+        assert Updater._auth_url() == "https://gitlab.com/core-27/slo.git"
+
+
+class TestPipxSpec:
+    """``_pipx_spec`` targets the slo/ subdirectory at the given ref."""
+
+    def test_spec_includes_subdirectory_and_ref(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SLO_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_TOKEN", raising=False)
+        spec = Updater._pipx_spec(ref="v0.3.2")
+        assert spec == "git+https://gitlab.com/core-27/slo.git@v0.3.2#subdirectory=slo"
+
+
+class TestResolveLatestReleaseTag:
+    """``resolve_latest_release_tag`` picks the highest vX.Y.Z from ls-remote."""
+
+    _LS_REMOTE = (
+        "abc\trefs/tags/v0.2.0\n"
+        "def\trefs/tags/v0.10.1\n"  # numeric, not lexical, ordering
+        "ghi\trefs/tags/v0.3.2\n"
+        "jkl\trefs/tags/not-a-version\n"
+        "mno\trefs/tags/v0.10.0\n"
+    )
+
+    def test_picks_highest_semver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SLO_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_TOKEN", raising=False)
+        with patch("src.cli.update.subprocess.run", return_value=_completed(stdout=self._LS_REMOTE)) as run:
+            assert Updater.resolve_latest_release_tag() == "v0.10.1"
+        # ls-remote invoked against the (clean) auth URL
+        assert run.call_args.args[0][:3] == ["git", "ls-remote", "--tags"]
+
+    def test_no_version_tags_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SLO_USERNAME", raising=False)
+        monkeypatch.delenv("SLO_TOKEN", raising=False)
+        with patch(
+            "src.cli.update.subprocess.run", return_value=_completed(stdout="zzz\trefs/tags/nightly\n")
+        ):
+            with pytest.raises(SystemExit):
+                Updater.resolve_latest_release_tag()
+
+
+class TestUvFallback:
+    """``_uv_present_but_broken`` only triggers when uv is on PATH but won't run."""
+
+    def test_absent_uv_is_not_broken(self) -> None:
+        with patch("src.cli.update.shutil.which", return_value=None):
+            assert Updater._uv_present_but_broken() is False
+
+    def test_present_runnable_uv_is_not_broken(self) -> None:
+        with (
+            patch("src.cli.update.shutil.which", return_value="/x/uv"),
+            patch("src.cli.update.subprocess.run", return_value=_completed(stdout="uv 0.5.0")),
+        ):
+            assert Updater._uv_present_but_broken() is False
+
+    def test_present_failing_uv_is_broken(self) -> None:
+        with (
+            patch("src.cli.update.shutil.which", return_value="/x/uv"),
+            patch("src.cli.update.subprocess.run", return_value=_completed(returncode=127)),
+        ):
+            assert Updater._uv_present_but_broken() is True
+
+
+class TestPythonBin:
+    """``_python_bin`` prefers the concrete pyenv interpreter over the shim."""
+
+    def test_uses_concrete_pyenv_interpreter(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PYENV_ROOT", str(tmp_path))
+        interp = tmp_path / "versions" / "3.11.7" / "bin" / "python3.11"
+        interp.parent.mkdir(parents=True)
+        interp.write_text("#!/bin/sh\n")
+        interp.chmod(0o755)
+        assert Updater._python_bin() == str(interp)
+
+    def test_falls_back_to_path_python311(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PYENV_ROOT", str(tmp_path))  # no versions dir -> miss
+        with patch("src.cli.update.shutil.which", return_value="/usr/bin/python3.11"):
+            assert Updater._python_bin() == "/usr/bin/python3.11"
+
+
+class TestPipxInstall:
+    """``_pipx_install`` builds the pipx command and forces pip off a broken uv."""
+
+    def test_builds_force_install_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PIPX_DEFAULT_BACKEND", raising=False)
+        with (
+            patch("src.cli.update.Updater._python_bin", return_value="/py/python3.11"),
+            patch("src.cli.update.Updater._uv_present_but_broken", return_value=False),
+            patch("src.cli.update.subprocess.run") as run,
+        ):
+            Updater._pipx_install(spec="git+https://x/slo.git@main#subdirectory=slo")
+        cmd = run.call_args.args[0]
+        assert cmd == [
+            "pipx",
+            "install",
+            "--force",
+            "--python",
+            "/py/python3.11",
+            "git+https://x/slo.git@main#subdirectory=slo",
+        ]
+        assert run.call_args.kwargs["env"].get("PIPX_DEFAULT_BACKEND") is None
+
+    def test_forces_pip_backend_when_uv_broken(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PIPX_DEFAULT_BACKEND", raising=False)
+        with (
+            patch("src.cli.update.Updater._python_bin", return_value="/py/python3.11"),
+            patch("src.cli.update.Updater._uv_present_but_broken", return_value=True),
+            patch("src.cli.update.subprocess.run") as run,
+        ):
+            Updater._pipx_install(spec="spec")
+        assert run.call_args.kwargs["env"]["PIPX_DEFAULT_BACKEND"] == "pip"
+
+    def test_respects_caller_pinned_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PIPX_DEFAULT_BACKEND", "uv")
+        with (
+            patch("src.cli.update.Updater._python_bin", return_value="/py/python3.11"),
+            patch("src.cli.update.Updater._uv_present_but_broken", return_value=True),
+            patch("src.cli.update.subprocess.run") as run,
+        ):
+            Updater._pipx_install(spec="spec")
+        assert run.call_args.kwargs["env"]["PIPX_DEFAULT_BACKEND"] == "uv"
+
+
+class TestInvoke:
+    """``invoke`` resolves the right ref per mode and installs it."""
+
+    def _patched(self) -> tuple[MagicMock, MagicMock, MagicMock]:
+        return (
+            patch("src.cli.update.Updater._pipx_install"),
+            patch("src.cli.update.Updater.resolve_latest_release_tag", return_value="v9.9.9"),
+            patch("src.cli.update.Updater._pipx_spec", side_effect=lambda *, ref: f"spec@{ref}"),
+        )
+
+    def test_default_installs_latest_release(self) -> None:
+        p_install, p_resolve, p_spec = self._patched()
+        with p_install as install, p_resolve as resolve, p_spec:
+            Updater.invoke()
+        resolve.assert_called_once_with()
+        install.assert_called_once_with(spec="spec@v9.9.9")
+
+    def test_development_installs_main(self) -> None:
+        p_install, p_resolve, p_spec = self._patched()
+        with p_install as install, p_resolve as resolve, p_spec:
+            Updater.invoke(development=True)
+        resolve.assert_not_called()
+        install.assert_called_once_with(spec="spec@main")
+
+    def test_explicit_ref_overrides_everything(self) -> None:
+        p_install, p_resolve, p_spec = self._patched()
+        with p_install as install, p_resolve as resolve, p_spec:
+            Updater.invoke(development=True, ref="abc123")
+        resolve.assert_not_called()
+        install.assert_called_once_with(spec="spec@abc123")
+
+
+class TestMain:
+    """``main`` maps argv to ``Updater.invoke`` kwargs."""
+
+    @pytest.mark.parametrize(
+        "argv, expected",
+        [
+            ([], {"development": False, "ref": None}),
+            (["--development"], {"development": True, "ref": None}),
+            (["--ref", "v1.2.3"], {"development": False, "ref": "v1.2.3"}),
+        ],
+    )
+    def test_argv_maps_to_invoke(self, argv: list[str], expected: dict[str, Optional[str]]) -> None:
+        with patch("src.cli.update.Updater.invoke") as invoke:
+            assert main(argv) == 0
+        invoke.assert_called_once_with(**expected)
+
+    def test_development_and_ref_are_mutually_exclusive(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["--development", "--ref", "v1.2.3"])
+
+
+class TestCheckPathAfterInstall:
+    """``_check_path_after_install`` warns when ``~/.local/bin`` is off PATH."""
+
+    def test_silent_when_local_bin_on_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """No output when ~/.local/bin is already on PATH."""
+        from pathlib import Path
+
+        local_bin = str(Path.home() / ".local" / "bin")
+        monkeypatch.setenv("PATH", f"{local_bin}:/usr/bin:/bin")
+        Updater._check_path_after_install()
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_warns_when_local_bin_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Warning text appears on stderr when ~/.local/bin is absent from PATH."""
+        monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/local/bin")
+        Updater._check_path_after_install()
+        captured = capsys.readouterr()
+        assert "~/.local/bin is not on your PATH" in captured.err
+        assert "~/.zshrc" in captured.err
+        assert "pipx ensurepath" in captured.err

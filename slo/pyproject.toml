@@ -1,0 +1,103 @@
+[project]
+name = "slo"
+version = "0.14.0"
+description = "Python ReAct agent harness, modelled on pi.dev"
+authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
+license = "GPL-2.0-only"
+# 01.n: narrowed to <3.12 because the dependency lock file is validated on
+# 3.11 only and pipx install is invoked with --python python3.11. Open the
+# upper bound to <3.13 once the suite runs green on 3.12.
+requires-python = ">=3.11,<3.12"
+
+dependencies = [
+    # Web
+    "fastapi (>=0.128.0,<0.129.0)",
+    "uvicorn[standard] (>=0.41.0,<0.42.0)",
+    "sse-starlette (>=2.1.0,<3.0.0)",
+    "starlette (>=0.46.0,<0.47.0)",
+
+    # LLM / LangChain / LangGraph
+    "langchain-core (>=0.3.50,<0.4.0)",
+    "langchain-anthropic (>=0.3.0,<0.4.0)",
+    "langchain-openai (>=0.3.0,<0.4.0)",
+    "langgraph (>=0.4.0,<0.5.0)",
+
+    # A2A protocol
+    "a2a-sdk (>=0.2.16,<0.3.0)",
+
+    # Pydantic / settings
+    "pydantic (>=2.12.5,<3.0.0)",
+    "pydantic-settings (>=2.7.0,<3.0.0)",
+
+    # DB (scaffolded but unused in v1)
+    "sqlalchemy[asyncio] (>=2.0.40,<3.0.0)",
+    "greenlet (>=3.0.0,<4.0.0)",
+    "asyncpg (>=0.31.0,<0.32.0)",
+    "psycopg2-binary (>=2.9.11,<3.0.0)",
+    "alembic (>=1.18.1,<2.0.0)",
+    "pgvector (>=0.4.0,<1.0.0)",
+
+    # Tool utilities
+    "pathspec (>=1.0.0,<2.0.0)",
+    "pillow (>=11.0.0,<12.0.0)",
+    "pypdf (>=5.0.0,<6.0.0)",
+    "json5 (>=0.9.25,<0.10.0)",
+
+    # HTTP client
+    "httpx (>=0.28.1,<0.29.0)",
+    "aiohttp (>=3.10.0,<4.0.0)",
+    "tenacity (>=9.1.4,<10.0.0)",
+
+    # Logging
+    "python-json-logger (>=4.0.0,<5.0.0)",
+    "textual (>=0.74,<1.0)",
+    "typer (>=0.12,<1.0)",
+]
+
+# 01.n: the ``slo`` console script. Body lives at src/cli/__init__.py (stub
+# in 01.n; full Typer app in 01.m).
+[project.scripts]
+slo = "src.cli:main"
+
+# 01.n note: skills/ are NOT declared as package data for v1. install.sh clones
+# the repo to ~/.slo/ and the editable pipx install lets ``cfg._resolve_skills_dir``
+# find the directory directly on disk. If/when slo ships to PyPI as a
+# proper wheel, add a ``[tool.poetry] include = [...]`` (or PEP 621
+# equivalent) so skills/ travels inside the artifact — see 01.n §8.7.
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+  packages = [
+      { include = "src" },
+      { include = "config" },
+      { include = "connectors" },
+  ]
+  
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-asyncio (>=1.3.0,<2.0.0)",
+    "pytest-httpserver (>=1.1.0,<2.0.0)",
+    "black (>=26.1.0,<27.0.0)",
+    "autoflake (>=2.3.1,<3.0.0)",
+    "mypy (>=1.13.0,<2.0.0)",
+    "debugpy (>=1.8.0,<2.0.0)",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "e2e: integration tests that call real provider APIs or run the installer in Docker (off by default)",
+]
+addopts = "-m 'not e2e'"
+
+[tool.black]
+line-length = 110
+
+[tool.mypy]
+strict_optional = true
+ignore_missing_imports = true

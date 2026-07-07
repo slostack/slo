@@ -221,3 +221,35 @@ class TestAssistantStreamBlockExpansion:
         block.set_answer(content="the answer")
 
         assert block._answer_body.display is True
+
+
+class TestAssistantStreamBlockCopyableText:
+    """``get_copyable_text`` protocol for clipboard copy (spec 56)."""
+
+    def test_combines_thinking_and_answer_with_blank_line(self) -> None:
+        """``get_copyable_text`` joins both parts with a blank-line separator."""
+        block = AssistantStreamBlock()
+        block._thinking_text = "thinking"
+        block._answer_text = "answer"
+
+        assert block.get_copyable_text() == "thinking\n\nanswer"
+
+    def test_skips_empty_thinking_when_absent(self) -> None:
+        """``get_copyable_text`` returns only the answer when thinking is empty."""
+        block = AssistantStreamBlock()
+        block._answer_text = "answer only"
+
+        assert block.get_copyable_text() == "answer only"
+
+    def test_skips_empty_answer_when_absent(self) -> None:
+        """``get_copyable_text`` returns only thinking when answer is empty."""
+        block = AssistantStreamBlock()
+        block._thinking_text = "thinking only"
+
+        assert block.get_copyable_text() == "thinking only"
+
+    def test_returns_empty_string_when_both_absent(self) -> None:
+        """``get_copyable_text`` returns empty string when the block has no content."""
+        block = AssistantStreamBlock()
+
+        assert block.get_copyable_text() == ""

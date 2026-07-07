@@ -267,6 +267,13 @@ class SloTUI(App):
         Binding(key="ctrl+o", action="toggle_expandable_details", description="expand/collapse all"),
         Binding(key="ctrl+shift+c", action="copy_visible_text", description="copy"),
         Binding(key="meta+c", action="copy_visible_text", description="copy", show=False),
+        Binding(
+            key="ctrl+end",
+            action="scroll_to_bottom",
+            description="scroll to bottom",
+            show=False,
+            priority=True,
+        ),
     ]
 
     DEFAULT_THEME: str = SLO_DARK_THEME.name  # slo boots into the slo-dark (near-black/green) palette
@@ -458,7 +465,9 @@ class SloTUI(App):
 
         If the current theme is neither of the two, switches to slo-default.
         """
-        next_theme: str = SLO_DARK_THEME.name if self.theme == SLO_DEFAULT_THEME.name else SLO_DEFAULT_THEME.name
+        next_theme: str = (
+            SLO_DARK_THEME.name if self.theme == SLO_DEFAULT_THEME.name else SLO_DEFAULT_THEME.name
+        )
         self.theme = next_theme
         self._write_adapter_line(content=f"theme: {next_theme}", classes="tool-result")
 
@@ -505,9 +514,7 @@ class SloTUI(App):
             f"reasoning {self._session.active_reasoning_level}"
         )
         if self._session.session_name is not None:
-            session_identity: str = (
-                f"session {self._session.session_name} · {self._session.session_id}"
-            )
+            session_identity: str = f"session {self._session.session_name} · {self._session.session_id}"
         else:
             session_identity = f"session {self._session.session_id}"
         self.sub_title = f"{session_identity} · {subject}" if subject else session_identity
@@ -771,9 +778,7 @@ class SloTUI(App):
             return_code (int): Process return code.
             message (Optional[object]): Optional explicit exit message.
         """
-        resolved_message: object = (
-            message if message is not None else self._resume_command_hint()
-        )
+        resolved_message: object = message if message is not None else self._resume_command_hint()
         super().exit(
             result=result,
             return_code=return_code,
@@ -827,16 +832,19 @@ class SloTUI(App):
 
         if tree_format == TreeExportFormat.TEXTUAL.value:
             from src.agents.slo_agent.history.tree_builder import SessionTreeNode
+
             if isinstance(tree, SessionTreeNode):
                 viewer = SessionTreeViewer(tree=tree)
                 await self._transcript_scroll.mount(viewer)
         elif tree_format == TreeExportFormat.MARKDOWN.value:
             from src.agents.slo_agent.history.tree_builder import SessionTreeNode
+
             if isinstance(tree, SessionTreeNode):
                 md = TreeMarkdownExporter.export(tree=tree)
                 await self._transcript_scroll.mount(Static(md))
         elif tree_format == TreeExportFormat.HTML.value:
             from src.agents.slo_agent.history.tree_builder import SessionTreeNode
+
             if isinstance(tree, SessionTreeNode):
                 path = TreeHtmlExporter.export(
                     tree=tree,
@@ -867,17 +875,29 @@ class SloTUI(App):
         self._projector.reset_for_new_run()
 
     async def action_copy_visible_text(self) -> None:
-        """Copy the selected prompt text or the visible transcript.
+        """Copy the focused block text, selected prompt text, or visible transcript.
 
-        Selection takes precedence when the prompt editor has one.
-        Otherwise Slo copies the current transcript as plain text, one
-        rendered line per newline, which makes the visible conversation
-        extractable from the widget-based transcript surface.
+        Resolution priority:
+        1. Text from the focused transcript block via ``get_copyable_text()``.
+        2. Selected text from the ``PromptInput`` editor.
+        3. Full transcript as plain text via ``_adapter.lines``.
+
+        The first non-empty result wins. A no-op when all three are empty.
         """
-        text: str = self._selected_prompt_text() or self._copyable_transcript_text()
+        text: str = (
+            self._focused_block_text() or self._selected_prompt_text() or self._copyable_transcript_text()
+        )
         if not text:
             return
         self.copy_to_clipboard(text)
+
+    async def action_scroll_to_bottom(self) -> None:
+        """Scroll the transcript to the latest content (``ctrl+end``).
+
+        Delegates to ``_scroll_transcript_to_end``. Idempotent when the
+        transcript is already at the bottom.
+        """
+        self._scroll_transcript_to_end()
 
     async def action_toggle_expandable_details(self) -> None:
         """Toggle global expand-all mode for every transcript block.
@@ -1093,9 +1113,7 @@ class SloTUI(App):
             return
 
         if event.kind in ("sub_agent_completed", "sub_agent_failed"):
-            terminal_status: SubAgentStatus = (
-                "completed" if event.kind == "sub_agent_completed" else "failed"
-            )
+            terminal_status: SubAgentStatus = "completed" if event.kind == "sub_agent_completed" else "failed"
             if self._adapter is not None:
                 self._adapter.write(
                     content=f"⊇ {task_id}: {terminal_status}",
@@ -1179,6 +1197,7 @@ class SloTUI(App):
         from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
             OrchestratorSessionBootstrap,
         )
+
         OrchestratorSessionBootstrap.attach(session=session)
 
     @staticmethod
@@ -1568,6 +1587,27 @@ class SloTUI(App):
             self._transcript_write(line=content, style_class=classes)
             return
         self._adapter.write(content=content, classes=classes)
+
+    def _focused_block_text(self) -> str:
+        """Return the copyable text of the focused transcript block, or ``""``.
+
+        Inspects ``self.focused`` for a ``get_copyable_text`` method. Used
+        by ``action_copy_visible_text`` to implement the focused-block-first
+        resolution tier. A no-op (returns ``""``) for any focused widget that
+        does not implement the protocol (e.g. ``PromptInput``,
+        ``VerticalScroll``, ``Footer``).
+
+        Returns:
+            str: The transcript block's copyable text, or ``""`` when the
+                focused widget does not participate in the copy protocol.
+        """
+        focused = self.focused
+        if focused is None:
+            return ""
+        get_text = getattr(focused, "get_copyable_text", None)
+        if get_text is None:
+            return ""
+        return get_text()
 
     def _selected_prompt_text(self) -> str:
         """Return the selected prompt text, or ``""`` when nothing is selected."""

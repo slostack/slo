@@ -118,6 +118,48 @@ class TestToolExecutionBlockGlobalExpand:
 
         assert block._expanded is True
 
+
+class TestToolExecutionBlockCopyableText:
+    """``get_copyable_text`` protocol for clipboard copy (spec 56)."""
+
+    def test_includes_tool_name_input_and_result(self) -> None:
+        """``get_copyable_text`` includes the tool name, serialized input, and result."""
+        block = ToolExecutionBlock(tool_call_id="tc1", tool_name="bash")
+        block._tool_input = {"command": "ls"}
+        block._result_output = "file.txt"
+
+        text = block.get_copyable_text()
+
+        assert "bash" in text
+        assert "ls" in text
+        assert "file.txt" in text
+
+    def test_omits_result_line_when_result_absent(self) -> None:
+        """``get_copyable_text`` omits the result section when output is not yet populated."""
+        block = ToolExecutionBlock(tool_call_id="tc1", tool_name="read")
+
+        text = block.get_copyable_text()
+
+        assert "result:" not in text
+
+    def test_omits_input_section_when_args_empty(self) -> None:
+        """``get_copyable_text`` omits the input section when no args are present."""
+        block = ToolExecutionBlock(tool_call_id="tc1", tool_name="read")
+        block._result_output = "content"
+
+        text = block.get_copyable_text()
+
+        assert "input:" not in text
+        assert "content" in text
+
+    def test_tool_name_always_present(self) -> None:
+        """``get_copyable_text`` always includes the tool name as the first line."""
+        block = ToolExecutionBlock(tool_call_id="tc1", tool_name="grep")
+
+        text = block.get_copyable_text()
+
+        assert text.startswith("tool: grep")
+
     def test_set_expanded_noop_when_not_expandable(self) -> None:
         """A block with no hidden detail ignores set_expanded."""
         block = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")

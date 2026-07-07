@@ -124,3 +124,19 @@ class TestUserMessageBlockExpansion:
 
         block.set_expanded(expanded=True)
         assert block._expanded is True
+
+
+class TestUserMessageBlockCopyableText:
+    """``get_copyable_text`` protocol for clipboard copy (spec 56)."""
+
+    def test_returns_raw_prompt_text(self) -> None:
+        """``get_copyable_text`` returns the exact prompt text unmodified."""
+        block = UserMessageBlock(text="hello\nworld")
+
+        assert block.get_copyable_text() == "hello\nworld"
+
+    def test_preserves_leading_and_trailing_whitespace(self) -> None:
+        """``get_copyable_text`` does not strip or transform the raw text."""
+        block = UserMessageBlock(text="  hello  ")
+
+        assert block.get_copyable_text() == "  hello  "

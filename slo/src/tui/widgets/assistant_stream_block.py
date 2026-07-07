@@ -25,6 +25,8 @@ class AssistantStreamBlock(Vertical):
     once answer text arrives or the final completed answer is known.
     """
 
+    can_focus: bool = True
+
     DEFAULT_CSS = """
     AssistantStreamBlock .sub-agent-label {
         color: $text-muted;
@@ -170,6 +172,20 @@ class AssistantStreamBlock(Vertical):
             bool: True when the block should stop accepting deltas.
         """
         return self._finalized
+
+    def get_copyable_text(self) -> str:
+        """Return the visible assistant text for clipboard copy.
+
+        Combines reasoning summary and answer text with a blank line
+        separator when both are present. Called by
+        ``SloTUI.action_copy_visible_text`` when this block holds focus.
+
+        Returns:
+            str: Reasoning + answer text joined by a blank line, or just
+                whichever part is non-empty.
+        """
+        parts: list[str] = [p for p in (self._thinking_text, self._answer_text) if p]
+        return "\n\n".join(parts)
 
     def set_expanded(self, *, expanded: bool) -> None:
         """Set the expansion state from the global expand-all toggle.
@@ -386,7 +402,7 @@ class AssistantStreamBlock(Vertical):
             return existing + delta
         if existing[-1].isspace() or delta[0].isspace():
             return existing + delta
-        if delta[0] in ",.;:!?)]}%\"'”’" or existing[-1] in "([{$\"“‘":
+        if delta[0] in ",.;:!?)]}%\"'”’" or existing[-1] in '([{$"“‘':
             return existing + delta
         if delta[0] in "-/\\_`" or existing[-1] in "-/\\_`'’":
             return existing + delta

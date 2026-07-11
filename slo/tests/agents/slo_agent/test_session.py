@@ -92,6 +92,24 @@ class TestSloAgentSessionInvokeSummary:
         assert aborted is False
 
 
+class TestStreamInactivityTimeoutConfig:
+    """Configuration helpers for the main stream inactivity timeout."""
+
+    def test_stream_inactivity_timeout_uses_shipped_default_when_env_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Absent env var falls back to the shipped 2400-second default."""
+        import importlib
+        import src.agents.slo_agent.sessions.service as session_service_module
+
+        monkeypatch.delenv("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS", raising=False)
+        importlib.reload(session_service_module)
+
+        assert session_service_module._stream_inactivity_timeout_seconds() == 2400.0
+
+        importlib.reload(session_service_module)
+
+
 class TestSloAgentSessionPromptStreaming:
     """``SloAgentSession.invoke`` — async-generator surface."""
 

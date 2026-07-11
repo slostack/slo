@@ -21,3 +21,5 @@ When the user explicitly mentions a "workflow" or names one, load the workflow f
 | "what workflows are available" | `skills/design-and-analysis/workflows/SKILL.md` |
 
 **Critical:** `code-test-loop` (`skills/coding/code-test-loop/SKILL.md`) is NOT the code-test-review workflow. It is Step 1 (the coding cadence) inside that workflow. Loading it instead of the workflow silently skips Step 2 (Code Review) and Step 3 (Completion Check). Always read the `workflows/` file when a workflow is requested.
+
+**Dynamic workflows shorthand:** if the user says **"dynamic workflows"** or the misspelling **"dyanmic workflows"**, interpret that as an explicit request to use the orchestrator / headless workflow path — a Slo orchestrator that launches multiple Slo agents to perform each part of the workflow.

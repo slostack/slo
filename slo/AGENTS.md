@@ -333,6 +333,8 @@ Named workflows:
 
 **Anti-pattern:** user says "use the code-test-review workflow" → agent loads `skills/coding/code-test-loop/SKILL.md`. This is wrong. `code-test-loop` is the coding cadence that forms Step 1 *inside* the Code-Test-Review workflow. Loading it instead of the workflow silently skips Step 2 (Code Review) and Step 3 (Completion Check). Always load the workflow `.md` from the `workflows/` folder when a workflow is requested.
 
+**Dynamic workflows shorthand:** when the user says **"dynamic workflows"** or the common misspelling **"dyanmic workflows"**, treat that as an explicit request to use the orchestrator / headless workflow path: launch a Slo orchestrator that launches multiple Slo agents to execute the workflow's parts. In interactive sessions this counts as explicit consent to call `spawn_sub_agents`; otherwise preserve the normal explicit-request-only policy.
+
 ---
 
 ## 8. Knowledge Base

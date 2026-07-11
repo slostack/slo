@@ -932,7 +932,7 @@ The injected prompt gives the orchestrator:
 | Capability | What it tells the orchestrator |
 |------------|-------------------------------|
 | **Role identity** | You are an orchestrator. You decompose, delegate, and synthesize — you do not do the bulk work yourself. |
-| **When to spawn** | Only when the user explicitly asks for parallel/concurrent execution. Never on its own initiative. |
+| **When to spawn** | Only when the user explicitly asks for parallel/concurrent execution. Treat `dynamic workflows` / `dyanmic workflows` as that same explicit request. Never on its own initiative. |
 | **Task decomposition** | How to break a request into self-contained sub-tasks. Each sub-task prompt must be stand-alone: no pronouns, no references to "the previous step", no assumed context. |
 | **Chain mode** | For sequential chains, the `{previous}` placeholder substitutes the previous sub-agent's answer into the next prompt. |
 | **Retry policy** | If a sub-agent fails or is aborted, retry once with corrected parameters (e.g., relaxed timeout, narrower scope). |
@@ -972,7 +972,7 @@ The orchestrator understands its own role. Your prompt describes the *task*, not
 
 ### Invoking a named Slo workflow
 
-The most powerful application of the default prompt is driving named Slo workflows. The orchestrator knows the workflow protocol: read the workflow file, extract your context, construct self-contained per-phase prompts, dispatch phases in order, handle verdicts, synthesize.
+The most powerful application of the default prompt is driving named Slo workflows. The orchestrator knows the workflow protocol: read the workflow file, extract your context, construct self-contained per-phase prompts, dispatch phases in order, handle verdicts, synthesize. The phrases `dynamic workflows` and `dyanmic workflows` are treated as an explicit request to use this orchestrator path with multiple Slo agents.
 
 ```bash
 # Choose a human-readable session id
@@ -1025,25 +1025,25 @@ jq -r 'select(.kind == "run_completed") | .content' "$SESSION.jsonl"
 
 ### Avoiding the main-stream inactivity timeout
 
-The orchestrator's own LLM stream (not its sub-agents) is guarded by a 300-second inactivity timeout. If the orchestrator makes a long LLM call while reading workflow files, running git commands, or synthesizing results, this can fire.
+The orchestrator's own LLM stream (not its sub-agents) is guarded by a 2400-second inactivity timeout. If the orchestrator makes a long LLM call while reading workflow files, running git commands, or synthesizing results, this can still fire when operators override it downward.
 
 For complex workflows, raise it before starting the orchestrator:
 
 ```bash
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200  # 20 minutes
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400  # shipped default; 40 minutes
 ```
 
-The sub-agent child processes have their own separate guard, `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`, which defaults to 1200 seconds. The two are independent:
+The sub-agent child processes have their own separate guard, `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`, which defaults to 1800 seconds. The two are independent:
 
 | Variable | Default | Guards |
 |----------|---------|--------|
-| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `300` | The orchestrator's **own** LLM event stream. |
-| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1200` | Each **child sub-agent** process's stdout pipe. |
+| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `2400` | The orchestrator's **own** LLM event stream. |
+| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1800` | Each **child sub-agent** process's stdout pipe. |
 
 Typical production invocation for a long workflow:
 
 ```bash
-SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200 \
+SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400 \
 SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800 \
 SLO_SUBAGENT_MAX_CONCURRENCY=6 \
 python -m src.cli run \
@@ -1276,8 +1276,8 @@ A clean, complete list of every environment variable Slo reads in headless and o
 |----------|---------|-------------|
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `4` | Maximum concurrent sub-agent processes in a pool. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | Maximum tasks accepted per `spawn_sub_agents` call. |
-| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `300` | Seconds the orchestrator's **own** LLM stream may be silent before the run is treated as hung. Raise this for complex workflows that involve large context LLM calls (reading many files, producing long synthesis). |
-| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1200` | Seconds a **child sub-agent** process may produce no stdout before being killed. Alias: `SLO_SUBAGENT_INACTIVITY_TIMEOUT`. |
+| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `2400` | Seconds the orchestrator's **own** LLM stream may be silent before the run is treated as hung. This is the shipped default; do not lower it for complex workflows. |
+| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1800` | Seconds a **child sub-agent** process may produce no stdout before being killed. Alias: `SLO_SUBAGENT_INACTIVITY_TIMEOUT`. |
 
 ### Visualizer
 
@@ -1464,8 +1464,8 @@ In terminal 1:
 
 ```bash
 # Raise the main-stream inactivity timeout — the orchestrator reads workflow files
-# and synthesizes results, which can take >300s on large contexts.
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200
+# and synthesizes results, which can take far longer than a short timeout on large contexts.
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400
 
 python -m src.cli run \
   -p "$(cat workflow_task.txt)" \
@@ -1591,11 +1591,11 @@ echo ""
 
 # ── Inactivity timeouts ────────────────────────────────────────────────────────
 # The orchestrator's own LLM stream (reads workflow file, synthesizes results)
-# can be silent for several minutes on large contexts.  Raise above the 300s
+# can be silent for several minutes on large contexts. Keep the shipped 2400s
 # default so it is not killed before finishing.
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS="${SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS:-1200}"
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS="${SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS:-2400}"
 
-# Each sub-agent child already defaults to 1200s; raise further for slow models.
+# Each sub-agent child already defaults to 1800s; raise further for slow models.
 export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS="${SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS:-1800}"
 
 # ── Concurrency ───────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 ---
 name: workflows
-description: "Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, and the named workflows available for explicit use."
-when_to_use: Use only when the user explicitly asks about workflows, asks to use a named workflow, or wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading.
+description: "Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, the named workflows available for explicit use, and the `dynamic workflows` / `dyanmic workflows` shorthand for orchestrated multi-agent runs."
+when_to_use: Use only when the user explicitly asks about workflows, asks to use a named workflow, wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading, or says "dynamic workflows" / "dyanmic workflows" to request orchestrated multi-agent workflow execution.
 group: design-and-analysis
 kind: skill
 source_prompt: workflows/overview.md
@@ -12,8 +12,8 @@ source_prompt: workflows/overview.md
 ## Skill summary
 
 - **Name:** `workflows`
-- **Description:** Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, and the named workflows available for explicit use.
-- **When to use:** Use only when the user explicitly asks about workflows, asks to use a named workflow, or wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading.
+- **Description:** Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, the named workflows available for explicit use, and the `dynamic workflows` / `dyanmic workflows` shorthand for orchestrated multi-agent runs.
+- **When to use:** Use only when the user explicitly asks about workflows, asks to use a named workflow, wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading, or says `dynamic workflows` / `dyanmic workflows` to request orchestrated multi-agent workflow execution.
 - **Group:** `design-and-analysis`
 - **Kind:** `skill`
 - **Source prompt:** `workflows/overview.md`
@@ -23,6 +23,7 @@ source_prompt: workflows/overview.md
 - The user asks: "What workflows does Slo support?"
 - The user asks: "Use the formal workflow system for this task instead of improvised routing."
 - Another skill explicitly tells you to load a named workflow before continuing.
+- The user asks: "Use dynamic workflows for this task." Treat that as an orchestrator / multi-agent workflow request, not as normal single-agent routing.
 
 ## Available workflows and their sub-skills (read this first)
 
@@ -45,6 +46,8 @@ Load it only when:
 - the user explicitly asks about workflows,
 - the user explicitly asks to execute a named workflow,
 - or another skill explicitly routes the task into the formal workflow system.
+
+If the user says `dynamic workflows` or `dyanmic workflows`, treat that phrase as an explicit request to use the orchestrator / headless workflow path with multiple Slo agents.
 
 Do **not** load this skill as an always-on default for normal coding or analysis work.
 

@@ -58,6 +58,33 @@ class TestResolveSkillsDir:
         assert result.endswith(os.sep + "skills")
 
 
+class TestHeadlessTimeoutDefaults:
+    """Shipped timeout defaults exposed through ``config.cfg``."""
+
+    def test_stream_inactivity_timeout_defaults_to_2400_seconds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Main-stream inactivity timeout ships with the 2400-second default."""
+        monkeypatch.delenv("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS", raising=False)
+        import config.cfg as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.STREAM_INACTIVITY_TIMEOUT_SECONDS == 2400.0
+        assert cfg_module.cfg("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS") == "2400.0"
+
+    def test_subagent_inactivity_timeout_defaults_to_1800_seconds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Child-process inactivity timeout ships with the 1800-second default."""
+        monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS", raising=False)
+        monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT", raising=False)
+        import config.cfg as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.SUBAGENT_INACTIVITY_TIMEOUT_SECONDS == 1800.0
+        assert cfg_module.cfg("SUBAGENT_INACTIVITY_TIMEOUT_SECONDS") == "1800.0"
+
+
 class TestUserSkillsDirConstants:
     """Spec 29: USER_SKILLS_DIR and USER_WORKFLOWS_DIR config constants."""
 

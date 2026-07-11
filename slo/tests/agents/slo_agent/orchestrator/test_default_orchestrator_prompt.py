@@ -58,6 +58,17 @@ class TestDefaultOrchestratorPromptContent:
         assert "TUI" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
         assert "explicitly" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
 
+    def test_prompt_treats_dynamic_workflows_alias_as_orchestrator_request(self) -> None:
+        """Common dynamic-workflow phrasing is treated as an explicit orchestrator request."""
+        assert "dynamic workflows" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert "dyanmic workflows" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert "multiple slo agents" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT.lower()
+
+    def test_addendum_treats_dynamic_workflows_as_explicit_request(self) -> None:
+        """The TUI addendum recognizes the dynamic-workflows alias as explicit consent."""
+        assert "dynamic workflows" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+        assert "dyanmic workflows" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+
     def test_constant_exported_in_all(self) -> None:
         """``DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT`` is declared in ``__all__``."""
         assert "DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT" in spawn_tool_module.__all__

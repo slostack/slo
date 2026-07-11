@@ -2111,7 +2111,7 @@ SubAgentPool.dispatch(tasks)
         ├─ relays each AgentStreamEventDAO to the parent's event bus
         │   (tagged with sub_agent_id / task_id)
         ├─ enforces PER_TASK_OUTPUT_CAP (aborts excessively verbose children)
-        ├─ 1200-second inactivity timeout (no output for 20 min → terminate + fail, env SLO_SUBAGENT_INACTIVITY_TIMEOUT)
+        ├─ 1800-second inactivity timeout (no output for 30 min → terminate + fail, env SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS, alias SLO_SUBAGENT_INACTIVITY_TIMEOUT)
         └─ terminal result: SubAgentResultDAO{status, answer, exit_code}
 ```
 
@@ -2162,7 +2162,7 @@ The sub-agent work also delivered several resilience fixes:
   mid-tool), the history projector synthesises a placeholder
   `ToolMessage` so the next resume doesn't 400 the provider.
 - **Child inactivity timeout** — if a child process produces no output
-  for 1200 seconds (20 minutes, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT`), `SubAgentProcess` terminates it and marks it failed.
+  for 1800 seconds (30 minutes, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`; alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`), `SubAgentProcess` terminates it and marks it failed.
 
 ---
 
@@ -2518,14 +2518,14 @@ Using `sys.executable` rather than a bare `slo` ensures the child always runs un
 while True:
     raw = await asyncio.wait_for(
         stream.readline(),
-        timeout=CHILD_INACTIVITY_TIMEOUT_SECONDS,   # 1200 s default (env SLO_SUBAGENT_INACTIVITY_TIMEOUT)
+        timeout=CHILD_INACTIVITY_TIMEOUT_SECONDS,   # 1800 s default (env SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS; alias SLO_SUBAGENT_INACTIVITY_TIMEOUT)
     )
     if not raw:   # EOF = child exited
         return
     await self._handle_line(raw=raw)
 ```
 
-The `_STDOUT_STREAM_LIMIT = 16 * 1024 * 1024` constant is passed as `limit=` to `asyncio.create_subprocess_exec`. This raises asyncio's default 64 KB per-line buffer to 16 MB, preventing `ValueError: Separator is found, but chunk is longer than limit` on large `run_completed` JSON lines. The inactivity watchdog (default 1200 s, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) treats a hung `readline()` as a failure rather than blocking the parent forever.
+The `_STDOUT_STREAM_LIMIT = 16 * 1024 * 1024` constant is passed as `limit=` to `asyncio.create_subprocess_exec`. This raises asyncio's default 64 KB per-line buffer to 16 MB, preventing `ValueError: Separator is found, but chunk is longer than limit` on large `run_completed` JSON lines. The inactivity watchdog (default 1800 s, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`; alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) treats a hung `readline()` as a failure rather than blocking the parent forever.
 
 **Per-line handler (`_handle_line`):**
 
@@ -2647,8 +2647,8 @@ User: "analyse in parallel"
 | Children run `slo run --json` (OS process, not a library import) | Process isolation: a crashed child cannot corrupt the parent's event loop or memory |
 | Headless children never get `_attach_pool_to_session` | Structural grandchildren prevention — the path is never taken; no explicit guard needed |
 | `ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM` is the only gate | The tool is always in the bundle; the LLM-layer constraint is what prevents autonomous use |
-| `PER_TASK_OUTPUT_CAP = 50 KB` | Prevents a verbose child from flooding the relay; terminal events always forwarded regardless |
-| `CHILD_INACTIVITY_TIMEOUT_SECONDS = 1200 s` (env `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) | A hung `readline()` surfaces as a clean `failed` result; 20-minute default accommodates large-context LLM calls with slow TTFT |
+| `PER_TASK_OUTPUT_CAP = 512 KB` | Prevents a verbose child from flooding the relay; terminal events always forwarded regardless |
+| `CHILD_INACTIVITY_TIMEOUT_SECONDS = 1800 s` (env `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`, alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) | A hung `readline()` surfaces as a clean `failed` result; 30-minute default accommodates large-context LLM calls with slow TTFT |
 | `_STDOUT_STREAM_LIMIT = 16 MB` | Prevents `ValueError` on large `run_completed` JSON lines; asyncio's default is 64 KB |
 | `args_schema=SpawnSubAgentsSchemaDAO` | Fixes LangChain bug where string-encoded args cause `TypeError` inside `StructuredTool._arun` |
 | `asyncio.gather(..., return_exceptions=True)` in `cancel_all` | One child's cancel failure never blocks the others |

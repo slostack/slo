@@ -92,7 +92,7 @@ Context determines the spawn policy:
 
 Headless mode (slo run --orchestrator): The user supplies a high-level task and expects you to handle it end-to-end. Decompose and spawn autonomously. Do not ask permission. Plan the decomposition, dispatch the sub-tasks, and synthesize the result.
 
-TUI mode (interactive session): The user drives turn by turn. Spawn sub-agents only when the user explicitly requests parallel or concurrent execution — for example by using words like "in parallel", "simultaneously", "spawn sub-agents", "delegate to workers", "at the same time", or "concurrently". For all other requests, act as a capable solo coding agent using the standard tools. The spawn_sub_agents tool is available but must not be called without an explicit user request.
+TUI mode (interactive session): The user drives turn by turn. Spawn sub-agents only when the user explicitly requests parallel or concurrent execution — for example by using words like "in parallel", "simultaneously", "spawn sub-agents", "delegate to workers", "at the same time", or "concurrently". Treat the phrases "dynamic workflows" and the common misspelling "dyanmic workflows" as that same explicit request: the user wants you to launch a Slo orchestrator that launches multiple Slo agents to perform each part of the workflow. For all other requests, act as a capable solo coding agent using the standard tools. The spawn_sub_agents tool is available but must not be called without an explicit user request.
 
 If you are unsure which context you are in, default to the TUI policy (spawn only on explicit request).
 
@@ -151,6 +151,8 @@ After all sub-tasks finish (or after you have exhausted retries for failed ones)
 When the user's request names a Slo workflow (for example, "use the specification-development
 workflow" or "run the code-test-review workflow"), treat the workflow file as the authoritative
 decomposition plan rather than deriving the phases yourself.
+
+Interpret "dynamic workflows" and the common misspelling "dyanmic workflows" as an explicit request to use this orchestrator workflow path: launch a Slo orchestrator that launches multiple Slo agents to execute the workflow's parts instead of handling the task as one solo agent.
 
 Step 1 — Read the workflow definition.
   Use the read tool to load the workflow file from:
@@ -227,17 +229,17 @@ The following section applies **only when you are running as a headless orchestr
 
 ### Critical: raise timeout environment variables before dispatching phases
 
-The orchestrator's own LLM stream is guarded by a 300-second inactivity timeout (`SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS`). This default is too short for workflows that involve reading large workflow files, synthesizing multi-phase results, or waiting for slow models. **You must raise it at launch time using environment variables before the orchestrator process starts.** Do this by exporting the variables in the shell that invokes `slo run`, or by emitting a bash tool call that re-exports them before the first `spawn_sub_agents` call:
+The orchestrator's own LLM stream is guarded by a 2400-second inactivity timeout (`SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS`). Keep it at least that high for real workflow runs; lower values commonly kill the orchestrator mid-turn while it is reading large workflow files, synthesizing multi-phase results, or waiting for slow models. **You must set or preserve these environment variables before the orchestrator process starts.** Do this by exporting the variables in the shell that invokes `slo run`, or by emitting a bash tool call that re-exports them before the first `spawn_sub_agents` call:
 
 ```bash
 # Minimum recommended values for a headless workflow run
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200   # raise from 300s default
-export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800  # raise from 1200s default
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400   # shipped default for orchestrator runs
+export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800  # shipped default for child agents
 export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200         # bash tool ceiling per command
 export SLO_SUBAGENT_MAX_CONCURRENCY=6                # concurrent child cap
 ```
 
-If `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` is not set or remains at 300, the orchestrator will be killed mid-turn on any large LLM call. This is the most common cause of unexpected orchestrator exits in headless mode.
+If `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` is forced significantly below 2400, the orchestrator is likely to be killed mid-turn on any large LLM call. This is the most common cause of unexpected orchestrator exits in headless mode.
 
 ### Serial phase dispatch (Pipeline workflows)
 
@@ -325,8 +327,8 @@ When running headlessly, you are the sole oversight layer. After dispatching eac
 
 | Variable | Recommended | Default | Purpose |
 |---|---|---|---|
-| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `1200` | `300` | Orchestrator's own LLM stream inactivity guard. **Raise this first.** |
-| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1800` | `1200` | Child sub-agent stdout inactivity guard. |
+| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `2400` | `2400` | Orchestrator's own LLM stream inactivity guard. Keep it at or above the shipped default. |
+| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1800` | `1800` | Child sub-agent stdout inactivity guard. |
 | `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1200` | `600` | Per-command bash tool ceiling inside sub-agents. |
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `4` | Maximum simultaneous child processes. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | `8` | Maximum tasks per `spawn_sub_agents` call. |
@@ -347,7 +349,9 @@ ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM: str = (
     "child processes. Call it **only** when the user explicitly requests "
     "parallel or concurrent execution \u2014 for example by using words like "
     "'in parallel', 'simultaneously', 'spawn sub-agents', 'delegate to workers', "
-    "'at the same time', or 'concurrently'. "
+    "'at the same time', 'concurrently', 'dynamic workflows', or the misspelling "
+    "'dyanmic workflows'. Those dynamic-workflows phrases mean the user wants "
+    "a Slo orchestrator to launch multiple Slo agents for the workflow's parts. "
     "Do NOT call `spawn_sub_agents` on your own initiative to decompose a complex "
     "task, even if parallelism would be beneficial. A single-agent ReAct loop is "
     "always the default. The user must ask."

@@ -1,13 +1,17 @@
 ---
 name: headless-orchestration
-description: Launch a named Slo workflow in headless mode — sets the required timeout
-  env vars, selects models per phase, dispatches phases serially or in parallel, and
-  monitors child agents until the orchestrator reaches a terminal state.
+description: Launch a named Slo workflow in headless mode — the `dynamic workflows`
+  / `dyanmic workflows` shorthand means use this orchestrator path, which sets the
+  required timeout env vars, selects models per phase, dispatches phases serially
+  or in parallel, and monitors child agents until the orchestrator reaches a
+  terminal state.
 when_to_use: Use when the user explicitly asks to run a workflow headlessly, launch
-  a workflow in the background, or execute a workflow using the headless runner (slo
-  run --orchestrator). Also load this skill when a complex multi-phase workflow (specification
-  development, code-test-review, etc.) is requested and the user wants it to run
-  unattended without a TUI session.
+  a workflow in the background, execute a workflow using the headless runner (slo
+  run --orchestrator), or says "dynamic workflows" / "dyanmic workflows" to request
+  an orchestrator that launches multiple Slo agents for the workflow's parts. Also
+  load this skill when a complex multi-phase workflow (specification development,
+  code-test-review, etc.) is requested and the user wants it to run unattended
+  without a TUI session.
 group: design-and-analysis
 kind: workflow
 ---
@@ -17,8 +21,8 @@ kind: workflow
 ## Skill summary
 
 - **Name:** `headless-orchestration`
-- **Description:** Launch a named Slo workflow in headless mode — sets the required timeout env vars, selects models per phase, dispatches phases serially or in parallel, and monitors child agents until the orchestrator reaches a terminal state.
-- **When to use:** Use when the user explicitly asks to run a workflow headlessly, launch a workflow in the background, or execute a workflow using the headless runner (`slo run --orchestrator`). Also load this skill when a complex multi-phase workflow (specification-development, code-test-review, etc.) is requested and the user wants it to run unattended.
+- **Description:** Launch a named Slo workflow in headless mode — the `dynamic workflows` / `dyanmic workflows` shorthand means use this orchestrator path, which sets the required timeout env vars, selects models per phase, dispatches phases serially or in parallel, and monitors child agents until the orchestrator reaches a terminal state.
+- **When to use:** Use when the user explicitly asks to run a workflow headlessly, launch a workflow in the background, execute a workflow using the headless runner (`slo run --orchestrator`), or says `dynamic workflows` / `dyanmic workflows` to request an orchestrator that launches multiple Slo agents for the workflow's parts. Also load this skill when a complex multi-phase workflow (specification-development, code-test-review, etc.) is requested and the user wants it to run unattended.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
 
@@ -27,14 +31,15 @@ kind: workflow
 - The user asks: "Run the code-test-review workflow for this feature spec in headless mode."
 - The user asks: "Launch the specification-development workflow in the background."
 - The user asks: "Run this workflow headlessly — I'll monitor it from the visualizer."
+- The user asks: "Use dynamic workflows for this task." Treat that as a request to launch the orchestrator / headless workflow path with multiple Slo agents.
 
----
+## Guidance
 
 ## Pre-conditions
 
 Before launching a headless workflow, confirm:
 
-1. **A workflow name is identified.** The user has named a Slo workflow (e.g., `code-test-review`, `specification-development`) or has provided a task that maps to one. If unspecified, load `skills/design-and-analysis/workflows/SKILL.md` to list options and ask.
+1. **A workflow name is identified.** The user has named a Slo workflow (e.g., `code-test-review`, `specification-development`) or has provided a task that maps to one. The phrases `dynamic workflows` and `dyanmic workflows` count as an explicit request for this headless-orchestrator path. If the actual workflow name is still unspecified, load `skills/design-and-analysis/workflows/SKILL.md` to list options and ask.
 2. **A project working directory is known.** The agent needs `--cwd` set to the repository root. Default to `$PWD` only if it is clearly a project root.
 3. **Credentials are in place.** At least one of `ANTHROPIC_API_KEY`, `KIMI_FOR_CODING_API_KEY`, or `MOONSHOT_API_KEY` must be set.
 4. **A session id strategy is chosen.** Either generate a human-readable slug (`<workflow>-<date>`) or use `--session-id` with a user-provided value.
@@ -43,15 +48,15 @@ Before launching a headless workflow, confirm:
 
 ## Step 1 — Set timeout and concurrency environment variables
 
-**Always export these before launching the orchestrator.** The default 300-second stream inactivity timeout will kill the orchestrator during large LLM calls (reading workflow files, synthesizing multi-phase results). Raising it is mandatory.
+**Always export these before launching the orchestrator.** The shipped 2400-second stream inactivity timeout is the minimum safe default for workflow orchestration; lowering it commonly kills the orchestrator during large LLM calls (reading workflow files, synthesizing multi-phase results).
 
 ```bash
 # Orchestrator's own LLM stream — how long it may be silent before the run is
-# treated as hung.  Default is 300s; 1200s covers most workflow synthesis passes.
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS="${SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS:-1200}"
+# treated as hung. Default is 2400s and should generally stay there or higher.
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS="${SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS:-2400}"
 
 # Each child sub-agent process — how long a child may produce no stdout before
-# being killed.  Default is 1200s; 1800s gives long-running coding agents headroom.
+# being killed. Default is 1800s; raise further for especially slow models.
 export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS="${SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS:-1800}"
 
 # Bash tool ceiling per command inside a sub-agent.  0 disables.
@@ -155,7 +160,7 @@ The prompt is purely context. The `DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT` injected 
 ### Standard launch (blocking, output captured to file)
 
 ```bash
-SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200 \
+SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400 \
 SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800 \
 SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200 \
 SLO_SUBAGENT_MAX_CONCURRENCY=6 \
@@ -174,7 +179,7 @@ STATUS=$?
 ### Background launch (non-blocking, monitor separately)
 
 ```bash
-SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200 \
+SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400 \
 SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800 \
 SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200 \
 SLO_SUBAGENT_MAX_CONCURRENCY=6 \
@@ -371,8 +376,8 @@ All variables relevant to a headless workflow launch:
 
 | Variable | Recommended value | Default | Guards |
 |---|---|---|---|
-| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `1200` | `300` | Orchestrator's own LLM stream. **Critical — raise above 300.** |
-| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1800` | `1200` | Each child sub-agent's stdout pipe. |
+| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `2400` | `2400` | Orchestrator's own LLM stream. Keep it at or above the shipped default. |
+| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1800` | `1800` | Each child sub-agent's stdout pipe. |
 | `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1200` | `600` | Bash tool per-command ceiling inside sub-agents. |
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `4` | Maximum simultaneous child processes. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | `8` | Maximum tasks per `spawn_sub_agents` call. |
@@ -403,7 +408,7 @@ SLO_SRC="${SLO_SRC:-$HOME/Code/slo/slo}"   # path to slo source root
 SESSION="${WORKFLOW_NAME}-$(date +%Y%m%d-%H%M%S)"
 
 # ── Timeout and concurrency env vars ─────────────────────────────────────────
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400
 export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800
 export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200
 export SLO_SUBAGENT_MAX_CONCURRENCY=6
@@ -474,7 +479,7 @@ When to use: user wants a Slo workflow run headlessly / unattended
 
 Pre-conditions: workflow name known, project cwd known, credentials set
 
-Step 1: Export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=1200 (critical)
+Step 1: Export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400 (critical)
         Export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800
         Export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200
 

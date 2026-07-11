@@ -20,6 +20,8 @@ __all__ = ["ToolExecutionBlock"]
 class ToolExecutionBlock(Vertical):
     """Render one live tool execution with expandable details."""
 
+    can_focus: bool = True
+
     DEFAULT_CSS = """
     ToolExecutionBlock {
         width: 100%;
@@ -144,6 +146,23 @@ class ToolExecutionBlock(Vertical):
             bool: True when expanded mode can reveal more information.
         """
         return self._has_expandable_arguments() or self._has_expandable_output()
+
+    def get_copyable_text(self) -> str:
+        """Return a plain-text summary of the tool call for clipboard copy.
+
+        Formats the tool name, serialized input, and result output into a
+        compact multi-line block. Called by
+        ``SloTUI.action_copy_visible_text`` when this block holds focus.
+
+        Returns:
+            str: Tool name, input args, and result joined by newlines.
+        """
+        lines: list[str] = [f"tool: {self._tool_name}"]
+        if self._tool_input:
+            lines.append(f"input: {json.dumps(obj=self._tool_input, indent=2)}")
+        if self._result_output is not None:
+            lines.append(f"result: {self._result_output}")
+        return "\n".join(lines)
 
     def set_active(self, *, active: bool) -> None:
         """Toggle the active block styling.

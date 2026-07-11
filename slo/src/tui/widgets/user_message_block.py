@@ -25,6 +25,8 @@ class UserMessageBlock(Vertical):
     transcript is never reparsed as one document.
     """
 
+    can_focus: bool = True
+
     DEFAULT_CSS = """
     UserMessageBlock {
         width: 100%;
@@ -125,6 +127,17 @@ class UserMessageBlock(Vertical):
         elif has_more:
             first_line = f"{first_line} …"
         return Padding(first_line, pad=(0, 1, 0, 1))
+
+    def get_copyable_text(self) -> str:
+        """Return the raw user prompt text for clipboard copy.
+
+        Called by ``SloTUI.action_copy_visible_text`` when this block holds
+        focus and the user presses the copy chord.
+
+        Returns:
+            str: The full user prompt text, unmodified.
+        """
+        return self._text
 
     @staticmethod
     def _renderable(*, text: str):

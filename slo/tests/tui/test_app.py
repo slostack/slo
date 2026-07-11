@@ -1879,3 +1879,143 @@ class TestSloTUIGlobalExpandToggle:
 
             new_tool = await app.mount_tool_execution_block(tool_call_id="tc2", tool_name="bash")
             assert new_tool._expanded is True
+
+
+class TestScrollToBottom:
+    """``action_scroll_to_bottom`` and ``meta+down`` gesture (spec 56)."""
+
+    @pytest.mark.asyncio
+    async def test_action_delegates_to_scroll_transcript_to_end(self) -> None:
+        """``action_scroll_to_bottom`` delegates to ``_scroll_transcript_to_end``."""
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            called: list[bool] = []
+            app._scroll_transcript_to_end = lambda: called.append(True)  # type: ignore[method-assign]
+
+            await app.action_scroll_to_bottom()
+
+            assert called == [True]
+
+    @pytest.mark.asyncio
+    async def test_action_is_noop_when_transcript_scroll_absent(self) -> None:
+        """``action_scroll_to_bottom`` does not raise when the scroll container is absent."""
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._transcript_scroll = None
+
+            await app.action_scroll_to_bottom()  # must not raise
+
+
+class TestFocusedBlockText:
+    """``_focused_block_text`` helper (spec 56)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_nothing_focused(self) -> None:
+        """``_focused_block_text`` returns empty string when ``self.focused`` is None."""
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.set_focus(None)
+            await pilot.pause()
+
+            assert app._focused_block_text() == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_widget_without_protocol(self) -> None:
+        """``_focused_block_text`` returns empty string for ``PromptInput`` (no ``get_copyable_text``)."""
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._input is not None
+            app.set_focus(app._input)
+            await pilot.pause()
+
+            assert app._focused_block_text() == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_block_text_when_transcript_block_focused(self) -> None:
+        """``_focused_block_text`` returns ``get_copyable_text()`` when a block holds focus."""
+        from src.tui.widgets.user_message_block import UserMessageBlock
+
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            block: UserMessageBlock = await app.mount_user_message_block(text="hello world")
+            app.set_focus(block)
+            await pilot.pause()
+
+            assert app._focused_block_text() == "hello world"
+
+
+class TestCopyVisibleTextResolutionChain:
+    """``action_copy_visible_text`` three-tier resolution (spec 56)."""
+
+    @pytest.mark.asyncio
+    async def test_copies_focused_block_text_first(self) -> None:
+        """Focused transcript block text wins over prompt selection and full transcript."""
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+        clipboard: list[str] = []
+        app.copy_to_clipboard = lambda text: clipboard.append(text)  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            block: AssistantStreamBlock = await app.mount_assistant_block()
+            block._answer_text = "assistant answer"
+            app.set_focus(block)
+            await pilot.pause()
+
+            await app.action_copy_visible_text()
+
+            assert clipboard and clipboard[-1] == "assistant answer"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_transcript_when_no_block_focused(self) -> None:
+        """Full transcript plain text is used when no transcript block holds focus."""
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+        clipboard: list[str] = []
+        app.copy_to_clipboard = lambda text: clipboard.append(text)  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._input is not None
+            app.set_focus(app._input)
+            app._write_adapter_line(content="some transcript line", classes="tool-result")
+            await pilot.pause()
+
+            await app.action_copy_visible_text()
+
+            assert clipboard and "some transcript line" in clipboard[-1]
+
+    @pytest.mark.asyncio
+    async def test_is_noop_when_all_tiers_empty(self) -> None:
+        """``action_copy_visible_text`` does not call ``copy_to_clipboard`` when everything is empty."""
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
+        app: SloTUI = SloTUI(session=session)
+        clipboard: list[str] = []
+        app.copy_to_clipboard = lambda text: clipboard.append(text)  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.set_focus(None)
+            # Clear adapter lines so the transcript fallback has nothing to offer.
+            if app._adapter is not None:
+                app._adapter.lines.clear()
+            await pilot.pause()
+
+            await app.action_copy_visible_text()
+
+            assert clipboard == []

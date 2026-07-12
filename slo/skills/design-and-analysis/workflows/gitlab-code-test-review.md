@@ -67,7 +67,7 @@ Before the pre-step begins, confirm:
 - `glab` is installed and authenticated (`glab version && glab auth status`).
 - A dedicated feature branch is checked out. Never implement directly on `main`.
   - Branch naming: `<ISSUE-ID>-<short-kebab-description>` when an issue ID is available (e.g. `19-orders-backend-scaffold`), or `feature-<short-kebab-description>` when there is no issue.
-- `AGENTS.md` and `RESEARCH.md` have been read (or are already in context).
+- `AGENTS.md` and `docs/RESEARCH.md` have been read (or are already in context).
 - The relevant KB folders have been consulted for the feature's surface area.
 - All applicable `build-*.md` files for the layers this task touches have been read.
 - The always-on rules are loaded: named arguments, type hints, declarative methods, method docstrings, test verification policy.
@@ -454,7 +454,7 @@ The following rules remain in effect throughout this entire workflow:
 Trigger: "implement issue #N" / "pick up the next ticket" / "work on [issue]"
 
 Pre-conditions: glab auth OK, feature branch checked out,
-                AGENTS.md/RESEARCH.md loaded, build-*.md for task layers loaded
+                AGENTS.md and docs/RESEARCH.md loaded, build-*.md for task layers loaded
 
 Pre-Step: Find assigned Todo issue → move to In-Progress
 

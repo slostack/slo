@@ -342,6 +342,23 @@ class ScheduleStore:
         cls._write_state(schedule_id=schedule_id, state=state)
 
     @classmethod
+    def update_definition(
+        cls, *, schedule_id: str, definition: ScheduleDefinitionDAO
+    ) -> ScheduleDefinitionDAO:
+        """Rewrite ``schedule.md`` for one existing schedule.
+
+        Args:
+            schedule_id (str): Persisted schedule identifier.
+            definition (ScheduleDefinitionDAO): Replacement definition payload.
+
+        Returns:
+            ScheduleDefinitionDAO: The stored replacement definition.
+        """
+        updated: ScheduleDefinitionDAO = definition.model_copy(update={"schedule_id": schedule_id})
+        cls._write_definition(definition=updated)
+        return updated
+
+    @classmethod
     def set_enabled(cls, *, schedule_id: str, enabled: bool) -> ScheduleDefinitionDAO:
         """Flip the ``enabled`` flag by rewriting only ``schedule.md``.
 

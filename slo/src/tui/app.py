@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Optional, cast
 
 from rich.markdown import Markdown
@@ -16,6 +17,9 @@ from textual.widgets import Footer, Header, Static, TextArea
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
 from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
+from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
+from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
+from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -55,6 +59,10 @@ The cooperative abort flag is only observed between agent graph stream items,
 so a run blocked inside a single hung tool call would otherwise never abort.
 After this grace, the TUI cancels the asyncio task outright, raising
 ``CancelledError`` into the blocked ``await`` and tearing the run down."""
+
+_SESSION_LEASE_TTL_SECONDS: float = 30.0
+_SESSION_LEASE_HEARTBEAT_SECONDS: float = 10.0
+_SESSION_INBOX_POLL_SECONDS: float = 1.0
 
 
 class PromptInput(TextArea):
@@ -286,11 +294,21 @@ class SloTUI(App):
     initialises ``_registered_themes``.
     """
 
-    def __init__(self, *, session: SloAgentSession) -> None:
+    def __init__(
+        self,
+        *,
+        session: SloAgentSession,
+        inbox_store: Optional[SessionInboxStore] = None,
+        lease_store: Optional[SessionOwnershipLeaseStore] = None,
+    ) -> None:
         """Compose the TUI around a pre-built session.
 
         Args:
             session (SloAgentSession): The in-process session to drive.
+            inbox_store (Optional[SessionInboxStore]): Optional injected inbox
+                store for tests. ``None`` uses the session history root.
+            lease_store (Optional[SessionOwnershipLeaseStore]): Optional injected
+                lease store for tests. ``None`` uses the session history root.
         """
         super().__init__()
         self.register_theme(SLO_DEFAULT_THEME)
@@ -326,6 +344,11 @@ class SloTUI(App):
         self._setting_prompt_from_history: bool = False
         # Fleet panel reference for sub-agent status display.
         self._fleet_panel: Optional[SubAgentFleetPanel] = None
+        self._inbox_store: Optional[SessionInboxStore] = inbox_store
+        self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
+        self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
+        self._lease_timer = None
+        self._inbox_timer = None
 
     def compose(self) -> ComposeResult:
         """Build the widget tree.
@@ -366,6 +389,7 @@ class SloTUI(App):
         await self._hydrate_transcript_from_history()
         await self._maybe_render_startup_notice()
         self._session.subscribe(handler=self._render_event)
+        await self._initialize_session_delivery()
         self._refresh_title_bar()
         self._refresh_usage_status_bar()
         if self._input is not None:
@@ -530,6 +554,141 @@ class SloTUI(App):
     async def on_unmount(self) -> None:
         """Detach the renderer. No subprocess to tear down."""
         self._session.unsubscribe(handler=self._render_event)
+        await self._release_session_lease()
+
+    async def _initialize_session_delivery(self) -> None:
+        """Start lease heartbeats and inbox polling for history-backed sessions."""
+        if not self._session_supports_inbox_delivery():
+            return
+        history_root: Path = cast(Path, self._session.history_root)
+        if self._lease_store is None:
+            self._lease_store = SessionOwnershipLeaseStore(history_root=history_root)
+        if self._inbox_store is None:
+            self._inbox_store = SessionInboxStore(history_root=history_root)
+        await self._acquire_session_lease()
+        await self._inbox_store.ensure_session_inbox(session_id=self._session.session_id)
+        self._lease_timer = self.set_interval(
+            _SESSION_LEASE_HEARTBEAT_SECONDS,
+            self._renew_session_lease,
+        )
+        self._inbox_timer = self.set_interval(
+            _SESSION_INBOX_POLL_SECONDS,
+            self._poll_session_inbox,
+        )
+
+    def _session_supports_inbox_delivery(self) -> bool:
+        """Return whether this TUI session should expose inbox delivery.
+
+        Returns:
+            bool: True when history is enabled and rooted on disk.
+        """
+        if self._session.history_enabled is not True:
+            return False
+        return isinstance(self._session.history_root, Path)
+
+    async def _acquire_session_lease(self) -> None:
+        """Acquire the active-session lease for the mounted TUI session."""
+        if self._lease_store is None:
+            return
+        await self._lease_store.acquire(
+            session_id=self._session.session_id,
+            owner_id=self._session_owner_id,
+            ttl_seconds=_SESSION_LEASE_TTL_SECONDS,
+        )
+
+    async def _renew_session_lease(self) -> None:
+        """Refresh the mounted TUI session lease."""
+        if self._lease_store is None:
+            return
+        await self._lease_store.renew(
+            session_id=self._session.session_id,
+            owner_id=self._session_owner_id,
+            ttl_seconds=_SESSION_LEASE_TTL_SECONDS,
+        )
+
+    async def _release_session_lease(self) -> None:
+        """Release the mounted TUI session lease on app shutdown."""
+        if self._lease_store is None:
+            return
+        await self._lease_store.release(
+            session_id=self._session.session_id,
+            owner_id=self._session_owner_id,
+        )
+
+    async def _poll_session_inbox(self) -> None:
+        """Claim and process at most one inbox item when the session is idle."""
+        if self._inbox_store is None:
+            return
+        if self._in_flight_task is not None:
+            return
+        message: Optional[SessionInboxMessageDAO] = await self._inbox_store.claim_next(
+            session_id=self._session.session_id,
+        )
+        if message is None:
+            return
+        await self._handle_inbox_message(message=message)
+        await self._inbox_store.ack(
+            session_id=self._session.session_id,
+            message_id=message.message_id,
+        )
+
+    async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> None:
+        """Route one claimed inbox item according to its delivery mode.
+
+        Args:
+            message (SessionInboxMessageDAO): Claimed inbox item.
+        """
+        if message.delivery_mode == "ui_notice":
+            self._write_adapter_line(
+                content=self._format_inbox_notice(message=message),
+                classes="tool-result",
+            )
+            return
+        if message.delivery_mode == "transcript_note":
+            self._write_adapter_line(
+                content=self._format_inbox_note(message=message),
+                classes="tool-result",
+            )
+            return
+        await self._start_inbox_chat_turn(message=message)
+
+    @staticmethod
+    def _format_inbox_notice(*, message: SessionInboxMessageDAO) -> str:
+        """Return the transcript line for a UI notice inbox item.
+
+        Args:
+            message (SessionInboxMessageDAO): Inbox item under rendering.
+
+        Returns:
+            str: Rendered notice text.
+        """
+        title: str = message.title or message.kind.replace("_", " ")
+        return f"[scheduled notice] {title}: {message.text}"
+
+    @staticmethod
+    def _format_inbox_note(*, message: SessionInboxMessageDAO) -> str:
+        """Return the transcript line for a transcript-note inbox item.
+
+        Args:
+            message (SessionInboxMessageDAO): Inbox item under rendering.
+
+        Returns:
+            str: Rendered note text.
+        """
+        title: str = message.title or message.kind.replace("_", " ")
+        return f"[scheduled update] {title}: {message.text}"
+
+    async def _start_inbox_chat_turn(self, *, message: SessionInboxMessageDAO) -> None:
+        """Submit one claimed inbox item as a real chat turn.
+
+        Args:
+            message (SessionInboxMessageDAO): Claimed inbox item.
+        """
+        self._write_adapter_line(
+            content=self._format_inbox_note(message=message),
+            classes="tool-result",
+        )
+        self._in_flight_task = asyncio.create_task(self._run_prompt(text=message.text))
 
     # ---- Input handling ---------------------------------------------------
 

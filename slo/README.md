@@ -87,6 +87,14 @@ specifications under `specifications/` and the Knowledge Base under
 > hosting at `get-slo.sh`), `slo update`, uninstalling, and troubleshooting.
 > The narrative below predates the current pipx-based installer and is kept as
 > background reading.
+>
+> **Need architecture and runtime docs?** See
+> **[`docs/RESEARCH.md`](docs/RESEARCH.md)** for the codebase index,
+> **[`docs/SLO_HEADLESS_README.md`](docs/SLO_HEADLESS_README.md)** for headless
+> execution and orchestrator usage, and
+> **[`docs/SLO_SCHEDULER_README.md`](docs/SLO_SCHEDULER_README.md)** for the
+> scheduler CLI, recurring runs, TUI/session delivery, and control-flow
+> walkthroughs.
 
 Before any of the agent code matters, Slo has to exist on your machine in
 a form Python can run. There are two supported installation paths: the
@@ -1313,7 +1321,7 @@ built at agent-construction time by `SystemPromptBuilder` (lives in
 - The list of tools with their docstrings.
 - The skills index from `~/.slo/skills/INDEX.md`.
 - Project-context blobs (the contents of `CLAUDE.md`, `AGENTS.md`,
-  `RESEARCH.md` if present in the workdir).
+  and `docs/RESEARCH.md` when present in the repo lineage).
 - Behavioural guidelines (when to abort, when to ask, how to use
   Markdown).
 
@@ -1423,6 +1431,17 @@ move the body into a sync `_invoke_sync(...)`, and call it via
 Slo ships with 100+ vendored skills under `skills/`. Starting with
 feature-29, users can add their **own** skills and workflows without
 touching the vendored tree.
+
+One of the vendored TUI skills is
+`skills/tui/tui-scheduled-workflows/SKILL.md`, which tells an interactive
+session how to use `slo schedule ...` to supervise dynamic workflows,
+post recurring progress updates back into the live TUI, and clean up the
+monitor schedule when the workflow ends.
+
+Another is `skills/tui/tui-scheduled-operations/SKILL.md`, which covers
+generic scheduled actions from the TUI such as repeated reminders,
+interval-based in-session output, delayed follow-ups, and schedules that
+run until the user explicitly stops them.
 
 ### Where user content lives
 

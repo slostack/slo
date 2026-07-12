@@ -1,7 +1,7 @@
 ---
 name: update-documentation-after-code-changes
-description: After any non-trivial change — update RESEARCH.md and code-prompts as
-  needed.
+description: After any non-trivial change — update docs/RESEARCH.md and code-prompts
+  as needed.
 when_to_use: Use post-merge or after a significant feature lands.
 group: design-and-analysis
 kind: workflow
@@ -13,7 +13,7 @@ source_prompt: update-documentation-after-code-changes.md
 ## Skill summary
 
 - **Name:** `update-documentation-after-code-changes`
-- **Description:** After any non-trivial change — update RESEARCH.md and code-prompts as needed.
+- **Description:** After any non-trivial change — update docs/RESEARCH.md and code-prompts as needed.
 - **When to use:** Use post-merge or after a significant feature lands.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`

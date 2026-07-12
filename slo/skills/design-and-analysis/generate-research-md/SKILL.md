@@ -1,27 +1,27 @@
 ---
 name: generate-research-md
-description: Regenerate the repository RESEARCH.md codebase index.
-when_to_use: Use when RESEARCH.md is stale or after structural changes added, removed,
-  or moved major components.
+description: Regenerate the repository docs/RESEARCH.md codebase index.
+when_to_use: Use when docs/RESEARCH.md is stale or after structural changes added,
+  removed, or moved major components.
 group: design-and-analysis
 kind: skill
 source_prompt: analyze/generate-research-md.md
 ---
 
-# Generate RESEARCH.md
+# Generate docs/RESEARCH.md
 
 ## Skill summary
 
 - **Name:** `generate-research-md`
-- **Description:** Regenerate the repository RESEARCH.md codebase index.
-- **When to use:** Use when RESEARCH.md is stale or after structural changes added, removed, or moved major components.
+- **Description:** Regenerate the repository docs/RESEARCH.md codebase index.
+- **When to use:** Use when docs/RESEARCH.md is stale or after structural changes added, removed, or moved major components.
 - **Group:** `design-and-analysis`
 - **Kind:** `skill`
 - **Source prompt:** `analyze/generate-research-md.md`
 
 ## Examples
 
-- The user asks: "Refresh RESEARCH.md after the skills refactor."
+- The user asks: "Refresh docs/RESEARCH.md after the skills refactor."
 - You added new source directories and need the codebase index to reflect them.
 
 ## Guidance
@@ -32,7 +32,7 @@ Use this prompt when `skills/orientation/research/SKILL.md` is empty, missing se
 
 ## Goal
 
-Produce a complete `skills/orientation/research/SKILL.md` at the repository root that serves as a **comprehensive codebase index** for AI agents. The file must allow any agent to locate any component — domain, router, service, worker, event handler, or integration — without exhaustive file searching.
+Produce a complete `docs/RESEARCH.md` in the repository's `docs/` folder that serves as a **comprehensive codebase index** for AI agents. The file must allow any agent to locate any component — domain, router, service, worker, event handler, or integration — without exhaustive file searching.
 
 ---
 
@@ -61,7 +61,7 @@ Use the file structure itself as the source of truth. Do not rely on assumptions
 ### 1. Header
 
 ```markdown
-# skills/orientation/research/SKILL.md — [Project Name] Codebase Index
+# docs/RESEARCH.md — [Project Name] Codebase Index
 
 > AI agent reference guide. Read `AGENTS.md` first, then use this file to locate any domain, service, router, worker, or integration.
 ```
@@ -161,7 +161,7 @@ List and describe every important file at the repository root level:
 |-------------|---------|
 | `main.py` | Application entrypoint — registers microapps, starts DBOS, binds routes |
 | `AGENTS.md` | AI agent guidance and coding conventions |
-| `skills/orientation/research/SKILL.md` | This file — complete codebase index |
+| `docs/RESEARCH.md` | This file — complete codebase index |
 | `pyproject.toml` | Dependency manifest and project metadata |
 | `config/cfg.py` | Centralised environment variable access |
 | `alembic/` | Database migration scripts |

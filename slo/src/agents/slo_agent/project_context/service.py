@@ -1,9 +1,10 @@
 """ProjectContextDiscovery — walk up from cwd collecting project instruction files.
 
-Matches three filenames (case-sensitive): ``SLO.md`` (preferred),
-``AGENTS.md`` (workspace-wide), ``CLAUDE.md`` (Claude-Code style). Files closer
-to cwd come first so they render above more distant ones. The deepest copy of a
-given filename wins.
+Matches the project guardrail files plus the repo research index:
+``SLO.md`` (preferred), ``AGENTS.md`` (workspace-wide), ``CLAUDE.md``
+(Claude-Code style), and ``docs/RESEARCH.md``. Files closer to cwd come
+first so they render above more distant ones. The deepest copy of a given
+relative path wins.
 
 The discovery walk no longer stops at ``.git`` boundaries so parent directories
 in a monorepo layout (above the innermost repo root) are also searched.
@@ -29,7 +30,12 @@ class ProjectContextDiscovery:
     Returns ``ContextFileEntryDAO`` objects in global-first, deepest-project-first order.
     """
 
-    _PROJECT_FILENAMES: ClassVar[tuple[str, ...]] = ("SLO.md", "AGENTS.md", "CLAUDE.md")
+    _PROJECT_CONTEXT_PATHS: ClassVar[tuple[str, ...]] = (
+        "SLO.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/RESEARCH.md",
+    )
 
     @classmethod
     def invoke(
@@ -104,11 +110,11 @@ class ProjectContextDiscovery:
         entries: list[ContextFileEntryDAO] = []
 
         for directory in cls._walk_up(start=cwd_path):
-            for name in cls._PROJECT_FILENAMES:
-                candidate = directory / name
-                if name in seen_names or not candidate.is_file():
+            for relative_path in cls._PROJECT_CONTEXT_PATHS:
+                candidate = directory / relative_path
+                if relative_path in seen_names or not candidate.is_file():
                     continue
-                seen_names.add(name)
+                seen_names.add(relative_path)
                 try:
                     content = candidate.read_text(encoding="utf-8")
                 except OSError:
@@ -129,7 +135,7 @@ class ProjectContextDiscovery:
     def _load_global_context(cls) -> Optional[ContextFileEntryDAO]:
         """Load the global user-level instruction file from ``~/.slo/``.
 
-        Checks each filename in ``_PROJECT_FILENAMES`` in order and returns
+        Checks each relative path in ``_PROJECT_CONTEXT_PATHS`` in order and returns
         the first readable file found.
 
         Returns:
@@ -139,8 +145,8 @@ class ProjectContextDiscovery:
         if not global_dir.is_dir():
             return None
 
-        for name in cls._PROJECT_FILENAMES:
-            candidate = global_dir / name
+        for relative_path in cls._PROJECT_CONTEXT_PATHS:
+            candidate = global_dir / relative_path
             if not candidate.is_file():
                 continue
             try:
@@ -175,8 +181,8 @@ class ProjectContextDiscovery:
 
         for folder in workspace_folders:
             for directory in cls._walk_up(start=folder.path):
-                for name in cls._PROJECT_FILENAMES:
-                    candidate = directory / name
+                for relative_path in cls._PROJECT_CONTEXT_PATHS:
+                    candidate = directory / relative_path
                     if not candidate.is_file():
                         continue
                     path_str: str = str(candidate)

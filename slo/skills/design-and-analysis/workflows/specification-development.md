@@ -40,7 +40,7 @@ The trigger is intent to produce a specification document. Confirmation-seeking 
 Before the first step begins, confirm:
 
 - The operator has provided a feature description, JIRA ticket, Confluence URL, or verbal brief.
-- `AGENTS.md` and `RESEARCH.md` have been read (or are already in context). If either is empty, populate it before proceeding — see the CLAUDE.md instruction on empty AGENTS.md/RESEARCH.md.
+- `AGENTS.md` and `docs/RESEARCH.md` have been read (or are already in context). If either is empty, populate it before proceeding — see the CLAUDE.md instruction on empty `AGENTS.md` / `docs/RESEARCH.md`.
 - The KB index at `$SLO_KB_DIR/Welcome.md` has been read (or is already in context).
 
 ---

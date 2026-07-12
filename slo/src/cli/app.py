@@ -8,6 +8,7 @@ import click
 import typer
 import typer.core
 
+from src.cli.schedule.app import schedule_app
 from src.cli.typer_dispatch import TyperDispatch
 from src.cli.version import resolve_version
 
@@ -74,6 +75,7 @@ app: typer.Typer = typer.Typer(
     add_completion=False,
     cls=_SloGroup,
 )
+app.add_typer(schedule_app, name="schedule")
 
 
 @app.callback(invoke_without_command=True)

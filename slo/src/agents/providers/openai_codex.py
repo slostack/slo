@@ -19,7 +19,7 @@ The pair of public surfaces is intentionally tiny:
 
 Background: ChatGPT-subscription OAuth tokens carry zero quota on
 ``api.openai.com``; they bill against the user's ChatGPT plan via the
-``chatgpt.com/backend-api`` lane. See ``RESEARCH.md`` "Two OpenAI lanes"
+``chatgpt.com/backend-api`` lane. See ``docs/RESEARCH.md`` "Two OpenAI lanes"
 and the parent spec at
 ``specifications/07-slo-openai-codex-responses-provider/``.
 """

@@ -6,17 +6,24 @@ from datetime import datetime
 from typing import Annotated, Literal, Optional, TypeAlias, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic import model_validator
 
 __all__ = [
+    "ActiveSessionDelivery",
     "CalendarTriggerDAO",
+    "CoalescingMode",
     "CronTriggerDAO",
+    "DeliveryPath",
+    "DeliveryState",
     "FireStatus",
+    "InactiveSessionDelivery",
     "IntervalTriggerDAO",
     "LoadedScheduleDAO",
     "NotificationTargetDAO",
     "OneShotTriggerDAO",
     "ScheduleDefinitionDAO",
     "ScheduleRunRecordDAO",
+    "ScheduleSessionPolicyDAO",
     "ScheduleStateDAO",
     "SessionMode",
     "SlackTargetDAO",
@@ -27,6 +34,17 @@ __all__ = [
 
 SessionMode: TypeAlias = Literal["fresh", "continuous"]
 FireStatus: TypeAlias = Literal["running", "completed", "aborted", "failed"]
+CoalescingMode: TypeAlias = Literal["none", "latest_by_key"]
+ActiveSessionDelivery: TypeAlias = Literal["session_inbox"]
+InactiveSessionDelivery: TypeAlias = Literal["resume"]
+DeliveryPath: TypeAlias = Literal["fresh_headless", "resume_headless", "session_inbox", "none"]
+DeliveryState: TypeAlias = Literal[
+    "executed",
+    "queued",
+    "coalesced",
+    "skipped_disabled",
+    "skipped_overlapping",
+]
 
 
 class OneShotTriggerDAO(BaseModel):
@@ -123,6 +141,53 @@ NotificationTargetDAO = Annotated[
 ]
 
 
+class ScheduleSessionPolicyDAO(BaseModel):
+    """Delivery policy for continuous session-mode schedules."""
+
+    model_config = ConfigDict(frozen=True)
+
+    session_reference: Optional[str] = Field(
+        default=None,
+        description="Optional target session id or unique session name.",
+    )
+    active_session_delivery: ActiveSessionDelivery = Field(
+        default="session_inbox",
+        description="Delivery path for an active TUI-owned target session.",
+    )
+    inactive_session_delivery: InactiveSessionDelivery = Field(
+        default="resume",
+        description="Delivery path for an inactive target session.",
+    )
+    coalescing_mode: CoalescingMode = Field(
+        default="none",
+        description="Pending-item coalescing strategy for high-frequency schedules.",
+    )
+    coalescing_key: Optional[str] = Field(
+        default=None,
+        description="Optional key used to replace older pending items with newer state.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_coalescing_configuration(self) -> "ScheduleSessionPolicyDAO":
+        """Require a coalescing key only when coalescing is enabled.
+
+        Returns:
+            ScheduleSessionPolicyDAO: The validated policy.
+
+        Raises:
+            ValueError: When the coalescing fields are inconsistent.
+        """
+        if self.coalescing_mode == "none" and self.coalescing_key is not None:
+            raise ValueError(
+                "coalescing_key requires coalescing_mode to be set to latest_by_key",
+            )
+        if self.coalescing_mode == "latest_by_key" and not self.coalescing_key:
+            raise ValueError(
+                "coalescing_key is required when coalescing_mode is latest_by_key",
+            )
+        return self
+
+
 class ScheduleDefinitionDAO(BaseModel):
     """The human-authored, rarely-changing part of a schedule."""
 
@@ -137,6 +202,10 @@ class ScheduleDefinitionDAO(BaseModel):
     cwd: Optional[str] = Field(default=None, description="Working directory for the run.")
     model: Optional[str] = Field(default=None, description="Model override; None uses the resolved default.")
     session_mode: SessionMode = Field(default="fresh", description="Either fresh or continuous.")
+    session_policy: Optional[ScheduleSessionPolicyDAO] = Field(
+        default=None,
+        description="Session-targeted delivery policy for continuous schedules.",
+    )
     misfire_grace_seconds: int = Field(
         default=300,
         description="Maximum lateness in seconds before a due fire is skipped as a misfire.",
@@ -145,6 +214,22 @@ class ScheduleDefinitionDAO(BaseModel):
         default_factory=list,
         description="Notification targets fired after each run.",
     )
+
+    @model_validator(mode="after")
+    def _validate_session_policy(self) -> "ScheduleDefinitionDAO":
+        """Enforce fresh-vs-continuous session policy rules.
+
+        Returns:
+            ScheduleDefinitionDAO: The validated definition.
+
+        Raises:
+            ValueError: When ``session_mode`` and ``session_policy`` disagree.
+        """
+        if self.session_mode == "fresh" and self.session_policy is not None:
+            raise ValueError("session_policy is not allowed when session_mode is fresh")
+        if self.session_mode == "continuous" and self.session_policy is None:
+            raise ValueError("session_policy is required when session_mode is continuous")
+        return self
 
 
 class ScheduleStateDAO(BaseModel):
@@ -159,6 +244,14 @@ class ScheduleStateDAO(BaseModel):
     last_run_at: Optional[datetime] = Field(default=None, description="Start of the last fire.")
     last_status: Optional[FireStatus] = Field(default=None, description="Outcome of the last fire.")
     last_session_id: Optional[str] = Field(default=None, description="Session id of the last fire.")
+    last_delivery_path: Optional[DeliveryPath] = Field(
+        default=None,
+        description="How the most recent fire was delivered.",
+    )
+    last_delivery_state: Optional[DeliveryState] = Field(
+        default=None,
+        description="Whether the most recent fire executed, queued, coalesced, or skipped.",
+    )
     run_count: int = Field(default=0, ge=0, description="Total fires so far.")
 
 
@@ -171,10 +264,37 @@ class ScheduleRunRecordDAO(BaseModel):
     schedule_id: str = Field(description="The schedule this fire belongs to.")
     started_at: datetime = Field(description="When the fire began.")
     finished_at: datetime = Field(description="When the fire ended.")
-    status: FireStatus = Field(description="Terminal outcome of the fire.")
-    session_id: Optional[str] = Field(default=None, description="Headless run session id.")
-    exit_code: int = Field(description="POSIX exit code of the child process.")
+    status: Optional[FireStatus] = Field(
+        default=None,
+        description="Terminal child-run outcome when a subprocess actually executed.",
+    )
+    delivery_path: DeliveryPath = Field(description="How the fire was delivered.")
+    delivery_state: DeliveryState = Field(
+        description="Whether the fire executed, queued, coalesced, or skipped."
+    )
+    session_id: Optional[str] = Field(
+        default=None, description="Actual session id created or resumed by the fire."
+    )
+    target_session_id: Optional[str] = Field(
+        default=None,
+        description="Resolved target session id for continuous-session scheduling.",
+    )
+    exit_code: Optional[int] = Field(
+        default=None,
+        description="POSIX exit code of the child process when one ran.",
+    )
     summary: str = Field(default="", description="Truncated final assistant text.")
+    stdout_summary: str = Field(default="", description="Clipped stdout summary for reporting.")
+    stderr_summary: str = Field(default="", description="Clipped stderr summary for reporting.")
+    skipped_reason: Optional[str] = Field(
+        default=None,
+        description="Why the fire was skipped instead of executed.",
+    )
+    coalesced_fire_count: int = Field(
+        default=0,
+        ge=0,
+        description="How many older pending fires were collapsed into this record.",
+    )
 
 
 class LoadedScheduleDAO(BaseModel):

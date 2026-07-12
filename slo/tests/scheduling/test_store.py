@@ -18,6 +18,7 @@ from src.scheduling.dao import (
     OneShotTriggerDAO,
     ScheduleDefinitionDAO,
     ScheduleRunRecordDAO,
+    ScheduleSessionPolicyDAO,
     ScheduleStateDAO,
     SlackTargetDAO,
     TriggerDAO,
@@ -75,6 +76,11 @@ def _build_definition(
         cwd="/Users/siddharth/Code/slo/slo",
         model="gpt-5.4",
         session_mode="continuous",
+        session_policy=ScheduleSessionPolicyDAO(
+            session_reference="release prep",
+            coalescing_mode="latest_by_key",
+            coalescing_key="repo-watch",
+        ),
         misfire_grace_seconds=900,
         notifications=[
             WebhookTargetDAO(
@@ -120,9 +126,16 @@ def _build_run_record(*, schedule_id: str, run_id: str = "run-1") -> ScheduleRun
         started_at=_utc_datetime(year=2026, month=7, day=1, hour=9, minute=0),
         finished_at=_utc_datetime(year=2026, month=7, day=1, hour=9, minute=2),
         status="completed",
+        delivery_path="resume_headless",
+        delivery_state="executed",
         session_id="session-123",
+        target_session_id="session-123",
         exit_code=0,
         summary="Weekly summary completed successfully.",
+        stdout_summary="stdout summary",
+        stderr_summary="stderr summary",
+        skipped_reason=None,
+        coalesced_fire_count=0,
     )
 
 
@@ -198,7 +211,50 @@ class TestScheduleDAOs:
 
         assert definition.enabled is True
         assert definition.session_mode == "fresh"
+        assert definition.session_policy is None
         assert definition.notifications == []
+
+    def test_schedule_definition_rejects_session_policy_for_fresh_mode(self) -> None:
+        """Fresh schedules must not persist continuous-session policy."""
+        with pytest.raises(ValueError, match="session_policy is not allowed"):
+            ScheduleDefinitionDAO(
+                schedule_id="schedule-1",
+                name="Friday Standup Digest",
+                name_key="friday-standup-digest",
+                trigger=OneShotTriggerDAO(run_at=_utc_datetime(year=2026, month=7, day=4, hour=15)),
+                prompt="Summarize the week.",
+                session_mode="fresh",
+                session_policy=ScheduleSessionPolicyDAO(session_reference="release prep"),
+            )
+
+    def test_schedule_definition_requires_session_policy_for_continuous_mode(self) -> None:
+        """Continuous schedules require a session policy block."""
+        with pytest.raises(ValueError, match="session_policy is required"):
+            ScheduleDefinitionDAO(
+                schedule_id="schedule-1",
+                name="Friday Standup Digest",
+                name_key="friday-standup-digest",
+                trigger=OneShotTriggerDAO(run_at=_utc_datetime(year=2026, month=7, day=4, hour=15)),
+                prompt="Summarize the week.",
+                session_mode="continuous",
+            )
+
+    def test_session_policy_rejects_coalescing_key_without_enabled_mode(self) -> None:
+        """A coalescing key requires ``latest_by_key`` mode."""
+        with pytest.raises(ValueError, match="coalescing_key requires"):
+            ScheduleSessionPolicyDAO(
+                session_reference="release prep",
+                coalescing_mode="none",
+                coalescing_key="repo-watch",
+            )
+
+    def test_session_policy_requires_coalescing_key_when_latest_by_key(self) -> None:
+        """``latest_by_key`` mode requires an explicit key."""
+        with pytest.raises(ValueError, match="coalescing_key is required"):
+            ScheduleSessionPolicyDAO(
+                session_reference="release prep",
+                coalescing_mode="latest_by_key",
+            )
 
 
 class TestScheduleStoreCreateAndLoad:
@@ -425,6 +481,8 @@ class TestScheduleStoreMutations:
             last_run_at=_utc_datetime(year=2026, month=7, day=15, hour=8),
             last_status="completed",
             last_session_id="session-456",
+            last_delivery_path="resume_headless",
+            last_delivery_state="executed",
             run_count=1,
         )
         ScheduleStore.update_state(schedule_id=definition.schedule_id, state=updated_state)
@@ -487,6 +545,41 @@ class TestScheduleStoreMutations:
         ScheduleStore.append_run_record(schedule_id=definition.schedule_id, record=record)
 
         record_path: Path = root / definition.schedule_id / "runs" / "run-123.json"
+        assert record_path.exists()
+        assert ScheduleRunRecordDAO.model_validate_json(record_path.read_text(encoding="utf-8")) == record
+
+    def test_append_run_record_roundtrips_queued_delivery_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Queued SessionInbox records persist without executed-run fields."""
+        root: Path = _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-queued-runs",
+            name="Queued Run Record Schedule",
+            trigger=OneShotTriggerDAO(run_at=_utc_datetime(year=2026, month=7, day=18, hour=8)),
+        )
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        record: ScheduleRunRecordDAO = ScheduleRunRecordDAO(
+            run_id="run-queued",
+            schedule_id=definition.schedule_id,
+            started_at=_utc_datetime(year=2026, month=7, day=18, hour=8),
+            finished_at=_utc_datetime(year=2026, month=7, day=18, hour=8, minute=1),
+            status=None,
+            delivery_path="session_inbox",
+            delivery_state="queued",
+            session_id=None,
+            target_session_id="session-456",
+            exit_code=None,
+            summary="",
+            stdout_summary="",
+            stderr_summary="",
+            skipped_reason=None,
+            coalesced_fire_count=0,
+        )
+
+        ScheduleStore.append_run_record(schedule_id=definition.schedule_id, record=record)
+
+        record_path: Path = root / definition.schedule_id / "runs" / "run-queued.json"
         assert record_path.exists()
         assert ScheduleRunRecordDAO.model_validate_json(record_path.read_text(encoding="utf-8")) == record
 

@@ -214,7 +214,7 @@ class TestSystemPromptBuilderInvoke:
             ),
             ContextFileEntryDAO(
                 path="/abs/path/AGENTS.md",
-                content="Read RESEARCH.md before editing routers.",
+                content="Read docs/RESEARCH.md before editing routers.",
                 tier="project",
             ),
         ]

@@ -1,15 +1,21 @@
 """Scheduling package — DAOs, store, and typed scheduling exceptions."""
 
 from src.scheduling.dao import (
+    ActiveSessionDelivery,
     CalendarTriggerDAO,
+    CoalescingMode,
     CronTriggerDAO,
+    DeliveryPath,
+    DeliveryState,
     FireStatus,
+    InactiveSessionDelivery,
     IntervalTriggerDAO,
     LoadedScheduleDAO,
     NotificationTargetDAO,
     OneShotTriggerDAO,
     ScheduleDefinitionDAO,
     ScheduleRunRecordDAO,
+    ScheduleSessionPolicyDAO,
     ScheduleStateDAO,
     SessionMode,
     SlackTargetDAO,
@@ -20,9 +26,14 @@ from src.scheduling.exceptions import ScheduleNotFoundError, ScheduleStoreCorrup
 from src.scheduling.store import ScheduleStore
 
 __all__ = [
+    "ActiveSessionDelivery",
     "CalendarTriggerDAO",
+    "CoalescingMode",
     "CronTriggerDAO",
+    "DeliveryPath",
+    "DeliveryState",
     "FireStatus",
+    "InactiveSessionDelivery",
     "IntervalTriggerDAO",
     "LoadedScheduleDAO",
     "NotificationTargetDAO",
@@ -30,6 +41,7 @@ __all__ = [
     "ScheduleDefinitionDAO",
     "ScheduleNotFoundError",
     "ScheduleRunRecordDAO",
+    "ScheduleSessionPolicyDAO",
     "ScheduleStateDAO",
     "ScheduleStore",
     "ScheduleStoreCorruptError",

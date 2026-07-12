@@ -2,8 +2,8 @@
 name: feature-specifications-pre-hook
 description: Context-gathering pass that runs before drafting or revising a feature
   specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails
-  (CLAUDE.md / AGENTS.md / RESEARCH.md), code conventions, and the current state of
-  the affected surface so the resulting spec respects existing patterns.
+  (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current
+  state of the affected surface so the resulting spec respects existing patterns.
 when_to_use: Use as the mandatory pre-hook for feature-specifications.
 group: design-and-analysis
 kind: workflow
@@ -15,7 +15,7 @@ source_prompt: analyze/feature-specifications-pre-hook.md
 ## Skill summary
 
 - **Name:** `feature-specifications-pre-hook`
-- **Description:** Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns.
+- **Description:** Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns.
 - **When to use:** Use as the mandatory pre-hook for feature-specifications.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
@@ -23,7 +23,7 @@ source_prompt: analyze/feature-specifications-pre-hook.md
 
 ## Examples
 
-- The user asks for an end-to-end workflow that fits: Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns.
+- The user asks for an end-to-end workflow that fits: Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns.
 - Use as the mandatory pre-hook for feature-specifications.
 
 ## Slo defaults for request and specification artifacts

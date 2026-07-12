@@ -84,6 +84,21 @@ class TestProjectContextDiscovery:
         with patch.object(ProjectContextDiscovery, "_load_global_context", return_value=None):
             assert ProjectContextDiscovery.invoke(cwd=str(tmp_path)) == []
 
+    def test_walk_up_finds_docs_research_file(self, tmp_path: Path) -> None:
+        """The repo-local ``docs/RESEARCH.md`` file is discovered as project context."""
+        docs_dir: Path = tmp_path / "docs"
+        docs_dir.mkdir(parents=True)
+        research_path: Path = docs_dir / "RESEARCH.md"
+        research_path.write_text("repo index", encoding="utf-8")
+        sub: Path = tmp_path / "src" / "feature"
+        sub.mkdir(parents=True)
+
+        with patch.object(ProjectContextDiscovery, "_load_global_context", return_value=None):
+            results = ProjectContextDiscovery.invoke(cwd=str(sub))
+
+        paths = [entry.path for entry in results]
+        assert str(research_path.resolve()) in paths
+
 
 # ---------------------------------------------------------------------------
 # New tests: ContextFileEntryDAO return type

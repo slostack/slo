@@ -11,7 +11,7 @@ Deviation note: returns ``str | list[ImageContentBlock]`` rather than a ``*Resul
 Coding agents consume raw file text directly from ``ToolMessage.content``;
 JSON-wrapping the file body would force the model to parse it back out, and
 image attachments require the multimodal content-list shape natively. See
-``RESEARCH.md`` for the full deviation rationale.
+``docs/RESEARCH.md`` for the full deviation rationale.
 """
 
 from __future__ import annotations

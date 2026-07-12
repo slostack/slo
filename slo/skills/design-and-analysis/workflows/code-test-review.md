@@ -38,7 +38,7 @@ Before the first step begins, confirm:
 
 - **A dedicated feature branch is checked out.** Never implement directly on `main`. If the current branch is `main`, create a feature branch first using the naming convention: `<TICKET-ID>-<short-kebab-description>` when a ticket ID is available (e.g. `AGI-42-session-rename`), or `feature-<short-kebab-description>` when there is no ticket (e.g. `feature-refresh-skills-index`). Use `git checkout -b <branch-name>` from an up-to-date `main`.
 - A specification document, JIRA task, or clear feature description is available. The agent must have something to implement against — a task without a spec is not ready for this workflow.
-- `AGENTS.md` and `RESEARCH.md` have been read (or are already in context).
+- `AGENTS.md` and `docs/RESEARCH.md` have been read (or are already in context).
 - The relevant KB folders have been consulted for the feature's surface area.
 - The always-on rules are loaded: `named-arguments-and-type-hints.md`, `declarative-method-structure.md`, `method-docstrings.md`, `test-verification-policy.md`.
 - All applicable `build-*.md` files for the layers this task touches have been read. Do not write a single line of code for a layer whose build rules have not been loaded.
@@ -56,7 +56,7 @@ If any pre-condition is not met, satisfy it before entering Step 1.
 **Input consumed:**
 - The feature specification or task description
 - All loaded `build-*.md` conventions for the task's layers
-- RESEARCH.md for existing patterns to mirror
+- docs/RESEARCH.md for existing patterns to mirror
 
 **What this step does:**
 
@@ -256,7 +256,7 @@ The following rules remain in effect throughout this workflow:
 ```
 Trigger: "implement [feature spec / task]"
 
-Pre-conditions: spec available, AGENTS.md/RESEARCH.md loaded,
+Pre-conditions: spec available, AGENTS.md and docs/RESEARCH.md loaded,
                 all build-*.md for the task's layers loaded
 
 Step 1: Code + Test Loop (write unit → test → green → repeat until done)

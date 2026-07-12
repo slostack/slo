@@ -52,6 +52,8 @@ class TestCommittedSkills:
         assert "load-pr-context" in names
         assert "fix-pr-review" in names
         assert "worktrees" in names
+        assert "tui-scheduled-operations" in names
+        assert "tui-scheduled-workflows" in names
 
     def test_top_level_group_directories_exist(self) -> None:
         groups = {path.name for path in SKILLS_DIR.iterdir() if path.is_dir()}

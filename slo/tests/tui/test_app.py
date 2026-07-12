@@ -15,6 +15,9 @@ from langchain_core.tools import tool
 
 from config.logger import interactive_logging, log_info
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
+from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
+from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
@@ -270,6 +273,127 @@ class TestSloTUI:
 
             assert app.sub_title.startswith("session release prep · session-")
             assert ("session renamed to release prep", "tool-result") in app._adapter.lines
+
+
+class TestSloTUISessionInbox:
+    """Lease and SessionInbox delivery behavior."""
+
+    @pytest.mark.asyncio
+    async def test_mount_acquires_and_unmount_releases_session_lease(self, tmp_path: Path) -> None:
+        """History-backed TUI sessions hold an active lease only while mounted."""
+        history_root: Path = tmp_path / "history"
+        lease_store: SessionOwnershipLeaseStore = SessionOwnershipLeaseStore(history_root=history_root)
+        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = True
+        session.history_root = history_root
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=[])
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=MagicMock())
+
+        app: SloTUI = SloTUI(session=session, lease_store=lease_store)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert await lease_store.is_active(session_id="session-1234") is True
+
+        assert await lease_store.is_active(session_id="session-1234") is False
+
+    @pytest.mark.asyncio
+    async def test_poll_session_inbox_renders_ui_notice(self, tmp_path: Path) -> None:
+        """`ui_notice` inbox items render a low-noise notice and are acked."""
+        history_root: Path = tmp_path / "history"
+        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
+        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = True
+        session.history_root = history_root
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=[])
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=MagicMock())
+
+        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            message_id="message-1",
+            session_id="session-1234",
+            schedule_id="schedule-1",
+            run_id="run-1",
+            kind="monitor_update",
+            delivery_mode="ui_notice",
+            title="CI monitor",
+            text="CI still running.",
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await inbox_store.enqueue(message=message)
+            await app._poll_session_inbox()
+            await pilot.pause()
+
+            assert any(
+                "[scheduled notice] CI monitor: CI still running." in line[0]
+                for line in app._adapter.lines
+            )
+            assert await inbox_store.list_pending(session_id="session-1234") == []
+            assert await inbox_store.list_done(session_id="session-1234") == [message]
+
+    @pytest.mark.asyncio
+    async def test_poll_session_inbox_starts_chat_turn(self, tmp_path: Path) -> None:
+        """`chat_turn` inbox items submit a real queued prompt when the session is idle."""
+        history_root: Path = tmp_path / "history"
+        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
+        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = True
+        session.history_root = history_root
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=[])
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=MagicMock())
+
+        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            message_id="message-1",
+            session_id="session-1234",
+            schedule_id="schedule-1",
+            run_id="run-1",
+            kind="scheduled_prompt",
+            delivery_mode="chat_turn",
+            title="Morning research",
+            text="Check the repo and summarize new failures.",
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await inbox_store.enqueue(message=message)
+            with patch.object(app, "_run_prompt", new=AsyncMock()) as mock_run_prompt:
+                await app._poll_session_inbox()
+                assert app._in_flight_task is not None
+                await app._in_flight_task
+                app._in_flight_task = None
+
+            mock_run_prompt.assert_awaited_once_with(text="Check the repo and summarize new failures.")
+            assert await inbox_store.list_done(session_id="session-1234") == [message]
 
     @pytest.mark.asyncio
     async def test_new_session_replaces_active_session_and_clears_transcript(self) -> None:

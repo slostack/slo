@@ -14,7 +14,7 @@ slo/
 ├── docker/               # docker-compose for dev/test Postgres+Redis
 ├── environments/         # development.env, tests.env
 ├── scripts/              # refresh_skills.py, build_skill_index.py
-├── skills/               # 104 vendored SKILL.md files (8 groups)
+├── skills/               # 100+ vendored SKILL.md files (10 groups)
 ├── specifications/       # symlink → ../specifications (specs 01–18)
 ├── src/                  # all Python application code
 │   ├── agents/           # agent loop, LLM factory, tools, providers, auth
@@ -23,6 +23,7 @@ slo/
 │   ├── main.py           # FastAPI entry (healthz only)
 │   ├── middleware/       # DbMiddleware, RequestCtxMiddleware
 │   ├── routers/          # health_controller, base_controller
+│   ├── scheduling/       # scheduler DAOs, store, runtime executor, OS integration
 │   ├── tui/              # Textual TUI, slash system, widgets
 │   └── web_app.py        # FastAPI initializer (middleware + routers)
 └── tests/                # pytest suite (faux-model only)
@@ -129,9 +130,9 @@ Supporting modules: `_truncate.py` (head/tail/line limits), `_gitignore.py` (wal
 
 ---
 
-## `skills/` — 104 vendored skills
+## `skills/` — 100+ vendored skills
 
-8 group directories; each skill is `skills/<group>/<slug>/SKILL.md` with YAML frontmatter (`name`, `description`, `when_to_use`, `group`, `kind`).
+10 group directories; each skill is `skills/<group>/<slug>/SKILL.md` with YAML frontmatter (`name`, `description`, `when_to_use`, `group`, `kind`).
 
 | Group | Contents |
 |---|---|
@@ -139,7 +140,7 @@ Supporting modules: `_truncate.py` (head/tail/line limits), `_gitignore.py` (wal
 | `coding/` | Build patterns: tools, services, routers, middleware, workers, etc. |
 | `git-ops/` | Branch, commit, push, PR/MR, ship-feature lifecycle, worktrees |
 | `cli/` | Typer CLI apps, command classes, modules |
-| `tui/` | Textual TUI apps |
+| `tui/` | Textual TUI apps, plus `tui-scheduled-workflows` for scheduler-driven workflow supervision and `tui-scheduled-operations` for generic recurring/delayed TUI scheduling |
 | `integration-tests/` | pytest-bdd scenarios, step definitions |
 | `frontend-vue/` | Vue 3 + Pinia + TypeScript conventions |
 | `orientation/` | Codebase orientation, KB navigation |

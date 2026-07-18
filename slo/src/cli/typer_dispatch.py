@@ -372,20 +372,28 @@ class TyperDispatch:
             log_info(msg="preferences_file_corrupt_falling_back_to_defaults")
             prefs = UserPreferencesDAO()
 
+        from config.ai_model_config import resolve_model_name_with_fallback
+
         model_name: str = (
             prefs.default_model_name
             or cfg("DEFAULT_MODEL_NAME")
             or "gpt-5.4"
+        )
+        resolved_model_name: str
+        fallback_notice: Optional[str]
+        resolved_model_name, fallback_notice = resolve_model_name_with_fallback(
+            model_name=model_name,
         )
         model_pool_dao = parse_model_pool_config(preference_value=prefs.default_model_pool)
 
         return SessionConfigDAO(
             workdir=workdir,
             workspace_file=workspace_file,
-            model_name=model_name,
+            model_name=resolved_model_name,
             model_pool_dao=model_pool_dao,
             reasoning_level=prefs.default_reasoning_level,
             session_id=resume_session_id,
+            fallback_notice=fallback_notice,
         )
 
     @classmethod

@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
+from textual.timer import Timer
 from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
@@ -347,8 +348,8 @@ class SloTUI(App):
         self._inbox_store: Optional[SessionInboxStore] = inbox_store
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
-        self._lease_timer = None
-        self._inbox_timer = None
+        self._lease_timer: Optional[Timer] = None
+        self._inbox_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
         """Build the widget tree.
@@ -420,6 +421,12 @@ class SloTUI(App):
         """Render the one-time startup notice for new sessions only."""
         if not await self._session.should_show_startup_notice():
             return
+        fallback_notice: Optional[str] = self._session.startup_fallback_notice
+        if fallback_notice:
+            self._write_adapter_line(
+                content=fallback_notice,
+                classes="tool-result",
+            )
         resolved_reasoning = resolve_reasoning_config(
             model_name=self._session.active_model_name,
             requested_level=self._session.active_reasoning_level,

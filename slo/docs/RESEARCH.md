@@ -1,6 +1,6 @@
 # Slo — Codebase Index
 
-Reference for navigating the source tree. Updated through spec 20 (session lifecycle naming, resume-by-name, prompt-history recall, and transcript surface parity). 847 tests pass.
+Reference for navigating the source tree. Updated through spec 55 (canonical model catalog and latest-model support). 2590 tests pass.
 
 ---
 
@@ -17,7 +17,8 @@ slo/
 ├── skills/               # 100+ vendored SKILL.md files (10 groups)
 ├── specifications/       # symlink → ../specifications (specs 01–18)
 ├── src/                  # all Python application code
-│   ├── agents/           # agent loop, LLM factory, tools, providers, auth
+│   ├── agents/           # agent loop, LLM factory, tools, providers, auth, model catalog
+│   │   └── model_catalog/  # canonical model support: DAOs, seed, service, discovery, store
 │   ├── cli/              # Typer CLI entry point
 │   ├── exceptions.py     # typed ApiException hierarchy
 │   ├── main.py           # FastAPI entry (healthz only)
@@ -70,7 +71,7 @@ slo/
 | `slash_suggestion_engine.py` | `SlashSuggestionEngine` — pure suggestion logic; `SlashSuggestionRowDAO`, `SlashSuggestionStateDAO` |
 | `event_renderer.py` | Tool-line formatting helpers; legacy `ProgressEventDAO` renderer |
 | `transcript_projector.py` | Stateful transcript projector for live `AgentStreamEventDAO`s and replay `TranscriptEntryDAO`s |
-| `model_catalog.py` | `ModelSuggestionEntryDAO`, `model_suggestion_entries()` — model list for `/model` autocomplete |
+| `model_catalog.py` | `ModelSuggestionEntryDAO`, `model_suggestion_entries()` — model list for `/model` autocomplete (now catalog-backed) |
 | `thinking_spinner.py` | Spinner widget shown during LLM reasoning |
 | `authentication/` | Sub-package for OAuth flow widgets |
 | `app.tcss` | Textual CSS styles |
@@ -111,7 +112,7 @@ Supporting modules: `_truncate.py` (head/tail/line limits), `_gitignore.py` (wal
 | `anthropic_claude_code.py` | `build_claude_code_backed_chat_anthropic()`, `anthropic_thinking_payload()` |
 | `openai_codex.py` | `build_chatgpt_backed_chat_openai()` (ChatGPT subscription lane), `openai_reasoning_payload()` |
 
-`src/agents/base.py` owns `LLMFactory.create()` dispatch and the `LLMBuildResult` dataclass (`llm` + `supports_explicit_caching`). Anthropic builds set `supports_explicit_caching=True`; OpenAI/Faux leave it `False`. The agent annotates `SystemMessage` with `cache_control` only when `supports_explicit_caching` is true.
+`src/agents/base.py` owns `LLMFactory.create()` dispatch and the `LLMBuildResult` dataclass (`llm` + `supports_explicit_caching`). Runtime defaults are projected from `ModelCatalogService`. Anthropic builds set `supports_explicit_caching=True`; OpenAI/Faux leave it `False`. The agent annotates `SystemMessage` with `cache_control` only when `supports_explicit_caching` is true.
 
 ---
 
@@ -124,7 +125,7 @@ Supporting modules: `_truncate.py` (head/tail/line limits), `_gitignore.py` (wal
 | `credential_refresher.py` | `refresh_if_stale()` — proactive OAuth refresh + persist; module-level lock |
 | `credential_store.py` | Read/write `~/.slo/.credentials.json` |
 | `oauth_flow.py`, `oauth_provider.py`, `pkce.py` | PKCE OAuth flow |
-| `provider_for_model.py` | Model name → provider name mapping |
+| `provider_for_model.py` | Model name → provider mapping; exact catalog/alias lookup first, prefix fallback second |
 | `provider_factory.py` | Auth provider factory |
 | `providers/` | Per-provider OAuth sub-implementations |
 
@@ -189,6 +190,10 @@ All tests use `FauxChatModel`; `pytest -m "not e2e"` is the default gate (`make 
 | `ModelRateLimitPolicyDAO` | `rate_limit_policy.py` | Per-model rate window + retry config |
 | `TokenUsageTotalsDAO` | `session_usage_dao.py` | Token counts incl. cache_creation + cache_read tokens |
 | `SlashCommandSpecDAO` | `slash_command_registry.py` | Slash command metadata (name, description, aliases, argument_mode) |
+| `ModelCatalogEntryDAO` | `src/agents/model_catalog/dao.py` | One canonical model-support record |
+| `ModelCatalogSnapshotDAO` | `src/agents/model_catalog/dao.py` | Merged seed/cache/discovery/override snapshot |
+| `ModelRuntimeProfileDAO` | `src/agents/model_catalog/dao.py` | Per-model runtime defaults |
+| `ModelReasoningProfileDAO` | `src/agents/model_catalog/dao.py` | Per-model reasoning support and provider translation |
 | `SlashSuggestionStateDAO` | `slash_suggestion_engine.py` | Engine output for current prompt buffer |
 
 ---

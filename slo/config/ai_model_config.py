@@ -1,30 +1,19 @@
 """Per-model default options for the LLM factory.
 
-Listing a model here is purely a defaults convenience — ``create_llm`` will
-still construct a chat model for any name that matches the provider prefix
-in ``src/agents/base.py``. Unlisted models fall back to
-``temperature=0.1, streaming=True, max_tokens=4096`` (see the factory).
-
-``max_tokens`` is the model's **total output ceiling** — the provider's hard
-cap on tokens emitted in one response (e.g. 64000 for ``claude-sonnet-4-6``,
-128000 for ``claude-opus-4-7``, mirroring pi). It is not a "visible output"
-budget that thinking tokens are added on top of: for adaptive thinking the
-thinking tokens count within it, so the factory sends this value as-is and
-never exceeds it (see ``LLMFactory._anthropic_max_tokens``).
-
-``context_window`` is the model's **total input context window** in tokens —
-the provider's cap on how much history + prompt one request may carry. It is
-the single source of truth consumed by ``CompactionChecker`` to decide when
-auto-compaction must fire (``compaction/compaction_checker.py``). Models
-absent from this table fall back to a conservative 200_000 there.
-
-Convention: list current top-tier production models only. Small / mini /
-preview variants still work via fallback defaults but are intentionally
-absent from this table so they don't become the default recommendation.
+``MODEL_DEFAULTS`` and provider landing-model helpers are now projections over
+``ModelCatalogService``. Existing imports continue to work; the values are rebuilt
+in place whenever the catalog snapshot changes so callers holding a reference see
+updated values.
 """
 
-from typing import TypedDict
+from __future__ import annotations
 
+from typing import Optional, TypedDict
+
+from config.cfg import cfg
+from config.logger import log_warning
+from src.agents.model_catalog.seed import SeedModelCatalog
+from src.agents.model_catalog.service import ModelCatalogService
 from src.auth.credential_dao import ProviderName
 
 
@@ -39,165 +28,45 @@ class ModelDefaults(TypedDict, total=False):
     local_retry_wait_cap_seconds: int
 
 
-MODEL_DEFAULTS: dict[str, ModelDefaults] = {
-    # Anthropic Claude — 4.x family. Opus is the flagship; Sonnet is the
-    # standard production workhorse. Haiku is intentionally omitted.
-    "claude-opus-4-7": {
-        "temperature": 0.1,
-        "max_tokens": 128_000,  # Total output ceiling (mirrors pi); was 8192.
-        # 200k is the standard cap. A 1M window exists but requires the
-        # `anthropic-beta: context-1m-2025-08-07` header, which slo does not
-        # send — so 200k is the real effective limit. Bump to 1_000_000 only
-        # in the same change that enables that beta in the LLM factory.
-        "context_window": 200_000,
-        "streaming": True,
-        "requests_per_minute": 60,
-        "tokens_per_minute": 200_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "claude-sonnet-4-6": {
-        "temperature": 0.1,
-        "max_tokens": 64_000,  # Total output ceiling (mirrors pi); was 8192.
-        # 200k standard cap; 1M requires the `context-1m` beta header (not sent
-        # by slo yet). Bump only when the factory enables that beta.
-        "context_window": 200_000,
-        "streaming": True,
-        "requests_per_minute": 60,
-        "tokens_per_minute": 200_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    # OpenAI Codex — coding-optimized GPT-5.x variants. These route through the
-    # same OpenAI lane as gpt-5.4; they differ in context-window sizing and
-    # rate-limit expectations. Context-window values are conservative defaults
-    # aligned with the gpt-5 / gpt-5.4 split until OpenAI publishes the exact
-    # provider caps for this family.
-    "gpt-5-codex": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 1_050_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "gpt-5.3-codex": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 1_050_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "gpt-5.3-codex-spark": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 1_050_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "gpt-5.2-codex": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 400_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    # OpenAI — flagship GPT and reasoning models. Mini / nano variants are
-    # intentionally omitted from this table.
-    "gpt-5.4": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 1_050_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "gpt-5": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 400_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "gpt-4.1": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 1_000_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 1,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "gpt-4o": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 128_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 1,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "o3": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 200_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    "o1": {
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "context_window": 200_000,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 30,
-        "tokens_per_minute": 500_000,
-        "automatic_retry_attempts": 2,
-        "local_retry_wait_cap_seconds": 30,
-    },
-    # Kimi For Coding (KFC) — https://api.kimi.com/coding/v1 (OpenAI-compatible).
-    # Keys issued from the Kimi Code Console (https://kimi.com/code).
-    # max_retries=0 is enforced at the factory level so credit-exhaustion errors
-    # surface immediately for ModelPool to handle.
-    # 262k context; always-on reasoning (cannot be disabled via API).
-    # Temperature MUST be exactly 1 — Kimi rejects any other value (400 error).
-    "kimi-for-coding": {
-        "temperature": 1,
-        "max_tokens": 32768,
-        "context_window": 262_144,  # total input context window
-        "streaming": True,
-        "requests_per_minute": 20,
-        "tokens_per_minute": 200_000,
-        "automatic_retry_attempts": 3,
-        "local_retry_wait_cap_seconds": 30,
-    },
-}
+__all__ = [
+    "MODEL_DEFAULTS",
+    "default_model_for_provider",
+    "rebuild_model_defaults_projection",
+    "resolve_model_name_with_fallback",
+]
 
-_PROVIDER_DEFAULT_MODELS: dict[ProviderName, str] = {
-    ProviderName.ANTHROPIC: "claude-sonnet-4-6",
-    ProviderName.OPENAI: "gpt-5.4",
-    ProviderName.KIMI_FOR_CODING: "kimi-for-coding",
-}
+
+MODEL_DEFAULTS: dict[str, ModelDefaults] = {}
+_PROVIDER_DEFAULT_MODELS: dict[ProviderName, str] = SeedModelCatalog.provider_default_models()
+
+
+def rebuild_model_defaults_projection() -> None:
+    """Rebuild legacy config maps from the canonical catalog in place."""
+    snapshot = ModelCatalogService.load()
+    projected_defaults: dict[str, ModelDefaults] = {}
+    for entry in snapshot.entries.values():
+        projected_defaults[entry.model_name] = {
+            "max_tokens": entry.runtime_profile.max_tokens,
+            "context_window": entry.runtime_profile.context_window,
+            "streaming": entry.runtime_profile.streaming,
+            "requests_per_minute": entry.runtime_profile.requests_per_minute,
+            "tokens_per_minute": entry.runtime_profile.tokens_per_minute,
+            "automatic_retry_attempts": entry.runtime_profile.automatic_retry_attempts,
+            "local_retry_wait_cap_seconds": entry.runtime_profile.local_retry_wait_cap_seconds,
+        }
+        # Kimi For Coding family models require ``temperature=1``. Preserve
+        # that provider-level constraint for every canonical Kimi entry,
+        # including newer variants such as ``kimi-k3`` and
+        # ``kimi-for-coding-highspeed``.
+        if entry.provider is ProviderName.KIMI_FOR_CODING:
+            projected_defaults[entry.model_name]["temperature"] = 1.0
+        else:
+            projected_defaults[entry.model_name]["temperature"] = 0.1
+    MODEL_DEFAULTS.clear()
+    MODEL_DEFAULTS.update(projected_defaults)
+
+
+rebuild_model_defaults_projection()
 
 
 def default_model_for_provider(*, provider: ProviderName) -> str:
@@ -210,3 +79,55 @@ def default_model_for_provider(*, provider: ProviderName) -> str:
         str: The recommended default model name.
     """
     return _PROVIDER_DEFAULT_MODELS[provider]
+
+
+def resolve_model_name_with_fallback(*, model_name: str) -> tuple[str, Optional[str]]:
+    """Resolve a model name, falling back to defaults when it is invalid.
+
+    Resolution order:
+        1. Exact canonical catalog entry or alias.
+        2. Provider prefix compatibility path.
+        3. Global default model (``DEFAULT_MODEL_NAME``).
+
+    Args:
+        model_name (str): Requested model name from preferences or env.
+
+    Returns:
+        tuple[str, Optional[str]]: The resolved model name and an optional
+            operator-visible notice when a fallback was used.
+    """
+    # Deferred import avoids a circular module dependency with
+    # ``src.agents.base`` via ``src.auth.provider_for_model``.
+    from src.auth.provider_for_model import provider_for_model
+
+    try:
+        ModelCatalogService.entry_for_model(model_name=model_name)
+        return model_name, None
+    except ValueError:
+        pass
+    try:
+        provider_for_model(model_name=model_name)
+        log_warning(
+            msg="model_catalog_fallback_used",
+            requested_model=model_name,
+            notice=(
+                f"Model '{model_name}' is not in the canonical catalog; "
+                "using provider prefix compatibility path."
+            ),
+        )
+        return (
+            model_name,
+            f"Model '{model_name}' is not in the catalog; it may use compatibility-only defaults.",
+        )
+    except ValueError:
+        pass
+    fallback_model_name: str = cfg("DEFAULT_MODEL_NAME") or "gpt-5.4"
+    log_warning(
+        msg="model_catalog_preference_invalid_fallback",
+        requested_model=model_name,
+        fallback_model=fallback_model_name,
+    )
+    return (
+        fallback_model_name,
+        f"Model '{model_name}' is not supported; falling back to {fallback_model_name}.",
+    )

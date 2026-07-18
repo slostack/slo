@@ -297,16 +297,45 @@ class TestBuildSessionConfigPreferences:
 
         assert config.reasoning_level is None
 
+    def test_invalid_saved_model_preference_falls_back_with_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A saved preference pointing at an unknown model is safely replaced."""
+        monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
+        monkeypatch.setenv("SLO_DEFAULT_MODEL_NAME", "gpt-5.4")
+        from src.agents.slo_agent.preferences.service import UserPreferencesStore
+        UserPreferencesStore.upsert(model_name="mistral-large")
+
+        config = TyperDispatch._build_session_config(workdir=tmp_path)
+
+        assert config.model_name == "gpt-5.4"
+        assert config.fallback_notice is not None
+        assert "mistral-large" in config.fallback_notice
+        assert "falling back" in config.fallback_notice
+
+    def test_compatibility_prefix_preference_keeps_model_with_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A preference matching a provider prefix uses compatibility path."""
+        monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
+        from src.agents.slo_agent.preferences.service import UserPreferencesStore
+        UserPreferencesStore.upsert(model_name="claude-legacy-model")
+
+        config = TyperDispatch._build_session_config(workdir=tmp_path)
+
+        assert config.model_name == "claude-legacy-model"
+        assert config.fallback_notice is not None
+        assert "compatibility-only" in config.fallback_notice
+
     def test_corrupt_preferences_file_falls_back_to_cfg(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A corrupt preferences file logs a warning and uses cfg default."""
         path = tmp_path / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
-        monkeypatch.setattr(
-            "src.cli.typer_dispatch.cfg",
-            lambda key: "fallback-model" if key == "DEFAULT_MODEL_NAME" else None,
-        )
+        fake_cfg = lambda key: "fallback-model" if key == "DEFAULT_MODEL_NAME" else None
+        monkeypatch.setattr("src.cli.typer_dispatch.cfg", fake_cfg)
+        monkeypatch.setattr("config.ai_model_config.cfg", fake_cfg)
         path.write_text("{corrupt", encoding="utf-8")
 
         config = TyperDispatch._build_session_config(workdir=tmp_path)

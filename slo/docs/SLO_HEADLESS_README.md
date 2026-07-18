@@ -59,7 +59,7 @@ This is the full settings surface. Every flag, every environment variable, every
 |------|-------|---------|-------------|
 | `--prompt` | `-p` | **required** | The prompt to execute. |
 | `--json` | | `False` | Accepted for compatibility; currently a no-op. Stdout is always JSONL regardless of this flag — every line is a validated `AgentStreamEventDAO`. |
-| `--model` | | `None` | Override the model for this run (e.g. `claude-opus-4-5`). Falls back to user preferences, then `cfg("DEFAULT_MODEL_NAME")`. |
+| `--model` | | `None` | Override the model for this run (e.g. `claude-sonnet-4-6`). Falls back to user preferences, then `cfg("DEFAULT_MODEL_NAME")`. |
 | `--reasoning` | | `None` | Override the reasoning level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Clamped to the model's supported range. |
 | `--cwd` | | `None` | Working directory. Defaults to `$PWD`. The agent uses this for all filesystem tools. |
 | `--enable-history` | | `False` | Persist history to disk. Required for `--resume` to have anything to find. |
@@ -105,7 +105,7 @@ When a run starts, the session id is resolved in this order (first non-`None` wi
 | `DEFAULT_MODEL_NAME` | provider default | Fallback model when no preference and no `--model`. |
 | `ANTHROPIC_API_KEY` | — | Anthropic credential. |
 | `KIMI_FOR_CODING_API_KEY` | — | Kimi For Coding credential. |
-| `MOONSHOT_API_KEY` | — | Moonshot credential. |
+| `SLO_MODEL_CATALOG_OVERRIDES_FILE` | — | Optional operator overrides for the canonical model catalog. |
 
 ---
 
@@ -186,10 +186,10 @@ Override the model for this run. Accepts any model name that Slo knows about:
 
 ```bash
 # Use Anthropic's most capable model
-slo run -p "Design a database schema" --model claude-opus-4-8 --json
+slo run -p "Design a database schema" --model claude-opus-4-7 --json
 
 # Use a faster, cheaper model for simple tasks
-slo run -p "Count the Python files" --model claude-haiku-4-5 --json
+slo run -p "Count the Python files" --model claude-sonnet-4-6 --json
 ```
 
 The fallback chain when `--model` is absent:
@@ -766,11 +766,17 @@ This is intentional: an orchestrator reviewing a frontend and a backend in paral
 ### Override the model for one run
 
 ```bash
-slo run -p "Refactor this function" --model claude-opus-4-8 --json
-slo run -p "Count the imports"      --model claude-haiku-4-5 --json
+slo run -p "Refactor this function" --model claude-sonnet-4-6 --json
+slo run -p "Count the imports"      --model gpt-5.4 --json
 ```
 
-Models that Slo knows about are in `config/ai_model_config.py`. The list includes Anthropic Claude variants, Kimi For Coding, and Moonshot models. A model name that Slo does not recognize will fail at session build time.
+Models that Slo knows about are defined in the canonical model catalog
+(`src/agents/model_catalog/`), projected through `config/ai_model_config.py`
+and `src/auth/provider_for_model.py`. The first-class lineup includes
+Anthropic Claude variants, OpenAI GPT-5.x and Codex variants, and Kimi For
+Coding models. Legacy `moonshot-*` aliases continue to resolve for backward
+compatibility. A model name that Slo does not recognize will fail at session
+build time.
 
 ### Override the reasoning level
 
@@ -791,7 +797,7 @@ The `SLO_MODEL_POOL` environment variable configures a multi-model fallback pool
 ```bash
 export SLO_MODEL_POOL='[
   {
-    "model_name": "claude-opus-4-5",
+    "model_name": "claude-sonnet-4-6",
     "provider": "anthropic",
     "priority": 1,
     "cooldown_seconds": 300,
@@ -805,7 +811,6 @@ export SLO_MODEL_POOL='[
     "rate_limit_cooldown_seconds": 60
   }
 ]'
-slo run -p "Write a migration plan" --json
 ```
 
 ---
@@ -1154,7 +1159,7 @@ The model pool is the production-grade answer to provider flakiness. It is overk
 ```json
 [
   {
-    "model_name": "claude-opus-4-5",
+    "model_name": "claude-sonnet-4-6",
     "provider": "anthropic",
     "priority": 1,
     "cooldown_seconds": 300,
@@ -1174,8 +1179,8 @@ The model pool is the production-grade answer to provider flakiness. It is overk
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `model_name` | *required* | Model identifier, must match `MODEL_DEFAULTS`. |
-| `provider` | *required* | Provider key (`anthropic`, `kimi_for_coding`, `moonshot`). |
+| `model_name` | *required* | Model identifier, must be recognized by the canonical model catalog. |
+| `provider` | *required* | Provider key (`anthropic`, `openai`, `kimi_for_coding`). |
 | `priority` | `0` | Routing order; lower values are tried first. |
 | `cooldown_seconds` | `300` | Ban duration after credit exhaustion or a non-rate-limit switchable error. |
 | `rate_limit_cooldown_seconds` | `60` | Shorter ban after a 429, 500, 502, 503, or 529. |
@@ -1291,7 +1296,6 @@ A clean, complete list of every environment variable Slo reads in headless and o
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic credential. |
 | `KIMI_FOR_CODING_API_KEY` | Kimi For Coding credential. |
-| `MOONSHOT_API_KEY` | Moonshot credential. |
 
 ### Miscellaneous
 
@@ -1366,7 +1370,7 @@ slo run -p "Review the changed files for security issues." \
 
 ```bash
 export SLO_MODEL_POOL='[
-  {"model_name":"claude-opus-4-5","provider":"anthropic","priority":1},
+  {"model_name":"claude-sonnet-4-6","provider":"anthropic","priority":1},
   {"model_name":"kimi-for-coding","provider":"kimi_for_coding","priority":2}
 ]'
 

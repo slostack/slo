@@ -335,7 +335,10 @@ Notes:
 - Keep the palette, fonts, spacing, and voice fixed across all of them — that constancy is the
   brand.
 
-## Definition of done
+## Guidance
+
+Follow the workflow in order: gather verified source material, outline the book, design diagrams, write in the required voice, render with WeasyPrint, and visually verify the PDF. Reuse the design system and CSS palette exactly; adapt only the subject matter and running title. Always deliver `input.html`, `output.pdf`, `diagrams/*.svg`, and `render.sh`.
+
 
 - Renders cleanly with WeasyPrint (no errors).
 - You have **read the rendered PDF back** and confirmed: cover bleed, auto TOC numbers, legible

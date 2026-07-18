@@ -109,6 +109,10 @@ PYTHON_VERSION: Optional[str] = os.environ.get("SLO_PYTHON_VERSION")
 # Schedules store root override
 SCHEDULES_DIR: Optional[str] = os.environ.get("SLO_SCHEDULES_DIR")
 
+# Model catalog override file path override
+MODEL_CATALOG_OVERRIDES_FILE: Optional[str] = os.environ.get("SLO_MODEL_CATALOG_OVERRIDES_FILE")
+
+
 # Session identity (headless runner pin; empty string means "assign a fresh id")
 SESSION_ID: str = os.environ.get("SLO_SESSION_ID", "").strip()
 
@@ -235,6 +239,7 @@ __cfg__: dict[str, str | None] = {
     "GITLAB_TIMEOUT_SECONDS": str(GITLAB_TIMEOUT_SECONDS) if GITLAB_TIMEOUT_SECONDS is not None else None,
     # GITLAB_TOKEN is intentionally absent: same reason as GITHUB_TOKEN above.
     "KIMI_FOR_CODING_API_KEY": KIMI_FOR_CODING_API_KEY,
+    "MODEL_CATALOG_OVERRIDES_FILE": MODEL_CATALOG_OVERRIDES_FILE,
     "LOG_FORMAT": LOG_FORMAT,
     "OAUTH_CALLBACK_HOST": OAUTH_CALLBACK_HOST,
     "OPENAI_API_KEY": OPENAI_API_KEY,

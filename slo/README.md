@@ -1645,9 +1645,10 @@ a third option. Each change is a one-file edit.
 
 v0.8.0 adds **Kimi For Coding** — a code-optimised model from
 [Moonshot AI](https://www.moonshot.cn/) served through an
-OpenAI-compatible API at `https://api.kimi.com/coding/v1`. The model
-name is `kimi-for-coding`; the `ProviderName` enum value is
-`ProviderName.KIMI_FOR_CODING = "kimi_for_coding"`.
+OpenAI-compatible API at `https://api.kimi.com/coding/v1`. The canonical
+model name is `kimi-for-coding`; newer first-class entries include
+`kimi-k3` and `kimi-for-coding-highspeed`. The `ProviderName` enum value
+is `ProviderName.KIMI_FOR_CODING = "kimi_for_coding"`.
 
 #### Getting credentials
 
@@ -1666,10 +1667,11 @@ either:
 
 #### LLMFactory dispatch
 
-`LLMFactory` (`src/agents/base.py`) uses a prefix table to route a
-model name to the correct provider builder. Both the `kimi-` prefix
-and the legacy `moonshot-` prefix route to the KFC builder, so
-`moonshot-*` model names continue to work without any migration:
+`LLMFactory` (`src/agents/base.py`) uses the canonical model catalog
+(`src/agents/model_catalog/`) to route a model name to the correct
+provider builder. Both the `kimi-` prefix and the legacy `moonshot-`
+prefix route to the KFC builder, so `moonshot-*` model names continue
+to work without any migration:
 
 ```
 kimi-*      → KFC builder  (ChatOpenAI pointed at kimi.com)
@@ -2305,7 +2307,7 @@ into replay.
 ### Config (`slo/config/`)
 
 - `cfg.py` — environment-variable resolver. Exports `cfg(key)` for runtime lookups. Key constants: `SKILLS_DIR`, `USER_SKILLS_DIR` (`~/.slo/user_skills`, override via `SLO_USER_SKILLS_DIR`), `USER_WORKFLOWS_DIR` (`~/.slo/user_workflows`, override via `SLO_USER_WORKFLOWS_DIR`).
-- `ai_model_config.py` — `MODEL_DEFAULTS` table (per-model temperature, streaming, max_tokens).
+- `ai_model_config.py` — `MODEL_DEFAULTS` compatibility projection (per-model temperature, streaming, max_tokens) derived from the canonical model catalog.
 - `logger.py` — JSON-structured logging.
 
 ### Environments (`slo/environments/`)

@@ -112,6 +112,13 @@ slo/
 │   │   │   ├── assistant_chunk_normalizer.py
 │   │   │   ├── graph_stream_parser.py
 │   │   │   └── message_text.py
+│   │   ├── model_catalog/             # canonical model catalog — identity, defaults, reasoning, aliases, discovery
+│   │   │   ├── dao.py                 # ModelCatalogEntryDAO, ModelRuntimeProfileDAO, ModelReasoningProfileDAO, …
+│   │   │   ├── seed.py                # committed first-class entries, family templates, aliases
+│   │   │   ├── discovery.py           # ProviderModelDiscoveryService, ModelCatalogOverrideService
+│   │   │   ├── service.py             # ModelCatalogService.load() — merged snapshot + projections
+│   │   │   ├── store.py               # cache and override file persistence
+│   │   │   └── prompt_clause.py       # append_kimi_for_coding_clause exact-match helper
 │   │   ├── skills/
 │   │   │   └── registry.py            # SkillRegistry — parses skills/<name>/SKILL.md
 │   │   ├── tools/
@@ -123,7 +130,7 @@ slo/
 │   │   │   ├── echo.py                # demo/test tool
 │   │   │   ├── prompt_snippets.py     # TOOL_PROMPT_SNIPPETS dict → system prompt tool lines
 │   │   │   └── _blocking.py / _truncate.py / _gitignore.py / _image_content.py
-│   │   └── reasoning_capabilities.py  # ReasoningLevel, resolve_reasoning_config
+│   │   └── reasoning_capabilities.py  # compatibility projection over ModelCatalogService reasoning profiles
 │   ├── auth/
 │   │   ├── credential_resolver.py     # CredentialResolver — env → store → legacy Claude
 │   │   ├── credential_store.py        # CredentialStore — ~/.slo/global/authentication.json
@@ -412,7 +419,7 @@ the agent is running.
 ## 10. Auth
 
 **`CredentialResolver`** (`src/auth/credential_resolver.py`) is stateless. Precedence:
-1. Environment variable for the provider (`SLO_ANTHROPIC_API_KEY`, `SLO_OPENAI_API_KEY`, or `SLO_MOONSHOT_API_KEY`).
+1. Environment variable for the provider (`SLO_ANTHROPIC_API_KEY`, `SLO_OPENAI_API_KEY`, or `SLO_KIMI_FOR_CODING_API_KEY`).
 2. `~/.slo/global/authentication.json` via `CredentialStore`.
 3. `~/.claude/.credentials.json` (Anthropic only — legacy Claude Code credentials).
 
@@ -421,16 +428,19 @@ The first-run / sign-in UI lives in `src/tui/authentication/`. `SloTUI.on_mount`
 `AuthenticationScreen` when `CredentialResolver.resolve` returns `None` for the active
 model's provider. Users re-open the modal with `/auth`.
 
-### Moonshot AI (Kimi models)
+### Kimi For Coding
 
-Provider enum value: `ProviderName.MOONSHOT`. Credential env var: `SLO_MOONSHOT_API_KEY`.
-Supported model names (all with `kimi-` or `moonshot-` prefix): `kimi-latest`,
-`kimi-k1.5-long-thinking`, `kimi-k2`.
+Provider enum value: `ProviderName.KIMI_FOR_CODING`. Credential env var: `SLO_KIMI_FOR_CODING_API_KEY`.
+Supported model names are defined by the canonical model catalog in
+`src/agents/model_catalog/seed.py`; current first-class examples include
+`kimi-for-coding`, `kimi-k3`, and `kimi-for-coding-highspeed`. Older `moonshot-*`
+aliases continue to resolve for backward compatibility but are not advertised as
+preferred names.
 
-`LLMFactory._build_moonshot_chat_openai` constructs a `ChatOpenAI` with:
-- `base_url="https://api.moonshot.cn/v1"` (OpenAI-compatible endpoint)
+`LLMFactory._build_kimi_for_coding_chat_openai` constructs a `ChatOpenAI` with:
+- `base_url="https://api.kimi.com/coding/v1"` (OpenAI-compatible endpoint)
 - `max_retries=0` — `ModelPool` handles fallback; errors must surface immediately
-- `supports_explicit_caching=False` — Moonshot does not support prompt caching
+- `supports_explicit_caching=False` — Kimi For Coding does not support prompt caching
 
 ### ModelPool (LLM Router)
 
@@ -476,6 +486,7 @@ of `ModelPool` in session.py. Pool config is parsed by
 **Credit exhaustion policy** (`src/agents/providers/credit_exhaustion_policy.py`):
 - `CreditExhaustionPolicy.classify(error, provider)` → `ProviderErrorKind`
 - `should_switch(kind)` is the single switch-vs-propagate predicate (`OTHER` ⇒ propagate).
+- Anthropic: 402 or "credit balance"/"billing" → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 529 → `TRANSIENT_PROVIDER_FAILURE`
 - Kimi For Coding: 402 → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 500/502/503/529 → `TRANSIENT_PROVIDER_FAILURE`
 - Anthropic: 402 or "credit balance"/"billing" → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 529 → `TRANSIENT_PROVIDER_FAILURE`
 - OpenAI: `code in {"insufficient_quota", "billing_hard_limit_reached"}` → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 500/502/503 → `TRANSIENT_PROVIDER_FAILURE`
@@ -540,7 +551,8 @@ Human-readable naming is additive metadata in `session.json` via `session_name` 
 
 `ModelRateLimitPolicyDAO` (`src/agents/slo_agent/rate_limit/dao.py`) holds per-model
 `requests_per_minute`, `tokens_per_minute`, `automatic_retry_attempts`, and
-`local_retry_wait_cap_seconds` sourced from `MODEL_DEFAULTS` in `config/ai_model_config.py`.
+`local_retry_wait_cap_seconds` sourced from the canonical model catalog via
+`MODEL_DEFAULTS` in `config/ai_model_config.py`.
 
 `retry_plan_from_error()` (`src/agents/slo_agent/rate_limit/service.py`) parses a caught
 rate-limit error and returns a `RateLimitRetryPlanDAO` with a `wait_seconds` value and a

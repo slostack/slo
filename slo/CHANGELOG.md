@@ -4,6 +4,61 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.9] — 2026-07-19
+
+**Automatic live visualization + a richer, resizable workflow visualizer.** When
+an orchestrator-backed TUI session spawns its first sub-agent, Slo now opens
+`slo visualize` in a separate terminal window automatically and keeps it following
+the run — operators no longer have to notice a workflow went headless and open the
+viewer by hand. The visualizer UI itself was reworked from an MVP into a themed,
+keyboard-resizable, markdown-rendering surface that mirrors the main TUI.
+
+### Added
+
+- **Auto-launch of the workflow visualizer** (`src/tui/visualizer_launcher.py`):
+  - New `VisualizerLauncher` opens `slo visualize --session <parent_session_id> --follow`
+    in a fresh OS terminal window. macOS drives Terminal.app / iTerm via `osascript`;
+    Linux probes common terminal emulators (`gnome-terminal`, `konsole`, `xterm`, …);
+    unsupported platforms and spawn failures fall back gracefully.
+  - `SloTUI._maybe_launch_visualizer` fires the launch exactly once per run on the
+    first `sub_agent_spawned` event, guarded by `_visualizer_launched_for_run` and
+    reset in `_cleanup_sub_agent_state`. On failure it writes the manual
+    `slo visualize` command into the transcript instead.
+  - Only a **non-secret `SLO_*` allowlist** (`SLO_HOME`, `SLO_ENV`, `PYTHONPATH`, …)
+    is forwarded into the new window; provider keys and deploy tokens are never
+    placed in the world-readable argv.
+- **New config flags** (`config/cfg.py`): `SLO_AUTO_VISUALIZE` (default on; set `0`
+  to opt out) and `SLO_VISUALIZER_TERMINAL_APP` (choose `Terminal` / `iTerm` on
+  macOS or a terminal-emulator executable on Linux).
+- **Workflow-summary bar** in the visualizer showing run state and a colour-coded
+  tally of sub-agents by status (running / completed / failed).
+- **Test coverage**: `tests/tui/test_visualizer_launcher.py`,
+  `tests/tui/test_visualizer_ui_enhancements.py`, and new auto-launch cases in
+  `tests/tui/test_subagent_event_routing.py`.
+
+### Changed
+
+- **Visualizer UI redesign** (`src/tui/headless_workflow_visualizer.py`):
+  - **Keyboard-resizable panes** — `ctrl+←/→` widen/narrow the sub-agent list,
+    `ctrl+↑/↓` grow/shrink the diagnostics pane (clamped, applied live). This
+    directly addresses the inability to resize the sub-agent (phase) panel.
+  - **Themed styling** aligned with the main TUI theme variables
+    (`$surface` / `$accent` / `$panel` / `$boost`).
+  - **Markdown transcript rendering** — assistant answers and user messages render
+    through `rich.markdown.Markdown`, matching the main TUI; sub-agent list entries
+    are colour-coded by status.
+  - Status bar now reports the current pane sizes.
+
+### Fixed
+
+- The visualizer no longer has to be launched and discovered manually for
+  orchestrator (dynamic) workflows started from the TUI.
+
+### Notes
+
+- Version bumped to `0.14.9` in `pyproject.toml`; `AGENTS.md` documents the
+  auto-launch behavior and the new resize / rich-rendering surface.
+
 ## [0.14.8] — 2026-07-18
 
 Unified model-catalog **latest-model support**: Slo now defines model support once in a canonical `src/agents/model_catalog` package and projects that truth into config, reasoning, provider routing, TUI model surfaces, startup fallback notices, and orchestrator child prompt wiring. This release adds the latest first-class OpenAI, Anthropic, and Kimi lineup while preserving compatibility aliases and keeping the non-e2e suite green.

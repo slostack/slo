@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -24,7 +24,6 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,9 +212,7 @@ class TestSubAgentEventRouting:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-            await app._render_event(
-                _text_delta(task_id="task-A", session_id="s1", delta="analyzing files")
-            )
+            await app._render_event(_text_delta(task_id="task-A", session_id="s1", delta="analyzing files"))
             await pilot.pause()
 
             assert app._fleet_panel is not None
@@ -375,6 +372,109 @@ class TestFleetPanelCleanup:
 
             await app._cleanup_sub_agent_state()
             await pilot.pause()
+
+
+# ---------------------------------------------------------------------------
+# TestVisualizerAutoLaunch
+# ---------------------------------------------------------------------------
+
+
+class TestVisualizerAutoLaunch:
+    """``_maybe_launch_visualizer`` opens the visualizer once per run."""
+
+    @pytest.mark.asyncio
+    async def test_first_spawn_launches_visualizer_once(self) -> None:
+        """The visualizer launches on the first spawn only, not on the second."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                new=MagicMock(return_value=True),
+            ) as mock_launch:
+                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+                await app._render_event(_spawned(task_id="task-B", session_id="s2"))
+                await pilot.pause()
+
+            mock_launch.assert_called_once()
+            assert app._visualizer_launched_for_run is True
+
+    @pytest.mark.asyncio
+    async def test_launch_passes_parent_session_id(self) -> None:
+        """The launcher receives the orchestrator (parent) session id."""
+        session = _build_session()
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                new=MagicMock(return_value=True),
+            ) as mock_launch:
+                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+                await pilot.pause()
+
+            _, kwargs = mock_launch.call_args
+            assert kwargs["parent_session_id"] == session.session_id
+
+    @pytest.mark.asyncio
+    async def test_success_writes_open_notice(self) -> None:
+        """A successful launch writes an 'Opened workflow visualizer' notice."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                new=MagicMock(return_value=True),
+            ):
+                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+                await pilot.pause()
+
+            assert app._adapter is not None
+            lines = [content for content, _ in app._adapter.lines]
+            assert any("Opened workflow visualizer" in line for line in lines)
+
+    @pytest.mark.asyncio
+    async def test_failure_writes_manual_hint(self) -> None:
+        """A failed launch writes the manual ``slo visualize`` hint instead."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                new=MagicMock(return_value=False),
+            ):
+                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+                await pilot.pause()
+
+            assert app._adapter is not None
+            lines = [content for content, _ in app._adapter.lines]
+            assert any("slo visualize --session" in line for line in lines)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_resets_launch_guard(self) -> None:
+        """After run cleanup the guard resets so the next run relaunches."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                new=MagicMock(return_value=True),
+            ) as mock_launch:
+                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+                await pilot.pause()
+                assert app._visualizer_launched_for_run is True
+
+                await app._cleanup_sub_agent_state()
+                assert app._visualizer_launched_for_run is False
+
+                await app._render_event(_spawned(task_id="task-B", session_id="s2"))
+                await pilot.pause()
+                assert mock_launch.call_count == 2
 
 
 # ---------------------------------------------------------------------------

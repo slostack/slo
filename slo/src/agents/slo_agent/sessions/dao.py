@@ -82,6 +82,10 @@ class SessionConfigDAO(BaseModel):
     orchestrator constraint addendum so the LLM only calls
     ``spawn_sub_agents`` on explicit user request.
     """
+    fallback_notice: Optional[str] = None
+    """Operator-visible notice when the requested model was invalid and a
+    fallback model was selected. Rendered once by the TUI on startup.
+    """
 
     @model_validator(mode="after")
     def _align_model_name_with_pool_primary(self) -> "SessionConfigDAO":

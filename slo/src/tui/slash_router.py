@@ -19,7 +19,11 @@ from src.agents.reasoning_capabilities import (
 )
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
-from src.tui.model_catalog import supported_models_by_provider
+from src.tui.model_catalog import (
+    ModelSuggestionEntryDAO,
+    model_suggestion_entries,
+    supported_models_by_provider,
+)
 from src.agents.slo_agent.history.tree_builder import SessionTreeBuilder
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.slash_command_registry import (
@@ -426,14 +430,22 @@ class SlashRouter:
             str: Human-readable model catalog.
         """
         lines: list[str] = ["models:"]
-        grouped_models: dict = supported_models_by_provider()
-        for provider, model_names in grouped_models.items():
+        entries: list[ModelSuggestionEntryDAO] = model_suggestion_entries(
+            active_model_name=session.active_model_name,
+        )
+        grouped: dict = {}
+        for entry in entries:
+            grouped.setdefault(entry.provider, []).append(entry)
+        for provider, provider_entries in grouped.items():
             lines.append(f"  {provider.value.title()}")
-            provider_available: bool = CredentialResolver.resolve(provider=provider) is not None
-            for model_name in model_names:
-                marker: str = "*" if model_name == session.active_model_name else " "
-                status: str = cls._provider_availability_status(provider_available=provider_available)
-                lines.append(f"    {marker} {model_name}   ({status})")
+            for entry in provider_entries:
+                marker: str = "*" if entry.is_active else " "
+                status: str = cls._provider_availability_status(
+                    provider_available=(not entry.requires_auth),
+                )
+                label: str = entry.support_tier_label
+                suffix: str = f" ({label})" if label else ""
+                lines.append(f"    {marker} {entry.model_name}   ({status}){suffix}")
         return "\n".join(lines)
 
     @staticmethod
@@ -656,9 +668,7 @@ class SlashRouter:
 
         prefs: UserPreferencesDAO = UserPreferencesStore.load()
         model_line: str = f"  model:     {prefs.default_model_name or '(none — uses default)'}"
-        reasoning_line: str = (
-            f"  reasoning: {prefs.default_reasoning_level or '(none — uses model default)'}"
-        )
+        reasoning_line: str = f"  reasoning: {prefs.default_reasoning_level or '(none — uses model default)'}"
         return SlashCommandResultDAO(
             rendered=f"Saved preferences:\n{model_line}\n{reasoning_line}",
         )
@@ -701,5 +711,3 @@ class SlashRouter:
         if command.argument_mode != "none" and command.usage is not None:
             return command.usage
         return f"/{command.name}"
-
-

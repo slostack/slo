@@ -73,13 +73,34 @@ class TestDefaultSeeding:
 
         assert default_level == "off"
 
-    def test_highest_supported_reasoning_level_returns_xhigh_when_available(self) -> None:
-        """`max` should resolve to ``xhigh`` on xhigh-capable models."""
-        highest_level: str = highest_supported_reasoning_level(
-            model_name="claude-opus-4-7",
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "claude-fable",
+            "kimi-k3",
+            "kimi-for-coding-highspeed",
+        ],
+    )
+    def test_capability_for_model_returns_record_for_new_models(self, model_name: str) -> None:
+        """Spec-55 first-class models have catalog-backed capability records."""
+        capability: ModelReasoningCapabilityDAO = capability_for_model(
+            model_name=model_name,
         )
 
-        assert highest_level == "xhigh"
+        assert capability is not None
+
+    def test_claude_mythos_clamps_xhigh_to_high(self) -> None:
+        """The conditional entry clamps xhigh to high from seed."""
+        active_level: str = clamp_reasoning_level(
+            model_name="claude-mythos",
+            requested_level="xhigh",
+        )
+
+        assert active_level == "high"
 
 
 class TestClamping:
@@ -168,11 +189,14 @@ class TestResolvedConfig:
 class TestCodexCapabilityRecords:
     """Reasoning capability records for the OpenAI Codex model family."""
 
-    @pytest.mark.parametrize("model_name", [
-        "gpt-5-codex",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
-    ])
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "gpt-5-codex",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+        ],
+    )
     def test_codex_flagship_models_support_reasoning_and_xhigh(
         self,
         model_name: str,

@@ -4,6 +4,45 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.8] — 2026-07-18
+
+Unified model-catalog **latest-model support**: Slo now defines model support once in a canonical `src/agents/model_catalog` package and projects that truth into config, reasoning, provider routing, TUI model surfaces, startup fallback notices, and orchestrator child prompt wiring. This release adds the latest first-class OpenAI, Anthropic, and Kimi lineup while preserving compatibility aliases and keeping the non-e2e suite green.
+
+### Added
+
+- **Canonical model catalog package** (`src/agents/model_catalog/`):
+  - `dao.py` — typed catalog, runtime-profile, reasoning-profile, alias, template, discovery, and override DAOs.
+  - `seed.py` — committed first-class catalog entries for `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `claude-fable`, `claude-mythos`, `kimi-k3`, and `kimi-for-coding-highspeed`, plus retained existing production models.
+  - `service.py` — memoized seed/cache/discovery/override load path and canonical entry resolution.
+  - `store.py` — cache and override persistence under `~/.slo/global/`.
+  - `discovery.py` — best-effort provider discovery merge surface and override application helpers.
+  - `prompt_clause.py` — exact-match Kimi task-prompt suffix injection for `kimi-for-coding` only.
+- **User-visible invalid-model fallback notice** plumbed from config/session startup into the TUI so a bad saved model preference falls back safely and tells the operator what happened.
+- **Catalog-focused regression coverage** across seed data, discovery/override behavior, provider routing, Kimi prompt-clause wiring, startup notices, and TUI `/model` projections.
+
+### Changed
+
+- **Legacy model-support surfaces are now catalog-backed projections**:
+  - `config/ai_model_config.py`
+  - `src/agents/reasoning_capabilities.py`
+  - `src/auth/provider_for_model.py`
+  - `src/tui/model_catalog.py`
+  - `src/tui/slash_router.py`
+- **Session startup and CLI config construction** now preserve and render fallback-notice metadata when a requested model is invalid or compatibility-only.
+- **Orchestrator child prompt assembly** now appends the terse Kimi clause only for the exact model name `kimi-for-coding`, not for `kimi-k3` or `kimi-for-coding-highspeed`.
+- **Prompt-critical docs** (`AGENTS.md`, `README.md`, `docs/RESEARCH.md`, `docs/SLO_HEADLESS_README.md`) now describe the canonical catalog architecture instead of the older split-table model story.
+
+### Fixed
+
+- **Kimi family temperature handling** now sets `temperature=1` for every canonical `ProviderName.KIMI_FOR_CODING` model, fixing runtime 400s for `kimi-k3` and `kimi-for-coding-highspeed` (`invalid temperature: only 1 is allowed for this model`).
+- **Full-suite gate regression** in `skills/presentation/present-as-pdf-book/SKILL.md` by restoring the required `## Guidance` section so the repo default test gate remains green.
+
+### Notes
+
+- `claude-mythos` remains hidden by default and capped at `high` reasoning until availability is confirmed by discovery or operator override.
+- Kimi family models remain `off`-only for user-configurable reasoning because the provider does not expose controllable reasoning levels.
+- Verification for this release: targeted catalog/tests green, touched-surface mypy green, full non-e2e suite green (`2590 passed, 4 deselected`).
+
 ## [0.10.2] — 2026-06-27
 
 Provider **message-contract reconciliation** — fixes a crash where a session

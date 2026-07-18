@@ -41,6 +41,7 @@ the total forwarded bytes, so memory use is still bounded.
 
 from config.logger import log_error, log_info, log_warning
 from config.timeout_resolver import positive_float_env
+from src.agents.model_catalog.prompt_clause import append_kimi_for_coding_clause
 from src.cli.headless_events import emit_lifecycle_event
 
 from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
@@ -182,6 +183,11 @@ class SubAgentProcess:
             dump_json_bytes,
         )
 
+        effective_prompt: str = append_kimi_for_coding_clause(
+            prompt=self._task.prompt,
+            model_name=self._model or "",
+        )
+
         capture_dir: Optional[Path] = self._capture_dir()
         if capture_dir is None:
             return
@@ -192,7 +198,7 @@ class SubAgentProcess:
                 return
             context: SpawnContextDAO = SpawnContextDAO.build(
                 task_id=self._task.task_id,
-                prompt=self._task.prompt,
+                prompt=effective_prompt,
                 system_prompt=self._system_prompt,
                 inactivity_timeout_seconds=CHILD_INACTIVITY_TIMEOUT_SECONDS,
                 model=self._model,
@@ -200,9 +206,7 @@ class SubAgentProcess:
                 cwd=self._task.cwd,
             )
             data: bytes = dump_json_bytes(model=context)
-            with tempfile.NamedTemporaryFile(
-                dir=capture_dir, delete=False
-            ) as tmp:
+            with tempfile.NamedTemporaryFile(dir=capture_dir, delete=False) as tmp:
                 tmp.write(data)
                 tmp_name: str = tmp.name
             os.replace(tmp_name, spawn_path)
@@ -224,6 +228,10 @@ class SubAgentProcess:
         Returns:
             list[str]: Argv for ``create_subprocess_exec``.
         """
+        effective_prompt: str = append_kimi_for_coding_clause(
+            prompt=self._task.prompt,
+            model_name=self._model or "",
+        )
         argv: list[str] = [
             sys.executable,
             "-m",
@@ -231,7 +239,7 @@ class SubAgentProcess:
             "run",
             "--json",
             "-p",
-            self._task.prompt,
+            effective_prompt,
         ]
         if self._model is not None:
             argv += ["--model", self._model]
@@ -246,9 +254,7 @@ class SubAgentProcess:
         if self._task.enable_history is True:
             argv += ["--enable-history"]
         if self._task.system_prompt is not None:
-            encoded: str = base64.b64encode(
-                self._task.system_prompt.encode()
-            ).decode()
+            encoded: str = base64.b64encode(self._task.system_prompt.encode()).decode()
             argv += ["--system-prompt-b64", encoded]
         return argv
 
@@ -265,12 +271,7 @@ class SubAgentProcess:
         if self._parent_session_id is None or self._slo_home is None:
             return None
         return (
-            self._slo_home
-            / "sessions"
-            / "history"
-            / self._parent_session_id
-            / "children"
-            / self._session_id
+            self._slo_home / "sessions" / "history" / self._parent_session_id / "children" / self._session_id
         )
 
     def _open_capture_file(self, *, name: str) -> Optional[IO[bytes]]:

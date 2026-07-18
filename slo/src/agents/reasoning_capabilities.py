@@ -1,16 +1,20 @@
 """Reasoning capability catalog and clamping helpers for Slo.
 
-This module owns Slo's provider-neutral reasoning vocabulary plus the
-supported interactive model capability table. The session, TUI, and LLM
-factory all consume these helpers so default seeding, clamping, and
-provider translation stay deterministic.
+This module is now a compatibility projection over the canonical model catalog
+in ``src.agents.model_catalog``. It preserves the historical public helpers
+(``capability_for_model``, ``clamp_reasoning_level``, ``resolve_reasoning_config``,
+``MODEL_REASONING_CAPABILITIES``) while sourcing truth from the catalog.
 """
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.agents.model_catalog.dao import ReasoningLevel
+from src.agents.model_catalog.service import ModelCatalogService
+from src.auth.credential_dao import ProviderName
 
 __all__ = [
     "MODEL_REASONING_CAPABILITIES",
@@ -28,8 +32,7 @@ __all__ = [
 ]
 
 
-ReasoningLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
-"""Slo's canonical provider-neutral reasoning vocabulary."""
+ReasoningLevel = ReasoningLevel
 
 
 REASONING_LEVELS: tuple[ReasoningLevel, ...] = (
@@ -94,139 +97,64 @@ class ResolvedReasoningConfigDAO(BaseModel):
     provider_summary_mode: Optional[str] = None
 
 
-def _anthropic_capability(*, supports_xhigh: bool) -> ModelReasoningCapabilityDAO:
-    """Build the Anthropic capability record for one supported model.
+MODEL_REASONING_CAPABILITIES: dict[str, ModelReasoningCapabilityDAO] = {}
+"""Compatibility projection from the canonical model catalog."""
+
+
+def _provider_summary_mode_for_model(*, model_name: str) -> Optional[str]:
+    """Derive the provider-native summary mode for a model.
+
+    OpenAI reasoning models use ``responses`` API with ``auto`` summary mode.
+    Anthropic adaptive thinking and Kimi do not expose this mode.
 
     Args:
-        supports_xhigh (bool): True when the model supports Slo's
-            highest reasoning tier.
+        model_name (str): Canonical model name.
 
     Returns:
-        ModelReasoningCapabilityDAO: Anthropic capability metadata.
+        Optional[str]: Provider summary mode, or ``None`` when not applicable.
     """
-    supported_levels: list[ReasoningLevel] = [
-        "off",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-    ]
-    # Anthropic adaptive thinking uses output_config.effort ("low"/"medium"/"high").
-    # Minimal and low both map to "low"; xhigh has no Anthropic tier above "high".
-    provider_effort_map: dict[ReasoningLevel, str] = {
-        "minimal": "low",
-        "low": "low",
-        "medium": "medium",
-        "high": "high",
-    }
-    if supports_xhigh:
-        supported_levels.append("xhigh")
-        provider_effort_map["xhigh"] = "high"
-    return ModelReasoningCapabilityDAO(
-        reasoning_supported=True,
-        supported_levels=supported_levels,
-        default_level="high",
-        provider_effort_map=provider_effort_map,
-    )
+    provider = ModelCatalogService.entry_for_model(model_name=model_name).provider
+    if provider is ProviderName.OPENAI:
+        return "auto"
+    return None
 
 
-def _openai_capability(
+def _catalog_entry_to_capability(
     *,
-    supports_xhigh: bool,
-    minimal_maps_to_low: bool,
+    model_name: str,
 ) -> ModelReasoningCapabilityDAO:
-    """Build the OpenAI capability record for one supported model.
+    """Project one catalog entry into the legacy capability shape.
 
     Args:
-        supports_xhigh (bool): True when the model supports Slo's
-            highest reasoning tier.
-        minimal_maps_to_low (bool): True when provider-native minimal
-            requests must be translated to ``low``.
+        model_name (str): Canonical model name or known alias.
 
     Returns:
-        ModelReasoningCapabilityDAO: OpenAI capability metadata.
+        ModelReasoningCapabilityDAO: Legacy capability record.
     """
-    supported_levels: list[ReasoningLevel] = [
-        "off",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-    ]
-    provider_effort_map: dict[ReasoningLevel, str] = {
-        "minimal": "low" if minimal_maps_to_low else "minimal",
-        "low": "low",
-        "medium": "medium",
-        "high": "high",
-    }
-    if supports_xhigh:
-        supported_levels.append("xhigh")
-        provider_effort_map["xhigh"] = "xhigh"
+    entry = ModelCatalogService.entry_for_model(model_name=model_name)
+    profile = entry.reasoning_profile
+    reasoning_supported = profile.supported_levels != ["off"]
     return ModelReasoningCapabilityDAO(
-        reasoning_supported=True,
-        supported_levels=supported_levels,
-        default_level="high",
-        provider_effort_map=provider_effort_map,
-        provider_summary_mode="auto",
+        reasoning_supported=reasoning_supported,
+        supported_levels=list(profile.supported_levels),
+        default_level=profile.default_level,
+        provider_effort_map=dict(profile.provider_effort_map),
+        provider_budget_map=dict(profile.provider_budget_map),
+        provider_summary_mode=_provider_summary_mode_for_model(model_name=entry.model_name),
     )
 
 
-def _non_reasoning_capability() -> ModelReasoningCapabilityDAO:
-    """Build the capability record for a non-reasoning model.
-
-    Returns:
-        ModelReasoningCapabilityDAO: Off-only capability metadata.
-    """
-    return ModelReasoningCapabilityDAO(
-        reasoning_supported=False,
-        supported_levels=["off"],
-        default_level="off",
-    )
+def rebuild_reasoning_capabilities_projection() -> None:
+    """Rebuild the legacy capability map in place from the canonical catalog."""
+    snapshot = ModelCatalogService.load()
+    projected: dict[str, ModelReasoningCapabilityDAO] = {}
+    for model_name in snapshot.entries:
+        projected[model_name] = _catalog_entry_to_capability(model_name=model_name)
+    MODEL_REASONING_CAPABILITIES.clear()
+    MODEL_REASONING_CAPABILITIES.update(projected)
 
 
-MODEL_REASONING_CAPABILITIES: dict[str, ModelReasoningCapabilityDAO] = {
-    "claude-opus-4-7": _anthropic_capability(supports_xhigh=True),
-    "claude-sonnet-4-6": _anthropic_capability(supports_xhigh=False),
-    "gpt-5.4": _openai_capability(
-        supports_xhigh=True,
-        minimal_maps_to_low=True,
-    ),
-    "gpt-5-codex": _openai_capability(
-        supports_xhigh=True,
-        minimal_maps_to_low=True,
-    ),
-    "gpt-5.3-codex": _openai_capability(
-        supports_xhigh=True,
-        minimal_maps_to_low=True,
-    ),
-    "gpt-5.3-codex-spark": _openai_capability(
-        supports_xhigh=True,
-        minimal_maps_to_low=True,
-    ),
-    "gpt-5.2-codex": _openai_capability(
-        supports_xhigh=False,
-        minimal_maps_to_low=True,
-    ),
-    "gpt-5": _openai_capability(
-        supports_xhigh=False,
-        minimal_maps_to_low=False,
-    ),
-    "gpt-4.1": _non_reasoning_capability(),
-    "gpt-4o": _non_reasoning_capability(),
-    "o3": _openai_capability(
-        supports_xhigh=False,
-        minimal_maps_to_low=False,
-    ),
-    "o1": _openai_capability(
-        supports_xhigh=False,
-        minimal_maps_to_low=False,
-    ),
-    # Kimi For Coding (KFC) always reasons internally
-    # (supports_thinking_type="only"); Slo treats it as non-reasoning since
-    # the reasoning level cannot be controlled via the API.
-    "kimi-for-coding": _non_reasoning_capability(),
-}
-"""Versioned capability table for Slo's supported interactive models."""
+rebuild_reasoning_capabilities_projection()
 
 
 def capability_for_model(*, model_name: str) -> ModelReasoningCapabilityDAO:

@@ -426,6 +426,7 @@ class SloAgentSession:
             if config is not None
             else cfg("DEFAULT_MODEL_NAME")
         )
+        self._startup_fallback_notice: Optional[str] = config.fallback_notice if config is not None else None
         self._active_reasoning_level: ReasoningLevel = self._seed_active_reasoning_level(
             config=config,
         )
@@ -934,6 +935,16 @@ class SloAgentSession:
             bool: True when canonical on-disk history is enabled.
         """
         return self._enable_history
+
+    @property
+    def startup_fallback_notice(self) -> Optional[str]:
+        """Return the operator-visible fallback notice, if any.
+
+        Returns:
+            Optional[str]: Notice text when the requested model was invalid,
+                otherwise ``None``.
+        """
+        return self._startup_fallback_notice
 
     @property
     def session_name(self) -> Optional[str]:

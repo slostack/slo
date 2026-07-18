@@ -10,16 +10,23 @@ A standalone Textual app that renders a headless orchestrator workflow:
   - Status bar: workflow state, last refresh timestamp, follow mode, detail view.
 
 Key bindings:
-  q   — quit
-  r   — force immediate refresh
-  f   — toggle follow mode
-  o   — toggle orchestrator context pane
-  v   — toggle detail view (transcript ↔ invocation)
-  t   — cycle detail pane format (textual → markdown → html)
-  d   — toggle the diagnostics pane
+  q          — quit
+  r          — force immediate refresh
+  f          — toggle follow mode
+  o          — toggle orchestrator context pane
+  v          — toggle detail view (transcript ↔ invocation)
+  t          — cycle detail pane format (textual → markdown → html)
+  d          — toggle the diagnostics pane
+  ctrl+left  — narrow the sub-agent list panel
+  ctrl+right — widen the sub-agent list panel
+  ctrl+up    — shrink the diagnostics pane
+  ctrl+down  — grow the diagnostics pane
 
 Sub-spec 53.a.5. Extended in 54.a.5 with orchestrator pane, invocation view,
-prompt previews, thinking/reasoning formatting, and new key bindings.
+prompt previews, thinking/reasoning formatting, and new key bindings. Extended
+again with a workflow-summary bar, themed styling matching the main TUI,
+markdown transcript rendering, coloured sub-agent status, and keyboard-resizable
+panes.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Optional
 
+from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -57,6 +65,28 @@ _STATUS_ICON: dict[str, str] = {
     "aborted": "⊘",
     "pending": "◌",
 }
+
+# Rich style per status, mirroring the main TUI's success/warning/muted palette
+# so a glance at the sub-agent list reads the same as the orchestrator view.
+_STATUS_STYLE: dict[str, str] = {
+    "running": "yellow",
+    "completed": "green",
+    "failed": "red",
+    "aborted": "red",
+    "pending": "dim",
+}
+
+# Child-list panel width bounds and step (cells) for keyboard resizing.
+_CHILD_PANEL_WIDTH_DEFAULT: int = 40
+_CHILD_PANEL_WIDTH_MIN: int = 24
+_CHILD_PANEL_WIDTH_MAX: int = 90
+_CHILD_PANEL_WIDTH_STEP: int = 6
+
+# Diagnostics-pane height bounds and step (cells) for keyboard resizing.
+_DIAG_HEIGHT_DEFAULT: int = 10
+_DIAG_HEIGHT_MIN: int = 3
+_DIAG_HEIGHT_MAX: int = 40
+_DIAG_HEIGHT_STEP: int = 3
 
 # Ordered cycle for the `t` key binding.
 _FORMAT_CYCLE: list[TreeExportFormat] = [
@@ -93,16 +123,33 @@ class HeadlessWorkflowVisualizer(App[None]):
         Binding(key="v", action="toggle_detail_view", description="Toggle detail view"),
         Binding(key="t", action="cycle_format", description="Cycle format"),
         Binding(key="d", action="toggle_diagnostics", description="Toggle diag"),
+        Binding(key="ctrl+right", action="widen_child_panel", description="Wider list"),
+        Binding(key="ctrl+left", action="narrow_child_panel", description="Narrower list"),
+        Binding(key="ctrl+down", action="grow_diagnostics", description="Taller diag"),
+        Binding(key="ctrl+up", action="shrink_diagnostics", description="Shorter diag"),
     ]
 
     DEFAULT_CSS = """
     HeadlessWorkflowVisualizer {
         layout: vertical;
+        background: $surface;
+    }
+    Header {
+        background: $surface;
+    }
+    Footer {
+        background: $surface;
+    }
+    #workflow-summary {
+        height: 1;
+        background: $panel;
+        color: $text;
+        padding: 0 1;
     }
     #orchestrator-context-panel {
         height: 12;
         padding: 0 1;
-        border-bottom: solid $primary;
+        border: round $accent;
     }
     #orchestrator-context-panel.hidden {
         display: none;
@@ -115,10 +162,17 @@ class HeadlessWorkflowVisualizer(App[None]):
         width: 40;
         min-width: 22;
         height: 100%;
-        border-right: solid $primary;
+        border-right: solid $accent;
     }
     #child-list-panel ListView {
         height: 1fr;
+        background: $surface;
+    }
+    #child-list-panel ListView > ListItem {
+        padding: 0 1;
+    }
+    #child-list-panel ListView > ListItem.--highlight {
+        background: $boost;
     }
     #detail-panel {
         width: 1fr;
@@ -126,13 +180,16 @@ class HeadlessWorkflowVisualizer(App[None]):
         layout: vertical;
     }
     #detail-log {
-        height: 2fr;
-        padding: 0 1;
-        border-bottom: dashed $primary;
-    }
-    #diagnostics-log {
         height: 1fr;
         padding: 0 1;
+        border-bottom: dashed $accent;
+        background: $surface;
+    }
+    #diagnostics-log {
+        height: 10;
+        padding: 0 1;
+        background: $surface;
+        color: $text-muted;
     }
     #diagnostics-log.hidden {
         display: none;
@@ -143,16 +200,20 @@ class HeadlessWorkflowVisualizer(App[None]):
     #status-bar {
         height: 1;
         background: $panel;
+        color: $text-muted;
         padding: 0 1;
         dock: bottom;
     }
     #panel-title {
         background: $boost;
+        color: $accent;
+        text-style: bold;
         padding: 0 1;
         height: 1;
     }
     #diag-title {
         background: $boost;
+        color: $text-muted;
         padding: 0 1;
         height: 1;
     }
@@ -186,6 +247,8 @@ class HeadlessWorkflowVisualizer(App[None]):
         self._refresh_timer: Optional[Timer] = None
         self._orchestrator_context_visible: bool = False
         self._detail_view: Literal["transcript", "invocation"] = "transcript"
+        self._child_panel_width: int = _CHILD_PANEL_WIDTH_DEFAULT
+        self._diag_height: int = _DIAG_HEIGHT_DEFAULT
 
     def compose(self) -> ComposeResult:
         """Lay out the three-pane interface with orchestrator context panel.
@@ -195,6 +258,7 @@ class HeadlessWorkflowVisualizer(App[None]):
                 layout, status bar, Footer.
         """
         yield Header()
+        yield Label("Loading workflow …", id="workflow-summary")
         with Vertical(id="orchestrator-context-panel", classes="hidden"):
             yield RichLog(id="orchestrator-context-log", highlight=True, markup=True)
         with Horizontal(id="main-layout"):
@@ -209,7 +273,8 @@ class HeadlessWorkflowVisualizer(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
-        """Load initial data and start the follow-mode timer if enabled."""
+        """Load initial data, apply pane sizes, and start the follow timer."""
+        self._apply_layout_sizes()
         await self._do_refresh()
         if self._follow and not self._workflow_data_is_terminal():
             self._start_refresh_timer()
@@ -245,6 +310,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             return
         self._last_refresh = datetime.now()
         self._update_app_header()
+        self._rebuild_summary_bar()
         await self._rebuild_child_list()
         await self._rebuild_detail_pane()
         self._rebuild_diagnostics_pane()
@@ -259,10 +325,52 @@ class HeadlessWorkflowVisualizer(App[None]):
         short_id: str = parent_id[:16] if len(parent_id) > 16 else parent_id
         self.title = f"Slo — session={short_id}"
         format_label: str = _FORMAT_LABEL.get(self._detail_format, "textual")
-        self.sub_title = (
-            f"format={format_label}  "
-            f"children={len(self._workflow_data.children)}"
+        self.sub_title = f"format={format_label}  " f"children={len(self._workflow_data.children)}"
+
+    def _rebuild_summary_bar(self) -> None:
+        """Rebuild the top workflow-summary bar from the current data snapshot.
+
+        Shows the overall run state followed by a coloured tally of sub-agents
+        by status (running / completed / failed) so the operator sees fleet
+        health at a glance, mirroring the main TUI's status palette.
+        """
+        summary: Label = self.query_one("#workflow-summary", Label)
+        if self._workflow_data is None:
+            summary.update("Loading workflow …")
+            return
+        counts: dict[str, int] = self._status_counts()
+        state_markup: str = (
+            "[green]● complete[/green]" if self._workflow_data.is_complete else "[yellow]● running[/yellow]"
         )
+        total: int = len(self._workflow_data.children)
+        parts: list[str] = [
+            state_markup,
+            f"[bold]{total}[/bold] sub-agents",
+            f"[yellow]⏳ {counts['running']}[/yellow]",
+            f"[green]✓ {counts['completed']}[/green]",
+            f"[red]✗ {counts['failed'] + counts['aborted']}[/red]",
+        ]
+        summary.update("   ".join(parts))
+
+    def _status_counts(self) -> dict[str, int]:
+        """Tally the current children by status.
+
+        Returns:
+            dict[str, int]: Counts keyed by status name; every known status is
+                present (zero when absent) so callers can index without guards.
+        """
+        counts: dict[str, int] = {
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "aborted": 0,
+            "pending": 0,
+        }
+        if self._workflow_data is None:
+            return counts
+        for child in self._workflow_data.children:
+            counts[child.status] = counts.get(child.status, 0) + 1
+        return counts
 
     async def _rebuild_child_list(self) -> None:
         """Repopulate the left-pane child session list from current data."""
@@ -298,17 +406,18 @@ class HeadlessWorkflowVisualizer(App[None]):
             child_session_id=child.session_id,
         )
         if not entries:
-            detail_log.write(
-                f"[dim]No transcript entries for {child.session_id}.[/dim]"
-            )
+            detail_log.write(f"[dim]No transcript entries for {child.session_id}.[/dim]")
             return
         for entry in entries:
-            detail_log.write(
-                self._format_transcript_entry(
-                    entry=entry,
-                    fmt=self._detail_format,
+            if self._detail_format == TreeExportFormat.TEXTUAL:
+                self._write_entry_rich(detail_log=detail_log, entry=entry)
+            else:
+                detail_log.write(
+                    self._format_transcript_entry(
+                        entry=entry,
+                        fmt=self._detail_format,
+                    )
                 )
-            )
 
     def _rebuild_diagnostics_pane(self) -> None:
         """Reload the diagnostics pane from the current child's stderr capture."""
@@ -391,11 +500,53 @@ class HeadlessWorkflowVisualizer(App[None]):
 
     async def action_toggle_detail_view(self) -> None:
         """Key-binding action: toggle detail pane between transcript and invocation."""
-        self._detail_view = (
-            "invocation" if self._detail_view == "transcript" else "transcript"
-        )
+        self._detail_view = "invocation" if self._detail_view == "transcript" else "transcript"
         await self._rebuild_detail_pane()
         self._update_status_bar_from_data()
+
+    def action_widen_child_panel(self) -> None:
+        """Key-binding action: widen the sub-agent list panel by one step."""
+        self._child_panel_width = min(
+            self._child_panel_width + _CHILD_PANEL_WIDTH_STEP,
+            _CHILD_PANEL_WIDTH_MAX,
+        )
+        self._apply_layout_sizes()
+
+    def action_narrow_child_panel(self) -> None:
+        """Key-binding action: narrow the sub-agent list panel by one step."""
+        self._child_panel_width = max(
+            self._child_panel_width - _CHILD_PANEL_WIDTH_STEP,
+            _CHILD_PANEL_WIDTH_MIN,
+        )
+        self._apply_layout_sizes()
+
+    def action_grow_diagnostics(self) -> None:
+        """Key-binding action: grow the diagnostics pane height by one step."""
+        self._diag_height = min(
+            self._diag_height + _DIAG_HEIGHT_STEP,
+            _DIAG_HEIGHT_MAX,
+        )
+        self._apply_layout_sizes()
+
+    def action_shrink_diagnostics(self) -> None:
+        """Key-binding action: shrink the diagnostics pane height by one step."""
+        self._diag_height = max(
+            self._diag_height - _DIAG_HEIGHT_STEP,
+            _DIAG_HEIGHT_MIN,
+        )
+        self._apply_layout_sizes()
+
+    def _apply_layout_sizes(self) -> None:
+        """Apply the stored pane sizes to the child-list and diagnostics widgets.
+
+        Called on mount and after every resize action. Silently no-ops when the
+        target widgets are not yet mounted so it is safe to call early.
+        """
+        try:
+            self.query_one("#child-list-panel").styles.width = self._child_panel_width
+            self.query_one("#diagnostics-log", RichLog).styles.height = self._diag_height
+        except Exception:  # noqa: BLE001 — widgets may not be mounted yet.
+            return
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -478,6 +629,9 @@ class HeadlessWorkflowVisualizer(App[None]):
     def _child_label(*, child: ChildSessionSummaryDAO) -> Text:
         """Format the list-item label for one child session with prompt preview.
 
+        The status icon and session id are coloured by status (green completed,
+        yellow running, red failed/aborted) so the list reads at a glance.
+
         Args:
             child (ChildSessionSummaryDAO): Child session summary.
 
@@ -488,11 +642,50 @@ class HeadlessWorkflowVisualizer(App[None]):
         icon: str = _STATUS_ICON.get(child.status, "?")
         short_id: str = child.session_id[:8]
         task_suffix: str = f" ({child.task_id[:8]})" if child.task_id else ""
-        label: Text = Text(f"{icon} {short_id}{task_suffix}")
+        style: str = _STATUS_STYLE.get(child.status, "")
+        label: Text = Text(f"{icon} {short_id}{task_suffix}", style=style)
         if child.prompt_preview:
             label.append(" │ ", style="dim")
             label.append(child.prompt_preview, style="italic")
         return label
+
+    @staticmethod
+    def _write_entry_rich(*, detail_log: RichLog, entry: TranscriptEntryDAO) -> None:
+        """Write one transcript entry to the detail log as rich renderables.
+
+        Used by the default (TEXTUAL) detail format. Assistant answers and user
+        messages render through ``rich.markdown.Markdown`` so headings, lists,
+        and code blocks display the same way they do in the main TUI; reasoning
+        and thinking render as dim italic; tool entries show a bold header and a
+        truncated output block. A dim separator closes each entry.
+
+        Args:
+            detail_log (RichLog): Target detail log widget.
+            entry (TranscriptEntryDAO): Transcript entry to render.
+        """
+        if entry.kind == "user":
+            detail_log.write(Text("▶ User", style="bold cyan"))
+            if entry.content:
+                detail_log.write(Markdown(entry.content))
+        elif entry.kind == "assistant":
+            detail_log.write(Text("◀ Assistant", style="bold green"))
+            if entry.reasoning:
+                detail_log.write(Text("~ reasoning", style="bold dim"))
+                detail_log.write(Text(entry.reasoning[:2000], style="dim italic"))
+            body: str = entry.answer or entry.content or ""
+            if body:
+                detail_log.write(Markdown(body))
+        elif entry.kind == "thinking":
+            detail_log.write(Text("~ Thinking", style="bold dim"))
+            if entry.content:
+                detail_log.write(Text(entry.content[:2000], style="dim italic"))
+        elif entry.kind == "tool":
+            detail_log.write(Text(f"⚙ {entry.tool_name or 'tool'}", style="bold yellow"))
+            if entry.output:
+                detail_log.write(Text(str(entry.output)[:800], style="yellow"))
+        else:
+            detail_log.write(Text(str(entry)))
+        detail_log.write(Text("─" * 24, style="dim"))
 
     @staticmethod
     def _format_transcript_entry(
@@ -647,11 +840,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             return
         state: str = "complete" if self._workflow_data.is_complete else "running"
         follow_flag: str = "follow=on" if self._follow else "follow=off"
-        refresh_ts: str = (
-            self._last_refresh.strftime("%H:%M:%S")
-            if self._last_refresh
-            else "—"
-        )
+        refresh_ts: str = self._last_refresh.strftime("%H:%M:%S") if self._last_refresh else "—"
         n_children: int = len(self._workflow_data.children)
         parent_short: str = self._workflow_data.parent_session_id[:8]
         fmt_label: str = _FORMAT_LABEL.get(self._detail_format, "textual")
@@ -659,5 +848,7 @@ class HeadlessWorkflowVisualizer(App[None]):
         self._update_status_bar(
             f"parent={parent_short}  state={state}  "
             f"children={n_children}  fmt={fmt_label}  "
-            f"view={view_label}  {follow_flag}  last_refresh={refresh_ts}"
+            f"view={view_label}  {follow_flag}  "
+            f"list={self._child_panel_width}  diag={self._diag_height}  "
+            f"last_refresh={refresh_ts}"
         )

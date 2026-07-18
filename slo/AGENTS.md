@@ -153,6 +153,9 @@ slo/
 │   │   ├── slash_command_registry.py  # SlashCommandRegistry + SlashCommandSpecDAO
 │   │   ├── slash_suggestion_engine.py # SlashSuggestionEngine — prefix-match autocomplete
 │   │   ├── thinking_spinner.py        # ThinkingSpinner widget
+│   │   ├── headless_workflow_visualizer.py # `slo visualize` TUI — resizable panes, summary bar, markdown transcript
+│   │   ├── workflow_visualizer_loader.py   # WorkflowVisualizerLoader — reads parent/child session captures
+│   │   ├── visualizer_launcher.py     # VisualizerLauncher — opens `slo visualize` in a new OS terminal window
 │   │   ├── model_catalog.py           # supported_models_by_provider()
 │   │   ├── authentication/            # AuthenticationScreen + widgets (api_key, oauth, …)
 │   │   └── widgets/
@@ -413,6 +416,20 @@ history navigation exits.
 
 **`ThinkingSpinner`** (`src/tui/thinking_spinner.py`) is mounted above `PromptInput` while
 the agent is running.
+
+**Workflow visualizer auto-launch:** when a TUI session is promoted to orchestrator mode and
+the first sub-agent is spawned, `SloTUI._maybe_launch_visualizer` opens a separate terminal
+window running `slo visualize --session <parent_session_id> --follow` via `VisualizerLauncher`
+(`src/tui/visualizer_launcher.py`). It fires once per run (guarded by
+`_visualizer_launched_for_run`, reset in `_cleanup_sub_agent_state`). The launch is
+best-effort: macOS drives Terminal.app/iTerm through `osascript`, Linux probes common
+terminal emulators, and any other platform (or a failed spawn) falls back to writing the
+manual `slo visualize` command into the transcript. Only a non-secret `SLO_*` allowlist is
+forwarded into the new window. Disable with `SLO_AUTO_VISUALIZE=0`; pick the emulator with
+`SLO_VISUALIZER_TERMINAL_APP`. The visualizer TUI itself
+(`headless_workflow_visualizer.py`) has a workflow-summary bar, status-coloured sub-agent
+list, markdown transcript rendering matching the main TUI, and keyboard-resizable panes
+(`ctrl+←/→` for the sub-agent list width, `ctrl+↑/↓` for the diagnostics height).
 
 ---
 

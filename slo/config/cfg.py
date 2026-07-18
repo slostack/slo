@@ -69,11 +69,9 @@ DEBUGPY_PORT: int = int(os.environ.get("SLO_DEBUGPY_PORT", "5678"))
 # Deploy / update credentials (consumed by ``slo update``). The public install.sh
 # names are SLO_USERNAME / SLO_TOKEN; the internal aliases are preferred when both
 # are present.
-DEPLOY_TOKEN: Optional[str] = (
-    os.environ.get("SLO_DEPLOY_TOKEN") or os.environ.get("SLO_TOKEN")
-)
-DEPLOY_TOKEN_USERNAME: Optional[str] = (
-    os.environ.get("SLO_DEPLOY_TOKEN_USERNAME") or os.environ.get("SLO_USERNAME")
+DEPLOY_TOKEN: Optional[str] = os.environ.get("SLO_DEPLOY_TOKEN") or os.environ.get("SLO_TOKEN")
+DEPLOY_TOKEN_USERNAME: Optional[str] = os.environ.get("SLO_DEPLOY_TOKEN_USERNAME") or os.environ.get(
+    "SLO_USERNAME"
 )
 
 # GitHub integration
@@ -81,9 +79,7 @@ GITHUB_API_BASE_URL: Optional[str] = os.environ.get("SLO_GITHUB_API_BASE_URL")
 _GITHUB_TIMEOUT_RAW: Optional[str] = os.environ.get("SLO_GITHUB_TIMEOUT_SECONDS")
 GITHUB_TIMEOUT_SECONDS: Optional[int] = int(_GITHUB_TIMEOUT_RAW) if _GITHUB_TIMEOUT_RAW else None
 GITHUB_TOKEN: Optional[str] = (
-    os.environ.get("GITHUB_TOKEN")
-    or os.environ.get("GH_TOKEN")
-    or os.environ.get("SLO_GITHUB_TOKEN")
+    os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or os.environ.get("SLO_GITHUB_TOKEN")
 )
 
 # GitLab integration
@@ -91,9 +87,7 @@ GITLAB_API_BASE_URL: Optional[str] = os.environ.get("SLO_GITLAB_API_BASE_URL")
 _GITLAB_TIMEOUT_RAW: Optional[str] = os.environ.get("SLO_GITLAB_TIMEOUT_SECONDS")
 GITLAB_TIMEOUT_SECONDS: Optional[int] = int(_GITLAB_TIMEOUT_RAW) if _GITLAB_TIMEOUT_RAW else None
 GITLAB_TOKEN: Optional[str] = (
-    os.environ.get("GITLAB_TOKEN")
-    or os.environ.get("GLAB_TOKEN")
-    or os.environ.get("SLO_GITLAB_TOKEN")
+    os.environ.get("GITLAB_TOKEN") or os.environ.get("GLAB_TOKEN") or os.environ.get("SLO_GITLAB_TOKEN")
 )
 
 # OAuth callback host (used by both Anthropic and OpenAI Codex provider flows)
@@ -141,20 +135,35 @@ VISUALIZER_REFRESH_SECONDS: float = positive_float_env(
     default=2.0,
 )
 
+# Auto-launch the workflow visualizer in a separate terminal window when the
+# TUI orchestrator spawns its first sub-agent. On by default; set
+# ``SLO_AUTO_VISUALIZE=0`` to opt out and rely on the manual ``slo visualize``
+# command instead.
+AUTO_VISUALIZE: bool = os.environ.get("SLO_AUTO_VISUALIZE", "1").strip() not in ("0", "false", "no", "")
+
+# Optional terminal-emulator override for the auto-launched visualizer window.
+# macOS accepts an application name (``Terminal`` or ``iTerm``); Linux accepts
+# a terminal-emulator executable (``gnome-terminal``, ``konsole``, ``xterm``, …).
+# When unset the launcher probes a platform-specific default list.
+VISUALIZER_TERMINAL_APP: Optional[str] = os.environ.get("SLO_VISUALIZER_TERMINAL_APP") or None
+
 # Tool defaults
 TOOL_BASE_DIR = os.environ.get("SLO_TOOL_BASE_DIR", os.getcwd())
 
 # Authentication storage (02.b.1). ``SLO_HOME`` is the persistent root used by
 # the installer; ``SLO_AUTH_FILE`` is where ``CredentialStore`` reads and writes.
 SLO_HOME = Path(os.environ.get("SLO_HOME", str(Path.home() / ".slo")))
-SLO_AUTH_FILE = Path(os.environ.get(
-    "SLO_AUTH_FILE",
-    str(SLO_HOME / "global" / "authentication.json"),
-))
+SLO_AUTH_FILE = Path(
+    os.environ.get(
+        "SLO_AUTH_FILE",
+        str(SLO_HOME / "global" / "authentication.json"),
+    )
+)
 
 # OAuth flow timeout (02.b.3). Seconds the ``_CallbackServer`` will wait for
 # the browser-side redirect before raising ``OAuthTimeoutError``.
 SLO_OAUTH_TIMEOUT_SECONDS = int(os.environ.get("SLO_OAUTH_TIMEOUT_SECONDS", "60"))
+
 
 # Skills + Knowledge Base (01.l + 01.n)
 # SKILLS_DIR is the absolute path to the committed skills/ directory. The
@@ -210,6 +219,7 @@ SLO_KB_SOURCE = os.environ.get("SLO_KB_SOURCE", None)
 __cfg__: dict[str, str | None] = {
     "A2A_FETCH_TIMEOUT_SECONDS": str(A2A_FETCH_TIMEOUT_SECONDS),
     "A2A_INVOKE_TIMEOUT_SECONDS": str(A2A_INVOKE_TIMEOUT_SECONDS),
+    "AUTO_VISUALIZE": "1" if AUTO_VISUALIZE else "0",
     "A2A_PORT": str(A2A_PORT),
     "A2A_PUBLIC_URL": A2A_PUBLIC_URL,
     "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
@@ -218,7 +228,9 @@ __cfg__: dict[str, str | None] = {
     "ATLASSIAN_API_TOKEN": ATLASSIAN_API_TOKEN,
     "ATLASSIAN_EMAIL": ATLASSIAN_EMAIL,
     "ATLASSIAN_SITE_URL": ATLASSIAN_SITE_URL,
-    "ATLASSIAN_TIMEOUT_SECONDS": str(ATLASSIAN_TIMEOUT_SECONDS) if ATLASSIAN_TIMEOUT_SECONDS is not None else None,
+    "ATLASSIAN_TIMEOUT_SECONDS": (
+        str(ATLASSIAN_TIMEOUT_SECONDS) if ATLASSIAN_TIMEOUT_SECONDS is not None else None
+    ),
     "BASE_URL": BASE_URL,
     "CONNECTORS_DIR": CONNECTORS_DIR,
     "CONNECTOR_PREFER_ENV": "1" if CONNECTOR_PREFER_ENV else "0",
@@ -264,6 +276,7 @@ __cfg__: dict[str, str | None] = {
     "USER_SKILLS_DIR": USER_SKILLS_DIR,
     "USER_WORKFLOWS_DIR": USER_WORKFLOWS_DIR,
     "VISUALIZER_REFRESH_SECONDS": str(VISUALIZER_REFRESH_SECONDS),
+    "VISUALIZER_TERMINAL_APP": VISUALIZER_TERMINAL_APP,
     "WEB_PORT": str(WEB_PORT),
 }
 

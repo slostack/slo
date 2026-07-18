@@ -345,6 +345,8 @@ class SloTUI(App):
         self._setting_prompt_from_history: bool = False
         # Fleet panel reference for sub-agent status display.
         self._fleet_panel: Optional[SubAgentFleetPanel] = None
+        # Guards one-per-run auto-launch of the workflow visualizer window.
+        self._visualizer_launched_for_run: bool = False
         self._inbox_store: Optional[SessionInboxStore] = inbox_store
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
@@ -1276,6 +1278,7 @@ class SloTUI(App):
                     task_id=task_id,
                     prompt_preview=prompt_preview,
                 )
+            self._maybe_launch_visualizer()
             return
 
         if event.kind in ("sub_agent_completed", "sub_agent_failed"):
@@ -1333,16 +1336,49 @@ class SloTUI(App):
             return f"✓ {event.tool_name or 'tool'}"
         return None
 
+    def _maybe_launch_visualizer(self) -> None:
+        """Open the workflow visualizer window on the first sub-agent of a run.
+
+        Launches ``slo visualize --session <id> --follow`` in a new terminal
+        window exactly once per run so the operator sees the sub-agent workflow
+        live without running the command by hand. Best-effort: when the launch
+        is skipped or fails (auto-visualize disabled, unsupported platform, no
+        terminal emulator), a one-line hint with the manual command is written
+        to the transcript instead. A no-op after the first spawn of a run.
+        """
+        if self._visualizer_launched_for_run:
+            return
+        self._visualizer_launched_for_run = True
+        from src.tui.visualizer_launcher import VisualizerLauncher  # noqa: PLC0415
+
+        parent_session_id: str = self._session.session_id
+        launched: bool = VisualizerLauncher.launch(parent_session_id=parent_session_id)
+        if self._adapter is None:
+            return
+        if launched:
+            self._adapter.write(
+                content=f"⊇ Opened workflow visualizer in a new window (session {parent_session_id}).",
+                classes="sub-agent-notice",
+            )
+            return
+        self._adapter.write(
+            content=("⊇ Watch sub-agents live: " f"slo visualize --session {parent_session_id} --follow"),
+            classes="sub-agent-notice",
+        )
+
     async def _cleanup_sub_agent_state(self) -> None:
         """Reset the fleet panel at the end of a run.
 
         Called from ``_run_prompt``'s ``finally`` block after
         ``_unmount_spinner``. Hides and clears the fleet panel so the layout
-        returns to the idle state and subsequent runs start cleanly.
-        A no-op when no sub-agents were spawned in this run.
+        returns to the idle state and subsequent runs start cleanly. Also clears
+        the per-run visualizer-launch guard so the next run that spawns
+        sub-agents opens a fresh visualizer window. A no-op when no sub-agents
+        were spawned in this run.
         """
         if self._fleet_panel is not None:
             await self._fleet_panel.reset()
+        self._visualizer_launched_for_run = False
         self._refresh_title_bar()
 
     # ---- Session and pool management ---------------------------------------

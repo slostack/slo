@@ -761,7 +761,7 @@ class TestSubAgentProcessEnvConfigurableTimeouts:
     def test_child_inactivity_timeout_uses_shipped_default_when_env_unset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Absent child-timeout env vars fall back to the shipped 1800-second default."""
+        """Absent child-timeout env vars fall back to the shipped 3600-second default."""
         monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS", raising=False)
         monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT", raising=False)
 
@@ -769,7 +769,7 @@ class TestSubAgentProcessEnvConfigurableTimeouts:
         import src.agents.slo_agent.orchestrator.process as proc_mod
         importlib.reload(proc_mod)
 
-        assert proc_mod.CHILD_INACTIVITY_TIMEOUT_SECONDS == 1800.0
+        assert proc_mod.CHILD_INACTIVITY_TIMEOUT_SECONDS == 3600.0
 
         importlib.reload(proc_mod)
 

@@ -15,7 +15,7 @@ context-overflow after compaction), NOT by tool calls returning errors.
 Why sub-agent timeouts do NOT trigger recovery
 ----------------------------------------------
 When a spawned sub-agent goes silent for ``CHILD_INACTIVITY_TIMEOUT_SECONDS``
-(default 1800 s), the following chain runs:
+(default 3600 s), the following chain runs:
 
     _pump_stdout                     → raises TimeoutError
     SubAgentProcess.run()            → *catches* it → returns SubAgentResultDAO(status="failed")
@@ -403,7 +403,7 @@ def _print_sub_agent_note() -> None:
         textwrap.dedent("""\
 
         When a spawned sub-agent is silent for CHILD_INACTIVITY_TIMEOUT_SECONDS
-        (currently 1800 s), this chain runs:
+        (currently 3600 s), this chain runs:
 
           _pump_stdout                  → raises TimeoutError
           SubAgentProcess.run()         → CATCHES it → SubAgentResultDAO(status="failed")
@@ -421,7 +421,7 @@ def _print_sub_agent_note() -> None:
           • 402 credit exhaustion
           • Context overflow on the initial attempt
 
-        To simulate the real inactivity-timeout code path without waiting 1800 seconds:
+        To simulate the real inactivity-timeout code path without waiting 3600 seconds:
           1. Set SLO_SUBAGENT_INACTIVITY_TIMEOUT=5 (or any short value)
           2. Spawn sub-agents that run: bash("sleep 10")
           3. Sub-agents will be killed after 5 s and return failed results

@@ -4,6 +4,38 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.10] — 2026-07-19
+
+**Longer inactivity timeouts for slow, large-context model calls.** The two
+inactivity watchdogs that guard against genuinely hung streams were raised so
+that legitimately slow turns — big prompts, slow time-to-first-token, long
+tool/model lanes — are no longer misclassified as hangs and killed mid-turn.
+
+### Changed
+
+- **`STREAM_INACTIVITY_TIMEOUT_SECONDS` default raised `2400` → `4800`** (40 → 80
+  minutes). This is the orchestrator's / main agent's own LLM-stream inactivity
+  guard. Overridable via `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS`. Updated in
+  `config/cfg.py` and the `_DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS` fallback
+  in `src/agents/slo_agent/sessions/service.py`.
+- **`SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` default raised `1800` → `3600`** (30 → 60
+  minutes). This is the child sub-agent stdout inactivity guard
+  (`CHILD_INACTIVITY_TIMEOUT_SECONDS`). Overridable via
+  `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` (alias
+  `SLO_SUBAGENT_INACTIVITY_TIMEOUT`). Updated in `config/cfg.py` and
+  `src/agents/slo_agent/orchestrator/process.py`.
+- Both values remain env-overridable; only the shipped defaults changed.
+- Synced the shipped-default documentation to the new values: the orchestrator
+  runtime prompt (`orchestrator/spawn_tool.py`), `README.md`,
+  `docs/SLO_HEADLESS_README.md`, the `headless-orchestration` skill, and
+  `scripts/validate_recovery.py`.
+
+### Tests
+
+- Updated the shipped-default assertions in `tests/config/test_cfg.py`,
+  `tests/agents/slo_agent/orchestrator/test_process.py`, and
+  `tests/agents/slo_agent/test_session.py` to expect `4800.0` / `3600.0`.
+
 ## [0.14.9] — 2026-07-19
 
 **Automatic live visualization + a richer, resizable workflow visualizer.** When

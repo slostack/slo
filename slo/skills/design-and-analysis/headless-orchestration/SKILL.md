@@ -48,16 +48,16 @@ Before launching a headless workflow, confirm:
 
 ## Step 1 — Set timeout and concurrency environment variables
 
-**Always export these before launching the orchestrator.** The shipped 2400-second stream inactivity timeout is the minimum safe default for workflow orchestration; lowering it commonly kills the orchestrator during large LLM calls (reading workflow files, synthesizing multi-phase results).
+**Always export these before launching the orchestrator.** The shipped 4800-second stream inactivity timeout is the minimum safe default for workflow orchestration; lowering it commonly kills the orchestrator during large LLM calls (reading workflow files, synthesizing multi-phase results).
 
 ```bash
 # Orchestrator's own LLM stream — how long it may be silent before the run is
-# treated as hung. Default is 2400s and should generally stay there or higher.
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS="${SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS:-2400}"
+# treated as hung. Default is 4800s and should generally stay there or higher.
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS="${SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS:-4800}"
 
 # Each child sub-agent process — how long a child may produce no stdout before
-# being killed. Default is 1800s; raise further for especially slow models.
-export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS="${SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS:-1800}"
+# being killed. Default is 3600s; raise further for especially slow models.
+export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS="${SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS:-3600}"
 
 # Bash tool ceiling per command inside a sub-agent.  0 disables.
 export SLO_BASH_DEFAULT_TIMEOUT_SECONDS="${SLO_BASH_DEFAULT_TIMEOUT_SECONDS:-1200}"
@@ -160,8 +160,8 @@ The prompt is purely context. The `DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT` injected 
 ### Standard launch (blocking, output captured to file)
 
 ```bash
-SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400 \
-SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800 \
+SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=4800 \
+SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=3600 \
 SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200 \
 SLO_SUBAGENT_MAX_CONCURRENCY=6 \
 python -m src.cli run \
@@ -179,8 +179,8 @@ STATUS=$?
 ### Background launch (non-blocking, monitor separately)
 
 ```bash
-SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400 \
-SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800 \
+SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=4800 \
+SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=3600 \
 SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200 \
 SLO_SUBAGENT_MAX_CONCURRENCY=6 \
 python -m src.cli run \
@@ -376,8 +376,8 @@ All variables relevant to a headless workflow launch:
 
 | Variable | Recommended value | Default | Guards |
 |---|---|---|---|
-| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `2400` | `2400` | Orchestrator's own LLM stream. Keep it at or above the shipped default. |
-| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `1800` | `1800` | Each child sub-agent's stdout pipe. |
+| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `4800` | `4800` | Orchestrator's own LLM stream. Keep it at or above the shipped default. |
+| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `3600` | `3600` | Each child sub-agent's stdout pipe. |
 | `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1200` | `600` | Bash tool per-command ceiling inside sub-agents. |
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `4` | Maximum simultaneous child processes. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | `8` | Maximum tasks per `spawn_sub_agents` call. |
@@ -408,8 +408,8 @@ SLO_SRC="${SLO_SRC:-$HOME/Code/slo/slo}"   # path to slo source root
 SESSION="${WORKFLOW_NAME}-$(date +%Y%m%d-%H%M%S)"
 
 # ── Timeout and concurrency env vars ─────────────────────────────────────────
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400
-export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=4800
+export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=3600
 export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200
 export SLO_SUBAGENT_MAX_CONCURRENCY=6
 
@@ -479,8 +479,8 @@ When to use: user wants a Slo workflow run headlessly / unattended
 
 Pre-conditions: workflow name known, project cwd known, credentials set
 
-Step 1: Export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=2400 (critical)
-        Export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=1800
+Step 1: Export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=4800 (critical)
+        Export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=3600
         Export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200
 
 Step 2: Choose orchestrator model (and optionally per-phase models)

@@ -117,7 +117,7 @@ SUBAGENT_MAX_TASKS: int = int(os.environ.get("SLO_SUBAGENT_MAX_TASKS", "8"))
 # Sub-agent / orchestrator timeout values
 STREAM_INACTIVITY_TIMEOUT_SECONDS: float = positive_float_env(
     primary_name="SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS",
-    default=2400.0,
+    default=4800.0,
 )
 SUBAGENT_TERMINATE_GRACE_SECONDS: float = positive_float_env(
     primary_name="SLO_SUBAGENT_TERMINATE_GRACE_SECONDS",
@@ -126,7 +126,7 @@ SUBAGENT_TERMINATE_GRACE_SECONDS: float = positive_float_env(
 SUBAGENT_INACTIVITY_TIMEOUT_SECONDS: float = positive_float_env(
     primary_name="SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS",
     alias_name="SLO_SUBAGENT_INACTIVITY_TIMEOUT",
-    default=1800.0,
+    default=3600.0,
 )
 
 # Visualizer polling cadence

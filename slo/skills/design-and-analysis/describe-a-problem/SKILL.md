@@ -163,6 +163,20 @@ Concrete diff snippet. The fix is the *consequence* of the description; not a su
 
 ---
 
+## Ideal Behavior First, Then the Problem — With Real Code
+
+Sections 1-11 pin down *what broke*. This section governs how the writeup frames the break: lead the reader through the **ideal behavior** of the system before restating the defect against it. Establish how the components should interact when everything works correctly — a detailed, plain-English narrative — and only then reiterate exactly where reality diverges. Section 0's happy-path paragraph opens this framing in business terms; this rule carries the same discipline into the technical body.
+
+Both the ideal-behavior walkthrough and the problem restatement must embed **real code samples taken from the actual codebase**, with `file:line` references — not pseudocode or invented signatures. The reader must see the concrete code the narrative is about, exactly as it exists.
+
+For a bug report, structure the framing as three ordered parts:
+
+1. **Describe the bug** — the symptom plus a one-sentence cause.
+2. **Ideal behavior** — a detailed walkthrough of how the components should have interacted, with real code samples.
+3. **Reiterate the problem** — restate the defect against the ideal, showing the real code that diverges.
+
+---
+
 ## What "good enough" looks like
 
 A finished problem description should let a teammate **who has never seen the code**:

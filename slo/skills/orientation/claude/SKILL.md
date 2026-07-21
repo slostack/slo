@@ -65,6 +65,12 @@ Named workflows and their exact file paths (use with the `read` tool):
 
 ---
 
+## Naming & clarity
+
+Always choose **clarity over cleverness** — a name or comment must read plainly to someone seeing the code for the first time. Ban clever/jargon verbs (no `pump`, `demux`, `wire`); name a function for exactly what it does. Use the lifecycle verb vocabulary consistently: `build…` assembles an in-memory object (no persistence, no goroutines), `Create…` / `Save…` persist an already-built object, `BuildAndCreate…` does both, and `start…` / `launch…` spawn goroutines/loops (never folded into `build`). Name producer/consumer pairs across a boundary `publish…` / `consume…` with a shared noun. Full rules and examples live in `skills/coding/naming-and-clarity/SKILL.md`; documentation-comment standards (WHAT/WHO/WHEN) live in `skills/coding/method-docstrings/SKILL.md`.
+
+---
+
 ## JIRA Solution Specifications
 
 Store JIRA ticket solution specifications in `<feature-specifications-root>/<ticket-id>/`. Each ticket gets its own folder with a markdown file named `<TICKET-ID>-<Short-Title>.md` following the style guide in `skills/design-and-analysis/feature-specifications/SKILL.md`. These specs serve as implementation blueprints that developers can build from directly.

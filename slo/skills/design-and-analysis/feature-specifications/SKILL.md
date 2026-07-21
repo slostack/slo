@@ -229,9 +229,35 @@ This section is mandatory for any non-trivial orchestration. Domain-only specs m
 
 ---
 
+## Bug and Analysis Specs: Ideal-Behavior-Then-Problem Structure
+
+A spec that documents a bug, regression, or defect analysis must be structured so the reader understands the *correct* design before being shown where it breaks. Use this required order:
+
+1. **The bug / problem** — lead with the symptom and a concise statement of the defect. What is observed, and what is wrong.
+2. **How it should behave (ideal walkthrough)** — a detailed, step-by-step narrative of how the system *should* function in this scenario, walking the runtime end to end. The reader must come away understanding the intended design before the failure is pinpointed.
+3. **The problem, restated** — return to the defect and pinpoint exactly where the ideal walkthrough breaks: the specific step, boundary, or line where correct behavior diverges from what actually happens.
+
+Never open a bug spec with the broken control flow in isolation. The ideal walkthrough comes first so the break is legible against a known-good baseline.
+
+---
+
+## Ideal Behavior First, Then the Problem — With Real Code
+
+This principle is not confined to bug specs. **Every** specification must walk the reader through the ideal behavior of the system before (or alongside) describing the problem or change: a detailed, plain-English narrative of how the components should interact when everything works correctly. Establish the ideal, *then* describe the problem or change against it.
+
+Both the ideal-behavior walkthrough and the problem/change description must embed **real code samples taken from the actual codebase**, with `file:line` references — not pseudocode or invented signatures. The reader must see the concrete code the narrative is about.
+
+For a bug report specifically, use these three ordered sections:
+
+1. **Describe the bug** — the symptom plus a one-sentence cause.
+2. **Ideal behavior** — a detailed walkthrough of how the components should have interacted, with real code samples.
+3. **Reiterate the problem** — restate the defect against the ideal, showing the real code that diverges.
+
+---
+
 ## `## Code Reference` Rules
 
-Every code block in `## Code Reference` must be preceded by 1-3 sentences of plain English explaining what the snippet does and why it is shaped that way. Silent code dumps are banned.
+Every code block in `## Code Reference` must be preceded by 1-3 sentences of plain English explaining what the snippet does and why it is shaped that way. Silent code dumps are banned. Silent prose is banned too — behavioral claims need a code sample. Every substantive claim about runtime behavior must be grounded in a **real code sample copied faithfully from the actual source, with a `file:line` citation**. This applies everywhere a spec describes how code behaves, and in a bug spec it applies in **both** the ideal-behavior walkthrough and the problem sections. Prose-only descriptions of control flow are not sufficient — show the actual code.
 
 If a class is central to the feature, do **not** show only a stub signature. Show:
 
@@ -370,6 +396,8 @@ Engineering implementation sub-specs should also state:
 10. **Mode fidelity** — choose the correct spec mode and follow its structure rigorously.
 11. **Standalone engineering slices** — Mode B specs must stand on their own.
 12. **Drift correction** — when older spec text is stale, say so explicitly and correct it.
+13. **Code samples as grounding** — every behavioral claim is backed by real source, copied faithfully with a `file:line` citation. Silent prose is banned as surely as silent code dumps.
+14. **Ideal before break** — bug and analysis specs walk the correct design end to end before pinpointing where it fails.
 
 ---
 
@@ -381,5 +409,7 @@ Engineering implementation sub-specs should also state:
 - Preserve implementation rigor while improving readability.
 - Use the exact structure required by the chosen mode.
 - Include concrete examples with realistic data and file paths.
+- Ground every behavioral claim in a real code sample with a `file:line` citation — never describe control flow in prose alone.
+- For a bug or analysis spec, lead with the problem, then walk the ideal behavior end to end, then restate exactly where it breaks.
 - Show the complete picture: why, current truth, proposed shape, flow, code, tests, and dependencies.
 - Think like a developer reading this at 2am trying to implement the feature without follow-up questions.

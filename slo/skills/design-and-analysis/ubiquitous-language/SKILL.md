@@ -52,6 +52,47 @@ but the semantic root never changes.**
 
 ---
 
+## Clarity Over Cleverness — Name for Exactly What It Does
+
+The one-concept-one-name rule governs *which* word a concept keeps
+across layers. This section governs *what kind* of word it may be in the
+first place. Both rules serve the same reader: the developer who must
+trace a concept without reverse-engineering the body.
+
+**Name every function, method, and variable for exactly what it does.**
+Reject opaque or cute verbs (`pump`, `wire`, `demux`, bare `handle` /
+`process`) whenever a precise verb exists.
+
+**Producer/consumer pairs.** Use `publish…` / `consume…` only for a
+genuine producer↔consumer: one side *writes/produces* items onto a
+channel/stream, the other *reads/consumes* them (e.g. `publishJob` /
+`consumeJob`). Do not force the pair onto two same-direction readers —
+name each for what it reads and at what scope (e.g. `readSessionRelayData`
+reads one session's inbound frames; `routeRelayFrames` reads all frames on
+a registration and routes them).
+
+**Object-lifecycle vocabulary — one verb per intent:**
+
+- `Build…` / `build…` — instantiate and assemble an in-memory object or
+  wiring; no persistence, no goroutines. Domain-specific builds keep the
+  noun: `buildOverlay`, `buildNATStrategy`.
+- `Create…` / `Save…` — persist an already-instantiated object.
+- `BuildAndCreate…` — build then persist, in one call.
+- `start…` / `launch…` — spawn goroutines or long-running loops; this is
+  NOT construction.
+- idiomatic `newX` — package-private constructors (Go).
+
+**Anti-pattern examples to avoid:** `wireOverlay` → use `buildOverlay`;
+`pumpRelayDataFrames` → use `readSessionRelayData`; `runRelayDemux` → use
+`routeRelayFrames`.
+
+Every function carries a rich doc comment stating WHAT it does, WHO
+calls it, the DATA FLOW it participates in, and its LIFETIME/teardown.
+Clarity over cleverness, always. The doc-comment richness rule lives in
+`skills/coding/method-docstrings/SKILL.md`.
+
+---
+
 ## Cross-references
 
 - CLI construction rules → `skills/cli/build-cli-commands/SKILL.md`
@@ -865,3 +906,58 @@ If every developer working on this codebase follows this rule, a
 concept introduced at any layer can be traced to any other layer — and
 back — by applying a single, deterministic naming transformation. That
 is the goal.
+
+---
+
+## 14. Clarity Over Cleverness: Name for Exactly What It Does
+
+The one-concept-one-name rule governs how a name propagates across
+layers. This section governs how a name is *chosen in the first place*.
+The principle is **clarity over cleverness, always**: a name must state
+exactly what the thing does, with no decoding required.
+
+- **Name every function, method, and variable for exactly what it
+  does.** Reject opaque or cute verbs — `pump`, `wire`, `demux`, bare
+  `handle` / `process` — whenever a precise verb exists.
+
+### 14.1 — Producer/consumer pairs vs. same-direction readers
+
+Use `publish…` / `consume…` only for a genuine producer↔consumer: one
+side *writes/produces* onto a channel or stream, the other *reads/consumes*.
+
+```go
+// publishJob writes a job onto the queue (producer).
+// consumeJob reads a job off the queue (consumer).
+```
+
+Do not force `publish`/`consume` onto two same-direction readers. Name
+each for what it reads and at what scope:
+
+```go
+// readSessionRelayData reads ONE session's inbound relay-data frames.
+// routeRelayFrames reads ALL inbound frames on a registration and routes them.
+```
+
+### 14.2 — Object-lifecycle vocabulary (one verb per intent)
+
+| Verb | Intent |
+|---|---|
+| `Build…` / `build…` | Instantiate and assemble an in-memory object or wiring. No persistence, no goroutines. Domain-specific builds keep the noun: `buildOverlay`, `buildNATStrategy`. |
+| `Create…` / `Save…` | Persist an already-instantiated object. |
+| `BuildAndCreate…` | Build then persist, in one call. |
+| `start…` / `launch…` | Spawn goroutines or long-running loops. This is **not** construction. |
+| idiomatic `newX` | Package-private constructors (Go). |
+
+### 14.3 — Anti-patterns to avoid
+
+- `wireOverlay` → use `buildOverlay`.
+- `pumpRelayDataFrames` → use `readSessionRelayData`.
+- `runRelayDemux` → use `routeRelayFrames`.
+
+### 14.4 — Rich doc comments accompany every name
+
+A self-describing name is only half the contract. Every function
+carries a rich doc comment stating **WHAT** it does, **WHO** calls it,
+the **DATA FLOW** it participates in, and its **LIFETIME/teardown**.
+See `skills/coding/method-docstrings/SKILL.md` for the doc-comment
+format. Clarity over cleverness, always.

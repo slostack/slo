@@ -29,6 +29,46 @@ All methods must be documented using the Google docstring style. This applies to
 
 ---
 
+## Rich Docs: WHAT, WHO, WHEN
+
+A documentation comment earns its place by answering three questions the signature cannot:
+
+- **WHAT** the function does — the observable behaviour, not the implementation.
+- **WHO** calls it — the caller(s) or layer that invokes it, especially for non-obvious entry points (a worker, an RPC handler, a producer/consumer pair, a lifecycle hook).
+- **WHEN** in the flow it runs — its place in the sequence (e.g. "after the session is admitted", "on every reconnect", "spawned once at startup").
+
+Clarity over cleverness applies to prose as much as to names: describe the behaviour plainly rather than gesturing at it. This standard pairs with the `naming-and-clarity` skill (`skills/coding/naming-and-clarity/SKILL.md`) — a self-describing name plus a WHAT/WHO/WHEN comment means the reader never has to reverse-engineer the body.
+
+```python
+async def consume_relay_data_frames(self) -> None:
+    """Read relay data frames off the persistent connection and hand them to the demux queue.
+
+    WHAT: Loops reading length-prefixed frames from the relay socket until the
+        connection closes, decoding each into a RelayDataFrame.
+    WHO: Started once by the transport layer's start_relay() after a session is admitted;
+        it is the consumer half of the publish_relay_data_frames / consume_relay_data_frames pair.
+    WHEN: Runs for the lifetime of the session, after admission and before teardown.
+
+    Raises:
+        RelayConnectionClosedError: If the peer closes the connection mid-frame.
+    """
+```
+
+The `Args` / `Returns` / `Raises` blocks below remain mandatory where applicable; WHAT/WHO/WHEN is the narrative that precedes them for any function whose caller or timing is not obvious from the signature.
+
+---
+
+## Rich Docs Extend to Data Flow and Lifetime
+
+Every function carries a rich doc comment stating WHAT it does, WHO calls it, the DATA FLOW it participates in, and its LIFETIME/teardown. For a long-running loop, a producer/consumer half, or a spawned goroutine, WHO and WHEN are not enough on their own — the reader also needs to know *which channel/stream the data moves along* and *when the function stops and how it is torn down*.
+
+- **DATA FLOW** — name the channel, stream, queue, or connection the function reads from or writes to, and its partner on the other side (e.g. "reads frames off the relay socket and hands them to the demux queue that `publish_relay_data_frames` drains").
+- **LIFETIME/teardown** — say when the function is spawned, how long it runs, and what closes it (e.g. "spawned once at startup; runs until the session is torn down; exits when the connection closes").
+
+Clarity over cleverness applies here too: a self-describing name (see the naming vocabulary in `skills/design-and-analysis/ubiquitous-language/SKILL.md` — `publish…` / `consume…` pairs, `build…` vs `start…`) plus a WHAT/WHO/DATA-FLOW/LIFETIME comment means the reader never has to reverse-engineer the body to learn how the piece is wired or when it dies.
+
+---
+
 ## Format
 
 ```python

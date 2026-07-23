@@ -12,6 +12,16 @@ breaking changes).
 
 **Spec 57** built the headless-workflow machinery: the `launch_workflow` tool, the workflow handle registry, the `WorkflowNotifier`, the TUI receive path, and the `/workflows` slash command — all described below.
 
+### Refactored
+
+- **Detached-workflow TUI receive path** — split the previously app-local lifecycle logic into `src/tui/workflows/`:
+  - `dao.py` validates lifecycle payloads and `launch_workflow` results into typed data and UI effects without Textual, filesystem, or launcher side effects;
+  - `service.py` (`DetachedWorkflowAppService`) reconciles and advances durable workflow handles, maintains the live-workflow cache used by resume hints, and returns typed effects;
+  - `renderer.py` (`DetachedWorkflowRenderer`) owns visualizer launch de-duplication, launcher calls, and success/fallback transcript notices through narrow Protocol ports.
+  `SloTUI` now composes these collaborators and routes events rather than parsing workflow JSON, changing handles, or launching detached visualizers itself.
+- **Receive-path resilience and regression coverage** — malformed/error launch JSON, malformed lifecycle payloads, missing handles, illegal transitions, and handle-store failures are safe no-effect paths that do not interrupt inbox delivery. Terminal lifecycle events reset only the visualizer launch guard, allowing later workflow runs to launch a fresh window without opening one at terminal delivery.
+- **Operator-facing lifecycle documentation** — clarified that inbox delivery requires enabled filesystem-backed session history because detached processes write the cross-process inbox; expanded `SessionOwnershipLeaseStore` documentation to explain acquire/renew/release, expiry, and TUI hand-off behavior.
+
 ### Added
 
 - **`launch_workflow` tool** (`orchestrator/launch_tool.py`) — detached spawn

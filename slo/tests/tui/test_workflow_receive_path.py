@@ -1,4 +1,11 @@
-"""Tests for the TUI detached-workflow receive path (spec 57.a.4 / 57.a.5)."""
+"""TUI integration tests for the detached-workflow receive path (spec 57.a.5).
+
+Proves ``SloTUI`` delegates to the ``src/tui/workflows`` namespace: inbox
+lifecycle messages advance durable handles and execute renderer effects,
+``launch_workflow`` tool results seed the live-state cache and launch the
+visualizer, the startup reconcile feeds the resume/exit hint, and inbox
+delivery modes keep their existing rendering behaviour.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
+from src.agents.slo_agent.history.inbox.dao import (
+    InboxDeliveryMode,
+    InboxMessageKind,
+    SessionInboxMessageDAO,
+)
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -94,8 +105,8 @@ async def _write_handle(
 
 def _workflow_message(
     *,
-    kind: str,
-    delivery_mode: str = "context_note",
+    kind: InboxMessageKind,
+    delivery_mode: InboxDeliveryMode = "context_note",
     message_id: str = "message-1",
     workflow_id: str = "wf-1",
     orchestrator_session_id: str = "orch-1",
@@ -103,8 +114,8 @@ def _workflow_message(
     """Build one workflow lifecycle inbox message.
 
     Args:
-        kind (str): Workflow lifecycle message kind.
-        delivery_mode (str): Inbox delivery mode.
+        kind (InboxMessageKind): Workflow lifecycle message kind.
+        delivery_mode (InboxDeliveryMode): Inbox delivery mode.
         message_id (str): Stable message id.
         workflow_id (str): Owning workflow id.
         orchestrator_session_id (str): Detached orchestrator session id.
@@ -117,8 +128,8 @@ def _workflow_message(
         session_id="session-1234",
         schedule_id=f"workflow:{workflow_id}",
         run_id="run-1",
-        kind=kind,  # type: ignore[arg-type]
-        delivery_mode=delivery_mode,  # type: ignore[arg-type]
+        kind=kind,
+        delivery_mode=delivery_mode,
         title=f"{workflow_id} update",
         text=f"[workflow {workflow_id}] lifecycle note",
         payload={
@@ -144,8 +155,7 @@ class TestContextNoteDelivery:
 
             assert app._adapter is not None
             assert any(
-                content == "⊛ wf-1 update: [workflow wf-1] lifecycle note"
-                and classes == "sub-agent-notice"
+                content == "⊛ wf-1 update: [workflow wf-1] lifecycle note" and classes == "sub-agent-notice"
                 for content, classes in app._adapter.lines
             )
             session.record_workflow_update.assert_awaited_once_with(
@@ -155,9 +165,7 @@ class TestContextNoteDelivery:
             )
 
     @pytest.mark.asyncio
-    async def test_context_note_missing_payload_defaults_workflow_unknown(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_context_note_missing_payload_defaults_workflow_unknown(self, tmp_path: Path) -> None:
         """A context_note without workflow payload records ``wf-unknown``."""
         session: MagicMock = _mock_session(history_root=tmp_path / "history")
         app: SloTUI = SloTUI(session=session)
@@ -233,11 +241,32 @@ class TestVisualizerRetarget:
                 await app._render_event(event)
 
             mock_launch.assert_not_called()
-            assert app._visualizer_launched_for == set()
+
+    @pytest.mark.asyncio
+    async def test_launch_result_malformed_json_does_not_trigger(self, tmp_path: Path) -> None:
+        """A malformed launch_workflow result is a safe no-op."""
+        session: MagicMock = _mock_session(history_root=tmp_path / "history")
+        app: SloTUI = SloTUI(session=session)
+        event: AgentStreamEventDAO = AgentStreamEventDAO(
+            kind="tool_result",
+            tool_name="launch_workflow",
+            tool_call_id="call-1",
+            content="not json {",
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                return_value=True,
+            ) as mock_launch:
+                await app._render_event(event)
+
+            mock_launch.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_duplicate_launch_result_launches_once(self, tmp_path: Path) -> None:
-        """Redelivered launch results are guarded by the launched set."""
+        """Redelivered launch results are guarded by the renderer."""
         session: MagicMock = _mock_session(history_root=tmp_path / "history")
         app: SloTUI = SloTUI(session=session)
 
@@ -299,6 +328,154 @@ class TestVisualizerRetarget:
 
             mock_launch.assert_called_once_with(parent_session_id="orch-1")
 
+    @pytest.mark.asyncio
+    async def test_terminal_note_resets_guard_and_relaunch_opens_new_window(self, tmp_path: Path) -> None:
+        """After a terminal note, a re-run of the workflow gets a fresh window."""
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        await _write_handle(store=store, state="launching")
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                    return_value=True,
+                ) as mock_launch,
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()),
+            ):
+                await app._handle_inbox_message(
+                    message=_workflow_message(kind="workflow_started"),
+                )
+                await app._handle_inbox_message(
+                    message=_workflow_message(
+                        kind="workflow_completed",
+                        delivery_mode="chat_turn",
+                        message_id="message-2",
+                    ),
+                )
+                await _write_handle(store=store, workflow_id="wf-2", state="launching")
+                await app._handle_inbox_message(
+                    message=_workflow_message(
+                        kind="workflow_started",
+                        message_id="message-3",
+                        workflow_id="wf-2",
+                    ),
+                )
+
+            assert mock_launch.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_terminal_note_never_launches_itself(self, tmp_path: Path) -> None:
+        """A terminal note frees the guard but never opens a window on its own."""
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        await _write_handle(store=store, state="running")
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                    return_value=True,
+                ) as mock_launch,
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()),
+            ):
+                await app._handle_inbox_message(
+                    message=_workflow_message(
+                        kind="workflow_completed",
+                        delivery_mode="chat_turn",
+                    ),
+                )
+
+            mock_launch.assert_not_called()
+
+
+class TestAppServiceRendererBoundary:
+    """The app passes raw input to the service once, then executes typed effects."""
+
+    @pytest.mark.asyncio
+    async def test_inbox_message_routes_raw_kind_and_payload_to_service_once(self, tmp_path: Path) -> None:
+        """The app hands the untouched kind/payload to the service — no extraction."""
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        await _write_handle(store=store, state="launching")
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
+        message: SessionInboxMessageDAO = _workflow_message(kind="workflow_started")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._workflow_app_service is not None
+            with (
+                patch.object(
+                    app._workflow_app_service,
+                    "advance_from_inbox_message",
+                    wraps=app._workflow_app_service.advance_from_inbox_message,
+                    new_callable=AsyncMock,
+                ) as advance_spy,
+                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
+            ):
+                await app._handle_inbox_message(message=message)
+
+        advance_spy.assert_awaited_once_with(kind="workflow_started", payload=message.payload)
+
+    @pytest.mark.asyncio
+    async def test_app_executes_exactly_the_emitted_typed_effects(self, tmp_path: Path) -> None:
+        """The renderer receives exactly the effect list the service emitted."""
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        await _write_handle(store=store, state="launching")
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            renderer = app._ensure_workflow_renderer()
+            with (
+                patch.object(renderer, "apply_effects", wraps=renderer.apply_effects) as apply_spy,
+                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
+            ):
+                await app._handle_inbox_message(
+                    message=_workflow_message(kind="workflow_started"),
+                )
+
+        apply_spy.assert_called_once()
+        effects = apply_spy.call_args.kwargs["effects"]
+        assert [(effect.effect, effect.state) for effect in effects] == [("launch_visualizer", "running")]
+
+    @pytest.mark.asyncio
+    async def test_terminal_advance_reaches_renderer_as_reset_only_effect(self, tmp_path: Path) -> None:
+        """A terminal lifecycle note yields a reset-only effect end-to-end."""
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        await _write_handle(store=store, state="running")
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            renderer = app._ensure_workflow_renderer()
+            with (
+                patch.object(renderer, "apply_effects", wraps=renderer.apply_effects) as apply_spy,
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()),
+                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
+            ):
+                await app._handle_inbox_message(
+                    message=_workflow_message(
+                        kind="workflow_completed",
+                        delivery_mode="chat_turn",
+                    ),
+                )
+
+        apply_spy.assert_called_once()
+        effects = apply_spy.call_args.kwargs["effects"]
+        assert [(effect.effect, effect.state) for effect in effects] == [("reset_launch_guard", "completed")]
+
 
 class TestWorkflowHandleStateAdvance:
     """Claimed lifecycle notes advance the durable handle (spec 57.a.5)."""
@@ -322,11 +499,13 @@ class TestWorkflowHandleStateAdvance:
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
             assert handle is not None
             assert handle.state == "running"
-            assert app._workflow_states["wf-1"] == "running"
+            assert app._workflow_app_service is not None
+            labels = app._workflow_app_service.live_workflow_labels()
+            assert [(label.workflow_id, label.state) for label in labels] == [("wf-1", "running")]
 
     @pytest.mark.asyncio
-    async def test_terminal_notes_advance_and_clear_launched_set(self, tmp_path: Path) -> None:
-        """Terminal notes reach terminal states and free the visualizer guard."""
+    async def test_terminal_note_advances_handle_and_clears_live_label(self, tmp_path: Path) -> None:
+        """Terminal notes reach terminal states and leave the live-label set."""
         history_root: Path = tmp_path / "history"
         store: WorkflowHandleStore = _build_store(history_root=history_root)
         await _write_handle(store=store, state="running")
@@ -335,7 +514,6 @@ class TestWorkflowHandleStateAdvance:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._visualizer_launched_for.add("orch-1")
             with patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()):
                 await app._handle_inbox_message(
                     message=_workflow_message(kind="workflow_completed", delivery_mode="chat_turn"),
@@ -344,7 +522,8 @@ class TestWorkflowHandleStateAdvance:
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
             assert handle is not None
             assert handle.state == "completed"
-            assert "orch-1" not in app._visualizer_launched_for
+            assert app._workflow_app_service is not None
+            assert app._workflow_app_service.live_workflow_labels() == []
 
     @pytest.mark.asyncio
     async def test_unknown_workflow_id_is_logged_not_raised(self, tmp_path: Path) -> None:
@@ -356,12 +535,17 @@ class TestWorkflowHandleStateAdvance:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True):
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                return_value=True,
+            ) as mock_launch:
                 await app._handle_inbox_message(
                     message=_workflow_message(kind="workflow_started", workflow_id="wf-missing"),
                 )
 
-            assert "wf-missing" not in app._workflow_states
+            mock_launch.assert_not_called()
+            assert app._workflow_app_service is not None
+            assert app._workflow_app_service.live_workflow_labels() == []
 
     @pytest.mark.asyncio
     async def test_illegal_transition_is_swallowed(self, tmp_path: Path) -> None:
@@ -395,7 +579,70 @@ class TestWorkflowHandleStateAdvance:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            assert app._workflow_states == {"wf-1": "stalled"}
+            assert app._workflow_app_service is not None
+            labels = app._workflow_app_service.live_workflow_labels()
+            assert labels == []
+            handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
+            assert handle is not None
+            assert handle.state == "stalled"
+
+    @pytest.mark.asyncio
+    async def test_mount_reconcile_failure_is_nonfatal(self, tmp_path: Path) -> None:
+        """A store failure at mount never breaks session delivery startup."""
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._workflow_app_service is not None
+            with patch.object(
+                app._workflow_app_service._store,
+                "reconcile",
+                new=AsyncMock(side_effect=OSError("disk gone")),
+            ):
+                snapshot = await app._workflow_app_service.reconcile_snapshot()
+
+            assert snapshot == {}
+
+    @pytest.mark.asyncio
+    async def test_nonworkflow_inbox_message_is_a_workflow_noop(self, tmp_path: Path) -> None:
+        """A non-workflow kind renders its delivery mode without touching handles."""
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        await _write_handle(store=store, state="launching")
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            message_id="message-9",
+            session_id="session-1234",
+            schedule_id="sched-1",
+            run_id="run-1",
+            kind="monitor_update",
+            delivery_mode="ui_notice",
+            title="monitor",
+            text="monitor tick",
+            payload={"workflow_id": "wf-1", "orchestrator_session_id": "orch-1"},
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
+                return_value=True,
+            ) as mock_launch:
+                await app._handle_inbox_message(message=message)
+
+            mock_launch.assert_not_called()
+            handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
+            assert handle is not None
+            assert handle.state == "launching"
+            assert app._adapter is not None
+            assert any(
+                content == "[scheduled notice] monitor: monitor tick"
+                for content, _classes in app._adapter.lines
+            )
 
 
 class TestAbortSeparationAndExit:
@@ -413,9 +660,7 @@ class TestAbortSeparationAndExit:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._in_flight_task = asyncio.create_task(asyncio.sleep(60))
-            with patch.object(
-                store, "update_state", wraps=store.update_state
-            ) as update_state_spy:
+            with patch.object(store, "update_state", wraps=store.update_state) as update_state_spy:
                 await app.action_interrupt()
 
             session.abort.assert_called_once_with()
@@ -447,9 +692,7 @@ class TestAbortSeparationAndExit:
                     message=_workflow_message(kind="workflow_started"),
                 )
                 await app._handle_inbox_message(
-                    message=_workflow_message(
-                        kind="workflow_phase_update", message_id="message-2"
-                    ),
+                    message=_workflow_message(kind="workflow_phase_update", message_id="message-2"),
                 )
                 await app._handle_inbox_message(
                     message=_workflow_message(
@@ -465,11 +708,22 @@ class TestAbortSeparationAndExit:
     @pytest.mark.asyncio
     async def test_exit_hint_lists_live_workflows(self, tmp_path: Path) -> None:
         """Live workflows appear next to the resume command on exit."""
-        session: MagicMock = _mock_session(history_root=tmp_path / "history")
-        app: SloTUI = SloTUI(session=session)
-        app._workflow_states = {"wf-1": "running", "wf-2": "completed"}
+        history_root: Path = tmp_path / "history"
+        store: WorkflowHandleStore = _build_store(history_root=history_root)
+        await _write_handle(store=store, state="running")
+        await _write_handle(store=store, workflow_id="wf-2", state="running")
+        await store.update_state(
+            owner_session_id="session-1234",
+            workflow_id="wf-2",
+            state="completed",
+        )
+        session: MagicMock = _mock_session(history_root=history_root)
+        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
 
-        hint: str = app._resume_command_hint()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            hint: str = app._resume_command_hint()
 
         assert hint == (
             "Resume this session: slo --resume session-1234\n"
@@ -499,8 +753,7 @@ class TestLaunchResultSeedsExitHint:
             tool_name="launch_workflow",
             tool_call_id="call-1",
             content=(
-                '{"workflow_id": "wf-9a1b", "orchestrator_session_id": "orch-1", '
-                '"state": "launching"}'
+                '{"workflow_id": "wf-9a1b", "orchestrator_session_id": "orch-1", ' '"state": "launching"}'
             ),
         )
 
@@ -512,7 +765,6 @@ class TestLaunchResultSeedsExitHint:
             ):
                 await app._render_event(event)
 
-            assert app._workflow_states == {"wf-9a1b": "launching"}
             assert app._resume_command_hint() == (
                 "Resume this session: slo --resume session-1234\n"
                 "Live workflows: wf-9a1b (launching). "

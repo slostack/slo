@@ -23,7 +23,24 @@ _FILE_MODE: int = 0o600
 
 
 class SessionOwnershipLeaseStore:
-    """Durable owner/lease records colocated with session history."""
+    """Durable owner/lease records colocated with session history.
+
+    WHAT: a *lease* is a small ``owner.json`` file inside a session's history
+        directory naming the single TUI process currently entitled to claim
+        that session's filesystem inbox. Because the inbox is a cross-process
+        on-disk queue, a lease is what prevents two simultaneously mounted
+        TUIs (e.g. the original window and a ``slo --resume`` window) from
+        both claiming and acting on the same inbox messages.
+    WHO: the mounted ``SloTUI`` acquires the lease at startup, renews it on a
+        heartbeat interval for the life of the app, and releases it on
+        shutdown. The scheduler and other readers use ``is_active`` to tell
+        whether any TUI currently owns the session.
+    WHEN/EXPIRY: each lease carries an ``expires_at`` (now + TTL). A TUI that
+        crashes without releasing simply stops heartbeating, so its lease
+        goes stale and expires — at which point another TUI may acquire the
+        session and take over inbox delivery. That expiry is the handoff
+        mechanism: ownership is never permanently lost to a dead process.
+    """
 
     def __init__(self, *, history_root: Path) -> None:
         """Bind the store to a session-history root.

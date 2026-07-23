@@ -85,6 +85,48 @@ class TestHeadlessTimeoutDefaults:
         assert cfg_module.cfg("SUBAGENT_INACTIVITY_TIMEOUT_SECONDS") == "3600.0"
 
 
+class TestDetachedWorkflowConfig:
+    """Detached-workflow kill switch and cap defaults."""
+
+    def test_detached_workflows_default_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Detached workflows ship enabled by default."""
+        monkeypatch.delenv("SLO_DETACHED_WORKFLOWS", raising=False)
+        import config.cfg as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.DETACHED_WORKFLOWS is True
+        assert cfg_module.cfg("DETACHED_WORKFLOWS") == "1"
+
+    def test_detached_workflows_false_strings_disable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """False-like env values disable detached workflows."""
+        monkeypatch.setenv("SLO_DETACHED_WORKFLOWS", "0")
+        import config.cfg as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.DETACHED_WORKFLOWS is False
+        assert cfg_module.cfg("DETACHED_WORKFLOWS") == "0"
+
+    def test_max_detached_workflows_defaults_to_two(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Detached workflow cap defaults to two live workflows."""
+        monkeypatch.delenv("SLO_MAX_DETACHED_WORKFLOWS", raising=False)
+        import config.cfg as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.MAX_DETACHED_WORKFLOWS == 2
+        assert cfg_module.cfg("MAX_DETACHED_WORKFLOWS") == "2"
+
+    def test_invalid_max_detached_workflows_falls_back_to_two(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-integer detached workflow caps fall back to the shipped default."""
+        monkeypatch.setenv("SLO_MAX_DETACHED_WORKFLOWS", "not-an-int")
+        import config.cfg as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.MAX_DETACHED_WORKFLOWS == 2
+
+
 class TestUserSkillsDirConstants:
     """Spec 29: USER_SKILLS_DIR and USER_WORKFLOWS_DIR config constants."""
 

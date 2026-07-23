@@ -347,7 +347,7 @@ Named workflows:
 
 **Anti-pattern:** user says "use the code-test-review workflow" → agent loads `skills/coding/code-test-loop/SKILL.md`. This is wrong. `code-test-loop` is the coding cadence that forms Step 1 *inside* the Code-Test-Review workflow. Loading it instead of the workflow silently skips Step 2 (Code Review) and Step 3 (Completion Check). Always load the workflow `.md` from the `workflows/` folder when a workflow is requested.
 
-**Dynamic workflows shorthand:** when the user says **"dynamic workflows"** or the common misspelling **"dyanmic workflows"**, treat that as an explicit request to use the orchestrator / headless workflow path: launch a Slo orchestrator that launches multiple Slo agents to execute the workflow's parts. In interactive sessions this counts as explicit consent to call `spawn_sub_agents`; otherwise preserve the normal explicit-request-only policy.
+**Dynamic workflows shorthand:** when the user says **"dynamic workflows"** or the common misspelling **"dyanmic workflows"**, treat that as an explicit request to execute the named workflow **in the current session** (sync dynamic workflow): the orchestrator decomposes phases and dispatches them with `spawn_sub_agents`, blocking until the synthesis is returned in the same turn. To **detach** the workflow as a headless orchestrator process (headless dynamic workflow), the user must add an explicit detach qualifier — the word **"headless"**, **"detached"**, or **"independent"** applied to the request (e.g., **"headless dynamic workflows"**, **"detached dynamic workflows"**, **"independent dynamic workflows"**) — or detach wording such as **"in the background"** / **"without blocking"**. A detach-qualified request routes to exactly one `launch_workflow` call; a detached orchestrator never calls `launch_workflow`.
 
 **TUI scheduler supervision:** when the user wants a dynamic workflow launched from a
 TUI session and also wants recurring monitoring, background follow-up, or progress
@@ -627,6 +627,18 @@ rate-limit error and returns a `RateLimitRetryPlanDAO` with a `wait_seconds` val
 - **Default gate:** `pytest -m "not e2e"` (set in `pyproject.toml` `addopts`).
   Use `pytest -m e2e` only when real provider credentials are intentionally in scope.
 - **Test env:** `make test` self-sources `environments/tests.env`; never the dev DB.
+- **Never real terminal windows.** `VisualizerLauncher.launch()` opens a real
+  Terminal/iTerm window running `slo visualize --follow` that outlives the suite. Any
+  test path that reaches it (a `sub_agent_spawned` event or a `launch_workflow` tool
+  result through `SloTUI._render_event`) must patch `VisualizerLauncher.launch` or
+  inject `spawn=`. Two suite-wide guards back this up: `environments/tests.env` sets
+  `SLO_AUTO_VISUALIZE=0` (covers `make test`) and the autouse
+  `_never_spawn_real_terminals` fixture in `tests/conftest.py` stubs
+  `VisualizerLauncher._default_spawn` (covers bare `pytest` runs). Regression tests:
+  `tests/tui/test_visualizer_launcher.py::TestSuiteNeverSpawnsRealTerminals`. During
+  **manual smoke** runs, explicitly close every visualizer terminal you open (quit the
+  `slo visualize` process and its window) — detached windows accumulate on the
+  operator's machine otherwise.
 - **Layout:**
   - `tests/agents/slo_agent/` — unit tests for agent loop, session, rate limits, usage.
   - `tests/tui/` — TUI tests (app, replay, slash commands, status bar, tool blocks).

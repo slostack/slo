@@ -138,3 +138,17 @@ class TestSlashSuggestionEngine:
         wrapped = state.with_highlight_delta(delta=-1)
 
         assert wrapped.highlighted_index == len(state.rows) - 1
+
+    def test_workflows_command_appears_in_suggestions(self) -> None:
+        """``/work`` suggests the registry-backed ``/workflows`` command (spec 57.a.6)."""
+        engine: SlashSuggestionEngine = SlashSuggestionEngine(
+            registry=SlashRouter.registry(),
+        )
+
+        state = engine.evaluate(
+            buffer_text="/work",
+            active_model_name="claude-sonnet-4-6",
+        )
+
+        assert state.visible is True
+        assert any(row.label == "/workflows" for row in state.rows)

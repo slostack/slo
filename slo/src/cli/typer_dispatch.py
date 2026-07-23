@@ -14,6 +14,7 @@ Name mapping — CLI flag → Python attribute (headless run path):
   --append-system-prompt-file <p> → append_system_prompt_file→ SessionConfigDAO.append_system_prompt
   --orchestrator                  → orchestrator_mode        → HeadlessRunner.orchestrator_mode
   --system-prompt-b64 <str>       → system_prompt_b64        → SessionConfigDAO.system_prompt
+  --notify-session <id>           → notify_session_id        → HeadlessRunner.notify_session_id
 
 Resolution order for session id (first non-None wins):
   1. ``--resume`` reference resolved by the history store to a canonical UUID.
@@ -132,6 +133,7 @@ class TyperDispatch:
         append_system_prompt_file: Optional[Path] = None,
         orchestrator_mode: bool = False,
         system_prompt_b64: Optional[str] = None,
+        notify_session_id: Optional[str] = None,
     ) -> int:
         """Run one agent loop headlessly, stream JSONL to stdout, return exit code.
 
@@ -175,6 +177,9 @@ class TyperDispatch:
             system_prompt_b64 (Optional[str]): Base64-encoded system prompt string.
                 When non-None, decoded and applied as ``SessionConfigDAO.system_prompt``.
                 Takes precedence over ``system_prompt_file``.
+            notify_session_id (Optional[str]): Session id whose inbox receives
+                workflow lifecycle notifications (spec 57.a.3). ``None`` keeps
+                headless behaviour byte-identical to today's (no notifier).
 
         Returns:
             int: POSIX exit code: ``0`` completed, ``2`` aborted, ``1`` failed.
@@ -218,6 +223,7 @@ class TyperDispatch:
         runner: HeadlessRunner = HeadlessRunner(
             config=config,
             orchestrator_mode=orchestrator_mode,
+            notify_session_id=notify_session_id,
         )
         with headless_logging(slo_home=slo_home):
             return asyncio.run(runner.invoke(prompt=prompt))

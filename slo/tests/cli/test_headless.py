@@ -225,3 +225,402 @@ class TestSloRunCommand:
             result = runner.invoke(app, ["run", "-p", "fail prompt"])
 
         assert result.exit_code == 1
+
+
+class _RecordingNotifier:
+    """WorkflowNotifier stand-in recording every lifecycle call in order."""
+
+    def __init__(self) -> None:
+        """Start with an empty call log."""
+        self.calls: list[tuple[str, dict]] = []
+
+    async def started(self, *, brief_preview: str) -> None:
+        """Record a started call.
+
+        Args:
+            brief_preview (str): Brief preview text.
+        """
+        self.calls.append(("started", {"brief_preview": brief_preview}))
+
+    async def phase_update(self, *, phase_summary: str) -> None:
+        """Record a phase_update call.
+
+        Args:
+            phase_summary (str): One-line phase digest.
+        """
+        self.calls.append(("phase_update", {"phase_summary": phase_summary}))
+
+    async def completed(self, *, synthesis: str, result_json: str) -> None:
+        """Record a completed call.
+
+        Args:
+            synthesis (str): Final answer text.
+            result_json (str): Last spawn result JSON.
+        """
+        self.calls.append(("completed", {"synthesis": synthesis, "result_json": result_json}))
+
+    async def failed(self, *, error: str) -> None:
+        """Record a failed call.
+
+        Args:
+            error (str): Terminal error description.
+        """
+        self.calls.append(("failed", {"error": error}))
+
+
+def _spawn_result_event(*, content: str) -> AgentStreamEventDAO:
+    """Build one orchestrator-level ``spawn_sub_agents`` tool-result event.
+
+    Args:
+        content (str): Serialized ``OrchestratorResultDAO`` JSON.
+
+    Returns:
+        AgentStreamEventDAO: The tool-result event.
+    """
+    return AgentStreamEventDAO(
+        kind="tool_result",
+        tool_name="spawn_sub_agents",
+        content=content,
+    )
+
+
+class TestHeadlessRunnerWorkflowNotifications:
+    """The ``--notify-session`` event tap (spec 57.a.3)."""
+
+    async def _run(
+        self,
+        *,
+        tmp_path,
+        events: list[AgentStreamEventDAO],
+        notify_session_id: str | None,
+        notifier: _RecordingNotifier | None,
+        prompt: str = "run the workflow",
+    ) -> int:
+        """Drive one runner over scripted events with an injected notifier.
+
+        Args:
+            tmp_path: Pytest tmp path.
+            events (list[AgentStreamEventDAO]): Scripted session events.
+            notify_session_id (str | None): CLI flag value under test.
+            notifier (_RecordingNotifier | None): Injected recorder.
+            prompt (str, optional): Headless prompt text.
+
+        Returns:
+            int: Runner exit code.
+        """
+        runner: HeadlessRunner = HeadlessRunner(
+            config=_make_config(tmp_path),
+            notify_session_id=notify_session_id,
+            notifier=notifier,  # type: ignore[arg-type]
+        )
+        with patch(
+            "src.cli.headless.SloAgentSession.build",
+            return_value=_make_session_mock(events=events),
+        ):
+            return await runner.invoke(prompt=prompt)
+
+    async def test_started_and_completed_bracket_the_run(self, tmp_path, capsys) -> None:
+        """A notified run sends started first and completed last."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        events: list[AgentStreamEventDAO] = [
+            AgentStreamEventDAO(kind="text_delta", delta="working"),
+            AgentStreamEventDAO(kind="run_completed", content="all done"),
+        ]
+
+        exit_code: int = await self._run(
+            tmp_path=tmp_path,
+            events=events,
+            notify_session_id="tui-1",
+            notifier=notifier,
+        )
+
+        assert exit_code == 0
+        assert [name for name, _ in notifier.calls] == ["started", "completed"]
+        assert notifier.calls[0][1]["brief_preview"] == "run the workflow"
+        assert notifier.calls[1][1]["synthesis"] == "all done"
+
+    async def test_runner_taps_spawn_result_into_phase_update(self, tmp_path, capsys) -> None:
+        """Each orchestrator-level spawn result produces exactly one phase update."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        spawn_json: str = json.dumps(
+            {
+                "mode": "single",
+                "all_completed": True,
+                "failed_task_ids": [],
+                "results": [{"task_id": "phase-1"}],
+            }
+        )
+        events: list[AgentStreamEventDAO] = [
+            _spawn_result_event(content=spawn_json),
+            AgentStreamEventDAO(kind="run_completed", content="synth"),
+        ]
+
+        await self._run(
+            tmp_path=tmp_path,
+            events=events,
+            notify_session_id="tui-1",
+            notifier=notifier,
+        )
+
+        phase_calls: list[tuple[str, dict]] = [c for c in notifier.calls if c[0] == "phase_update"]
+        assert len(phase_calls) == 1
+        assert phase_calls[0][1]["phase_summary"] == "1 task(s), all_completed=True"
+        completed_call: dict = notifier.calls[-1][1]
+        assert completed_call["result_json"] == spawn_json
+
+    async def test_phase_summary_lists_failed_task_ids(self, tmp_path, capsys) -> None:
+        """Failed task ids surface in the phase digest."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        spawn_json: str = json.dumps(
+            {
+                "mode": "parallel",
+                "all_completed": False,
+                "failed_task_ids": ["phase-2"],
+                "results": [{"task_id": "phase-1"}, {"task_id": "phase-2"}],
+            }
+        )
+        events: list[AgentStreamEventDAO] = [
+            _spawn_result_event(content=spawn_json),
+            AgentStreamEventDAO(kind="run_completed", content="synth"),
+        ]
+
+        await self._run(
+            tmp_path=tmp_path,
+            events=events,
+            notify_session_id="tui-1",
+            notifier=notifier,
+        )
+
+        phase_call: dict = next(kwargs for name, kwargs in notifier.calls if name == "phase_update")
+        assert phase_call["phase_summary"] == "2 task(s), all_completed=False, failed=['phase-2']"
+
+    async def test_sub_agent_events_never_trigger_phase_updates(self, tmp_path, capsys) -> None:
+        """Relayed child events (sub_agent_id set) are not phase boundaries."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        child_tool_result: AgentStreamEventDAO = AgentStreamEventDAO(
+            kind="tool_result",
+            tool_name="spawn_sub_agents",
+            content="{}",
+            sub_agent_id="child-1",
+            task_id="t1",
+        )
+        events: list[AgentStreamEventDAO] = [
+            child_tool_result,
+            AgentStreamEventDAO(kind="run_completed", content="synth"),
+        ]
+
+        await self._run(
+            tmp_path=tmp_path,
+            events=events,
+            notify_session_id="tui-1",
+            notifier=notifier,
+        )
+
+        assert [name for name, _ in notifier.calls] == ["started", "completed"]
+
+    async def test_runner_run_failed_maps_to_failed(self, tmp_path, capsys) -> None:
+        """A run_failed terminal event maps to ``notifier.failed``."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        events: list[AgentStreamEventDAO] = [
+            AgentStreamEventDAO(kind="run_failed", content="model exhausted"),
+        ]
+
+        exit_code: int = await self._run(
+            tmp_path=tmp_path,
+            events=events,
+            notify_session_id="tui-1",
+            notifier=notifier,
+        )
+
+        assert exit_code == 1
+        assert notifier.calls[-1][0] == "failed"
+        assert "run_failed" in notifier.calls[-1][1]["error"]
+        assert "model exhausted" in notifier.calls[-1][1]["error"]
+
+    async def test_runner_run_aborted_maps_to_failed(self, tmp_path, capsys) -> None:
+        """A run_aborted terminal event also maps to ``notifier.failed``."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        events: list[AgentStreamEventDAO] = [
+            AgentStreamEventDAO(kind="run_aborted"),
+        ]
+
+        exit_code: int = await self._run(
+            tmp_path=tmp_path,
+            events=events,
+            notify_session_id="tui-1",
+            notifier=notifier,
+        )
+
+        assert exit_code == 2
+        assert notifier.calls[-1][0] == "failed"
+        assert "run_aborted" in notifier.calls[-1][1]["error"]
+
+    async def test_runner_without_flag_constructs_no_notifier(self, tmp_path, capsys) -> None:
+        """Without ``--notify-session`` no notifier exists and nothing is recorded."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        events: list[AgentStreamEventDAO] = [
+            _spawn_result_event(content="{}"),
+            AgentStreamEventDAO(kind="run_completed", content="done"),
+        ]
+
+        runner: HeadlessRunner = HeadlessRunner(
+            config=_make_config(tmp_path),
+            notify_session_id=None,
+            notifier=notifier,  # type: ignore[arg-type]
+        )
+        with patch(
+            "src.cli.headless.SloAgentSession.build",
+            return_value=_make_session_mock(events=events),
+        ):
+            exit_code: int = await runner.invoke(prompt="hi")
+
+        assert exit_code == 0
+        assert notifier.calls == []
+        assert runner._notifier is None
+
+    async def test_workflow_id_read_from_env_with_fallback(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """The real notifier is built with SLO_WORKFLOW_ID, else 'wf-unknown'."""
+        monkeypatch.setenv("SLO_WORKFLOW_ID", "wf-3f2a")
+        runner: HeadlessRunner = HeadlessRunner(
+            config=_make_config(tmp_path),
+            notify_session_id="tui-1",
+        )
+
+        built = runner._resolve_notifier(orchestrator_session_id="orch-1")
+        assert built is not None
+        assert built._workflow_id == "wf-3f2a"
+        assert built._target_session_id == "tui-1"
+        assert built._orchestrator_session_id == "orch-1"
+
+        monkeypatch.delenv("SLO_WORKFLOW_ID", raising=False)
+        fallback = runner._resolve_notifier(orchestrator_session_id="orch-1")
+        assert fallback is not None
+        assert fallback._workflow_id == "wf-unknown"
+
+
+class TestHeadlessNotifyEndToEnd:
+    """Integration: runner event tap → real WorkflowNotifier → real inbox store."""
+
+    async def test_full_lifecycle_lands_in_target_inbox(self, tmp_path, capsys) -> None:
+        """started + phase + completed messages land in the owner session's inbox."""
+        from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+        from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+
+        inbox_store: SessionInboxStore = SessionInboxStore(history_root=tmp_path / "history")
+        notifier: WorkflowNotifier = WorkflowNotifier(
+            target_session_id="tui-owner",
+            orchestrator_session_id="orch-1",
+            workflow_id="wf-3f2a",
+            inbox_store=inbox_store,
+        )
+        spawn_json: str = json.dumps(
+            {"mode": "single", "all_completed": True, "failed_task_ids": [], "results": [{}]}
+        )
+        events: list[AgentStreamEventDAO] = [
+            AgentStreamEventDAO(kind="tool_result", tool_name="spawn_sub_agents", content=spawn_json),
+            AgentStreamEventDAO(kind="run_completed", content="workflow synthesis"),
+        ]
+        runner: HeadlessRunner = HeadlessRunner(
+            config=_make_config(tmp_path),
+            notify_session_id="tui-owner",
+            notifier=notifier,
+        )
+
+        with patch(
+            "src.cli.headless.SloAgentSession.build",
+            return_value=_make_session_mock(events=events),
+        ):
+            exit_code: int = await runner.invoke(prompt="run the workflow")
+
+        pending = await inbox_store.list_pending(session_id="tui-owner")
+        assert exit_code == 0
+        assert [message.kind for message in pending] == [
+            "workflow_started",
+            "workflow_phase_update",
+            "workflow_completed",
+        ]
+        assert [message.delivery_mode for message in pending] == [
+            "context_note",
+            "context_note",
+            "chat_turn",
+        ]
+        assert all(message.payload["workflow_id"] == "wf-3f2a" for message in pending)
+        assert "workflow synthesis" in pending[-1].text
+
+    async def test_exploding_inbox_never_alters_exit_code_or_stdout(
+        self, tmp_path, capsys
+    ) -> None:
+        """An inbox that raises on every call leaves the run's output untouched."""
+        from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+
+        class _ExplodingStore:
+            async def enqueue(self, *, message):
+                raise OSError("disk full")
+
+        notifier: WorkflowNotifier = WorkflowNotifier(
+            target_session_id="tui-owner",
+            orchestrator_session_id="orch-1",
+            workflow_id="wf-3f2a",
+            inbox_store=_ExplodingStore(),  # type: ignore[arg-type]
+        )
+        events: list[AgentStreamEventDAO] = [
+            AgentStreamEventDAO(kind="text_delta", delta="hello"),
+            AgentStreamEventDAO(kind="run_completed", content="done"),
+        ]
+        runner: HeadlessRunner = HeadlessRunner(
+            config=_make_config(tmp_path),
+            notify_session_id="tui-owner",
+            notifier=notifier,
+        )
+
+        with patch(
+            "src.cli.headless.SloAgentSession.build",
+            return_value=_make_session_mock(events=events),
+        ):
+            exit_code: int = await runner.invoke(prompt="hi")
+
+        captured = capsys.readouterr()
+        lines: list[str] = [line for line in captured.out.strip().split("\n") if line]
+        assert exit_code == 0
+        assert len(lines) == len(events)
+
+
+class TestRunCommandNotifySessionFlag:
+    """``slo run --notify-session`` parse surface (spec 57.a.3)."""
+
+    def test_notify_session_flag_reaches_dispatch(self) -> None:
+        """The parsed flag value is forwarded as ``notify_session_id``."""
+        from typer.testing import CliRunner
+
+        from src.cli.app import app
+
+        runner: CliRunner = CliRunner()
+        with patch(
+            "src.cli.typer_dispatch.TyperDispatch.run_headless",
+            return_value=0,
+        ) as mock_run_headless:
+            result = runner.invoke(
+                app,
+                ["run", "-p", "hello", "--notify-session", "tui-42"],
+            )
+
+        assert result.exit_code == 0
+        assert mock_run_headless.call_args.kwargs["notify_session_id"] == "tui-42"
+
+    def test_flag_absent_forwards_none(self) -> None:
+        """Omitting the flag forwards ``notify_session_id=None`` (legacy behaviour)."""
+        from typer.testing import CliRunner
+
+        from src.cli.app import app
+
+        runner: CliRunner = CliRunner()
+        with patch(
+            "src.cli.typer_dispatch.TyperDispatch.run_headless",
+            return_value=0,
+        ) as mock_run_headless:
+            result = runner.invoke(app, ["run", "-p", "hello"])
+
+        assert result.exit_code == 0
+        assert mock_run_headless.call_args.kwargs["notify_session_id"] is None

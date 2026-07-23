@@ -25,6 +25,10 @@ from src.tui.model_catalog import (
     supported_models_by_provider,
 )
 from src.agents.slo_agent.history.tree_builder import SessionTreeBuilder
+from src.agents.slo_agent.orchestrator.workflow_registry import (
+    WorkflowCommandService,
+    WorkflowHandleStore,
+)
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.slash_command_registry import (
     SlashCommandRegistry,
@@ -158,6 +162,7 @@ class SlashRouter:
             "new": cls._handle_new,
             "rename": cls._handle_rename,
             "preferences": cls._handle_preferences,
+            "workflows": cls._handle_workflows,
         }
         return handlers[command_name]
 
@@ -671,6 +676,49 @@ class SlashRouter:
         reasoning_line: str = f"  reasoning: {prefs.default_reasoning_level or '(none — uses model default)'}"
         return SlashCommandResultDAO(
             rendered=f"Saved preferences:\n{model_line}\n{reasoning_line}",
+        )
+
+    @classmethod
+    async def _handle_workflows(
+        cls,
+        *,
+        rest: str,
+        session: SloAgentSession,
+    ) -> SlashCommandResultDAO:
+        """List, abort, or dismiss detached workflows (spec 57.a.6).
+
+        Deliberately does NOT self-guard on ``session.is_running`` — listing
+        and aborting while the main lane is busy is a primary use case. Every
+        outcome (including unknown ids and illegal transitions) is rendered as
+        transcript text; nothing raises to the dispatcher.
+
+        Args:
+            rest (str): Trailing argument text — empty for list, or
+                ``abort <workflow-id>`` / ``dismiss <workflow-id>``.
+            session (SloAgentSession): Session whose workflows are managed.
+
+        Returns:
+            SlashCommandResultDAO: Result with the listing, a confirmation,
+                or an error/usage line.
+        """
+        if session.history_root is None:
+            return SlashCommandResultDAO(
+                rendered="workflows unavailable — history is disabled for this session",
+            )
+        service: WorkflowCommandService = WorkflowCommandService(
+            store=WorkflowHandleStore(history_root=session.history_root),
+            owner_session_id=session.session_id,
+        )
+        subcommand, _, workflow_id = rest.strip().partition(" ")
+        workflow_id = workflow_id.strip()
+        if not subcommand:
+            return SlashCommandResultDAO(rendered=await service.list_text())
+        if subcommand == "abort" and workflow_id:
+            return SlashCommandResultDAO(rendered=await service.abort(workflow_id=workflow_id))
+        if subcommand == "dismiss" and workflow_id:
+            return SlashCommandResultDAO(rendered=await service.dismiss(workflow_id=workflow_id))
+        return SlashCommandResultDAO(
+            rendered="usage: /workflows [abort <workflow-id> | dismiss <workflow-id>]",
         )
 
     @classmethod

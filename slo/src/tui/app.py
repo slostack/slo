@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Optional, cast
 
@@ -17,7 +18,13 @@ from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
+from config.logger import log_info
 from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
+from src.agents.slo_agent.orchestrator.workflow_registry import (
+    WorkflowHandleDAO,
+    WorkflowHandleStore,
+    WorkflowState,
+)
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
@@ -295,12 +302,20 @@ class SloTUI(App):
     initialises ``_registered_themes``.
     """
 
+    _WORKFLOW_KIND_TO_STATE: dict[str, WorkflowState] = {
+        "workflow_started": "running",
+        "workflow_completed": "completed",
+        "workflow_failed": "failed",
+    }
+    """Claimed workflow lifecycle note kind → durable handle state (spec 57.a.5)."""
+
     def __init__(
         self,
         *,
         session: SloAgentSession,
         inbox_store: Optional[SessionInboxStore] = None,
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
+        workflow_handle_store: Optional[WorkflowHandleStore] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -310,6 +325,9 @@ class SloTUI(App):
                 store for tests. ``None`` uses the session history root.
             lease_store (Optional[SessionOwnershipLeaseStore]): Optional injected
                 lease store for tests. ``None`` uses the session history root.
+            workflow_handle_store (Optional[WorkflowHandleStore]): Optional
+                injected workflow handle store for tests. ``None`` uses the
+                session history root.
         """
         super().__init__()
         self.register_theme(SLO_DEFAULT_THEME)
@@ -347,6 +365,13 @@ class SloTUI(App):
         self._fleet_panel: Optional[SubAgentFleetPanel] = None
         # Guards one-per-run auto-launch of the workflow visualizer window.
         self._visualizer_launched_for_run: bool = False
+        # Detached-workflow receive path (spec 57.a.5): one visualizer per
+        # orchestrator session id (cleared on terminal notes), a durable handle
+        # store bound at mount, and a mount-reconciled state cache backing the
+        # exit hint.
+        self._visualizer_launched_for: set[str] = set()
+        self._workflow_handle_store: Optional[WorkflowHandleStore] = workflow_handle_store
+        self._workflow_states: dict[str, WorkflowState] = {}
         self._inbox_store: Optional[SessionInboxStore] = inbox_store
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
@@ -574,6 +599,9 @@ class SloTUI(App):
             self._lease_store = SessionOwnershipLeaseStore(history_root=history_root)
         if self._inbox_store is None:
             self._inbox_store = SessionInboxStore(history_root=history_root)
+        if self._workflow_handle_store is None:
+            self._workflow_handle_store = WorkflowHandleStore(history_root=history_root)
+        await self._reconcile_workflow_handles()
         await self._acquire_session_lease()
         await self._inbox_store.ensure_session_inbox(session_id=self._session.session_id)
         self._lease_timer = self.set_interval(
@@ -644,9 +672,14 @@ class SloTUI(App):
     async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> None:
         """Route one claimed inbox item according to its delivery mode.
 
+        Workflow lifecycle messages (spec 57.a.5) additionally advance the
+        durable workflow handle before their delivery-mode rendering runs, so
+        `/workflows` state stays truthful regardless of the delivery mode.
+
         Args:
             message (SessionInboxMessageDAO): Claimed inbox item.
         """
+        await self._advance_workflow_handle_state(message=message)
         if message.delivery_mode == "ui_notice":
             self._write_adapter_line(
                 content=self._format_inbox_notice(message=message),
@@ -659,7 +692,32 @@ class SloTUI(App):
                 classes="tool-result",
             )
             return
+        if message.delivery_mode == "context_note":
+            await self._deliver_context_note(message=message)
+            return
         await self._start_inbox_chat_turn(message=message)
+
+    async def _deliver_context_note(self, *, message: SessionInboxMessageDAO) -> None:
+        """Render a context note AND persist it into model context (spec 57.a.4).
+
+        Writes the ``⊛`` transcript line, then persists one ``workflow_update``
+        history event via ``SloAgentSession.record_workflow_update`` — no LLM
+        call happens. Persistence is idempotent on ``message_id``, so a
+        re-claimed message (claim → crash → re-claim) renders again but is
+        recorded at most once.
+
+        Args:
+            message (SessionInboxMessageDAO): Claimed ``context_note`` item.
+        """
+        self._write_adapter_line(
+            content=f"⊛ {message.title or message.kind}: {message.text}",
+            classes="sub-agent-notice",
+        )
+        await self._session.record_workflow_update(
+            text=message.text,
+            message_id=message.message_id,
+            workflow_id=str((message.payload or {}).get("workflow_id", "wf-unknown")),
+        )
 
     @staticmethod
     def _format_inbox_notice(*, message: SessionInboxMessageDAO) -> str:
@@ -698,6 +756,148 @@ class SloTUI(App):
             classes="tool-result",
         )
         self._in_flight_task = asyncio.create_task(self._run_prompt(text=message.text))
+
+    # ---- Detached-workflow receive path (spec 57.a.5) ----------------------
+
+    async def _reconcile_workflow_handles(self) -> None:
+        """Refresh the cached workflow states from a pid-liveness reconcile pass.
+
+        Invoked once at mount so a resumed TUI immediately shows accurate
+        states before any note arrives. Failures are logged, never raised —
+        session delivery must not fail because a handle file is unreadable.
+        """
+        if self._workflow_handle_store is None:
+            return
+        try:
+            handles: list[WorkflowHandleDAO] = await self._workflow_handle_store.reconcile(
+                owner_session_id=self._session.session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — mount must not fail on handle errors
+            log_info(msg="workflow_reconcile_failed", error=str(exc))
+            return
+        self._workflow_states = {handle.workflow_id: handle.state for handle in handles}
+
+    async def _advance_workflow_handle_state(self, *, message: SessionInboxMessageDAO) -> None:
+        """Advance the durable handle for a claimed workflow lifecycle message.
+
+        Invoked by the inbox claim path for every message; non-workflow kinds
+        no-op. ``workflow_started`` additionally fires the resume-case
+        visualizer fallback; terminal kinds clear the launched-visualizer
+        guard so a future re-run gets a fresh window. Unknown workflows and
+        illegal transitions are logged, never raised — inbox delivery must not
+        fail because a handle file is missing.
+
+        Args:
+            message (SessionInboxMessageDAO): Claimed inbox item.
+        """
+        target_state: Optional[WorkflowState] = self._WORKFLOW_KIND_TO_STATE.get(message.kind)
+        workflow_id: str = str((message.payload or {}).get("workflow_id", ""))
+        if target_state is None or not workflow_id or self._workflow_handle_store is None:
+            return
+        if message.kind == "workflow_started":
+            self._maybe_launch_workflow_visualizer_from_payload(message=message)
+        if target_state in ("completed", "failed"):
+            orchestrator_session_id: str = str(
+                (message.payload or {}).get("orchestrator_session_id", "")
+            )
+            self._visualizer_launched_for.discard(orchestrator_session_id)
+        try:
+            await self._workflow_handle_store.update_state(
+                owner_session_id=self._session.session_id,
+                workflow_id=workflow_id,
+                state=target_state,
+            )
+        except Exception as exc:  # noqa: BLE001 — delivery must not fail on handle errors
+            log_info(
+                msg="workflow_handle_advance_failed",
+                workflow_id=workflow_id,
+                error=str(exc),
+            )
+            return
+        self._workflow_states[workflow_id] = target_state
+
+    def _maybe_launch_workflow_visualizer(self, *, result_text: str) -> None:
+        """Open the visualizer for a freshly launched detached workflow.
+
+        Invoked from ``_render_event`` when a ``launch_workflow`` tool result
+        streams through. Parses the handle JSON for the orchestrator session
+        id; a result that is not a handle (error JSON) is ignored. Also seeds
+        the workflow-state cache so the exit hint lists a workflow launched in
+        this session even before its ``workflow_started`` note is claimed.
+
+        Args:
+            result_text (str): Raw ``launch_workflow`` tool-result text.
+        """
+        try:
+            parsed: object = json.loads(result_text)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(parsed, dict):
+            return
+        orchestrator_session_id: str = str(parsed.get("orchestrator_session_id") or "")
+        if not orchestrator_session_id:
+            return
+        workflow_id: str = str(parsed.get("workflow_id") or "")
+        if workflow_id:
+            self._workflow_states[workflow_id] = cast(
+                WorkflowState, str(parsed.get("state") or "launching")
+            )
+        self._launch_workflow_visualizer(orchestrator_session_id=orchestrator_session_id)
+
+    def _maybe_launch_workflow_visualizer_from_payload(
+        self,
+        *,
+        message: SessionInboxMessageDAO,
+    ) -> None:
+        """Resume-case fallback: launch the visualizer from a ``workflow_started`` note.
+
+        Covers the TUI-restarted-after-launch case where no ``launch_workflow``
+        tool-result event will re-fire (parent spec, Ambiguity #2 resolution).
+
+        Args:
+            message (SessionInboxMessageDAO): Claimed ``workflow_started`` item.
+        """
+        orchestrator_session_id: str = str(
+            (message.payload or {}).get("orchestrator_session_id", "")
+        )
+        self._launch_workflow_visualizer(orchestrator_session_id=orchestrator_session_id)
+
+    def _launch_workflow_visualizer(self, *, orchestrator_session_id: str) -> None:
+        """Open the visualizer once per detached workflow's orchestrator session.
+
+        The one-per-target guard is keyed by ``orchestrator_session_id`` — not
+        per run — and is cleared on workflow terminal notes. Best-effort like
+        the in-turn path: a failed spawn writes the manual command hint.
+
+        Args:
+            orchestrator_session_id (str): Detached orchestrator session id.
+        """
+        if not orchestrator_session_id:
+            return
+        if orchestrator_session_id in self._visualizer_launched_for:
+            return
+        self._visualizer_launched_for.add(orchestrator_session_id)
+        from src.tui.visualizer_launcher import VisualizerLauncher  # noqa: PLC0415
+
+        launched: bool = VisualizerLauncher.launch(parent_session_id=orchestrator_session_id)
+        if self._adapter is None:
+            return
+        if launched:
+            self._adapter.write(
+                content=(
+                    "⊇ Opened workflow visualizer in a new window "
+                    f"(session {orchestrator_session_id})."
+                ),
+                classes="sub-agent-notice",
+            )
+            return
+        self._adapter.write(
+            content=(
+                "⊇ Watch the workflow live: "
+                f"slo visualize --session {orchestrator_session_id} --follow"
+            ),
+            classes="sub-agent-notice",
+        )
 
     # ---- Input handling ---------------------------------------------------
 
@@ -1023,10 +1223,26 @@ class SloTUI(App):
     def _resume_command_hint(self) -> str:
         """Return the copy-paste command that resumes the active session.
 
+        When detached workflows are live (state ``launching``/``running`` in
+        the mount-reconciled cache), a second line lists them next to the
+        resume command (spec 57.a.5) — they keep running after the TUI exits.
+
         Returns:
-            str: A ``slo --resume <session id>`` line for the active session.
+            str: A ``slo --resume <session id>`` line for the active session,
+                plus a live-workflows line when any workflow is live.
         """
-        return f"Resume this session: slo --resume {self._session.session_id}"
+        hint: str = f"Resume this session: slo --resume {self._session.session_id}"
+        live_workflows: list[str] = [
+            f"{workflow_id} ({state})"
+            for workflow_id, state in sorted(self._workflow_states.items())
+            if state in ("launching", "running")
+        ]
+        if not live_workflows:
+            return hint
+        return (
+            f"{hint}\nLive workflows: {', '.join(live_workflows)}. "
+            "They keep running — list with /workflows after resume."
+        )
 
     async def action_clear(self) -> None:
         """``^L``: clear the transcript without affecting agent state."""
@@ -1664,6 +1880,10 @@ class SloTUI(App):
             "recovery_exhausted",
         }:
             self._spinner.set_override_status(text=None)
+        if event.kind == "tool_result" and event.tool_name == "launch_workflow":
+            # Primary visualizer trigger (spec 57.a.5): the launch turn's tool
+            # result carries the handle JSON with the orchestrator session id.
+            self._maybe_launch_workflow_visualizer(result_text=event.content or "")
         if event.sub_agent_id is not None:
             await self._route_sub_agent_event(event=event)
             return

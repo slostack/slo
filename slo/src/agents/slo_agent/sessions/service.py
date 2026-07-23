@@ -440,6 +440,10 @@ class SloAgentSession:
         self._startup_notice_shown_in_memory: bool = False
         self._usage_snapshot: SessionUsageSnapshotDAO = self._build_usage_snapshot()
         self._orchestrator_context_written: bool = False
+        # Idempotency cache for record_workflow_update (spec 57.a.4): inbox
+        # message ids whose workflow_update event is already persisted. Seeded
+        # lazily from the event log on the first record call.
+        self._workflow_message_ids_seen: Optional[set[str]] = None
         log_info(msg=f"SloAgentSession built session_id={session_id[:8]} workdir={workdir}")
 
     @classmethod
@@ -1027,6 +1031,79 @@ class SloAgentSession:
             session_name=session_name,
         )
 
+    async def record_workflow_update(
+        self,
+        *,
+        text: str,
+        message_id: str,
+        workflow_id: str,
+    ) -> bool:
+        """Persist one workflow note as a synthetic completed turn (spec 57.a.4).
+
+        Invoked by the TUI's ``context_note`` inbox branch after rendering the
+        transcript line. The event is appended with a fresh ``turn_id`` and no
+        run envelope — terminal by construction — so
+        ``SessionHistoryProjector`` includes it in model context in true
+        chronological position. Idempotent on ``message_id``: a note that is
+        already recorded (inbox re-delivery after a crash-before-ack) is
+        skipped.
+
+        Args:
+            text (str): The full note text (already formatted by the notifier).
+            message_id (str): Originating inbox message id — the idempotency key.
+            workflow_id (str): Owning workflow, recorded in the event payload.
+
+        Returns:
+            bool: ``True`` when a new event was persisted, ``False`` on a
+                duplicate ``message_id`` or when history is disabled.
+        """
+        if not self._enable_history or self._history_store is None:
+            return False
+        await self._ensure_history_session()
+        seen_message_ids: set[str] = await self._seen_workflow_message_ids()
+        if message_id in seen_message_ids:
+            return False
+        event: SessionHistoryEventDAO = SessionHistoryEventDAO(
+            session_id=self._session_id,
+            turn_id=str(uuid4()),
+            kind="workflow_update",
+            payload=SessionHistoryEventPayloadDAO(
+                content=text,
+                metadata={
+                    "workflow_id": workflow_id,
+                    "inbox_message_id": message_id,
+                },
+            ),
+        )
+        await self._history_store.append_event(event=event)
+        seen_message_ids.add(message_id)
+        return True
+
+    async def _seen_workflow_message_ids(self) -> set[str]:
+        """Return the persisted workflow inbox message ids, seeding the cache once.
+
+        Scans the event log for ``workflow_update`` events on first use and
+        caches their ``inbox_message_id`` payload values in memory — the set is
+        small (one entry per delivered phase note).
+
+        Returns:
+            set[str]: Mutable cache of already-recorded inbox message ids.
+        """
+        if self._workflow_message_ids_seen is not None:
+            return self._workflow_message_ids_seen
+        if self._history_store is None:
+            self._workflow_message_ids_seen = set()
+            return self._workflow_message_ids_seen
+        events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
+            session_id=self._session_id,
+        )
+        self._workflow_message_ids_seen = {
+            str(event.payload.metadata["inbox_message_id"])
+            for event in events
+            if event.kind == "workflow_update" and event.payload.metadata.get("inbox_message_id")
+        }
+        return self._workflow_message_ids_seen
+
     def subscribe(self, *, handler: AgentEventSubscriber) -> None:
         """Register an async event handler."""
         self._subscribers.append(handler)
@@ -1071,12 +1148,13 @@ class SloAgentSession:
         self,
         *,
         pool: "SubAgentPool",
-        spawn_tool: BaseTool,
+        spawn_tool: Optional[BaseTool] = None,
+        spawn_tools: Optional[list[BaseTool]] = None,
     ) -> None:
-        """Promote this session to orchestrator mode by attaching a pool and tool.
+        """Promote this session to orchestrator mode by attaching a pool and tools.
 
-        Merges ``spawn_tool`` into the session config's ``extra_tools`` list and
-        appends ``ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM`` to the config's
+        Merges the orchestrator tools into the session config's ``extra_tools``
+        list and appends ``ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM`` to the config's
         ``append_system_prompt`` so the next lazy agent build picks up both.
 
         Must be called before the first prompt (i.e. before ``self._agent`` is
@@ -1087,17 +1165,28 @@ class SloAgentSession:
         Args:
             pool (SubAgentPool): The pool that manages child processes for
                 this session.
-            spawn_tool (BaseTool): The bound ``spawn_sub_agents`` LangChain
-                tool closed over ``pool``.
+            spawn_tool (Optional[BaseTool]): Deprecated single-tool form — the
+                bound ``spawn_sub_agents`` tool. Normalised into a one-element
+                list. Prefer ``spawn_tools``.
+            spawn_tools (Optional[list[BaseTool]]): Orchestrator tool list
+                (``spawn_sub_agents`` plus optional ``launch_workflow`` /
+                ``workflow_status``). Takes precedence over ``spawn_tool``.
 
         Raises:
             RuntimeError: When the lazy agent has already been built.
+            ValueError: When neither ``spawn_tool`` nor ``spawn_tools`` supplies
+                at least one tool.
         """
         if self._agent is not None:
             raise RuntimeError(
                 "attach_sub_agent_pool() must be called before the first prompt. "
                 "The agent has already been built for this session."
             )
+        resolved_tools: list[BaseTool] = list(spawn_tools) if spawn_tools is not None else (
+            [spawn_tool] if spawn_tool is not None else []
+        )
+        if not resolved_tools:
+            raise ValueError("attach_sub_agent_pool() requires at least one tool.")
         from src.agents.slo_agent.orchestrator.spawn_tool import (  # noqa: PLC0415
             ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM,
             DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
@@ -1106,13 +1195,30 @@ class SloAgentSession:
         existing_extra: list[BaseTool] = list(self._config.extra_tools or [])
         existing_append: str = self._config.append_system_prompt or ""
         update: dict = {
-            "extra_tools": existing_extra + [spawn_tool],
+            "extra_tools": existing_extra + resolved_tools,
             "append_system_prompt": existing_append + ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM,
         }
         if self._config.system_prompt is None:
             update["system_prompt"] = DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
         self._config = self._config.model_copy(update=update)
         self._sub_agent_pool = pool
+
+    @property
+    def orchestration_tools(self) -> list[BaseTool]:
+        """Return the orchestrator tools attached by ``attach_sub_agent_pool``.
+
+        Test seam only — exposes the tools stored in ``_config.extra_tools``
+        after a successful ``attach_sub_agent_pool`` call so tests can assert
+        on the exact bundle without inspecting private config state directly.
+
+        Returns:
+            list[BaseTool]: The tool list passed to ``attach_sub_agent_pool``
+                as ``spawn_tools``, or an empty list when the session has no
+                config or no extra tools have been attached yet.
+        """
+        if self._config is None:
+            return []
+        return list(self._config.extra_tools or [])
 
     def steer(self, *, message: str | BaseMessage) -> None:
         """Queue a steering message for the next agent turn."""

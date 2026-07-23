@@ -1,7 +1,20 @@
 ---
 name: workflows
-description: "Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, the named workflows available for explicit use, and the `dynamic workflows` / `dyanmic workflows` shorthand for orchestrated multi-agent runs."
-when_to_use: Use only when the user explicitly asks about workflows, asks to use a named workflow, wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading, or says "dynamic workflows" / "dyanmic workflows" to request orchestrated multi-agent workflow execution.
+description: "Overview of Slo's formal workflow system: pipeline vs parallel execution,
+  context handoff, confirmation behavior, the named workflows available for explicit
+  use, and the routing rules: 'dynamic workflows' / 'dyanmic workflows' (no detach
+  qualifier) = sync in-session execution via spawn_sub_agents; a detach-qualified
+  request ('headless' / 'detached' / 'independent' dynamic workflows, or a named
+  workflow with detach wording) = detached headless orchestrator via launch_workflow;
+  a detached orchestrator never calls launch_workflow."
+when_to_use: Use only when the user explicitly asks about workflows, asks to use a
+  named workflow, wants a compound task executed through a formal multi-step workflow
+  instead of ad-hoc skill loading, or says "dynamic workflows" / "dyanmic workflows"
+  to request in-session orchestrated multi-agent workflow execution. Note: an
+  unqualified "dynamic workflows" phrase runs in-session (sync dynamic workflow); only
+  a detach-qualified phrase ("headless dynamic workflows", "detached dynamic
+  workflows", "independent dynamic workflows") routes to the headless-orchestration
+  skill.
 group: design-and-analysis
 kind: skill
 source_prompt: workflows/overview.md
@@ -12,8 +25,8 @@ source_prompt: workflows/overview.md
 ## Skill summary
 
 - **Name:** `workflows`
-- **Description:** Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, the named workflows available for explicit use, and the `dynamic workflows` / `dyanmic workflows` shorthand for orchestrated multi-agent runs.
-- **When to use:** Use only when the user explicitly asks about workflows, asks to use a named workflow, wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading, or says `dynamic workflows` / `dyanmic workflows` to request orchestrated multi-agent workflow execution.
+- **Description:** Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, the named workflows available for explicit use, and the routing rules: "dynamic workflows" / "dyanmic workflows" (no detach qualifier) = sync in-session execution via spawn_sub_agents; a detach-qualified request ("headless" / "detached" / "independent" dynamic workflows, or a named workflow with detach wording) = detached headless orchestrator via launch_workflow; a detached orchestrator never calls launch_workflow.
+- **When to use:** Use only when the user explicitly asks about workflows, asks to use a named workflow, wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading, or says `dynamic workflows` / `dyanmic workflows` to request in-session orchestrated multi-agent workflow execution. An unqualified "dynamic workflows" phrase runs in-session (sync dynamic workflow); a detach-qualified phrase routes to the headless-orchestration skill.
 - **Group:** `design-and-analysis`
 - **Kind:** `skill`
 - **Source prompt:** `workflows/overview.md`
@@ -23,7 +36,8 @@ source_prompt: workflows/overview.md
 - The user asks: "What workflows does Slo support?"
 - The user asks: "Use the formal workflow system for this task instead of improvised routing."
 - Another skill explicitly tells you to load a named workflow before continuing.
-- The user asks: "Use dynamic workflows for this task." Treat that as an orchestrator / multi-agent workflow request, not as normal single-agent routing.
+- The user asks: "Use dynamic workflows for this task." Treat that as a sync in-session orchestrator / multi-agent workflow request (not as detachment); run the workflow in this session via spawn_sub_agents.
+- The user asks: "Use headless dynamic workflows for this task." That is a detach-qualified request — route to the headless-orchestration skill instead.
 
 ## Available workflows and their sub-skills (read this first)
 
@@ -47,7 +61,7 @@ Load it only when:
 - the user explicitly asks to execute a named workflow,
 - or another skill explicitly routes the task into the formal workflow system.
 
-If the user says `dynamic workflows` or `dyanmic workflows`, treat that phrase as an explicit request to use the orchestrator / headless workflow path with multiple Slo agents.
+If the user says `dynamic workflows` or `dyanmic workflows` **without a detach qualifier**, treat that phrase as an explicit request to run the workflow in-session via `spawn_sub_agents` (sync dynamic workflow). If the user adds a detach qualifier — "headless", "detached", or "independent" applied to the request, or detach wording like "in the background" / "without blocking" — route to the `headless-orchestration` skill instead (headless dynamic workflow). A detached orchestrator never calls `launch_workflow`.
 
 Do **not** load this skill as an always-on default for normal coding or analysis work.
 

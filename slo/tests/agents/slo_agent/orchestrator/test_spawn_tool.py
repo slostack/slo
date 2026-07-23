@@ -129,6 +129,92 @@ class TestSpawnSubAgentsToolDispatch:
 
         assert "error" in parsed
 
+    async def test_unknown_model_rejected_before_dispatch(self) -> None:
+        """An unknown ``model`` returns an error naming the task and supported models, no dispatch."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        tasks_json: str = json.dumps(
+            [{"task_id": "synthesize", "prompt": "Do it.", "model": "claude-sonnet-4-5"}]
+        )
+
+        raw: str = await tool_obj.ainvoke(
+            input={"mode": "single", "tasks_json": tasks_json}
+        )
+        parsed: dict = json.loads(raw)
+
+        assert "error" in parsed
+        assert "synthesize" in parsed["error"]
+        assert "claude-sonnet-4-5" in parsed["error"]
+        assert "Supported models" in parsed["error"]
+        pool.dispatch.assert_not_called()
+
+    async def test_valid_model_passes_validation_and_dispatches(self) -> None:
+        """A supported ``model`` clears validation and reaches ``dispatch``."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "prompt": "Do it.", "model": "claude-sonnet-4-6"}]
+        )
+
+        await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
+
+        pool.dispatch.assert_called_once()
+
+    async def test_omitted_model_skips_validation_and_dispatches(self) -> None:
+        """A task without a ``model`` inherits the pool default and is not rejected."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
+
+        await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
+
+        pool.dispatch.assert_called_once()
+
+    async def test_reasoning_level_field_accepted_on_task(self) -> None:
+        """A task carrying ``reasoning_level`` validates and dispatches (documents the key name)."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        tasks_json: str = json.dumps(
+            [
+                {
+                    "task_id": "t1",
+                    "prompt": "Do it.",
+                    "model": "claude-sonnet-4-6",
+                    "reasoning_level": "medium",
+                }
+            ]
+        )
+
+        await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
+
+        pool.dispatch.assert_called_once()
+
+    async def test_reasoning_key_typo_is_rejected(self) -> None:
+        """The wrong key ``reasoning`` (not ``reasoning_level``) is rejected without dispatch."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "prompt": "Do it.", "reasoning": "medium"}]
+        )
+
+        raw: str = await tool_obj.ainvoke(
+            input={"mode": "single", "tasks_json": tasks_json}
+        )
+        parsed: dict = json.loads(raw)
+
+        assert "error" in parsed
+        pool.dispatch.assert_not_called()
+
+    def test_tool_schema_documents_reasoning_level_key(self) -> None:
+        """The tool schema tells the LLM the key is ``reasoning_level``, not ``reasoning``."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        description: str = tool_obj.args_schema.model_fields["tasks_json"].description
+
+        assert "reasoning_level" in description
+        assert 'NOT "reasoning"' in description
+
 
 class TestExtraToolsInjectionInSessionConfig:
     """``SessionConfigDAO.extra_tools`` accepts and stores ``BaseTool`` instances."""

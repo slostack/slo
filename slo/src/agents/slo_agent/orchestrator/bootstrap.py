@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from langchain_core.tools import BaseTool
 
+import config.cfg as cfg_module
 from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool
 
@@ -30,7 +31,10 @@ class OrchestratorSessionBootstrap:
     """Promote a ``SloAgentSession`` to orchestrator mode.
 
     Builds a ``SubAgentPool``, wraps it in the ``spawn_sub_agents`` LangChain
-    tool, and calls ``session.attach_sub_agent_pool(pool=pool, spawn_tool=spawn_tool)``.
+    tool, adds the detached-workflow tools (``launch_workflow`` /
+    ``workflow_status``, spec 57) unless the ``SLO_DETACHED_WORKFLOWS`` kill
+    switch is off, and calls ``session.attach_sub_agent_pool(pool=pool,
+    spawn_tools=[…])``.
 
     The caller must hold the session in a pre-prompt state — the underlying
     ``attach_sub_agent_pool`` method raises ``RuntimeError`` if the lazy agent
@@ -38,8 +42,8 @@ class OrchestratorSessionBootstrap:
     """
 
     @classmethod
-    def attach(cls, *, session: "SloAgentSession") -> None:  # type: ignore[name-defined]
-        """Attach a ``SubAgentPool`` and the ``spawn_sub_agents`` tool to ``session``.
+    def attach(cls, *, session: "SloAgentSession", headless: bool = False) -> None:  # type: ignore[name-defined]
+        """Attach a ``SubAgentPool`` and the orchestrator tools to ``session``.
 
         No-ops when the session already has a built agent (e.g. a test session
         constructed with a ``FauxChatModel`` injected directly) or already has a
@@ -49,6 +53,10 @@ class OrchestratorSessionBootstrap:
             session: Session to promote to orchestrator mode. Must be in a
                 pre-prompt state — i.e. the lazy agent must not have been
                 built yet.
+            headless (bool): True when promoting a headless ``slo run
+                --orchestrator`` session; withholds the detached-workflow tools
+                so a detached orchestrator can never recurse. Defaults to
+                ``False`` (TUI path — all three tools).
         """
         if cls._already_has_agent(session=session):
             return
@@ -56,9 +64,63 @@ class OrchestratorSessionBootstrap:
             return
         pool: SubAgentPool = cls._build_pool(session=session)
         spawn_tool: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        session.attach_sub_agent_pool(pool=pool, spawn_tool=spawn_tool)
+        extra_tools: list[BaseTool] = [spawn_tool] + cls._build_workflow_tools(
+            session=session,
+            headless=headless,
+        )
+        session.attach_sub_agent_pool(pool=pool, spawn_tools=extra_tools)
 
     # ── private helpers ──────────────────────────────────────────────────────
+
+    @classmethod
+    def _build_workflow_tools(
+        cls,
+        *,
+        session: "SloAgentSession",
+        headless: bool = False,
+    ) -> list[BaseTool]:
+        """Build the detached-workflow tools when the kill switch allows them.
+
+        Both tools share one ``WorkflowHandleStore`` bound to the default
+        history root so the launch tool and the status tool always agree on
+        handle state.
+
+        Args:
+            session (SloAgentSession): Owning session providing its id and
+                active model.
+            headless (bool): True when promoting a headless ``slo run
+                --orchestrator`` session; withholds the detached-workflow tools
+                so a detached orchestrator can never recurse.
+
+        Returns:
+            list[BaseTool]: ``[launch_workflow, workflow_status]`` when
+                ``SLO_DETACHED_WORKFLOWS`` is enabled and ``headless`` is
+                ``False``, else an empty list.
+        """
+        if headless:
+            return []
+        if not cfg_module.DETACHED_WORKFLOWS:
+            return []
+        from src.agents.slo_agent.history.filesystem_store import (  # noqa: PLC0415
+            default_history_root,
+        )
+        from src.agents.slo_agent.orchestrator.launch_tool import (  # noqa: PLC0415
+            LaunchWorkflowTool,
+        )
+        from src.agents.slo_agent.orchestrator.workflow_registry import (  # noqa: PLC0415
+            WorkflowHandleStore,
+            WorkflowStatusTool,
+        )
+
+        store: WorkflowHandleStore = WorkflowHandleStore(history_root=default_history_root())
+        return [
+            LaunchWorkflowTool.build(
+                owner_session_id=session.session_id,
+                default_model=session.active_model_name,
+                handle_store=store,
+            ),
+            WorkflowStatusTool.build(owner_session_id=session.session_id, store=store),
+        ]
 
     @classmethod
     def _already_has_agent(cls, *, session: SloAgentSession) -> bool:

@@ -15,14 +15,20 @@ histories.  Operators can opt in with ``--enable-history``.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+from typing import Optional
 
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
 from src.cli.headless_events import emit_lifecycle_event
 
 __all__ = ["HeadlessRunner"]
+
+_FALLBACK_WORKFLOW_ID: str = "wf-unknown"
 
 # Maps run terminal kinds to the matching lifecycle kind for stderr.
 _TERMINAL_KIND_TO_LIFECYCLE: dict[str, str] = {
@@ -50,6 +56,8 @@ class HeadlessRunner:
         *,
         config: SessionConfigDAO,
         orchestrator_mode: bool = False,
+        notify_session_id: Optional[str] = None,
+        notifier: Optional[WorkflowNotifier] = None,
     ) -> None:
         """Bind the runner to its session config.
 
@@ -58,10 +66,22 @@ class HeadlessRunner:
             orchestrator_mode (bool, optional): When ``True`` a ``SubAgentPool``
                 will be attached before the run so the agent can spawn sub-agents.
                 Defaults to ``False``.
+            notify_session_id (Optional[str]): Session id whose inbox receives
+                workflow lifecycle notifications (spec 57.a.3). ``None`` keeps
+                behaviour byte-identical to a plain headless run — no notifier
+                is constructed and nothing is enqueued.
+            notifier (Optional[WorkflowNotifier]): Injectable notifier for
+                tests. Ignored when ``notify_session_id`` is ``None``.
         """
         self._config: SessionConfigDAO = config
         self._orchestrator_mode: bool = orchestrator_mode
+        self._notify_session_id: Optional[str] = notify_session_id
+        self._injected_notifier: Optional[WorkflowNotifier] = notifier
+        self._notifier: Optional[WorkflowNotifier] = None
+        self._started_sent: bool = False
+        self._last_spawn_result_json: str = "{}"
         self._terminal_kind: str = "run_failed"
+        self._terminal_content: str = ""
 
     async def invoke(self, *, prompt: str) -> int:
         """Run one prompt to completion and return the POSIX exit code.
@@ -98,15 +118,18 @@ class HeadlessRunner:
             from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
                 OrchestratorSessionBootstrap,
             )
-            OrchestratorSessionBootstrap.attach(session=session)
+            OrchestratorSessionBootstrap.attach(session=session, headless=True)
             emit_lifecycle_event(
                 kind="headless_orchestrator_attached",
                 session_id=session.session_id,
                 message="sub-agent pool attached",
             )
         session.subscribe(handler=self._emit)
+        self._notifier = self._resolve_notifier(orchestrator_session_id=session.session_id)
+        await self._notify_started(prompt=prompt)
         async for _event in session.invoke(text=prompt):
             pass
+        await self._notify_terminal()
         lifecycle_kind: str = _TERMINAL_KIND_TO_LIFECYCLE.get(
             self._terminal_kind,
             "headless_run_failed",
@@ -123,17 +146,120 @@ class HeadlessRunner:
         """Write one event to stdout as a single newline-terminated JSON line.
 
         Registered as the session subscriber by ``invoke``. Records the terminal
-        event kind so ``invoke`` can derive the exit code after the session ends.
-        Flushes after every write so downstream consumers (``SubAgentProcess``)
-        receive events as they arrive, not buffered.
+        event kind so ``invoke`` can derive the exit code after the session ends,
+        and taps ``spawn_sub_agents`` results into the workflow notifier when
+        ``--notify-session`` is active. Flushes after every write so downstream
+        consumers (``SubAgentProcess``) receive events as they arrive, not
+        buffered.
 
         Args:
             event (AgentStreamEventDAO): The event to serialise and emit.
         """
         if event.is_terminal:
             self._terminal_kind = event.kind
+            if not event.is_sub_agent_event:
+                self._terminal_content = event.content or ""
         sys.stdout.write(event.model_dump_json() + "\n")
         sys.stdout.flush()
+        await self._maybe_notify_phase(event=event)
+
+    # ── workflow notification tap (spec 57.a.3) ──────────────────────────────
+
+    def _resolve_notifier(self, *, orchestrator_session_id: str) -> Optional[WorkflowNotifier]:
+        """Return the workflow notifier for this run, when one is requested.
+
+        Args:
+            orchestrator_session_id (str): This run's own session id.
+
+        Returns:
+            Optional[WorkflowNotifier]: ``None`` when ``--notify-session`` is
+                absent (byte-identical legacy behaviour); the injected notifier
+                when tests supplied one; else a fresh notifier bound to the
+                target session, this orchestrator session, and the workflow id
+                from ``SLO_WORKFLOW_ID``.
+        """
+        if self._notify_session_id is None:
+            return None
+        if self._injected_notifier is not None:
+            return self._injected_notifier
+        return WorkflowNotifier(
+            target_session_id=self._notify_session_id,
+            orchestrator_session_id=orchestrator_session_id,
+            workflow_id=os.environ.get("SLO_WORKFLOW_ID", _FALLBACK_WORKFLOW_ID),
+        )
+
+    async def _notify_started(self, *, prompt: str) -> None:
+        """Send the workflow_started note exactly once, before the first LLM call.
+
+        Args:
+            prompt (str): The workflow brief this run executes.
+        """
+        if self._notifier is None:
+            return
+        if self._started_sent:
+            return
+        self._started_sent = True
+        await self._notifier.started(brief_preview=prompt)
+
+    async def _maybe_notify_phase(self, *, event: AgentStreamEventDAO) -> None:
+        """Send one phase update per orchestrator-level ``spawn_sub_agents`` result.
+
+        Relayed sub-agent events (``sub_agent_id`` set) never count as phase
+        boundaries — only this orchestrator's own tool results do.
+
+        Args:
+            event (AgentStreamEventDAO): The event under inspection.
+        """
+        if self._notifier is None:
+            return
+        if event.is_sub_agent_event:
+            return
+        if event.kind != "tool_result" or event.tool_name != "spawn_sub_agents":
+            return
+        result_text: str = event.content or "{}"
+        self._last_spawn_result_json = result_text
+        await self._notifier.phase_update(
+            phase_summary=self._phase_summary(result_text=result_text),
+        )
+
+    async def _notify_terminal(self) -> None:
+        """Send the terminal workflow message matching the run's terminal kind."""
+        if self._notifier is None:
+            return
+        if self._terminal_kind == "run_completed":
+            await self._notifier.completed(
+                synthesis=self._terminal_content,
+                result_json=self._last_spawn_result_json,
+            )
+            return
+        await self._notifier.failed(
+            error=f"{self._terminal_kind}: {self._terminal_content or 'no terminal output'}",
+        )
+
+    @staticmethod
+    def _phase_summary(*, result_text: str) -> str:
+        """Digest one ``OrchestratorResultDAO`` JSON into a one-line phase summary.
+
+        Args:
+            result_text (str): Raw ``spawn_sub_agents`` tool-result text.
+
+        Returns:
+            str: One-line summary (task count, completion flag, failed ids), or
+                a fallback line when the result is not parseable JSON.
+        """
+        try:
+            parsed: dict = json.loads(result_text)
+        except (json.JSONDecodeError, TypeError):
+            return "spawn_sub_agents finished (unparseable result)"
+        if "error" in parsed:
+            return f"spawn_sub_agents error: {parsed['error']}"
+        task_count: int = len(parsed.get("results", []))
+        all_completed: bool = bool(parsed.get("all_completed", False))
+        failed_task_ids: list = parsed.get("failed_task_ids", [])
+        summary: str = f"{task_count} task(s), all_completed={all_completed}"
+        if failed_task_ids:
+            summary += f", failed={failed_task_ids}"
+        return summary
 
     @staticmethod
     def _exit_code_for_terminal_kind(*, kind: str) -> int:

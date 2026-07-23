@@ -228,3 +228,47 @@ class TestRenderMarkdown:
         events = [_event(kind="run_started"), _event(kind="run_completed")]
 
         assert ReplayEntryProjector.render_markdown(events=events) == ""
+
+
+class TestWorkflowUpdateReplay:
+    """``workflow_update`` events replay as note entries (spec 57.a.4)."""
+
+    def test_replay_renders_workflow_update_as_note_entry(self) -> None:
+        """A workflow_update event folds into one ``kind="note"`` entry."""
+        events = [
+            _event(
+                kind="user_message",
+                turn_id="t1",
+                payload=SessionHistoryEventPayloadDAO(content="hello"),
+            ),
+            _event(kind="run_completed", turn_id="t1"),
+            _event(
+                kind="workflow_update",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(
+                    content="[workflow wf-3f2a] phase 1: COMPLETE",
+                ),
+            ),
+        ]
+
+        entries: list[TranscriptEntryDAO] = ReplayEntryProjector.build_entries(events=events)
+
+        assert entries == [
+            TranscriptEntryDAO(kind="user", content="hello"),
+            TranscriptEntryDAO(kind="note", content="⊛ [workflow wf-3f2a] phase 1: COMPLETE"),
+        ]
+
+    def test_workflow_update_renders_in_markdown_export(self) -> None:
+        """``render_markdown`` includes a workflow-update section."""
+        events = [
+            _event(
+                kind="workflow_update",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(content="phase 1 done"),
+            ),
+        ]
+
+        markdown: str = ReplayEntryProjector.render_markdown(events=events)
+
+        assert "### Workflow update" in markdown
+        assert "phase 1 done" in markdown

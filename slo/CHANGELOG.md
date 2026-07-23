@@ -4,6 +4,77 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.11] — 2026-07-22
+
+**Explicit orchestrator routing (spec 56) + non-blocking dynamic workflows (spec 57).**
+
+**Spec 56** restores "dynamic workflows" to sync in-session execution and introduces the detach qualifier as the only route to `launch_workflow`. An unqualified "dynamic workflows" request now blocks the TUI and runs the workflow phases in the current session via `spawn_sub_agents`; only a request carrying an explicit detach qualifier — the word "headless", "detached", or "independent" applied to the dynamic-workflows request or to a named workflow ("headless dynamic workflows", "detached dynamic workflows", "independent dynamic workflows", or detach wording "in the background" / "without blocking") — routes to a single `launch_workflow` call. Detached orchestrators no longer receive `launch_workflow` (structural guard) and refuse recursion via `SLO_WORKFLOW_ID` (depth guard), closing the three-level cascade observed in session `7222023f-db7a-4d68-98b6-013551e101c6`.
+
+**Spec 57** built the headless-workflow machinery: the `launch_workflow` tool, the workflow handle registry, the `WorkflowNotifier`, the TUI receive path, and the `/workflows` slash command — all described below.
+
+### Added
+
+- **`launch_workflow` tool** (`orchestrator/launch_tool.py`) — detached spawn
+  with `start_new_session=True`, non-secret `SLO_*` env allowlist,
+  handle-file-before-spawn crash safety, live-workflow cap
+  (`SLO_MAX_DETACHED_WORKFLOWS`, default 2), and error-JSON-never-raise
+  semantics on every failure path (capture files, spawn, handle writes). An
+  operator abort landing mid-spawn is honoured by reaping the fresh process
+  group. Depth guard: refuses (error JSON, no spawn) when `SLO_WORKFLOW_ID` is
+  present in the process environment.
+- **Workflow handle registry** (`orchestrator/workflow_registry.py`) —
+  `WorkflowHandleDAO` + `WorkflowHandleStore` (atomic 0600/0700 writes,
+  legal-transition table, pid-liveness `reconcile` with a 30 s launch grace
+  window, path-safe workflow ids) and the read-only `workflow_status` tool.
+- **`WorkflowNotifier` + `slo run --notify-session <sid>`**
+  (`orchestrator/notifier.py`, `cli/headless.py`) — the headless runner taps
+  its own event stream and enqueues durable inbox messages: `workflow_started`
+  and per-phase `workflow_phase_update` as `context_note`, terminal
+  `workflow_completed`/`workflow_failed` as `chat_turn`. Enqueue failures are
+  swallowed; without the flag, headless behaviour is byte-identical.
+- **`context_note` delivery mode + `workflow_update` history events** — claimed
+  notes render a `⊛` line AND persist a synthetic completed turn (idempotent on
+  inbox `message_id`) that `SessionHistoryProjector` includes in model context
+  as `[workflow update] …`, in true chronological position, surviving
+  `--resume` (resume context is golden-equal to live context). New session API
+  `SloAgentSession.record_workflow_update`.
+- **TUI receive path** (`tui/app.py`) — visualizer retargeted to the
+  orchestrator's session id from the `launch_workflow` tool result (fallback:
+  the `workflow_started` note on resume), one window per orchestrator session;
+  claimed notes advance the durable handle state; mount-time reconcile; the
+  exit hint lists live workflows; `^C`/`/abort` keep today's
+  current-turn-only meaning.
+- **`/workflows` slash command** (`/wf`) — reconciled list, `abort <id>`
+  (SIGTERM to the process group, SIGKILL escalation after 5 s), `dismiss <id>`
+  for stalled workflows. `WorkflowCommandService` refuses non-positive pids so
+  a never-patched handle can never signal the TUI's own process group.
+- **Kill switch** `SLO_DETACHED_WORKFLOWS=0` keeps all dynamic-workflow
+  requests in-session via `spawn_sub_agents`.
+
+### Changed
+
+- `SloAgentSession.attach_sub_agent_pool` accepts a `spawn_tools` list;
+  `OrchestratorSessionBootstrap.attach` gains `headless: bool = False`; when
+  `headless=True` (the `HeadlessRunner --orchestrator` path) `_build_workflow_tools`
+  returns `[]` so detached orchestrators structurally cannot call `launch_workflow`
+  or `workflow_status`; TUI call site is unchanged and keeps all three tools.
+- Orchestrator prompts rewritten (spec 56): unqualified "dynamic workflows" runs
+  in-session via `spawn_sub_agents`; only a detach-qualified request routes to
+  `launch_workflow`; routing documented across `spawn_tool.py`,
+  `launch_tool.py`, `AGENTS.md`, `CLAUDE.md`, `skills/INDEX.md`,
+  headless-orchestration / workflows / orchestrator `SKILL.md` files, and
+  `docs/SLO_HEADLESS_README.md`.
+- Test harness safety: `environments/tests.env` sets `SLO_AUTO_VISUALIZE=0`
+  and an autouse fixture in `tests/conftest.py` stubs
+  `VisualizerLauncher._default_spawn`, so no test run can ever open real
+  terminal windows on the developer's machine (regression-tested).
+
+### Tests
+
+- ~130 new tests across the handle store, launch tool, notifier, headless tap,
+  context delivery/projection/replay, TUI receive path, and `/workflows`
+  service + router; full suite 2801 passing.
+
 ## [0.14.10] — 2026-07-19
 
 **Longer inactivity timeouts for slow, large-context model calls.** The two

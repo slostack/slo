@@ -50,6 +50,11 @@ HistoryEventKind = Literal[
     "sub_agent_completed",   # one child reached a terminal state
     # Compaction (sub-spec 01.a.1):
     "compaction_summary",    # LLM-generated summary of the compacted history portion
+    # Detached workflow feedback (spec 57.a.4) — included in model context on replay.
+    # Persisted as a synthetic completed turn: one event, a fresh turn_id, terminal
+    # by construction (no run envelope). Payload: content = the note text;
+    # metadata carries {"workflow_id": …, "inbox_message_id": …} (idempotency key).
+    "workflow_update",
 ]
 
 

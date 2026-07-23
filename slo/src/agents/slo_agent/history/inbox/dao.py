@@ -24,9 +24,14 @@ InboxMessageKind: TypeAlias = Literal[
     "monitor_alert",
     "scheduled_prompt",
     "system_notice",
+    # Detached-workflow lifecycle (spec 57.a.3 writer / 57.a.4 receive path):
+    "workflow_started",
+    "workflow_phase_update",
+    "workflow_completed",
+    "workflow_failed",
 ]
 InboxPriority: TypeAlias = Literal["low", "normal", "high"]
-InboxDeliveryMode: TypeAlias = Literal["ui_notice", "transcript_note", "chat_turn"]
+InboxDeliveryMode: TypeAlias = Literal["ui_notice", "transcript_note", "chat_turn", "context_note"]
 SessionInboxStoreResult: TypeAlias = Literal["queued", "coalesced"]
 
 

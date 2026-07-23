@@ -43,6 +43,7 @@ class TestSlashCommandRegistry:
             "abort",
             "steer",
             "auth",
+            "workflows",
             "model",
             "reasoning",
             "theme",

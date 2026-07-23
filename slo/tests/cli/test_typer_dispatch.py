@@ -361,7 +361,7 @@ class TestRunHeadlessReasoningOverride:
         fake_runner = MagicMock()
         fake_runner.invoke = _fake_invoke
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured_config.append(config)
             return fake_runner
 
@@ -380,7 +380,7 @@ class TestRunHeadlessReasoningOverride:
 
         captured_configs: list = []
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured_configs.append(config)
             return MagicMock()
 
@@ -404,7 +404,7 @@ class TestRunHeadlessReasoningOverride:
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "absent.json"))
         captured_configs: list = []
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured_configs.append(config)
             return MagicMock()
 
@@ -431,7 +431,7 @@ class TestRunHeadlessResumeImpliesHistory:
         session_id: str = str(uuid4())
         captured_configs: list = []
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured_configs.append(config)
             return MagicMock()
 
@@ -459,7 +459,7 @@ class TestRunHeadlessResumeImpliesHistory:
 
         captured_configs: list = []
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured_configs.append(config)
             return MagicMock()
 
@@ -486,7 +486,7 @@ class TestRunHeadlessSessionIdResolution:
 
         captured: list = []
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured.append(config)
             runner = MagicMock()
             runner.invoke = AsyncMock(return_value=0)
@@ -535,7 +535,7 @@ class TestRunHeadlessSystemPromptOverrides:
 
         captured: list = []
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured.append(config)
             runner = MagicMock()
             runner.invoke = AsyncMock(return_value=0)
@@ -599,7 +599,7 @@ class TestApplySystemPromptB64Override:
 
         captured: list = []
 
-        def _capture_runner(*, config, orchestrator_mode=False):
+        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
             captured.append(config)
             runner = MagicMock()
             runner.invoke = AsyncMock(return_value=0)
@@ -647,3 +647,49 @@ class TestApplySystemPromptB64Override:
         )
 
         assert config.system_prompt == b64_body
+
+
+class TestRunHeadlessNotifySession:
+    """``run_headless`` threads ``--notify-session`` into ``HeadlessRunner`` (spec 57.a.3)."""
+
+    def _captured_runner_kwargs(self, *, notify_session_id) -> dict:
+        """Run ``run_headless`` with heavy deps patched and capture runner kwargs.
+
+        Args:
+            notify_session_id: Value passed through ``run_headless``.
+
+        Returns:
+            dict: The keyword arguments ``HeadlessRunner`` was constructed with.
+        """
+        from contextlib import nullcontext
+
+        captured_kwargs: list[dict] = []
+
+        def _capture_runner(**kwargs):
+            captured_kwargs.append(kwargs)
+            return MagicMock()
+
+        with (
+            patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
+            patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
+        ):
+            TyperDispatch.run_headless(
+                prompt="do it",
+                notify_session_id=notify_session_id,
+            )
+
+        assert len(captured_kwargs) == 1
+        return captured_kwargs[0]
+
+    def test_run_headless_threads_notify_session_id(self) -> None:
+        """A supplied notify session id reaches the runner constructor."""
+        kwargs: dict = self._captured_runner_kwargs(notify_session_id="tui-session-9")
+
+        assert kwargs["notify_session_id"] == "tui-session-9"
+
+    def test_run_headless_defaults_notify_session_id_to_none(self) -> None:
+        """Without the flag the runner receives ``notify_session_id=None``."""
+        kwargs: dict = self._captured_runner_kwargs(notify_session_id=None)
+
+        assert kwargs["notify_session_id"] is None

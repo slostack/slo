@@ -372,6 +372,59 @@ class TestSubAgentProcessTerminalResult:
 
         assert result.status == "failed"
 
+    def test_failed_child_with_no_answer_surfaces_stderr_tail(self) -> None:
+        """A silent non-zero exit surfaces the captured stderr tail as the answer."""
+        process, _ = _make_process()
+        process._stderr_tail.append(
+            "ValueError: Unsupported reasoning model 'claude-sonnet-4-5'."
+        )
+
+        result = process._terminal_result(exit_code=1)
+
+        assert result.status == "failed"
+        assert "stderr tail" in result.answer
+        assert "Unsupported reasoning model 'claude-sonnet-4-5'" in result.answer
+
+    def test_stdout_answer_wins_over_stderr_tail(self) -> None:
+        """A child that produced a terminal answer keeps it even if stderr was noisy."""
+        process, _ = _make_process()
+        process._answer = "the real answer"
+        process._stderr_tail.append("some warning on stderr")
+
+        result = process._terminal_result(exit_code=1)
+
+        assert result.answer == "the real answer"
+
+    def test_failed_child_with_no_stderr_returns_empty_answer(self) -> None:
+        """A silent failure with no captured stderr yields an empty answer, not a label."""
+        process, _ = _make_process()
+
+        result = process._terminal_result(exit_code=1)
+
+        assert result.answer == ""
+
+    def test_clean_exit_with_empty_answer_does_not_borrow_stderr(self) -> None:
+        """A clean exit (code 0) never substitutes stderr for an empty answer."""
+        process, _ = _make_process()
+        process._stderr_tail.append("benign deprecation warning")
+
+        result = process._terminal_result(exit_code=0)
+
+        assert result.answer == ""
+
+    def test_stderr_fallback_answer_is_char_bounded(self) -> None:
+        """The stderr fallback answer never exceeds the char cap plus its label."""
+        from src.agents.slo_agent.orchestrator.process import STDERR_TAIL_MAX_CHARS
+
+        process, _ = _make_process()
+        for index in range(200):
+            process._stderr_tail.append(f"stderr line {index} " + "x" * 200)
+
+        result = process._terminal_result(exit_code=1)
+
+        label: str = "child exited without an answer; stderr tail:\n"
+        assert len(result.answer) <= len(label) + STDERR_TAIL_MAX_CHARS
+
 
 class TestSubAgentProcessRunFailureIsolation:
     """``run()`` never raises — failures become ``failed`` results."""
@@ -653,6 +706,35 @@ class TestSubAgentProcessPumpStderr:
         mock_log.assert_called_once()
         call_kwargs = mock_log.call_args.kwargs
         assert call_kwargs["line"] == "child diagnostic"
+
+    async def test_retains_stderr_lines_in_tail_buffer(self) -> None:
+        """Non-empty stderr lines are retained in the tail buffer for failure diagnostics."""
+        process, _ = _make_process()
+        reader: AsyncMock = AsyncMock()
+        reader.readline = AsyncMock(
+            side_effect=[b"first diagnostic\n", b"\n", b"RateLimitError: 429\n", b""]
+        )
+
+        with patch("src.agents.slo_agent.orchestrator.process.log_info"):
+            await process._pump_stderr(stream=reader)
+
+        assert list(process._stderr_tail) == ["first diagnostic", "RateLimitError: 429"]
+
+    async def test_stderr_tail_is_bounded_to_max_lines(self) -> None:
+        """The tail buffer keeps only the last ``STDERR_TAIL_MAX_LINES`` lines."""
+        from src.agents.slo_agent.orchestrator.process import STDERR_TAIL_MAX_LINES
+
+        process, _ = _make_process()
+        overflow: int = STDERR_TAIL_MAX_LINES + 10
+        lines: list[bytes] = [f"line {i}\n".encode() for i in range(overflow)] + [b""]
+        reader: AsyncMock = AsyncMock()
+        reader.readline = AsyncMock(side_effect=lines)
+
+        with patch("src.agents.slo_agent.orchestrator.process.log_info"):
+            await process._pump_stderr(stream=reader)
+
+        assert len(process._stderr_tail) == STDERR_TAIL_MAX_LINES
+        assert process._stderr_tail[-1] == f"line {overflow - 1}"
 
     async def test_writes_lines_to_capture_file_when_configured(
         self, tmp_path: pytest.MonkeyPatch

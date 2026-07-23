@@ -1,6 +1,6 @@
 # Slo — Codebase Index
 
-Reference for navigating the source tree. Updated through spec 55 (canonical model catalog and latest-model support). 2590 tests pass.
+Reference for navigating the source tree. Updated through spec 55 (canonical model catalog and latest-model support) plus the spec 57.a.5 detached-workflow receive-path namespace (`src/tui/workflows/`). 2868 tests pass (19 baseline launch-tool/workflow-routing failures identical to clean commit `038c9ce` — environment-rooted, documented in the KB `gotchas.md`).
 
 ---
 
@@ -81,6 +81,11 @@ slo/
 | `widgets/tool_execution_block.py` | Live-updating tool call + result widget; Claude-Code-style rows with shared panel rhythm |
 | `widgets/slash_suggestion_menu.py` | Floating suggestion menu that appears when `/` is typed |
 | `widgets/usage_status_bar.py` | Status bar showing per-turn and session token totals + rate state |
+| `workflows/dao.py` | Detached-workflow receive-path DTOs and the only parsing/validation seams (`parse_workflow_lifecycle_message`, `parse_launch_workflow_result`); typed `DetachedWorkflowUiEffectDAO` vocabulary (`launch_visualizer`, `reset_launch_guard`) with a typed `WorkflowState` on every effect; no Textual |
+| `workflows/service.py` | `DetachedWorkflowAppService` — owns `WorkflowHandleStore` reconcile/update, legal durable transitions, and the `workflow_id → state` live-label cache (exit hint); terminal advances emit reset-only effects, never a launch effect |
+| `workflows/renderer.py` | `DetachedWorkflowRenderer` — owns the one-window-per-orchestrator-session launch guard, `VisualizerLauncher` calls, and transcript notices via `DetachedWorkflowNoticeSink`; guard resets only via a typed `reset_launch_guard` effect |
+
+**Delegation chain (spec 57.a.5):** `SloTUI` → raw kind/payload → `DetachedWorkflowAppService` → typed `HandleAdvanceOutcomeDAO` → `SloTUI` → `DetachedWorkflowRenderer.apply_effects`. The app never parses workflow payloads, branches on terminal fields, or launches windows itself.
 
 ---
 
@@ -164,6 +169,7 @@ tests/
 ├── tui/                # app, slash router, slash registry, suggestion engine,
 │   │                   #   suggestion menu, tool_execution_block, usage_status_bar,
 │   │                   #   thinking_spinner, transcript_projector, replay/resume, …
+│   ├── workflows/      # dao / app-service / renderer unit tests for the receive path
 │   └── authentication/ # OAuth flow TUI tests
 ├── auth/               # credential resolver, refresher, store
 ├── cli/                # Typer dispatch

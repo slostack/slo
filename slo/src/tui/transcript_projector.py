@@ -90,6 +90,7 @@ class TranscriptProjector:
             "user": self._project_replay_user,
             "assistant": self._project_replay_assistant,
             "tool": self._project_replay_tool,
+            "note": self._project_replay_note,
         }
 
     def reset_for_new_run(self) -> None:
@@ -296,6 +297,17 @@ class TranscriptProjector:
         self._seed_replay_reasoning(block=block, reasoning=entry.reasoning)
         content, classes = self._finalize_replay_assistant(block=block, entry=entry)
         self._host.record_transcript_line(content=content, classes=classes)
+
+    async def _project_replay_note(self, *, entry: TranscriptEntryDAO) -> None:
+        """Write a replayed workflow note as a one-line notice (spec 57.a.4).
+
+        Args:
+            entry (TranscriptEntryDAO): A ``kind="note"`` entry.
+        """
+        self._host.write_transcript_line(
+            content=entry.content or "",
+            classes="sub-agent-notice",
+        )
 
     async def _project_replay_tool(self, *, entry: TranscriptEntryDAO) -> None:
         """Mount a finalized tool execution and record its logical lines.

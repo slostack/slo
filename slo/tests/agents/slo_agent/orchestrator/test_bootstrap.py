@@ -49,7 +49,7 @@ class TestOrchestratorSessionBootstrapAttach:
     """``OrchestratorSessionBootstrap.attach`` promotes sessions to orchestrator mode."""
 
     def test_attach_calls_session_attach_sub_agent_pool(self) -> None:
-        """Successful attach calls ``session.attach_sub_agent_pool``."""
+        """Successful attach calls ``session.attach_sub_agent_pool`` with the tool list."""
         session: MagicMock = _make_session()
 
         with (
@@ -59,6 +59,11 @@ class TestOrchestratorSessionBootstrapAttach:
             patch(
                 "src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"
             ) as MockTool,
+            patch.object(
+                OrchestratorSessionBootstrap,
+                "_build_workflow_tools",
+                return_value=[],
+            ),
         ):
             mock_pool = MagicMock()
             MockPool.return_value = mock_pool
@@ -69,7 +74,7 @@ class TestOrchestratorSessionBootstrapAttach:
 
         session.attach_sub_agent_pool.assert_called_once_with(
             pool=mock_pool,
-            spawn_tool=mock_spawn_tool,
+            spawn_tools=[mock_spawn_tool],
         )
 
     def test_attach_builds_pool_with_session_identity(self) -> None:
@@ -138,6 +143,122 @@ class TestOrchestratorSessionBootstrapAttach:
             OrchestratorSessionBootstrap.attach(session=session)
 
         MockTool.build.assert_called_once_with(pool=mock_pool)
+
+
+class TestOrchestratorSessionBootstrapWorkflowTools:
+    """Detached-workflow tool registration and the kill switch (spec 57.a.2)."""
+
+    def test_attach_registers_three_tools_when_enabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With detached workflows enabled the tool list is spawn + launch + status."""
+        import config.cfg as cfg_module
+
+        monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", True)
+        session: MagicMock = _make_session()
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
+        ):
+            OrchestratorSessionBootstrap.attach(session=session)
+
+        spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        assert [tool.name for tool in spawn_tools] == [
+            "spawn_sub_agents",
+            "launch_workflow",
+            "workflow_status",
+        ]
+
+    def test_attach_registers_only_spawn_tool_when_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``SLO_DETACHED_WORKFLOWS=0`` restores the spawn-only tool bundle."""
+        import config.cfg as cfg_module
+
+        monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", False)
+        session: MagicMock = _make_session()
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
+        ):
+            OrchestratorSessionBootstrap.attach(session=session)
+
+        spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        assert [tool.name for tool in spawn_tools] == ["spawn_sub_agents"]
+
+    def test_workflow_tools_bound_to_session_identity(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The launch tool receives the session id and active model."""
+        import config.cfg as cfg_module
+
+        monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", True)
+        session: MagicMock = _make_session(
+            session_id="owner-1",
+            active_model_name="gpt-5.4",
+        )
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.launch_tool.LaunchWorkflowTool.build"
+        ) as mock_build:
+            mock_build.return_value = MagicMock(name="launch_workflow")
+            OrchestratorSessionBootstrap._build_workflow_tools(session=session)
+
+        assert mock_build.call_args.kwargs["owner_session_id"] == "owner-1"
+        assert mock_build.call_args.kwargs["default_model"] == "gpt-5.4"
+
+    def test_attach_headless_registers_only_spawn_tool(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Headless promotion with DETACHED_WORKFLOWS=True yields exactly [spawn_sub_agents].
+
+        The structural guard must withhold ``launch_workflow`` and
+        ``workflow_status`` from a detached headless orchestrator even when the
+        kill switch is on, so the orchestrator can never recurse.
+        """
+        import config.cfg as cfg_module
+
+        monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", True)
+        session: MagicMock = _make_session()
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
+        ):
+            OrchestratorSessionBootstrap.attach(session=session, headless=True)
+
+        spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        assert [tool.name for tool in spawn_tools] == ["spawn_sub_agents"]
+
+    def test_attach_tui_default_keeps_three_tools(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """TUI promotion (headless omitted) still exposes all three orchestration tools.
+
+        Guards the sync/TUI surface against regression: an unqualified
+        ``attach(session=…)`` call must keep the full bundle of
+        ``spawn_sub_agents``, ``launch_workflow``, and ``workflow_status``.
+        """
+        import config.cfg as cfg_module
+
+        monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", True)
+        session: MagicMock = _make_session()
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
+        ):
+            OrchestratorSessionBootstrap.attach(session=session)
+
+        spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        assert [tool.name for tool in spawn_tools] == [
+            "spawn_sub_agents",
+            "launch_workflow",
+            "workflow_status",
+        ]
 
 
 class TestOrchestratorSessionBootstrapPrivateHelpers:

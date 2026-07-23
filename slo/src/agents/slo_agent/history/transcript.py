@@ -27,8 +27,11 @@ __all__ = [
 ]
 
 
-TranscriptEntryKind = Literal["user", "assistant", "tool", "thinking"]
-"""Which transcript component a replay entry maps to."""
+TranscriptEntryKind = Literal["user", "assistant", "tool", "thinking", "note"]
+"""Which transcript component a replay entry maps to.
+
+``note`` (spec 57.a.4) replays a persisted ``workflow_update`` event as the
+same one-line ``sub-agent-notice`` rendering the live inbox path writes."""
 
 _ABORTED_NOTE: str = "aborted"
 """Sentinel terminal note marking an aborted assistant turn."""
@@ -137,6 +140,7 @@ class _ReplayEntryBuilder:
             "tool_result": self._absorb_tool_result,
             "run_aborted": self._absorb_run_aborted,
             "run_failed": self._absorb_run_failed,
+            "workflow_update": self._absorb_workflow_update,
         }
 
     def absorb(self, *, event: SessionHistoryEventDAO) -> None:
@@ -214,6 +218,17 @@ class _ReplayEntryBuilder:
         if entry is None:
             return
         entry.output = event.payload.tool_output or ""
+
+    def _absorb_workflow_update(self, *, event: SessionHistoryEventDAO) -> None:
+        """Close the active turn and append a workflow note entry (spec 57.a.4).
+
+        Args:
+            event (SessionHistoryEventDAO): One ``workflow_update`` event.
+        """
+        self._flush_assistant()
+        self._entries.append(
+            TranscriptEntryDAO(kind="note", content=f"⊛ {event.payload.content or ''}")
+        )
 
     def _absorb_run_aborted(self, *, event: SessionHistoryEventDAO) -> None:
         """Mark the active turn aborted and close it."""
@@ -342,6 +357,8 @@ class ReplayEntryProjector:
             return f"### Tool result · `{tool_name}`\n\n```\n{body}\n```"
         if event.kind == "assistant_message":
             return f"## Assistant\n\n{payload.content or ''}"
+        if event.kind == "workflow_update":
+            return f"### Workflow update\n\n{payload.content or ''}"
         if event.kind == "run_aborted":
             return "## Aborted"
         if event.kind == "run_failed":

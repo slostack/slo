@@ -69,6 +69,67 @@ class TestDefaultOrchestratorPromptContent:
         assert "dynamic workflows" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
         assert "dyanmic workflows" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
 
+    def test_prompt_routes_tui_dynamic_workflows_to_launch_workflow(self) -> None:
+        """TUI-mode dynamic-workflow requests route to ``launch_workflow`` (spec 57.a.2)."""
+        assert "launch_workflow" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert "detach" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT.lower()
+
+    def test_prompt_forbids_launch_workflow_in_headless_mode(self) -> None:
+        """Headless orchestrators must never recurse via ``launch_workflow``."""
+        assert "NEVER call `launch_workflow` from a headless run" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
+    def test_addendum_routes_dynamic_workflows_to_launch_workflow(self) -> None:
+        """The TUI addendum routes dynamic workflows to ``launch_workflow`` when available."""
+        assert "launch_workflow" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+        assert "spawn_sub_agents" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+
+    def test_sync_phrase_routes_to_spawn_sub_agents(self) -> None:
+        """Unqualified 'dynamic workflows' runs in-session via spawn_sub_agents (spec 56.a.2).
+
+        The TUI paragraph must state that the phrase runs the workflow IN THIS SESSION
+        via spawn_sub_agents; the old spec-57 routing sentence that sent unqualified
+        requests to launch_workflow must be absent.
+        """
+        assert "run the named workflow IN THIS SESSION" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert (
+            "satisfy dynamic-workflow and named-workflow requests by calling"
+            not in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        )
+
+    def test_detach_qualifiers_documented(self) -> None:
+        """All three detach qualifiers and the qualifier-only rule are documented (spec 56.a.2).
+
+        The prompt must name all three qualifiers — "headless", "detached", "independent" —
+        and must state that without a detach qualifier, launch_workflow must not be called.
+        """
+        assert '"headless"' in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert '"detached"' in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert '"independent"' in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert "without a detach qualifier, never call it" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
+    def test_addendum_routes_unqualified_to_spawn(self) -> None:
+        """Addendum states unqualified request runs in-session and qualifier-only launch rule (spec 56.a.2).
+
+        The TUI addendum must contain "runs in-session" to document the sync default
+        and must contain the qualifier-only rule for launch_workflow.
+        """
+        assert "runs in-session" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+        assert "launch_workflow" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+        assert "detach qualifier" in ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+
+    def test_prose_recursion_guard_retained(self) -> None:
+        """The line-97 prose recursion guard sentence is present verbatim (spec 56.a.2).
+
+        The sentence at the old line 97 of spawn_tool.py must remain character-for-character
+        so the human-readable headless-mode warning is not silently lost.
+        """
+        expected: str = (
+            "Headless mode is already inside a detached orchestrator: "
+            "keep using spawn_sub_agents there and NEVER call `launch_workflow` "
+            "from a headless run — that would recurse into a second detached orchestrator."
+        )
+        assert expected in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
     def test_constant_exported_in_all(self) -> None:
         """``DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT`` is declared in ``__all__``."""
         assert "DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT" in spawn_tool_module.__all__

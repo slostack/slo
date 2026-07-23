@@ -445,3 +445,107 @@ class TestParallelToolCallProjection:
         ai_messages = [m for m in messages if isinstance(m, AIMessage) and m.tool_calls]
         assert len(ai_messages) == 1
         assert ai_messages[0].tool_calls[0]["id"] == "call_F"
+
+
+class TestWorkflowUpdateProjection:
+    """``workflow_update`` synthetic turns enter model context (spec 57.a.4)."""
+
+    @pytest.mark.asyncio
+    async def test_projector_includes_workflow_update_as_human_message(self) -> None:
+        """A workflow_update event projects to a bracketed ``HumanMessage``."""
+        events = [
+            _event(
+                kind="workflow_update",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(
+                    content="[workflow wf-3f2a] phase 1: 2 task(s), all_completed=True",
+                    metadata={"workflow_id": "wf-3f2a", "inbox_message_id": "msg-1"},
+                ),
+            ),
+        ]
+
+        messages: list[BaseMessage] = await SessionHistoryProjector.build_message_history(
+            events=events,
+        )
+
+        assert len(messages) == 1
+        assert isinstance(messages[0], HumanMessage)
+        assert messages[0].content == (
+            "[workflow update] [workflow wf-3f2a] phase 1: 2 task(s), all_completed=True"
+        )
+
+    @pytest.mark.asyncio
+    async def test_projector_orders_workflow_update_chronologically(self) -> None:
+        """A between-turn workflow note replays between the surrounding turns."""
+        events = [
+            _event(
+                kind="user_message",
+                turn_id="t1",
+                payload=SessionHistoryEventPayloadDAO(content="first turn"),
+            ),
+            _event(kind="run_completed", turn_id="t1"),
+            _event(
+                kind="workflow_update",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(content="phase 1 done"),
+            ),
+            _event(
+                kind="user_message",
+                turn_id="t2",
+                payload=SessionHistoryEventPayloadDAO(content="second turn"),
+            ),
+            _event(kind="run_completed", turn_id="t2"),
+        ]
+
+        messages = await SessionHistoryProjector.build_message_history(events=events)
+
+        contents: list[str] = [m.content for m in messages if isinstance(m.content, str)]
+        assert contents == ["first turn", "[workflow update] phase 1 done", "second turn"]
+
+    @pytest.mark.asyncio
+    async def test_projector_still_excludes_audit_kinds(self) -> None:
+        """Regression: audit kinds stay out of model context alongside workflow notes."""
+        events = [
+            _event(
+                kind="workflow_update",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(content="phase 1 done"),
+            ),
+            _event(
+                kind="run_retrying",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(content="retrying"),
+            ),
+            _event(
+                kind="route_switched",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(content="switched"),
+            ),
+        ]
+
+        messages = await SessionHistoryProjector.build_message_history(events=events)
+
+        assert len(messages) == 1
+        assert messages[0].content == "[workflow update] phase 1 done"
+
+    @pytest.mark.asyncio
+    async def test_incomplete_turn_exclusion_unaffected(self) -> None:
+        """Regression: synthetic workflow turns do not loosen the incomplete-turn rule."""
+        events = [
+            _event(
+                kind="workflow_update",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(content="phase 1 done"),
+            ),
+            _event(
+                kind="user_message",
+                turn_id="t-pending",
+                payload=SessionHistoryEventPayloadDAO(content="never finished"),
+            ),
+            # No terminal record for t-pending.
+        ]
+
+        messages = await SessionHistoryProjector.build_message_history(events=events)
+
+        contents: list[str] = [m.content for m in messages if isinstance(m.content, str)]
+        assert contents == ["[workflow update] phase 1 done"]

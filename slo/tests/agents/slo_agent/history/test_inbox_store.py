@@ -6,6 +6,9 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError as PydanticValidationError
+
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 
@@ -134,3 +137,64 @@ class TestSessionInboxStore:
         assert result.result == "coalesced"
         assert result.replaced_message_id == "message-1"
         assert pending_messages == [second]
+
+
+class TestWorkflowInboxVocabulary:
+    """Spec 57: workflow message kinds and the context_note delivery mode (dao literals)."""
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["workflow_started", "workflow_phase_update", "workflow_completed", "workflow_failed"],
+    )
+    def test_workflow_kinds_validate(self, kind: str) -> None:
+        """Each workflow lifecycle kind is an accepted ``InboxMessageKind`` literal."""
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            session_id="session-1",
+            schedule_id="workflow:wf-3f2a",
+            run_id="run-1",
+            kind=kind,  # type: ignore[arg-type]
+            text="workflow note",
+        )
+        assert message.kind == kind
+
+    def test_context_note_delivery_mode_validates(self) -> None:
+        """``context_note`` is an accepted ``InboxDeliveryMode`` literal."""
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            session_id="session-1",
+            schedule_id="workflow:wf-3f2a",
+            run_id="run-1",
+            kind="workflow_phase_update",
+            delivery_mode="context_note",
+            text="phase 1 complete",
+        )
+        assert message.delivery_mode == "context_note"
+
+    def test_unknown_kind_still_rejected(self) -> None:
+        """The kind vocabulary stays closed — unknown values raise."""
+        with pytest.raises(PydanticValidationError):
+            SessionInboxMessageDAO(
+                session_id="session-1",
+                schedule_id="workflow:wf-3f2a",
+                run_id="run-1",
+                kind="workflow_paused",  # type: ignore[arg-type]
+                text="nope",
+            )
+
+    async def test_workflow_message_round_trips_through_store(self, tmp_path: Path) -> None:
+        """A context_note workflow message enqueues and claims back intact."""
+        store: SessionInboxStore = _build_store(tmp_path=tmp_path)
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            session_id="session-1",
+            schedule_id="workflow:wf-3f2a",
+            run_id="run-1",
+            kind="workflow_started",
+            delivery_mode="context_note",
+            text="[workflow wf-3f2a] started",
+            payload={"workflow_id": "wf-3f2a", "orchestrator_session_id": "orch-1"},
+        )
+        await store.enqueue(message=message)
+        claimed: SessionInboxMessageDAO | None = await store.claim_next(session_id="session-1")
+        assert claimed is not None
+        assert claimed.kind == "workflow_started"
+        assert claimed.delivery_mode == "context_note"
+        assert claimed.payload["workflow_id"] == "wf-3f2a"

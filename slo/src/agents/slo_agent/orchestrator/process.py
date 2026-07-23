@@ -21,6 +21,7 @@ import base64
 import os
 import sys
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import IO, Optional
 
@@ -63,6 +64,25 @@ PER_TASK_OUTPUT_CAP: int = 512 * 1024
 Raised from 50 KB to 512 KB (sub-spec 54.a.2) so thinking streams and tool call
 events are not truncated for agents doing significant intermediate work.
 """
+
+STDERR_TAIL_MAX_LINES: int = 50
+"""Number of trailing stderr lines retained per child for failure diagnostics.
+
+A child that dies before emitting any stdout terminal event (e.g. an invalid
+model name or a provider rate-limit at startup) leaves an empty answer. The
+retained stderr tail is surfaced as the failure answer so the orchestrator sees
+the actual error instead of an empty string.
+"""
+
+STDERR_TAIL_MAX_CHARS: int = 4000
+"""Upper bound on the stderr-tail text surfaced as a failure answer.
+
+Bounds the size of the fallback answer so a verbose traceback cannot bloat the
+``OrchestratorResultDAO`` JSON returned to the orchestrator LLM.
+"""
+
+STDERR_LINE_MAX_CHARS: int = 1000
+"""Per-line clamp applied to each retained stderr line to bound memory."""
 
 TERMINATE_GRACE_SECONDS: float = positive_float_env(
     primary_name="SLO_SUBAGENT_TERMINATE_GRACE_SECONDS",
@@ -128,6 +148,9 @@ class SubAgentProcess:
             set by ``run()`` after the subprocess is created.
         _forwarded_bytes (int): Running total of raw bytes relayed from stdout.
         _answer (str): Accumulated final answer from the child's terminal event.
+        _stderr_tail (deque[str]): Bounded ring buffer of the child's most recent
+            stderr lines, surfaced as the failure answer when the child dies
+            without emitting a terminal stdout event.
     """
 
     def __init__(
@@ -169,6 +192,7 @@ class SubAgentProcess:
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._forwarded_bytes: int = 0
         self._answer: str = ""
+        self._stderr_tail: deque[str] = deque(maxlen=STDERR_TAIL_MAX_LINES)
 
     def _write_spawn_context(self) -> None:
         """Write spawn_context.json to the child capture directory.
@@ -420,6 +444,8 @@ class SubAgentProcess:
                     except OSError:
                         capture = None  # stop writing after first IO failure
                 line_text: str = raw.decode("utf-8", errors="replace").rstrip()
+                if line_text:
+                    self._stderr_tail.append(line_text[:STDERR_LINE_MAX_CHARS])
                 log_info(
                     msg="sub_agent_stderr_line",
                     task_id=self._task.task_id,
@@ -487,19 +513,63 @@ class SubAgentProcess:
         Returns:
             SubAgentResultDAO: Terminal result DAO.
         """
-        if exit_code == 0:
-            status = "completed"
-        elif exit_code == 2:
-            status = "aborted"
-        else:
-            status = "failed"
         return SubAgentResultDAO(
             task_id=self._task.task_id,
             session_id=self._session_id,
-            status=status,  # type: ignore[arg-type]
-            answer=self._answer,
+            status=self._status_for(exit_code=exit_code),  # type: ignore[arg-type]
+            answer=self._resolve_answer(exit_code=exit_code),
             exit_code=exit_code,
         )
+
+    def _status_for(self, *, exit_code: int) -> str:
+        """Map a child exit code to its terminal status string.
+
+        Args:
+            exit_code (int): Child process exit code.
+
+        Returns:
+            str: ``"completed"`` for ``0``, ``"aborted"`` for ``2``, else
+                ``"failed"``.
+        """
+        if exit_code == 0:
+            return "completed"
+        if exit_code == 2:
+            return "aborted"
+        return "failed"
+
+    def _resolve_answer(self, *, exit_code: int) -> str:
+        """Choose the result answer, falling back to the stderr tail on silent failures.
+
+        A child that dies before emitting a terminal stdout event leaves
+        ``_answer`` empty; without a fallback the orchestrator sees only an
+        empty string and cannot diagnose the failure. When the child exited
+        non-zero with no accumulated answer, surface its captured stderr tail
+        (the actual error) instead.
+
+        Args:
+            exit_code (int): Child process exit code.
+
+        Returns:
+            str: The accumulated answer, or the stderr-tail fallback for a
+                silent non-zero exit.
+        """
+        if self._answer:
+            return self._answer
+        if exit_code == 0:
+            return self._answer
+        return self._stderr_fallback_answer()
+
+    def _stderr_fallback_answer(self) -> str:
+        """Build a bounded failure answer from the retained stderr tail.
+
+        Returns:
+            str: A labelled, char-bounded stderr tail, or an empty string when
+                no stderr was captured.
+        """
+        if not self._stderr_tail:
+            return ""
+        tail_text: str = "\n".join(self._stderr_tail)[-STDERR_TAIL_MAX_CHARS:]
+        return f"child exited without an answer; stderr tail:\n{tail_text}"
 
     async def cancel(self) -> None:
         """Terminate the child gracefully, escalating to SIGKILL after the grace period.

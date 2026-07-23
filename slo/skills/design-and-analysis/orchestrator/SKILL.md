@@ -1,8 +1,12 @@
 ---
 name: orchestrator
 description: Gateway workflow that decides which skill or workflow to load next for
-  the current task, including routing `dynamic workflows` / `dyanmic workflows`
-  to headless multi-agent orchestration.
+  the current task. Routes "dynamic workflows" / "dyanmic workflows" (no detach
+  qualifier) to in-session multi-agent orchestration via spawn_sub_agents; routes
+  a detach-qualified request ("headless" / "detached" / "independent" dynamic
+  workflows, or a named workflow with "in the background" / "without blocking") to
+  the headless-orchestration skill via launch_workflow. A detached orchestrator
+  never calls launch_workflow.
 when_to_use: Use at the start or end of a turn when you need to route the task into
   the right Slo workflow, category, or individual skill.
 group: design-and-analysis
@@ -44,7 +48,8 @@ sub-skills and lists them at its top:
 | Implement a spec or task slice into tested, reviewed code | `skills/design-and-analysis/workflows/code-test-review.md` |
 | Same, tracked through a GitLab issue + MR lifecycle | `skills/design-and-analysis/workflows/gitlab-code-test-review.md` |
 | Learn what workflows exist / run a named workflow | `skills/design-and-analysis/workflows/SKILL.md` |
-| User says `dynamic workflows` / `dyanmic workflows` and wants multiple Slo agents to execute workflow parts | `skills/design-and-analysis/headless-orchestration/SKILL.md` |
+| User says `dynamic workflows` / `dyanmic workflows` without a detach qualifier — in-session orchestration with spawn_sub_agents | `skills/design-and-analysis/workflows/SKILL.md` |
+| User says `dynamic workflows` / `dyanmic workflows` **with** a detach qualifier ("headless" / "detached" / "independent") or detach wording ("in the background" / "without blocking") — headless dynamic workflow via launch_workflow | `skills/design-and-analysis/headless-orchestration/SKILL.md` |
 | Sequence a git task (branch → commit → push → PR) | `skills/git-ops/git-ops-orchestrator/SKILL.md` |
 
 For narrower, single-purpose tasks, skip the workflows and use the category
@@ -53,7 +58,8 @@ routing hints below.
 ## Task Routing Order
 
 1. **Detect whether this is a workflow task or an individual-skill task.**
-   - The phrases `dynamic workflows` and `dyanmic workflows` are an explicit request for orchestrated multi-agent workflow execution; route them to `headless-orchestration`.
+   - The phrases `dynamic workflows` and `dyanmic workflows` **without a detach qualifier** are an explicit request for in-session multi-agent workflow execution; route them to `workflows` (spawn_sub_agents runs the phases in-session).
+   - The same phrases **with a detach qualifier** ("headless", "detached", "independent") or detach wording ("in the background", "without blocking") are a detachment request; route them to `headless-orchestration` (launch_workflow detaches a headless orchestrator). A detached orchestrator never calls `launch_workflow`.
    - Workflow tasks span multiple phases: context gathering, spec writing,
      implementation, testing, review, or documentation updates.
    - Individual-skill tasks are narrower: write a router, update a client,

@@ -662,3 +662,177 @@ class TestSlashModelPreferencePersistence:
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
         prefs = UserPreferencesStore.load()
         assert prefs.default_reasoning_level == "high"
+
+
+class TestSlashWorkflowsHandler:
+    """``/workflows`` — list, abort, dismiss detached workflows (spec 57.a.6)."""
+
+    @staticmethod
+    def _build_workflow_session(*, tmp_path: Path) -> MagicMock:
+        """Build a session stub with a history root for workflow dispatch.
+
+        Args:
+            tmp_path (Path): Test-scoped history root.
+
+        Returns:
+            MagicMock: Session stub exposing history_root and session_id.
+        """
+        session: MagicMock = _build_session_stub()
+        session.session_id = "session-1234"
+        session.history_root = tmp_path / "history"
+        return session
+
+    @staticmethod
+    async def _write_handle(*, history_root: Path, state: str = "running") -> None:
+        """Persist one ``wf-1`` handle owned by ``session-1234``.
+
+        Uses this test process's own pid so the router's real liveness probe
+        sees the workflow as alive.
+
+        Args:
+            history_root (Path): Handle store root.
+            state (str): Initial handle state.
+        """
+        import os
+
+        from src.agents.slo_agent.orchestrator.workflow_registry import (
+            WorkflowHandleDAO,
+            WorkflowHandleStore,
+        )
+
+        store: WorkflowHandleStore = WorkflowHandleStore(history_root=history_root)
+        await store.write(
+            handle=WorkflowHandleDAO(
+                workflow_id="wf-1",
+                owner_session_id="session-1234",
+                orchestrator_session_id="orch-1",
+                pid=os.getpid(),
+                brief="run the workflow",
+                cwd="/tmp",
+                state=state,  # type: ignore[arg-type]
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_workflows_lists_handles(self, tmp_path: Path) -> None:
+        """``/workflows`` renders the reconciled listing."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        await self._write_handle(history_root=session.history_root)
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows",
+            session=session,
+        )
+
+        assert result.rendered is not None
+        assert result.rendered.startswith("wf-1  running  orch orch-1")
+
+    @pytest.mark.asyncio
+    async def test_workflows_abort_routes_to_service(self, tmp_path: Path) -> None:
+        """``/workflows abort wf-1`` renders the service's abort text."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        from unittest.mock import AsyncMock
+
+        service: MagicMock = MagicMock()
+        service.abort = AsyncMock(return_value="workflow wf-1 aborted")
+        with patch(
+            "src.tui.slash_router.WorkflowCommandService",
+            return_value=service,
+        ):
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(
+                line="/workflows abort wf-1",
+                session=session,
+            )
+
+        service.abort.assert_awaited_once_with(workflow_id="wf-1")
+        assert result.rendered == "workflow wf-1 aborted"
+
+    @pytest.mark.asyncio
+    async def test_workflows_dismiss_routes_to_service(self, tmp_path: Path) -> None:
+        """``/workflows dismiss wf-1`` renders the service's dismiss text."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        from unittest.mock import AsyncMock
+
+        service: MagicMock = MagicMock()
+        service.dismiss = AsyncMock(return_value="workflow wf-1 dismissed (stalled → failed)")
+        with patch(
+            "src.tui.slash_router.WorkflowCommandService",
+            return_value=service,
+        ):
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(
+                line="/workflows dismiss wf-1",
+                session=session,
+            )
+
+        service.dismiss.assert_awaited_once_with(workflow_id="wf-1")
+        assert result.rendered == "workflow wf-1 dismissed (stalled → failed)"
+
+    @pytest.mark.asyncio
+    async def test_workflows_bad_subcommand_renders_usage(self, tmp_path: Path) -> None:
+        """An unknown subcommand (or a missing id) renders the usage line."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows pause wf-1",
+            session=session,
+        )
+        result_missing_id: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows abort",
+            session=session,
+        )
+
+        usage: str = "usage: /workflows [abort <workflow-id> | dismiss <workflow-id>]"
+        assert result.rendered == usage
+        assert result_missing_id.rendered == usage
+
+    @pytest.mark.asyncio
+    async def test_workflows_without_history_renders_unavailable(self) -> None:
+        """History-disabled sessions get the unavailable line."""
+        session: MagicMock = _build_session_stub()
+        session.history_root = None
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows",
+            session=session,
+        )
+
+        assert result.rendered == "workflows unavailable — history is disabled for this session"
+
+    @pytest.mark.asyncio
+    async def test_workflows_dispatches_while_prompt_in_flight(self, tmp_path: Path) -> None:
+        """No self-guard on ``session.is_running`` — supervision mid-run is the point."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        session.is_running = True
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows",
+            session=session,
+        )
+
+        assert result.rendered == "no detached workflows for this session"
+
+    @pytest.mark.asyncio
+    async def test_wf_alias_resolves_to_workflows(self, tmp_path: Path) -> None:
+        """``/wf`` routes to the same handler."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/wf",
+            session=session,
+        )
+
+        assert result.rendered == "no detached workflows for this session"
+
+    @pytest.mark.asyncio
+    async def test_workflows_appears_in_help(self) -> None:
+        """The registry entry shows up in ``/help`` output."""
+        session: MagicMock = _build_session_stub()
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/help",
+            session=session,
+        )
+
+        assert result.rendered is not None
+        assert "/workflows [abort <workflow-id> | dismiss <workflow-id>]" in result.rendered
+        assert "list detached workflows" in result.rendered

@@ -883,6 +883,48 @@ class TestSloAgentSessionAttachSubAgentPool:
 
         assert session._sub_agent_pool is pool
 
+    def test_attach_pool_accepts_tool_list(self, tmp_path: Path) -> None:
+        """``spawn_tools`` merges every supplied tool into ``extra_tools`` (spec 57.a.2)."""
+        from unittest.mock import MagicMock
+        from langchain_core.tools import BaseTool
+
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-5.4",
+                enable_history=False,
+            )
+        )
+        spawn_tool: MagicMock = MagicMock(spec=BaseTool)
+        spawn_tool.name = "spawn_sub_agents"
+        launch_tool: MagicMock = MagicMock(spec=BaseTool)
+        launch_tool.name = "launch_workflow"
+        status_tool: MagicMock = MagicMock(spec=BaseTool)
+        status_tool.name = "workflow_status"
+
+        session.attach_sub_agent_pool(
+            pool=_build_pool_mock(),
+            spawn_tools=[spawn_tool, launch_tool, status_tool],
+        )
+
+        assert session._config is not None
+        assert session._config.extra_tools is not None
+        tool_names: list[str] = [t.name for t in session._config.extra_tools]
+        assert tool_names[-3:] == ["spawn_sub_agents", "launch_workflow", "workflow_status"]
+
+    def test_attach_pool_requires_at_least_one_tool(self, tmp_path: Path) -> None:
+        """Neither ``spawn_tool`` nor ``spawn_tools`` supplied raises ``ValueError``."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-5.4",
+                enable_history=False,
+            )
+        )
+
+        with pytest.raises(ValueError, match="at least one tool"):
+            session.attach_sub_agent_pool(pool=_build_pool_mock())
+
     def test_attach_pool_raises_when_agent_already_built(
         self, tmp_path: Path
     ) -> None:
@@ -1445,3 +1487,138 @@ class TestIterationRetryPolicyDynamicName:
         pool._cooldowns["gpt-5.4"] = time.monotonic() + 60
         plan_secondary = decide(RuntimeError("429 rate limit reached"), False, 1)
         assert "claude-sonnet-4-6" in plan_secondary.message
+
+
+class TestRecordWorkflowUpdate:
+    """``record_workflow_update`` persists synthetic completed turns (spec 57.a.4)."""
+
+    @staticmethod
+    def _build_history_session(*, tmp_path: Path, session_id: str | None = None) -> SloAgentSession:
+        """Build a history-backed lazy session rooted under ``tmp_path``.
+
+        Args:
+            tmp_path (Path): Test-scoped directory for the history root.
+            session_id (str | None): Optional fixed session id for resume tests.
+
+        Returns:
+            SloAgentSession: Session with history enabled on a tmp root.
+        """
+        return SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                history_root=tmp_path / "history",
+                session_id=session_id,
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_record_workflow_update_appends_synthetic_completed_turn(
+        self, tmp_path: Path
+    ) -> None:
+        """One workflow note becomes one terminal-by-construction one-event turn."""
+        session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
+
+        persisted: bool = await session.record_workflow_update(
+            text="[workflow wf-3f2a] phase 1: 2 task(s), all_completed=True",
+            message_id="msg-1",
+            workflow_id="wf-3f2a",
+        )
+
+        assert persisted is True
+        assert session.history_store is not None
+        events = await session.history_store.load_events(session_id=session.session_id)
+        workflow_events = [event for event in events if event.kind == "workflow_update"]
+        assert len(workflow_events) == 1
+        event = workflow_events[0]
+        assert event.turn_id is not None
+        assert event.payload.content == "[workflow wf-3f2a] phase 1: 2 task(s), all_completed=True"
+        assert event.payload.metadata["workflow_id"] == "wf-3f2a"
+        assert event.payload.metadata["inbox_message_id"] == "msg-1"
+        # The synthetic turn contains exactly this one event — no run envelope.
+        same_turn_events = [e for e in events if e.turn_id == event.turn_id]
+        assert same_turn_events == [event]
+
+    @pytest.mark.asyncio
+    async def test_record_workflow_update_is_idempotent_on_message_id(
+        self, tmp_path: Path
+    ) -> None:
+        """A re-claimed inbox message persists at most one event."""
+        session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
+
+        first: bool = await session.record_workflow_update(
+            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
+        )
+        second: bool = await session.record_workflow_update(
+            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
+        )
+
+        assert first is True
+        assert second is False
+        assert session.history_store is not None
+        events = await session.history_store.load_events(session_id=session.session_id)
+        assert len([event for event in events if event.kind == "workflow_update"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_record_workflow_update_idempotency_survives_reload(
+        self, tmp_path: Path
+    ) -> None:
+        """The seen-set reseeds from disk after a simulated TUI restart."""
+        session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
+        await session.record_workflow_update(
+            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
+        )
+
+        resumed: SloAgentSession = self._build_history_session(
+            tmp_path=tmp_path,
+            session_id=session.session_id,
+        )
+        duplicate: bool = await resumed.record_workflow_update(
+            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
+        )
+
+        assert duplicate is False
+        assert resumed.history_store is not None
+        events = await resumed.history_store.load_events(session_id=resumed.session_id)
+        assert len([event for event in events if event.kind == "workflow_update"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_record_workflow_update_history_disabled_noop(self, tmp_path: Path) -> None:
+        """History-disabled sessions skip persistence and return ``False``."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                enable_history=False,
+            )
+        )
+
+        persisted: bool = await session.record_workflow_update(
+            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
+        )
+
+        assert persisted is False
+
+    @pytest.mark.asyncio
+    async def test_resume_context_equals_live_context(self, tmp_path: Path) -> None:
+        """A reloaded session projects the same message history as the live one."""
+        session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
+        await session.record_workflow_update(
+            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
+        )
+        await session.record_workflow_update(
+            text="phase 2 done", message_id="msg-2", workflow_id="wf-3f2a"
+        )
+        live_history = await session._load_message_history()
+
+        resumed: SloAgentSession = self._build_history_session(
+            tmp_path=tmp_path,
+            session_id=session.session_id,
+        )
+        resumed_history = await resumed._load_message_history()
+
+        assert [message.content for message in resumed_history] == [
+            message.content for message in live_history
+        ]
+        assert [message.content for message in live_history] == [
+            "[workflow update] phase 1 done",
+            "[workflow update] phase 2 done",
+        ]

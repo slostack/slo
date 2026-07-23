@@ -24,11 +24,12 @@ Sub-spec 01-sub-agents 01.e.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
+from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorResultDAO,
     SubAgentMode,
@@ -66,7 +67,12 @@ class SpawnSubAgentsSchemaDAO(BaseModel):
     tasks_json: str = Field(
         description=(
             'JSON array of task objects. Each must have "task_id" (str) and '
-            '"prompt" (str). Optional fields: "cwd" (str), "model" (str), "system_prompt" (str).'
+            '"prompt" (str). Optional fields: "cwd" (str), "model" (str), '
+            '"reasoning_level" (str — the reasoning budget; the key is '
+            '"reasoning_level", NOT "reasoning"; one of "off", "minimal", '
+            '"low", "medium", "high", "xhigh"), "system_prompt" (str). '
+            "An unknown model name is rejected before any child spawns, with "
+            "the supported model list returned in the error."
         ),
     )
 
@@ -92,7 +98,9 @@ Context determines the spawn policy:
 
 Headless mode (slo run --orchestrator): The user supplies a high-level task and expects you to handle it end-to-end. Decompose and spawn autonomously. Do not ask permission. Plan the decomposition, dispatch the sub-tasks, and synthesize the result.
 
-TUI mode (interactive session): The user drives turn by turn. Spawn sub-agents only when the user explicitly requests parallel or concurrent execution — for example by using words like "in parallel", "simultaneously", "spawn sub-agents", "delegate to workers", "at the same time", or "concurrently". Treat the phrases "dynamic workflows" and the common misspelling "dyanmic workflows" as that same explicit request: the user wants you to launch a Slo orchestrator that launches multiple Slo agents to perform each part of the workflow. For all other requests, act as a capable solo coding agent using the standard tools. The spawn_sub_agents tool is available but must not be called without an explicit user request.
+TUI mode (interactive session): The user drives turn by turn. Spawn sub-agents only when the user explicitly requests parallel or concurrent execution — for example by using words like "in parallel", "simultaneously", "spawn sub-agents", "delegate to workers", "at the same time", or "concurrently". Treat the phrases "dynamic workflows" and the common misspelling "dyanmic workflows" as that same explicit request: run the named workflow IN THIS SESSION by decomposing its phases and dispatching them with the blocking spawn_sub_agents tool, then synthesizing the result in this turn. Route a request to `launch_workflow` ONLY when the user adds an explicit detach qualifier — the word "headless", "detached", or "independent" applied to the dynamic-workflows request or to a named workflow ("headless dynamic workflows", "detached dynamic workflows", "independent dynamic workflows", "run the code-test-review workflow detached") — or equivalent detach wording such as "in the background" or "without blocking". `launch_workflow` detaches the whole workflow as a headless orchestrator process and frees this session within seconds; without a detach qualifier, never call it. If `launch_workflow` is not available, execute a detach-qualified request as a sync dynamic workflow and tell the user it ran in-session. If `launch_workflow` returns an error JSON (workflow cap reached, launch failure), report that error to the user and stop — never fall back to sync execution unless the user asks. Keep explicit short ad-hoc fanouts ("spawn 3 agents to grep …") on the blocking spawn_sub_agents tool. For all other requests, act as a capable solo coding agent using the standard tools. The spawn_sub_agents tool is available but must not be called without an explicit user request.
+
+Headless mode is already inside a detached orchestrator: keep using spawn_sub_agents there and NEVER call `launch_workflow` from a headless run — that would recurse into a second detached orchestrator.
 
 If you are unsure which context you are in, default to the TUI policy (spawn only on explicit request).
 
@@ -152,7 +160,9 @@ When the user's request names a Slo workflow (for example, "use the specificatio
 workflow" or "run the code-test-review workflow"), treat the workflow file as the authoritative
 decomposition plan rather than deriving the phases yourself.
 
-Interpret "dynamic workflows" and the common misspelling "dyanmic workflows" as an explicit request to use this orchestrator workflow path: launch a Slo orchestrator that launches multiple Slo agents to execute the workflow's parts instead of handling the task as one solo agent.
+Interpret "dynamic workflows" and the common misspelling "dyanmic workflows" as an explicit request to execute the named workflow through this orchestrator path in the current session: decompose the workflow's parts and dispatch them with spawn_sub_agents — launching multiple Slo agents for the workflow's parts — instead of handling the task as one solo agent.
+
+Routing the workflow request (spec 56): execute the workflow phases in this session with spawn_sub_agents (steps 1–6 below) unless the user gave an explicit detach qualifier — the word "headless", "detached", or "independent" applied to the dynamic-workflows request or to a named workflow (e.g., "headless dynamic workflows", "detached dynamic workflows", "independent dynamic workflows"), or detach wording like "in the background" / "without blocking". Only a detach-qualified request in an interactive TUI session routes to `launch_workflow`: compose the self-contained brief (steps 1–3 below describe what it must contain) and call `launch_workflow` once; the detached orchestrator executes steps 1–6 itself. When you ARE the headless orchestrator (slo run --orchestrator), you always execute phases directly with spawn_sub_agents; `launch_workflow` is not in your tool bundle.
 
 Step 1 — Read the workflow definition.
   Use the read tool to load the workflow file from:
@@ -294,6 +304,14 @@ Different phases can use different models to balance cost and quality. Pass the 
 
 If only one model is available, omit the `model` field from all tasks — the pool default applies.
 
+To set a phase's reasoning budget, pass the `reasoning_level` field (the key is `reasoning_level`, NOT `reasoning`) alongside `model`. Valid values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`:
+
+```json
+{ "mode": "single", "tasks_json": "[{\"task_id\": \"review\", \"prompt\": \"<review prompt>\", \"model\": \"claude-opus-4-8\", \"reasoning_level\": \"medium\"}]" }
+```
+
+An unknown `model` name is rejected before any child is spawned; the returned error names the supported models — read it and reissue the call with a supported name rather than guessing another.
+
 ### Publish the visualize command immediately after launch
 
 When a slo agent (TUI or headless) launches this orchestrator process, it **must** output the following to the user as the very first action after the launch command returns or after the background process is started — before any polling, before any status checks:
@@ -350,8 +368,16 @@ ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM: str = (
     "parallel or concurrent execution \u2014 for example by using words like "
     "'in parallel', 'simultaneously', 'spawn sub-agents', 'delegate to workers', "
     "'at the same time', 'concurrently', 'dynamic workflows', or the misspelling "
-    "'dyanmic workflows'. Those dynamic-workflows phrases mean the user wants "
-    "a Slo orchestrator to launch multiple Slo agents for the workflow's parts. "
+    "'dyanmic workflows'. "
+    "In this interactive TUI session, an unqualified dynamic-workflows request "
+    "runs in-session: decompose and dispatch with `spawn_sub_agents` and return "
+    "the synthesis in this turn. Route to `launch_workflow` only when the user "
+    "adds an explicit detach qualifier \u2014 the word 'headless', 'detached', or "
+    "'independent' ('headless dynamic workflows', 'detached dynamic workflows', "
+    "'independent dynamic workflows', or a named workflow plus one of those words "
+    "or 'in the background' / 'without blocking'); one call with a self-contained "
+    "brief detaches the workflow and frees this session. When `launch_workflow` is "
+    "unavailable, run detach-qualified requests in-session and say so. "
     "Do NOT call `spawn_sub_agents` on your own initiative to decompose a complex "
     "task, even if parallelism would be beneficial. A single-agent ReAct loop is "
     "always the default. The user must ask."
@@ -362,6 +388,32 @@ This is the sole control preventing the LLM from calling
 ``spawn_sub_agents`` autonomously. The tool is always in the bundle;
 this constraint is the gate.
 """
+
+
+def _model_rejection_reason(*, tasks: list[SubAgentTaskDAO]) -> Optional[str]:
+    """Return why a task's model is unknown, or ``None`` when all models resolve.
+
+    Validates each task's optional ``model`` against the process model catalog
+    before any child is spawned, so an invalid or hallucinated model name is
+    reported in-turn (with the supported-model list) instead of surfacing as an
+    opaque child startup crash. Tasks without a ``model`` inherit the pool
+    default and are skipped.
+
+    Args:
+        tasks (list[SubAgentTaskDAO]): The parsed batch about to be dispatched.
+
+    Returns:
+        Optional[str]: An error message naming the offending task and the
+            supported models, or ``None`` when every model resolves.
+    """
+    for task in tasks:
+        if task.model is None:
+            continue
+        try:
+            ModelCatalogService.entry_for_model(model_name=task.model)
+        except ValueError as exc:
+            return f"Task '{task.task_id}': {exc}"
+    return None
 
 
 class SpawnSubAgentsTool:
@@ -413,7 +465,12 @@ class SpawnSubAgentsTool:
                 tasks_json (str): JSON array of task objects. Each object must
                     have ``"task_id"`` (str) and ``"prompt"`` (str), and may
                     optionally include ``"cwd"`` (str), ``"model"`` (str),
-                    and ``"system_prompt"`` (str).
+                    ``"reasoning_level"`` (str), and ``"system_prompt"`` (str).
+                    The reasoning key is ``"reasoning_level"``, NOT
+                    ``"reasoning"``; its value is one of ``"off"``,
+                    ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``,
+                    ``"xhigh"``. An unknown ``"model"`` is rejected before any
+                    child is spawned and the error names the supported models.
                     Maximum ``MAX_PARALLEL_TASKS`` tasks per call.
 
             Returns:
@@ -442,6 +499,10 @@ class SpawnSubAgentsTool:
                 ]
             except Exception as exc:  # noqa: BLE001 — validation errors must not raise
                 return json.dumps({"error": f"Invalid task definition: {exc}"})
+
+            model_rejection: Optional[str] = _model_rejection_reason(tasks=tasks)
+            if model_rejection is not None:
+                return json.dumps({"error": model_rejection})
 
             result: OrchestratorResultDAO = await _pool.dispatch(
                 mode=mode,

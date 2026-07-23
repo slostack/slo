@@ -269,3 +269,48 @@ class TestLaunch:
         )
 
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Suite-wide real-terminal guard (tests/conftest.py)
+# ---------------------------------------------------------------------------
+
+
+class TestSuiteNeverSpawnsRealTerminals:
+    """The autouse guard keeps tests from opening terminal windows.
+
+    ``launch()`` with no injected spawner falls through to
+    ``VisualizerLauncher._default_spawn``, which on a developer machine opens
+    a REAL Terminal/iTerm window running ``slo visualize --follow`` that
+    outlives the test suite. ``tests/conftest.py`` stubs that seam for every
+    test; these regression tests fail loudly if the guard is ever removed.
+    """
+
+    def test_default_spawn_is_stubbed_suite_wide(self) -> None:
+        """The autouse fixture replaced ``_default_spawn`` with the test stub."""
+        assert getattr(VisualizerLauncher._default_spawn, "__test_stub__", False) is True
+
+    def test_unpatched_launch_spawns_no_real_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The worst case — auto-visualize on, no injected spawner — stays inert.
+
+        This is the exact path an unpatched TUI test takes when it streams a
+        ``sub_agent_spawned`` event or a ``launch_workflow`` tool result:
+        ``launch()`` must still report success semantics without any
+        ``subprocess.Popen`` ever running.
+        """
+        import subprocess
+
+        monkeypatch.setenv("SLO_AUTO_VISUALIZE", "1")
+
+        def _forbidden(*args: object, **kwargs: object) -> None:
+            raise AssertionError(
+                "a test tried to open a real terminal window via subprocess.Popen"
+            )
+
+        monkeypatch.setattr(subprocess, "Popen", _forbidden)
+
+        result = VisualizerLauncher.launch(parent_session_id="sess-guard", platform="darwin")
+
+        assert result is True  # stubbed spawn "succeeds" — but no process exists

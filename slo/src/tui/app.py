@@ -18,6 +18,7 @@ from textual.widgets import Footer, Header, Static, TextArea
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
 from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
+from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
@@ -49,6 +50,9 @@ from src.tui.widgets.tree_markdown_exporter import TreeMarkdownExporter
 from src.tui.widgets.tree_viewer import SessionTreeViewer
 from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.tui.widgets.user_message_block import UserMessageBlock
+from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, LiveWorkflowLabelDAO
+from src.tui.workflows.renderer import DetachedWorkflowRenderer
+from src.tui.workflows.service import DetachedWorkflowAppService
 
 __all__ = ["SloTUI", "PromptInput"]
 
@@ -301,6 +305,7 @@ class SloTUI(App):
         session: SloAgentSession,
         inbox_store: Optional[SessionInboxStore] = None,
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
+        workflow_handle_store: Optional[WorkflowHandleStore] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -310,6 +315,9 @@ class SloTUI(App):
                 store for tests. ``None`` uses the session history root.
             lease_store (Optional[SessionOwnershipLeaseStore]): Optional injected
                 lease store for tests. ``None`` uses the session history root.
+            workflow_handle_store (Optional[WorkflowHandleStore]): Optional
+                injected workflow handle store for tests. ``None`` uses the
+                session history root.
         """
         super().__init__()
         self.register_theme(SLO_DEFAULT_THEME)
@@ -347,6 +355,14 @@ class SloTUI(App):
         self._fleet_panel: Optional[SubAgentFleetPanel] = None
         # Guards one-per-run auto-launch of the workflow visualizer window.
         self._visualizer_launched_for_run: bool = False
+        # Detached-workflow receive path (spec 57.a.5): the app service owns
+        # the handle store, legal durable transitions, and the live-state
+        # cache; the renderer owns visualizer launch de-duplication and
+        # transcript notices. Both are composed at delivery-init time — the
+        # app only delegates and executes typed effects.
+        self._workflow_handle_store: Optional[WorkflowHandleStore] = workflow_handle_store
+        self._workflow_app_service: Optional[DetachedWorkflowAppService] = None
+        self._workflow_renderer: Optional[DetachedWorkflowRenderer] = None
         self._inbox_store: Optional[SessionInboxStore] = inbox_store
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
@@ -574,6 +590,14 @@ class SloTUI(App):
             self._lease_store = SessionOwnershipLeaseStore(history_root=history_root)
         if self._inbox_store is None:
             self._inbox_store = SessionInboxStore(history_root=history_root)
+        if self._workflow_handle_store is None:
+            self._workflow_handle_store = WorkflowHandleStore(history_root=history_root)
+        if self._workflow_app_service is None:
+            self._workflow_app_service = DetachedWorkflowAppService(
+                workflow_handle_store=self._workflow_handle_store,
+                owner_session_id=self._session.session_id,
+            )
+        await self._workflow_app_service.reconcile_snapshot()
         await self._acquire_session_lease()
         await self._inbox_store.ensure_session_inbox(session_id=self._session.session_id)
         self._lease_timer = self.set_interval(
@@ -587,6 +611,14 @@ class SloTUI(App):
 
     def _session_supports_inbox_delivery(self) -> bool:
         """Return whether this TUI session should expose inbox delivery.
+
+        In-memory / no-history sessions cannot join the inbox delivery path:
+        the session inbox is a filesystem-backed, cross-process queue that is
+        colocated with the session history tree. The scheduler and detached
+        workflow runners enqueue from *other* processes by writing message
+        files under ``<history_root>/<session_id>/inbox/``, so this session is
+        only reachable when it has BOTH ``history_enabled`` set to ``True``
+        AND an on-disk ``Path`` history root for those writers to target.
 
         Returns:
             bool: True when history is enabled and rooted on disk.
@@ -644,9 +676,14 @@ class SloTUI(App):
     async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> None:
         """Route one claimed inbox item according to its delivery mode.
 
+        Workflow lifecycle messages (spec 57.a.5) additionally advance the
+        durable workflow handle before their delivery-mode rendering runs, so
+        `/workflows` state stays truthful regardless of the delivery mode.
+
         Args:
             message (SessionInboxMessageDAO): Claimed inbox item.
         """
+        await self._advance_workflow_handle_state(message=message)
         if message.delivery_mode == "ui_notice":
             self._write_adapter_line(
                 content=self._format_inbox_notice(message=message),
@@ -659,7 +696,32 @@ class SloTUI(App):
                 classes="tool-result",
             )
             return
+        if message.delivery_mode == "context_note":
+            await self._deliver_context_note(message=message)
+            return
         await self._start_inbox_chat_turn(message=message)
+
+    async def _deliver_context_note(self, *, message: SessionInboxMessageDAO) -> None:
+        """Render a context note AND persist it into model context (spec 57.a.4).
+
+        Writes the ``⊛`` transcript line, then persists one ``workflow_update``
+        history event via ``SloAgentSession.record_workflow_update`` — no LLM
+        call happens. Persistence is idempotent on ``message_id``, so a
+        re-claimed message (claim → crash → re-claim) renders again but is
+        recorded at most once.
+
+        Args:
+            message (SessionInboxMessageDAO): Claimed ``context_note`` item.
+        """
+        self._write_adapter_line(
+            content=f"⊛ {message.title or message.kind}: {message.text}",
+            classes="sub-agent-notice",
+        )
+        await self._session.record_workflow_update(
+            text=message.text,
+            message_id=message.message_id,
+            workflow_id=str((message.payload or {}).get("workflow_id", "wf-unknown")),
+        )
 
     @staticmethod
     def _format_inbox_notice(*, message: SessionInboxMessageDAO) -> str:
@@ -698,6 +760,65 @@ class SloTUI(App):
             classes="tool-result",
         )
         self._in_flight_task = asyncio.create_task(self._run_prompt(text=message.text))
+
+    # ---- Detached-workflow receive path (spec 57.a.5) ----------------------
+
+    async def _advance_workflow_handle_state(self, *, message: SessionInboxMessageDAO) -> None:
+        """Delegate one claimed inbox message to the workflow app service.
+
+        The app passes the raw kind/payload to the service exactly once;
+        every durable and UI decision rides back in the typed
+        ``HandleAdvanceOutcomeDAO``. The renderer executes the typed effects
+        (including terminal ``reset_launch_guard`` effects) — the app never
+        parses workflow payloads, mutates durable state, branches on
+        terminal fields, or launches windows.
+
+        Args:
+            message (SessionInboxMessageDAO): Claimed inbox item.
+        """
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        if service is None:
+            return
+        outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
+            kind=message.kind,
+            payload=message.payload,
+        )
+        self._ensure_workflow_renderer().apply_effects(effects=outcome.effects)
+
+    def _ensure_workflow_renderer(self) -> DetachedWorkflowRenderer:
+        """Return the workflow renderer, composing it lazily on first use.
+
+        The adapter is only available after ``compose`` runs, so the renderer
+        cannot be built in ``__init__``; the notice sink adapter forwards to
+        ``self._write_adapter_line`` which itself no-ops until the adapter
+        exists.
+
+        Returns:
+            DetachedWorkflowRenderer: The composed renderer.
+        """
+        if self._workflow_renderer is None:
+            self._workflow_renderer = DetachedWorkflowRenderer(
+                notice_sink=_WorkflowNoticeAdapter(tui=self),
+            )
+        return self._workflow_renderer
+
+    def _maybe_launch_workflow_visualizer(self, *, result_text: str) -> None:
+        """Translate a ``launch_workflow`` tool result into a visualizer launch.
+
+        Invoked from ``_render_event`` when a ``launch_workflow`` tool result
+        streams through. The app service validates the result (seeding the
+        live-state cache on success); the renderer re-validates and opens the
+        window. Malformed or error JSON is a safe no-op on both layers.
+
+        Args:
+            result_text (str): Raw ``launch_workflow`` tool-result text.
+        """
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        if service is None:
+            return
+        if service.advance_from_launch_result(result_text=result_text) == "ignored":
+            return
+        self._ensure_workflow_renderer().handle_launch_result(result_text=result_text)
 
     # ---- Input handling ---------------------------------------------------
 
@@ -1023,10 +1144,34 @@ class SloTUI(App):
     def _resume_command_hint(self) -> str:
         """Return the copy-paste command that resumes the active session.
 
+        When detached workflows are live (state ``launching``/``running`` in
+        the mount-reconciled cache), a second line lists them next to the
+        resume command (spec 57.a.5) — they keep running after the TUI exits.
+
         Returns:
-            str: A ``slo --resume <session id>`` line for the active session.
+            str: A ``slo --resume <session id>`` line for the active session,
+                plus a live-workflows line when any workflow is live.
         """
-        return f"Resume this session: slo --resume {self._session.session_id}"
+        hint: str = f"Resume this session: slo --resume {self._session.session_id}"
+        live_labels: list[LiveWorkflowLabelDAO] = self._live_workflow_labels()
+        if not live_labels:
+            return hint
+        live_workflows: list[str] = [f"{label.workflow_id} ({label.state})" for label in live_labels]
+        return (
+            f"{hint}\nLive workflows: {', '.join(live_workflows)}. "
+            "They keep running — list with /workflows after resume."
+        )
+
+    def _live_workflow_labels(self) -> list[LiveWorkflowLabelDAO]:
+        """Return the live workflow labels from the app service cache.
+
+        Returns:
+            list[LiveWorkflowLabelDAO]: Live labels, empty when the workflow
+                receive path is not initialized.
+        """
+        if self._workflow_app_service is None:
+            return []
+        return self._workflow_app_service.live_workflow_labels()
 
     async def action_clear(self) -> None:
         """``^L``: clear the transcript without affecting agent state."""
@@ -1664,6 +1809,10 @@ class SloTUI(App):
             "recovery_exhausted",
         }:
             self._spinner.set_override_status(text=None)
+        if event.kind == "tool_result" and event.tool_name == "launch_workflow":
+            # Primary visualizer trigger (spec 57.a.5): the launch turn's tool
+            # result carries the handle JSON with the orchestrator session id.
+            self._maybe_launch_workflow_visualizer(result_text=event.content or "")
         if event.sub_agent_id is not None:
             await self._route_sub_agent_event(event=event)
             return
@@ -1903,7 +2052,7 @@ class _TranscriptAdapter:
         self._tui: SloTUI = tui
         self.lines: list[tuple[str, str]] = []
 
-    def write(self, content: str, classes: str = "") -> None:
+    def write(self, *, content: str, classes: str = "") -> None:
         """Record the line and delegate to the visible transcript writer.
 
         Args:
@@ -1933,3 +2082,30 @@ class _TranscriptAdapter:
             bool: True when any non-separator line has already been recorded.
         """
         return any(classes != "turn-separator" for _content, classes in self.lines)
+
+
+class _WorkflowNoticeAdapter:
+    """Thin adapter satisfying the workflow renderer's notice-sink protocol.
+
+    The renderer must not know about ``SloTUI`` or the transcript adapter;
+    this shim forwards its typed notice writes to the app's single
+    ``_write_adapter_line`` funnel so notices render (and are recorded for
+    tests/copy) exactly like every other transcript line.
+    """
+
+    def __init__(self, *, tui: SloTUI) -> None:
+        """Bind the adapter to the owning app.
+
+        Args:
+            tui (SloTUI): The app whose transcript surface receives notices.
+        """
+        self._tui: SloTUI = tui
+
+    def write(self, *, content: str, classes: str = "") -> None:
+        """Forward one notice line to the app's transcript funnel.
+
+        Args:
+            content (str): Notice text.
+            classes (str): Semantic render class (default ``""``).
+        """
+        self._tui._write_adapter_line(content=content, classes=classes)

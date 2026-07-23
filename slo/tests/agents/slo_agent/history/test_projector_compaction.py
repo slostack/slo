@@ -387,3 +387,28 @@ async def test_summary_content_is_preserved_verbatim() -> None:
     ]
     assert len(summary_msgs) == 1
     assert summary_text in summary_msgs[0].content
+
+
+@pytest.mark.asyncio
+async def test_workflow_update_in_retained_tail_survives_compaction() -> None:
+    """A workflow_update note past the compaction boundary stays in context (spec 57.a.4)."""
+    events = [
+        *_make_completed_turn(turn_id="t1", start_seq=1, user_content="pre-cut turn"),
+        _make_event(
+            kind="workflow_update",
+            sequence=5,
+            turn_id="wf-turn-1",
+            content="phase 1 done",
+        ),
+        *_make_completed_turn(turn_id="t2", start_seq=6, user_content="retained turn"),
+        _make_event(kind="compaction_summary", sequence=10, content="The session so far: …"),
+    ]
+    # The boundary keeps everything from the workflow note onward.
+    events[-1].payload.metadata["first_kept_entry_id"] = events[4].event_id
+
+    messages = await SessionHistoryProjector.build_message_history(events=events)
+
+    contents = [m.content for m in messages if isinstance(m.content, str)]
+    assert "[workflow update] phase 1 done" in contents
+    assert "retained turn" in contents
+    assert "pre-cut turn" not in contents

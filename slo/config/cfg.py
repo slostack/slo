@@ -141,6 +141,19 @@ VISUALIZER_REFRESH_SECONDS: float = positive_float_env(
 # command instead.
 AUTO_VISUALIZE: bool = os.environ.get("SLO_AUTO_VISUALIZE", "1").strip() not in ("0", "false", "no", "")
 
+# Detached workflow controls (spec 57).
+DETACHED_WORKFLOWS: bool = os.environ.get("SLO_DETACHED_WORKFLOWS", "1").strip() not in (
+    "0",
+    "false",
+    "no",
+    "",
+)
+_MAX_DETACHED_WORKFLOWS_RAW: str = os.environ.get("SLO_MAX_DETACHED_WORKFLOWS", "2").strip()
+try:
+    MAX_DETACHED_WORKFLOWS: int = max(1, int(_MAX_DETACHED_WORKFLOWS_RAW))
+except ValueError:
+    MAX_DETACHED_WORKFLOWS = 2
+
 # Optional terminal-emulator override for the auto-launched visualizer window.
 # macOS accepts an application name (``Terminal`` or ``iTerm``); Linux accepts
 # a terminal-emulator executable (``gnome-terminal``, ``konsole``, ``xterm``, …).
@@ -220,6 +233,7 @@ __cfg__: dict[str, str | None] = {
     "A2A_FETCH_TIMEOUT_SECONDS": str(A2A_FETCH_TIMEOUT_SECONDS),
     "A2A_INVOKE_TIMEOUT_SECONDS": str(A2A_INVOKE_TIMEOUT_SECONDS),
     "AUTO_VISUALIZE": "1" if AUTO_VISUALIZE else "0",
+    "DETACHED_WORKFLOWS": "1" if DETACHED_WORKFLOWS else "0",
     "A2A_PORT": str(A2A_PORT),
     "A2A_PUBLIC_URL": A2A_PUBLIC_URL,
     "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
@@ -252,6 +266,7 @@ __cfg__: dict[str, str | None] = {
     # GITLAB_TOKEN is intentionally absent: same reason as GITHUB_TOKEN above.
     "KIMI_FOR_CODING_API_KEY": KIMI_FOR_CODING_API_KEY,
     "MODEL_CATALOG_OVERRIDES_FILE": MODEL_CATALOG_OVERRIDES_FILE,
+    "MAX_DETACHED_WORKFLOWS": str(MAX_DETACHED_WORKFLOWS),
     "LOG_FORMAT": LOG_FORMAT,
     "OAUTH_CALLBACK_HOST": OAUTH_CALLBACK_HOST,
     "OPENAI_API_KEY": OPENAI_API_KEY,

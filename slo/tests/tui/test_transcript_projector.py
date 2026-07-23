@@ -897,3 +897,19 @@ class TestCompactionEventProjection:
         assert len(host.lines) == 3
         assert "compact" in host.lines[0][0].lower()
         assert "retry" in host.lines[2][0].lower()
+
+
+class TestProjectReplayNote:
+    """``kind="note"`` replay entries render as one-line notices (spec 57.a.4)."""
+
+    @pytest.mark.asyncio
+    async def test_note_entry_writes_sub_agent_notice_line(self) -> None:
+        """A replayed workflow note re-renders the live ``⊛`` line."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project_replay_entry(
+            entry=TranscriptEntryDAO(kind="note", content="⊛ [workflow wf-3f2a] phase 1: COMPLETE"),
+        )
+
+        assert ("⊛ [workflow wf-3f2a] phase 1: COMPLETE", "sub-agent-notice") in host.lines

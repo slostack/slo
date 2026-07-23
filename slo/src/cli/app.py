@@ -192,6 +192,15 @@ def _run(
         "--system-prompt-b64",
         help="Base64-encoded system prompt override for this run.",
     ),
+    notify_session: Optional[str] = typer.Option(
+        None,
+        "--notify-session",
+        help=(
+            "Session id whose inbox receives workflow lifecycle notifications "
+            "(workflow_started / phase updates / completion). Used by detached "
+            "orchestrators launched from a TUI session."
+        ),
+    ),
 ) -> None:
     """Run one agent loop with no UI, stream JSONL to stdout, then exit."""
     exit_code: int = TyperDispatch.run_headless(
@@ -208,6 +217,7 @@ def _run(
         append_system_prompt_file=append_system_prompt_file,
         orchestrator_mode=orchestrator_mode,
         system_prompt_b64=system_prompt_b64,
+        notify_session_id=notify_session,
     )
     raise typer.Exit(code=exit_code)
 

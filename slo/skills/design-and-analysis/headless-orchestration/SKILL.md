@@ -1,17 +1,23 @@
 ---
 name: headless-orchestration
-description: Launch a named Slo workflow in headless mode — the `dynamic workflows`
-  / `dyanmic workflows` shorthand means use this orchestrator path, which sets the
-  required timeout env vars, selects models per phase, dispatches phases serially
-  or in parallel, and monitors child agents until the orchestrator reaches a
-  terminal state.
-when_to_use: Use when the user explicitly asks to run a workflow headlessly, launch
-  a workflow in the background, execute a workflow using the headless runner (slo
-  run --orchestrator), or says "dynamic workflows" / "dyanmic workflows" to request
-  an orchestrator that launches multiple Slo agents for the workflow's parts. Also
-  load this skill when a complex multi-phase workflow (specification development,
-  code-test-review, etc.) is requested and the user wants it to run unattended
-  without a TUI session.
+description: Launch a named Slo workflow as a DETACHED headless orchestrator process
+  — triggered only when the user adds an explicit detach qualifier ("headless" /
+  "detached" / "independent" applied to a dynamic-workflows request or a named
+  workflow, or detach wording "in the background" / "without blocking"). An
+  unqualified "dynamic workflows" request runs in-session via spawn_sub_agents and
+  does NOT trigger this skill. Sets the required timeout env vars, selects models
+  per phase, dispatches phases serially or in parallel, and monitors child agents
+  until the orchestrator reaches a terminal state. A detached orchestrator never
+  calls launch_workflow.
+when_to_use: Use when the user explicitly asks to run a workflow with a detach
+  qualifier — "headless dynamic workflows", "detached dynamic workflows",
+  "independent dynamic workflows", "run the code-test-review workflow detached",
+  or detach wording like "in the background" / "without blocking" applied to a
+  workflow request. Do NOT load this skill for an unqualified "dynamic workflows"
+  or "dyanmic workflows" phrase (no detach qualifier) — that runs in-session via
+  spawn_sub_agents. Also load this skill when the user explicitly asks to execute
+  a workflow using the headless runner (slo run --orchestrator) from a shell or CI
+  pipeline.
 group: design-and-analysis
 kind: workflow
 ---
@@ -21,17 +27,18 @@ kind: workflow
 ## Skill summary
 
 - **Name:** `headless-orchestration`
-- **Description:** Launch a named Slo workflow in headless mode — the `dynamic workflows` / `dyanmic workflows` shorthand means use this orchestrator path, which sets the required timeout env vars, selects models per phase, dispatches phases serially or in parallel, and monitors child agents until the orchestrator reaches a terminal state.
-- **When to use:** Use when the user explicitly asks to run a workflow headlessly, launch a workflow in the background, execute a workflow using the headless runner (`slo run --orchestrator`), or says `dynamic workflows` / `dyanmic workflows` to request an orchestrator that launches multiple Slo agents for the workflow's parts. Also load this skill when a complex multi-phase workflow (specification-development, code-test-review, etc.) is requested and the user wants it to run unattended.
+- **Description:** Launch a named Slo workflow as a DETACHED headless orchestrator process — triggered only when the user adds an explicit detach qualifier ("headless" / "detached" / "independent" applied to a dynamic-workflows request or a named workflow, or detach wording "in the background" / "without blocking"). An unqualified "dynamic workflows" request runs in-session via spawn_sub_agents and does NOT trigger this skill. Sets the required timeout env vars, selects models per phase, dispatches phases serially or in parallel, and monitors child agents until the orchestrator reaches a terminal state. A detached orchestrator never calls launch_workflow.
+- **When to use:** Use when the user explicitly asks to run a workflow with a detach qualifier — "headless dynamic workflows", "detached dynamic workflows", "independent dynamic workflows", "run the code-test-review workflow detached", or detach wording like "in the background" / "without blocking" applied to a workflow request. Do NOT load this skill for an unqualified "dynamic workflows" or "dyanmic workflows" phrase (no detach qualifier) — that runs in-session via spawn_sub_agents. Also load this skill when the user explicitly asks to execute a workflow using the headless runner (`slo run --orchestrator`) from a shell or CI pipeline.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
 
 ## Examples
 
-- The user asks: "Run the code-test-review workflow for this feature spec in headless mode."
-- The user asks: "Launch the specification-development workflow in the background."
-- The user asks: "Run this workflow headlessly — I'll monitor it from the visualizer."
-- The user asks: "Use dynamic workflows for this task." Treat that as a request to launch the orchestrator / headless workflow path with multiple Slo agents.
+- The user asks: "Run the code-test-review workflow for this feature spec in headless mode." — load this skill (detach qualifier present).
+- The user asks: "Launch the specification-development workflow in the background." — load this skill (detach wording present).
+- The user asks: "Run this workflow headlessly — I'll monitor it from the visualizer." — load this skill (detach qualifier present).
+- The user asks: "Use headless dynamic workflows for this task." — load this skill (detach qualifier "headless" present).
+- The user asks: "Use dynamic workflows for this task." — do NOT load this skill; the unqualified phrase runs in-session via spawn_sub_agents (sync dynamic workflow).
 
 ## Guidance
 
@@ -39,7 +46,7 @@ kind: workflow
 
 Before launching a headless workflow, confirm:
 
-1. **A workflow name is identified.** The user has named a Slo workflow (e.g., `code-test-review`, `specification-development`) or has provided a task that maps to one. The phrases `dynamic workflows` and `dyanmic workflows` count as an explicit request for this headless-orchestrator path. If the actual workflow name is still unspecified, load `skills/design-and-analysis/workflows/SKILL.md` to list options and ask.
+1. **A workflow name is identified.** The user has named a Slo workflow (e.g., `code-test-review`, `specification-development`) or has provided a task that maps to one. A detach-qualified phrase ("headless dynamic workflows", "detached dynamic workflows", "independent dynamic workflows") counts as an explicit request for this headless-orchestrator path. An unqualified "dynamic workflows" phrase (no detach qualifier) runs in-session via spawn_sub_agents — do not continue with this skill for an unqualified phrase. If the actual workflow name is still unspecified, load `skills/design-and-analysis/workflows/SKILL.md` to list options and ask.
 2. **A project working directory is known.** The agent needs `--cwd` set to the repository root. Default to `$PWD` only if it is clearly a project root.
 3. **Credentials are in place.** At least one of `ANTHROPIC_API_KEY`, `KIMI_FOR_CODING_API_KEY`, or `MOONSHOT_API_KEY` must be set.
 4. **A session id strategy is chosen.** Either generate a human-readable slug (`<workflow>-<date>`) or use `--session-id` with a user-provided value.

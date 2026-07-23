@@ -36,6 +36,13 @@ __all__ = ["SessionHistoryProjector"]
 
 _TERMINAL_KINDS: frozenset[str] = frozenset({"run_completed", "run_aborted", "run_failed"})
 
+_SELF_TERMINAL_KINDS: frozenset[str] = frozenset({"workflow_update"})
+"""Kinds whose turn is a synthetic completed turn — terminal by construction.
+
+A ``workflow_update`` event (spec 57.a.4) is persisted between runs as a
+one-event turn with a fresh ``turn_id`` and no ``run_started``/``run_completed``
+envelope, so its own presence marks the turn complete."""
+
 
 class SessionHistoryProjector:
     """Project canonical events into ``BaseMessage`` model context."""
@@ -230,12 +237,17 @@ class SessionHistoryProjector:
         *,
         events: list[SessionHistoryEventDAO],
     ) -> set[str]:
-        """Return the set of turn ids with a terminal lifecycle event."""
+        """Return the set of turn ids with a terminal lifecycle event.
+
+        Turns are completed by a terminal run event (``run_completed``,
+        ``run_aborted``, ``run_failed``) or by containing a self-terminal
+        synthetic-turn kind (``workflow_update``, spec 57.a.4).
+        """
         completed: set[str] = set()
         for event in events:
             if event.turn_id is None:
                 continue
-            if event.kind in _TERMINAL_KINDS:
+            if event.kind in _TERMINAL_KINDS or event.kind in _SELF_TERMINAL_KINDS:
                 completed.add(event.turn_id)
         return completed
 
@@ -311,6 +323,11 @@ class SessionHistoryProjector:
         injected by the recovery loop; it is included in model context as a
         ``HumanMessage`` so the model can reason about the previous failure.
 
+        ``workflow_update`` (spec 57.a.4) is a detached-workflow phase note
+        persisted as its own synthetic completed turn; it is included as a
+        bracketed ``HumanMessage`` so the agent can answer workflow questions
+        from context without an LLM call at delivery time.
+
         ``compaction_summary`` events are emitted as a ``HumanMessage`` that
         the model reads as the boundary between compacted history and the
         retained tail.
@@ -324,6 +341,8 @@ class SessionHistoryProjector:
             return HumanMessage(content=payload.content or "")
         if event.kind == "recovery_observation":
             return HumanMessage(content=payload.content or "")
+        if event.kind == "workflow_update":
+            return HumanMessage(content=f"[workflow update] {payload.content or ''}")
         if event.kind == "assistant_message":
             return AIMessage(content=payload.content or "")
         if event.kind == "tool_call":

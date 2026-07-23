@@ -70,6 +70,7 @@ This is the full settings surface. Every flag, every environment variable, every
 | `--append-system-prompt-file` | | `None` | Path to a file whose content is **appended** to the default system prompt. Use for per-job injections. |
 | `--orchestrator` / `--no-orchestrator` | | `False` | Attach a sub-agent pool before running. Enables the `spawn_sub_agents` tool. Also injects the default orchestrator system prompt when no custom `--system-prompt-file` is set. |
 | `--system-prompt-b64` | | `None` | Base64-encoded system prompt override. Equivalent to `--system-prompt-file` but safe for multi-line text passed across a subprocess boundary. Decodes and replaces the session system prompt. |
+| `--notify-session` | | `None` | Session id whose durable inbox receives workflow lifecycle notifications (`workflow_started`, per-phase updates, terminal synthesis). Set by `launch_workflow` when a TUI session detaches an orchestrator; without it, headless behaviour is byte-identical to before (no notifier, no inbox writes). |
 
 ### `slo visualize` — all flags
 
@@ -937,7 +938,7 @@ The injected prompt gives the orchestrator:
 | Capability | What it tells the orchestrator |
 |------------|-------------------------------|
 | **Role identity** | You are an orchestrator. You decompose, delegate, and synthesize — you do not do the bulk work yourself. |
-| **When to spawn** | Only when the user explicitly asks for parallel/concurrent execution. Treat `dynamic workflows` / `dyanmic workflows` as that same explicit request. Never on its own initiative. |
+| **When to spawn** | Only when the user explicitly asks for parallel/concurrent execution. Treat `dynamic workflows` / `dyanmic workflows` (no detach qualifier) as that same explicit request — runs in-session via spawn_sub_agents (sync dynamic workflow). A detach-qualified request ("headless dynamic workflows", "detached dynamic workflows", "independent dynamic workflows", or detach wording "in the background" / "without blocking") routes to launch_workflow instead. A detached orchestrator never calls launch_workflow. Never spawns on its own initiative. |
 | **Task decomposition** | How to break a request into self-contained sub-tasks. Each sub-task prompt must be stand-alone: no pronouns, no references to "the previous step", no assumed context. |
 | **Chain mode** | For sequential chains, the `{previous}` placeholder substitutes the previous sub-agent's answer into the next prompt. |
 | **Retry policy** | If a sub-agent fails or is aborted, retry once with corrected parameters (e.g., relaxed timeout, narrower scope). |
@@ -977,7 +978,7 @@ The orchestrator understands its own role. Your prompt describes the *task*, not
 
 ### Invoking a named Slo workflow
 
-The most powerful application of the default prompt is driving named Slo workflows. The orchestrator knows the workflow protocol: read the workflow file, extract your context, construct self-contained per-phase prompts, dispatch phases in order, handle verdicts, synthesize. The phrases `dynamic workflows` and `dyanmic workflows` are treated as an explicit request to use this orchestrator path with multiple Slo agents.
+The most powerful application of the default prompt is driving named Slo workflows. The orchestrator knows the workflow protocol: read the workflow file, extract your context, construct self-contained per-phase prompts, dispatch phases in order, handle verdicts, synthesize. The phrases `dynamic workflows` and `dyanmic workflows` **without a detach qualifier** are treated as an explicit request to run the workflow in the current session via `spawn_sub_agents` (sync dynamic workflow). To detach the workflow as a headless orchestrator process, add a detach qualifier — the word "headless", "detached", or "independent" applied to the request (e.g., "headless dynamic workflows", "detached dynamic workflows"), or detach wording such as "in the background" or "without blocking". Only a detach-qualified request routes to `launch_workflow`; a detached orchestrator never calls `launch_workflow`.
 
 ```bash
 # Choose a human-readable session id

@@ -181,3 +181,28 @@ class TestAttachSubAgentPoolInjectsOrchestratorPrompt:
             assert ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM in (
                 session._config.append_system_prompt or ""
             ), f"Addendum missing for initial_prompt={initial_prompt!r}"
+
+
+class TestOrchestratorPromptPrefersNativeTasks:
+    """The dispatch examples steer the model to the native ``tasks`` array."""
+
+    def test_examples_use_the_native_tasks_array(self) -> None:
+        """At least one example uses a native ``"tasks": [`` array."""
+        assert '"tasks": [' in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
+    def test_examples_drop_the_double_escaped_tasks_json_form(self) -> None:
+        """No example still shows the doubly-escaped ``\\"task_id\\"`` string form."""
+        assert '\\"task_id\\"' not in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
+    def test_prompt_names_native_tasks_as_preferred(self) -> None:
+        """The clarifier states the native array is preferred."""
+        assert "native `tasks` array (preferred)" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
+    def test_prompt_still_mentions_legacy_tasks_json(self) -> None:
+        """The clarifier records ``tasks_json`` as an accepted legacy fallback."""
+        assert "legacy `tasks_json`" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
+    def test_routing_prose_is_unchanged(self) -> None:
+        """The detach-routing gate sentence is preserved verbatim (surgical edit)."""
+        assert "without a detach qualifier, never call it" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+        assert "NEVER call `launch_workflow` from a headless run" in DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT

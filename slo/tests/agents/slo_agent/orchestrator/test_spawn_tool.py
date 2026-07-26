@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.tools import BaseTool
@@ -12,7 +12,8 @@ from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorResultDAO,
     SubAgentResultDAO,
 )
-from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool
+from src.agents.slo_agent.orchestrator.pool import MAX_PARALLEL_TASKS
+from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool, SpawnSubAgentsSchemaDAO
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -206,11 +207,15 @@ class TestSpawnSubAgentsToolDispatch:
         pool.dispatch.assert_not_called()
 
     def test_tool_schema_documents_reasoning_level_key(self) -> None:
-        """The tool schema tells the LLM the key is ``reasoning_level``, not ``reasoning``."""
+        """The tool schema tells the LLM the key is ``reasoning_level``, not ``reasoning``.
+
+        Per sub-spec 58.b, the reasoning_level guidance was moved from tasks_json
+        to the native tasks field description.
+        """
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        description: str = tool_obj.args_schema.model_fields["tasks_json"].description
+        description: str = tool_obj.args_schema.model_fields["tasks"].description
 
         assert "reasoning_level" in description
         assert 'NOT "reasoning"' in description
@@ -506,3 +511,160 @@ class TestSpawnSubAgentsToolInvocationPaths:
 
         assert "error" in parsed
         pool.dispatch.assert_not_called()
+
+
+class TestSpawnSubAgentsNativeTasks:
+    """The preferred native ``tasks`` array dispatches without a string re-parse."""
+
+    async def test_dispatches_native_tasks_array(self) -> None:
+        """A native ``tasks`` array is validated and dispatched."""
+        result: OrchestratorResultDAO = OrchestratorResultDAO(mode="single")
+        pool: MagicMock = _make_pool_mock(result=result)
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        await tool_obj.ainvoke(
+            input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "Do it."}]}
+        )
+
+        pool.dispatch.assert_awaited_once()
+        dispatched = pool.dispatch.await_args.kwargs["tasks"]
+        assert [t.task_id for t in dispatched] == ["t1"]
+
+    async def test_native_tasks_win_over_tasks_json(self) -> None:
+        """When both inputs are present, ``tasks`` is used and ``tasks_json`` ignored."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        await tool_obj.ainvoke(
+            input={
+                "mode": "single",
+                "tasks": [{"task_id": "native", "prompt": "x"}],
+                "tasks_json": '[{"task_id": "legacy", "prompt": "y"}]',
+            }
+        )
+
+        dispatched = pool.dispatch.await_args.kwargs["tasks"]
+        assert [t.task_id for t in dispatched] == ["native"]
+
+    async def test_clean_native_path_logs_no_recovery_warning(self) -> None:
+        """The native path emits no recovery warning (guard-clause true branch)."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.spawn_tool.log_warning"
+        ) as mock_warn:
+            await tool_obj.ainvoke(
+                input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x"}]}
+            )
+
+        mock_warn.assert_not_called()
+
+    def test_schema_documents_both_task_inputs(self) -> None:
+        """``SpawnSubAgentsSchemaDAO`` documents native ``tasks`` and legacy ``tasks_json``."""
+        fields = SpawnSubAgentsSchemaDAO.model_fields
+        assert "tasks" in fields and "tasks_json" in fields
+        assert "preferred" in fields["tasks"].description.lower()
+        assert "legacy" in fields["tasks_json"].description.lower()
+
+
+class TestSpawnSubAgentsTolerantTasksJson:
+    """Legacy ``tasks_json`` with trailing junk recovers instead of failing."""
+
+    async def test_recovers_tasks_json_with_trailing_data(self) -> None:
+        """A valid array plus trailing prose dispatches the recovered tasks."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        corrupt: str = '[{"task_id": "t1", "prompt": "x"}]  // dispatch phase 1'
+
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": corrupt})
+
+        assert "error" not in json.loads(raw)
+        pool.dispatch.assert_awaited_once()
+
+    async def test_logs_a_warning_when_recovery_occurs(self) -> None:
+        """A salvaged payload emits one structured recovery warning."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        corrupt: str = '[{"task_id": "t1", "prompt": "x"}]  trailing'
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.spawn_tool.log_warning"
+        ) as mock_warn:
+            await tool_obj.ainvoke(input={"mode": "single", "tasks_json": corrupt})
+
+        mock_warn.assert_called_once()
+
+
+class TestSpawnSubAgentsResolutionErrors:
+    """Unresolvable input returns JSON errors and never dispatches."""
+
+    async def test_missing_both_inputs_returns_error(self) -> None:
+        """Neither ``tasks`` nor ``tasks_json`` returns a clear error, no dispatch."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        raw: str = await tool_obj.ainvoke(input={"mode": "single"})
+
+        assert "error" in json.loads(raw)
+        pool.dispatch.assert_not_awaited()
+
+    async def test_unrecoverable_tasks_json_returns_error(self) -> None:
+        """Non-JSON ``tasks_json`` returns an error without dispatching."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": "not-json"})
+
+        assert "error" in json.loads(raw)
+        pool.dispatch.assert_not_awaited()
+
+    async def test_invalid_task_field_returns_error(self) -> None:
+        """A task object with an unknown field returns a validation error, no dispatch."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        raw: str = await tool_obj.ainvoke(
+            input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x", "bogus": 1}]}
+        )
+
+        assert "Invalid task definition" in json.loads(raw)["error"]
+        pool.dispatch.assert_not_awaited()
+
+    async def test_oversized_native_batch_returns_error(self) -> None:
+        """A native batch above MAX_PARALLEL_TASKS returns an error, no dispatch."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="parallel"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        oversized = [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
+
+        raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks": oversized})
+
+        assert "Too many tasks" in json.loads(raw)["error"]
+        pool.dispatch.assert_not_awaited()
+
+    async def test_oversized_legacy_tasks_json_returns_error(self) -> None:
+        """An oversized batch supplied via legacy ``tasks_json`` is capped too, no dispatch."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="parallel"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        oversized_json: str = json.dumps(
+            [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
+        )
+
+        raw: str = await tool_obj.ainvoke(
+            input={"mode": "parallel", "tasks_json": oversized_json}
+        )
+
+        assert "Too many tasks" in json.loads(raw)["error"]
+        pool.dispatch.assert_not_awaited()
+
+    async def test_unknown_model_is_rejected_before_dispatch(self) -> None:
+        """A task naming an unknown model returns an error, no dispatch."""
+        pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        raw: str = await tool_obj.ainvoke(
+            input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x", "model": "no-such-model"}]}
+        )
+
+        assert "error" in json.loads(raw)
+        pool.dispatch.assert_not_awaited()

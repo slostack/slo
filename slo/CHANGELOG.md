@@ -4,6 +4,26 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.12] — 2026-07-26
+
+**Tolerant `spawn_sub_agents` task parsing (sub-spec 58.a) + TUI performance root-cause analysis.**
+
+Fixes a class of orchestrator failures where the LLM emits a malformed `tasks_json` argument for `spawn_sub_agents` — a valid JSON array followed by trailing content, a double-encoded string, a markdown-fenced block, two concatenated arrays, or duplicate task ids. Previously `json.loads` rejected the entire payload with `JSONDecodeError: Extra data`, failing the whole sub-agent batch even though the intended tasks were recoverable. The orchestrator now recovers the intended tasks, records which tolerances it applied, and only errors when no task object can be salvaged.
+
+### Added
+
+- **Tolerant `tasks_json` parser** (`orchestrator/task_payload.py`, sub-spec 58.a) — a pure text-to-dicts layer, `parse_tasks_json` → `TasksJsonParseDAO`, that strips markdown JSON fences, decodes double-encoded strings, ignores trailing prose after a complete array, merges two concatenated arrays, drops duplicate task ids (keeping the first), and returns human-readable `recovery_notes` for every tolerance applied. It errors cleanly on empty input, non-JSON garbage, or JSON with no objects. The module knows nothing about `SubAgentTaskDAO` or the pool, so it stays independently testable.
+- **`SubAgentTaskResolutionDAO`** (`orchestrator/dao.py`) — typed result of resolving `spawn_sub_agents` input into validated tasks: `tasks`, `recovery_notes`, and `error` (set only when the input cannot be resolved into tasks).
+- **TUI performance root-cause analysis** (`docs/tui-performance-degradation.md`) — a standalone write-up of why the Textual TUI slows down as a conversation grows (an unbounded, non-virtualized transcript that forces an O(N) full compositor reflow on every keystroke and streamed token, plus an O(m²) Rich Markdown re-parse while streaming a single answer), grounded in framework-level `file:line` citations against Textual 0.89.1.
+
+### Changed
+
+- **`spawn_sub_agents` argument resolution** (`orchestrator/spawn_tool.py`) — `resolve_sub_agent_tasks` now accepts either a native `tasks` array or a legacy `tasks_json` string, builds `SubAgentTaskDAO`s from the tolerantly-parsed dicts, surfaces recovery notes, and follows error-JSON-never-raise semantics on every failure path. The OpenAI tool schema exposes the nested-array `tasks` shape, and neither task input is required.
+
+### Tests
+
+- New `test_task_payload.py` (the tolerant-parse matrix: clean array, single-object wrap, markdown-fence strip, double-encoded decode, trailing-prose ignore, concatenated-array merge, duplicate-id drop, and the empty / garbage / no-object error paths) and `test_spawn_tool_schema.py` (native array vs `tasks_json` string, neither-required, and the nested-array OpenAI tool shape); expanded `test_spawn_tool.py`, `test_workflow_routing_e2e.py` (native-tasks dispatch + corrupt-`tasks_json` recovery scenarios), and `test_default_orchestrator_prompt.py`.
+
 ## [0.14.11] — 2026-07-22
 
 **Explicit orchestrator routing (spec 56) + non-blocking dynamic workflows (spec 57).**

@@ -446,3 +446,83 @@ async def test_headless_dynamic_workflow_detaches_without_blocking(tmp_path: Pat
     with monkeypatched_env(SLO_WORKFLOW_ID=handle["workflow_id"]):
         refusal: str = await launch_workflow_tool.ainvoke({"brief": "recurse"})
     assert "refusing to launch" in json.loads(refusal)["error"]
+
+
+@pytest.mark.asyncio
+async def test_sync_dynamic_workflow_dispatches_native_tasks(tmp_path: Path) -> None:
+    """An in-session dynamic workflow dispatches a native ``tasks`` array."""
+    session: SloAgentSession = build_orchestrator_session(
+        history_root=tmp_path,
+        responses=[
+            FauxChatModel.assistant_message(
+                content="",
+                tool_calls=[FauxChatModel.tool_call_dict(
+                    name="spawn_sub_agents",
+                    args={"mode": "single",
+                          "tasks": [{"task_id": "phase-1", "prompt": "explain HEAD"}]},
+                )],
+            ),
+            FauxChatModel.assistant_message(content="WORKFLOW COMPLETE."),
+        ],
+        pool_process_stub=_completed_child(answer="phase-1 done"),
+        launch_spawn=lambda *a, **kw: None,
+    )
+
+    answer: str = await _final_answer(
+        session=session, text="Use dynamic workflows to run explain-how-it-works.",
+    )
+
+    assert "WORKFLOW COMPLETE" in answer
+
+
+@pytest.mark.asyncio
+async def test_sync_dynamic_workflow_recovers_corrupt_tasks_json(tmp_path: Path) -> None:
+    """An in-session dynamic workflow recovers a ``tasks_json`` with trailing junk."""
+    session: SloAgentSession = build_orchestrator_session(
+        history_root=tmp_path,
+        responses=[
+            FauxChatModel.assistant_message(
+                content="",
+                tool_calls=[FauxChatModel.tool_call_dict(
+                    name="spawn_sub_agents",
+                    args={"mode": "single",
+                          "tasks_json": '[{"task_id": "phase-1", "prompt": "x"}]  // note'},
+                )],
+            ),
+            FauxChatModel.assistant_message(content="WORKFLOW COMPLETE."),
+        ],
+        pool_process_stub=_completed_child(answer="phase-1 done"),
+        launch_spawn=lambda *a, **kw: None,
+    )
+
+    answer: str = await _final_answer(
+        session=session, text="Use dynamic workflows to run the flow.",
+    )
+
+    assert "WORKFLOW COMPLETE" in answer  # recovered instead of failing phase 1
+
+
+@pytest.mark.asyncio
+async def test_headless_child_dispatches_native_tasks(tmp_path: Path) -> None:
+    """A headless orchestrator child dispatches a native ``tasks`` batch."""
+    child_session: SloAgentSession = build_plain_session(history_root=tmp_path)
+    OrchestratorSessionBootstrap.attach(session=child_session, headless=True)
+
+    child_tools: list[str] = [t.name for t in child_session.orchestration_tools]
+
+    assert child_tools == ["spawn_sub_agents"]  # launch_workflow withheld — no recursion
+
+
+@pytest.mark.asyncio
+async def test_solo_prompt_does_not_spawn_sub_agents(tmp_path: Path) -> None:
+    """A plain prompt in an orchestrator-capable session performs no dispatch."""
+    session: SloAgentSession = build_orchestrator_session(
+        history_root=tmp_path,
+        responses=[FauxChatModel.assistant_message(content="Here is the answer.")],
+        pool_process_stub=_completed_child(answer="unused"),
+        launch_spawn=lambda *a, **kw: None,
+    )
+
+    answer: str = await _final_answer(session=session, text="What does HEAD mean in git?")
+
+    assert "Here is the answer." in answer  # no spawn_sub_agents call scripted or needed

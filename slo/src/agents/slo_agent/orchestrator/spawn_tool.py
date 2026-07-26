@@ -24,18 +24,24 @@ Sub-spec 01-sub-agents 01.e.
 from __future__ import annotations
 
 import json
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from config.logger import log_warning
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorResultDAO,
     SubAgentMode,
     SubAgentTaskDAO,
+    SubAgentTaskResolutionDAO,
 )
 from src.agents.slo_agent.orchestrator.pool import MAX_PARALLEL_TASKS
+from src.agents.slo_agent.orchestrator.task_payload import (
+    TasksJsonParseDAO,
+    parse_tasks_json,
+)
 
 if TYPE_CHECKING:
     from src.agents.slo_agent.orchestrator.pool import SubAgentPool
@@ -46,16 +52,18 @@ __all__ = ["SpawnSubAgentsTool", "SpawnSubAgentsSchemaDAO", "ORCHESTRATOR_SYSTEM
 class SpawnSubAgentsSchemaDAO(BaseModel):
     """Validated input schema for the ``spawn_sub_agents`` LangChain tool.
 
-    Providing an explicit ``args_schema`` ensures LangChain always deserialises
-    tool-call arguments into validated keyword arguments regardless of whether
-    the upstream provider emits them as a parsed dict or a raw JSON string.
-    Without this, string-encoded args cause a positional-argument ``TypeError``
-    inside ``StructuredTool._arun``.
+    Accepts the sub-task batch either as a native ``tasks`` array (preferred) or
+    as a legacy ``tasks_json`` string. Both are optional at the schema level; the
+    tool body requires exactly one and returns a JSON error otherwise, so a
+    missing or malformed batch never raises into the graph.
 
     Attributes:
         mode (SubAgentMode): Dispatch strategy for the batch.
-        tasks_json (str): JSON array of sub-task objects.
+        tasks (Optional[list[dict[str, Any]]]): Preferred native task array.
+        tasks_json (Optional[str]): Legacy stringified task array.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     mode: SubAgentMode = Field(
         description=(
@@ -64,15 +72,25 @@ class SpawnSubAgentsSchemaDAO(BaseModel):
             "prior answer, 'single' runs exactly one task."
         ),
     )
-    tasks_json: str = Field(
+    tasks: Optional[list[dict[str, Any]]] = Field(
+        default=None,
         description=(
-            'JSON array of task objects. Each must have "task_id" (str) and '
-            '"prompt" (str). Optional fields: "cwd" (str), "model" (str), '
-            '"reasoning_level" (str — the reasoning budget; the key is '
-            '"reasoning_level", NOT "reasoning"; one of "off", "minimal", '
-            '"low", "medium", "high", "xhigh"), "system_prompt" (str). '
-            "An unknown model name is rejected before any child spawns, with "
-            "the supported model list returned in the error."
+            "Preferred input: a native JSON array of task objects — pass the "
+            "array directly, do NOT wrap it in a string. Each object must have "
+            '"task_id" (str) and "prompt" (str). Optional fields: "cwd" (str), '
+            '"model" (str), "reasoning_level" (str — one of "off", "minimal", '
+            '"low", "medium", "high", "xhigh"; the key is "reasoning_level", NOT '
+            '"reasoning"), "system_prompt" (str). An unknown model name is '
+            "rejected before any child spawns, with the supported model list in "
+            "the error."
+        ),
+    )
+    tasks_json: Optional[str] = Field(
+        default=None,
+        description=(
+            "Legacy fallback: the same task array encoded as a JSON string. "
+            "Prefer 'tasks'. Provide 'tasks' OR 'tasks_json' — when both are "
+            "present, 'tasks' wins."
         ),
     )
 
@@ -255,12 +273,14 @@ If `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` is forced significantly below 4800, t
 
 For Pipeline workflows, dispatch **one phase at a time** using `mode="single"`. Do not start the next phase until the current phase returns a terminal verdict (`COMPLETE`, `READY`, `FAILED`).
 
+Pass the batch as a native `tasks` array (preferred) — the array of task objects directly, not wrapped in a string. The legacy `tasks_json` string is still accepted for backward compatibility.
+
 ```json
 // Phase 1
-{ "mode": "single", "tasks_json": "[{\"task_id\": \"phase-1\", \"prompt\": \"<self-contained phase 1 prompt>\", \"cwd\": \"/repo\", \"model\": \"claude-sonnet-4-6\"}]" }
+{ "mode": "single", "tasks": [{ "task_id": "phase-1", "prompt": "<self-contained phase 1 prompt>", "cwd": "/repo", "model": "claude-sonnet-4-6" }] }
 
 // Phase 2 — only after phase 1 returns READY
-{ "mode": "single", "tasks_json": "[{\"task_id\": \"phase-2\", \"prompt\": \"<self-contained phase 2 prompt>\", \"cwd\": \"/repo\", \"model\": \"claude-sonnet-4-6\"}]" }
+{ "mode": "single", "tasks": [{ "task_id": "phase-2", "prompt": "<self-contained phase 2 prompt>", "cwd": "/repo", "model": "claude-sonnet-4-6" }] }
 ```
 
 Use `mode="chain"` when Phase N+1's prompt can be templated with Phase N's output via `{previous}`:
@@ -268,10 +288,10 @@ Use `mode="chain"` when Phase N+1's prompt can be templated with Phase N's outpu
 ```json
 {
   "mode": "chain",
-  "tasks_json": "[
-    {\"task_id\": \"phase-1\", \"prompt\": \"<phase 1 prompt>\"},
-    {\"task_id\": \"phase-2\", \"prompt\": \"Prior output: {previous}\\n\\n<phase 2 instructions>\"}
-  ]"
+  "tasks": [
+    { "task_id": "phase-1", "prompt": "<phase 1 prompt>" },
+    { "task_id": "phase-2", "prompt": "Prior output: {previous}\n\n<phase 2 instructions>" }
+  ]
 }
 ```
 
@@ -283,15 +303,15 @@ For Parallel workflows, dispatch all independent phases in a **single `mode="par
 // All independent phases at once
 {
   "mode": "parallel",
-  "tasks_json": "[
-    {\"task_id\": \"phase-auth\",  \"prompt\": \"<auth analysis>\",  \"model\": \"claude-sonnet-4-6\"},
-    {\"task_id\": \"phase-db\",    \"prompt\": \"<db analysis>\",    \"model\": \"claude-sonnet-4-6\"},
-    {\"task_id\": \"phase-api\",   \"prompt\": \"<api analysis>\",   \"model\": \"claude-sonnet-4-6\"}
-  ]"
+  "tasks": [
+    { "task_id": "phase-auth", "prompt": "<auth analysis>", "model": "claude-sonnet-4-6" },
+    { "task_id": "phase-db",   "prompt": "<db analysis>",   "model": "claude-sonnet-4-6" },
+    { "task_id": "phase-api",  "prompt": "<api analysis>",  "model": "claude-sonnet-4-6" }
+  ]
 }
 
 // Synthesis — after all parallel phases complete
-{ "mode": "single", "tasks_json": "[{\"task_id\": \"synthesis\", \"prompt\": \"Synthesize: <insert phase results>\"}]" }
+{ "mode": "single", "tasks": [{ "task_id": "synthesis", "prompt": "Synthesize: <insert phase results>" }] }
 ```
 
 ### Per-phase model assignment
@@ -307,7 +327,7 @@ If only one model is available, omit the `model` field from all tasks — the po
 To set a phase's reasoning budget, pass the `reasoning_level` field (the key is `reasoning_level`, NOT `reasoning`) alongside `model`. Valid values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`:
 
 ```json
-{ "mode": "single", "tasks_json": "[{\"task_id\": \"review\", \"prompt\": \"<review prompt>\", \"model\": \"claude-opus-4-8\", \"reasoning_level\": \"medium\"}]" }
+{ "mode": "single", "tasks": [{ "task_id": "review", "prompt": "<review prompt>", "model": "claude-opus-4-8", "reasoning_level": "medium" }] }
 ```
 
 An unknown `model` name is rejected before any child is spawned; the returned error names the supported models — read it and reissue the call with a supported name rather than guessing another.
@@ -390,6 +410,109 @@ this constraint is the gate.
 """
 
 
+def resolve_sub_agent_tasks(
+    *,
+    tasks: Optional[list[dict[str, Any]]],
+    tasks_json: Optional[str],
+) -> SubAgentTaskResolutionDAO:
+    """Resolve the tool's two input shapes into validated tasks.
+
+    Native ``tasks`` take precedence: a non-empty native array skips the string
+    path entirely. A legacy ``tasks_json`` string is parsed tolerantly (see
+    ``parse_tasks_json``) and its recovered objects validated. Errors are
+    returned on the DAO, never raised, so the tool can surface them as JSON.
+
+    Args:
+        tasks (Optional[list[dict[str, Any]]]): Native task objects from the LLM.
+            ``None`` or empty falls through to ``tasks_json``.
+        tasks_json (Optional[str]): Legacy stringified task array.
+
+    Returns:
+        SubAgentTaskResolutionDAO: Validated ``tasks`` plus any ``recovery_notes``,
+            or a populated ``error``.
+    """
+    if tasks:
+        return _resolution_from_task_dicts(task_dicts=tasks, recovery_notes=[])
+    if tasks_json and tasks_json.strip():
+        parsed: TasksJsonParseDAO = parse_tasks_json(tasks_json=tasks_json)
+        if parsed.error is not None:
+            return SubAgentTaskResolutionDAO(error=parsed.error)
+        return _resolution_from_task_dicts(
+            task_dicts=parsed.task_dicts,
+            recovery_notes=parsed.recovery_notes,
+        )
+    return SubAgentTaskResolutionDAO(error=_missing_task_input_error())
+
+
+def _resolution_from_task_dicts(
+    *,
+    task_dicts: list[dict[str, Any]],
+    recovery_notes: list[str],
+) -> SubAgentTaskResolutionDAO:
+    """Validate raw task objects into DAOs, keeping errors off the exception path.
+
+    Used by both the native and legacy paths so validation and error reporting
+    are identical regardless of how the batch arrived.
+
+    Args:
+        task_dicts (list[dict[str, Any]]): Raw task objects.
+        recovery_notes (list[str]): Notes to carry forward on success.
+
+    Returns:
+        SubAgentTaskResolutionDAO: Validated tasks + notes, or an error.
+    """
+    try:
+        resolved_tasks: list[SubAgentTaskDAO] = [
+            SubAgentTaskDAO(**entry) for entry in task_dicts
+        ]
+    except Exception as exc:  # noqa: BLE001 — validation errors must not raise
+        return SubAgentTaskResolutionDAO(error=f"Invalid task definition: {exc}")
+    return SubAgentTaskResolutionDAO(tasks=resolved_tasks, recovery_notes=recovery_notes)
+
+
+def _missing_task_input_error() -> str:
+    """Return the error shown when neither task input shape is supplied.
+
+    Returns:
+        str: A message naming both accepted inputs.
+    """
+    return (
+        "No tasks provided: supply 'tasks' (a JSON array of task objects, "
+        "preferred) or the legacy 'tasks_json' string."
+    )
+
+
+def _oversize_error(*, tasks: list[SubAgentTaskDAO]) -> Optional[str]:
+    """Return an error when the batch exceeds ``MAX_PARALLEL_TASKS``, else ``None``.
+
+    Args:
+        tasks (list[SubAgentTaskDAO]): The resolved batch.
+
+    Returns:
+        Optional[str]: The oversize message, or ``None`` when within the cap.
+    """
+    if len(tasks) > MAX_PARALLEL_TASKS:
+        return f"Too many tasks ({len(tasks)}); maximum is {MAX_PARALLEL_TASKS}."
+    return None
+
+
+def _log_recovery_notes(*, recovery_notes: list[str]) -> None:
+    """Emit one structured warning when a legacy payload had to be salvaged.
+
+    Invoked by ``spawn_sub_agents`` after a successful resolution. Does nothing
+    on the native ``tasks`` path (no notes).
+
+    Args:
+        recovery_notes (list[str]): Notes from ``resolve_sub_agent_tasks``.
+    """
+    if not recovery_notes:
+        return
+    log_warning(
+        msg="spawn_sub_agents recovered a malformed tasks_json payload",
+        recovery_notes=recovery_notes,
+    )
+
+
 def _model_rejection_reason(*, tasks: list[SubAgentTaskDAO]) -> Optional[str]:
     """Return why a task's model is unknown, or ``None`` when all models resolve.
 
@@ -442,71 +565,55 @@ class SpawnSubAgentsTool:
         _pool = pool
 
         @tool(args_schema=SpawnSubAgentsSchemaDAO)
-        async def spawn_sub_agents(mode: SubAgentMode, tasks_json: str) -> str:
+        async def spawn_sub_agents(
+            mode: SubAgentMode,
+            tasks: Optional[list[dict[str, Any]]] = None,
+            tasks_json: Optional[str] = None,
+        ) -> str:
             """Spawn sub-agents to run sub-tasks and wait for them to finish.
 
-            ONLY call this tool when the user has EXPLICITLY requested
-            sub-agent or parallel execution — for example by using words like
-            "spawn", "in parallel", "use sub-agents", or "delegate to workers".
-            Do NOT call it on your own initiative to decompose a complex task.
+            ONLY call this tool when the user has EXPLICITLY requested sub-agent or
+            parallel execution. Do NOT call it on your own initiative.
 
-            Dispatch ``tasks_json`` (a JSON array of task objects) to child
-            ``slo run`` processes using the specified ``mode``. Block until
-            every child reaches a terminal state, then return a
-            JSON-serialised ``OrchestratorResultDAO`` summarising each
-            child's answer, status, and exit code.
+            Provide the batch as ``tasks`` (a native JSON array of task objects,
+            preferred) or as the legacy ``tasks_json`` string. Each task object must
+            have ``"task_id"`` (str) and ``"prompt"`` (str), and may include ``"cwd"``,
+            ``"model"``, ``"reasoning_level"`` (NOT ``"reasoning"``), and
+            ``"system_prompt"``. Dispatch runs under ``mode`` and blocks until every
+            child reaches a terminal state, then returns a JSON-serialised
+            ``OrchestratorResultDAO``.
 
             Args:
-                mode (SubAgentMode): ``"parallel"`` fans out all tasks at once
-                    (bounded by the concurrency cap). ``"chain"`` runs tasks
-                    sequentially and substitutes ``{previous}`` in each prompt
-                    with the prior task's final answer; a failed step stops
-                    the chain. ``"single"`` runs exactly one task.
-                tasks_json (str): JSON array of task objects. Each object must
-                    have ``"task_id"`` (str) and ``"prompt"`` (str), and may
-                    optionally include ``"cwd"`` (str), ``"model"`` (str),
-                    ``"reasoning_level"`` (str), and ``"system_prompt"`` (str).
-                    The reasoning key is ``"reasoning_level"``, NOT
-                    ``"reasoning"``; its value is one of ``"off"``,
-                    ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``,
-                    ``"xhigh"``. An unknown ``"model"`` is rejected before any
-                    child is spawned and the error names the supported models.
-                    Maximum ``MAX_PARALLEL_TASKS`` tasks per call.
+                mode (SubAgentMode): ``"parallel"``, ``"chain"``, or ``"single"``.
+                tasks (Optional[list[dict[str, Any]]]): Preferred native task array.
+                tasks_json (Optional[str]): Legacy stringified task array. Ignored when
+                    ``tasks`` is supplied.
 
             Returns:
-                str: JSON-serialised ``OrchestratorResultDAO``. Parse with
-                    ``OrchestratorResultDAO.model_validate_json(result)`` or
-                    read the ``results`` array directly for per-task answers.
+                str: JSON-serialised ``OrchestratorResultDAO``, or ``{"error": …}`` when
+                    the batch cannot be resolved, exceeds ``MAX_PARALLEL_TASKS``, or names
+                    an unknown model.
             """
-            try:
-                raw_tasks: list[dict] = json.loads(tasks_json)
-            except (json.JSONDecodeError, TypeError) as exc:
-                return json.dumps({"error": f"Invalid tasks_json: {exc}"})
+            resolution: SubAgentTaskResolutionDAO = resolve_sub_agent_tasks(
+                tasks=tasks,
+                tasks_json=tasks_json,
+            )
+            if resolution.error is not None:
+                return json.dumps({"error": resolution.error})
+            _log_recovery_notes(recovery_notes=resolution.recovery_notes)
 
-            if len(raw_tasks) > MAX_PARALLEL_TASKS:
-                return json.dumps(
-                    {
-                        "error": (
-                            f"Too many tasks ({len(raw_tasks)}); "
-                            f"maximum is {MAX_PARALLEL_TASKS}."
-                        )
-                    }
-                )
+            batch: list[SubAgentTaskDAO] = resolution.tasks
+            oversize_error: Optional[str] = _oversize_error(tasks=batch)
+            if oversize_error is not None:
+                return json.dumps({"error": oversize_error})
 
-            try:
-                tasks: list[SubAgentTaskDAO] = [
-                    SubAgentTaskDAO(**entry) for entry in raw_tasks
-                ]
-            except Exception as exc:  # noqa: BLE001 — validation errors must not raise
-                return json.dumps({"error": f"Invalid task definition: {exc}"})
-
-            model_rejection: Optional[str] = _model_rejection_reason(tasks=tasks)
+            model_rejection: Optional[str] = _model_rejection_reason(tasks=batch)
             if model_rejection is not None:
                 return json.dumps({"error": model_rejection})
 
             result: OrchestratorResultDAO = await _pool.dispatch(
                 mode=mode,
-                tasks=tasks,
+                tasks=batch,
             )
             return result.model_dump_json()
 

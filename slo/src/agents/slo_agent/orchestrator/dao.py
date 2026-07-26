@@ -19,6 +19,7 @@ __all__ = [
     "SubAgentMode",
     "SubAgentStatus",
     "SubAgentTaskDAO",
+    "SubAgentTaskResolutionDAO",
     "SubAgentStatusDAO",
     "SubAgentResultDAO",
     "OrchestratorResultDAO",
@@ -118,6 +119,25 @@ class SubAgentTaskDAO(BaseModel):
         if self.resume_session_reference is not None and not self.enable_history:
             self.enable_history = True
         return self
+
+
+class SubAgentTaskResolutionDAO(BaseModel):
+    """Result of resolving ``spawn_sub_agents`` input into validated tasks.
+
+    Attributes:
+        tasks (list[SubAgentTaskDAO]): Validated tasks ready for dispatch. Empty
+            when ``error`` is set.
+        recovery_notes (list[str]): Tolerances applied while parsing a legacy
+            ``tasks_json`` string. Empty for the native ``tasks`` path.
+        error (Optional[str]): Set when the input could not be resolved into
+            tasks; ``None`` on success.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tasks: list[SubAgentTaskDAO] = Field(default_factory=list)
+    recovery_notes: list[str] = Field(default_factory=list)
+    error: Optional[str] = None
 
 
 class SubAgentStatusDAO(BaseModel):

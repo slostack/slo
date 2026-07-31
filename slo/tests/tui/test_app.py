@@ -22,12 +22,14 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
-from src.tui.app import SloTUI, PromptInput
+from src.tui.app import SloTUI, PromptInput, TRANSCRIPT_WINDOW_SIZE
 from src.tui.authentication import AuthenticationScreen
+from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 from src.tui.thinking_spinner import ThinkingSpinner
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
+from src.tui.widgets.user_message_block import UserMessageBlock
 
 
 def _build_session(*, responses: list[AIMessage]) -> SloAgentSession:
@@ -2143,3 +2145,295 @@ class TestCopyVisibleTextResolutionChain:
             await app.action_copy_visible_text()
 
             assert clipboard == []
+
+
+class TestTranscriptWindow:
+    """Transcript window keeps mounted children bounded (spec 59, Phase 2)."""
+
+    def _build_app(self) -> SloTUI:
+        """Build a ``SloTUI`` for transcript-window tests.
+
+        Returns:
+            SloTUI: App ready for ``run_test``.
+        """
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
+        return SloTUI(session=session)
+
+    @pytest.mark.asyncio
+    async def test_transcript_window_caps_mounted_children(self) -> None:
+        """Mounting more than TRANSCRIPT_WINDOW_SIZE settled blocks caps the count."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Clear any startup adapter lines so the count is deterministic.
+            await app.action_clear()
+            # Mount TRANSCRIPT_WINDOW_SIZE + 5 settled user-message blocks.
+            extra: int = 5
+            for _ in range(TRANSCRIPT_WINDOW_SIZE + extra):
+                await app.mount_user_message_block(text="msg")
+            await pilot.pause()
+            # Pause extra ticks for any pending worker to complete.
+            for _ in range(5):
+                await pilot.pause()
+            non_summary: int = len([
+                c for c in app._transcript_content.children
+                if c is not app._earlier_summary
+            ])
+            assert non_summary == TRANSCRIPT_WINDOW_SIZE
+            assert app._hidden_block_count == extra
+            assert app._earlier_summary is not None
+
+    @pytest.mark.asyncio
+    async def test_earlier_summary_absent_below_window(self) -> None:
+        """Fewer than window children produce no summary widget."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Mount fewer blocks than the window.
+            for _ in range(5):
+                await app.mount_user_message_block(text="msg")
+            await pilot.pause()
+            assert app._earlier_summary is None
+            assert app._hidden_block_count == 0
+
+    @pytest.mark.asyncio
+    async def test_window_never_evicts_live_block(self) -> None:
+        """An un-finalized AssistantStreamBlock placed first is never evicted."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Mount one live assistant block as the oldest child.
+            live_block: AssistantStreamBlock = await app.mount_assistant_block()
+            # live_block is not finalized — it is live.
+            assert live_block.finalized is False
+            # Mount TRANSCRIPT_WINDOW_SIZE settled blocks to trigger eviction.
+            for _ in range(TRANSCRIPT_WINDOW_SIZE):
+                await app.mount_user_message_block(text="settled")
+            for _ in range(5):
+                await pilot.pause()
+            # The live block must still be in the transcript (Textual's
+            # Widget.is_mounted stays True after remove(); check children instead).
+            assert live_block in app._transcript_content.children
+
+    @pytest.mark.asyncio
+    async def test_window_never_evicts_pending_steer_block(self) -> None:
+        """A SteeringPendingBlock tracked in _pending_steer_blocks is never evicted."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Mount a pending steer block as the oldest child.
+            steer_block: SteeringPendingBlock = SteeringPendingBlock(message="steer msg")
+            await app._transcript_content.mount(steer_block)
+            app._pending_steer_blocks.append(steer_block)
+            # Mount TRANSCRIPT_WINDOW_SIZE settled blocks.
+            for _ in range(TRANSCRIPT_WINDOW_SIZE):
+                await app.mount_user_message_block(text="settled")
+            for _ in range(5):
+                await pilot.pause()
+            # The steer block must still be in the transcript (Textual's
+            # Widget.is_mounted stays True after remove(); check children instead).
+            assert steer_block in app._transcript_content.children
+
+    @pytest.mark.asyncio
+    async def test_adapter_line_mount_enforces_window(self) -> None:
+        """Adapter lines via _write_adapter_line also enforce the window."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Clear any startup adapter lines so the count is deterministic.
+            await app.action_clear()
+            extra: int = 5
+            for index in range(TRANSCRIPT_WINDOW_SIZE + extra):
+                app._write_adapter_line(content=f"line {index}", classes="tool-result")
+            # Pause multiple ticks for workers to complete.
+            for _ in range(10):
+                await pilot.pause()
+            non_summary: int = len([
+                c for c in app._transcript_content.children
+                if c is not app._earlier_summary
+            ])
+            assert non_summary == TRANSCRIPT_WINDOW_SIZE
+            assert app._hidden_block_count == extra
+
+    @pytest.mark.asyncio
+    async def test_clear_resets_window_state(self) -> None:
+        """action_clear resets _hidden_block_count and _earlier_summary."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Mount over-window blocks so summary is created.
+            for _ in range(TRANSCRIPT_WINDOW_SIZE + 3):
+                await app.mount_user_message_block(text="msg")
+            for _ in range(5):
+                await pilot.pause()
+            assert app._earlier_summary is not None
+            assert app._hidden_block_count > 0
+            await app.action_clear()
+            await pilot.pause()
+            assert app._hidden_block_count == 0
+            assert app._earlier_summary is None
+
+    @pytest.mark.asyncio
+    async def test_window_evicts_incomplete_tool_block(self) -> None:
+        """A tool block marked incomplete is evictable (terminal, not live)."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Clear any startup adapter lines so eviction order is deterministic.
+            await app.action_clear()
+            # Mount a tool block and mark it incomplete (terminal state).
+            incomplete_block: ToolExecutionBlock = await app.mount_tool_execution_block(
+                tool_call_id="tc1", tool_name="bash"
+            )
+            incomplete_block.mark_incomplete()
+            assert incomplete_block.is_incomplete is True
+            # Mount TRANSCRIPT_WINDOW_SIZE more settled blocks to trigger eviction.
+            for _ in range(TRANSCRIPT_WINDOW_SIZE):
+                await app.mount_user_message_block(text="settled")
+            for _ in range(5):
+                await pilot.pause()
+            # The incomplete block should have been evicted.
+            # Textual's Widget.is_mounted is a one-way flag that stays True after
+            # remove() — the authoritative post-eviction check is whether the
+            # widget is still present in the parent's children list.
+            assert incomplete_block not in app._transcript_content.children, (
+                f"incomplete_block still in transcript children after eviction; "
+                f"total={len(list(app._transcript_content.children))}, "
+                f"hidden={app._hidden_block_count}, "
+                f"is_incomplete={incomplete_block.is_incomplete}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_window_enforcement_is_single_flight(self) -> None:
+        """Overlapping enforcer invocations never double-remove a child.
+
+        The transcript is driven genuinely over-window by mounting directly onto
+        the container, so mount-site enforcement never fires and both enforcer
+        coroutines observe ``children_count > TRANSCRIPT_WINDOW_SIZE`` — past the
+        fast-path early return. ``asyncio.gather`` schedules both concurrently:
+        the first invocation claims the single-flight guard
+        (``_window_enforcement_running = True``) and yields at its first
+        ``await child.remove()``; the second then finds the guard held, sets
+        ``_window_enforcement_rerun = True`` and returns without claiming the
+        guard. The first invocation's ``while`` loop then consumes the rerun
+        request with one extra pass that removes nothing because overflow is
+        already 0. Only the first pass removes children, so no child is
+        double-removed even though the enforcer was invoked twice.
+
+        A patched ``_run_window_enforcement_pass`` wrapper forces every pass to
+        yield at entry (``await asyncio.sleep(0)``) so the first invocation
+        suspends before the second call runs, making the interleave
+        deterministic. Counting the wrapped calls proves both the initial pass
+        and the rerun pass executed under a single guard holder (two passes,
+        one holder) rather than two concurrent removal loops, and confirms the
+        rerun flag was raised then consumed.
+
+        Assertions: non-summary children count == TRANSCRIPT_WINDOW_SIZE
+        (exactly-once removal; a genuine second removal loop would drive it
+        below the window), ``app._hidden_block_count == extra`` (correct count,
+        not doubled), the pass ran twice under one guard holder, and the rerun
+        request was raised then cleared.
+        """
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            # Clear startup adapter lines so child count is deterministic.
+            await app.action_clear()
+            extra: int = 5
+            # Mount directly onto the container so mount-site enforcement never
+            # runs and the transcript is genuinely over-window when the enforcers
+            # start — both calls must pass the fast-path into the guard.
+            for _ in range(TRANSCRIPT_WINDOW_SIZE + extra):
+                await app._transcript_content.mount(UserMessageBlock(text="settled"))
+            await pilot.pause()
+            assert len(list(app._transcript_content.children)) == TRANSCRIPT_WINDOW_SIZE + extra
+            # Wrap the removal pass so the first invocation yields at entry,
+            # guaranteeing the second call observes the guard held and takes the
+            # rerun branch. Count passes to prove both ran under one guard holder.
+            pass_count: int = 0
+            original_pass = app._run_window_enforcement_pass
+
+            async def _counting_pass() -> None:
+                nonlocal pass_count
+                pass_count += 1
+                await asyncio.sleep(0)
+                await original_pass()
+
+            with patch.object(app, "_run_window_enforcement_pass", _counting_pass):
+                # Both calls see count > window and race into the single-flight
+                # guard: the first claims it and yields; the second sets the
+                # rerun flag and returns.
+                await asyncio.gather(
+                    app._enforce_transcript_window(),
+                    app._enforce_transcript_window(),
+                )
+            await pilot.pause()
+            non_summary: int = len([
+                c for c in app._transcript_content.children
+                if c is not app._earlier_summary
+            ])
+            # Exactly-once removal: a second removal loop would drop the count
+            # below the window or double the hidden count.
+            assert non_summary == TRANSCRIPT_WINDOW_SIZE
+            assert app._hidden_block_count == extra
+            # The pass ran twice under a single guard holder: the initial removal
+            # pass plus the rerun pass consumed by the while loop (the rerun pass
+            # removes nothing because overflow is already 0). Two concurrent
+            # removal loops would instead have double-removed above.
+            assert pass_count == 2
+            # The rerun request was raised by the guarded second call, then
+            # consumed by the first invocation's while loop.
+            assert app._window_enforcement_rerun is False
+            assert app._window_enforcement_running is False
+
+
+class TestTypingNoReflow:
+    """Typing plain prose must not reflow the transcript (spec 59, Bug #1, AC #1)."""
+
+    @pytest.mark.asyncio
+    async def test_typing_plain_prose_does_not_reflow_transcript(self) -> None:
+        """Plain-prose keystrokes trigger no ``update_state`` when menu state is stable.
+
+        The slash-suggestion menu returns ``visible=False`` for every plain-prose
+        keystroke. With the Phase 1a equality guard in place, ``update_state``
+        returns early on the second and subsequent identical states, so no
+        ``Static.update`` is issued and Textual never schedules a reflow.
+
+        Asserted via a spy installed on ``app._suggestion_menu.update_state``
+        so the test is implementation-agnostic (does not scrape reflow internals).
+        Every call recorded by the spy must have ``visible is False``, and the
+        final stored state must be ``visible is False``.
+        """
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
+        app: SloTUI = SloTUI(session=session)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._suggestion_menu is not None
+            assert app._input is not None
+            # Install a spy that records every state passed to update_state.
+            recorded_states: list[SlashSuggestionStateDAO] = []
+            original_update_state = app._suggestion_menu.update_state
+            def _spy_update_state(*, state: SlashSuggestionStateDAO) -> None:
+                recorded_states.append(state)
+                original_update_state(state=state)
+            app._suggestion_menu.update_state = _spy_update_state  # type: ignore[method-assign]
+            # Focus the prompt and type plain prose (no leading slash).
+            app.set_focus(app._input)
+            await pilot.pause()
+            await pilot.press("h", "e", "l", "l", "o")
+            await pilot.pause()
+            # Every state the spy recorded must be non-visible.
+            for recorded_state in recorded_states:
+                assert recorded_state.visible is False, (
+                    f"Expected visible=False for plain prose but got {recorded_state}"
+                )
+            # The final stored state on the menu must be non-visible.
+            assert app._suggestion_menu._state.visible is False

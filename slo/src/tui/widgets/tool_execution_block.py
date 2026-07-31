@@ -89,6 +89,8 @@ class ToolExecutionBlock(Vertical):
         self._hint: Static = Static("", classes="tool-call-hint")
         self._expanded_body: Static = Static("")
         self._result_line: Static = Static("", classes="tool-call-result")
+        self._last_rendered_snapshot: tuple[str, str, str] = ("", "", "")
+        self._marked_incomplete: bool = False
         self._refresh()
 
     def compose(self) -> ComposeResult:
@@ -248,22 +250,43 @@ class ToolExecutionBlock(Vertical):
         empty result.
         """
         self._result_output = None
+        self._marked_incomplete = True
         self._result_line.remove_class("tool-call-result")
         self._result_line.add_class("tool-call-incomplete")
         self._result_line.update(
             "⎿ no result recorded — this call may not have completed before the session ended"
         )
 
+    @property
+    def is_incomplete(self) -> bool:
+        """Return True when this tool call was explicitly marked incomplete.
+
+        A tool block marked incomplete is terminal (its result will never
+        arrive), so the transcript window may safely evict it — unlike a block
+        still legitimately awaiting its result. Read by ``SloTUI._is_block_live``.
+
+        Returns:
+            bool: True when ``mark_incomplete`` has been called.
+        """
+        return self._marked_incomplete
+
     def _refresh(self) -> None:
-        """Refresh all visible surfaces from the current tool state."""
-        self._headline.update(
-            format_tool_call_headline(
-                name=self._tool_name,
-                tool_input=self._tool_input,
-            )
-        )
-        self._hint.update(self._hint_text())
-        self._expanded_body.update(self._expanded_body_text())
+        """Refresh visible surfaces from tool state, skipping unchanged renders.
+
+        Each ``Static.update`` forces a transcript reflow, so a ``_refresh`` that
+        would render identical headline/hint/body strings (e.g. a repeated
+        ``update_tool_call`` with the same args) must do no DOM work.
+        """
+        headline: str = format_tool_call_headline(name=self._tool_name, tool_input=self._tool_input)
+        hint: str = self._hint_text()
+        body: str = self._expanded_body_text()
+        snapshot: tuple[str, str, str] = (headline, hint, body)
+        if snapshot == self._last_rendered_snapshot:
+            return
+        self._last_rendered_snapshot = snapshot
+        self._headline.update(headline)
+        self._hint.update(hint)
+        self._expanded_body.update(body)
 
     def _hint_text(self) -> str:
         """Return the collapsed-mode expansion hint when needed.

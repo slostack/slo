@@ -179,3 +179,38 @@ class TestToolExecutionBlockCopyableText:
 
         block.set_expanded(expanded=False)
         assert block._expanded_body_text() == ""
+
+
+class TestToolExecutionBlockRefreshGuard:
+    """_refresh skips redundant Static.update when content is unchanged (spec 59, Bug #3c)."""
+
+    def test_repeated_update_with_same_args_is_noop(self) -> None:
+        """A second update_tool_call with identical args keeps the same snapshot."""
+        block = ToolExecutionBlock(tool_call_id="t1", tool_name="grep")
+        block.update_tool_call(tool_name="grep", tool_input={"pattern": "x"})
+        first = block._last_rendered_snapshot
+        block.update_tool_call(tool_name="grep", tool_input={"pattern": "x"})
+        assert block._last_rendered_snapshot == first
+
+    def test_changed_args_updates_snapshot(self) -> None:
+        """Different tool args result in an updated snapshot."""
+        block = ToolExecutionBlock(tool_call_id="t1", tool_name="grep")
+        block.update_tool_call(tool_name="grep", tool_input={"pattern": "x"})
+        first = block._last_rendered_snapshot
+        block.update_tool_call(tool_name="grep", tool_input={"pattern": "y"})
+        assert block._last_rendered_snapshot != first
+
+
+class TestToolExecutionBlockIsIncomplete:
+    """is_incomplete accessor and mark_incomplete terminal semantics (spec 59, Phase 1c)."""
+
+    def test_is_incomplete_false_by_default(self) -> None:
+        """A fresh tool block is not marked incomplete."""
+        block = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")
+        assert block.is_incomplete is False
+
+    def test_mark_incomplete_sets_is_incomplete_true(self) -> None:
+        """Calling mark_incomplete flips is_incomplete to True."""
+        block = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")
+        block.mark_incomplete()
+        assert block.is_incomplete is True

@@ -13,6 +13,7 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
@@ -68,6 +69,15 @@ After this grace, the TUI cancels the asyncio task outright, raising
 _SESSION_LEASE_TTL_SECONDS: float = 30.0
 _SESSION_LEASE_HEARTBEAT_SECONDS: float = 10.0
 _SESSION_INBOX_POLL_SECONDS: float = 1.0
+
+TRANSCRIPT_WINDOW_SIZE: int = 80
+"""Maximum children kept mounted in #transcript-content.
+
+Chosen as an initial value: ~80 blocks is roughly ~400 mounted widgets
+(~5 widgets/block), comfortably below the ~1,000-widget point where a full
+reflow exceeds the ~16 ms frame budget. Tune against the reflow-slope
+measurement in the manual smoke step (7.6) if needed; a follow-up may make
+it adaptive to viewport height."""
 
 
 class PromptInput(TextArea):
@@ -327,6 +337,10 @@ class SloTUI(App):
         self._attach_pool_to_session(session=self._session)
         self._transcript_scroll: Optional[VerticalScroll] = None
         self._transcript_content: Optional[Vertical] = None
+        self._hidden_block_count: int = 0
+        self._earlier_summary: Optional[Static] = None
+        self._window_enforcement_running: bool = False
+        self._window_enforcement_rerun: bool = False
         self._status_region: Optional[Vertical] = None
         self._input: Optional[PromptInput] = None
         self._suggestion_menu: Optional[SlashSuggestionMenu] = None
@@ -838,6 +852,24 @@ class SloTUI(App):
                 self._input.set_prompt_history_navigation_enabled(enabled=False)
         self._refresh_slash_suggestions()
 
+    def on_assistant_stream_block_rendered(self, event: AssistantStreamBlock.Rendered) -> None:
+        """Re-check scroll-follow after the coalescing timer renders a block.
+
+        The coalescing timer in ``AssistantStreamBlock`` fires after
+        ``_restore_follow_after_mutation`` has already run for the mount event,
+        so the ``Static.update`` inside ``_render_answer`` / ``_render_thinking``
+        expands ``max_scroll_y`` without a matching ``scroll_end`` call. This
+        handler re-schedules ``scroll_end`` when the transcript was already
+        following before the flush, so streaming text keeps the viewport pinned
+        at the bottom.
+
+        Args:
+            event (AssistantStreamBlock.Rendered): Post-flush notification
+                carrying the pre-flush follow state.
+        """
+        if event.was_following:
+            self._scroll_transcript_to_end()
+
     async def on_key(self, event: events.Key) -> None:
         """Redirect a printable keystroke back to the prompt input.
 
@@ -1094,6 +1126,8 @@ class SloTUI(App):
         await self._transcript_content.mount(block)
         self._pending_steer_blocks.append(block)
         self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+        if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
+            await self._enforce_transcript_window()
 
     async def _consume_pending_steer_block(self) -> None:
         """Remove the oldest pending steer block when its steer is consumed.
@@ -1186,6 +1220,10 @@ class SloTUI(App):
         # remove an already-detached widget.
         self._pending_steer_blocks.clear()
         self._projector.reset_for_new_run()
+        # Reset window state so a cleared transcript starts fresh with no
+        # dangling summary and a correct hidden count.
+        self._hidden_block_count = 0
+        self._earlier_summary = None
 
     async def action_copy_visible_text(self) -> None:
         """Copy the focused block text, selected prompt text, or visible transcript.
@@ -1566,6 +1604,137 @@ class SloTUI(App):
             enable_history=old_session.history_enabled,
         )
 
+    def _is_block_live(self, *, child: Widget) -> bool:
+        """Return True when a transcript child is still being written to.
+
+        Live children must never be evicted by the window: the projector or the
+        steer-drain still holds a reference and will update or remove them later.
+        Evicting one would drop content or double-remove (the hazard action_clear
+        guards against).
+
+        Args:
+            child (Widget): A child widget from ``#transcript-content``.
+
+        Returns:
+            bool: True when the child is still receiving updates.
+        """
+        if isinstance(child, AssistantStreamBlock):
+            return not child.finalized
+        if isinstance(child, ToolExecutionBlock):
+            # A block awaiting its result is live; one explicitly marked
+            # incomplete is terminal (its result will never arrive) and settled.
+            return child.result_output is None and not child.is_incomplete
+        if isinstance(child, SteeringPendingBlock):
+            return child in self._pending_steer_blocks
+        return False
+
+    async def _enforce_transcript_window(self) -> None:
+        """Keep the transcript within the window; single-flight and coalescing.
+
+        Called after every transcript mount (all five sites). Only one pass runs
+        at a time: a call arriving while a pass is in flight sets a rerun flag and
+        returns, so two removal loops never interleave (which would double-remove
+        a child and — under a worker — could crash the app). After the active pass
+        finishes it runs one more pass if any request arrived meanwhile, so the
+        window always converges regardless of how the call was scheduled.
+
+        A fast-path check returns immediately when the child count cannot yet
+        exceed the window, so normal short sessions pay no event-loop overhead.
+        """
+        if self._transcript_content is None:
+            return
+        children_count: int = len(list(self._transcript_content.children))
+        if children_count <= TRANSCRIPT_WINDOW_SIZE:
+            return
+        if self._window_enforcement_running:
+            self._window_enforcement_rerun = True
+            return
+        self._window_enforcement_running = True
+        try:
+            await self._run_window_enforcement_pass()
+            while self._window_enforcement_rerun:
+                self._window_enforcement_rerun = False
+                await self._run_window_enforcement_pass()
+        finally:
+            self._window_enforcement_running = False
+
+    async def _run_window_enforcement_pass(self) -> None:
+        """Remove the oldest settled children until the window holds.
+
+        Runs only under the single-flight guard in ``_enforce_transcript_window``,
+        so it is never concurrent with another pass. Skips live blocks, folds
+        removals into the summary, and wraps the mutation in the scroll idiom so
+        the viewport does not jump. The hidden count is incremented before the
+        ``await`` so a mid-flight interruption cannot under-count. N may briefly
+        exceed the window during a single turn holding many in-flight blocks.
+        """
+        if self._transcript_content is None:
+            return
+        children: list[Widget] = [
+            child for child in self._transcript_content.children if child is not self._earlier_summary
+        ]
+        overflow: int = len(children) - TRANSCRIPT_WINDOW_SIZE
+        if overflow <= 0:
+            return
+        follow_snapshot: bool = self._capture_follow_snapshot()
+        removed: int = 0
+        for child in children:
+            if removed >= overflow:
+                break
+            if self._is_block_live(child=child):
+                continue
+            self._hidden_block_count += 1
+            removed += 1
+            await child.remove()
+        if removed > 0:
+            await self._update_earlier_summary()
+        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+
+    async def _update_earlier_summary(self) -> None:
+        """Render (mounting first if needed) the earlier-messages summary line.
+
+        A single pinned Static at the top of the transcript naming how many
+        settled blocks were collapsed out of the window and how to recover them,
+        so windowing is never a silent scrollback loss.
+        """
+        if self._transcript_content is None:
+            return
+        text: str = (
+            f"▲ {self._hidden_block_count} earlier messages hidden "
+            f"— reload the session (slo --resume) to view full history"
+        )
+        if self._earlier_summary is None:
+            self._earlier_summary = Static(text, id="transcript-earlier-summary")
+            await self._transcript_content.mount(self._earlier_summary, before=0)
+            return
+        self._earlier_summary.update(text)
+
+    def _enforce_window_soon(self) -> None:
+        """Schedule window enforcement from a synchronous mount site.
+
+        Used by the adapter line-writer and the steering mount, which are not
+        async. Coalescing and mutual exclusion are handled by the enforcer's own
+        single-flight guard — not by worker exclusivity — so a plain worker is
+        safe even while a block helper is awaiting the enforcer directly.
+        ``exit_on_error=False`` ensures a stray enforcement error can never tear
+        down the whole TUI (Textual's ``run_worker`` default would otherwise exit
+        the app on an unhandled worker error).
+
+        A cheap threshold pre-check skips the worker entirely when the child
+        count cannot yet exceed the window, keeping the no-op fast path free of
+        event-loop overhead during normal short sessions.
+        """
+        if self._transcript_content is None:
+            return
+        child_count: int = len(list(self._transcript_content.children))
+        if child_count <= TRANSCRIPT_WINDOW_SIZE:
+            return
+        self.run_worker(
+            self._enforce_transcript_window(),
+            group="transcript-window",
+            exit_on_error=False,
+        )
+
     async def mount_user_message_block(self, *, text: str) -> UserMessageBlock:
         """Mount a fresh user message block into the transcript flow.
 
@@ -1578,6 +1747,8 @@ class SloTUI(App):
         block: UserMessageBlock = UserMessageBlock(text=text, force_expanded=self._global_expand_all)
         if self._transcript_content is not None:
             await self._transcript_content.mount(block)
+            if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
+                await self._enforce_transcript_window()
         return block
 
     def mount_turn_separator_if_needed(self) -> None:
@@ -1614,6 +1785,8 @@ class SloTUI(App):
         )
         if self._transcript_content is not None:
             await self._transcript_content.mount(block)
+            if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
+                await self._enforce_transcript_window()
         return block
 
     async def mount_tool_execution_block(
@@ -1639,6 +1812,11 @@ class SloTUI(App):
         if self._transcript_content is not None:
             await self._transcript_content.mount(block)
         self._set_active_expandable_tool_block(block=block)
+        if (
+            self._transcript_content is not None
+            and len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE
+        ):
+            await self._enforce_transcript_window()
         return block
 
     def _set_active_expandable_tool_block(self, *, block: ToolExecutionBlock) -> None:
@@ -2023,6 +2201,7 @@ class SloTUI(App):
             widget = Static(line, classes=style_class)
         self._transcript_content.mount(widget)
         self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+        self._enforce_window_soon()
 
 
 class _TranscriptAdapter:

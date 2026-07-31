@@ -8,9 +8,14 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.message import Message
+from textual.timer import Timer
 from textual.widgets import Static
 
 __all__ = ["AssistantStreamBlock"]
+
+_STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
+"""Coalescing cadence for streamed reasoning/answer renders (~30 fps)."""
 
 
 class AssistantStreamBlock(Vertical):
@@ -24,6 +29,31 @@ class AssistantStreamBlock(Vertical):
     The reasoning region is optional. The answer region is always present
     once answer text arrives or the final completed answer is known.
     """
+
+    class Rendered(Message):
+        """Posted after the coalescing timer flushes at least one dirty region.
+
+        The app handles this to re-check scroll-follow: because the timer fires
+        *after* the per-mount ``_restore_follow_after_mutation`` has already run,
+        the ``Static.update`` inside ``_render_answer`` / ``_render_thinking``
+        expands ``max_scroll_y`` without a scroll-end call. This message lets
+        the app schedule a scroll restoration on the next refresh.
+
+        ``was_following`` carries the pre-flush follow state so the app can
+        restore scroll-end when the viewport was at the bottom before the
+        ``Static.update`` expanded ``max_scroll_y``.
+        """
+
+        def __init__(self, *, was_following: bool) -> None:
+            """Initialise the rendered notification.
+
+            Args:
+                was_following (bool): True when the viewport was at the bottom
+                    immediately before the flush, so the app knows to restore
+                    scroll-end.
+            """
+            super().__init__()
+            self.was_following: bool = was_following
 
     can_focus: bool = True
 
@@ -120,6 +150,11 @@ class AssistantStreamBlock(Vertical):
         self._answer_text: str = ""
         self._terminal_note_text: str = ""
         self._finalized: bool = False
+        self._answer_dirty: bool = False
+        self._thinking_dirty: bool = False
+        self._last_rendered_answer: str = ""
+        self._last_rendered_thinking: str = ""
+        self._flush_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
         """Compose the visible child widgets.
@@ -136,6 +171,130 @@ class AssistantStreamBlock(Vertical):
         yield self._thinking_body
         yield self._answer_body
         yield self._terminal_note
+
+    def on_unmount(self) -> None:
+        """Flush and cancel the coalescing timer when the block leaves the DOM."""
+        self._stop_flush_timer()
+
+    def _ensure_flush_timer(self) -> None:
+        """Start the coalescing timer on the first streamed delta, if mounted.
+
+        Called by the schedulers. No-op when unmounted (the scheduler renders
+        synchronously instead), when already running, or once finalized.
+        """
+        if self._flush_timer is None and self.is_mounted and not self._finalized:
+            self._flush_timer = self.set_interval(
+                interval=_STREAM_FLUSH_INTERVAL_SECONDS,
+                callback=self._flush_dirty_regions,
+                name="assistant-stream-flush",
+            )
+
+    def _stop_flush_timer(self) -> None:
+        """Flush any pending render, then stop and drop the coalescing timer.
+
+        Flushing first guarantees the last streamed frame is on screen before
+        the timer dies, so finalize/seal/abort/failure never drop the final
+        (<=1 frame) of accumulated text. Called on unmount and every
+        finalization path.
+        """
+        self._flush_dirty_regions()
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
+
+    def _flush_dirty_regions(self) -> None:
+        """Render whichever streamed surfaces changed since the last tick.
+
+        The ~30 fps ``set_interval`` callback and the only place a mounted block
+        calls into the real render methods, so per-frame render cost is bounded
+        to one answer render and one reasoning render regardless of delta count.
+        Posts ``AssistantStreamBlock.Rendered`` when mounted and at least one
+        surface was dirty, carrying the pre-flush follow state so the app can
+        restore scroll-end after the ``Static.update`` expands ``max_scroll_y``.
+        """
+        if not self._answer_dirty and not self._thinking_dirty:
+            return
+        was_following: bool = self._check_app_at_bottom()
+        if self._answer_dirty:
+            self._flush_answer()
+        if self._thinking_dirty:
+            self._flush_thinking()
+        if self.is_mounted:
+            self.post_message(AssistantStreamBlock.Rendered(was_following=was_following))
+
+    def _check_app_at_bottom(self) -> bool:
+        """Return True when the transcript viewport is effectively at the bottom.
+
+        Reads the scroll state from the app via duck-typing without importing
+        ``SloTUI`` (which would create a circular dependency). When unmounted
+        or when the app does not expose ``_transcript_is_at_bottom``, returns
+        ``False`` (safe default — no spurious scroll-end).
+
+        Returns:
+            bool: True when the transcript viewport is within one line of the
+                scroll bottom.
+        """
+        if not self.is_mounted:
+            return False
+        check = getattr(self.app, "_transcript_is_at_bottom", None)
+        if check is None:
+            return False
+        return bool(check())
+
+    def _flush_answer(self) -> None:
+        """Render the accumulated answer, skipping work when text is unchanged.
+
+        Clears the answer dirty flag and re-renders only when the accumulated
+        text differs from the last rendered snapshot, so an idle tick or a
+        finalize matching the streamed text costs nothing.
+        """
+        self._answer_dirty = False
+        if self._answer_text == self._last_rendered_answer:
+            return
+        self._last_rendered_answer = self._answer_text
+        self._render_answer()
+
+    def _flush_thinking(self) -> None:
+        """Render the accumulated reasoning, skipping work when text is unchanged.
+
+        Tracks text only — visibility is handled by ``set_expanded``, which
+        calls ``_render_thinking`` directly and deliberately bypasses the flusher.
+        Clears the thinking dirty flag and re-renders only when the accumulated
+        text differs from the last rendered snapshot.
+        """
+        self._thinking_dirty = False
+        if self._thinking_text == self._last_rendered_thinking:
+            return
+        self._last_rendered_thinking = self._thinking_text
+        self._render_thinking()
+
+    def _schedule_answer_render(self) -> None:
+        """Mark the answer dirty; render now when unmounted, else coalesce.
+
+        Called by ``append_text``. When mounted, the coalescing timer performs
+        the ``Static.update`` on the next tick so a burst of deltas produces
+        one render per frame. Before mount (direct unit-test construction,
+        ``is_mounted`` is ``False``) there is no timer, so we render
+        synchronously to preserve the direct-assertion widget contract.
+        """
+        self._answer_dirty = True
+        if not self.is_mounted:
+            self._flush_answer()
+            return
+        self._ensure_flush_timer()
+
+    def _schedule_thinking_render(self) -> None:
+        """Mark the reasoning dirty; render now when unmounted, else coalesce.
+
+        Called by ``append_thinking``. Mirrors ``_schedule_answer_render`` for
+        the reasoning surface: synchronous when unmounted, coalesced once
+        mounted.
+        """
+        self._thinking_dirty = True
+        if not self.is_mounted:
+            self._flush_thinking()
+            return
+        self._ensure_flush_timer()
 
     @property
     def thinking_text(self) -> str:
@@ -213,7 +372,7 @@ class AssistantStreamBlock(Vertical):
             existing=self._thinking_text,
             delta=delta,
         )
-        self._render_thinking()
+        self._schedule_thinking_render()
 
     def set_thinking(self, *, content: str) -> None:
         """Replace the visible reasoning summary with completed truth.
@@ -224,7 +383,8 @@ class AssistantStreamBlock(Vertical):
         if self._finalized or not content:
             return
         self._thinking_text = content
-        self._render_thinking()
+        self._thinking_dirty = True
+        self._flush_thinking()
 
     def append_text(self, *, delta: str) -> None:
         """Append visible assistant answer text.
@@ -235,7 +395,7 @@ class AssistantStreamBlock(Vertical):
         if self._finalized or not delta:
             return
         self._answer_text += delta
-        self._render_answer()
+        self._schedule_answer_render()
 
     def set_answer(self, *, content: str) -> None:
         """Replace the visible answer text with completed truth.
@@ -246,14 +406,16 @@ class AssistantStreamBlock(Vertical):
         if self._finalized or not content:
             return
         self._answer_text = content
-        self._render_answer()
+        self._answer_dirty = True
+        self._flush_answer()
 
     def finalize(self, *, final_text: str) -> None:
         """Finalize the block using completed assistant text.
 
-        The completed assistant text from the runtime is the source of
-        truth. This method intentionally overwrites the in-flight answer
-        body in case streamed deltas differed from the completed message.
+        The completed assistant text from the runtime is the source of truth and
+        overwrites any in-flight streamed answer. Marks the final text dirty,
+        then stops the timer — which flushes it synchronously first, so the final
+        answer is on screen immediately and no later tick fires.
 
         Args:
             final_text (str): Completed assistant answer text.
@@ -261,8 +423,9 @@ class AssistantStreamBlock(Vertical):
         if self._finalized:
             return
         self._answer_text = final_text
-        self._render_answer()
+        self._answer_dirty = True
         self._finalized = True
+        self._stop_flush_timer()
 
     def mark_aborted(self) -> None:
         """Mark the block as aborted while preserving partial content."""
@@ -272,6 +435,7 @@ class AssistantStreamBlock(Vertical):
         self._terminal_note.display = True
         self._terminal_note.update(self._terminal_note_text)
         self._finalized = True
+        self._stop_flush_timer()
 
     def mark_failed(self, *, error_message: str) -> None:
         """Mark the block as failed while preserving partial content.
@@ -285,6 +449,7 @@ class AssistantStreamBlock(Vertical):
         self._terminal_note.display = True
         self._terminal_note.update(self._terminal_note_text)
         self._finalized = True
+        self._stop_flush_timer()
 
     def seal(self) -> None:
         """Mark the block finalized without overwriting any streamed content.
@@ -293,11 +458,13 @@ class AssistantStreamBlock(Vertical):
         ``run_completed`` fires with no confirmed final text. Stops the block
         from accepting further ``append_text`` / ``append_thinking`` deltas
         while preserving whatever was already streamed into the answer and
-        reasoning regions.
+        reasoning regions. Flushes pending dirty regions before stopping the
+        timer so the last streamed delta is always on screen.
         """
         if self._finalized:
             return
         self._finalized = True
+        self._stop_flush_timer()
 
     def _render_thinking(self) -> None:
         """Render the current reasoning summary with Pi-style padding.

@@ -48,11 +48,20 @@ class SlashSuggestionMenu(Vertical):
         yield Static("", classes="slash-suggestion-lines")
 
     def update_state(self, *, state: SlashSuggestionStateDAO) -> None:
-        """Render the provided suggestion state.
+        """Render the provided suggestion state, skipping unchanged updates.
+
+        ``SloTUI.on_text_area_changed`` calls this on every prompt keystroke,
+        including ordinary prose where ``state.visible`` is ``False`` every time.
+        Each ``Static.update`` forces Textual to reflow the whole transcript
+        (O(N) in mounted widgets), so re-rendering an unchanged state is the
+        dominant source of typing lag in long sessions. This guard makes a
+        no-change keystroke do zero DOM work.
 
         Args:
             state (SlashSuggestionStateDAO): Suggestion state to render.
         """
+        if state == self._state:
+            return
         self._state = state
         self.set_class(not state.visible, "-hidden")
         self.query_one(".slash-suggestion-lines", Static).update(self._render_lines(state=state))

@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from langchain_core.messages import AIMessage
 from rich.markdown import Markdown
 from rich.padding import Padding
 
+from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.providers.faux import FauxChatModel
+from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 
 
@@ -253,3 +262,175 @@ class TestAssistantStreamBlockCopyableText:
         block = AssistantStreamBlock()
 
         assert block.get_copyable_text() == ""
+
+
+def _build_session() -> SloAgentSession:
+    """Build a minimal ``SloAgentSession`` driven by a Faux LLM for pilot tests.
+
+    Returns:
+        SloAgentSession: A session ready to drive a ``SloTUI``.
+    """
+    agent: SloAgent = SloAgent(
+        llm=FauxChatModel(responses=[AIMessage(content="unused")])
+    )
+    return SloAgentSession(
+        agent=agent,
+        workdir=Path(".").resolve(),
+        session_id=str(uuid4()),
+    )
+
+
+class TestAssistantStreamBlockCoalescing:
+    """Coalesced, mount-aware streaming render + final flush (spec 59, Bug #2, CRITICAL #4)."""
+
+    def test_unmounted_append_renders_synchronously(self) -> None:
+        """Before mount, a delta renders immediately (preserves existing contract)."""
+        block = AssistantStreamBlock()
+        block.append_text(delta="Hello")
+        assert block._last_rendered_answer == "Hello"
+        assert block._answer_dirty is False
+
+    def test_flush_answer_skips_unchanged_text(self) -> None:
+        """_flush_answer does nothing when the accumulator equals the snapshot."""
+        block = AssistantStreamBlock()
+        block.append_text(delta="Hello")
+        # After the synchronous flush, snapshot == accumulator. Mark dirty again.
+        block._answer_dirty = True
+        block._flush_answer()
+        # Snapshot still equals "Hello"; no re-render, dirty cleared.
+        assert block._last_rendered_answer == "Hello"
+        assert block._answer_dirty is False
+
+    def test_set_answer_renders_completed_truth_synchronously(self) -> None:
+        """set_answer renders immediately (completed truth is eager)."""
+        block = AssistantStreamBlock()
+        block.set_answer(content="done")
+        assert block._last_rendered_answer == "done"
+
+    def test_unmounted_append_thinking_renders_synchronously(self) -> None:
+        """Before mount, a thinking delta renders immediately."""
+        block = AssistantStreamBlock()
+        block.append_thinking(delta="reasoning here")
+        assert block._last_rendered_thinking == "reasoning here"
+        assert block._thinking_dirty is False
+
+    def test_set_thinking_renders_completed_truth_synchronously(self) -> None:
+        """set_thinking renders immediately (completed truth is eager)."""
+        block = AssistantStreamBlock()
+        block.set_thinking(content="full reasoning")
+        assert block._last_rendered_thinking == "full reasoning"
+
+    def test_flush_dirty_regions_only_renders_dirty_surfaces(self) -> None:
+        """_flush_dirty_regions processes only surfaces that are marked dirty."""
+        block = AssistantStreamBlock()
+        block._answer_text = "A"
+        block._answer_dirty = True
+        block._thinking_dirty = False
+        block._flush_dirty_regions()
+        # Answer was dirty so it rendered; thinking was not dirty.
+        assert block._last_rendered_answer == "A"
+        assert block._last_rendered_thinking == ""
+
+    def test_finalize_flushes_and_marks_timer_none(self) -> None:
+        """finalize flushes pending text and leaves _flush_timer as None."""
+        block = AssistantStreamBlock()
+        block._answer_text = "streamed"
+        block._answer_dirty = True
+        block.finalize(final_text="final answer")
+        assert block._last_rendered_answer == "final answer"
+        assert block._flush_timer is None
+        assert block.finalized is True
+
+    def test_seal_flushes_pending_text(self) -> None:
+        """seal flushes pending dirty regions before finalizing."""
+        block = AssistantStreamBlock()
+        block._answer_text = "tail text"
+        block._answer_dirty = True
+        block.seal()
+        assert block._last_rendered_answer == "tail text"
+        assert block._flush_timer is None
+        assert block.finalized is True
+
+    def test_mark_aborted_flushes_pending_text(self) -> None:
+        """mark_aborted flushes pending dirty regions before finalizing."""
+        block = AssistantStreamBlock()
+        block._answer_text = "partial"
+        block._answer_dirty = True
+        block.mark_aborted()
+        assert block._last_rendered_answer == "partial"
+        assert block._flush_timer is None
+
+    def test_mark_failed_flushes_pending_text(self) -> None:
+        """mark_failed flushes pending dirty regions before finalizing."""
+        block = AssistantStreamBlock()
+        block._answer_text = "partial"
+        block._answer_dirty = True
+        block.mark_failed(error_message="oops")
+        assert block._last_rendered_answer == "partial"
+        assert block._flush_timer is None
+
+    @pytest.mark.asyncio
+    async def test_seal_flushes_last_delta_when_mounted(self) -> None:
+        """seal renders the last un-flushed delta before stopping the timer."""
+        session: SloAgentSession = _build_session()
+        app: SloTUI = SloTUI(session=session)
+        async with app.run_test() as pilot:
+            block = AssistantStreamBlock()
+            assert app._transcript_content is not None
+            await app._transcript_content.mount(block)
+            # Append without waiting for the timer to tick — mark dirty manually.
+            block._answer_text = "tail text"
+            block._answer_dirty = True
+            block.seal()  # must flush before stopping
+            await pilot.pause()
+            assert block._last_rendered_answer == "tail text"
+            assert block._flush_timer is None
+
+    @pytest.mark.asyncio
+    async def test_mounted_coalescing_renders_once_per_frame(self) -> None:
+        """Multiple deltas within one frame produce exactly one _render_answer call.
+
+        This test guards the core Phase 1b fix: before the fix, every
+        ``append_text`` call would invoke ``_render_answer`` synchronously
+        (because ``or self._flush_timer is None`` made the guard always true),
+        so N deltas produced N renders. After the fix, the coalescing timer
+        is started on the first delta and only fires once per ~30 Hz tick,
+        collapsing N same-frame deltas into one ``Static.update``.
+
+        Assertion: after several deltas and ONE ``pilot.pause()``, the last
+        rendered answer snapshot equals the full accumulated text (the timer
+        ticked once), AND ``_flush_timer`` is not None (the timer is still
+        running because the block is not finalized).
+        """
+        session: SloAgentSession = _build_session()
+        app: SloTUI = SloTUI(session=session)
+        render_call_count: list[int] = [0]
+        async with app.run_test() as pilot:
+            block = AssistantStreamBlock()
+            assert app._transcript_content is not None
+            await app._transcript_content.mount(block)
+            # Patch _render_answer to count invocations.
+            original_render = block._render_answer
+            def _counting_render() -> None:
+                render_call_count[0] += 1
+                original_render()
+            block._render_answer = _counting_render  # type: ignore[method-assign]
+            # Issue several deltas synchronously — no pause between them.
+            # A working coalescing timer must NOT render synchronously here.
+            block.append_text(delta="Hello")
+            block.append_text(delta=" world")
+            block.append_text(delta=" from")
+            block.append_text(delta=" coalescing")
+            # The timer should now be running (not None), and no render yet.
+            assert block._flush_timer is not None, (
+                "_flush_timer must be set after first delta on a mounted block"
+            )
+            # One pause lets the ~30 Hz timer tick and flush exactly once.
+            await pilot.pause()
+            # After one frame, the render should have fired exactly once.
+            assert render_call_count[0] == 1, (
+                f"Expected 1 _render_answer call but got {render_call_count[0]}; "
+                "the coalescing timer is not suppressing per-delta renders"
+            )
+            assert block._last_rendered_answer == "Hello world from coalescing"
+            assert block._flush_timer is not None

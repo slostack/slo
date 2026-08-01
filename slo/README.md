@@ -2313,9 +2313,7 @@ into replay.
 
 ### Environments (`slo/environments/`)
 
-- `local.env` — developer env (sourced by `make run`).
 - `tests.env` — test env (sourced by `make test`).
-- `development.env` — Docker-compose env.
 - `.env.template` — the canonical list of every variable.
 
 ---

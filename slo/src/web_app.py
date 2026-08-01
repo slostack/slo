@@ -17,7 +17,6 @@ from pydantic import ValidationError as PydanticValidationError
 
 from config.logger import log_error
 from src.exceptions import ApiException
-from src.middleware.db import DbMiddleware
 from src.middleware.request_ctx import RequestCtxDAO, RequestCtxMiddleware
 from src.routers.base_controller import FailureResponseDAO
 from src.routers.health_controller import router as health_router
@@ -39,7 +38,7 @@ def initialize_web_app(app: FastAPI) -> FastAPI:
 
 
 def _initialize_middleware(app: FastAPI) -> FastAPI:
-    """Install CORS, DB-session, and request-context middleware in order."""
+    """Install CORS and request-context middleware in order."""
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -47,7 +46,6 @@ def _initialize_middleware(app: FastAPI) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(DbMiddleware)
     app.add_middleware(RequestCtxMiddleware)
     return app
 

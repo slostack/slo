@@ -20,7 +20,6 @@ def _walk_imports(package_name: str) -> list[str]:
 
 _MODULES_TO_IMPORT: list[str] = [
     *_walk_imports("config"),
-    *_walk_imports("connectors"),
     *_walk_imports("src"),
 ]
 

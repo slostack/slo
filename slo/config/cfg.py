@@ -22,10 +22,7 @@ def is_staging() -> bool:
 
 
 APP_NAME = os.environ.get("SLO_APP_NAME", "slo")
-DB_URL = os.environ.get("SLO_DB_URL", None)
-DB_URL_ASYNC = os.environ.get("SLO_DB_URL_ASYNC", None)
 APP_DIR = os.environ.get("SLO_APP_DIR", None)
-REDIS_URL = os.environ.get("SLO_REDIS_URL", None)
 BASE_URL = os.environ.get("SLO_BASE_URL", "http://localhost:7700/slo")
 DOMAIN = os.environ.get("SLO_DOMAIN", "localhost:7700")
 LOG_FORMAT = os.environ.get("SLO_LOG_FORMAT", "json")
@@ -248,8 +245,6 @@ __cfg__: dict[str, str | None] = {
     "BASE_URL": BASE_URL,
     "CONNECTORS_DIR": CONNECTORS_DIR,
     "CONNECTOR_PREFER_ENV": "1" if CONNECTOR_PREFER_ENV else "0",
-    "DB_URL": DB_URL,
-    "DB_URL_ASYNC": DB_URL_ASYNC,
     "DEBUGPY": DEBUGPY,
     "DEBUGPY_PORT": str(DEBUGPY_PORT),
     "DEFAULT_MODEL_NAME": DEFAULT_MODEL_NAME,
@@ -273,7 +268,6 @@ __cfg__: dict[str, str | None] = {
     "PREFERENCES_FILE": PREFERENCES_FILE,
     "PYENV_ROOT": PYENV_ROOT,
     "PYTHON_VERSION": PYTHON_VERSION,
-    "REDIS_URL": REDIS_URL,
     "SCHEDULES_DIR": SCHEDULES_DIR,
     "SESSION_ID": SESSION_ID,
     "SKILLS_DIR": SKILLS_DIR,

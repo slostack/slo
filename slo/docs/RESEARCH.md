@@ -9,10 +9,7 @@ Reference for navigating the source tree. Updated through spec 55 (canonical mod
 ```
 slo/
 ├── config/               # env config, model table, logger
-├── connectors/           # async SQLAlchemy session helpers
-├── db/                   # Alembic migrations
-├── docker/               # docker-compose for dev/test Postgres+Redis
-├── environments/         # development.env, tests.env
+├── environments/         # test environment and template
 ├── scripts/              # refresh_skills.py, build_skill_index.py
 ├── skills/               # 100+ vendored SKILL.md files (10 groups)
 ├── specifications/       # symlink → ../specifications (specs 01–18)
@@ -22,7 +19,7 @@ slo/
 │   ├── cli/              # Typer CLI entry point
 │   ├── exceptions.py     # typed ApiException hierarchy
 │   ├── main.py           # FastAPI entry (healthz only)
-│   ├── middleware/       # DbMiddleware, RequestCtxMiddleware
+│   ├── middleware/       # RequestCtxMiddleware
 │   ├── routers/          # health_controller, base_controller
 │   ├── scheduling/       # scheduler DAOs, store, runtime executor, OS integration
 │   ├── tui/              # Textual TUI, slash system, widgets
@@ -174,10 +171,8 @@ tests/
 ├── auth/               # credential resolver, refresher, store
 ├── cli/                # Typer dispatch
 ├── config/             # cfg, ai_model_config
-├── domains/            # SQLAlchemy domain tests
 ├── routers/            # healthz
-├── services/           # application service tests
-└── conftest.py         # shared fixtures (FauxChatModel session, tmp dirs, …)
+└── conftest.py         # shared test fixtures
 ```
 
 All tests use `FauxChatModel`; `pytest -m "not e2e"` is the default gate (`make test` self-sources `tests.env`).

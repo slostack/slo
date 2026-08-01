@@ -1,4 +1,4 @@
-"""Liveness probe used by Docker, Compose, and uptime monitoring.
+"""Liveness probe used by uptime monitoring.
 
 Per ``build-routers.md`` §"Sample Controller", real controllers must
 namespace under ``/api/v1``. ``/healthz`` deliberately escapes the

@@ -47,8 +47,6 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 | `make format` | `poetry run black src/ tests/` (line length 110) |
 | `make build-skill-index` | Regenerate `skills/INDEX.md` from committed `SKILL.md` files |
 | `make install` | `install.sh` → pipx install to `~/.slo/` |
-| `make dev-up` | Docker: Postgres (5437) + Redis (6379) |
-| `make migrate` | `alembic upgrade head` |
 | `make run` | uvicorn on :7700 (currently `/healthz` only) |
 
 ---
@@ -367,6 +365,27 @@ scheduled behavior from the TUI, such as repeated reminders, periodic checks, or
 `skills/tui/tui-scheduled-operations/SKILL.md`. That skill governs interval,
 cron, and one-shot schedules, including how to target the live TUI session and how
 to stop and clean them up on request.
+
+**Orchestrator timeouts for projects with slow test suites:** `spawn_sub_agents` is a
+**blocking** tool — while a child runs, the orchestrator's own LangGraph stream emits
+nothing, so the parent guard `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` (default `4800`)
+measures wall-clock silence for the child's entire runtime. A continuously busy child keeps
+resetting its own `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` (default `3600`) and never trips
+it, so the parent guard is the true ceiling on a single blocking phase. If a phase's gates
+run long (e.g. a Go `go test -race ./...` suite), the orchestrator aborts a still-healthy run
+with `TimeoutError: main agent stream produced no events for <N>s; treated as hung` and kills
+the child mid-task. Before launching a dynamic/headless workflow against such a project,
+export both guards (parent strictly greater than child) in the shell that starts the
+orchestrator, or re-export them via a `bash` tool call before the first `spawn_sub_agents`:
+
+```bash
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=10800   # orchestrator: 3h ceiling per blocking phase
+export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=7200  # child: 2h between stdout events
+```
+
+Also prefer splitting a phase so no single blocking `spawn_sub_agents` call runs longer than
+the parent guard. See KB `slo/headless-workflow-orchestration.md` → "Long-running phases /
+slow test suites".
 
 ---
 

@@ -1,4 +1,4 @@
-.PHONY: help dev-up run tui migrate migration test smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release
+.PHONY: help run tui test smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -7,32 +7,16 @@ help:  ## Show this help message
 	@echo ""
 	@echo "  Usage: make <target> [VAR=value]"
 
-# Bring up local Postgres + Redis. This is composite infrastructure, so it
-# lives as a Make target — NOT a launch_*.sh (launch scripts launch a single
-# service only).
-dev-up:  ## Start local Postgres + Redis via Docker Compose
-	docker compose --env-file environments/development.env -f docker/docker-compose.dev.yml up --build
-
-# Launch the main API service (poetry + uvicorn; runs migrations first).
-run:  ## Launch the API server (uvicorn, runs migrations first)
+# Launch the main API service (poetry + uvicorn).
+run:  ## Launch the API server
 	bash launch.sh
 
 # Open the Textual TUI (sub-spec 02.a). Equivalent to running `slo` directly.
 tui:  ## Open the Textual TUI
 	poetry run slo
 
-# Apply Alembic migrations against the active environment.
-migrate:  ## Apply Alembic migrations against the active environment
-	poetry run alembic upgrade head
-
-# Autogenerate a new migration revision.
-migration:  ## Autogenerate a new Alembic migration revision
-	@read -p "Migration message: " msg; poetry run alembic revision --autogenerate -m "$$msg"
-
-# Tests ALWAYS run against the dedicated test environment (environments/tests.env),
-# never the development database. The recipe sources tests.env itself so the
-# active shell environment can never leak the dev DB into a test run.
-test:  ## Run the full test suite (always against tests.env)
+# Tests source the dedicated test environment (environments/tests.env).
+test:  ## Run the full test suite
 	set -a && . ./environments/tests.env && set +a && PYTHONPATH=$(PWD) poetry run pytest
 
 smoke:  ## Run smoke tests only

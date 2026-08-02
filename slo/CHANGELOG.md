@@ -4,6 +4,18 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.14] — 2026-08-02
+
+**Clarified the `feature-specifications` skill: dual-mode specs by default + readability mandate.**
+
+Documentation-only update to `skills/design-and-analysis/feature-specifications/SKILL.md`. No runtime or code behaviour changes.
+
+### Changed
+
+- **Default workflow reformatted** — the pre-hook → skill → post-hook sequence is now a bulleted `**Default workflow:**` block instead of an inline sentence, so the mandatory ordering is easy to scan.
+- **Spec mode selection is now dual-mode by default** — every non-trivial feature specification must include **both** Mode A (business / product) and Mode B components unless the user explicitly asks for only one. Single-mode selection remains available on request and must still be recorded in the PRE-Hook Context Bundle. This replaces the previous "choose exactly one mode before drafting" rule.
+- **Readability mandate added to the O'Reilly-chapter opening rule** — specs must mix narrative, numbered steps, ASCII diagrams, and tables to orient the reader; avoid silent code dumps or silent prose; and every behavioural claim must be grounded in a real code sample with a `file:line` citation. The document is explicitly framed as being for both the user and the AI, emphasising clarity.
+
 ## [0.14.12] — 2026-07-26
 
 **Tolerant `spawn_sub_agents` task parsing (sub-spec 58.a) + TUI performance root-cause analysis.**

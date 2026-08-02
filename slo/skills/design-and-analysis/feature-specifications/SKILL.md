@@ -25,7 +25,14 @@ source_prompt: analyze/feature-specifications.md
 ## Examples
 
 - The user asks for an end-to-end workflow that fits: Style guide for writing technical feature specifications.
-- Use when authoring a spec from scratch — covers structure, scope, acceptance criteria, sequencing. Default workflow: load feature-specifications-pre-hook first (pre-hook), then this, then feature-specifications-post-hook (post-hook). The older gather-feature-context and feature-specification-verification skills remain available as legacy companions when explicitly requested.
+- Use when authoring a spec from scratch — covers structure, scope, acceptance criteria, sequencing. 
+
+**Default workflow:** 
+- load feature-specifications-pre-hook first (pre-hook), 
+- then this, 
+- then feature-specifications-post-hook (post-hook). 
+
+The older gather-feature-context and feature-specification-verification skills remain available as legacy companions when explicitly requested.
 
 ## Slo defaults for request and specification artifacts
 
@@ -66,7 +73,9 @@ A feature specification produced without both hooks is considered incomplete.
 
 ## Mandatory Spec Mode Selection
 
-Every feature specification must explicitly choose one of these two modes **before drafting begins**. The chosen mode must be written into the PRE-Hook Context Bundle.
+Every feature specification must include **BOTH** of these two modes **before drafting begins** unless the user asks for only one specifically. 
+
+When specifically asked, the chosen mode must be written into the PRE-Hook Context Bundle.
 
 ### Mode A — Business / product feature spec
 
@@ -116,6 +125,11 @@ If the mode is unclear, ask the operator or state the inference explicitly befor
 
 Every feature specification and every broken-down child spec must open like an **O'Reilly technical book chapter**: begin with the problem and the runtime or business story, orient the reader inside the existing system, then progressively narrow into components and code. Do **not** jump straight into method names or low-level implementation details before the reader understands the change in plain English.
 
+> Use a mix of narrative, numbered steps, ASCII diagrams, and tables to orient the reader. Avoid silent code dumps or silent prose. Every behavioral claim must be grounded in a real code sample with a `file:line` citation.
+> 
+> This document is for the user and the AI so lay emphasis on readbility and clarity. 
+
+
 ### Mandatory opening section: `## Context`
 
 The `## Context` block is always required. It must contain, in order:
@@ -142,6 +156,8 @@ That section must explicitly state the issue and the chosen resolution.
 ---
 
 ## Mode-Specific Canonical Structures
+
+Remember every non-trivial spec requires both components unless explicitly requested. 
 
 ## Mode A — Business / product feature spec
 

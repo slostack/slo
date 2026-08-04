@@ -98,15 +98,18 @@ class TestStreamInactivityTimeoutConfig:
     def test_stream_inactivity_timeout_uses_shipped_default_when_env_unset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Absent env var falls back to the shipped 4800-second default."""
+        """Absent env var falls back to the shipped 10800-second default."""
         import importlib
+        import config.cfg as cfg_module
         import src.agents.slo_agent.sessions.service as session_service_module
 
         monkeypatch.delenv("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS", raising=False)
+        importlib.reload(cfg_module)
         importlib.reload(session_service_module)
 
-        assert session_service_module._stream_inactivity_timeout_seconds() == 4800.0
+        assert session_service_module._stream_inactivity_timeout_seconds() == 10800.0
 
+        importlib.reload(cfg_module)
         importlib.reload(session_service_module)
 
 

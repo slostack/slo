@@ -368,9 +368,9 @@ to stop and clean them up on request.
 
 **Orchestrator timeouts for projects with slow test suites:** `spawn_sub_agents` is a
 **blocking** tool — while a child runs, the orchestrator's own LangGraph stream emits
-nothing, so the parent guard `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` (default `4800`)
+nothing, so the parent guard `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` (default `10800`)
 measures wall-clock silence for the child's entire runtime. A continuously busy child keeps
-resetting its own `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` (default `3600`) and never trips
+resetting its own `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` (default `7200`) and never trips
 it, so the parent guard is the true ceiling on a single blocking phase. If a phase's gates
 run long (e.g. a Go `go test -race ./...` suite), the orchestrator aborts a still-healthy run
 with `TimeoutError: main agent stream produced no events for <N>s; treated as hung` and kills

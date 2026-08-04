@@ -22,11 +22,16 @@ _ABORTED_TERMINAL_NOTE: str = "aborted"
 class TranscriptMountHost(Protocol):
     """Minimal app surface the projector depends on."""
 
-    async def mount_user_message_block(self, *, text: str) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self,
+        *,
+        text: str,
+        before: Optional[int] = None,
+    ) -> UserMessageBlock:
         """Mount and return a fresh user message block."""
         ...
 
-    def mount_turn_separator_if_needed(self) -> None:
+    def mount_turn_separator_if_needed(self, *, before: Optional[int] = None) -> bool:
         """Mount and record a turn separator when prior content exists."""
         ...
 
@@ -34,6 +39,7 @@ class TranscriptMountHost(Protocol):
         self,
         *,
         title_prefix: Optional[str] = None,
+        before: Optional[int] = None,
     ) -> AssistantStreamBlock:
         """Mount and return a fresh assistant block.
 
@@ -48,11 +54,18 @@ class TranscriptMountHost(Protocol):
         *,
         tool_call_id: str,
         tool_name: str,
+        before: Optional[int] = None,
     ) -> ToolExecutionBlock:
         """Mount and return a fresh tool execution block."""
         ...
 
-    def write_transcript_line(self, *, content: str, classes: str) -> None:
+    def write_transcript_line(
+        self,
+        *,
+        content: str,
+        classes: str,
+        before: Optional[int] = None,
+    ) -> None:
         """Write an append-only line to the transcript and logical log."""
         ...
 
@@ -120,29 +133,31 @@ class TranscriptProjector:
         if event.kind == "thinking_delta":
             if not (event.delta or ""):
                 return  # no content — do not mount an empty block
-            block: AssistantStreamBlock = await self._ensure_assistant_block(
+            thinking_block: AssistantStreamBlock = await self._ensure_assistant_block(
                 iteration=event.iteration,
             )
-            block.append_thinking(delta=event.delta or "")
+            thinking_block.append_thinking(delta=event.delta or "")
             return
 
         if event.kind == "thinking_end":
-            block: AssistantStreamBlock | None = self._assistant_blocks.get(event.iteration)
-            if block is not None and event.content:
-                block.set_thinking(content=event.content)
+            maybe_thinking_block: AssistantStreamBlock | None = self._assistant_blocks.get(event.iteration)
+            if maybe_thinking_block is not None and event.content:
+                maybe_thinking_block.set_thinking(content=event.content)
             return
 
         if event.kind == "text_delta":
             if not (event.delta or ""):
                 return  # no content — do not mount an empty block
-            block = await self._ensure_assistant_block(iteration=event.iteration)
-            block.append_text(delta=event.delta or "")
+            answer_block: AssistantStreamBlock = await self._ensure_assistant_block(
+                iteration=event.iteration
+            )
+            answer_block.append_text(delta=event.delta or "")
             return
 
         if event.kind == "text_end":
-            block = self._assistant_blocks.get(event.iteration)
-            if block is not None and event.content:
-                block.set_answer(content=event.content)
+            maybe_answer_block: AssistantStreamBlock | None = self._assistant_blocks.get(event.iteration)
+            if maybe_answer_block is not None and event.content:
+                maybe_answer_block.set_answer(content=event.content)
             return
 
         if event.kind == "tool_call_start":
@@ -150,7 +165,7 @@ class TranscriptProjector:
 
         if event.kind == "tool_call_delta":
             tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
-            block = await self._ensure_tool_block(
+            delta_tool_block: ToolExecutionBlock = await self._ensure_tool_block(
                 tool_call_id=tool_call_id,
                 tool_name=event.tool_name or "tool",
             )
@@ -161,7 +176,7 @@ class TranscriptProjector:
             parsed_input: dict[str, Any] = event.tool_input or self._best_effort_parse_tool_input(
                 raw_arguments=self._tool_argument_buffers.get(tool_call_id, ""),
             )
-            block.update_tool_call(
+            delta_tool_block.update_tool_call(
                 tool_name=event.tool_name,
                 tool_input=parsed_input,
             )
@@ -169,18 +184,18 @@ class TranscriptProjector:
 
         if event.kind == "tool_call_end":
             tool_call_id = event.tool_call_id or event.block_id or "tool-call"
-            block = await self._ensure_tool_block(
+            final_tool_block: ToolExecutionBlock = await self._ensure_tool_block(
                 tool_call_id=tool_call_id,
                 tool_name=event.tool_name or "tool",
             )
             parsed_input = event.tool_input or self._best_effort_parse_tool_input(
                 raw_arguments=self._tool_argument_buffers.get(tool_call_id, ""),
             )
-            block.update_tool_call(
+            final_tool_block.update_tool_call(
                 tool_name=event.tool_name,
                 tool_input=parsed_input,
             )
-            self._record_tool_call(block=block)
+            self._record_tool_call(block=final_tool_block)
             return
 
         if event.kind == "tool_result":
@@ -250,7 +265,7 @@ class TranscriptProjector:
             )
             return
 
-    async def project_user_turn(self, *, text: str) -> None:
+    async def project_user_turn(self, *, text: str, before: Optional[int] = None) -> None:
         """Mount one live user turn and record its logical line.
 
         Invoked by ``SloTUI._echo_user_line`` the moment a prompt is
@@ -261,12 +276,19 @@ class TranscriptProjector:
 
         Args:
             text (str): The raw user prompt text.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
-        self._host.mount_turn_separator_if_needed()
-        await self._host.mount_user_message_block(text=text)
+        self._host.mount_turn_separator_if_needed(before=before)
+        await self._host.mount_user_message_block(text=text, before=before)
         self._host.record_transcript_line(content=f"> {text}", classes="user-line")
 
-    async def project_replay_entry(self, *, entry: TranscriptEntryDAO) -> None:
+    async def project_replay_entry(
+        self,
+        *,
+        entry: TranscriptEntryDAO,
+        before: Optional[int] = None,
+    ) -> None:
         """Mount one finalized transcript entry during session replay.
 
         Invoked once per completed entry by
@@ -276,48 +298,80 @@ class TranscriptProjector:
 
         Args:
             entry (TranscriptEntryDAO): One completed transcript entry.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
-        await self._replay_projectors[entry.kind](entry=entry)
+        await self._replay_projectors[entry.kind](entry=entry, before=before)
 
-    async def _project_replay_user(self, *, entry: TranscriptEntryDAO) -> None:
+    async def _project_replay_user(
+        self,
+        *,
+        entry: TranscriptEntryDAO,
+        before: Optional[int] = None,
+    ) -> None:
         """Mount a replayed user turn via the shared user-turn path.
 
         Args:
             entry (TranscriptEntryDAO): A ``kind="user"`` entry.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
-        await self.project_user_turn(text=entry.content or "")
+        await self.project_user_turn(text=entry.content or "", before=before)
 
-    async def _project_replay_assistant(self, *, entry: TranscriptEntryDAO) -> None:
+    async def _project_replay_assistant(
+        self,
+        *,
+        entry: TranscriptEntryDAO,
+        before: Optional[int] = None,
+    ) -> None:
         """Mount a finalized assistant turn and record its logical line.
 
         Args:
             entry (TranscriptEntryDAO): A ``kind="assistant"`` entry.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
-        block: AssistantStreamBlock = await self._host.mount_assistant_block()
+        block: AssistantStreamBlock = await self._host.mount_assistant_block(before=before)
         self._seed_replay_reasoning(block=block, reasoning=entry.reasoning)
         content, classes = self._finalize_replay_assistant(block=block, entry=entry)
         self._host.record_transcript_line(content=content, classes=classes)
 
-    async def _project_replay_note(self, *, entry: TranscriptEntryDAO) -> None:
+    async def _project_replay_note(
+        self,
+        *,
+        entry: TranscriptEntryDAO,
+        before: Optional[int] = None,
+    ) -> None:
         """Write a replayed workflow note as a one-line notice (spec 57.a.4).
 
         Args:
             entry (TranscriptEntryDAO): A ``kind="note"`` entry.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
         self._host.write_transcript_line(
             content=entry.content or "",
             classes="sub-agent-notice",
+            before=before,
         )
 
-    async def _project_replay_tool(self, *, entry: TranscriptEntryDAO) -> None:
+    async def _project_replay_tool(
+        self,
+        *,
+        entry: TranscriptEntryDAO,
+        before: Optional[int] = None,
+    ) -> None:
         """Mount a finalized tool execution and record its logical lines.
 
         Args:
             entry (TranscriptEntryDAO): A ``kind="tool"`` entry.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
         block: ToolExecutionBlock = await self._host.mount_tool_execution_block(
             tool_call_id=self._replay_tool_call_id(entry=entry),
             tool_name=entry.tool_name or "tool",
+            before=before,
         )
         block.update_tool_call(tool_name=entry.tool_name, tool_input=entry.tool_input)
         if entry.output is None:
@@ -512,15 +566,15 @@ class TranscriptProjector:
             # Without this, the AssistantStreamBlock remains in its "streaming"
             # state permanently since the pane projector never receives an
             # explicit finalize call from any other path.
-            block = self._sub_agent_assistant_blocks.get(task_id)
-            if block is not None:
-                block.finalize(final_text=event.content or block.answer_text)
+            assistant_block = self._sub_agent_assistant_blocks.get(task_id)
+            if assistant_block is not None:
+                assistant_block.finalize(final_text=event.content or assistant_block.answer_text)
             return
 
         if event.kind == "run_aborted":
-            block = self._sub_agent_assistant_blocks.get(task_id)
-            if block is not None:
-                block.mark_aborted()
+            assistant_block = self._sub_agent_assistant_blocks.get(task_id)
+            if assistant_block is not None:
+                assistant_block.mark_aborted()
             else:
                 self._host.write_transcript_line(
                     content="(sub-agent aborted)",
@@ -529,10 +583,10 @@ class TranscriptProjector:
             return
 
         if event.kind == "run_failed":
-            block = self._sub_agent_assistant_blocks.get(task_id)
+            assistant_block = self._sub_agent_assistant_blocks.get(task_id)
             error: str = event.content or "unknown error"
-            if block is not None:
-                block.mark_failed(error_message=error)
+            if assistant_block is not None:
+                assistant_block.mark_failed(error_message=error)
             else:
                 self._host.write_transcript_line(
                     content=f"(sub-agent error: {error})",

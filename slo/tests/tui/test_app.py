@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from textual import events
 from textual.app import App
+from textual.message import Message
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.tools import tool
 
@@ -18,11 +19,18 @@ from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
-from src.tui.app import SloTUI, PromptInput, TRANSCRIPT_WINDOW_SIZE
+from src.tui.app import (
+    LOAD_OLDER_BATCH_SIZE,
+    TRANSCRIPT_WINDOW_SIZE,
+    PromptInput,
+    SloTUI,
+    TranscriptScroll,
+)
 from src.tui.authentication import AuthenticationScreen
 from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 from src.tui.thinking_spinner import ThinkingSpinner
@@ -1963,7 +1971,7 @@ class TestSloTUIGlobalExpandToggle:
             await app.action_toggle_expandable_details()
             await pilot.pause()
             assert app._global_expand_all is False
-            assert (user._expanded, assistant._thinking_body.display, tool._expanded) == (False, False, False)
+            assert (user._expanded, assistant._thinking_body.display, tool._expanded) == (True, False, False)
 
             await app.action_toggle_expandable_details()
             await pilot.pause()
@@ -1971,8 +1979,8 @@ class TestSloTUIGlobalExpandToggle:
             assert (user._expanded, assistant._thinking_body.display, tool._expanded) == (True, True, True)
 
     @pytest.mark.asyncio
-    async def test_new_block_respects_collapse_all_state(self) -> None:
-        """A block mounted after collapse-all inherits the collapsed state."""
+    async def test_new_block_keeps_user_expanded_but_collapses_assistant_state(self) -> None:
+        """Collapse-all does not affect user blocks but still applies to assistant blocks."""
         session: SloAgentSession = _build_session(responses=[AIMessage(content="x")])
         app: SloTUI = SloTUI(session=session)
 
@@ -1988,7 +1996,7 @@ class TestSloTUIGlobalExpandToggle:
             new_assistant.set_thinking(content="fresh reasoning")
             await pilot.pause()
 
-            assert new_user._expanded is False
+            assert new_user._expanded is True
             assert new_assistant._thinking_body.display is False
 
     @pytest.mark.asyncio
@@ -2393,6 +2401,326 @@ class TestTranscriptWindow:
             # consumed by the first invocation's while loop.
             assert app._window_enforcement_rerun is False
             assert app._window_enforcement_running is False
+
+
+class TestLoadOlderEntries:
+    """Load-older scrollback behavior for spec 60."""
+
+    @staticmethod
+    def _assistant_entries(*, count: int) -> list[TranscriptEntryDAO]:
+        """Build ordered replay entries with distinctive assistant answers.
+
+        Args:
+            count (int): Number of entries to build.
+
+        Returns:
+            list[TranscriptEntryDAO]: Chronological assistant entries.
+        """
+        return [
+            TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}")
+            for index in range(count)
+        ]
+
+    @staticmethod
+    def _build_history_app(*, entries: list[TranscriptEntryDAO]) -> SloTUI:
+        """Build a TUI whose replay path returns ``entries``.
+
+        Args:
+            entries (list[TranscriptEntryDAO]): Ordered replay entries.
+
+        Returns:
+            SloTUI: App under test.
+        """
+        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-history-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = False
+        session.history_root = None
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=entries)
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=MagicMock())
+        session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
+        return SloTUI(session=session)
+
+    @staticmethod
+    async def _fill_transcript(*, app: SloTUI, pilot, line_count: int = 40) -> None:
+        """Write enough transcript lines to create scroll headroom.
+
+        Args:
+            app (SloTUI): App under test.
+            pilot: Textual pilot.
+            line_count (int, optional): Number of lines to append. Defaults to 40.
+        """
+        for index in range(line_count):
+            app._write_adapter_line(content=f"line {index}", classes="tool-result")
+        await pilot.pause()
+
+    @staticmethod
+    def _visible_assistant_answers(*, app: SloTUI) -> list[str]:
+        """Return assistant answers in on-screen transcript order.
+
+        Args:
+            app (SloTUI): App under inspection.
+
+        Returns:
+            list[str]: Visible assistant answers from top to bottom.
+        """
+        assert app._transcript_content is not None
+        answers: list[str] = []
+        for child in app._transcript_content.children:
+            if isinstance(child, AssistantStreamBlock):
+                answers.append(child.answer_text)
+        return answers
+
+    @pytest.mark.asyncio
+    async def test_hydration_initializes_cursor_to_entry_count(self) -> None:
+        """Replay hydration initializes the cursor from ordered history length."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                assert app._load_older_cursor == 12
+                assert app._earlier_summary is not None
+                assert "12 earlier messages hidden" in str(app._earlier_summary.renderable)
+
+    @pytest.mark.asyncio
+    async def test_load_older_prepends_entries_below_summary_in_chronological_order(self) -> None:
+        """One load-older pass prepends the batch immediately before the cursor."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+        with (
+            patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
+        ):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._load_older_entries()
+                await pilot.pause()
+                visible_answers: list[str] = self._visible_assistant_answers(app=app)
+                assert visible_answers[:5] == [
+                    "assistant-7",
+                    "assistant-8",
+                    "assistant-9",
+                    "assistant-10",
+                    "assistant-11",
+                ]
+                assert app._load_older_cursor == 7
+
+    @pytest.mark.asyncio
+    async def test_load_older_preserves_scroll_anchor(self) -> None:
+        """Prepending older entries keeps the reader anchored in place."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=14)
+        with (
+            patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 4),
+        ):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                assert app._transcript_scroll is not None
+                app._transcript_scroll.scroll_to(y=1, animate=False)
+                await pilot.pause()
+                scroll_before: float = app._transcript_scroll.scroll_y
+                await app._load_older_entries()
+                await pilot.pause()
+                assert app._transcript_scroll.scroll_y > scroll_before
+                assert app._transcript_scroll.scroll_y <= app._transcript_scroll.max_scroll_y
+
+    @pytest.mark.asyncio
+    async def test_load_older_removes_summary_when_cursor_reaches_zero(self) -> None:
+        """The summary widget disappears when all older entries are loaded."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=8)
+        with (
+            patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
+        ):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._load_older_entries()
+                await pilot.pause()
+                assert app._load_older_cursor == 3
+                assert app._earlier_summary is not None
+                assert app._transcript_content is not None
+                assert any("transcript-earlier-summary" == child.id for child in app._transcript_content.children)
+
+    @pytest.mark.asyncio
+    async def test_load_older_removes_summary_when_cursor_reaches_zero(self) -> None:
+        """The summary is removed only after the canonical cursor reaches zero."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=5)
+        with (
+            patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 3),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
+        ):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._load_older_entries()
+                await pilot.pause()
+                assert app._load_older_cursor == 0
+                assert app._earlier_summary is None
+                assert app._transcript_content is not None
+                assert all(child.id != "transcript-earlier-summary" for child in app._transcript_content.children)
+
+    @pytest.mark.asyncio
+    async def test_fetch_older_batch_returns_empty_without_cursor_or_history_read(self) -> None:
+        """A zero cursor avoids a history read and returns no batch."""
+        app: SloTUI = self._build_history_app(entries=self._assistant_entries(count=3))
+        app._load_older_cursor = 0
+
+        batch: list[TranscriptEntryDAO] = await app._fetch_older_batch()
+
+        assert batch == []
+        app._session.hydrate_transcript_entries.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_older_batch_returns_chronological_slice(self) -> None:
+        """Fetching slices immediately before the canonical cursor in chronological order."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=8)
+        with patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 3):
+            app: SloTUI = self._build_history_app(entries=entries)
+            app._load_older_cursor = 7
+
+            batch: list[TranscriptEntryDAO] = await app._fetch_older_batch()
+
+        assert [entry.answer for entry in batch] == ["assistant-4", "assistant-5", "assistant-6"]
+
+    @pytest.mark.asyncio
+    async def test_load_older_keeps_cursor_when_history_read_fails(self) -> None:
+        """An error-safe history read does not advance the cursor or arm back-scroll mode."""
+        app: SloTUI = self._build_history_app(entries=self._assistant_entries(count=4))
+        app._load_older_cursor = 4
+        app._session.hydrate_transcript_entries = AsyncMock(side_effect=OSError("history unavailable"))
+
+        await app._load_older_entries()
+
+        assert app._load_older_cursor == 4
+        assert app._back_scroll_mode is False
+
+    @pytest.mark.asyncio
+    async def test_load_older_is_single_flight(self) -> None:
+        """Concurrent load-older requests do not double-run the pass."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+
+                async def _slow_pass() -> None:
+                    await asyncio.sleep(0)
+
+                with patch.object(app, "_run_load_older_pass", new=AsyncMock(side_effect=_slow_pass)) as mock_pass:
+                    await asyncio.gather(app._load_older_entries(), app._load_older_entries())
+
+                mock_pass.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_load_older_noops_when_cursor_is_zero(self) -> None:
+        """No hidden history means load-older does nothing."""
+        app: SloTUI = self._build_history_app(entries=[])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            child_count_before: int = len(list(app._transcript_content.children))
+            await app._load_older_entries()
+            await pilot.pause()
+            assert len(list(app._transcript_content.children)) == child_count_before
+            assert app._earlier_summary is None
+
+    @pytest.mark.asyncio
+    async def test_echo_user_line_force_reveals_and_clears_backscroll_mode(self) -> None:
+        """Submitting a prompt returns from backscroll mode and re-pins the viewport."""
+        app: SloTUI = self._build_history_app(entries=[])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await self._fill_transcript(app=app, pilot=pilot, line_count=40)
+            assert app._transcript_scroll is not None
+            app._transcript_scroll.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            app._back_scroll_mode = True
+
+            await app._echo_user_line(text="live prompt")
+            await pilot.pause()
+
+            assert app._back_scroll_mode is False
+            assert (app._transcript_scroll.max_scroll_y - app._transcript_scroll.scroll_y) <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_transcript_is_at_bottom_returns_true_while_force_follow_latch_is_armed(self) -> None:
+        """The force-follow branch protects streaming until deferred scroll completion."""
+        app: SloTUI = self._build_history_app(entries=[])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await self._fill_transcript(app=app, pilot=pilot, line_count=40)
+            assert app._transcript_scroll is not None
+            app._transcript_scroll.scroll_to(y=0, animate=False)
+            await pilot.pause()
+
+            app._force_following_until_layout = True
+
+            assert app._transcript_is_at_bottom() is True
+
+    @pytest.mark.asyncio
+    async def test_echo_user_line_rearms_follow_for_subsequent_streaming_after_window_activation(self) -> None:
+        """A stranded live viewport shows the submitted user turn and remains bottom-pinned while streaming."""
+        app: SloTUI = self._build_history_app(entries=[])
+        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                for index in range(12):
+                    app._write_adapter_line(content=f"window line {index}", classes="tool-result")
+                for _ in range(4):
+                    await pilot.pause()
+                assert app._transcript_scroll is not None
+                app._transcript_scroll.scroll_to(y=0, animate=False)
+                await pilot.pause()
+                assert app._transcript_is_at_bottom() is False
+
+                await app._echo_user_line(text="visible new prompt")
+                await pilot.pause()
+                await app._render_event(
+                    event=AgentStreamEventDAO(kind="text_delta", delta="streaming tail", iteration=0)
+                )
+                await pilot.pause()
+
+                assert app._transcript_is_at_bottom() is True
+                assert any(
+                    isinstance(child, UserMessageBlock) and child.text == "visible new prompt"
+                    for child in app._transcript_content.children
+                )
+
+    def test_transcript_scroll_posts_reached_top_only_on_threshold_crossing(self) -> None:
+        """The scroll widget emits a top-reached message on downward crossing only."""
+        scroll: TranscriptScroll = TranscriptScroll()
+        posted: list[Message] = []
+        scroll.post_message = lambda message: posted.append(message)  # type: ignore[method-assign]
+
+        with patch("textual.containers.VerticalScroll.watch_scroll_y", autospec=True) as mock_super_watch:
+            scroll.watch_scroll_y(old_value=5.0, new_value=1.0)
+            scroll.watch_scroll_y(old_value=1.0, new_value=0.0)
+
+        assert mock_super_watch.call_count == 2
+        assert len(posted) == 1
+        assert isinstance(posted[0], TranscriptScroll.ReachedTop)
+
+    def test_reached_top_handler_starts_worker_for_load_older(self) -> None:
+        """The app-level top-reached handler delegates through ``run_worker``."""
+        app: SloTUI = self._build_history_app(entries=[])
+        with patch.object(app, "run_worker") as mock_run_worker:
+            app.on_transcript_scroll_reached_top(TranscriptScroll.ReachedTop())
+
+        mock_run_worker.assert_called_once()
+        args, kwargs = mock_run_worker.call_args
+        args[0].close()
+        assert kwargs["group"] == "load-older"
+        assert kwargs["exit_on_error"] is False
 
 
 class TestTypingNoReflow:

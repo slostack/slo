@@ -61,28 +61,28 @@ class TestResolveSkillsDir:
 class TestHeadlessTimeoutDefaults:
     """Shipped timeout defaults exposed through ``config.cfg``."""
 
-    def test_stream_inactivity_timeout_defaults_to_4800_seconds(
+    def test_stream_inactivity_timeout_defaults_to_10800_seconds(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Main-stream inactivity timeout ships with the 4800-second default."""
+        """Main-stream inactivity timeout ships with the 10800-second default."""
         monkeypatch.delenv("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS", raising=False)
         import config.cfg as cfg_module
 
         importlib.reload(cfg_module)
-        assert cfg_module.STREAM_INACTIVITY_TIMEOUT_SECONDS == 4800.0
-        assert cfg_module.cfg("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS") == "4800.0"
+        assert cfg_module.STREAM_INACTIVITY_TIMEOUT_SECONDS == 10800.0
+        assert cfg_module.cfg("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS") == "10800.0"
 
-    def test_subagent_inactivity_timeout_defaults_to_3600_seconds(
+    def test_subagent_inactivity_timeout_defaults_to_7200_seconds(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Child-process inactivity timeout ships with the 3600-second default."""
+        """Child-process inactivity timeout ships with the 7200-second default."""
         monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS", raising=False)
         monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT", raising=False)
         import config.cfg as cfg_module
 
         importlib.reload(cfg_module)
-        assert cfg_module.SUBAGENT_INACTIVITY_TIMEOUT_SECONDS == 3600.0
-        assert cfg_module.cfg("SUBAGENT_INACTIVITY_TIMEOUT_SECONDS") == "3600.0"
+        assert cfg_module.SUBAGENT_INACTIVITY_TIMEOUT_SECONDS == 7200.0
+        assert cfg_module.cfg("SUBAGENT_INACTIVITY_TIMEOUT_SECONDS") == "7200.0"
 
 
 class TestDetachedWorkflowConfig:

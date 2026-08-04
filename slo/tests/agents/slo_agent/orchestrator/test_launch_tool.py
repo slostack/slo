@@ -24,6 +24,21 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
 _OWNER_SESSION_ID: str = "tui-session-1"
 
 
+@pytest.fixture(autouse=True)
+def _clear_enclosing_workflow_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate normal detached-launch tests from an enclosing workflow process.
+
+    The production depth guard must reject recursive detached launches when
+    ``SLO_WORKFLOW_ID`` is set. This test module verifies both that guard and
+    the normal launch path, so each test begins without an inherited workflow
+    id; depth-guard tests explicitly set one when exercising the refusal.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest environment patch helper.
+    """
+    monkeypatch.delenv("SLO_WORKFLOW_ID", raising=False)
+
+
 class _StubProcess:
     """Minimal spawned-process stand-in with a fixed pid."""
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from rich.markdown import Markdown
 from rich.padding import Padding
 from textual.app import ComposeResult
@@ -11,9 +9,6 @@ from textual.containers import Vertical
 from textual.widgets import Static
 
 __all__ = ["UserMessageBlock"]
-
-_COLLAPSED_MAX_WIDTH: int = 80
-"""Maximum characters shown for the collapsed single-line summary."""
 
 
 class UserMessageBlock(Vertical):
@@ -43,7 +38,7 @@ class UserMessageBlock(Vertical):
     }
     """
 
-    def __init__(self, *, text: str, force_expanded: Optional[bool] = None) -> None:
+    def __init__(self, *, text: str) -> None:
         """Seed the block with the user's submitted text.
 
         The visible renderable is built here, at construction, rather than
@@ -52,19 +47,16 @@ class UserMessageBlock(Vertical):
         compositing. Building it up front means the ``Static`` always has a
         valid renderable before it is ever rendered.
 
+        User turns are always displayed in full text; the global expand/
+        collapse toggle does not affect them.
+
         Args:
             text (str): The raw user prompt text.
-            force_expanded (Optional[bool]): Initial expansion state from the
-                global expand-all toggle. ``None`` (default) renders the
-                natural full text; ``False`` collapses to a single truncated
-                line; ``True`` is the full text.
         """
         super().__init__()
         self._text: str = text
-        # The natural state for a user turn is the full text; only an explicit
-        # collapse-all (force_expanded=False) shows the truncated summary.
-        self._expanded: bool = True if force_expanded is None else force_expanded
-        self._body: Static = Static(self._body_renderable(), classes="user-message-body")
+        self._expanded: bool = True
+        self._body: Static = Static(self._renderable(text=self._text), classes="user-message-body")
 
     def compose(self) -> ComposeResult:
         """Compose the single visible region.
@@ -84,49 +76,17 @@ class UserMessageBlock(Vertical):
         return self._text
 
     def set_expanded(self, *, expanded: bool) -> None:
-        """Set the expansion state from the global expand-all toggle.
+        """Accept the global expand-all call without acting on it.
+
+        User turns are always shown in full text. The global expand/collapse
+        toggle applies to assistant and tool blocks only; calling this method
+        on a ``UserMessageBlock`` is deliberately a no-op so the block's
+        visual state is never changed by the app-wide toggle.
 
         Args:
-            expanded (bool): True shows the full text; False shows the
-                collapsed single-line summary.
+            expanded (bool): Ignored. Always a no-op for user turns.
         """
-        if expanded == self._expanded:
-            return
-        self._expanded = expanded
-        self._body.update(self._body_renderable())
-
-    def _body_renderable(self):
-        """Build the body renderable for the current expansion state.
-
-        Returns:
-            RenderableType: Full padded markdown when expanded, otherwise the
-                truncated single-line summary.
-        """
-        if self._expanded:
-            return self._renderable(text=self._text)
-        return self._collapsed_renderable(text=self._text)
-
-    @staticmethod
-    def _collapsed_renderable(*, text: str):
-        """Build the collapsed single-line summary for the user text.
-
-        Args:
-            text (str): The raw user prompt text.
-
-        Returns:
-            RenderableType: A padded, truncated first line, or an empty string
-                when the text is blank.
-        """
-        stripped: str = text.strip()
-        if not stripped:
-            return ""
-        first_line: str = stripped.split("\n")[0]
-        has_more: bool = "\n" in stripped or len(first_line) > _COLLAPSED_MAX_WIDTH
-        if len(first_line) > _COLLAPSED_MAX_WIDTH:
-            first_line = first_line[: _COLLAPSED_MAX_WIDTH - 3] + "..."
-        elif has_more:
-            first_line = f"{first_line} …"
-        return Padding(first_line, pad=(0, 1, 0, 1))
+        return
 
     def get_copyable_text(self) -> str:
         """Return the raw user prompt text for clipboard copy.

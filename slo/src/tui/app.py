@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, cast
 
@@ -18,6 +19,7 @@ from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
@@ -78,6 +80,45 @@ Chosen as an initial value: ~80 blocks is roughly ~400 mounted widgets
 reflow exceeds the ~16 ms frame budget. Tune against the reflow-slope
 measurement in the manual smoke step (7.6) if needed; a follow-up may make
 it adaptive to viewport height."""
+
+LOAD_OLDER_BATCH_SIZE: int = 30
+"""Number of older transcript entries to prepend per scroll-to-top trigger."""
+
+_NEAR_TOP_THRESHOLD: float = 2.0
+"""Scroll-y threshold that counts as reaching the transcript top."""
+
+
+class TranscriptScroll(VerticalScroll):
+    """VerticalScroll that emits a typed message when scrolled to the top."""
+
+    class ReachedTop(Message):
+        """Posted when ``scroll_y`` crosses down to the near-top threshold."""
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """React to scroll position changes and post ``ReachedTop``.
+
+        Args:
+            old_value (float): Previous ``scroll_y`` value.
+            new_value (float): New ``scroll_y`` value.
+        """
+        super().watch_scroll_y(old_value=old_value, new_value=new_value)
+        if new_value <= _NEAR_TOP_THRESHOLD < old_value:
+            self.post_message(self.ReachedTop())
+
+
+@dataclass
+class _LoadOlderAnchorDAO:
+    """Snapshot of the scroll anchor captured before a prepend pass.
+
+    Attributes:
+        widget: The first pre-existing non-summary child, or ``None``.
+        offset_before: The widget's ``virtual_region.y`` before prepend.
+        scroll_y_before: Transcript ``scroll_y`` before prepend.
+    """
+
+    widget: Optional[Widget]
+    offset_before: float
+    scroll_y_before: float
 
 
 class PromptInput(TextArea):
@@ -335,9 +376,13 @@ class SloTUI(App):
         self.theme = self.DEFAULT_THEME
         self._session: SloAgentSession = session
         self._attach_pool_to_session(session=self._session)
-        self._transcript_scroll: Optional[VerticalScroll] = None
+        self._transcript_scroll: Optional[TranscriptScroll] = None
         self._transcript_content: Optional[Vertical] = None
         self._hidden_block_count: int = 0
+        self._load_older_cursor: int = 0
+        self._load_older_running: bool = False
+        self._back_scroll_mode: bool = False
+        self._force_following_until_layout: bool = False
         self._earlier_summary: Optional[Static] = None
         self._window_enforcement_running: bool = False
         self._window_enforcement_rerun: bool = False
@@ -348,8 +393,8 @@ class SloTUI(App):
         self._active_expandable_tool_block: Optional[ToolExecutionBlock] = None
         # Global expand-all state for the Ctrl+O toggle. None = natural default
         # (full user text, visible reasoning, compact tool blocks); True =
-        # expand all; False = collapse all. New blocks inherit this via
-        # ``force_expanded`` so the toggle persists across new messages.
+        # expand all; False = collapse all. Assistant and tool blocks inherit
+        # this state; user turns intentionally remain expanded.
         self._global_expand_all: Optional[bool] = None
         self._adapter: Optional[_TranscriptAdapter] = None
         self._in_flight_task: Optional[asyncio.Task[None]] = None
@@ -391,7 +436,7 @@ class SloTUI(App):
         """
         yield Header(show_clock=False)
         with Vertical(id="chat-shell"):
-            self._transcript_scroll = VerticalScroll(id="transcript-scroll")
+            self._transcript_scroll = TranscriptScroll(id="transcript-scroll")
             self._transcript_content = Vertical(id="transcript-content")
             with self._transcript_scroll:
                 yield self._transcript_content
@@ -441,12 +486,15 @@ class SloTUI(App):
         replay is a pure read path. Runs before the live renderer
         subscribes so replay and live events cannot interleave.
         """
+        self._load_older_cursor = 0
         try:
-            entries = await self._session.hydrate_transcript_entries()
+            entries: list[TranscriptEntryDAO] = await self._session.hydrate_transcript_entries()
         except Exception:  # noqa: BLE001 — replay must never crash boot
             return
         for entry in entries:
             await self._projector.project_replay_entry(entry=entry)
+        self._load_older_cursor = len(entries)
+        await self._update_earlier_summary()
         self._scroll_transcript_to_end()
 
     async def _maybe_render_startup_notice(self) -> None:
@@ -1220,9 +1268,13 @@ class SloTUI(App):
         # remove an already-detached widget.
         self._pending_steer_blocks.clear()
         self._projector.reset_for_new_run()
-        # Reset window state so a cleared transcript starts fresh with no
-        # dangling summary and a correct hidden count.
+        # Reset window and load-older state so a cleared transcript starts
+        # fresh with no dangling summary, cursor, or forced-follow flag.
         self._hidden_block_count = 0
+        self._load_older_cursor = 0
+        self._load_older_running = False
+        self._back_scroll_mode = False
+        self._force_following_until_layout = False
         self._earlier_summary = None
 
     async def action_copy_visible_text(self) -> None:
@@ -1274,6 +1326,19 @@ class SloTUI(App):
             set_expanded = getattr(widget, "set_expanded", None)
             if set_expanded is not None:
                 set_expanded(expanded=expanded)
+
+    def on_transcript_scroll_reached_top(self, event: "TranscriptScroll.ReachedTop") -> None:
+        """Start a load-older pass when the transcript reaches the top.
+
+        Args:
+            event (TranscriptScroll.ReachedTop): Typed top-reached message.
+        """
+        del event
+        self.run_worker(
+            self._load_older_entries(),
+            group="load-older",
+            exit_on_error=False,
+        )
 
     # ---- Private helpers --------------------------------------------------
 
@@ -1668,6 +1733,8 @@ class SloTUI(App):
         ``await`` so a mid-flight interruption cannot under-count. N may briefly
         exceed the window during a single turn holding many in-flight blocks.
         """
+        if self._back_scroll_mode:
+            return
         if self._transcript_content is None:
             return
         children: list[Widget] = [
@@ -1699,15 +1766,28 @@ class SloTUI(App):
         """
         if self._transcript_content is None:
             return
+        hidden_count: int = self._hidden_entry_count()
+        if hidden_count == 0:
+            if self._hidden_block_count == 0 or self._back_scroll_mode:
+                await self._remove_earlier_summary()
+                return
         text: str = (
-            f"▲ {self._hidden_block_count} earlier messages hidden "
-            f"— reload the session (slo --resume) to view full history"
+            f"▲ {hidden_count} earlier messages hidden "
+            f"— scroll to the top to load older messages"
         )
         if self._earlier_summary is None:
             self._earlier_summary = Static(text, id="transcript-earlier-summary")
             await self._transcript_content.mount(self._earlier_summary, before=0)
             return
         self._earlier_summary.update(text)
+
+    async def _remove_earlier_summary(self) -> None:
+        """Remove and dereference the earlier-messages summary widget."""
+        if self._earlier_summary is None:
+            return
+        summary: Static = self._earlier_summary
+        self._earlier_summary = None
+        await summary.remove()
 
     def _enforce_window_soon(self) -> None:
         """Schedule window enforcement from a synchronous mount site.
@@ -1735,37 +1815,61 @@ class SloTUI(App):
             exit_on_error=False,
         )
 
-    async def mount_user_message_block(self, *, text: str) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self,
+        *,
+        text: str,
+        before: Optional[int] = None,
+    ) -> UserMessageBlock:
         """Mount a fresh user message block into the transcript flow.
 
         Args:
             text (str): The raw user prompt text.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
 
         Returns:
             UserMessageBlock: The mounted block.
         """
-        block: UserMessageBlock = UserMessageBlock(text=text, force_expanded=self._global_expand_all)
-        if self._transcript_content is not None:
+        block: UserMessageBlock = UserMessageBlock(text=text)
+        if self._transcript_content is None:
+            return block
+        if before is None:
             await self._transcript_content.mount(block)
             if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
                 await self._enforce_transcript_window()
+            return block
+        await self._transcript_content.mount(block, before=before)
         return block
 
-    def mount_turn_separator_if_needed(self) -> None:
+    def mount_turn_separator_if_needed(self, *, before: Optional[int] = None) -> bool:
         """Mount and record a turn separator when prior content exists.
 
         Idempotent in effect: a no-op on the first turn (nothing to
         separate). Writing through ``_write_adapter_line`` both mounts the
         visible ``┈┈┈`` separator and records its logical line.
+
+        Args:
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
+
+        Returns:
+            bool: True when a separator was mounted.
         """
         if self._adapter is None or not self._adapter.has_prior_turn_content():
-            return
-        self._write_adapter_line(content=_TranscriptAdapter.TURN_SEPARATOR, classes="turn-separator")
+            return False
+        self._write_adapter_line(
+            content=_TranscriptAdapter.TURN_SEPARATOR,
+            classes="turn-separator",
+            before=before,
+        )
+        return True
 
     async def mount_assistant_block(
         self,
         *,
         title_prefix: Optional[str] = None,
+        before: Optional[int] = None,
     ) -> AssistantStreamBlock:
         """Mount a fresh assistant streaming block into the transcript flow.
 
@@ -1775,6 +1879,8 @@ class SloTUI(App):
                 rendering path to tag child output with its task id.
                 ``None`` (default) produces a label-free block identical to
                 the pre-feature behaviour.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
 
         Returns:
             AssistantStreamBlock: The mounted block.
@@ -1783,10 +1889,16 @@ class SloTUI(App):
             title_prefix=title_prefix,
             force_expanded=self._global_expand_all,
         )
-        if self._transcript_content is not None:
+        if self._transcript_content is None:
+            return block
+        follow_snapshot: bool = self._capture_follow_snapshot()
+        if before is None:
             await self._transcript_content.mount(block)
             if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
                 await self._enforce_transcript_window()
+            self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+            return block
+        await self._transcript_content.mount(block, before=before)
         return block
 
     async def mount_tool_execution_block(
@@ -1794,12 +1906,15 @@ class SloTUI(App):
         *,
         tool_call_id: str,
         tool_name: str,
+        before: Optional[int] = None,
     ) -> ToolExecutionBlock:
         """Mount a fresh tool execution block above the prompt input.
 
         Args:
             tool_call_id (str): Stable tool call id.
             tool_name (str): Tool name.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
 
         Returns:
             ToolExecutionBlock: The mounted block.
@@ -1809,14 +1924,19 @@ class SloTUI(App):
             tool_name=tool_name,
             force_expanded=self._global_expand_all,
         )
-        if self._transcript_content is not None:
+        if self._transcript_content is None:
+            self._set_active_expandable_tool_block(block=block)
+            return block
+        follow_snapshot: bool = self._capture_follow_snapshot()
+        if before is None:
             await self._transcript_content.mount(block)
+            self._set_active_expandable_tool_block(block=block)
+            if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
+                await self._enforce_transcript_window()
+            self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+            return block
+        await self._transcript_content.mount(block, before=before)
         self._set_active_expandable_tool_block(block=block)
-        if (
-            self._transcript_content is not None
-            and len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE
-        ):
-            await self._enforce_transcript_window()
         return block
 
     def _set_active_expandable_tool_block(self, *, block: ToolExecutionBlock) -> None:
@@ -1832,14 +1952,22 @@ class SloTUI(App):
         self._active_expandable_tool_block = block
         self._active_expandable_tool_block.set_active(active=True)
 
-    def write_transcript_line(self, *, content: str, classes: str) -> None:
-        """Write and record an append-only transcript line.
+    def write_transcript_line(
+        self,
+        *,
+        content: str,
+        classes: str,
+        before: Optional[int] = None,
+    ) -> None:
+        """Write and record an append-only or prepended transcript line.
 
         Args:
             content (str): Transcript line content.
             classes (str): Semantic transcript class.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
-        self._write_adapter_line(content=content, classes=classes)
+        self._write_adapter_line(content=content, classes=classes, before=before)
 
     def record_transcript_line(self, *, content: str, classes: str) -> None:
         """Record a logical transcript line without rendering a duplicate.
@@ -1851,6 +1979,7 @@ class SloTUI(App):
         if self._adapter is None:
             return
         self._adapter.record(content=content, classes=classes)
+
 
     async def _run_prompt(self, *, text: str) -> None:
         """Drain ``session.invoke`` to completion.
@@ -2079,18 +2208,14 @@ class SloTUI(App):
         await spinner.remove()
 
     async def _echo_user_line(self, *, text: str) -> None:
-        """Echo one user turn into the transcript as a dedicated component.
-
-        Delegates to the projector, which mounts a ``UserMessageBlock`` and
-        records the ``> text`` logical line (with a turn separator ahead of
-        it when prior content exists).
+        """Echo one user turn into the transcript and unconditionally reveal it.
 
         Args:
             text (str): The user prompt text to echo.
         """
-        follow_snapshot: bool = self._capture_follow_snapshot()
+        self._back_scroll_mode = False
         await self._projector.project_user_turn(text=text)
-        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+        self._force_reveal_and_rearm()
 
     def _render_busy_line(self) -> None:
         """Render the busy reply when the input arrives during a run."""
@@ -2099,7 +2224,13 @@ class SloTUI(App):
             classes="tool-result",
         )
 
-    def _write_adapter_line(self, *, content: str, classes: str) -> None:
+    def _write_adapter_line(
+        self,
+        *,
+        content: str,
+        classes: str,
+        before: Optional[int] = None,
+    ) -> None:
         """Funnel non-event transcript writes through the adapter.
 
         The adapter is the single test seam — every line that lands in the
@@ -2111,11 +2242,13 @@ class SloTUI(App):
         Args:
             content (str): The line content.
             classes (str): The semantic render class.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
         if self._adapter is None:
-            self._transcript_write(line=content, style_class=classes)
+            self._transcript_write(line=content, style_class=classes, before=before)
             return
-        self._adapter.write(content=content, classes=classes)
+        self._adapter.write(content=content, classes=classes, before=before)
 
     def _focused_block_text(self) -> str:
         """Return the copyable text of the focused transcript block, or ``""``.
@@ -2158,6 +2291,22 @@ class SloTUI(App):
         """
         return self._transcript_is_at_bottom()
 
+    def _has_older_entries_to_load(self) -> bool:
+        """Return whether older transcript entries remain above the cursor.
+
+        Returns:
+            bool: True when ``_load_older_cursor`` is greater than zero.
+        """
+        return self._load_older_cursor > 0
+
+    def _hidden_entry_count(self) -> int:
+        """Return how many older logical entries remain unloaded.
+
+        Returns:
+            int: The canonical ordered-entry cursor.
+        """
+        return self._load_older_cursor
+
     def _transcript_is_at_bottom(self) -> bool:
         """Return True when the transcript viewport is effectively at bottom.
 
@@ -2165,6 +2314,8 @@ class SloTUI(App):
             bool: True when the scroll position is within one line of the bottom.
         """
         if self._transcript_scroll is None:
+            return True
+        if self._force_following_until_layout:
             return True
         return (self._transcript_scroll.max_scroll_y - self._transcript_scroll.scroll_y) <= 1.0
 
@@ -2184,12 +2335,163 @@ class SloTUI(App):
             return
         self.call_after_refresh(self._transcript_scroll.scroll_end, animate=False)
 
-    def _transcript_write(self, *, line: str, style_class: str) -> None:
-        """Append one visible line widget to the transcript container.
+    def _enable_back_scroll_mode(self) -> None:
+        """Suspend top eviction so prepended history is not immediately removed."""
+        self._back_scroll_mode = True
+
+    async def _load_older_entries(self) -> None:
+        """Prepend the next batch of older transcript entries at the top."""
+        if self._load_older_running:
+            return
+        if not self._has_older_entries_to_load():
+            return
+        self._load_older_running = True
+        try:
+            await self._run_load_older_pass()
+        finally:
+            self._load_older_running = False
+
+    async def _run_load_older_pass(self) -> None:
+        """Execute one load-older prepend pass."""
+        entries: list[TranscriptEntryDAO] = await self._fetch_older_batch()
+        if not entries:
+            return
+        self._enable_back_scroll_mode()
+        anchor: _LoadOlderAnchorDAO = self._capture_load_older_anchor()
+        await self._prepend_older_entries(entries=entries)
+        self._load_older_cursor = max(0, self._load_older_cursor - len(entries))
+        self._schedule_anchor_restore(anchor=anchor)
+        await self._update_earlier_summary()
+
+    async def _read_all_entries(self) -> list[TranscriptEntryDAO]:
+        """Return all hydrated transcript entries from the session.
+
+        Returns:
+            list[TranscriptEntryDAO]: Chronological entries, or an empty list
+                when history cannot be read.
+        """
+        try:
+            return await self._session.hydrate_transcript_entries()
+        except Exception:  # noqa: BLE001 — loading history must not crash the TUI
+            return []
+
+    async def _fetch_older_batch(self) -> list[TranscriptEntryDAO]:
+        """Return the chronological batch immediately before the cursor.
+
+        Returns:
+            list[TranscriptEntryDAO]: The next older batch, or an empty list
+                when the cursor is exhausted or history is unavailable.
+        """
+        if self._load_older_cursor <= 0:
+            return []
+        all_entries: list[TranscriptEntryDAO] = await self._read_all_entries()
+        batch_start: int = max(0, self._load_older_cursor - LOAD_OLDER_BATCH_SIZE)
+        return all_entries[batch_start:self._load_older_cursor]
+
+    async def _prepend_older_entries(self, *, entries: list[TranscriptEntryDAO]) -> None:
+        """Project and prepend entries in chronological order below the summary."""
+        if self._transcript_content is None:
+            return
+        insert_index: int = 1
+        for entry in entries:
+            children_before: int = len(list(self._transcript_content.children))
+            await self._projector.project_replay_entry(entry=entry, before=insert_index)
+            children_after: int = len(list(self._transcript_content.children))
+            insert_index += children_after - children_before
+
+    def _first_live_child(self) -> Optional[Widget]:
+        """Return the first non-summary child in the transcript container."""
+        if self._transcript_content is None:
+            return None
+        for child in self._transcript_content.children:
+            if child is self._earlier_summary:
+                continue
+            return child
+        return None
+
+    def _child_offset_y(self, *, child: Widget) -> float:
+        """Return the virtual y-offset of ``child``."""
+        return float(child.virtual_region.y)
+
+    def _capture_scroll_anchor(self) -> float:
+        """Return the current transcript scroll offset."""
+        if self._transcript_scroll is None:
+            return 0.0
+        return self._transcript_scroll.scroll_y
+
+
+    def _capture_load_older_anchor(self) -> _LoadOlderAnchorDAO:
+        """Capture the scroll anchor before a prepend pass."""
+        anchor_widget: Optional[Widget] = self._first_live_child()
+        anchor_offset_before: float = (
+            self._child_offset_y(child=anchor_widget) if anchor_widget is not None else 0.0
+        )
+        scroll_y_before: float = self._capture_scroll_anchor()
+        return _LoadOlderAnchorDAO(
+            widget=anchor_widget,
+            offset_before=anchor_offset_before,
+            scroll_y_before=scroll_y_before,
+        )
+
+    def _schedule_anchor_restore(self, *, anchor: _LoadOlderAnchorDAO) -> None:
+        """Schedule post-layout scroll restoration using the captured anchor."""
+        self.call_after_refresh(
+            self._restore_scroll_after_layout,
+            anchor_widget=anchor.widget,
+            anchor_offset_before=anchor.offset_before,
+            scroll_y_before=anchor.scroll_y_before,
+        )
+
+    def _restore_scroll_after_layout(
+        self,
+        *,
+        anchor_widget: Optional[Widget],
+        anchor_offset_before: float,
+        scroll_y_before: float,
+    ) -> None:
+        """Restore the scroll position after a prepend using anchor offset."""
+        if self._transcript_scroll is None:
+            return
+        if anchor_widget is None:
+            return
+        anchor_offset_after: float = self._child_offset_y(child=anchor_widget)
+        delta: float = anchor_offset_after - anchor_offset_before
+        self._transcript_scroll.scroll_to(y=scroll_y_before + delta, animate=False)
+
+    def _force_reveal_and_rearm(self) -> None:
+        """Snap the transcript to the bottom and re-arm follow mode."""
+        if self._transcript_scroll is None:
+            return
+        self._force_following_until_layout = True
+        self._transcript_scroll.scroll_y = self._transcript_scroll.max_scroll_y
+        self.call_after_refresh(self._complete_force_reveal_after_layout)
+
+    def _complete_force_reveal_after_layout(self) -> None:
+        """Perform the authoritative post-layout scroll and then release the latch."""
+        if self._transcript_scroll is None:
+            self._force_following_until_layout = False
+            return
+        self._transcript_scroll.scroll_end(animate=False)
+        self.call_after_refresh(self._clear_force_following_after_scroll_end)
+
+    def _clear_force_following_after_scroll_end(self) -> None:
+        """Release force-follow only after the deferred authoritative pin completes."""
+        self._force_following_until_layout = False
+
+    def _transcript_write(
+        self,
+        *,
+        line: str,
+        style_class: str,
+        before: Optional[int] = None,
+    ) -> None:
+        """Append or insert one visible line widget into the transcript.
 
         Args:
             line (str): The line to write.
             style_class (str): Semantic render class from the TUI renderer.
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
         if self._transcript_content is None:
             return
@@ -2199,9 +2501,12 @@ class SloTUI(App):
             widget = Static(Markdown(line), classes=style_class)
         else:
             widget = Static(line, classes=style_class)
-        self._transcript_content.mount(widget)
-        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
-        self._enforce_window_soon()
+        if before is None:
+            self._transcript_content.mount(widget)
+            self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+            self._enforce_window_soon()
+            return
+        self._transcript_content.mount(widget, before=before)
 
 
 class _TranscriptAdapter:
@@ -2231,19 +2536,33 @@ class _TranscriptAdapter:
         self._tui: SloTUI = tui
         self.lines: list[tuple[str, str]] = []
 
-    def write(self, *, content: str, classes: str = "") -> None:
+    def write(
+        self,
+        *,
+        content: str,
+        classes: str = "",
+        before: Optional[int] = None,
+    ) -> None:
         """Record the line and delegate to the visible transcript writer.
 
         Args:
             content (str): The text to append.
             classes (str): The semantic render class (default ``""``).
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
         """
-        self._append_line(content=content, classes=classes)
+        self._append_line(content=content, classes=classes, before=before)
 
-    def _append_line(self, *, content: str, classes: str) -> None:
+    def _append_line(
+        self,
+        *,
+        content: str,
+        classes: str,
+        before: Optional[int] = None,
+    ) -> None:
         """Persist one transcript line and write it to the transcript surface."""
         self.lines.append((content, classes))
-        self._tui._transcript_write(line=content, style_class=classes)
+        self._tui._transcript_write(line=content, style_class=classes, before=before)
 
     def record(self, *, content: str, classes: str) -> None:
         """Persist one logical transcript line without rendering it again.

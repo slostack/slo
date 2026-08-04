@@ -127,7 +127,7 @@ emits far less; 8192 (the historical pre-02 value) keeps the local rate-limit
 behavior stable. The TUI usage snapshot still surfaces the true ceiling separately.
 """
 
-_DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS: float = 4800.0
+_DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS: float = 10800.0
 """Maximum silence tolerated from the main agent stream before it is treated as hung.
 
 This mirrors the sub-agent child-process inactivity guard: if the model/tool lane

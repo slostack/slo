@@ -257,17 +257,17 @@ The following section applies **only when you are running as a headless orchestr
 
 ### Critical: raise timeout environment variables before dispatching phases
 
-The orchestrator's own LLM stream is guarded by a 4800-second inactivity timeout (`SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS`). Keep it at least that high for real workflow runs; lower values commonly kill the orchestrator mid-turn while it is reading large workflow files, synthesizing multi-phase results, or waiting for slow models. **You must set or preserve these environment variables before the orchestrator process starts.** Do this by exporting the variables in the shell that invokes `slo run`, or by emitting a bash tool call that re-exports them before the first `spawn_sub_agents` call:
+The orchestrator's own LLM stream is guarded by a 10800-second inactivity timeout (`SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS`). Keep it at least that high for real workflow runs; lower values commonly kill the orchestrator mid-turn while it is reading large workflow files, synthesizing multi-phase results, or waiting for slow models. **You must set or preserve these environment variables before the orchestrator process starts.** Do this by exporting the variables in the shell that invokes `slo run`, or by emitting a bash tool call that re-exports them before the first `spawn_sub_agents` call:
 
 ```bash
 # Minimum recommended values for a headless workflow run
-export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=4800   # shipped default for orchestrator runs
-export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=3600  # shipped default for child agents
+export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=10800  # shipped default for orchestrator runs
+export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=7200   # shipped default for child agents
 export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200         # bash tool ceiling per command
 export SLO_SUBAGENT_MAX_CONCURRENCY=6                # concurrent child cap
 ```
 
-If `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` is forced significantly below 4800, the orchestrator is likely to be killed mid-turn on any large LLM call. This is the most common cause of unexpected orchestrator exits in headless mode.
+If `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` is forced significantly below 10800, the orchestrator is likely to be killed mid-turn on any large LLM call. This is the most common cause of unexpected orchestrator exits in headless mode.
 
 ### Serial phase dispatch (Pipeline workflows)
 
@@ -365,8 +365,8 @@ When running headlessly, you are the sole oversight layer. After dispatching eac
 
 | Variable | Recommended | Default | Purpose |
 |---|---|---|---|
-| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `4800` | `4800` | Orchestrator's own LLM stream inactivity guard. Keep it at or above the shipped default. |
-| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `3600` | `3600` | Child sub-agent stdout inactivity guard. |
+| `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `10800` | `10800` | Orchestrator's own LLM stream inactivity guard. Keep it at or above the shipped default. |
+| `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `7200` | `7200` | Child sub-agent stdout inactivity guard. |
 | `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1200` | `600` | Per-command bash tool ceiling inside sub-agents. |
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `4` | Maximum simultaneous child processes. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | `8` | Maximum tasks per `spawn_sub_agents` call. |

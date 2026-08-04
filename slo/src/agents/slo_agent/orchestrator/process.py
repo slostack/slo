@@ -96,7 +96,7 @@ Overridable via ``SLO_SUBAGENT_TERMINATE_GRACE_SECONDS``.
 CHILD_INACTIVITY_TIMEOUT_SECONDS: float = positive_float_env(
     primary_name="SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS",
     alias_name="SLO_SUBAGENT_INACTIVITY_TIMEOUT",
-    default=3600.0,
+    default=7200.0,
 )
 """Maximum silence tolerated from a child between stdout lines before it is declared hung.
 
@@ -107,7 +107,7 @@ at all (the classic ``readline()`` hang — a blocked subprocess waiting on an
 operation that itself hung) surfaces as a timeout instead of wedging the
 parent forever. Owned by the orchestrator; never set by the model.
 
-Default is 3600 s (60 minutes) to accommodate large-context LLM calls where
+Default is 7200 s (2 hours) to accommodate large-context LLM calls where
 the time-to-first-token on a 100 KB+ prompt can exceed several minutes.
 
 Overridable via ``SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS``

@@ -74,55 +74,37 @@ class TestUserMessageBlock:
 
 
 class TestUserMessageBlockExpansion:
-    """Global expand/collapse behaviour for ``UserMessageBlock`` (sub-spec 42.a.12)."""
+    """Global expand/collapse behaviour for ``UserMessageBlock``."""
 
-    def test_natural_default_is_expanded(self) -> None:
-        """No force_expanded keeps the natural full-text state."""
-        block = UserMessageBlock(text="hello\nworld")
-
-        assert block._expanded is True
-
-    def test_force_expanded_false_starts_collapsed(self) -> None:
-        """Mounting under collapse-all starts in the collapsed state."""
-        block = UserMessageBlock(text="hello\nworld", force_expanded=False)
-
-        assert block._expanded is False
-
-    def test_force_expanded_true_starts_expanded(self) -> None:
-        """Mounting under expand-all starts in the expanded state."""
-        block = UserMessageBlock(text="hello\nworld", force_expanded=True)
+    def test_user_block_always_starts_expanded(self) -> None:
+        """User turns always start in the full-text state."""
+        block: UserMessageBlock = UserMessageBlock(text="hello\nworld")
 
         assert block._expanded is True
 
-    def test_collapsed_renderable_truncates_long_first_line(self) -> None:
-        """A long first line collapses to <=80 chars with an ellipsis."""
-        renderable = UserMessageBlock._collapsed_renderable(text="a" * 200)
+    def test_user_block_multi_line_text_renders_full_at_construction(self) -> None:
+        """Construction keeps the full multi-line renderable intact."""
+        block: UserMessageBlock = UserMessageBlock(text="line one\nline two\nline three")
 
-        assert len(renderable.renderable) <= 80
-        assert renderable.renderable.endswith("...")
+        assert block.text == "line one\nline two\nline three"
+        assert block._body.renderable.renderable.markup == "line one\nline two\nline three"
 
-    def test_collapsed_renderable_marks_multiline_text(self) -> None:
-        """A multi-line message shows only the first line with a more-marker."""
-        renderable = UserMessageBlock._collapsed_renderable(text="first line\nsecond line")
-
-        assert "first line" in renderable.renderable
-        assert "second line" not in renderable.renderable
-        assert "…" in renderable.renderable
-
-    def test_collapsed_renderable_blank_text_is_empty(self) -> None:
-        """Whitespace-only text collapses to an empty string."""
-        renderable = UserMessageBlock._collapsed_renderable(text="   \n  ")
-
-        assert renderable == ""
-
-    def test_set_expanded_toggles_state(self) -> None:
-        """``set_expanded`` flips the tracked expansion state."""
-        block = UserMessageBlock(text="hello\nworld")
+    def test_set_expanded_is_a_noop_for_user_blocks(self) -> None:
+        """``set_expanded`` never changes the tracked user-block state."""
+        block: UserMessageBlock = UserMessageBlock(text="hello\nworld")
 
         block.set_expanded(expanded=False)
-        assert block._expanded is False
+        assert block._expanded is True
 
         block.set_expanded(expanded=True)
+        assert block._expanded is True
+
+    def test_set_expanded_to_true_is_also_noop(self) -> None:
+        """The idempotent true-path also preserves the full-text state."""
+        block: UserMessageBlock = UserMessageBlock(text="hello\nworld")
+
+        block.set_expanded(expanded=True)
+
         assert block._expanded is True
 
 

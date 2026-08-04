@@ -4,6 +4,33 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.15] — 2026-08-04
+
+**Transcript window reliability: untruncated user turns, force-revealed submits, and lazy scrollback.**
+
+Fixes the regressions exposed when a long Textual transcript exceeds its mounted-widget window, while retaining the bounded live-rendering behavior introduced in v0.14.13. User prompts now remain fully readable, prompt submission reliably returns the viewport to the live end of the transcript, and scrolling to the top can lazily restore older evicted session history.
+
+### Fixed
+
+- **User turns never collapse or truncate** — `UserMessageBlock` now has a single full-text render path. The global expand/collapse control deliberately leaves user blocks unchanged, including newly submitted and replayed turns after collapse-all has been selected.
+- **Submitted prompts are always visible** — a deliberate user submission clears history-browsing mode, force-reveals the new block, and keeps the follow latch armed through the post-layout bottom pin. This prevents an evicted/live-stream transcript from leaving a newly submitted prompt below a stranded viewport.
+- **Follow-state race at assistant and tool mounts** — assistant and tool blocks capture the follow decision before mounting and transcript-window enforcement, then restore it afterward. The snapshot therefore reflects whether the user was following before new content changed the scroll geometry.
+- **Long-workflow timeout defaults** — the orchestrator stream inactivity default is now **10,800 seconds (3 hours)** and the child sub-agent stdout inactivity default is **7,200 seconds (2 hours)**. Runtime consumers, documentation, orchestration prompts, and default-value regression tests now agree.
+- **Detached-launch test isolation** — normal launch-path tests explicitly clear inherited `SLO_WORKFLOW_ID`; depth-guard tests continue to assert that nested detached launches are refused.
+
+### Added
+
+- **Lazy scroll-to-top history loading** — `TranscriptScroll` emits a typed near-top crossing message that starts a single-flight history load. The TUI re-reads ordered `TranscriptEntryDAO` history, prepends the batch immediately before the canonical entry cursor in chronological order, restores the scroll anchor after layout, and updates/removes the earlier-history summary accurately.
+- **Back-scroll mode** — loading older history suspends normal top eviction until the user submits another prompt or clears the transcript, so requested scrollback is not immediately evicted again.
+- **Complete replay prepend support** — `before=` insertion is propagated through user, assistant, tool, turn-separator, note, adapter, and raw transcript write paths, preserving transcript ordering for every replayed entry shape.
+- **Regression coverage for small transcript windows** — focused Textual tests reduce `TRANSCRIPT_WINDOW_SIZE` to exercise eviction quickly and cover collapse immunity, stranded-viewport recovery, continued streaming follow, canonical cursor/batching behavior, single-flight loading, anchor preservation, summary lifecycle, back-scroll resets, and replayed separator/note placement.
+
+### Verification
+
+- `2955 passed, 4 deselected` — complete non-E2E test suite.
+- Targeted mypy checks pass for changed timeout/orchestration runtime modules.
+- `git diff --check` passes.
+
 ## [0.14.14] — 2026-08-02
 
 **Clarified the `feature-specifications` skill: dual-mode specs by default + readability mandate.**

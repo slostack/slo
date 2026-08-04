@@ -50,6 +50,14 @@ class FakeAssistantBlock:
         self.aborted: bool = False
         self.failed_with: str | None = None
 
+    @property
+    def thinking_text(self) -> str:
+        return self.thinking
+
+    @property
+    def answer_text(self) -> str:
+        return self.answer
+
     def append_thinking(self, *, delta: str) -> None:
         self.thinking += delta
 
@@ -118,28 +126,41 @@ class FakeHost:
         self.lines: list[tuple[str, str]] = []
         self.recorded: list[tuple[str, str]] = []
 
-    async def mount_user_message_block(self, *, text: str):
+    async def mount_user_message_block(self, *, text: str, before: int | None = None):
+        del before
         block = FakeUserBlock(text=text)
         self.user_blocks.append(block)
         return block
 
-    def mount_turn_separator_if_needed(self) -> None:
+    def mount_turn_separator_if_needed(self, *, before: int | None = None) -> bool:
+        del before
         if any(classes != "turn-separator" for _content, classes in self.recorded):
             self.separators += 1
             self.recorded.append(("┈", "turn-separator"))
+            return True
+        return False
 
-    async def mount_assistant_block(self, *, title_prefix=None):
+    async def mount_assistant_block(self, *, title_prefix=None, before: int | None = None):
+        del before
         block = FakeAssistantBlock()
         block.title_prefix = title_prefix
         self.blocks.append(block)
         return block
 
-    async def mount_tool_execution_block(self, *, tool_call_id: str, tool_name: str):
+    async def mount_tool_execution_block(
+        self,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        before: int | None = None,
+    ):
+        del before
         block = FakeToolBlock(tool_call_id=tool_call_id, tool_name=tool_name)
         self.tool_blocks[tool_call_id] = block
         return block
 
-    def write_transcript_line(self, *, content: str, classes: str) -> None:
+    def write_transcript_line(self, *, content: str, classes: str, before: int | None = None) -> None:
+        del before
         self.lines.append((content, classes))
 
     def record_transcript_line(self, *, content: str, classes: str) -> None:
@@ -913,3 +934,50 @@ class TestProjectReplayNote:
         )
 
         assert ("⊛ [workflow wf-3f2a] phase 1: COMPLETE", "sub-agent-notice") in host.lines
+
+    @pytest.mark.asyncio
+    async def test_replay_passes_before_to_user_separator_and_block(self) -> None:
+        """A replayed user turn forwards the prepend index through its separator and widget mounts."""
+        host = FakeHost()
+        recorded_before: list[int | None] = []
+        original_separator = host.mount_turn_separator_if_needed
+        original_mount = host.mount_user_message_block
+
+        def _record_separator(*, before: int | None = None) -> bool:
+            recorded_before.append(before)
+            return original_separator(before=before)
+
+        async def _record_user_mount(*, text: str, before: int | None = None) -> FakeUserBlock:
+            recorded_before.append(before)
+            return await original_mount(text=text, before=before)
+
+        host.mount_turn_separator_if_needed = _record_separator  # type: ignore[method-assign]
+        host.mount_user_message_block = _record_user_mount  # type: ignore[method-assign]
+        projector = TranscriptProjector(host=host)
+        await projector.project_user_turn(text="prior turn")
+
+        recorded_before.clear()
+        await projector.project_replay_entry(entry=_user_entry(content="older turn"), before=1)
+
+        assert recorded_before == [1, 1]
+
+    @pytest.mark.asyncio
+    async def test_replay_passes_before_to_note_write(self) -> None:
+        """A replayed note forwards the prepend index through the raw transcript write path."""
+        host = FakeHost()
+        recorded_before: list[int | None] = []
+        original_write = host.write_transcript_line
+
+        def _record_write(*, content: str, classes: str, before: int | None = None) -> None:
+            recorded_before.append(before)
+            original_write(content=content, classes=classes, before=before)
+
+        host.write_transcript_line = _record_write  # type: ignore[method-assign]
+        projector = TranscriptProjector(host=host)
+
+        await projector.project_replay_entry(
+            entry=TranscriptEntryDAO(kind="note", content="older note"),
+            before=1,
+        )
+
+        assert recorded_before == [1]

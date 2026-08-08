@@ -446,6 +446,102 @@ class TestLLMFactoryReasoningRouting:
         assert thinking_block["thinking"] == ""
 
 
+class TestLLMFactoryAnthropicApiModelNameResolution:
+    """``_build_anthropic`` passes the catalog-resolved API model ID to the provider (spec 54)."""
+
+    def _api_key_cred(self) -> CredentialDAO:
+        """Build an Anthropic API-key credential.
+
+        Returns:
+            CredentialDAO: API-key credential for the Anthropic provider.
+        """
+        return CredentialDAO(
+            provider=ProviderName.ANTHROPIC,
+            auth_type=AuthType.API_KEY,
+            access_token="sk-ant-api",
+        )
+
+    def _oauth_cred(self) -> CredentialDAO:
+        """Build an Anthropic OAuth credential.
+
+        Returns:
+            CredentialDAO: OAuth credential for the Anthropic provider.
+        """
+        return CredentialDAO(
+            provider=ProviderName.ANTHROPIC,
+            auth_type=AuthType.OAUTH,
+            access_token="sk-ant-oat01-api-model-name",
+        )
+
+    def test_api_key_lane_1m_variant_sends_base_api_model_id(self) -> None:
+        """claude-opus-4-8-1m-context builds the chat with model == 'claude-opus-4-8'."""
+        with patch(
+            "src.agents.base.CredentialResolver.require",
+            return_value=self._api_key_cred(),
+        ):
+            result = LLMFactory.create(model_name="claude-opus-4-8-1m-context")
+
+        assert result.llm.model == "claude-opus-4-8"
+
+    def test_api_key_lane_haiku_sends_dated_api_model_id(self) -> None:
+        """claude-haiku-4-5 builds the chat with model == 'claude-haiku-4-5-20251001'."""
+        with patch(
+            "src.agents.base.CredentialResolver.require",
+            return_value=self._api_key_cred(),
+        ):
+            result = LLMFactory.create(model_name="claude-haiku-4-5")
+
+        assert result.llm.model == "claude-haiku-4-5-20251001"
+
+    def test_api_key_lane_sonnet_1m_sends_base_api_model_id(self) -> None:
+        """claude-sonnet-4-6-1m-context builds the chat with model == 'claude-sonnet-4-6'."""
+        with patch(
+            "src.agents.base.CredentialResolver.require",
+            return_value=self._api_key_cred(),
+        ):
+            result = LLMFactory.create(model_name="claude-sonnet-4-6-1m-context")
+
+        assert result.llm.model == "claude-sonnet-4-6"
+
+    def test_api_key_lane_identity_entry_sends_canonical_name(self) -> None:
+        """claude-opus-4-8 (no override) builds the chat with the canonical name verbatim."""
+        with patch(
+            "src.agents.base.CredentialResolver.require",
+            return_value=self._api_key_cred(),
+        ):
+            result = LLMFactory.create(model_name="claude-opus-4-8")
+
+        assert result.llm.model == "claude-opus-4-8"
+
+    def test_oauth_lane_1m_variant_sends_base_api_model_id(self) -> None:
+        """Claude Code OAuth lane receives the same resolved API model name."""
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._oauth_cred(),
+            ),
+            patch("src.agents.base.build_claude_code_backed_chat_anthropic") as mock_builder,
+        ):
+            LLMFactory.create(model_name="claude-opus-4-8-1m-context")
+
+        mock_builder.assert_called_once()
+        assert mock_builder.call_args.kwargs["model_name"] == "claude-opus-4-8"
+
+    def test_oauth_lane_identity_entry_sends_canonical_name(self) -> None:
+        """Claude Code OAuth lane keeps identity entries on the canonical name."""
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._oauth_cred(),
+            ),
+            patch("src.agents.base.build_claude_code_backed_chat_anthropic") as mock_builder,
+        ):
+            LLMFactory.create(model_name="claude-sonnet-4-6")
+
+        mock_builder.assert_called_once()
+        assert mock_builder.call_args.kwargs["model_name"] == "claude-sonnet-4-6"
+
+
 class TestSessionIdThreading:
     """``session_id`` flows from caller → ``_resolved_defaults`` → builder."""
 

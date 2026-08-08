@@ -60,3 +60,16 @@ class TestProviderForModel:
         """Unknown prefix → ``ValueError`` naming both prefix tables."""
         with pytest.raises(ValueError, match="Unsupported model_name"):
             provider_for_model(model_name="mistral-large")
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "claude-opus-4-8",
+            "claude-opus-4-8-1m-context",
+            "claude-sonnet-4-6-1m-context",
+            "claude-haiku-4-5",
+        ],
+    )
+    def test_spec54_anthropic_models_map_to_anthropic(self, model_name: str) -> None:
+        """Spec-54 Claude models resolve to ``ANTHROPIC``."""
+        assert provider_for_model(model_name=model_name) is ProviderName.ANTHROPIC

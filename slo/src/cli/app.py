@@ -134,7 +134,7 @@ def _run(
     model: Optional[str] = typer.Option(
         None,
         "--model",
-        help="Model override (e.g. claude-opus-4-5).",
+        help="Model override (e.g. claude-opus-4-8).",
     ),
     reasoning: Optional[str] = typer.Option(
         None,

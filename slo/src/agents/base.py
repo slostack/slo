@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPool, ModelPoolDAO
 
 from config.ai_model_config import MODEL_DEFAULTS
+from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.anthropic_claude_code import (
     _ThinkingPatchedChatAnthropic,
     anthropic_thinking_payload,
@@ -292,14 +293,22 @@ class LLMFactory:
     ) -> ChatAnthropic:
         """Build a ChatAnthropic for ``model_name`` using the resolver.
 
+        The canonical ``model_name`` keys ``MODEL_DEFAULTS``, reasoning
+        resolution, session kwargs, and logging. The provider call itself
+        receives the API model name resolved through
+        ``ModelCatalogService.api_model_name_for`` (identity when the entry
+        carries no override). Both lanes — API-key and Claude Code OAuth —
+        share the same resolution.
+
         Args:
-            model_name (str): Anthropic model identifier.
+            model_name (str): Canonical Anthropic model identifier.
             resolved (dict[str, Any]): Output of :meth:`_resolved_defaults`.
 
         Returns:
             ChatAnthropic: Configured chat model with the resolver's credential.
         """
         cred: CredentialDAO = CredentialResolver.require(provider=ProviderName.ANTHROPIC)
+        api_model_name: str = ModelCatalogService.api_model_name_for(model_name=model_name)
         resolved_reasoning: ResolvedReasoningConfigDAO = resolve_reasoning_config(
             model_name=model_name,
             requested_level=resolved["reasoning_level"],
@@ -313,7 +322,7 @@ class LLMFactory:
         )
         if cred.auth_type == AuthType.OAUTH:
             return build_claude_code_backed_chat_anthropic(
-                model_name=model_name,
+                model_name=api_model_name,
                 cred=cred,
                 temperature=resolved["temperature"],
                 reasoning=resolved_reasoning,
@@ -326,7 +335,7 @@ class LLMFactory:
         if thinking is not None and resolved_reasoning.provider_effort is not None:
             merged_model_kwargs["output_config"] = {"effort": resolved_reasoning.provider_effort}
         anthropic_kwargs: dict[str, Any] = {
-            "model": model_name,
+            "model": api_model_name,
             "streaming": resolved["streaming"],
             "max_retries": resolved["max_retries"],
             "max_tokens": max_tokens,

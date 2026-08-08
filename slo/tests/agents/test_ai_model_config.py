@@ -50,6 +50,30 @@ class TestLatestModelDefaults:
         """``kimi-for-coding-highspeed`` has a higher RPM ceiling."""
         assert MODEL_DEFAULTS["kimi-for-coding-highspeed"]["requests_per_minute"] == 40
 
+
+class TestClaude48ModelDefaults:
+    """Runtime defaults for spec-54 first-class Claude entries."""
+
+    def test_opus_4_8_1m_context_window_is_1_000_000(self) -> None:
+        """``claude-opus-4-8-1m-context`` exposes the 1M input context window."""
+        assert MODEL_DEFAULTS["claude-opus-4-8-1m-context"]["context_window"] == 1_000_000
+
+    def test_opus_4_8_context_window_is_200_000(self) -> None:
+        """``claude-opus-4-8`` keeps the 200K input context window."""
+        assert MODEL_DEFAULTS["claude-opus-4-8"]["context_window"] == 200_000
+
+    def test_opus_4_8_default_max_tokens_is_128000(self) -> None:
+        """``claude-opus-4-8`` uses the 128K output ceiling."""
+        assert MODEL_DEFAULTS["claude-opus-4-8"]["max_tokens"] == 128_000
+
+    def test_sonnet_4_6_1m_context_window_is_1_000_000(self) -> None:
+        """``claude-sonnet-4-6-1m-context`` exposes the 1M input context window."""
+        assert MODEL_DEFAULTS["claude-sonnet-4-6-1m-context"]["context_window"] == 1_000_000
+
+    def test_haiku_4_5_default_max_tokens_is_64000(self) -> None:
+        """``claude-haiku-4-5`` uses the 64K output ceiling."""
+        assert MODEL_DEFAULTS["claude-haiku-4-5"]["max_tokens"] == 64_000
+
     @pytest.mark.parametrize(
         "model_name",
         ["kimi-for-coding", "kimi-k3", "kimi-for-coding-highspeed"],
@@ -63,8 +87,8 @@ class TestProviderDefaultModels:
     """Provider landing models are derived from the catalog seed."""
 
     def test_default_model_for_provider_anthropic(self) -> None:
-        """Anthropic landing model remains stable."""
-        assert default_model_for_provider(provider=ProviderName.ANTHROPIC) == "claude-sonnet-4-6"
+        """Anthropic landing model is the spec-54 Claude Opus 4.8 1M-context entry."""
+        assert default_model_for_provider(provider=ProviderName.ANTHROPIC) == "claude-opus-4-8-1m-context"
 
     def test_default_model_for_provider_openai(self) -> None:
         """OpenAI landing model remains stable."""

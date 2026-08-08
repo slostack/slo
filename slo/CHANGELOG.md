@@ -4,6 +4,36 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.16] — 2026-08-04
+
+**Model catalog spec-54: Claude Opus 4.8, Sonnet 4.6, Haiku 4.5, and 1M-context variants.**
+
+Introduces four first-class Anthropic model entries aligned to spec-54, a `ModelCatalogService` API-model-name resolution layer, and comprehensive test coverage. The provider default shifts to `claude-opus-4-8-1m-context` (1M input context window). Existing sessions that stored a model name continue to work via the catalog alias mechanism.
+
+### Added
+
+- **Four spec-54 first-class model entries** — `claude-opus-4-8`, `claude-opus-4-8-1m-context`, `claude-sonnet-4-6-1m-context`, and `claude-haiku-4-5` are now registered in `SeedModelCatalog` with canonical names, display names, runtime profiles, and reasoning-level support flags.
+- **`ModelCatalogEntryDAO.api_model_name`** — optional field that records the provider API model ID when it differs from the canonical Slo model name. `claude-opus-4-8-1m-context` and `claude-sonnet-4-6-1m-context` send their base model IDs (`claude-opus-4-8` / `claude-sonnet-4-6`) to Anthropic; `claude-haiku-4-5` sends the dated ID `claude-haiku-4-5-20251001`.
+- **`ModelCatalogService.api_model_name_for`** — resolves a canonical name or known alias to the API model ID that must be sent to the provider. Raises `ValueError` on unknown names, supporting both API-key and Claude Code OAuth lanes.
+- **1M-context runtime profiles** — `claude-opus-4-8-1m-context` and `claude-sonnet-4-6-1m-context` expose a 1,000,000-token context window; base variants stay at 200K. Opus variants carry the 128K output ceiling; Sonnet 1M and Haiku carry 64K.
+- **`xhigh` reasoning support flags** — both Opus 4.8 variants support `xhigh`; Sonnet 1M and Haiku 4.5 do not.
+- **Anthropic provider default updated** — `provider_default_models()` now returns `claude-opus-4-8-1m-context` as the Anthropic landing model.
+- **TUI picker updated** — `model_suggestion_entries` and `model_catalog` surfaces include all four spec-54 entries with correct display names.
+- **`_build_anthropic` API-model-name resolution** — `LLMFactory` resolves the catalog API model name before constructing the LangChain chat object, so 1M-context and dated-API variants are sent to Anthropic with the correct model string.
+- **Full test suite for spec-54** — `test_model_catalog_seed.py`, `test_model_catalog_service.py`, `test_ai_model_config.py`, `test_base.py`, `test_provider_for_model.py`, and `test_model_catalog.py` cover catalog entries, display names, runtime profiles, API-model-name resolution, alias inheritance, `LLMFactory` integration, TUI picker projection, and provider-default landing model.
+
+### Changed
+
+- **`MODEL_DEFAULTS`** (`agents/base.py`) — extended with spec-54 context-window and max-token entries for all four new models.
+- **`environments/.env.template`** — model-related example values updated to reference spec-54 model names.
+- **CLI `--model` help text** — example updated to `claude-opus-4-8`.
+
+### Verification
+
+- All spec-54 model tests pass alongside the existing suite.
+- `ModelCatalogService.api_model_name_for` resolves correctly for API-key and Claude Code OAuth lanes.
+- `git diff --check` passes.
+
 ## [0.14.15] — 2026-08-04
 
 **Transcript window reliability: untruncated user turns, force-revealed submits, and lazy scrollback.**

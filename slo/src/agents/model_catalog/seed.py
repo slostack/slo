@@ -189,6 +189,85 @@ class SeedModelCatalog:
             ),
             # Anthropic Claude family
             ModelCatalogEntryDAO(
+                model_name="claude-opus-4-8",
+                display_name="Claude Opus 4.8",
+                provider=ProviderName.ANTHROPIC,
+                support_tier="first_class",
+                visible_in_picker=True,
+                runtime_profile=ModelRuntimeProfileDAO(
+                    max_tokens=128_000,
+                    context_window=200_000,
+                    streaming=True,
+                    requests_per_minute=60,
+                    tokens_per_minute=200_000,
+                    automatic_retry_attempts=2,
+                    local_retry_wait_cap_seconds=30,
+                ),
+                reasoning_profile=_anthropic_adaptive_reasoning_profile(
+                    supports_xhigh=True,
+                ),
+            ),
+            ModelCatalogEntryDAO(
+                model_name="claude-opus-4-8-1m-context",
+                display_name="Claude Opus 4.8 (1M context)",
+                provider=ProviderName.ANTHROPIC,
+                support_tier="first_class",
+                visible_in_picker=True,
+                runtime_profile=ModelRuntimeProfileDAO(
+                    max_tokens=128_000,
+                    context_window=1_000_000,
+                    streaming=True,
+                    requests_per_minute=60,
+                    tokens_per_minute=200_000,
+                    automatic_retry_attempts=2,
+                    local_retry_wait_cap_seconds=30,
+                ),
+                reasoning_profile=_anthropic_adaptive_reasoning_profile(
+                    supports_xhigh=True,
+                ),
+                api_model_name="claude-opus-4-8",
+            ),
+            ModelCatalogEntryDAO(
+                model_name="claude-sonnet-4-6-1m-context",
+                display_name="Claude Sonnet 4.6 (1M context)",
+                provider=ProviderName.ANTHROPIC,
+                support_tier="first_class",
+                visible_in_picker=True,
+                runtime_profile=ModelRuntimeProfileDAO(
+                    max_tokens=64_000,
+                    context_window=1_000_000,
+                    streaming=True,
+                    requests_per_minute=60,
+                    tokens_per_minute=200_000,
+                    automatic_retry_attempts=2,
+                    local_retry_wait_cap_seconds=30,
+                ),
+                reasoning_profile=_anthropic_adaptive_reasoning_profile(
+                    supports_xhigh=False,
+                ),
+                api_model_name="claude-sonnet-4-6",
+            ),
+            ModelCatalogEntryDAO(
+                model_name="claude-haiku-4-5",
+                display_name="Claude Haiku 4.5",
+                provider=ProviderName.ANTHROPIC,
+                support_tier="first_class",
+                visible_in_picker=True,
+                runtime_profile=ModelRuntimeProfileDAO(
+                    max_tokens=64_000,
+                    context_window=200_000,
+                    streaming=True,
+                    requests_per_minute=60,
+                    tokens_per_minute=200_000,
+                    automatic_retry_attempts=2,
+                    local_retry_wait_cap_seconds=30,
+                ),
+                reasoning_profile=_anthropic_adaptive_reasoning_profile(
+                    supports_xhigh=False,
+                ),
+                api_model_name="claude-haiku-4-5-20251001",
+            ),
+            ModelCatalogEntryDAO(
                 model_name="claude-fable",
                 display_name="Claude Fable",
                 provider=ProviderName.ANTHROPIC,
@@ -206,6 +285,7 @@ class SeedModelCatalog:
                 reasoning_profile=_anthropic_adaptive_reasoning_profile(
                     supports_xhigh=False,
                 ),
+                api_model_name="claude-fable-5",
             ),
             ModelCatalogEntryDAO(
                 model_name="claude-mythos",
@@ -526,7 +606,7 @@ class SeedModelCatalog:
             dict[ProviderName, str]: Provider → canonical default model name.
         """
         return {
-            ProviderName.ANTHROPIC: "claude-sonnet-4-6",
+            ProviderName.ANTHROPIC: "claude-opus-4-8-1m-context",
             ProviderName.OPENAI: "gpt-5.4",
             ProviderName.KIMI_FOR_CODING: "kimi-for-coding",
         }

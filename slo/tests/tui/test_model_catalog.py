@@ -175,3 +175,40 @@ class TestModelSuggestionEntries:
         entry = next((e for e in entries if e.model_name == "gpt-5.7-nebula"), None)
         assert entry is not None
         assert entry.support_tier_label == "auto-discovered"
+
+
+class TestClaude48SuggestionEntries:
+    """Spec-54 Claude models in the TUI picker projections."""
+
+    EXPECTED_DISPLAY_NAMES: dict[str, str] = {
+        "claude-opus-4-8": "Claude Opus 4.8",
+        "claude-opus-4-8-1m-context": "Claude Opus 4.8 (1M context)",
+        "claude-sonnet-4-6-1m-context": "Claude Sonnet 4.6 (1M context)",
+        "claude-haiku-4-5": "Claude Haiku 4.5",
+    }
+
+    def test_spec54_models_in_model_catalog_with_display_names(self) -> None:
+        """MODEL_CATALOG lists the four spec-54 models with their display names."""
+        catalog_by_name: dict[str, str] = {e.model_name: e.display_name for e in MODEL_CATALOG}
+        for model_name, display_name in self.EXPECTED_DISPLAY_NAMES.items():
+            assert catalog_by_name.get(model_name) == display_name, model_name
+
+    def test_spec54_models_in_supported_models_by_provider(self) -> None:
+        """All four spec-54 models are picker-visible under Anthropic."""
+        result: dict[ProviderName, list[str]] = supported_models_by_provider()
+        for model_name in self.EXPECTED_DISPLAY_NAMES:
+            assert model_name in result[ProviderName.ANTHROPIC], model_name
+
+    def test_spec54_models_in_model_suggestion_entries(self) -> None:
+        """model_suggestion_entries includes the four spec-54 Anthropic rows with display names."""
+        entries: list[ModelSuggestionEntryDAO] = model_suggestion_entries(
+            active_model_name="claude-opus-4-8",
+        )
+        entries_by_name: dict[str, ModelSuggestionEntryDAO] = {e.model_name: e for e in entries}
+        for model_name, display_name in self.EXPECTED_DISPLAY_NAMES.items():
+            entry = entries_by_name.get(model_name)
+            assert entry is not None, model_name
+            assert entry.provider is ProviderName.ANTHROPIC, model_name
+            assert entry.display_name == display_name, model_name
+        assert entries_by_name["claude-opus-4-8"].is_active is True
+        assert entries_by_name["claude-haiku-4-5"].is_active is False

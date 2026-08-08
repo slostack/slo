@@ -62,7 +62,9 @@ class ModelCatalogEntryDAO(BaseModel):
     """One canonical model-support record.
 
     Attributes:
-        model_name (str): Canonical model identifier sent to the provider.
+        model_name (str): Canonical model identifier used by Slo for catalog
+            lookup, ``MODEL_DEFAULTS``, reasoning resolution, session state,
+            and logs. It can differ from the provider API model ID.
         display_name (str): Human-facing name shown in the TUI and docs.
         provider (ProviderName): Provider that owns the model.
         support_tier (str): One of ``first_class``, ``auto_discovered``, or
@@ -73,6 +75,8 @@ class ModelCatalogEntryDAO(BaseModel):
         reasoning_profile (ModelReasoningProfileDAO): Reasoning support and
             translation metadata.
         aliases (list[str]): Alternate names accepted for backward compatibility.
+        api_model_name (Optional[str]): API model ID sent to the provider.
+            ``None`` means the canonical ``model_name`` is sent verbatim.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -85,6 +89,7 @@ class ModelCatalogEntryDAO(BaseModel):
     runtime_profile: ModelRuntimeProfileDAO
     reasoning_profile: ModelReasoningProfileDAO
     aliases: list[str] = Field(default_factory=list)
+    api_model_name: Optional[str] = None
 
 
 class ModelAliasDAO(BaseModel):

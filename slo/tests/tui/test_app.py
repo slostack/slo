@@ -162,10 +162,13 @@ class TestSloTUIActiveModelState:
             await pilot.pause()
             app._on_auth_dismissed(value)
             await pilot.pause()
-            session.switch_model.assert_called_once_with(model_name="claude-sonnet-4-6")
-            assert "claude-sonnet-4-6" in app.title
+            session.switch_model.assert_called_once_with(model_name="claude-opus-4-8-1m-context")
+            assert "claude-opus-4-8-1m-context" in app.title
             assert "reasoning high" in app.title
-            assert ("active model switched to claude-sonnet-4-6", "tool-result") in app._adapter.lines
+            assert (
+                "active model switched to claude-opus-4-8-1m-context",
+                "tool-result",
+            ) in app._adapter.lines
 
     @pytest.mark.asyncio
     async def test_dispatch_slash_command_refreshes_title_when_requested(self) -> None:

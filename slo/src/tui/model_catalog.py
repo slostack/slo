@@ -34,11 +34,22 @@ class ModelCatalogEntryDAO(BaseModel):
 
 
 class ModelSuggestionEntryDAO(BaseModel):
-    """One supported model row for ``/model`` suggestions."""
+    """One supported model row for ``/model`` suggestions.
+
+    Attributes:
+        model_name (str): Canonical model identifier.
+        display_name (str): Human-readable label for the model.
+        provider (ProviderName): Owning provider.
+        is_active (bool): Whether this is the current session model.
+        requires_auth (bool): Whether the provider lacks credentials.
+        reasoning_summary (str): Supported reasoning levels, comma-joined.
+        support_tier_label (str): Non-standard support-tier label, or ``""``.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     model_name: str
+    display_name: str
     provider: ProviderName
     is_active: bool
     requires_auth: bool
@@ -101,6 +112,7 @@ def model_suggestion_entries(*, active_model_name: str) -> list[ModelSuggestionE
         entries.append(
             ModelSuggestionEntryDAO(
                 model_name=entry.model_name,
+                display_name=entry.display_name,
                 provider=entry.provider,
                 is_active=(entry.model_name == active_model_name),
                 requires_auth=(CredentialResolver.resolve(provider=entry.provider) is None),

@@ -324,7 +324,9 @@ def build_claude_code_backed_chat_anthropic(
     """Build the Claude Code-backed Anthropic runtime lane.
 
     Args:
-        model_name (str): Anthropic model identifier.
+        model_name (str): API model name sent to the provider. Callers resolve
+            it from the canonical model name via
+            ``ModelCatalogService.api_model_name_for`` before building.
         cred (CredentialDAO): OAuth credential resolved for Anthropic.
         temperature (Optional[float]): Forwarded to ``ChatAnthropic``
             when reasoning is disabled.

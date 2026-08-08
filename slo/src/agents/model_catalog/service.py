@@ -117,6 +117,32 @@ class ModelCatalogService:
         return cls._resolve_entry(snapshot=snapshot, model_name=model_name)
 
     @classmethod
+    def api_model_name_for(
+        cls,
+        *,
+        model_name: str,
+    ) -> str:
+        """Return the API model ID to send to the provider for one model or alias.
+
+        Aliases resolve to their canonical entry first. When the entry carries
+        an ``api_model_name`` override it wins; otherwise the canonical
+        ``model_name`` is returned verbatim (identity mapping).
+
+        Args:
+            model_name (str): Canonical model name or known alias.
+
+        Returns:
+            str: The API model ID to pass to the provider.
+
+        Raises:
+            ValueError: When the model name or alias is not known.
+        """
+        entry: ModelCatalogEntryDAO = cls.entry_for_model(model_name=model_name)
+        if entry.api_model_name is None:
+            return entry.model_name
+        return entry.api_model_name
+
+    @classmethod
     def _merge_seed_and_cache(
         cls,
         *,

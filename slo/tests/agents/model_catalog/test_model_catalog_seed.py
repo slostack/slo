@@ -124,3 +124,121 @@ class TestSeedAliases:
         snapshot = SeedModelCatalog.load()
 
         assert snapshot.aliases["kimi-k2"].support_tier == "compatibility_only"
+
+
+class TestClaude48SeedEntries:
+    """Spec-54 first-class Claude 4.8 / Haiku 4.5 / 1M-context entries."""
+
+    NEW_MODEL_NAMES: list[str] = [
+        "claude-opus-4-8",
+        "claude-opus-4-8-1m-context",
+        "claude-sonnet-4-6-1m-context",
+        "claude-haiku-4-5",
+    ]
+
+    def test_new_models_are_first_class_visible_anthropic_entries(self) -> None:
+        """All four spec-54 models are first-class, picker-visible Anthropic entries."""
+        snapshot = SeedModelCatalog.load()
+
+        for model_name in self.NEW_MODEL_NAMES:
+            entry = snapshot.entries[model_name]
+            assert entry.support_tier == "first_class", model_name
+            assert entry.visible_in_picker is True, model_name
+            assert entry.provider is ProviderName.ANTHROPIC, model_name
+
+    def test_new_models_display_names(self) -> None:
+        """Each spec-54 entry carries its spec'd display name."""
+        snapshot = SeedModelCatalog.load()
+
+        assert snapshot.entries["claude-opus-4-8"].display_name == "Claude Opus 4.8"
+        assert snapshot.entries["claude-opus-4-8-1m-context"].display_name == "Claude Opus 4.8 (1M context)"
+        assert (
+            snapshot.entries["claude-sonnet-4-6-1m-context"].display_name == "Claude Sonnet 4.6 (1M context)"
+        )
+        assert snapshot.entries["claude-haiku-4-5"].display_name == "Claude Haiku 4.5"
+
+    def test_context_windows(self) -> None:
+        """1M variants expose the 1M context window; base models stay at 200K."""
+        snapshot = SeedModelCatalog.load()
+
+        assert snapshot.entries["claude-opus-4-8-1m-context"].runtime_profile.context_window == 1_000_000
+        assert snapshot.entries["claude-opus-4-8"].runtime_profile.context_window == 200_000
+        assert snapshot.entries["claude-sonnet-4-6-1m-context"].runtime_profile.context_window == 1_000_000
+
+    def test_max_tokens(self) -> None:
+        """Opus variants carry the 128K ceiling; sonnet-1M and haiku carry 64K."""
+        snapshot = SeedModelCatalog.load()
+
+        assert snapshot.entries["claude-opus-4-8"].runtime_profile.max_tokens == 128_000
+        assert snapshot.entries["claude-opus-4-8-1m-context"].runtime_profile.max_tokens == 128_000
+        assert snapshot.entries["claude-sonnet-4-6-1m-context"].runtime_profile.max_tokens == 64_000
+        assert snapshot.entries["claude-haiku-4-5"].runtime_profile.max_tokens == 64_000
+
+    def test_xhigh_support_only_on_opus_variants(self) -> None:
+        """Opus 4.8 variants support xhigh; sonnet-1M and haiku do not."""
+        snapshot = SeedModelCatalog.load()
+
+        assert "xhigh" in snapshot.entries["claude-opus-4-8"].reasoning_profile.supported_levels
+        assert "xhigh" in snapshot.entries["claude-opus-4-8-1m-context"].reasoning_profile.supported_levels
+        assert (
+            "xhigh" not in snapshot.entries["claude-sonnet-4-6-1m-context"].reasoning_profile.supported_levels
+        )
+        assert "xhigh" not in snapshot.entries["claude-haiku-4-5"].reasoning_profile.supported_levels
+
+    def test_rate_limit_knobs_mirror_existing_anthropic_entries(self) -> None:
+        """RPM/TPM/retry knobs match the existing Anthropic entries."""
+        snapshot = SeedModelCatalog.load()
+
+        for model_name in self.NEW_MODEL_NAMES:
+            profile = snapshot.entries[model_name].runtime_profile
+            assert profile.requests_per_minute == 60, model_name
+            assert profile.tokens_per_minute == 200_000, model_name
+            assert profile.automatic_retry_attempts == 2, model_name
+            assert profile.local_retry_wait_cap_seconds == 30, model_name
+            assert profile.streaming is True, model_name
+
+
+class TestApiModelNameSeedMappings:
+    """Spec-54 api_model_name seed mappings (canonical name vs API model ID)."""
+
+    def test_opus_1m_shares_api_id_with_base_opus(self) -> None:
+        """claude-opus-4-8-1m-context routes to the claude-opus-4-8 API ID."""
+        snapshot = SeedModelCatalog.load()
+
+        assert snapshot.entries["claude-opus-4-8-1m-context"].api_model_name == "claude-opus-4-8"
+
+    def test_sonnet_1m_shares_api_id_with_base_sonnet(self) -> None:
+        """claude-sonnet-4-6-1m-context routes to the claude-sonnet-4-6 API ID."""
+        snapshot = SeedModelCatalog.load()
+
+        assert snapshot.entries["claude-sonnet-4-6-1m-context"].api_model_name == "claude-sonnet-4-6"
+
+    def test_haiku_maps_to_dated_api_id(self) -> None:
+        """claude-haiku-4-5 routes to the dated claude-haiku-4-5-20251001 API ID."""
+        snapshot = SeedModelCatalog.load()
+
+        assert snapshot.entries["claude-haiku-4-5"].api_model_name == "claude-haiku-4-5-20251001"
+
+    def test_opus_4_8_api_model_name_is_identity(self) -> None:
+        """claude-opus-4-8 has no api_model_name override (identity)."""
+        snapshot = SeedModelCatalog.load()
+
+        assert snapshot.entries["claude-opus-4-8"].api_model_name is None
+
+    def test_fable_api_model_name_is_claude_fable_5(self) -> None:
+        """claude-fable routes to the claude-fable-5 API ID; the name is unchanged."""
+        snapshot = SeedModelCatalog.load()
+
+        entry = snapshot.entries["claude-fable"]
+        assert entry.model_name == "claude-fable"
+        assert entry.api_model_name == "claude-fable-5"
+
+
+class TestAnthropicProviderDefault:
+    """Spec-54 Anthropic provider default model."""
+
+    def test_anthropic_default_is_opus_4_8_1m_context(self) -> None:
+        """provider_default_models lands Anthropic on claude-opus-4-8-1m-context."""
+        defaults = SeedModelCatalog.provider_default_models()
+
+        assert defaults[ProviderName.ANTHROPIC] == "claude-opus-4-8-1m-context"

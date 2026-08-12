@@ -10,9 +10,11 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS, SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
+from src.auth.credential_dao import ProviderName
 
 
 def _session() -> SloAgentSession:
@@ -25,6 +27,27 @@ def _session() -> SloAgentSession:
         agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
         workdir=Path(".").resolve(),
         session_id=str(uuid4()),
+    )
+
+
+def _single_model_session(*, model_name: str = "gpt-5.6-terra") -> SloAgentSession:
+    """Build a pre-built single-model session with a known provider identity.
+
+    Args:
+        model_name (str, optional): The configured single-model route. Defaults to
+            "gpt-5.6-terra".
+
+    Returns:
+        SloAgentSession: Session whose active model resolves through provider_for_model.
+    """
+    workdir: Path = Path(".").resolve()
+    config: SessionConfigDAO = SessionConfigDAO(workdir=workdir, model_name=model_name)
+    return SloAgentSession(
+        agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
+        config=config,
+        workdir=workdir,
+        session_id=str(uuid4()),
+        enable_history=False,
     )
 
 
@@ -100,6 +123,33 @@ class TestSessionRateLimitResilience:
 
         assert events[0].kind == "text_delta"
         assert attempt_count == 1
+
+    def test_classifies_openai_overload_as_iteration_retryable_for_single_model(self) -> None:
+        """OpenAI overload retries through the configured single-model provider lane."""
+        session: SloAgentSession = _single_model_session()
+        error: RuntimeError = RuntimeError(
+            "APIError: Our servers are currently overloaded. Please try again later."
+        )
+
+        assert session._resolve_active_provider() is ProviderName.OPENAI
+        assert session._is_iteration_retryable_error(exc=error) is True
+
+    def test_openai_overload_after_visible_output_does_not_retry(self) -> None:
+        """Visible transcript output prevents replaying a later OpenAI overload failure."""
+        session: SloAgentSession = _single_model_session()
+        retry_policy = session._build_iteration_retry_policy(policy=session._resolve_attempt_policy())
+        error: RuntimeError = RuntimeError(
+            "APIError: Our servers are currently overloaded. Please try again later."
+        )
+
+        plan = session.agent._decide_iteration_retry(
+            iteration_retry_policy=retry_policy,
+            exc=error,
+            saw_visible_output_this_iteration=True,
+            attempt_number=1,
+        )
+
+        assert plan.retryable is False
 
     @pytest.mark.asyncio
     async def test_preflight_local_rate_wait_yields_retrying_status(self) -> None:

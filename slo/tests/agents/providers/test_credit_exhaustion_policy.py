@@ -8,6 +8,7 @@ from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
     CreditExhaustedError,
     CreditExhaustionPolicy,
+    ProviderErrorClassifier,
     ProviderErrorKind,
     should_switch,
 )
@@ -245,6 +246,19 @@ class TestShouldSwitch:
 
 
 class TestClassifyOpenAITransient:
+    def test_overload_message_classifies_as_transient_provider_failure(self) -> None:
+        """The generic OpenAI overload message is retryable without a status code."""
+        error: RuntimeError = RuntimeError(
+            "APIError: Our servers are currently overloaded. Please try again later."
+        )
+
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
+            error=error,
+            provider=ProviderName.OPENAI,
+        )
+
+        assert kind is ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE
+
     def test_503_classifies_as_transient_provider_failure(self) -> None:
         """OpenAI 503 → TRANSIENT_PROVIDER_FAILURE (previously OTHER, did not switch)."""
         kind = CreditExhaustionPolicy.classify(
@@ -320,3 +334,31 @@ class TestClassifyKimiForCodingTransient:
             provider=ProviderName.KIMI_FOR_CODING,
         )
         assert kind is ProviderErrorKind.CREDIT_EXHAUSTED
+
+
+class TestClassifyMessageTextFallback:
+    """The shared text fallback for status-less provider errors."""
+
+    def test_text_only_429_is_rate_limited(self) -> None:
+        """A status-less error whose message names 429 → RATE_LIMITED."""
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
+            error=RuntimeError("429 rate limit reached"),
+            provider=ProviderName.OPENAI,
+        )
+        assert kind is ProviderErrorKind.RATE_LIMITED
+
+    def test_text_only_rate_limit_phrase_is_rate_limited(self) -> None:
+        """A status-less error whose message names a rate limit → RATE_LIMITED."""
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
+            error=RuntimeError("Rate limit exceeded for this model"),
+            provider=ProviderName.ANTHROPIC,
+        )
+        assert kind is ProviderErrorKind.RATE_LIMITED
+
+    def test_unrelated_text_without_status_is_other(self) -> None:
+        """A status-less error with no known marker stays OTHER — must not switch."""
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
+            error=RuntimeError("connection reset by peer"),
+            provider=ProviderName.KIMI_FOR_CODING,
+        )
+        assert kind is ProviderErrorKind.OTHER

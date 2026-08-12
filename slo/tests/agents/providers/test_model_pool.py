@@ -302,7 +302,7 @@ class TestModelPoolGenerate:
     def test_falls_through_to_secondary_on_credit_exhaustion(self) -> None:
         """Credit exhaustion on primary routes the call to secondary."""
         with patch(
-            "src.agents.providers.model_pool.CreditExhaustionPolicy.classify",
+            "src.agents.providers.model_pool.ProviderErrorClassifier.classify",
             return_value=ProviderErrorKind.CREDIT_EXHAUSTED,
         ):
             pool: ModelPool = _pool_with_two_entries(first_raises=_FakeCreditError("credit"))
@@ -313,7 +313,7 @@ class TestModelPoolGenerate:
     def test_does_not_fall_through_on_non_credit_error(self) -> None:
         """A non-credit error propagates immediately; secondary never called."""
         with patch(
-            "src.agents.providers.model_pool.CreditExhaustionPolicy.classify",
+            "src.agents.providers.model_pool.ProviderErrorClassifier.classify",
             return_value=ProviderErrorKind.OTHER,
         ):
             pool: ModelPool = _pool_with_two_entries(first_raises=RuntimeError("network timeout"))

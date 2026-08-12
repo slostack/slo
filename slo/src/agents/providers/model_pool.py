@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
-    CreditExhaustionPolicy,
+    ProviderErrorClassifier,
     ProviderErrorKind,
     should_switch,
 )
@@ -451,7 +451,7 @@ class ModelPool(BaseChatModel):
         Returns:
             bool: ``True`` when the pool should select the next member and replay.
         """
-        kind: ProviderErrorKind = CreditExhaustionPolicy.classify(
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
             error=exc, provider=entry.provider
         )
         if not should_switch(kind=kind):

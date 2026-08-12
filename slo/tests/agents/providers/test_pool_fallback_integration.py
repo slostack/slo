@@ -117,7 +117,7 @@ def _classify_side_effect(*, error: Exception, provider: ProviderName) -> Provid
 def _patch_classify():
     """Replace the real classifier with a deterministic test version."""
     with patch(
-        "src.agents.providers.model_pool.CreditExhaustionPolicy.classify",
+        "src.agents.providers.model_pool.ProviderErrorClassifier.classify",
         side_effect=_classify_side_effect,
     ):
         yield

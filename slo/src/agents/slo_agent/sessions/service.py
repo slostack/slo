@@ -45,7 +45,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from config.ai_model_config import MODEL_DEFAULTS
 from config.cfg import cfg
 from config.logger import log_error, log_info, log_warning
-from src.agents.providers.credit_exhaustion_policy import AllModelsExhaustedError
+from src.agents.providers.credit_exhaustion_policy import (
+    AllModelsExhaustedError,
+    ProviderErrorClassifier,
+    ProviderErrorKind,
+)
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
@@ -676,18 +680,6 @@ class SloAgentSession:
             output_cap_tokens=_RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS,
             reasoning_budget_tokens=resolved_reasoning.provider_budget_tokens,
         )
-
-    def _is_retryable_rate_limit_error(self, *, exc: BaseException) -> bool:
-        """Return True when ``exc`` is a retryable rate-limit failure.
-
-        Args:
-            exc (BaseException): Provider exception under inspection.
-
-        Returns:
-            bool: True when the exception reads like a rate-limit failure.
-        """
-        message: str = str(exc).lower()
-        return "rate limit" in message or "429" in message
 
     def _prune_rate_window(self, *, now_seconds: float) -> None:
         """Drop request-window entries older than sixty seconds.
@@ -2424,9 +2416,10 @@ class SloAgentSession:
     def _is_iteration_retryable_error(self, *, exc: BaseException) -> bool:
         """Return True for errors an iteration retry should wait-and-retry.
 
-        Retryable: rate-limit/429 text matches (existing rule) OR the pool's
-        ``AllModelsExhaustedError`` (every member is cooling on a timer).
-        Non-retryable: everything else (programmer/validation/serialization).
+        ``AllModelsExhaustedError`` is retryable because its pool cooldowns are
+        time-bound. For a known provider, the shared classifier permits only
+        rate-limit and transient-provider classifications. Credit exhaustion,
+        auth, validation, and arbitrary errors remain terminal.
 
         Args:
             exc (BaseException): The provider/pool exception under inspection.
@@ -2436,7 +2429,17 @@ class SloAgentSession:
         """
         if isinstance(exc, AllModelsExhaustedError):
             return True
-        return self._is_retryable_rate_limit_error(exc=exc)
+        provider: Optional[ProviderName] = self._resolve_active_provider()
+        if provider is None:
+            return False
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
+            error=exc,
+            provider=provider,
+        )
+        return kind in {
+            ProviderErrorKind.RATE_LIMITED,
+            ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE,
+        }
 
     def _mirror_retry_cooldown(self, *, event: AgentStreamEventDAO) -> None:
         """Mirror an agent-emitted ``run_retrying`` wait into the cooldown surface.
@@ -2670,21 +2673,48 @@ class SloAgentSession:
         )
 
     def _resolve_active_provider(self) -> Optional[ProviderName]:
-        """Return the provider of the routed model, or None for a single model.
+        """Return the provider for the routed pool member or configured single model.
 
-        Duck-types ``active_provider`` on the bound LLM so a ``ModelPool``
-        reports the member actually in play after any mid-run route switch,
-        exactly as ``_resolve_active_model_name`` resolves the routed model
-        name. Called by the ``_build_iteration_recovery_policy`` closure at
-        decision time.
+        A ModelPool exposes the selected member through ``active_provider``.
+        A single LangChain model does not, so this method resolves the active
+        model name through ``provider_for_model`` instead. Both the iteration
+        retry and recovery policies call this method at decision time.
 
         Returns:
-            Optional[ProviderName]: The active provider, or ``None`` when the
-                bound LLM is a single model that exposes no ``active_provider``.
+            Optional[ProviderName]: The current provider, or ``None`` when the
+                configured model identifier is not recognized.
+        """
+        pooled_provider: Optional[ProviderName] = self._pooled_active_provider()
+        if pooled_provider is not None:
+            return pooled_provider
+        return self._provider_for_active_model()
+
+    def _pooled_active_provider(self) -> Optional[ProviderName]:
+        """Return a ModelPool's current provider when the bound LLM exposes one.
+
+        Returns:
+            Optional[ProviderName]: The routed pool provider, or ``None`` for a
+                single-model session.
         """
         if self._agent is None:
             return None
-        return getattr(self._agent.llm, "active_provider", None)
+        active_provider: object = getattr(self._agent.llm, "active_provider", None)
+        return active_provider if isinstance(active_provider, ProviderName) else None
+
+    def _provider_for_active_model(self) -> Optional[ProviderName]:
+        """Resolve the configured active model name to its provider when possible.
+
+        Returns:
+            Optional[ProviderName]: The provider mapped from the active model, or
+                ``None`` when the model name is unsupported.
+        """
+        model_name: str = self._resolve_active_model_name()
+        if not model_name:
+            return None
+        try:
+            return provider_for_model(model_name=model_name)
+        except ValueError:
+            return None
 
     def _build_iteration_recovery_policy(self) -> IterationRecoveryPolicy:
         """Build the per-iteration LLM-recovery decision for one prompt run.

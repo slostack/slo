@@ -9,7 +9,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
-    CreditExhaustionPolicy,
+    ProviderErrorClassifier,
     should_switch,
 )
 from src.agents.slo_agent.recovery.dao import RecoveryClass, RecoveryDecisionDAO
@@ -53,7 +53,7 @@ service maintains a parallel copy in ``SloAgentSession._is_context_overflow_erro
 class RecoveryPolicy:
     """Classify an escaped ReAct-iteration exception into a RecoveryClass.
 
-    Composes ``CreditExhaustionPolicy`` for provider-error semantics rather than
+    Composes ``ProviderErrorClassifier`` for provider-error semantics rather than
     duplicating HTTP-status logic, then folds the result into the three-way
     recovery taxonomy the loop acts on.
     """
@@ -94,7 +94,7 @@ class RecoveryPolicy:
                 ),
             )
         if provider is not None and should_switch(
-            kind=CreditExhaustionPolicy.classify(error=exc, provider=provider)  # type: ignore[arg-type]
+            kind=ProviderErrorClassifier.classify(error=exc, provider=provider)
         ):
             return RecoveryDecisionDAO(
                 recovery_class=RecoveryClass.MECHANICAL,

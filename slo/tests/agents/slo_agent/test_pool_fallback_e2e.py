@@ -36,6 +36,7 @@ from src.agents.slo_agent.history.dao import (
 )
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
+from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.credential_dao import ProviderName
 
@@ -89,6 +90,7 @@ class _RaiseStreamModel(BaseChatModel):
     def __init__(self, *, error: Exception, **data: Any) -> None:
         super().__init__(**data)
         self._error = error
+        self._calls = 0
 
     @property
     def _llm_type(self) -> str:
@@ -101,6 +103,7 @@ class _RaiseStreamModel(BaseChatModel):
         raise self._error
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs) -> AsyncIterator[ChatGenerationChunk]:
+        self._calls += 1
         raise self._error
         yield  # pragma: no cover — marks this coroutine an async generator
 
@@ -178,11 +181,32 @@ def _pooled_session(*, pool: ModelPool, tmp_path: Path) -> SloAgentSession:
     )
 
 
-def _single_model_session(*, model: BaseChatModel, tmp_path: Path) -> SloAgentSession:
-    """Wrap a pre-built single-model agent in a history-enabled session."""
+def _single_model_session(
+    *,
+    model: BaseChatModel,
+    tmp_path: Path,
+    model_name: str = "gpt-5.6-terra",
+) -> SloAgentSession:
+    """Wrap a pre-built single-model agent in a history-enabled session.
+
+    Args:
+        model (BaseChatModel): The scripted provider model for the session.
+        tmp_path (Path): Isolated history-store root and session workdir.
+        model_name (str, optional): Configured active model identity. Defaults to
+            "gpt-5.6-terra".
+
+    Returns:
+        SloAgentSession: A persisted single-model session with a known provider.
+    """
     agent = SloAgent(llm=model, cwd=str(tmp_path), tools=[])
+    config: SessionConfigDAO = SessionConfigDAO(
+        workdir=tmp_path,
+        model_name=model_name,
+        enable_history=True,
+    )
     return SloAgentSession(
         agent=agent,
+        config=config,
         workdir=tmp_path,
         session_id=str(uuid4()),
         history_store=FilesystemSessionHistoryStore(root=tmp_path),
@@ -260,6 +284,26 @@ class TestPoolFallbackEndToEnd:
             text="go",
         )
         assert result == "recovered"
+
+    @pytest.mark.asyncio
+    async def test_openai_overload_message_switches_pool_before_output(self, tmp_path: Path) -> None:
+        """The status-less OpenAI overload message cools and switches the primary lane."""
+        pool: ModelPool = _pool(
+            primary=_RaiseStreamModel(
+                error=RuntimeError(
+                    "APIError: Our servers are currently overloaded. Please try again later."
+                )
+            ),
+            secondary=_StreamingModel(chunks=["recovered"]),
+        )
+
+        result: str = await _collect_response(
+            session=_pooled_session(pool=pool, tmp_path=tmp_path),
+            text="go",
+        )
+
+        assert result == "recovered"
+        assert "gpt-5.4" in pool._cooldowns
 
     @pytest.mark.asyncio
     async def test_malformed_error_propagates_without_switch(self, tmp_path: Path) -> None:
@@ -365,6 +409,57 @@ class TestPoolObservabilityPersistence:
         assert any(e.kind == "run_completed" for e in events)
         stored = await _store(session).load_events(session_id=session.session_id)
         assert any(e.kind == "run_retrying" for e in stored)
+
+    @pytest.mark.asyncio
+    async def test_openai_overload_retries_without_recovery_observation(self, tmp_path: Path) -> None:
+        """The status-less OpenAI overload error retries mechanically before recovery."""
+        model: _RaiseThenStreamModel = _RaiseThenStreamModel(
+            error=RuntimeError(
+                "APIError: Our servers are currently overloaded. Please try again later."
+            ),
+            content="done",
+        )
+        session: SloAgentSession = _single_model_session(model=model, tmp_path=tmp_path)
+
+        events: list = await _collect(session, text="go")
+        stored: list[SessionHistoryEventDAO] = await _store(session).load_events(
+            session_id=session.session_id
+        )
+
+        assert model._calls == 2
+        assert any(event.kind == "run_retrying" for event in events)
+        assert any(event.kind == "run_retrying" for event in stored)
+        assert not any(event.kind == "recovery_started" for event in events)
+        assert not any(event.kind in {"run_recovering", "recovery_observation"} for event in stored)
+
+    @pytest.mark.asyncio
+    async def test_openai_overload_stops_after_configured_retry_budget(self, tmp_path: Path) -> None:
+        """The configured two retries yield three provider attempts, then one terminal failure."""
+        model: _RaiseStreamModel = _RaiseStreamModel(
+            error=RuntimeError(
+                "APIError: Our servers are currently overloaded. Please try again later."
+            )
+        )
+        session: SloAgentSession = _single_model_session(model=model, tmp_path=tmp_path)
+        events: list = []
+
+        with pytest.raises(RuntimeError, match="currently overloaded"):
+            with patch("src.agents.slo_agent.agent.asyncio.sleep", new=AsyncMock()):
+                async for event in session.invoke(text="go"):
+                    events.append(event)
+
+        stored: list[SessionHistoryEventDAO] = await _store(session).load_events(
+            session_id=session.session_id
+        )
+        retry_events: list[AgentStreamEventDAO] = [
+            event for event in events if event.kind == "run_retrying"
+        ]
+
+        assert model._calls == 3
+        assert len(retry_events) == 2
+        assert any(event.kind == "run_failed" for event in events)
+        assert any(event.kind == "run_failed" for event in stored)
+        assert not any(event.kind in {"run_recovering", "recovery_observation"} for event in stored)
 
     @pytest.mark.asyncio
     async def test_single_model_session_unchanged(self, tmp_path: Path) -> None:

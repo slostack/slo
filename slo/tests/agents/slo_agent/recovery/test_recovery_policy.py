@@ -47,12 +47,25 @@ class TestRecoveryPolicyFatalCases:
 class TestRecoveryPolicyMechanical:
     """Exceptions that the rate-limit / route-switch layers own."""
 
+    def test_classify_returns_mechanical_for_openai_overload_message(self) -> None:
+        """The generic OpenAI overload message never becomes an LLM recovery prompt."""
+        exc: RuntimeError = RuntimeError(
+            "APIError: Our servers are currently overloaded. Please try again later."
+        )
+
+        decision: RecoveryDecisionDAO = RecoveryPolicy.classify(
+            exc=exc,
+            provider=ProviderName.OPENAI,
+        )
+
+        assert decision.recovery_class is RecoveryClass.MECHANICAL
+
     def test_classify_returns_mechanical_for_switchable_provider_error(self) -> None:
         """An error classified as RATE_LIMITED with a known provider → MECHANICAL."""
         # Patch CreditExhaustionPolicy.classify to return RATE_LIMITED so that
         # should_switch returns True, simulating a rate-limit HTTP 429 from Anthropic.
         with patch(
-            "src.agents.slo_agent.recovery.service.CreditExhaustionPolicy.classify",
+            "src.agents.slo_agent.recovery.service.ProviderErrorClassifier.classify",
             return_value=ProviderErrorKind.RATE_LIMITED,
         ):
             exc = RuntimeError("rate limit 429")
@@ -66,7 +79,7 @@ class TestRecoveryPolicyMechanical:
     def test_mechanical_reason_mentions_rate_limit_layers(self) -> None:
         """The reason for a MECHANICAL decision references the owning layers."""
         with patch(
-            "src.agents.slo_agent.recovery.service.CreditExhaustionPolicy.classify",
+            "src.agents.slo_agent.recovery.service.ProviderErrorClassifier.classify",
             return_value=ProviderErrorKind.CREDIT_EXHAUSTED,
         ):
             exc = RuntimeError("billing hard limit")
@@ -103,7 +116,7 @@ class TestRecoveryPolicyLLMRecoverable:
         # CreditExhaustionPolicy returns OTHER for an unknown error, so should_switch
         # returns False, and the exception falls through to LLM_RECOVERABLE.
         with patch(
-            "src.agents.slo_agent.recovery.service.CreditExhaustionPolicy.classify",
+            "src.agents.slo_agent.recovery.service.ProviderErrorClassifier.classify",
             return_value=ProviderErrorKind.OTHER,
         ):
             exc = RuntimeError("unexpected internal error")
@@ -187,7 +200,7 @@ class TestRecoveryPolicyContextOverflow:
     def test_classify_context_overflow_takes_priority_over_provider_check(self) -> None:
         """Overflow is classified FATAL before the provider / MECHANICAL guard runs."""
         with patch(
-            "src.agents.slo_agent.recovery.service.CreditExhaustionPolicy.classify",
+            "src.agents.slo_agent.recovery.service.ProviderErrorClassifier.classify",
             return_value=ProviderErrorKind.RATE_LIMITED,
         ):
             exc = RuntimeError("prompt is too long (context_length_exceeded)")

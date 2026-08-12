@@ -550,13 +550,18 @@ of `ModelPool` in session.py. Pool config is parsed by
 `SessionConfigDAO.model_pool_dao`. Usage/title/rate-policy and persisted run events read the
 **routed** member; `_refresh_oauth_credential_if_needed` warms **every** pool provider.
 
-**Credit exhaustion policy** (`src/agents/providers/credit_exhaustion_policy.py`):
-- `CreditExhaustionPolicy.classify(error, provider)` → `ProviderErrorKind`
+**Provider-error classifier** (`src/agents/providers/credit_exhaustion_policy.py`):
+- `ProviderErrorClassifier.classify(error, provider)` → `ProviderErrorKind` is the **one shared
+  classifier** consumed by all three failure paths: `ModelPool` route-switching, `RecoveryPolicy`,
+  and `SloAgentSession`'s single-model iteration retry. `CreditExhaustionPolicy` remains as a
+  backward-compatible alias for the old name.
 - `should_switch(kind)` is the single switch-vs-propagate predicate (`OTHER` ⇒ propagate).
 - Anthropic: 402 or "credit balance"/"billing" → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 529 → `TRANSIENT_PROVIDER_FAILURE`
 - Kimi For Coding: 402 → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 500/502/503/529 → `TRANSIENT_PROVIDER_FAILURE`
-- Anthropic: 402 or "credit balance"/"billing" → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 529 → `TRANSIENT_PROVIDER_FAILURE`
-- OpenAI: `code in {"insufficient_quota", "billing_hard_limit_reached"}` → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 500/502/503 → `TRANSIENT_PROVIDER_FAILURE`
+- OpenAI: `code in {"insufficient_quota", "billing_hard_limit_reached"}` → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 500/502/503 → `TRANSIENT_PROVIDER_FAILURE`; the status-less overload message ("our servers are currently overloaded") → `TRANSIENT_PROVIDER_FAILURE`.
+- **Shared message-text fallback:** when no HTTP status settles the kind, `"rate limit"`/`"429"`
+  in the message text → `RATE_LIMITED`. This preserves the former provider-agnostic session
+  heuristic so a text-only rate limit still waits and retries under the unified classifier.
 
 ---
 
@@ -632,9 +637,14 @@ rate-limit error and returns a `RateLimitRetryPlanDAO` with a `wait_seconds` val
    the next member inside one provider call (see Section 10).
 3. **Iteration-scoped retry (agent)** — `SloAgent.invoke(iteration_retry_policy=...)`
    retries a failed ReAct iteration **only when it emitted no visible output**, replaying the
-   unchanged `accumulated_messages` (no duplicate transcript). `AllModelsExhaustedError` is
-   retryable within the attempt budget; when spent, a terminal `run_failed` naming the cooled
-   members reaches the screen. With no injected policy, legacy no-retry behavior is preserved.
+   unchanged `accumulated_messages` (no duplicate transcript). Retryability is decided by
+   `SloAgentSession._is_iteration_retryable_error`, which resolves the active provider
+   (`_resolve_active_provider` → pool `active_provider`, else `provider_for_model`) and consults
+   the shared `ProviderErrorClassifier`: only `RATE_LIMITED` and `TRANSIENT_PROVIDER_FAILURE`
+   wait-and-retry, so the status-less OpenAI overload message now takes a bounded delayed retry
+   (`run_retrying`) instead of an immediate same-model LLM recovery observation (`run_recovering`).
+   `AllModelsExhaustedError` is retryable within the attempt budget; when spent, a terminal
+   `run_failed` naming the cooled members reaches the screen. With no injected policy, legacy no-retry behavior is preserved.
    The session injects the policy via `_build_iteration_retry_policy` and relays/persists the
    agent's `run_retrying` events. **Overflow backstop (spec 46.a.2):** when a provider explicitly
    rejects a request for context overflow on the initial attempt, `_derive_next_attempt_plan`

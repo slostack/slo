@@ -1181,6 +1181,62 @@ exactly once at construction and is never reprocessed, and a
 to one `Static` — the answer region of the current turn's
 `AssistantStreamBlock` — never the transcript as a whole.
 
+#### 4.10.1 The Transcript Window, Block Liveness, and the Protected Tail
+
+Mounting one widget per semantic unit is what makes streaming cheap, but it
+also means a long session accumulates widgets without bound. `TRANSCRIPT_WINDOW_SIZE`
+(`src/tui/app.py`, currently `80`) caps how many children stay mounted under
+`#transcript-content`. Every transcript mount calls `_enforce_transcript_window`,
+which runs a single-flight `_run_window_enforcement_pass` that walks the children
+**oldest first** and removes settled ones until the overflow is absorbed.
+
+The pass has exactly one safety rule, decided by `_is_block_live`: **a block still
+receiving streamed updates must never be evicted.** An `AssistantStreamBlock` is
+live while `finalized` is `False`; a `ToolExecutionBlock` is live while it awaits
+its result; a `SteeringPendingBlock` is live while it sits in
+`_pending_steer_blocks`. Everything else — including `UserMessageBlock` — is
+settled, because it never streams.
+
+**The dual of that rule matters just as much: liveness must eventually be
+*released*.** The projector mounts one `AssistantStreamBlock` per outer-loop ReAct
+iteration, but the agent emits exactly one terminal event per prompt, carrying only
+the *final* iteration number. A turn that drove five iterations therefore mounted
+five blocks and resolved one — the other four sat at `finalized is False` forever,
+and `reset_for_new_run` then cleared the tracking dict, making the leak permanent.
+Because skipping a live child in the eviction walk costs nothing against the
+overflow budget, enough falsely-live blocks let the walk march all the way to the
+newest child. At exactly `live_blocks >= TRANSCRIPT_WINDOW_SIZE` the child it
+reached and deleted was the `UserMessageBlock` the user had just submitted — the
+prompt was accepted, mounted, and silently removed in the same frame.
+
+Three changes close this (spec `61-deleting-user-message-fix`):
+
+- **Run-end sweep.** `TranscriptProjector._seal_stale_assistant_blocks(except_iteration=…)`
+  is called from all three terminal handlers (`_finalize_completed_run`,
+  `_finalize_aborted_run`, `_finalize_failed_run`), so every block a run mounted is
+  sealed before `reset_for_new_run` forgets about it. `AssistantStreamBlock.seal()`
+  is idempotent and content-preserving — it stops the block accepting deltas without
+  discarding what it already streamed.
+- **Seal-on-advance.** `_ensure_assistant_block` calls the same helper right after
+  mounting a new iteration's block. The ReAct iteration counter is strictly
+  monotonic, so mounting iteration *n* proves every earlier block has stopped
+  streaming. This bounds a single long-running turn, which the run-end sweep alone
+  cannot do because it only fires once the run terminates.
+- **Protected tail.** `TRANSCRIPT_PROTECTED_TAIL_SIZE` (`10`) and
+  `_eviction_candidates(children=…)` structurally exclude the newest ten children
+  from the candidate set, regardless of liveness. This is a *starvation guard*, not
+  a replacement for `_is_block_live` — the `finalized` flag remains the correctness
+  guard. Its job is to fix the failure *direction*: any future liveness-tracking bug
+  now degrades to "the window briefly holds a few more widgets than the cap" instead
+  of "the user's message vanished". The constant must stay strictly below
+  `TRANSCRIPT_WINDOW_SIZE`, or enforcement stops converging; a test that patches the
+  window below the tail must patch both.
+
+`tests/tui/test_app.py::TestProtectedTail` reproduces the original threshold sweep
+(`29 / 60 / 79 / 80 / 90` stuck-live blocks) against the real eviction algorithm,
+and `TestLivenessLeakReproduction` drives the whole stack — agent, projector, and
+widgets — to prove a multi-iteration turn no longer hides the next prompt.
+
 ### 4.11 The Fixed Spinner, Terminal Events, and Replay
 
 **The spinner.** `#status-region` is a `Vertical` docked between the

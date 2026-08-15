@@ -649,11 +649,18 @@ class TranscriptProjector:
         return block
 
     async def _ensure_assistant_block(self, *, iteration: int) -> AssistantStreamBlock:
-        """Return the assistant block for ``iteration``.
+        """Return the assistant block for ``iteration``, sealing the block(s) it replaces.
 
         Each outer-loop assistant iteration owns its own transcript block so
         later thinking/text updates do not rewrite an older block above live
-        tool output.
+        tool output. Strict monotonicity of the ReAct loop's iteration counter
+        (``agent.py:855``, ``:881``, ``:905`` — iteration only ever increases)
+        guarantees that any other tracked block has already stopped receiving
+        deltas the moment a new one is mounted, so it is safe to seal it here
+        ("seal-on-advance", spec 61 D2) rather than waiting for the run's
+        terminal event (D1) — this is what stops a single long-running turn
+        from saturating the transcript window on its own, before the run ever
+        completes.
 
         Args:
             iteration (int): Outer-loop assistant iteration.
@@ -666,7 +673,44 @@ class TranscriptProjector:
             return block
         block = await self._host.mount_assistant_block()
         self._assistant_blocks[iteration] = block
+        self._seal_stale_assistant_blocks(except_iteration=iteration)
         return block
+
+    def _seal_stale_assistant_blocks(self, *, except_iteration: int) -> None:
+        """Tell every tracked assistant block other than ``except_iteration`` to seal.
+
+        This is the single implementation behind two call sites that both need
+        the same guarantee — every assistant block this run has mounted stops
+        being reported "live" once it can no longer receive updates:
+
+        * **Seal-on-advance** — ``_ensure_assistant_block`` calls this
+          immediately after mounting a new block for a new iteration. Strict
+          monotonicity of the ReAct loop's iteration counter
+          (``agent.py:855``, ``:881``, ``:905`` — iteration only ever
+          increases) guarantees every other tracked block has already stopped
+          streaming the moment a later iteration's block is mounted.
+        * **Run-end sweep** — each of ``_finalize_completed_run``,
+          ``_finalize_aborted_run``, and ``_finalize_failed_run`` calls this
+          after applying the authoritative terminal treatment to the current
+          iteration's block, so every iteration this run ever touched is
+          sealed before ``reset_for_new_run`` clears ``_assistant_blocks`` for
+          the next prompt.
+
+        ``AssistantStreamBlock.seal()`` is idempotent (it no-ops once
+        ``_finalized`` is already True), so this method tells every block to
+        seal unconditionally rather than first asking whether it still needs
+        to — there is exactly one decision here: which block is exempt.
+
+        Args:
+            except_iteration (int): The iteration whose block must not be
+                sealed by this call — it either just received its own
+                terminal treatment at the call site, or is the block just
+                mounted for the new iteration.
+        """
+        for iteration, block in self._assistant_blocks.items():
+            if iteration == except_iteration:
+                continue
+            block.seal()
 
     async def _ensure_tool_block(
         self,
@@ -745,6 +789,11 @@ class TranscriptProjector:
     async def _finalize_completed_run(self, *, iteration: int, content: str) -> None:
         """Finalize the terminal assistant block for ``iteration``.
 
+        Also seals every other tracked assistant block from this run (the
+        run-end sweep, spec 61 D1) so a multi-iteration turn never leaves a
+        stale block permanently reporting itself live to the transcript
+        window.
+
         Args:
             iteration (int): Outer-loop assistant iteration.
             content (str): Completed assistant answer text.
@@ -755,6 +804,7 @@ class TranscriptProjector:
             # its streamed content, and never create a new empty block.
             if block is not None:
                 block.seal()
+            self._seal_stale_assistant_blocks(except_iteration=iteration)
             return
         # Confirmed final text: create the block when absent, then finalize it
         # with the LLM-confirmed text (authoritative over streamed deltas).
@@ -762,9 +812,13 @@ class TranscriptProjector:
             block = await self._ensure_assistant_block(iteration=iteration)
         block.finalize(final_text=content)
         self._host.record_transcript_line(content=content, classes="assistant-final")
+        self._seal_stale_assistant_blocks(except_iteration=iteration)
 
     async def _finalize_aborted_run(self, *, iteration: int) -> None:
         """Finalize the current iteration block or render a fallback aborted line.
+
+        Also seals every other tracked assistant block from this run (the
+        run-end sweep, spec 61 D1).
 
         Args:
             iteration (int): Outer-loop assistant iteration.
@@ -775,15 +829,20 @@ class TranscriptProjector:
                 content="(aborted)",
                 classes="assistant-aborted",
             )
+            self._seal_stale_assistant_blocks(except_iteration=iteration)
             return
         block.mark_aborted()
         self._host.record_transcript_line(
             content="(aborted)",
             classes="assistant-aborted",
         )
+        self._seal_stale_assistant_blocks(except_iteration=iteration)
 
     async def _finalize_failed_run(self, *, iteration: int, error_message: str) -> None:
         """Finalize the current iteration block or render a fallback error line.
+
+        Also seals every other tracked assistant block from this run (the
+        run-end sweep, spec 61 D1).
 
         Args:
             iteration (int): Outer-loop assistant iteration.
@@ -796,12 +855,14 @@ class TranscriptProjector:
                 content=rendered_error,
                 classes="assistant-aborted",
             )
+            self._seal_stale_assistant_blocks(except_iteration=iteration)
             return
         block.mark_failed(error_message=error_message)
         self._host.record_transcript_line(
             content=rendered_error,
             classes="assistant-aborted",
         )
+        self._seal_stale_assistant_blocks(except_iteration=iteration)
 
     @staticmethod
     def _best_effort_parse_tool_input(*, raw_arguments: str) -> dict[str, Any]:

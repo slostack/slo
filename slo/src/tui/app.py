@@ -81,6 +81,35 @@ reflow exceeds the ~16 ms frame budget. Tune against the reflow-slope
 measurement in the manual smoke step (7.6) if needed; a follow-up may make
 it adaptive to viewport height."""
 
+TRANSCRIPT_PROTECTED_TAIL_SIZE: int = 10
+"""Newest transcript children the window enforcer may never evict, structurally.
+
+This is a starvation guard, independent of per-block liveness bookkeeping
+(_is_block_live). _run_window_enforcement_pass walks candidates oldest-first
+and stops once it has removed `overflow` children — but skipping a live child
+costs nothing against that budget, so a transcript saturated with
+permanently-live blocks lets the walk reach all the way to the newest child,
+including one mounted this very frame (the user's own prompt). Excluding the
+newest TRANSCRIPT_PROTECTED_TAIL_SIZE children from the candidate set entirely
+converts that failure mode from "the user's message disappears" into "the
+window temporarily holds a few more children than TRANSCRIPT_WINDOW_SIZE" —
+the correct failure direction.
+
+Invariant: this value must stay strictly below TRANSCRIPT_WINDOW_SIZE. At or
+above it, _eviction_candidates returns an empty list for every transcript of
+TRANSCRIPT_PROTECTED_TAIL_SIZE children or fewer and window enforcement stops
+converging altogether. Any test that patches
+`src.tui.app.TRANSCRIPT_WINDOW_SIZE` to a value at or below this one MUST
+either patch `src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE` in the same `with`
+block, or state in its docstring that it deliberately relies on the
+non-converging regime and assert nothing that depends on eviction making
+progress.
+
+10 is chosen to comfortably exceed the mounted-widget count of a small
+tool-calling turn while remaining a small fraction of TRANSCRIPT_WINDOW_SIZE
+(80), so it does not meaningfully weaken the windowing budget in the common
+case where liveness bookkeeping (D1/D2, spec 61) is working correctly."""
+
 LOAD_OLDER_BATCH_SIZE: int = 30
 """Number of older transcript entries to prepend per scroll-to-top trigger."""
 
@@ -1693,6 +1722,27 @@ class SloTUI(App):
             return child in self._pending_steer_blocks
         return False
 
+    def _eviction_candidates(self, *, children: list[Widget]) -> list[Widget]:
+        """Return the prefix of ``children`` eligible for window eviction.
+
+        Excludes the newest ``TRANSCRIPT_PROTECTED_TAIL_SIZE`` children
+        structurally, regardless of liveness — this is the starvation guard
+        that keeps ``_run_window_enforcement_pass`` from ever walking into the
+        newest content, even when every older child (incorrectly) reports
+        itself live (spec 61, D3).
+
+        Args:
+            children (list[Widget]): Non-summary transcript children, oldest
+                first.
+
+        Returns:
+            list[Widget]: The oldest-first prefix outside the protected tail;
+                empty when ``children`` does not exceed the tail size.
+        """
+        if len(children) <= TRANSCRIPT_PROTECTED_TAIL_SIZE:
+            return []
+        return children[:-TRANSCRIPT_PROTECTED_TAIL_SIZE]
+
     async def _enforce_transcript_window(self) -> None:
         """Keep the transcript within the window; single-flight and coalescing.
 
@@ -1727,11 +1777,15 @@ class SloTUI(App):
         """Remove the oldest settled children until the window holds.
 
         Runs only under the single-flight guard in ``_enforce_transcript_window``,
-        so it is never concurrent with another pass. Skips live blocks, folds
-        removals into the summary, and wraps the mutation in the scroll idiom so
-        the viewport does not jump. The hidden count is incremented before the
-        ``await`` so a mid-flight interruption cannot under-count. N may briefly
-        exceed the window during a single turn holding many in-flight blocks.
+        so it is never concurrent with another pass. Walks only children outside
+        the protected tail (``_eviction_candidates``, spec 61 D3), skips live
+        blocks within that set, folds removals into the summary, and wraps the
+        mutation in the scroll idiom so the viewport does not jump. The hidden
+        count is incremented before the ``await`` so a mid-flight interruption
+        cannot under-count. N may briefly exceed the window during a single turn
+        holding many in-flight blocks, or when the protected tail structurally
+        prevents convergence (see ``TRANSCRIPT_PROTECTED_TAIL_SIZE``) — that
+        over-budget state is the intended, safe failure direction.
         """
         if self._back_scroll_mode:
             return
@@ -1743,9 +1797,10 @@ class SloTUI(App):
         overflow: int = len(children) - TRANSCRIPT_WINDOW_SIZE
         if overflow <= 0:
             return
+        candidates: list[Widget] = self._eviction_candidates(children=children)
         follow_snapshot: bool = self._capture_follow_snapshot()
         removed: int = 0
-        for child in children:
+        for child in candidates:
             if removed >= overflow:
                 break
             if self._is_block_live(child=child):

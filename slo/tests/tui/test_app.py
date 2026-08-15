@@ -11,6 +11,7 @@ import pytest
 from textual import events
 from textual.app import App
 from textual.message import Message
+from textual.widget import Widget
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.tools import tool
 
@@ -26,6 +27,7 @@ from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import (
     LOAD_OLDER_BATCH_SIZE,
+    TRANSCRIPT_PROTECTED_TAIL_SIZE,
     TRANSCRIPT_WINDOW_SIZE,
     PromptInput,
     SloTUI,
@@ -2404,6 +2406,254 @@ class TestTranscriptWindow:
             # consumed by the first invocation's while loop.
             assert app._window_enforcement_rerun is False
             assert app._window_enforcement_running is False
+
+
+class TestProtectedTail:
+    """Structural starvation guard: the newest tail is never an eviction candidate (spec 61, D3/D4)."""
+
+    def _build_app(self) -> SloTUI:
+        """Build a ``SloTUI`` for protected-tail tests.
+
+        Returns:
+            SloTUI: App ready for ``run_test``.
+        """
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
+        return SloTUI(session=session)
+
+    # -- Unit tests for _eviction_candidates --
+
+    def test_eviction_candidates_excludes_the_newest_tail_when_children_exceed_the_tail_size(
+        self,
+    ) -> None:
+        """The candidate prefix excludes exactly the newest tail-sized suffix."""
+        app: SloTUI = self._build_app()
+        widgets: list[Widget] = [UserMessageBlock(text=f"msg{i}") for i in range(5)]
+
+        with patch("src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE", 3):
+            candidates: list[Widget] = app._eviction_candidates(children=widgets)
+
+        assert candidates == [widgets[0], widgets[1]]
+
+    def test_eviction_candidates_returns_empty_when_children_equal_the_tail_size(self) -> None:
+        """The boundary case of the guard clause: children exactly equal to the tail size."""
+        app: SloTUI = self._build_app()
+        widgets: list[Widget] = [UserMessageBlock(text=f"msg{i}") for i in range(5)]
+
+        with patch("src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE", 5):
+            candidates: list[Widget] = app._eviction_candidates(children=widgets)
+
+        assert candidates == []
+
+    def test_eviction_candidates_returns_empty_when_children_are_fewer_than_the_tail_size(
+        self,
+    ) -> None:
+        """The strictly-below branch of the same guard clause."""
+        app: SloTUI = self._build_app()
+        widgets: list[Widget] = [UserMessageBlock(text=f"msg{i}") for i in range(3)]
+
+        with patch("src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE", 5):
+            candidates: list[Widget] = app._eviction_candidates(children=widgets)
+
+        assert candidates == []
+
+    def test_protected_tail_is_strictly_smaller_than_the_transcript_window(self) -> None:
+        """Pins the convergence invariant documented on the constant."""
+        assert TRANSCRIPT_PROTECTED_TAIL_SIZE < TRANSCRIPT_WINDOW_SIZE
+
+    # -- Pilot tests for the enforcement pass --
+
+    @pytest.mark.asyncio
+    async def test_run_window_enforcement_pass_preserves_the_newest_child_when_every_candidate_is_live(
+        self,
+    ) -> None:
+        """The newest child is never touched even when every candidate reports live."""
+        assert TRANSCRIPT_PROTECTED_TAIL_SIZE == 10
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            await app.action_clear()
+
+            unfinalized_blocks: list[AssistantStreamBlock] = []
+            for _ in range(90):
+                unfinalized_blocks.append(await app.mount_assistant_block())
+            user_block: UserMessageBlock = await app.mount_user_message_block(text="the user's new message")
+            for _ in range(5):
+                await pilot.pause()
+
+            assert user_block in app._transcript_content.children
+            for block in unfinalized_blocks:
+                assert block in app._transcript_content.children
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
+            assert non_summary == 91
+            assert app._hidden_block_count == 0
+
+    @pytest.mark.asyncio
+    async def test_run_window_enforcement_pass_converges_to_the_window_when_overflow_lies_outside_the_tail(
+        self,
+    ) -> None:
+        """Ordinary eviction still converges to exactly the window when overflow lies outside the tail."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            await app.action_clear()
+
+            for _ in range(TRANSCRIPT_WINDOW_SIZE + 5):
+                await app.mount_user_message_block(text="settled")
+            for _ in range(5):
+                await pilot.pause()
+
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
+            assert non_summary == TRANSCRIPT_WINDOW_SIZE
+            assert app._hidden_block_count == 5
+            assert app._earlier_summary is not None
+
+    # -- 61.a.4: parametrised threshold reproduction --
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stuck_live", [29, 60, 79, 80, 90])
+    async def test_run_window_enforcement_pass_preserves_the_user_message_at_every_diagnosed_live_block_count(
+        self,
+        stuck_live: int,
+    ) -> None:
+        """The user's new message survives at every stuck-live count the investigation measured."""
+        assert TRANSCRIPT_PROTECTED_TAIL_SIZE == 10
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            await app.action_clear()
+
+            unfinalized_blocks: list[AssistantStreamBlock] = []
+            for _ in range(stuck_live):
+                unfinalized_blocks.append(await app.mount_assistant_block())
+            assert unfinalized_blocks[0].finalized is False
+
+            settled_filler: int = max(0, TRANSCRIPT_WINDOW_SIZE - stuck_live)
+            for _ in range(settled_filler):
+                await app.mount_user_message_block(text="filler")
+
+            children_before: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
+            assert children_before == max(TRANSCRIPT_WINDOW_SIZE, stuck_live)
+
+            user_block: UserMessageBlock = await app.mount_user_message_block(text="the user's new prompt")
+            for _ in range(5):
+                await pilot.pause()
+
+            children_count: int = len(list(app._transcript_content.children))
+            assert user_block in app._transcript_content.children, (
+                f"stuck_live={stuck_live}, children={children_count}, " f"hidden={app._hidden_block_count}"
+            )
+            assert app._hidden_block_count <= 1
+
+
+class TestLivenessLeakReproduction:
+    """End-to-end proof that a multi-iteration turn never hides the next prompt (spec 61)."""
+
+    @pytest.mark.asyncio
+    async def test_multi_iteration_turn_does_not_hide_the_next_prompt(self) -> None:
+        """Spec 61: a multi-iteration turn never hides the user's next prompt.
+
+        Deliberately runs in the non-converging window regime —
+        TRANSCRIPT_WINDOW_SIZE is patched to 5 while TRANSCRIPT_PROTECTED_TAIL_SIZE
+        keeps its production value of 10, so the eviction candidate set is always
+        empty and the enforcer removes nothing. Nothing asserted here depends on
+        eviction making progress: the `finalized` assertions prove the liveness
+        fix (D1/D2) at source, and the visible-prompt assertion proves the
+        user-facing symptom is gone.
+        """
+
+        @tool
+        def stub_echo(text: str) -> str:
+            """Echo the provided text."""
+            return text
+
+        agent: SloAgent = SloAgent(
+            llm=FauxChatModel(
+                responses=[
+                    FauxChatModel.assistant_message(
+                        tool_calls=[FauxChatModel.tool_call_dict(name="stub_echo", args={"text": f"x{i}"})],
+                    )
+                    for i in range(5)
+                ]
+                + [
+                    FauxChatModel.assistant_message(content="all done"),
+                ],
+                chunk_scripts=[
+                    [
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": f"pass {i}"}],
+                            tool_calls=[{"id": f"call_{i}", "name": "stub_echo", "args": {"text": f"x{i}"}}],
+                        )
+                    ]
+                    for i in range(5)
+                ]
+                + [
+                    [AIMessageChunk(content=[{"type": "text", "text": "all done"}])],
+                ],
+            ),
+            tools=[stub_echo],
+        )
+        session = SloAgentSession(
+            agent=agent,
+            workdir=Path(".").resolve(),
+            session_id=str(uuid4()),
+        )
+        app: SloTUI = SloTUI(session=session)
+
+        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app._input is not None
+                assert app._transcript_content is not None
+                await app.action_clear()
+
+                # --- first prompt: six iterations ---
+                app._input.load_text("first prompt")
+                await pilot.press("enter")
+                await _await_idle(app=app, pilot=pilot, timeout_seconds=10.0)
+                await pilot.pause()
+
+                assistant_blocks: list[AssistantStreamBlock] = list(app.query(selector=AssistantStreamBlock))
+                assert len(assistant_blocks) >= 2, (
+                    "scripted turn did not drive multiple outer-loop iterations; "
+                    f"mounted {len(assistant_blocks)} assistant blocks"
+                )
+
+                # LOAD-BEARING: D1/D2 proof — every block except the last is sealed.
+                non_terminal_blocks: list[AssistantStreamBlock] = assistant_blocks[:-1]
+                for index, block in enumerate(non_terminal_blocks):
+                    assert block.finalized is True, (
+                        f"assistant block {index} of {len(assistant_blocks)} still "
+                        "reports itself live after the run terminated"
+                    )
+
+                # --- second prompt ---
+                app._input.load_text("second prompt")
+                await pilot.press("enter")
+                await _await_idle(app=app, pilot=pilot, timeout_seconds=10.0)
+                for _ in range(5):
+                    await pilot.pause()
+
+                # SYMPTOM-LEVEL: the user's message is on screen.
+                user_texts: list[str] = [
+                    child.text
+                    for child in app._transcript_content.children
+                    if isinstance(child, UserMessageBlock)
+                ]
+                assert "second prompt" in user_texts, (
+                    f"the second prompt's UserMessageBlock was evicted; "
+                    f"mounted user texts={user_texts}, "
+                    f"children={len(list(app._transcript_content.children))}, "
+                    f"hidden={app._hidden_block_count}"
+                )
 
 
 class TestLoadOlderEntries:

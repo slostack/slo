@@ -4,6 +4,28 @@ All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).
 
+## [0.14.17] — 2026-08-15
+
+**Unified provider-error classification for transient-failure retries.**
+
+Slo could not recover from OpenAI's status-less "Our servers are currently overloaded" `APIError`. On a single-model session the iteration-retry predicate matched only `"rate limit"` / `"429"` text and never consulted the shared error classifier, so the overload error fell through to LLM recovery — the log showed `run_recovering` → same overloaded model → `run_failed` instead of a bounded delayed retry. All three failure paths (single-model iteration retry, `ModelPool` route-switching, and `RecoveryPolicy`) now share one classifier.
+
+### Fixed
+
+- **Status-less OpenAI overload errors take a bounded delayed retry** — the OpenAI classifier maps the stable overload wording (`"our servers are currently overloaded"`) to `TRANSIENT_PROVIDER_FAILURE` when the SDK exposes no HTTP status. The session now emits `run_retrying` and, after the configured budget (2 retries → 3 attempts), a terminal `run_failed` — never a `run_recovering` observation routed back to the overloaded model.
+- **Single-model sessions can classify provider errors at all** — `SloAgentSession._resolve_active_provider` resolves a single model's provider via `provider_for_model` rather than reading only a pool's `active_provider`, so sessions without a `ModelPool` reach the classifier.
+- **Text-only rate limits still classify correctly** — `_classify_by_message_text` restores the provider-agnostic `"rate limit"` / `"429"` heuristic as a last-resort fallback after status-code checks. Folding the old string predicate into the classifier (rather than deleting it) prevents the two regressions this unification would otherwise introduce.
+
+### Changed
+
+- **`CreditExhaustionPolicy` → `ProviderErrorClassifier`** — renamed to reflect the widened taxonomy, which now owns credit exhaustion, rate limits, and transient provider failures. The old name is retained as a backward-compatible alias.
+- **`_is_iteration_retryable_error` taxonomy-driven** — `RATE_LIMITED`, `TRANSIENT_PROVIDER_FAILURE`, and `AllModelsExhaustedError` are treated as wait-and-retry; `CREDIT_EXHAUSTED`, auth, and validation failures stay terminal. The no-replay-after-visible-output guard is preserved.
+- **`AGENTS.md`** — provider-error handling section updated to describe the unified classifier.
+
+### Verification
+
+- Full non-E2E suite green, including new coverage in `test_credit_exhaustion_policy.py`, `test_recovery_policy.py`, `test_pool_fallback_e2e.py`, and `test_session_rate_limits.py`.
+
 ## [0.14.16] — 2026-08-04
 
 **Model catalog spec-54: Claude Opus 4.8, Sonnet 4.6, Haiku 4.5, and 1M-context variants.**

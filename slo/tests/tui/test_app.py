@@ -27,6 +27,7 @@ from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import (
     LOAD_OLDER_BATCH_SIZE,
+    TRANSCRIPT_HYDRATION_ENTRY_LIMIT,
     TRANSCRIPT_PROTECTED_TAIL_SIZE,
     TRANSCRIPT_WINDOW_SIZE,
     PromptInput,
@@ -2732,23 +2733,17 @@ class TestLoadOlderEntries:
         return answers
 
     @pytest.mark.asyncio
-    async def test_hydration_initializes_cursor_to_entry_count(self) -> None:
-        """Replay hydration initializes the cursor from ordered history length."""
-        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
-        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
-            app: SloTUI = self._build_history_app(entries=entries)
-            async with app.run_test(size=(80, 24)) as pilot:
-                await pilot.pause()
-                assert app._load_older_cursor == 12
-                assert app._earlier_summary is not None
-                assert "12 earlier messages hidden" in str(app._earlier_summary.renderable)
-
-    @pytest.mark.asyncio
     async def test_load_older_prepends_entries_below_summary_in_chronological_order(self) -> None:
-        """One load-older pass prepends the batch immediately before the cursor."""
+        """One load-older pass prepends the batch immediately before the cursor.
+
+        Asserts the whole visible list rather than a prefix: an earlier version
+        of this test sliced ``[:5]``, which let hydration's over-reported cursor
+        prepend a duplicate copy of the mounted batch without failing anything.
+        """
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
             patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
@@ -2757,14 +2752,19 @@ class TestLoadOlderEntries:
                 await app._load_older_entries()
                 await pilot.pause()
                 visible_answers: list[str] = self._visible_assistant_answers(app=app)
-                assert visible_answers[:5] == [
+                assert visible_answers == [
+                    "assistant-2",
+                    "assistant-3",
+                    "assistant-4",
+                    "assistant-5",
+                    "assistant-6",
                     "assistant-7",
                     "assistant-8",
                     "assistant-9",
                     "assistant-10",
                     "assistant-11",
                 ]
-                assert app._load_older_cursor == 7
+                assert app._load_older_cursor == 2
 
     @pytest.mark.asyncio
     async def test_load_older_preserves_scroll_anchor(self) -> None:
@@ -2772,6 +2772,7 @@ class TestLoadOlderEntries:
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=14)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
             patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 4),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
@@ -2787,12 +2788,17 @@ class TestLoadOlderEntries:
                 assert app._transcript_scroll.scroll_y <= app._transcript_scroll.max_scroll_y
 
     @pytest.mark.asyncio
-    async def test_load_older_removes_summary_when_cursor_reaches_zero(self) -> None:
-        """The summary widget disappears when all older entries are loaded."""
+    async def test_load_older_keeps_summary_when_cursor_is_still_positive(self) -> None:
+        """The summary survives a pass that leaves older entries unreached.
+
+        Renamed from a second ``test_load_older_removes_summary_when_cursor_reaches_zero``
+        definition, which shadowed the one below it so this case never ran.
+        """
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=8)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
-            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 3),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 2),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
             async with app.run_test(size=(80, 24)) as pilot:
@@ -2810,6 +2816,7 @@ class TestLoadOlderEntries:
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=5)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 3),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 3),
             patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
@@ -2861,7 +2868,10 @@ class TestLoadOlderEntries:
     async def test_load_older_is_single_flight(self) -> None:
         """Concurrent load-older requests do not double-run the pass."""
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
-        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
+        with (
+            patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
+        ):
             app: SloTUI = self._build_history_app(entries=entries)
             async with app.run_test(size=(80, 24)) as pilot:
                 await pilot.pause()
@@ -2974,6 +2984,161 @@ class TestLoadOlderEntries:
         args[0].close()
         assert kwargs["group"] == "load-older"
         assert kwargs["exit_on_error"] is False
+
+
+class TestHydrationEntryCursor:
+    """Hydration bounds what it mounts and reports the cursor honestly (spec 62)."""
+
+    @staticmethod
+    def _assistant_entries(*, count: int) -> list[TranscriptEntryDAO]:
+        """Build ordered replay entries with distinctive assistant answers.
+
+        Args:
+            count (int): Number of entries to build.
+
+        Returns:
+            list[TranscriptEntryDAO]: Chronological assistant entries.
+        """
+        return [
+            TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}")
+            for index in range(count)
+        ]
+
+    def _build_history_app(self, *, entries: list[TranscriptEntryDAO]) -> SloTUI:
+        """Build a TUI whose replay path returns ``entries``.
+
+        Args:
+            entries (list[TranscriptEntryDAO]): Ordered replay entries.
+
+        Returns:
+            SloTUI: App under test.
+        """
+        return TestLoadOlderEntries._build_history_app(entries=entries)
+
+    @staticmethod
+    def _visible_assistant_answers(*, app: SloTUI) -> list[str]:
+        """Return assistant answers in on-screen transcript order.
+
+        Args:
+            app (SloTUI): App under inspection.
+
+        Returns:
+            list[str]: Visible assistant answers from top to bottom.
+        """
+        assert app._transcript_content is not None
+        return [
+            child.answer_text
+            for child in app._transcript_content.children
+            if isinstance(child, AssistantStreamBlock)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_hydration_mounts_only_the_newest_entry_limit_entries(self) -> None:
+        """Hydration mounts the newest batch instead of every entry on disk."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+
+        with patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+
+                assert self._visible_assistant_answers(app=app) == [
+                    "assistant-7",
+                    "assistant-8",
+                    "assistant-9",
+                    "assistant-10",
+                    "assistant-11",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_hydration_cursor_counts_only_entries_it_did_not_mount(self) -> None:
+        """The cursor is the count of entries left above the mounted batch."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+
+        with patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+
+                assert app._load_older_cursor == 7
+                assert app._earlier_summary is not None
+                assert "7 earlier messages hidden" in str(app._earlier_summary.renderable)
+
+    @pytest.mark.asyncio
+    async def test_hydration_cursor_is_zero_when_history_fits_within_the_entry_limit(self) -> None:
+        """Nothing is hidden when the whole history is mounted."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=3)
+
+        with patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+
+                assert app._load_older_cursor == 0
+                assert app._earlier_summary is None
+
+    @pytest.mark.asyncio
+    async def test_load_older_after_hydration_prepends_no_duplicate_entries(self) -> None:
+        """The batch prepended by a load-older pass never repeats a mounted entry.
+
+        This is the regression guard for the defect diagnosed alongside spec 61:
+        hydration used to set the cursor to the *total* entry count, so the first
+        load-older pass re-fetched the newest batch — the entries already on
+        screen — and prepended them above themselves, duplicated and out of
+        chronological order.
+        """
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+
+        with (
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 4),
+        ):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._load_older_entries()
+                await pilot.pause()
+
+                visible_answers: list[str] = self._visible_assistant_answers(app=app)
+                assert visible_answers == [
+                    "assistant-3",
+                    "assistant-4",
+                    "assistant-5",
+                    "assistant-6",
+                    "assistant-7",
+                    "assistant-8",
+                    "assistant-9",
+                    "assistant-10",
+                    "assistant-11",
+                ]
+                assert len(visible_answers) == len(set(visible_answers))
+                assert app._load_older_cursor == 3
+
+    @pytest.mark.asyncio
+    async def test_earlier_summary_omits_the_load_hint_when_no_entries_can_be_loaded(self) -> None:
+        """A live session with evictions never advertises an unreachable load path.
+
+        With no resumable history the cursor stays at zero, so the summary must
+        not claim "0 earlier messages hidden" nor promise a scroll-to-top
+        recovery that ``_has_older_entries_to_load`` would refuse.
+        """
+        app: SloTUI = self._build_history_app(entries=[])
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app._hidden_block_count = 4
+            await app._update_earlier_summary()
+            await pilot.pause()
+
+            assert app._load_older_cursor == 0
+            assert app._earlier_summary is not None
+            summary_text: str = str(app._earlier_summary.renderable)
+            assert "0 earlier messages hidden" not in summary_text
+            assert "scroll to the top" not in summary_text
+
+    def test_hydration_entry_limit_is_positive(self) -> None:
+        """Pins the constant's only load-bearing invariant."""
+        assert TRANSCRIPT_HYDRATION_ENTRY_LIMIT > 0
 
 
 class TestTypingNoReflow:

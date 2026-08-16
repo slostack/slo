@@ -1237,6 +1237,40 @@ Three changes close this (spec `61-deleting-user-message-fix`):
 and `TestLivenessLeakReproduction` drives the whole stack — agent, projector, and
 widgets — to prove a multi-iteration turn no longer hides the next prompt.
 
+#### 4.10.2 Recovering What the Window Collapsed
+
+Evicted content is not lost — it is still on disk as `TranscriptEntryDAO` history.
+Scrolling to the top triggers `_load_older_entries`, which prepends the next batch
+above the current oldest child. That path is driven by one number,
+`_load_older_cursor`, whose contract is **"how many logical entries sit above the
+oldest entry currently mounted"**.
+
+Hydration is what establishes it, and it does so by *bounding what it mounts*:
+`_newest_hydration_entries` returns only the newest `TRANSCRIPT_HYDRATION_ENTRY_LIMIT`
+(30) entries, and the cursor becomes exactly the number left behind. Mounting
+everything and letting the window evict the excess — the previous behaviour —
+made the cursor unrecoverable, because it was assigned `len(entries)` even though
+eviction had already put most of those entries on screen. The first scroll-to-top
+pass then re-fetched the batch that was already mounted and prepended it above
+itself, duplicated and out of chronological order.
+
+The cursor is deliberately **never** derived from evicted widget counts. One entry
+mounts a variable number of widgets — a user turn mounts a separator *and* a
+`UserMessageBlock`, and a single tool call can mount more than one
+`ToolExecutionBlock` — so there is no ratio to invert.
+
+Two consequences worth knowing:
+
+- **The cursor can under-report, never over-report.** Nothing advances it while a
+  live session evicts entries that hydration did mount, so scroll-to-top may not
+  reach a middle band of history. That is the safe direction: under-reporting
+  leaves a gap, over-reporting reintroduces duplicates.
+- **A live, never-resumed session has no cursor at all** — there was nothing to
+  hydrate, so it stays at `0`. `_earlier_summary_text` handles that honestly: with
+  no reachable entry it renders `▲ earlier messages collapsed — resume this session
+  to recover them` rather than the nonsensical `▲ 0 earlier messages hidden` plus a
+  scroll-to-top hint that `_has_older_entries_to_load` would refuse.
+
 ### 4.11 The Fixed Spinner, Terminal Events, and Replay
 
 **The spinner.** `#status-region` is a `Vertical` docked between the

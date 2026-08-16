@@ -113,6 +113,31 @@ case where liveness bookkeeping (D1/D2, spec 61) is working correctly."""
 LOAD_OLDER_BATCH_SIZE: int = 30
 """Number of older transcript entries to prepend per scroll-to-top trigger."""
 
+TRANSCRIPT_HYDRATION_ENTRY_LIMIT: int = 30
+"""Newest logical entries a resumed session mounts during replay hydration.
+
+Hydration used to project *every* entry on disk and let the transcript window
+evict the excess back down. That made `_load_older_cursor` — which the
+load-older path reads as "how many entries sit above the oldest mounted one" —
+unrecoverable: it was assigned `len(entries)`, the total, even though eviction
+had already put most of those entries on screen. The first scroll-to-top pass
+then re-fetched `all_entries[-LOAD_OLDER_BATCH_SIZE:]`, the batch already
+mounted, and prepended it above itself, duplicated and out of order.
+
+Bounding hydration to the newest entries makes the cursor exact by
+construction: whatever this slice leaves behind is precisely what is not on
+screen. There is no widget-to-entry attribution anywhere in this calculation,
+which matters because that mapping is not derivable — one entry mounts a
+variable number of widgets (a user turn mounts a separator *and* a block), and
+a single tool call can mount more than one `ToolExecutionBlock`.
+
+The cursor may still *under*-report once live eviction starts trimming entries
+this slice did mount, since nothing advances it during a live session. That
+failure direction is deliberate: under-reporting leaves a gap in what
+scroll-to-top can reach, while over-reporting reintroduces the duplicate
+prepend. Never raise this cursor past the count of entries hydration declined
+to mount."""
+
 _NEAR_TOP_THRESHOLD: float = 2.0
 """Scroll-y threshold that counts as reaching the transcript top."""
 
@@ -520,11 +545,37 @@ class SloTUI(App):
             entries: list[TranscriptEntryDAO] = await self._session.hydrate_transcript_entries()
         except Exception:  # noqa: BLE001 — replay must never crash boot
             return
-        for entry in entries:
+        mountable: list[TranscriptEntryDAO] = self._newest_hydration_entries(entries=entries)
+        self._load_older_cursor = len(entries) - len(mountable)
+        for entry in mountable:
             await self._projector.project_replay_entry(entry=entry)
-        self._load_older_cursor = len(entries)
         await self._update_earlier_summary()
         self._scroll_transcript_to_end()
+
+    @staticmethod
+    def _newest_hydration_entries(
+        *,
+        entries: list[TranscriptEntryDAO],
+    ) -> list[TranscriptEntryDAO]:
+        """Return the newest entries replay hydration should mount.
+
+        Bounding the mounted slice is what keeps ``_load_older_cursor`` exact:
+        the entries this method declines to return are precisely the ones the
+        load-older path may still fetch (see
+        ``TRANSCRIPT_HYDRATION_ENTRY_LIMIT``).
+
+        Args:
+            entries (list[TranscriptEntryDAO]): Chronological entries read from
+                the session's on-disk history.
+
+        Returns:
+            list[TranscriptEntryDAO]: The newest
+                ``TRANSCRIPT_HYDRATION_ENTRY_LIMIT`` entries, or every entry
+                when history is shorter than that limit.
+        """
+        if len(entries) <= TRANSCRIPT_HYDRATION_ENTRY_LIMIT:
+            return entries
+        return entries[-TRANSCRIPT_HYDRATION_ENTRY_LIMIT:]
 
     async def _maybe_render_startup_notice(self) -> None:
         """Render the one-time startup notice for new sessions only."""
@@ -1826,15 +1877,31 @@ class SloTUI(App):
             if self._hidden_block_count == 0 or self._back_scroll_mode:
                 await self._remove_earlier_summary()
                 return
-        text: str = (
-            f"▲ {hidden_count} earlier messages hidden "
-            f"— scroll to the top to load older messages"
-        )
+        text: str = self._earlier_summary_text(hidden_count=hidden_count)
         if self._earlier_summary is None:
             self._earlier_summary = Static(text, id="transcript-earlier-summary")
             await self._transcript_content.mount(self._earlier_summary, before=0)
             return
         self._earlier_summary.update(text)
+
+    @staticmethod
+    def _earlier_summary_text(*, hidden_count: int) -> str:
+        """Return the earlier-messages summary line for ``hidden_count``.
+
+        Args:
+            hidden_count (int): Older logical entries a scroll-to-top pass can
+                still load.
+
+        Returns:
+            str: The summary line. When no entry is reachable the line names
+                the collapse without a count and without the scroll-to-top
+                hint, so the banner never advertises a recovery pass
+                ``_has_older_entries_to_load`` would refuse — the state a live,
+                never-resumed session sits in once the window starts evicting.
+        """
+        if hidden_count == 0:
+            return "▲ earlier messages collapsed — resume this session to recover them"
+        return f"▲ {hidden_count} earlier messages hidden " f"— scroll to the top to load older messages"
 
     async def _remove_earlier_summary(self) -> None:
         """Remove and dereference the earlier-messages summary widget."""
@@ -2034,7 +2101,6 @@ class SloTUI(App):
         if self._adapter is None:
             return
         self._adapter.record(content=content, classes=classes)
-
 
     async def _run_prompt(self, *, text: str) -> None:
         """Drain ``session.invoke`` to completion.
@@ -2441,7 +2507,7 @@ class SloTUI(App):
             return []
         all_entries: list[TranscriptEntryDAO] = await self._read_all_entries()
         batch_start: int = max(0, self._load_older_cursor - LOAD_OLDER_BATCH_SIZE)
-        return all_entries[batch_start:self._load_older_cursor]
+        return all_entries[batch_start : self._load_older_cursor]
 
     async def _prepend_older_entries(self, *, entries: list[TranscriptEntryDAO]) -> None:
         """Project and prepend entries in chronological order below the summary."""
@@ -2473,7 +2539,6 @@ class SloTUI(App):
         if self._transcript_scroll is None:
             return 0.0
         return self._transcript_scroll.scroll_y
-
 
     def _capture_load_older_anchor(self) -> _LoadOlderAnchorDAO:
         """Capture the scroll anchor before a prepend pass."""

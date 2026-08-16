@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.14.18] — 2026-08-16
+
+### Added
+- Context-window inspection and manual compaction, including projector-faithful usage snapshots, model capacity handling, transactional history compaction, and `/context-window` and `/compact` commands.
+- TUI usage footer support and bounded context-window refresh behavior.
+
+### Fixed
+- Preserved replay history cursors during transcript hydration.
+- Fixed a transcript-window liveness leak that could delete the user's active message.
+
 All notable changes to **slo** are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may carry
 breaking changes).

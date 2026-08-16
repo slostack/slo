@@ -25,6 +25,14 @@
 
 ---
 
+## Context Window Visibility and Manual Compaction
+
+The TUI exposes durable replay-history context separately from provider billing telemetry:
+
+- `/context-window` reports the routed model's Context Window capacity, Estimated Used Context, Available Context, and one-decimal percentage. The estimate counts selected durable replay events, not cumulative session billing totals.
+- `/compact` requests one lock-safe Manual Compaction while the session is idle. It reports a no-op when there is nothing to compact and rejects an in-flight prompt without touching history.
+- The usage footer appends `NN.N% context used` only when a durable Context Window Snapshot is available. It refreshes at bounded lifecycle points rather than on every streamed event.
+
 ## Preface
 
 This is not a feature list. This is a **narrative walkthrough** of Slo — a
@@ -1180,6 +1188,96 @@ exactly once at construction and is never reprocessed, and a
 `tool_result` arrives. So the end-of-stream markdown reprocessing is scoped
 to one `Static` — the answer region of the current turn's
 `AssistantStreamBlock` — never the transcript as a whole.
+
+#### 4.10.1 The Transcript Window, Block Liveness, and the Protected Tail
+
+Mounting one widget per semantic unit is what makes streaming cheap, but it
+also means a long session accumulates widgets without bound. `TRANSCRIPT_WINDOW_SIZE`
+(`src/tui/app.py`, currently `80`) caps how many children stay mounted under
+`#transcript-content`. Every transcript mount calls `_enforce_transcript_window`,
+which runs a single-flight `_run_window_enforcement_pass` that walks the children
+**oldest first** and removes settled ones until the overflow is absorbed.
+
+The pass has exactly one safety rule, decided by `_is_block_live`: **a block still
+receiving streamed updates must never be evicted.** An `AssistantStreamBlock` is
+live while `finalized` is `False`; a `ToolExecutionBlock` is live while it awaits
+its result; a `SteeringPendingBlock` is live while it sits in
+`_pending_steer_blocks`. Everything else — including `UserMessageBlock` — is
+settled, because it never streams.
+
+**The dual of that rule matters just as much: liveness must eventually be
+*released*.** The projector mounts one `AssistantStreamBlock` per outer-loop ReAct
+iteration, but the agent emits exactly one terminal event per prompt, carrying only
+the *final* iteration number. A turn that drove five iterations therefore mounted
+five blocks and resolved one — the other four sat at `finalized is False` forever,
+and `reset_for_new_run` then cleared the tracking dict, making the leak permanent.
+Because skipping a live child in the eviction walk costs nothing against the
+overflow budget, enough falsely-live blocks let the walk march all the way to the
+newest child. At exactly `live_blocks >= TRANSCRIPT_WINDOW_SIZE` the child it
+reached and deleted was the `UserMessageBlock` the user had just submitted — the
+prompt was accepted, mounted, and silently removed in the same frame.
+
+Three changes close this (spec `61-deleting-user-message-fix`):
+
+- **Run-end sweep.** `TranscriptProjector._seal_stale_assistant_blocks(except_iteration=…)`
+  is called from all three terminal handlers (`_finalize_completed_run`,
+  `_finalize_aborted_run`, `_finalize_failed_run`), so every block a run mounted is
+  sealed before `reset_for_new_run` forgets about it. `AssistantStreamBlock.seal()`
+  is idempotent and content-preserving — it stops the block accepting deltas without
+  discarding what it already streamed.
+- **Seal-on-advance.** `_ensure_assistant_block` calls the same helper right after
+  mounting a new iteration's block. The ReAct iteration counter is strictly
+  monotonic, so mounting iteration *n* proves every earlier block has stopped
+  streaming. This bounds a single long-running turn, which the run-end sweep alone
+  cannot do because it only fires once the run terminates.
+- **Protected tail.** `TRANSCRIPT_PROTECTED_TAIL_SIZE` (`10`) and
+  `_eviction_candidates(children=…)` structurally exclude the newest ten children
+  from the candidate set, regardless of liveness. This is a *starvation guard*, not
+  a replacement for `_is_block_live` — the `finalized` flag remains the correctness
+  guard. Its job is to fix the failure *direction*: any future liveness-tracking bug
+  now degrades to "the window briefly holds a few more widgets than the cap" instead
+  of "the user's message vanished". The constant must stay strictly below
+  `TRANSCRIPT_WINDOW_SIZE`, or enforcement stops converging; a test that patches the
+  window below the tail must patch both.
+
+`tests/tui/test_app.py::TestProtectedTail` reproduces the original threshold sweep
+(`29 / 60 / 79 / 80 / 90` stuck-live blocks) against the real eviction algorithm,
+and `TestLivenessLeakReproduction` drives the whole stack — agent, projector, and
+widgets — to prove a multi-iteration turn no longer hides the next prompt.
+
+#### 4.10.2 Recovering What the Window Collapsed
+
+Evicted content is not lost — it is still on disk as `TranscriptEntryDAO` history.
+Scrolling to the top triggers `_load_older_entries`, which prepends the next batch
+above the current oldest child. That path is driven by one number,
+`_load_older_cursor`, whose contract is **"how many logical entries sit above the
+oldest entry currently mounted"**.
+
+Hydration is what establishes it, and it does so by *bounding what it mounts*:
+`_newest_hydration_entries` returns only the newest `TRANSCRIPT_HYDRATION_ENTRY_LIMIT`
+(30) entries, and the cursor becomes exactly the number left behind. Mounting
+everything and letting the window evict the excess — the previous behaviour —
+made the cursor unrecoverable, because it was assigned `len(entries)` even though
+eviction had already put most of those entries on screen. The first scroll-to-top
+pass then re-fetched the batch that was already mounted and prepended it above
+itself, duplicated and out of chronological order.
+
+The cursor is deliberately **never** derived from evicted widget counts. One entry
+mounts a variable number of widgets — a user turn mounts a separator *and* a
+`UserMessageBlock`, and a single tool call can mount more than one
+`ToolExecutionBlock` — so there is no ratio to invert.
+
+Two consequences worth knowing:
+
+- **The cursor can under-report, never over-report.** Nothing advances it while a
+  live session evicts entries that hydration did mount, so scroll-to-top may not
+  reach a middle band of history. That is the safe direction: under-reporting
+  leaves a gap, over-reporting reintroduces duplicates.
+- **A live, never-resumed session has no cursor at all** — there was nothing to
+  hydrate, so it stays at `0`. `_earlier_summary_text` handles that honestly: with
+  no reachable entry it renders `▲ earlier messages collapsed — resume this session
+  to recover them` rather than the nonsensical `▲ 0 earlier messages hidden` plus a
+  scroll-to-top hint that `_has_older_entries_to_load` would refuse.
 
 ### 4.11 The Fixed Spinner, Terminal Events, and Replay
 

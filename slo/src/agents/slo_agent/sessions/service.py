@@ -65,9 +65,11 @@ from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHi
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
 from src.agents.slo_agent.compaction.compaction_checker import CompactionChecker
 from src.agents.slo_agent.compaction.compacter import Compacter
-from src.agents.slo_agent.compaction.compacted_session_updater import (
-    CompactedSessionUpdater,
+from src.agents.slo_agent.compaction.context_window import (
+    ContextWindowSnapshotDAO,
+    ContextWindowSnapshotService,
 )
+from src.agents.slo_agent.compaction.compacted_session_updater import CompactedSessionUpdater
 from src.agents.slo_agent.rate_limit.service import int_or_none
 from src.agents.slo_agent.rate_limit.dao import (
     ModelRateLimitPolicyDAO,
@@ -90,6 +92,7 @@ from src.agents.slo_agent.events.runtime import (
 )
 from src.agents.slo_agent.sessions.dao import (
     AgentEventSubscriber,
+    ManualCompactionResultDAO,
     SessionConfigDAO,
 )
 from src.agents.slo_agent.sessions.usage import (
@@ -340,8 +343,7 @@ class PromptAttemptResultDAO(BaseModel):
     overflow_recovery_eligible: bool = Field(
         default=False,
         description=(
-            "True when the failure was a recognized provider context overflow "
-            "on an initial attempt."
+            "True when the failure was a recognized provider context overflow " "on an initial attempt."
         ),
     )
 
@@ -442,6 +444,7 @@ class SloAgentSession:
         self._cooldown_until: Optional[float] = None
         self._cooldown_seconds_remaining: Optional[int] = None
         self._startup_notice_shown_in_memory: bool = False
+        self._context_window_snapshot: Optional[ContextWindowSnapshotDAO] = None
         self._usage_snapshot: SessionUsageSnapshotDAO = self._build_usage_snapshot()
         self._orchestrator_context_written: bool = False
         # Idempotency cache for record_workflow_update (spec 57.a.4): inbox
@@ -594,7 +597,32 @@ class SloAgentSession:
             latest_turn=latest_turn,
             session_totals=self._session_usage_totals,
             usage_available=self._usage_is_available(latest_turn=latest_turn),
+            context_window_snapshot=self._context_window_snapshot_for_model(
+                routed_model_name=routed_model_name,
+            ),
         )
+
+    def _context_window_snapshot_for_model(
+        self,
+        *,
+        routed_model_name: str,
+    ) -> Optional[ContextWindowSnapshotDAO]:
+        """Return the cached snapshot only when it matches the routed model.
+
+        Args:
+            routed_model_name (str): Current routed model identity.
+
+        Returns:
+            Optional[ContextWindowSnapshotDAO]: Matching snapshot, if any.
+        """
+        if self._context_window_snapshot is None:
+            return None
+        routed_identity: str = ContextWindowSnapshotService.resolve_model_identity(
+            model_name=routed_model_name,
+        )
+        if self._context_window_snapshot.model_name != routed_identity:
+            return None
+        return self._context_window_snapshot
 
     @staticmethod
     def _usage_is_available(*, latest_turn: TokenUsageTotalsDAO) -> bool:
@@ -977,6 +1005,180 @@ class SloAgentSession:
         self._sync_usage_snapshot_commit()
         return self._rebuild_usage_snapshot().model_copy(deep=True)
 
+    async def context_window_snapshot(self) -> ContextWindowSnapshotDAO:
+        """Measure the active Context Window Snapshot without mutating history.
+
+        Returns:
+            ContextWindowSnapshotDAO: Capacity and durable replay estimate when readable.
+        """
+        model_name: str = self.routed_model_name
+        events: Optional[list[SessionHistoryEventDAO]] = await self._existing_history_events()
+        if events is None:
+            return ContextWindowSnapshotService.without_history(model_name=model_name)
+        return ContextWindowSnapshotService.build(events=events, model_name=model_name)
+
+    async def refresh_context_window_snapshot(self) -> SessionUsageSnapshotDAO:
+        """Cache a newly measured Context Window Snapshot for the footer.
+
+        Returns:
+            SessionUsageSnapshotDAO: Republished usage snapshot with the cached value.
+        """
+        self._context_window_snapshot = await self.context_window_snapshot()
+        self._sync_usage_snapshot_commit()
+        return self._rebuild_usage_snapshot().model_copy(deep=True)
+
+    async def _existing_history_events(self) -> Optional[list[SessionHistoryEventDAO]]:
+        """Read history without creating a session or mutating durable state.
+
+        Returns:
+            Optional[list[SessionHistoryEventDAO]]: Events, or ``None`` when unavailable.
+        """
+        if not self._enable_history or self._history_store is None:
+            return None
+        if not await self._history_store.session_exists(session_id=self._session_id):
+            return None
+        try:
+            return await self._history_store.load_events(session_id=self._session_id)
+        except (OSError, ValueError) as exc:
+            log_error(
+                msg="context_window_history_load_failed",
+                session_id=self._session_id[:8],
+                error=str(exc),
+            )
+            return None
+
+    async def compact_context(self) -> ManualCompactionResultDAO:
+        """Perform one lock-safe Manual Compaction while the session is idle.
+
+        Returns:
+            ManualCompactionResultDAO: Operator-safe terminal result.
+        """
+        if self._lock.locked():
+            return ManualCompactionResultDAO(
+                status="unavailable",
+                detail="cannot compact while a prompt is in flight; run /abort first",
+            )
+        async with self._lock:
+            result: ManualCompactionResultDAO = await self._compact_context_locked()
+        return await self._with_refreshed_context_window(result=result)
+
+    async def _compact_context_locked(self) -> ManualCompactionResultDAO:
+        """Validate history and run Manual Compaction under the session lock.
+
+        Returns:
+            ManualCompactionResultDAO: Result before its post-operation snapshot.
+        """
+        events, history_result = await self._read_manual_compaction_history()
+        if history_result is not None:
+            return history_result
+        if not events or not Compacter.has_viable_cut_point(events=events):
+            return ManualCompactionResultDAO(status="nothing_to_compact")
+        await self._ensure_history_session()
+        readiness_result: Optional[ManualCompactionResultDAO] = (
+            await self._ensure_manual_compaction_agent_ready()
+        )
+        if readiness_result is not None:
+            return readiness_result
+        return await self._run_manual_compaction(events=events)
+
+    async def _read_manual_compaction_history(
+        self,
+    ) -> tuple[Optional[list[SessionHistoryEventDAO]], Optional[ManualCompactionResultDAO]]:
+        """Read viable Manual Compaction input once with typed guard outcomes.
+
+        Returns:
+            tuple[Optional[list[SessionHistoryEventDAO]], Optional[ManualCompactionResultDAO]]:
+                Loaded events or the terminal guard result.
+        """
+        if not self._enable_history or self._history_store is None:
+            return None, ManualCompactionResultDAO(
+                status="unavailable",
+                detail="session history is disabled; there is nothing to compact",
+            )
+        if not await self._history_store.session_exists(session_id=self._session_id):
+            return None, ManualCompactionResultDAO(status="nothing_to_compact")
+        try:
+            events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
+                session_id=self._session_id,
+            )
+        except (OSError, ValueError):
+            return None, ManualCompactionResultDAO(
+                status="unavailable",
+                detail="session history is unavailable; try again after repairing the session",
+            )
+        return events, None
+
+    async def _ensure_manual_compaction_agent_ready(self) -> Optional[ManualCompactionResultDAO]:
+        """Ensure an LLM exists before emitting Manual Compaction lifecycle events.
+
+        Returns:
+            Optional[ManualCompactionResultDAO]: Unavailable result or ``None``.
+        """
+        try:
+            await self._ensure_agent_ready()
+        except Exception as exc:  # noqa: BLE001
+            log_error(msg="manual_compaction_agent_not_ready", error=str(exc))
+            return self._manual_compaction_model_unavailable()
+        if self._agent is not None and self._agent.llm is not None:
+            return None
+        return self._manual_compaction_model_unavailable()
+
+    @staticmethod
+    def _manual_compaction_model_unavailable() -> ManualCompactionResultDAO:
+        """Build the exact unavailable result for an unready model.
+
+        Returns:
+            ManualCompactionResultDAO: Stable model-readiness detail.
+        """
+        return ManualCompactionResultDAO(
+            status="unavailable",
+            detail="the model is not ready; compaction needs an active model",
+        )
+
+    async def _run_manual_compaction(
+        self,
+        *,
+        events: list[SessionHistoryEventDAO],
+    ) -> ManualCompactionResultDAO:
+        """Run the shared forced compaction pipeline after all guards pass.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Validated events handed to the pipeline.
+
+        Returns:
+            ManualCompactionResultDAO: ``compacted`` or ``failed`` result.
+        """
+        turn_id: str = self._allocate_turn_id()
+        await self._emit_compaction_event(kind="compaction_started")
+        try:
+            await self._run_compaction_if_needed(turn_id=turn_id, force=True, events=events)
+        except Exception as exc:  # noqa: BLE001
+            log_error(msg="manual_compaction_failed", error=str(exc))
+            await self._emit_compaction_event(kind="compaction_failed")
+            return ManualCompactionResultDAO(status="failed", detail="compaction failed")
+        await self._emit_compaction_event(kind="compaction_completed")
+        return ManualCompactionResultDAO(status="compacted")
+
+    async def _with_refreshed_context_window(
+        self,
+        *,
+        result: ManualCompactionResultDAO,
+    ) -> ManualCompactionResultDAO:
+        """Attach a best-effort post-operation Context Window Snapshot.
+
+        Args:
+            result (ManualCompactionResultDAO): Terminal operation result.
+
+        Returns:
+            ManualCompactionResultDAO: Result enriched with a snapshot when available.
+        """
+        try:
+            await self.refresh_context_window_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            log_error(msg="context_window_refresh_failed", error=str(exc))
+            return result
+        return result.model_copy(update={"context_window_snapshot": self._context_window_snapshot})
+
     async def should_show_startup_notice(self) -> bool:
         """Return True when the one-time startup notice should be shown.
 
@@ -1126,6 +1328,7 @@ class SloAgentSession:
             AgentEventSubscriber: Coroutine that accepts one positional
                 ``AgentStreamEventDAO`` and dispatches it to all subscribers.
         """
+
         async def _positional_relay(event: AgentStreamEventDAO) -> None:
             """Forward ``event`` to ``_dispatch_event`` using its keyword signature.
 
@@ -1174,8 +1377,8 @@ class SloAgentSession:
                 "attach_sub_agent_pool() must be called before the first prompt. "
                 "The agent has already been built for this session."
             )
-        resolved_tools: list[BaseTool] = list(spawn_tools) if spawn_tools is not None else (
-            [spawn_tool] if spawn_tool is not None else []
+        resolved_tools: list[BaseTool] = (
+            list(spawn_tools) if spawn_tools is not None else ([spawn_tool] if spawn_tool is not None else [])
         )
         if not resolved_tools:
             raise ValueError("attach_sub_agent_pool() requires at least one tool.")
@@ -1183,6 +1386,7 @@ class SloAgentSession:
             ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM,
             DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
         )
+
         assert self._config is not None  # orchestrator sessions are always config-built
         existing_extra: list[BaseTool] = list(self._config.extra_tools or [])
         existing_append: str = self._config.append_system_prompt or ""
@@ -1396,7 +1600,6 @@ class SloAgentSession:
                     result=result,
                 )
                 return
-
 
     def _assert_no_prompt_in_flight(self) -> None:
         """Raise if another prompt is already running on this session.
@@ -1726,9 +1929,7 @@ class SloAgentSession:
         if not self._enable_history or self._history_store is None:
             return
         self._orchestrator_context_written = True
-        context_path: Path = (
-            self._history_store.root / self._session_id / "orchestrator_context.json"
-        )
+        context_path: Path = self._history_store.root / self._session_id / "orchestrator_context.json"
         if context_path.exists():
             return
         try:
@@ -1736,6 +1937,7 @@ class SloAgentSession:
                 OrchestratorContextDAO,
                 dump_json_bytes,
             )
+
             context: OrchestratorContextDAO = OrchestratorContextDAO.build(
                 system_prompt=self._assembled_system_prompt(),
                 user_prompt=user_prompt,
@@ -2502,9 +2704,7 @@ class SloAgentSession:
         if wait_seconds <= 0:
             self._clear_retry_cooldown()
             self._record_request_attempt(
-                estimated_tokens=self._estimated_request_tokens(
-                    text=text, message_history=message_history
-                ),
+                estimated_tokens=self._estimated_request_tokens(text=text, message_history=message_history),
                 now_seconds=time.monotonic(),
             )
             return
@@ -2522,9 +2722,7 @@ class SloAgentSession:
         await asyncio.sleep(wait_seconds)
         self._clear_retry_cooldown()
         self._record_request_attempt(
-            estimated_tokens=self._estimated_request_tokens(
-                text=text, message_history=message_history
-            ),
+            estimated_tokens=self._estimated_request_tokens(text=text, message_history=message_history),
             now_seconds=time.monotonic(),
         )
 
@@ -2545,9 +2743,7 @@ class SloAgentSession:
         Returns:
             int: Local wait duration in seconds.
         """
-        estimated_tokens: int = self._estimated_request_tokens(
-            text=text, message_history=message_history
-        )
+        estimated_tokens: int = self._estimated_request_tokens(text=text, message_history=message_history)
         now_seconds: float = time.monotonic()
         cooldown_wait_seconds: int = self._cooldown_wait_seconds()
         window_wait_seconds: int = self._preflight_wait_seconds(
@@ -2925,6 +3121,7 @@ class SloAgentSession:
         *,
         turn_id: str,
         force: bool = False,
+        events: Optional[list[SessionHistoryEventDAO]] = None,
     ) -> None:
         """Check context size and compact session history when needed.
 
@@ -2960,14 +3157,16 @@ class SloAgentSession:
         if self._agent is None or self._agent.llm is None:
             return
 
-        events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
-            session_id=self._session_id,
-        )
+        compaction_events: list[SessionHistoryEventDAO]
+        if events is not None:
+            compaction_events = events
+        else:
+            compaction_events = await self._history_store.load_events(session_id=self._session_id)
         model_name: str = self._resolve_active_model_name()
 
         if not force:
             should_compact: bool = await CompactionChecker.should_compact(
-                events=events,
+                events=compaction_events,
                 model_name=model_name,
             )
             if not should_compact:
@@ -2976,27 +3175,21 @@ class SloAgentSession:
         log_info(
             msg="compaction_triggered",
             session_id=self._session_id[:8],
-            event_count=len(events),
+            event_count=len(compaction_events),
             model_name=model_name,
             force=force,
         )
 
         result = await Compacter.compact(
-            events=events,
+            events=compaction_events,
             model_name=model_name,
             llm=self._agent.llm,
         )
-        stamped: SessionHistoryEventDAO = await CompactedSessionUpdater.update(
+        await self._history_store.compact_to_boundary(
             session_id=self._session_id,
+            events=compaction_events,
             result=result,
-            store=self._history_store,
             turn_id=turn_id,
-        )
-        await self._history_store.truncate_to_compaction_boundary(
-            session_id=self._session_id,
-            events=events,
-            first_kept_entry_id=result.first_kept_entry_id,
-            summary_event=stamped,
         )
 
         log_info(
@@ -3153,9 +3346,7 @@ class SloAgentSession:
 
     # ---- Private helpers --------------------------------------------------
 
-    async def _on_stream_event_for_history(
-        self, event: AgentStreamEventDAO
-    ) -> None:
+    async def _on_stream_event_for_history(self, event: AgentStreamEventDAO) -> None:
         """Persist sub-agent lifecycle events to the orchestrator's history.
 
         Internal subscriber registered at session construction when history is

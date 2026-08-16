@@ -11,6 +11,7 @@ import pytest
 from textual import events
 from textual.app import App
 from textual.message import Message
+from textual.widget import Widget
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.tools import tool
 
@@ -20,12 +21,15 @@ from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.agents.slo_agent.sessions.dao import ManualCompactionResultDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import (
     LOAD_OLDER_BATCH_SIZE,
+    TRANSCRIPT_HYDRATION_ENTRY_LIMIT,
+    TRANSCRIPT_PROTECTED_TAIL_SIZE,
     TRANSCRIPT_WINDOW_SIZE,
     PromptInput,
     SloTUI,
@@ -358,8 +362,7 @@ class TestSloTUISessionInbox:
             await pilot.pause()
 
             assert any(
-                "[scheduled notice] CI monitor: CI still running." in line[0]
-                for line in app._adapter.lines
+                "[scheduled notice] CI monitor: CI still running." in line[0] for line in app._adapter.lines
             )
             assert await inbox_store.list_pending(session_id="session-1234") == []
             assert await inbox_store.list_done(session_id="session-1234") == [message]
@@ -949,6 +952,37 @@ class TestSloTUISessionInbox:
             # Pending block is consumed and replaced by a normal user message.
             assert list(app.query(SteeringPendingBlock)) == []
             assert ("> be terse", "user-line") in app._adapter.lines
+
+    @pytest.mark.asyncio
+    async def test_compact_while_a_prompt_is_in_flight_renders_the_session_guard(self) -> None:
+        """Textual dispatch keeps the prompt alive and delegates the compact guard once."""
+        session: MagicMock = self._steering_session_stub()
+        session.compact_context = AsyncMock(
+            return_value=ManualCompactionResultDAO(
+                status="unavailable",
+                detail="cannot compact while a prompt is in flight; run /abort first",
+            )
+        )
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            active_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
+            app._in_flight_task = active_task
+            await app.on_prompt_input_submitted(PromptInput.Submitted(text="/compact"))
+            await pilot.pause()
+
+            assert (
+                "cannot compact while a prompt is in flight; run /abort first",
+                "tool-result",
+            ) in app._adapter.lines
+            session.compact_context.assert_awaited_once()
+            assert not active_task.done()
+            assert app._in_flight_task is active_task
+            active_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await active_task
+            app._in_flight_task = None
 
     @pytest.mark.asyncio
     async def test_steer_dispatches_and_renders_while_run_in_flight(self) -> None:
@@ -1750,9 +1784,7 @@ class TestSloTUIThemeToggle:
 class TestSloTUIPoolAttachment:
     """``SloTUI._attach_pool_to_session`` wiring (sub-spec 03.b)."""
 
-    def test_attach_pool_to_session_sets_spawn_tool_on_session(
-        self, tmp_path: Path
-    ) -> None:
+    def test_attach_pool_to_session_sets_spawn_tool_on_session(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` injects the spawn tool into the session config."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -1771,9 +1803,7 @@ class TestSloTUIPoolAttachment:
         tool_names: list[str] = [t.name for t in session._config.extra_tools]
         assert "spawn_sub_agents" in tool_names
 
-    def test_attach_pool_to_session_sets_append_system_prompt(
-        self, tmp_path: Path
-    ) -> None:
+    def test_attach_pool_to_session_sets_append_system_prompt(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` injects the orchestrator addendum."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -1791,9 +1821,7 @@ class TestSloTUIPoolAttachment:
         assert session._config.append_system_prompt is not None
         assert "spawn_sub_agents" in session._config.append_system_prompt
 
-    def test_headless_session_does_not_have_spawn_tool(
-        self, tmp_path: Path
-    ) -> None:
+    def test_headless_session_does_not_have_spawn_tool(self, tmp_path: Path) -> None:
         """``HeadlessRunner``-built sessions have no ``spawn_sub_agents`` tool."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -1807,23 +1835,17 @@ class TestSloTUIPoolAttachment:
             )
         )
 
-        tool_names: list[str] = [
-            t.name for t in (session._config.extra_tools or [])
-        ]
+        tool_names: list[str] = [t.name for t in (session._config.extra_tools or [])]
         assert "spawn_sub_agents" not in tool_names
 
-    def test_pre_built_agent_session_is_skipped_gracefully(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pre_built_agent_session_is_skipped_gracefully(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` is a no-op for pre-built agent sessions."""
         from src.agents.slo_agent.agent import SloAgent
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.providers.faux import FauxChatModel
 
         agent: SloAgent = SloAgent(
-            llm=FauxChatModel(
-                responses=[FauxChatModel.assistant_message(content="ok")]
-            ),
+            llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
             cwd=str(tmp_path),
             tools=[],
         )
@@ -2187,10 +2209,9 @@ class TestTranscriptWindow:
             # Pause extra ticks for any pending worker to complete.
             for _ in range(5):
                 await pilot.pause()
-            non_summary: int = len([
-                c for c in app._transcript_content.children
-                if c is not app._earlier_summary
-            ])
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
             assert non_summary == TRANSCRIPT_WINDOW_SIZE
             assert app._hidden_block_count == extra
             assert app._earlier_summary is not None
@@ -2264,10 +2285,9 @@ class TestTranscriptWindow:
             # Pause multiple ticks for workers to complete.
             for _ in range(10):
                 await pilot.pause()
-            non_summary: int = len([
-                c for c in app._transcript_content.children
-                if c is not app._earlier_summary
-            ])
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
             assert non_summary == TRANSCRIPT_WINDOW_SIZE
             assert app._hidden_block_count == extra
 
@@ -2387,10 +2407,9 @@ class TestTranscriptWindow:
                     app._enforce_transcript_window(),
                 )
             await pilot.pause()
-            non_summary: int = len([
-                c for c in app._transcript_content.children
-                if c is not app._earlier_summary
-            ])
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
             # Exactly-once removal: a second removal loop would drop the count
             # below the window or double the hidden count.
             assert non_summary == TRANSCRIPT_WINDOW_SIZE
@@ -2406,6 +2425,254 @@ class TestTranscriptWindow:
             assert app._window_enforcement_running is False
 
 
+class TestProtectedTail:
+    """Structural starvation guard: the newest tail is never an eviction candidate (spec 61, D3/D4)."""
+
+    def _build_app(self) -> SloTUI:
+        """Build a ``SloTUI`` for protected-tail tests.
+
+        Returns:
+            SloTUI: App ready for ``run_test``.
+        """
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
+        return SloTUI(session=session)
+
+    # -- Unit tests for _eviction_candidates --
+
+    def test_eviction_candidates_excludes_the_newest_tail_when_children_exceed_the_tail_size(
+        self,
+    ) -> None:
+        """The candidate prefix excludes exactly the newest tail-sized suffix."""
+        app: SloTUI = self._build_app()
+        widgets: list[Widget] = [UserMessageBlock(text=f"msg{i}") for i in range(5)]
+
+        with patch("src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE", 3):
+            candidates: list[Widget] = app._eviction_candidates(children=widgets)
+
+        assert candidates == [widgets[0], widgets[1]]
+
+    def test_eviction_candidates_returns_empty_when_children_equal_the_tail_size(self) -> None:
+        """The boundary case of the guard clause: children exactly equal to the tail size."""
+        app: SloTUI = self._build_app()
+        widgets: list[Widget] = [UserMessageBlock(text=f"msg{i}") for i in range(5)]
+
+        with patch("src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE", 5):
+            candidates: list[Widget] = app._eviction_candidates(children=widgets)
+
+        assert candidates == []
+
+    def test_eviction_candidates_returns_empty_when_children_are_fewer_than_the_tail_size(
+        self,
+    ) -> None:
+        """The strictly-below branch of the same guard clause."""
+        app: SloTUI = self._build_app()
+        widgets: list[Widget] = [UserMessageBlock(text=f"msg{i}") for i in range(3)]
+
+        with patch("src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE", 5):
+            candidates: list[Widget] = app._eviction_candidates(children=widgets)
+
+        assert candidates == []
+
+    def test_protected_tail_is_strictly_smaller_than_the_transcript_window(self) -> None:
+        """Pins the convergence invariant documented on the constant."""
+        assert TRANSCRIPT_PROTECTED_TAIL_SIZE < TRANSCRIPT_WINDOW_SIZE
+
+    # -- Pilot tests for the enforcement pass --
+
+    @pytest.mark.asyncio
+    async def test_run_window_enforcement_pass_preserves_the_newest_child_when_every_candidate_is_live(
+        self,
+    ) -> None:
+        """The newest child is never touched even when every candidate reports live."""
+        assert TRANSCRIPT_PROTECTED_TAIL_SIZE == 10
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            await app.action_clear()
+
+            unfinalized_blocks: list[AssistantStreamBlock] = []
+            for _ in range(90):
+                unfinalized_blocks.append(await app.mount_assistant_block())
+            user_block: UserMessageBlock = await app.mount_user_message_block(text="the user's new message")
+            for _ in range(5):
+                await pilot.pause()
+
+            assert user_block in app._transcript_content.children
+            for block in unfinalized_blocks:
+                assert block in app._transcript_content.children
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
+            assert non_summary == 91
+            assert app._hidden_block_count == 0
+
+    @pytest.mark.asyncio
+    async def test_run_window_enforcement_pass_converges_to_the_window_when_overflow_lies_outside_the_tail(
+        self,
+    ) -> None:
+        """Ordinary eviction still converges to exactly the window when overflow lies outside the tail."""
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            await app.action_clear()
+
+            for _ in range(TRANSCRIPT_WINDOW_SIZE + 5):
+                await app.mount_user_message_block(text="settled")
+            for _ in range(5):
+                await pilot.pause()
+
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
+            assert non_summary == TRANSCRIPT_WINDOW_SIZE
+            assert app._hidden_block_count == 5
+            assert app._earlier_summary is not None
+
+    # -- 61.a.4: parametrised threshold reproduction --
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stuck_live", [29, 60, 79, 80, 90])
+    async def test_run_window_enforcement_pass_preserves_the_user_message_at_every_diagnosed_live_block_count(
+        self,
+        stuck_live: int,
+    ) -> None:
+        """The user's new message survives at every stuck-live count the investigation measured."""
+        assert TRANSCRIPT_PROTECTED_TAIL_SIZE == 10
+        app: SloTUI = self._build_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._transcript_content is not None
+            await app.action_clear()
+
+            unfinalized_blocks: list[AssistantStreamBlock] = []
+            for _ in range(stuck_live):
+                unfinalized_blocks.append(await app.mount_assistant_block())
+            assert unfinalized_blocks[0].finalized is False
+
+            settled_filler: int = max(0, TRANSCRIPT_WINDOW_SIZE - stuck_live)
+            for _ in range(settled_filler):
+                await app.mount_user_message_block(text="filler")
+
+            children_before: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
+            assert children_before == max(TRANSCRIPT_WINDOW_SIZE, stuck_live)
+
+            user_block: UserMessageBlock = await app.mount_user_message_block(text="the user's new prompt")
+            for _ in range(5):
+                await pilot.pause()
+
+            children_count: int = len(list(app._transcript_content.children))
+            assert user_block in app._transcript_content.children, (
+                f"stuck_live={stuck_live}, children={children_count}, " f"hidden={app._hidden_block_count}"
+            )
+            assert app._hidden_block_count <= 1
+
+
+class TestLivenessLeakReproduction:
+    """End-to-end proof that a multi-iteration turn never hides the next prompt (spec 61)."""
+
+    @pytest.mark.asyncio
+    async def test_multi_iteration_turn_does_not_hide_the_next_prompt(self) -> None:
+        """Spec 61: a multi-iteration turn never hides the user's next prompt.
+
+        Deliberately runs in the non-converging window regime —
+        TRANSCRIPT_WINDOW_SIZE is patched to 5 while TRANSCRIPT_PROTECTED_TAIL_SIZE
+        keeps its production value of 10, so the eviction candidate set is always
+        empty and the enforcer removes nothing. Nothing asserted here depends on
+        eviction making progress: the `finalized` assertions prove the liveness
+        fix (D1/D2) at source, and the visible-prompt assertion proves the
+        user-facing symptom is gone.
+        """
+
+        @tool
+        def stub_echo(text: str) -> str:
+            """Echo the provided text."""
+            return text
+
+        agent: SloAgent = SloAgent(
+            llm=FauxChatModel(
+                responses=[
+                    FauxChatModel.assistant_message(
+                        tool_calls=[FauxChatModel.tool_call_dict(name="stub_echo", args={"text": f"x{i}"})],
+                    )
+                    for i in range(5)
+                ]
+                + [
+                    FauxChatModel.assistant_message(content="all done"),
+                ],
+                chunk_scripts=[
+                    [
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": f"pass {i}"}],
+                            tool_calls=[{"id": f"call_{i}", "name": "stub_echo", "args": {"text": f"x{i}"}}],
+                        )
+                    ]
+                    for i in range(5)
+                ]
+                + [
+                    [AIMessageChunk(content=[{"type": "text", "text": "all done"}])],
+                ],
+            ),
+            tools=[stub_echo],
+        )
+        session = SloAgentSession(
+            agent=agent,
+            workdir=Path(".").resolve(),
+            session_id=str(uuid4()),
+        )
+        app: SloTUI = SloTUI(session=session)
+
+        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app._input is not None
+                assert app._transcript_content is not None
+                await app.action_clear()
+
+                # --- first prompt: six iterations ---
+                app._input.load_text("first prompt")
+                await pilot.press("enter")
+                await _await_idle(app=app, pilot=pilot, timeout_seconds=10.0)
+                await pilot.pause()
+
+                assistant_blocks: list[AssistantStreamBlock] = list(app.query(selector=AssistantStreamBlock))
+                assert len(assistant_blocks) >= 2, (
+                    "scripted turn did not drive multiple outer-loop iterations; "
+                    f"mounted {len(assistant_blocks)} assistant blocks"
+                )
+
+                # LOAD-BEARING: D1/D2 proof — every block except the last is sealed.
+                non_terminal_blocks: list[AssistantStreamBlock] = assistant_blocks[:-1]
+                for index, block in enumerate(non_terminal_blocks):
+                    assert block.finalized is True, (
+                        f"assistant block {index} of {len(assistant_blocks)} still "
+                        "reports itself live after the run terminated"
+                    )
+
+                # --- second prompt ---
+                app._input.load_text("second prompt")
+                await pilot.press("enter")
+                await _await_idle(app=app, pilot=pilot, timeout_seconds=10.0)
+                for _ in range(5):
+                    await pilot.pause()
+
+                # SYMPTOM-LEVEL: the user's message is on screen.
+                user_texts: list[str] = [
+                    child.text
+                    for child in app._transcript_content.children
+                    if isinstance(child, UserMessageBlock)
+                ]
+                assert "second prompt" in user_texts, (
+                    f"the second prompt's UserMessageBlock was evicted; "
+                    f"mounted user texts={user_texts}, "
+                    f"children={len(list(app._transcript_content.children))}, "
+                    f"hidden={app._hidden_block_count}"
+                )
+
+
 class TestLoadOlderEntries:
     """Load-older scrollback behavior for spec 60."""
 
@@ -2419,10 +2686,7 @@ class TestLoadOlderEntries:
         Returns:
             list[TranscriptEntryDAO]: Chronological assistant entries.
         """
-        return [
-            TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}")
-            for index in range(count)
-        ]
+        return [TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}") for index in range(count)]
 
     @staticmethod
     def _build_history_app(*, entries: list[TranscriptEntryDAO]) -> SloTUI:
@@ -2482,23 +2746,17 @@ class TestLoadOlderEntries:
         return answers
 
     @pytest.mark.asyncio
-    async def test_hydration_initializes_cursor_to_entry_count(self) -> None:
-        """Replay hydration initializes the cursor from ordered history length."""
-        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
-        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
-            app: SloTUI = self._build_history_app(entries=entries)
-            async with app.run_test(size=(80, 24)) as pilot:
-                await pilot.pause()
-                assert app._load_older_cursor == 12
-                assert app._earlier_summary is not None
-                assert "12 earlier messages hidden" in str(app._earlier_summary.renderable)
-
-    @pytest.mark.asyncio
     async def test_load_older_prepends_entries_below_summary_in_chronological_order(self) -> None:
-        """One load-older pass prepends the batch immediately before the cursor."""
+        """One load-older pass prepends the batch immediately before the cursor.
+
+        Asserts the whole visible list rather than a prefix: an earlier version
+        of this test sliced ``[:5]``, which let hydration's over-reported cursor
+        prepend a duplicate copy of the mounted batch without failing anything.
+        """
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
             patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
@@ -2507,14 +2765,19 @@ class TestLoadOlderEntries:
                 await app._load_older_entries()
                 await pilot.pause()
                 visible_answers: list[str] = self._visible_assistant_answers(app=app)
-                assert visible_answers[:5] == [
+                assert visible_answers == [
+                    "assistant-2",
+                    "assistant-3",
+                    "assistant-4",
+                    "assistant-5",
+                    "assistant-6",
                     "assistant-7",
                     "assistant-8",
                     "assistant-9",
                     "assistant-10",
                     "assistant-11",
                 ]
-                assert app._load_older_cursor == 7
+                assert app._load_older_cursor == 2
 
     @pytest.mark.asyncio
     async def test_load_older_preserves_scroll_anchor(self) -> None:
@@ -2522,6 +2785,7 @@ class TestLoadOlderEntries:
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=14)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
             patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 4),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
@@ -2537,12 +2801,17 @@ class TestLoadOlderEntries:
                 assert app._transcript_scroll.scroll_y <= app._transcript_scroll.max_scroll_y
 
     @pytest.mark.asyncio
-    async def test_load_older_removes_summary_when_cursor_reaches_zero(self) -> None:
-        """The summary widget disappears when all older entries are loaded."""
+    async def test_load_older_keeps_summary_when_cursor_is_still_positive(self) -> None:
+        """The summary survives a pass that leaves older entries unreached.
+
+        Renamed from a second ``test_load_older_removes_summary_when_cursor_reaches_zero``
+        definition, which shadowed the one below it so this case never ran.
+        """
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=8)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
-            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 3),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 2),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
             async with app.run_test(size=(80, 24)) as pilot:
@@ -2552,7 +2821,9 @@ class TestLoadOlderEntries:
                 assert app._load_older_cursor == 3
                 assert app._earlier_summary is not None
                 assert app._transcript_content is not None
-                assert any("transcript-earlier-summary" == child.id for child in app._transcript_content.children)
+                assert any(
+                    "transcript-earlier-summary" == child.id for child in app._transcript_content.children
+                )
 
     @pytest.mark.asyncio
     async def test_load_older_removes_summary_when_cursor_reaches_zero(self) -> None:
@@ -2560,6 +2831,7 @@ class TestLoadOlderEntries:
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=5)
         with (
             patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 3),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 3),
             patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 5),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
@@ -2570,7 +2842,9 @@ class TestLoadOlderEntries:
                 assert app._load_older_cursor == 0
                 assert app._earlier_summary is None
                 assert app._transcript_content is not None
-                assert all(child.id != "transcript-earlier-summary" for child in app._transcript_content.children)
+                assert all(
+                    child.id != "transcript-earlier-summary" for child in app._transcript_content.children
+                )
 
     @pytest.mark.asyncio
     async def test_fetch_older_batch_returns_empty_without_cursor_or_history_read(self) -> None:
@@ -2611,7 +2885,10 @@ class TestLoadOlderEntries:
     async def test_load_older_is_single_flight(self) -> None:
         """Concurrent load-older requests do not double-run the pass."""
         entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
-        with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
+        with (
+            patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5),
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
+        ):
             app: SloTUI = self._build_history_app(entries=entries)
             async with app.run_test(size=(80, 24)) as pilot:
                 await pilot.pause()
@@ -2619,7 +2896,9 @@ class TestLoadOlderEntries:
                 async def _slow_pass() -> None:
                     await asyncio.sleep(0)
 
-                with patch.object(app, "_run_load_older_pass", new=AsyncMock(side_effect=_slow_pass)) as mock_pass:
+                with patch.object(
+                    app, "_run_load_older_pass", new=AsyncMock(side_effect=_slow_pass)
+                ) as mock_pass:
                     await asyncio.gather(app._load_older_entries(), app._load_older_entries())
 
                 mock_pass.assert_awaited_once_with()
@@ -2671,7 +2950,9 @@ class TestLoadOlderEntries:
             assert app._transcript_is_at_bottom() is True
 
     @pytest.mark.asyncio
-    async def test_echo_user_line_rearms_follow_for_subsequent_streaming_after_window_activation(self) -> None:
+    async def test_echo_user_line_rearms_follow_for_subsequent_streaming_after_window_activation(
+        self,
+    ) -> None:
         """A stranded live viewport shows the submitted user turn and remains bottom-pinned while streaming."""
         app: SloTUI = self._build_history_app(entries=[])
         with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
@@ -2726,6 +3007,158 @@ class TestLoadOlderEntries:
         assert kwargs["exit_on_error"] is False
 
 
+class TestHydrationEntryCursor:
+    """Hydration bounds what it mounts and reports the cursor honestly (spec 62)."""
+
+    @staticmethod
+    def _assistant_entries(*, count: int) -> list[TranscriptEntryDAO]:
+        """Build ordered replay entries with distinctive assistant answers.
+
+        Args:
+            count (int): Number of entries to build.
+
+        Returns:
+            list[TranscriptEntryDAO]: Chronological assistant entries.
+        """
+        return [TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}") for index in range(count)]
+
+    def _build_history_app(self, *, entries: list[TranscriptEntryDAO]) -> SloTUI:
+        """Build a TUI whose replay path returns ``entries``.
+
+        Args:
+            entries (list[TranscriptEntryDAO]): Ordered replay entries.
+
+        Returns:
+            SloTUI: App under test.
+        """
+        return TestLoadOlderEntries._build_history_app(entries=entries)
+
+    @staticmethod
+    def _visible_assistant_answers(*, app: SloTUI) -> list[str]:
+        """Return assistant answers in on-screen transcript order.
+
+        Args:
+            app (SloTUI): App under inspection.
+
+        Returns:
+            list[str]: Visible assistant answers from top to bottom.
+        """
+        assert app._transcript_content is not None
+        return [
+            child.answer_text
+            for child in app._transcript_content.children
+            if isinstance(child, AssistantStreamBlock)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_hydration_mounts_only_the_newest_entry_limit_entries(self) -> None:
+        """Hydration mounts the newest batch instead of every entry on disk."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+
+        with patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+
+                assert self._visible_assistant_answers(app=app) == [
+                    "assistant-7",
+                    "assistant-8",
+                    "assistant-9",
+                    "assistant-10",
+                    "assistant-11",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_hydration_cursor_counts_only_entries_it_did_not_mount(self) -> None:
+        """The cursor is the count of entries left above the mounted batch."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+
+        with patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+
+                assert app._load_older_cursor == 7
+                assert app._earlier_summary is not None
+                assert "7 earlier messages hidden" in str(app._earlier_summary.renderable)
+
+    @pytest.mark.asyncio
+    async def test_hydration_cursor_is_zero_when_history_fits_within_the_entry_limit(self) -> None:
+        """Nothing is hidden when the whole history is mounted."""
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=3)
+
+        with patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+
+                assert app._load_older_cursor == 0
+                assert app._earlier_summary is None
+
+    @pytest.mark.asyncio
+    async def test_load_older_after_hydration_prepends_no_duplicate_entries(self) -> None:
+        """The batch prepended by a load-older pass never repeats a mounted entry.
+
+        This is the regression guard for the defect diagnosed alongside spec 61:
+        hydration used to set the cursor to the *total* entry count, so the first
+        load-older pass re-fetched the newest batch — the entries already on
+        screen — and prepended them above themselves, duplicated and out of
+        chronological order.
+        """
+        entries: list[TranscriptEntryDAO] = self._assistant_entries(count=12)
+
+        with (
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 5),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 4),
+        ):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._load_older_entries()
+                await pilot.pause()
+
+                visible_answers: list[str] = self._visible_assistant_answers(app=app)
+                assert visible_answers == [
+                    "assistant-3",
+                    "assistant-4",
+                    "assistant-5",
+                    "assistant-6",
+                    "assistant-7",
+                    "assistant-8",
+                    "assistant-9",
+                    "assistant-10",
+                    "assistant-11",
+                ]
+                assert len(visible_answers) == len(set(visible_answers))
+                assert app._load_older_cursor == 3
+
+    @pytest.mark.asyncio
+    async def test_earlier_summary_omits_the_load_hint_when_no_entries_can_be_loaded(self) -> None:
+        """A live session with evictions never advertises an unreachable load path.
+
+        With no resumable history the cursor stays at zero, so the summary must
+        not claim "0 earlier messages hidden" nor promise a scroll-to-top
+        recovery that ``_has_older_entries_to_load`` would refuse.
+        """
+        app: SloTUI = self._build_history_app(entries=[])
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app._hidden_block_count = 4
+            await app._update_earlier_summary()
+            await pilot.pause()
+
+            assert app._load_older_cursor == 0
+            assert app._earlier_summary is not None
+            summary_text: str = str(app._earlier_summary.renderable)
+            assert "0 earlier messages hidden" not in summary_text
+            assert "scroll to the top" not in summary_text
+
+    def test_hydration_entry_limit_is_positive(self) -> None:
+        """Pins the constant's only load-bearing invariant."""
+        assert TRANSCRIPT_HYDRATION_ENTRY_LIMIT > 0
+
+
 class TestTypingNoReflow:
     """Typing plain prose must not reflow the transcript (spec 59, Bug #1, AC #1)."""
 
@@ -2752,9 +3185,11 @@ class TestTypingNoReflow:
             # Install a spy that records every state passed to update_state.
             recorded_states: list[SlashSuggestionStateDAO] = []
             original_update_state = app._suggestion_menu.update_state
+
             def _spy_update_state(*, state: SlashSuggestionStateDAO) -> None:
                 recorded_states.append(state)
                 original_update_state(state=state)
+
             app._suggestion_menu.update_state = _spy_update_state  # type: ignore[method-assign]
             # Focus the prompt and type plain prose (no leading slash).
             app.set_focus(app._input)
@@ -2763,8 +3198,8 @@ class TestTypingNoReflow:
             await pilot.pause()
             # Every state the spy recorded must be non-visible.
             for recorded_state in recorded_states:
-                assert recorded_state.visible is False, (
-                    f"Expected visible=False for plain prose but got {recorded_state}"
-                )
+                assert (
+                    recorded_state.visible is False
+                ), f"Expected visible=False for plain prose but got {recorded_state}"
             # The final stored state on the menu must be non-visible.
             assert app._suggestion_menu._state.visible is False

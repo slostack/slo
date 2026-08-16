@@ -48,7 +48,9 @@ class TestSlashCommandRegistry:
             "reasoning",
             "theme",
             "tree",
+            "context-window",
             "new",
+            "compact",
             "rename",
             "preferences",
         ]

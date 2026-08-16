@@ -19,6 +19,7 @@ from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
+from config.logger import log_error
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
@@ -81,8 +82,62 @@ reflow exceeds the ~16 ms frame budget. Tune against the reflow-slope
 measurement in the manual smoke step (7.6) if needed; a follow-up may make
 it adaptive to viewport height."""
 
+TRANSCRIPT_PROTECTED_TAIL_SIZE: int = 10
+"""Newest transcript children the window enforcer may never evict, structurally.
+
+This is a starvation guard, independent of per-block liveness bookkeeping
+(_is_block_live). _run_window_enforcement_pass walks candidates oldest-first
+and stops once it has removed `overflow` children — but skipping a live child
+costs nothing against that budget, so a transcript saturated with
+permanently-live blocks lets the walk reach all the way to the newest child,
+including one mounted this very frame (the user's own prompt). Excluding the
+newest TRANSCRIPT_PROTECTED_TAIL_SIZE children from the candidate set entirely
+converts that failure mode from "the user's message disappears" into "the
+window temporarily holds a few more children than TRANSCRIPT_WINDOW_SIZE" —
+the correct failure direction.
+
+Invariant: this value must stay strictly below TRANSCRIPT_WINDOW_SIZE. At or
+above it, _eviction_candidates returns an empty list for every transcript of
+TRANSCRIPT_PROTECTED_TAIL_SIZE children or fewer and window enforcement stops
+converging altogether. Any test that patches
+`src.tui.app.TRANSCRIPT_WINDOW_SIZE` to a value at or below this one MUST
+either patch `src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE` in the same `with`
+block, or state in its docstring that it deliberately relies on the
+non-converging regime and assert nothing that depends on eviction making
+progress.
+
+10 is chosen to comfortably exceed the mounted-widget count of a small
+tool-calling turn while remaining a small fraction of TRANSCRIPT_WINDOW_SIZE
+(80), so it does not meaningfully weaken the windowing budget in the common
+case where liveness bookkeeping (D1/D2, spec 61) is working correctly."""
+
 LOAD_OLDER_BATCH_SIZE: int = 30
 """Number of older transcript entries to prepend per scroll-to-top trigger."""
+
+TRANSCRIPT_HYDRATION_ENTRY_LIMIT: int = 30
+"""Newest logical entries a resumed session mounts during replay hydration.
+
+Hydration used to project *every* entry on disk and let the transcript window
+evict the excess back down. That made `_load_older_cursor` — which the
+load-older path reads as "how many entries sit above the oldest mounted one" —
+unrecoverable: it was assigned `len(entries)`, the total, even though eviction
+had already put most of those entries on screen. The first scroll-to-top pass
+then re-fetched `all_entries[-LOAD_OLDER_BATCH_SIZE:]`, the batch already
+mounted, and prepended it above itself, duplicated and out of order.
+
+Bounding hydration to the newest entries makes the cursor exact by
+construction: whatever this slice leaves behind is precisely what is not on
+screen. There is no widget-to-entry attribution anywhere in this calculation,
+which matters because that mapping is not derivable — one entry mounts a
+variable number of widgets (a user turn mounts a separator *and* a block), and
+a single tool call can mount more than one `ToolExecutionBlock`.
+
+The cursor may still *under*-report once live eviction starts trimming entries
+this slice did mount, since nothing advances it during a live session. That
+failure direction is deliberate: under-reporting leaves a gap in what
+scroll-to-top can reach, while over-reporting reintroduces the duplicate
+prepend. Never raise this cursor past the count of entries hydration declined
+to mount."""
 
 _NEAR_TOP_THRESHOLD: float = 2.0
 """Scroll-y threshold that counts as reaching the transcript top."""
@@ -469,6 +524,7 @@ class SloTUI(App):
         self._session.subscribe(handler=self._render_event)
         await self._initialize_session_delivery()
         self._refresh_title_bar()
+        await self._session.refresh_context_window_snapshot()
         self._refresh_usage_status_bar()
         if self._input is not None:
             self._input.focus()
@@ -491,11 +547,37 @@ class SloTUI(App):
             entries: list[TranscriptEntryDAO] = await self._session.hydrate_transcript_entries()
         except Exception:  # noqa: BLE001 — replay must never crash boot
             return
-        for entry in entries:
+        mountable: list[TranscriptEntryDAO] = self._newest_hydration_entries(entries=entries)
+        self._load_older_cursor = len(entries) - len(mountable)
+        for entry in mountable:
             await self._projector.project_replay_entry(entry=entry)
-        self._load_older_cursor = len(entries)
         await self._update_earlier_summary()
         self._scroll_transcript_to_end()
+
+    @staticmethod
+    def _newest_hydration_entries(
+        *,
+        entries: list[TranscriptEntryDAO],
+    ) -> list[TranscriptEntryDAO]:
+        """Return the newest entries replay hydration should mount.
+
+        Bounding the mounted slice is what keeps ``_load_older_cursor`` exact:
+        the entries this method declines to return are precisely the ones the
+        load-older path may still fetch (see
+        ``TRANSCRIPT_HYDRATION_ENTRY_LIMIT``).
+
+        Args:
+            entries (list[TranscriptEntryDAO]): Chronological entries read from
+                the session's on-disk history.
+
+        Returns:
+            list[TranscriptEntryDAO]: The newest
+                ``TRANSCRIPT_HYDRATION_ENTRY_LIMIT`` entries, or every entry
+                when history is shorter than that limit.
+        """
+        if len(entries) <= TRANSCRIPT_HYDRATION_ENTRY_LIMIT:
+            return entries
+        return entries[-TRANSCRIPT_HYDRATION_ENTRY_LIMIT:]
 
     async def _maybe_render_startup_notice(self) -> None:
         """Render the one-time startup notice for new sessions only."""
@@ -1442,6 +1524,13 @@ class SloTUI(App):
             self._refresh_title_bar()
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
+            await self._session.refresh_context_window_snapshot()
+            self._refresh_usage_status_bar()
+        if result.refresh_context_window:
+            await self._session.refresh_context_window_snapshot()
+            self._refresh_usage_status_bar()
+        if result.refresh_usage_status:
+            self._refresh_usage_status_bar()
         if result.toggle_theme:
             self._toggle_theme()
         if result.open_auth_modal:
@@ -1479,7 +1568,7 @@ class SloTUI(App):
         await self._maybe_render_startup_notice()
         self._session.subscribe(handler=self._render_event)
         self._refresh_title_bar()
-        self._session.refresh_usage_snapshot()
+        await self._session.refresh_context_window_snapshot()
         self._refresh_usage_status_bar()
 
     async def _rename_current_session(self, *, session_name: str) -> None:
@@ -1693,6 +1782,27 @@ class SloTUI(App):
             return child in self._pending_steer_blocks
         return False
 
+    def _eviction_candidates(self, *, children: list[Widget]) -> list[Widget]:
+        """Return the prefix of ``children`` eligible for window eviction.
+
+        Excludes the newest ``TRANSCRIPT_PROTECTED_TAIL_SIZE`` children
+        structurally, regardless of liveness — this is the starvation guard
+        that keeps ``_run_window_enforcement_pass`` from ever walking into the
+        newest content, even when every older child (incorrectly) reports
+        itself live (spec 61, D3).
+
+        Args:
+            children (list[Widget]): Non-summary transcript children, oldest
+                first.
+
+        Returns:
+            list[Widget]: The oldest-first prefix outside the protected tail;
+                empty when ``children`` does not exceed the tail size.
+        """
+        if len(children) <= TRANSCRIPT_PROTECTED_TAIL_SIZE:
+            return []
+        return children[:-TRANSCRIPT_PROTECTED_TAIL_SIZE]
+
     async def _enforce_transcript_window(self) -> None:
         """Keep the transcript within the window; single-flight and coalescing.
 
@@ -1727,11 +1837,15 @@ class SloTUI(App):
         """Remove the oldest settled children until the window holds.
 
         Runs only under the single-flight guard in ``_enforce_transcript_window``,
-        so it is never concurrent with another pass. Skips live blocks, folds
-        removals into the summary, and wraps the mutation in the scroll idiom so
-        the viewport does not jump. The hidden count is incremented before the
-        ``await`` so a mid-flight interruption cannot under-count. N may briefly
-        exceed the window during a single turn holding many in-flight blocks.
+        so it is never concurrent with another pass. Walks only children outside
+        the protected tail (``_eviction_candidates``, spec 61 D3), skips live
+        blocks within that set, folds removals into the summary, and wraps the
+        mutation in the scroll idiom so the viewport does not jump. The hidden
+        count is incremented before the ``await`` so a mid-flight interruption
+        cannot under-count. N may briefly exceed the window during a single turn
+        holding many in-flight blocks, or when the protected tail structurally
+        prevents convergence (see ``TRANSCRIPT_PROTECTED_TAIL_SIZE``) — that
+        over-budget state is the intended, safe failure direction.
         """
         if self._back_scroll_mode:
             return
@@ -1743,9 +1857,10 @@ class SloTUI(App):
         overflow: int = len(children) - TRANSCRIPT_WINDOW_SIZE
         if overflow <= 0:
             return
+        candidates: list[Widget] = self._eviction_candidates(children=children)
         follow_snapshot: bool = self._capture_follow_snapshot()
         removed: int = 0
-        for child in children:
+        for child in candidates:
             if removed >= overflow:
                 break
             if self._is_block_live(child=child):
@@ -1771,15 +1886,31 @@ class SloTUI(App):
             if self._hidden_block_count == 0 or self._back_scroll_mode:
                 await self._remove_earlier_summary()
                 return
-        text: str = (
-            f"▲ {hidden_count} earlier messages hidden "
-            f"— scroll to the top to load older messages"
-        )
+        text: str = self._earlier_summary_text(hidden_count=hidden_count)
         if self._earlier_summary is None:
             self._earlier_summary = Static(text, id="transcript-earlier-summary")
             await self._transcript_content.mount(self._earlier_summary, before=0)
             return
         self._earlier_summary.update(text)
+
+    @staticmethod
+    def _earlier_summary_text(*, hidden_count: int) -> str:
+        """Return the earlier-messages summary line for ``hidden_count``.
+
+        Args:
+            hidden_count (int): Older logical entries a scroll-to-top pass can
+                still load.
+
+        Returns:
+            str: The summary line. When no entry is reachable the line names
+                the collapse without a count and without the scroll-to-top
+                hint, so the banner never advertises a recovery pass
+                ``_has_older_entries_to_load`` would refuse — the state a live,
+                never-resumed session sits in once the window starts evicting.
+        """
+        if hidden_count == 0:
+            return "▲ earlier messages collapsed — resume this session to recover them"
+        return f"▲ {hidden_count} earlier messages hidden " f"— scroll to the top to load older messages"
 
     async def _remove_earlier_summary(self) -> None:
         """Remove and dereference the earlier-messages summary widget."""
@@ -1980,7 +2111,6 @@ class SloTUI(App):
             return
         self._adapter.record(content=content, classes=classes)
 
-
     async def _run_prompt(self, *, text: str) -> None:
         """Drain ``session.invoke`` to completion.
 
@@ -2007,11 +2137,19 @@ class SloTUI(App):
             if not saw_failed_event:
                 self._render_run_error(exc=exc)
         finally:
+            await self._refresh_context_window_after_prompt()
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
             await self._unmount_spinner()
             await self._cleanup_sub_agent_state()
             self._in_flight_task = None
+
+    async def _refresh_context_window_after_prompt(self) -> None:
+        """Refresh durable Context Window Snapshot exactly once at prompt cleanup."""
+        try:
+            await self._session.refresh_context_window_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            log_error(msg="context_window_prompt_refresh_failed", error=str(exc))
 
     def _render_run_error(self, *, exc: BaseException) -> None:
         """Render a run-level error into the transcript.
@@ -2386,7 +2524,7 @@ class SloTUI(App):
             return []
         all_entries: list[TranscriptEntryDAO] = await self._read_all_entries()
         batch_start: int = max(0, self._load_older_cursor - LOAD_OLDER_BATCH_SIZE)
-        return all_entries[batch_start:self._load_older_cursor]
+        return all_entries[batch_start : self._load_older_cursor]
 
     async def _prepend_older_entries(self, *, entries: list[TranscriptEntryDAO]) -> None:
         """Project and prepend entries in chronological order below the summary."""
@@ -2418,7 +2556,6 @@ class SloTUI(App):
         if self._transcript_scroll is None:
             return 0.0
         return self._transcript_scroll.scroll_y
-
 
     def _capture_load_older_anchor(self) -> _LoadOlderAnchorDAO:
         """Capture the scroll anchor before a prepend pass."""

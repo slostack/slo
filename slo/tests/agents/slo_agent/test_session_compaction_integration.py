@@ -34,7 +34,6 @@ from src.agents.slo_agent.history.projector import SessionHistoryProjector
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -105,6 +104,7 @@ def _build_session(
     mock_store.update_metadata_model_name = AsyncMock()
     mock_store.session_exists = AsyncMock(return_value=True)
     mock_store.truncate_to_compaction_boundary = AsyncMock()
+    mock_store.compact_to_boundary = AsyncMock()
 
     # A real SloAgent backed by a FauxChatModel — mirrors the established
     # session-test pattern. A bare MagicMock agent breaks construction because
@@ -263,11 +263,7 @@ async def test_run_compaction_calls_full_pipeline_when_threshold_crossed() -> No
     ):
         await session._run_compaction_if_needed(turn_id="turn-1")
         mock_compact.assert_awaited_once()
-        mock_update.assert_awaited_once()
-        call_kwargs = mock_update.call_args.kwargs
-        assert call_kwargs["session_id"] == "sess-test"
-        assert call_kwargs["turn_id"] == "turn-1"
-        assert call_kwargs["result"] is fake_result
+        mock_update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -311,11 +307,11 @@ async def test_run_compaction_calls_truncate_after_updater() -> None:
     ):
         await session._run_compaction_if_needed(turn_id="turn-1")
 
-    mock_store.truncate_to_compaction_boundary.assert_awaited_once()
-    call_kwargs = mock_store.truncate_to_compaction_boundary.call_args.kwargs
+    mock_store.compact_to_boundary.assert_awaited_once()
+    call_kwargs = mock_store.compact_to_boundary.call_args.kwargs
     assert call_kwargs["session_id"] == "sess-test"
-    assert call_kwargs["first_kept_entry_id"] == "e-kept"
-    assert call_kwargs["summary_event"] is stamped_summary
+    assert call_kwargs["result"] is fake_result
+    assert call_kwargs["turn_id"] == "turn-1"
     assert call_kwargs["events"] is events
 
 
@@ -331,7 +327,7 @@ async def test_run_compaction_does_not_call_truncate_when_threshold_not_crossed(
     ):
         await session._run_compaction_if_needed(turn_id="turn-1")
 
-    mock_store.truncate_to_compaction_boundary.assert_not_awaited()
+    mock_store.compact_to_boundary.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -368,7 +364,7 @@ async def test_run_compaction_force_bypasses_threshold_checker() -> None:
         await session._run_compaction_if_needed(turn_id="turn-1", force=True)
         mock_check.assert_not_called()
         mock_compact.assert_awaited_once()
-        mock_update.assert_awaited_once()
+        mock_update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -591,30 +587,23 @@ async def test_projector_skips_pre_cut_events_after_compaction() -> None:
     assert messages, "build_message_history must return a non-empty list"
 
     first = messages[0]
-    assert isinstance(first, HumanMessage), (
-        f"First message after compaction must be HumanMessage, got {type(first)}"
-    )
+    assert isinstance(
+        first, HumanMessage
+    ), f"First message after compaction must be HumanMessage, got {type(first)}"
     first_content: str = first.content if isinstance(first.content, str) else str(first.content)
-    assert "[Previous conversation summary]" in first_content, (
-        "Summary HumanMessage must begin with '[Previous conversation summary]'"
-    )
-    assert "foo.py" in first_content or "bar.py" in first_content, (
-        "Summary text must appear in the HumanMessage content"
-    )
+    assert (
+        "[Previous conversation summary]" in first_content
+    ), "Summary HumanMessage must begin with '[Previous conversation summary]'"
+    assert (
+        "foo.py" in first_content or "bar.py" in first_content
+    ), "Summary text must appear in the HumanMessage content"
 
-    all_contents = " ".join(
-        m.content if isinstance(m.content, str) else str(m.content)
-        for m in messages
-    )
-    assert "old pre-compaction message" not in all_contents, (
-        "Pre-cut user message must be excluded from projected history"
-    )
-    assert "what did you change?" in all_contents, (
-        "Retained user message must appear in projected history"
-    )
-    assert "error handling" in all_contents, (
-        "Retained assistant message must appear in projected history"
-    )
+    all_contents = " ".join(m.content if isinstance(m.content, str) else str(m.content) for m in messages)
+    assert (
+        "old pre-compaction message" not in all_contents
+    ), "Pre-cut user message must be excluded from projected history"
+    assert "what did you change?" in all_contents, "Retained user message must appear in projected history"
+    assert "error handling" in all_contents, "Retained assistant message must appear in projected history"
 
 
 # ---------------------------------------------------------------------------
@@ -832,9 +821,9 @@ async def test_retry_attempt_does_not_persist_duplicate_user_message() -> None:
 
     appended_kinds = [call.kwargs["event"].kind for call in mock_store.append_event.call_args_list]
     user_message_count = appended_kinds.count("user_message")
-    assert user_message_count == 1, (
-        f"Expected exactly one user_message, got {user_message_count}: {appended_kinds}"
-    )
+    assert (
+        user_message_count == 1
+    ), f"Expected exactly one user_message, got {user_message_count}: {appended_kinds}"
 
 
 @pytest.mark.asyncio
@@ -935,17 +924,14 @@ async def test_preflight_swallows_compaction_error_and_clears_flag() -> None:
 def test_is_context_overflow_error_openai_your_input_exceeds() -> None:
     """OpenAI / Codex phrase 'your input exceeds' is classified as overflow."""
     exc = RuntimeError(
-        "Your input exceeds the context window of this model."
-        " Please reduce your input and try again."
+        "Your input exceeds the context window of this model." " Please reduce your input and try again."
     )
     assert SloAgentSession._is_context_overflow_error(exc=exc) is True
 
 
 def test_is_context_overflow_error_exceeds_the_context_window() -> None:
     """Phrase 'exceeds the context window' alone is classified as overflow."""
-    exc = RuntimeError(
-        "BadRequestError(400): The request exceeds the context window of the model."
-    )
+    exc = RuntimeError("BadRequestError(400): The request exceeds the context window of the model.")
     assert SloAgentSession._is_context_overflow_error(exc=exc) is True
 
 

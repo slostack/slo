@@ -16,6 +16,7 @@ from src.agents.slo_agent.history.dao import (
 )
 from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
+    HistoryCompactionRecoveryError,
 )
 from src.agents.slo_agent.history.store_protocol import (
     SessionHistoryStoreProtocol,
@@ -36,6 +37,7 @@ __all__ = [
     "SessionHistoryEventPayloadDAO",
     "SessionHistoryMetadataDAO",
     "FilesystemSessionHistoryStore",
+    "HistoryCompactionRecoveryError",
     "SessionHistoryStoreProtocol",
     "TreeBasedFilesystemSessionHistoryStore",
     "SessionHistoryProjector",

@@ -19,20 +19,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from config.ai_model_config import MODEL_DEFAULTS, ModelDefaults
 from src.agents.slo_agent.compaction.constants import (
     COMPACTION_INPUT_SAFETY_DIVISOR,
+    DEFAULT_CONTEXT_WINDOW,
     KEEP_RECENT_TOKENS,
     RESERVED_TOKEN_LIMIT,
 )
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 
 __all__ = ["CompactionResult", "Compacter"]
-
-_DEFAULT_CONTEXT_WINDOW: int = 200_000
-"""Fallback context window used when a model is absent from MODEL_DEFAULTS.
-
-Matches the conservative default in ``compaction_checker.py``. Any model whose
-real window is smaller must be registered in ``config.ai_model_config.MODEL_DEFAULTS``
-to prevent under-capping of the compaction input.
-"""
 
 
 def _get_context_window(*, model_name: str) -> int:
@@ -42,12 +35,12 @@ def _get_context_window(*, model_name: str) -> int:
         model_name (str): Model identifier used by the session.
 
     Returns:
-        int: Context window in tokens; falls back to ``_DEFAULT_CONTEXT_WINDOW``.
+        int: Context window in tokens; falls back to ``DEFAULT_CONTEXT_WINDOW``.
     """
     defaults: Optional[ModelDefaults] = MODEL_DEFAULTS.get(model_name)
     if defaults is None:
-        return _DEFAULT_CONTEXT_WINDOW
-    return defaults.get("context_window", _DEFAULT_CONTEXT_WINDOW)
+        return DEFAULT_CONTEXT_WINDOW
+    return defaults.get("context_window", DEFAULT_CONTEXT_WINDOW)
 
 
 def _max_compaction_input_token_units(*, context_window: int) -> int:
@@ -80,20 +73,22 @@ class CompactionResult(BaseModel):
     tokens_after: int = Field(description="Estimated token count after compaction.")
 
 
-_SKIP_KINDS: frozenset[str] = frozenset({
-    "session_started",
-    "run_started",
-    "run_completed",
-    "run_aborted",
-    "run_failed",
-    "run_retrying",
-    "route_switched",
-    "assistant_delta",
-    "slash_command",
-    "orchestrator_started",
-    "sub_agent_spawned",
-    "sub_agent_completed",
-})
+_SKIP_KINDS: frozenset[str] = frozenset(
+    {
+        "session_started",
+        "run_started",
+        "run_completed",
+        "run_aborted",
+        "run_failed",
+        "run_retrying",
+        "route_switched",
+        "assistant_delta",
+        "slash_command",
+        "orchestrator_started",
+        "sub_agent_spawned",
+        "sub_agent_completed",
+    }
+)
 
 _SYSTEM_PROMPT_TEMPLATE: str = (
     "You are a conversation compactor for an AI coding assistant called Slo. "
@@ -170,9 +165,7 @@ class Compacter:
         # overflow the model. Overflow events (too-recent-to-summarise-now) move
         # to retained_events and are handled on the next compaction pass.
         effective_context_window: int = (
-            context_window
-            if context_window is not None
-            else _get_context_window(model_name=model_name)
+            context_window if context_window is not None else _get_context_window(model_name=model_name)
         )
         max_input_units: int = _max_compaction_input_token_units(
             context_window=effective_context_window,
@@ -240,6 +233,26 @@ class Compacter:
         return events, []
 
     @classmethod
+    def has_viable_cut_point(
+        cls,
+        *,
+        events: list[SessionHistoryEventDAO],
+    ) -> bool:
+        """Return whether durable events have a clean manual compaction cut.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Full event log in append order.
+
+        Returns:
+            bool: ``True`` when compaction can retain a valid tail without I/O.
+        """
+        try:
+            cls._find_cut_point(events=events)
+        except ValueError:
+            return False
+        return True
+
+    @classmethod
     def _find_cut_point(
         cls,
         *,
@@ -297,15 +310,10 @@ class Compacter:
                 break
 
         if candidate_cut is None:
-            raise ValueError(
-                "Total token usage does not exceed KEEP_RECENT_TOKENS; "
-                "no compaction needed."
-            )
+            raise ValueError("Total token usage does not exceed KEEP_RECENT_TOKENS; " "no compaction needed.")
 
         if candidate_cut < 0:
-            raise ValueError(
-                "No viable cut point: retain window covers the entire event list."
-            )
+            raise ValueError("No viable cut point: retain window covers the entire event list.")
 
         # Rule 1 (clean cut): retreat up until the cut splits no tool span.
         candidate_cut = cls._retreat_to_clean_cut(
@@ -314,8 +322,7 @@ class Compacter:
         )
         if candidate_cut < 0:
             raise ValueError(
-                "No viable clean cut point: a tool-call group spans the entire "
-                "compactable range."
+                "No viable clean cut point: a tool-call group spans the entire " "compactable range."
             )
 
         # Rule 2 (first-message anchor): never leave only the first
@@ -329,8 +336,7 @@ class Compacter:
             candidate_cut = first_user_idx + 1
             if candidate_cut >= len(events):
                 raise ValueError(
-                    "No viable cut point: all compactable events precede or "
-                    "equal the first user_message."
+                    "No viable cut point: all compactable events precede or " "equal the first user_message."
                 )
             candidate_cut = cls._retreat_to_clean_cut(
                 events=events,
@@ -410,9 +416,7 @@ class Compacter:
         cut: int = candidate_cut
         while cut >= 0:
             splitting_calls: list[int] = [
-                call_idx
-                for (call_idx, result_idx) in spans
-                if call_idx <= cut < result_idx
+                call_idx for (call_idx, result_idx) in spans if call_idx <= cut < result_idx
             ]
             if not splitting_calls:
                 return cut
@@ -441,8 +445,7 @@ class Compacter:
             bool: ``True`` when no retained tool_result is orphaned by the cut.
         """
         return all(
-            not (call_idx <= cut < result_idx)
-            for (call_idx, result_idx) in cls._tool_spans(events=events)
+            not (call_idx <= cut < result_idx) for (call_idx, result_idx) in cls._tool_spans(events=events)
         )
 
     @classmethod

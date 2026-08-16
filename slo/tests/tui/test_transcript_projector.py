@@ -551,6 +551,265 @@ class TestTranscriptProjector:
         assert projector._assistant_blocks == {}  # type: ignore[attr-defined]
         assert projector._tool_blocks == {}  # type: ignore[attr-defined]
 
+    # -- 61.a.1: _seal_stale_assistant_blocks direct decision-point coverage --
+
+    @pytest.mark.asyncio
+    async def test_seal_stale_assistant_blocks_seals_every_block_except_the_named_iteration(
+        self,
+    ) -> None:
+        """The sweep seals every tracked block except the exempt iteration."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="c", iteration=2),
+        )
+
+        projector._seal_stale_assistant_blocks(except_iteration=2)  # type: ignore[attr-defined]
+
+        assert host.blocks[0].sealed is True
+        assert host.blocks[1].sealed is True
+        assert host.blocks[2].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_seal_stale_assistant_blocks_seals_nothing_when_only_the_named_iteration_is_tracked(
+        self,
+    ) -> None:
+        """The sweep is a guaranteed no-op when only the exempt iteration is tracked."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+
+        projector._seal_stale_assistant_blocks(except_iteration=0)  # type: ignore[attr-defined]
+
+        assert host.blocks[0].sealed is False
+
+    # -- 61.a.1: _finalize_completed_run call-site tests --
+
+    @pytest.mark.asyncio
+    async def test_run_completed_empty_content_seals_prior_iteration_via_sweep_when_no_new_block_created(
+        self,
+    ) -> None:
+        """The run-end sweep seals a prior iteration even when D2 never fires for the terminal one."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="partial", iteration=0),
+        )
+        # No delta was ever sent for iteration=1, so _ensure_assistant_block is
+        # never called for it and D2 never fires for this run.
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_completed", content="", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert len(host.blocks) == 1
+
+    @pytest.mark.asyncio
+    async def test_run_completed_with_content_seals_every_other_tracked_block(self) -> None:
+        """A confirmed-text completion seals every other tracked block via the sweep."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_completed", content="final answer", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert host.blocks[1].finalized_with == "final answer"
+        assert host.blocks[1].sealed is False
+
+    # -- 61.a.1: _finalize_aborted_run call-site tests --
+
+    @pytest.mark.asyncio
+    async def test_run_aborted_seals_every_other_tracked_block(self) -> None:
+        """Abort seals every other tracked block while marking the current one aborted."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_aborted", content="<aborted>", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert host.blocks[1].aborted is True
+        assert host.blocks[1].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_run_aborted_seals_prior_iteration_when_the_current_iteration_has_no_block(
+        self,
+    ) -> None:
+        """The sweep reaches a prior iteration even on the no-current-block fallback branch."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_aborted", content="<aborted>", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert ("(aborted)", "assistant-aborted") in host.lines
+
+    # -- 61.a.1: _finalize_failed_run call-site tests --
+
+    @pytest.mark.asyncio
+    async def test_run_failed_seals_every_other_tracked_block(self) -> None:
+        """Failure seals every other tracked block while marking the current one failed."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert host.blocks[1].failed_with == "boom"
+        assert host.blocks[1].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_run_failed_seals_prior_iteration_when_the_current_iteration_has_no_block(
+        self,
+    ) -> None:
+        """The sweep reaches a prior iteration even on the no-current-block fallback branch."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert ("(error: boom)", "assistant-aborted") in host.lines
+
+    # -- 61.a.1: sweep runs before the dict is cleared for the next prompt --
+
+    @pytest.mark.asyncio
+    async def test_reset_for_new_run_starts_the_next_prompt_with_no_stale_entries_after_a_sweep(
+        self,
+    ) -> None:
+        """Reset genuinely clears the dict after a sweep-then-terminal-event cycle."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_completed", content="done", iteration=1),
+        )
+
+        projector.reset_for_new_run()
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="next", iteration=0),
+        )
+
+        assert len(host.blocks) == 3
+        assert host.blocks[2] is not host.blocks[0]
+        assert host.blocks[2] is not host.blocks[1]
+
+    # -- 61.a.2: seal-on-advance in _ensure_assistant_block --
+
+    @pytest.mark.asyncio
+    async def test_ensure_assistant_block_seals_the_previous_block_when_a_second_iteration_mounts(
+        self,
+    ) -> None:
+        """Mounting a second iteration's block seals the block it supersedes."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="first", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="second", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert host.blocks[1].sealed is False
+        assert len(host.blocks) == 2
+
+    @pytest.mark.asyncio
+    async def test_ensure_assistant_block_leaves_earlier_sealed_blocks_untouched_when_a_third_iteration_mounts(
+        self,
+    ) -> None:
+        """A third iteration's mount re-seals an already-sealed earlier block without error."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="first", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="second", iteration=1),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="third", iteration=2),
+        )
+
+        assert host.blocks[0].sealed is True
+        assert host.blocks[1].sealed is True
+        assert host.blocks[2].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_ensure_assistant_block_seals_nothing_when_the_iteration_block_already_exists(
+        self,
+    ) -> None:
+        """The cache-hit branch returns early and does not re-run the sweep."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="first", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="second", iteration=1),
+        )
+        host.blocks[0].sealed = False
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="more", iteration=1),
+        )
+
+        assert host.blocks[0].sealed is False
+        assert len(host.blocks) == 2
+
 
 class TestUserTurn:
     """``project_user_turn`` — live user-message component + separator."""

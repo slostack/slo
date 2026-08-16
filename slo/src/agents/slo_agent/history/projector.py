@@ -98,100 +98,124 @@ class SessionHistoryProjector:
             list[BaseMessage]: Ordered ``BaseMessage`` history suitable
                 for ``SloAgent.invoke(message_history=...)``.
         """
-        completed_turn_ids: set[str] = cls._completed_turn_ids(events=events)
-        completed_turn_ids.difference_update(excluded_turn_ids or set())
-        summary_event: Optional[SessionHistoryEventDAO] = (
-            cls._find_last_compaction_summary_event(events=events)
-        )
-        if summary_event is None:
-            return MessageContractReconciler.reconcile(
-                messages=cls._project_events(
-                    events=events,
-                    completed_turn_ids=completed_turn_ids,
-                ),
-            )
-
-        keep_from_sequence: int = cls._resolve_retain_boundary_sequence(
-            summary_event=summary_event,
+        context_events: list[SessionHistoryEventDAO] = cls._context_event_slice(
             events=events,
+            excluded_turn_ids=excluded_turn_ids,
         )
-        messages: list[BaseMessage] = [
-            HumanMessage(
-                content=(
-                    "[Previous conversation summary]\n\n"
-                    f"{summary_event.payload.content or ''}"
-                ),
-            ),
-        ]
-        messages.extend(
-            cls._project_retained_tail(
-                events=events,
-                completed_turn_ids=completed_turn_ids,
-                keep_from_sequence=keep_from_sequence,
-                summary_event_id=summary_event.event_id,
-            ),
-        )
-        return MessageContractReconciler.reconcile(messages=messages)
+        return MessageContractReconciler.reconcile(messages=cls._to_messages(events=context_events))
 
     @classmethod
-    def _project_events(
+    def context_events(
         cls,
         *,
         events: list[SessionHistoryEventDAO],
+        excluded_turn_ids: Optional[set[str]] = None,
+    ) -> list[SessionHistoryEventDAO]:
+        """Return pre-reconciliation durable events selected for model context.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Canonical events in append order.
+            excluded_turn_ids (Optional[set[str]]): Completed turns omitted for
+                this projection. Defaults to ``None``.
+
+        Returns:
+            list[SessionHistoryEventDAO]: Summary-first selected message events.
+        """
+        return [
+            event
+            for event in cls._context_event_slice(events=events, excluded_turn_ids=excluded_turn_ids)
+            if cls._event_to_message(event=event) is not None
+        ]
+
+    @classmethod
+    def _context_event_slice(
+        cls,
+        *,
+        events: list[SessionHistoryEventDAO],
+        excluded_turn_ids: Optional[set[str]],
+    ) -> list[SessionHistoryEventDAO]:
+        """Select summary plus completed retained events using one replay rule.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Canonical events in append order.
+            excluded_turn_ids (Optional[set[str]]): Completed turns to omit.
+
+        Returns:
+            list[SessionHistoryEventDAO]: Events before message conversion.
+        """
+        completed_turn_ids: set[str] = cls._completed_turn_ids(events=events)
+        completed_turn_ids.difference_update(excluded_turn_ids or set())
+        summary_event: Optional[SessionHistoryEventDAO] = cls._find_last_compaction_summary_event(
+            events=events
+        )
+        if summary_event is None:
+            return cls._completed_turn_events(events=events, completed_turn_ids=completed_turn_ids)
+        return [summary_event] + cls._retained_tail_events(
+            events=events,
+            completed_turn_ids=completed_turn_ids,
+            keep_from_sequence=cls._resolve_retain_boundary_sequence(
+                summary_event=summary_event,
+                events=events,
+            ),
+            summary_event_id=summary_event.event_id,
+        )
+
+    @staticmethod
+    def _completed_turn_events(
+        *,
+        events: list[SessionHistoryEventDAO],
         completed_turn_ids: set[str],
-    ) -> list[BaseMessage]:
-        """Project every completed-turn event to a message (no compaction cut).
+    ) -> list[SessionHistoryEventDAO]:
+        """Return events in completed turns or events without a turn id.
 
         Args:
             events (list[SessionHistoryEventDAO]): Events in append order.
-            completed_turn_ids (set[str]): Turn ids with a terminal event.
+            completed_turn_ids (set[str]): Terminal turn ids.
 
         Returns:
-            list[BaseMessage]: Projected messages for completed turns.
+            list[SessionHistoryEventDAO]: Events selected before message filtering.
         """
-        messages: list[BaseMessage] = []
-        for event in events:
-            if event.turn_id is not None and event.turn_id not in completed_turn_ids:
-                continue
-            message: BaseMessage | None = cls._event_to_message(event=event)
-            if message is not None:
-                messages.append(message)
-        return messages
+        return [event for event in events if event.turn_id is None or event.turn_id in completed_turn_ids]
 
-    @classmethod
-    def _project_retained_tail(
-        cls,
+    @staticmethod
+    def _retained_tail_events(
         *,
         events: list[SessionHistoryEventDAO],
         completed_turn_ids: set[str],
         keep_from_sequence: int,
         summary_event_id: str,
-    ) -> list[BaseMessage]:
-        """Project the retained tail that follows a compaction boundary.
-
-        Skips pre-cut events (``sequence < keep_from_sequence``), the summary
-        event itself (already emitted as the header), and events from
-        incomplete turns.
+    ) -> list[SessionHistoryEventDAO]:
+        """Return retained events after a compaction boundary.
 
         Args:
             events (list[SessionHistoryEventDAO]): Events in append order.
-            completed_turn_ids (set[str]): Turn ids with a terminal event.
-            keep_from_sequence (int): Sequence of the first retained event;
-                events older than this are excluded.
-            summary_event_id (str): ``event_id`` of the header summary event,
-                excluded here so it is not emitted twice.
+            completed_turn_ids (set[str]): Terminal turn ids.
+            keep_from_sequence (int): First retained sequence.
+            summary_event_id (str): Header summary to omit from the tail.
 
         Returns:
-            list[BaseMessage]: Projected retained-tail messages.
+            list[SessionHistoryEventDAO]: Retained events before message filtering.
+        """
+        return [
+            event
+            for event in events
+            if event.event_id != summary_event_id
+            and event.sequence >= keep_from_sequence
+            and (event.turn_id is None or event.turn_id in completed_turn_ids)
+        ]
+
+    @classmethod
+    def _to_messages(cls, *, events: list[SessionHistoryEventDAO]) -> list[BaseMessage]:
+        """Convert selected durable events into unreconciled LangChain messages.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Selected durable event slice.
+
+        Returns:
+            list[BaseMessage]: Projected messages in durable order.
         """
         messages: list[BaseMessage] = []
         for event in events:
-            if event.event_id == summary_event_id:
-                continue
-            if event.sequence < keep_from_sequence:
-                continue
-            if event.turn_id is not None and event.turn_id not in completed_turn_ids:
-                continue
             message: BaseMessage | None = cls._event_to_message(event=event)
             if message is not None:
                 messages.append(message)

@@ -221,12 +221,24 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         display_order=93,
     ),
     SlashCommandSpecDAO(
+        name="context-window",
+        description="show context-window capacity and usage",
+        argument_mode="none",
+        display_order=94,
+    ),
+    SlashCommandSpecDAO(
         name="new",
         description="start a brand-new session",
         argument_mode="free_text",
         usage="/new [session name]",
         argument_hint="optional session name",
         display_order=95,
+    ),
+    SlashCommandSpecDAO(
+        name="compact",
+        description="compact session history now",
+        argument_mode="none",
+        display_order=96,
     ),
     SlashCommandSpecDAO(
         name="rename",

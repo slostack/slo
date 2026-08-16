@@ -20,6 +20,7 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
     SessionHistoryMetadataDAO,
 )
+from src.agents.slo_agent.compaction.compacter import CompactionResult
 
 __all__ = ["SessionHistoryStoreProtocol"]
 
@@ -171,6 +172,33 @@ class SessionHistoryStoreProtocol(Protocol):
 
         Returns:
             SessionHistoryMetadataDAO: Updated metadata.
+        """
+        ...
+
+    async def compact_to_boundary(
+        self,
+        *,
+        session_id: str,
+        events: list[SessionHistoryEventDAO],
+        result: CompactionResult,
+        turn_id: str,
+    ) -> SessionHistoryEventDAO:
+        """Atomically activate a retained tail plus one compaction summary.
+
+        Writes and fsyncs a candidate, archives the active log at a deterministic
+        collision-free path, activates the candidate, then advances metadata.
+        Post-archive failures restore the archive; a failed restore raises
+        ``HistoryCompactionRecoveryError`` and readers restore that archive
+        before parsing history.
+
+        Args:
+            session_id (str): Session owning the durable history.
+            events (list[SessionHistoryEventDAO]): Validated pre-compaction events.
+            result (CompactionResult): LLM summary and boundary bookkeeping.
+            turn_id (str): Turn that initiated this compaction.
+
+        Returns:
+            SessionHistoryEventDAO: The durably activated summary event.
         """
         ...
 

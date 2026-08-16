@@ -781,15 +781,27 @@ class SloAgentSession:
     ) -> int:
         """Return the local TPM wait for the next attempt.
 
+        Waiting only helps when prior in-window requests are holding the budget:
+        the wait is derived from when the oldest recorded request ages out. An
+        empty window therefore has nothing to wait for — that happens when a
+        single request's estimate exceeds the whole per-minute budget on its own
+        (e.g. a model whose context window is larger than its TPM ceiling, or a
+        transcript pinned open by one oversized tool result). Waiting cannot
+        shrink that request, so the attempt proceeds and the provider's own 429
+        handling becomes the authority.
+
         Args:
             policy (ModelRateLimitPolicyDAO): Active model policy.
             estimated_tokens (int): Estimated request-window token pressure.
             now_seconds (float): Current monotonic timestamp.
 
         Returns:
-            int: Seconds to wait for token-window capacity.
+            int: Seconds to wait for token-window capacity. ``0`` when the
+                window is empty or the request already fits.
         """
         if policy.tokens_per_minute is None:
+            return 0
+        if not self._recent_request_token_estimates:
             return 0
         current_window_tokens: int = sum(
             tokens for _timestamp, tokens in self._recent_request_token_estimates

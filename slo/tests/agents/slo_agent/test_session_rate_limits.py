@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.rate_limit.dao import ModelRateLimitPolicyDAO
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS, SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -190,3 +192,112 @@ def test_request_token_estimate_uses_realistic_output_not_ceiling() -> None:
     assert estimate == (len(text) // 4) + _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS
     # Guard against re-coupling to the raised hard ceiling.
     assert _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS < 64_000
+
+
+def _tpm_policy(*, tokens_per_minute: Optional[int] = 200_000) -> ModelRateLimitPolicyDAO:
+    """Build a rate policy carrying only a TPM ceiling.
+
+    Args:
+        tokens_per_minute (Optional[int], optional): TPM ceiling, or None when
+            uncapped. Defaults to 200_000 (the Kimi family ceiling).
+
+    Returns:
+        ModelRateLimitPolicyDAO: Policy for token-window tests.
+    """
+    return ModelRateLimitPolicyDAO(
+        model_name="kimi-k3",
+        requests_per_minute=None,
+        tokens_per_minute=tokens_per_minute,
+        automatic_retry_attempts=3,
+        local_retry_wait_cap_seconds=30,
+    )
+
+
+class TestTokenWindowWaitSeconds:
+    """Local TPM wait computation, including the un-schedulable request case."""
+
+    def test_returns_zero_when_window_is_empty_and_estimate_exceeds_budget(self) -> None:
+        """An oversized request against an empty window proceeds instead of raising.
+
+        Regression for ``IndexError: deque index out of range``. When one request's
+        estimate exceeds the entire per-minute budget on its own — the case for a
+        model whose context window (262_144) is larger than its TPM ceiling
+        (200_000) — the fit check fails while no prior request is recorded. Reading
+        the oldest window entry then indexed an empty deque and killed the turn in
+        pre-flight, before any provider call. There is nothing to wait for, so the
+        attempt must proceed and let the provider's 429 handling decide.
+        """
+        session: SloAgentSession = _session()
+
+        assert not session._recent_request_token_estimates
+
+        wait_seconds: int = session._token_window_wait_seconds(
+            policy=_tpm_policy(),
+            estimated_tokens=208_000,
+            now_seconds=1.0,
+        )
+
+        assert wait_seconds == 0
+
+    def test_returns_zero_when_window_is_empty_and_estimate_fits(self) -> None:
+        """A normal first request against an empty window never waits."""
+        session: SloAgentSession = _session()
+
+        wait_seconds: int = session._token_window_wait_seconds(
+            policy=_tpm_policy(),
+            estimated_tokens=10_000,
+            now_seconds=1.0,
+        )
+
+        assert wait_seconds == 0
+
+    def test_waits_for_oldest_entry_to_age_out_when_window_is_saturated(self) -> None:
+        """A saturated window waits until the oldest recorded request leaves it."""
+        session: SloAgentSession = _session()
+        session._recent_request_token_estimates.append((10.0, 195_000))
+
+        wait_seconds: int = session._token_window_wait_seconds(
+            policy=_tpm_policy(),
+            estimated_tokens=10_000,
+            now_seconds=30.0,
+        )
+
+        assert wait_seconds == 40  # (10.0 + 60.0) - 30.0
+
+    def test_returns_zero_when_policy_has_no_token_ceiling(self) -> None:
+        """An uncapped model never incurs a local TPM wait."""
+        session: SloAgentSession = _session()
+
+        wait_seconds: int = session._token_window_wait_seconds(
+            policy=_tpm_policy(tokens_per_minute=None),
+            estimated_tokens=5_000_000,
+            now_seconds=1.0,
+        )
+
+        assert wait_seconds == 0
+
+    @pytest.mark.asyncio
+    async def test_invoke_survives_request_larger_than_full_token_budget(self) -> None:
+        """``invoke`` completes the turn instead of failing pre-flight on an oversized request.
+
+        End-to-end guard for the session 82089eae crash: every turn died with
+        ``IndexError`` roughly a millisecond after ``run_started``, because a single
+        oversized transcript made the estimate exceed the whole TPM budget on a
+        fresh window. The failure never recorded an attempt, so the window stayed
+        empty and the next turn failed identically.
+        """
+        session: SloAgentSession = _session()
+
+        async def _invoke(**_kwargs):
+            yield AgentStreamEventDAO(kind="run_completed", content="done")
+
+        session.agent.invoke = _invoke  # type: ignore[method-assign,assignment]
+
+        oversized_prompt: str = "x" * 4_000_000  # ~1M estimated tokens
+
+        with patch("src.agents.slo_agent.sessions.service.asyncio.sleep", new=AsyncMock()):
+            events: list[AgentStreamEventDAO] = [
+                event async for event in session.invoke(text=oversized_prompt)
+            ]
+
+        assert [event.kind for event in events] == ["run_completed"]

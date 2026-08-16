@@ -21,6 +21,7 @@ from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.agents.slo_agent.sessions.dao import ManualCompactionResultDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
@@ -361,8 +362,7 @@ class TestSloTUISessionInbox:
             await pilot.pause()
 
             assert any(
-                "[scheduled notice] CI monitor: CI still running." in line[0]
-                for line in app._adapter.lines
+                "[scheduled notice] CI monitor: CI still running." in line[0] for line in app._adapter.lines
             )
             assert await inbox_store.list_pending(session_id="session-1234") == []
             assert await inbox_store.list_done(session_id="session-1234") == [message]
@@ -952,6 +952,37 @@ class TestSloTUISessionInbox:
             # Pending block is consumed and replaced by a normal user message.
             assert list(app.query(SteeringPendingBlock)) == []
             assert ("> be terse", "user-line") in app._adapter.lines
+
+    @pytest.mark.asyncio
+    async def test_compact_while_a_prompt_is_in_flight_renders_the_session_guard(self) -> None:
+        """Textual dispatch keeps the prompt alive and delegates the compact guard once."""
+        session: MagicMock = self._steering_session_stub()
+        session.compact_context = AsyncMock(
+            return_value=ManualCompactionResultDAO(
+                status="unavailable",
+                detail="cannot compact while a prompt is in flight; run /abort first",
+            )
+        )
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            active_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
+            app._in_flight_task = active_task
+            await app.on_prompt_input_submitted(PromptInput.Submitted(text="/compact"))
+            await pilot.pause()
+
+            assert (
+                "cannot compact while a prompt is in flight; run /abort first",
+                "tool-result",
+            ) in app._adapter.lines
+            session.compact_context.assert_awaited_once()
+            assert not active_task.done()
+            assert app._in_flight_task is active_task
+            active_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await active_task
+            app._in_flight_task = None
 
     @pytest.mark.asyncio
     async def test_steer_dispatches_and_renders_while_run_in_flight(self) -> None:
@@ -1753,9 +1784,7 @@ class TestSloTUIThemeToggle:
 class TestSloTUIPoolAttachment:
     """``SloTUI._attach_pool_to_session`` wiring (sub-spec 03.b)."""
 
-    def test_attach_pool_to_session_sets_spawn_tool_on_session(
-        self, tmp_path: Path
-    ) -> None:
+    def test_attach_pool_to_session_sets_spawn_tool_on_session(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` injects the spawn tool into the session config."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -1774,9 +1803,7 @@ class TestSloTUIPoolAttachment:
         tool_names: list[str] = [t.name for t in session._config.extra_tools]
         assert "spawn_sub_agents" in tool_names
 
-    def test_attach_pool_to_session_sets_append_system_prompt(
-        self, tmp_path: Path
-    ) -> None:
+    def test_attach_pool_to_session_sets_append_system_prompt(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` injects the orchestrator addendum."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -1794,9 +1821,7 @@ class TestSloTUIPoolAttachment:
         assert session._config.append_system_prompt is not None
         assert "spawn_sub_agents" in session._config.append_system_prompt
 
-    def test_headless_session_does_not_have_spawn_tool(
-        self, tmp_path: Path
-    ) -> None:
+    def test_headless_session_does_not_have_spawn_tool(self, tmp_path: Path) -> None:
         """``HeadlessRunner``-built sessions have no ``spawn_sub_agents`` tool."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -1810,23 +1835,17 @@ class TestSloTUIPoolAttachment:
             )
         )
 
-        tool_names: list[str] = [
-            t.name for t in (session._config.extra_tools or [])
-        ]
+        tool_names: list[str] = [t.name for t in (session._config.extra_tools or [])]
         assert "spawn_sub_agents" not in tool_names
 
-    def test_pre_built_agent_session_is_skipped_gracefully(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pre_built_agent_session_is_skipped_gracefully(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` is a no-op for pre-built agent sessions."""
         from src.agents.slo_agent.agent import SloAgent
         from src.agents.slo_agent.sessions.service import SloAgentSession
         from src.agents.providers.faux import FauxChatModel
 
         agent: SloAgent = SloAgent(
-            llm=FauxChatModel(
-                responses=[FauxChatModel.assistant_message(content="ok")]
-            ),
+            llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
             cwd=str(tmp_path),
             tools=[],
         )
@@ -2190,10 +2209,9 @@ class TestTranscriptWindow:
             # Pause extra ticks for any pending worker to complete.
             for _ in range(5):
                 await pilot.pause()
-            non_summary: int = len([
-                c for c in app._transcript_content.children
-                if c is not app._earlier_summary
-            ])
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
             assert non_summary == TRANSCRIPT_WINDOW_SIZE
             assert app._hidden_block_count == extra
             assert app._earlier_summary is not None
@@ -2267,10 +2285,9 @@ class TestTranscriptWindow:
             # Pause multiple ticks for workers to complete.
             for _ in range(10):
                 await pilot.pause()
-            non_summary: int = len([
-                c for c in app._transcript_content.children
-                if c is not app._earlier_summary
-            ])
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
             assert non_summary == TRANSCRIPT_WINDOW_SIZE
             assert app._hidden_block_count == extra
 
@@ -2390,10 +2407,9 @@ class TestTranscriptWindow:
                     app._enforce_transcript_window(),
                 )
             await pilot.pause()
-            non_summary: int = len([
-                c for c in app._transcript_content.children
-                if c is not app._earlier_summary
-            ])
+            non_summary: int = len(
+                [c for c in app._transcript_content.children if c is not app._earlier_summary]
+            )
             # Exactly-once removal: a second removal loop would drop the count
             # below the window or double the hidden count.
             assert non_summary == TRANSCRIPT_WINDOW_SIZE
@@ -2670,10 +2686,7 @@ class TestLoadOlderEntries:
         Returns:
             list[TranscriptEntryDAO]: Chronological assistant entries.
         """
-        return [
-            TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}")
-            for index in range(count)
-        ]
+        return [TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}") for index in range(count)]
 
     @staticmethod
     def _build_history_app(*, entries: list[TranscriptEntryDAO]) -> SloTUI:
@@ -2808,7 +2821,9 @@ class TestLoadOlderEntries:
                 assert app._load_older_cursor == 3
                 assert app._earlier_summary is not None
                 assert app._transcript_content is not None
-                assert any("transcript-earlier-summary" == child.id for child in app._transcript_content.children)
+                assert any(
+                    "transcript-earlier-summary" == child.id for child in app._transcript_content.children
+                )
 
     @pytest.mark.asyncio
     async def test_load_older_removes_summary_when_cursor_reaches_zero(self) -> None:
@@ -2827,7 +2842,9 @@ class TestLoadOlderEntries:
                 assert app._load_older_cursor == 0
                 assert app._earlier_summary is None
                 assert app._transcript_content is not None
-                assert all(child.id != "transcript-earlier-summary" for child in app._transcript_content.children)
+                assert all(
+                    child.id != "transcript-earlier-summary" for child in app._transcript_content.children
+                )
 
     @pytest.mark.asyncio
     async def test_fetch_older_batch_returns_empty_without_cursor_or_history_read(self) -> None:
@@ -2879,7 +2896,9 @@ class TestLoadOlderEntries:
                 async def _slow_pass() -> None:
                     await asyncio.sleep(0)
 
-                with patch.object(app, "_run_load_older_pass", new=AsyncMock(side_effect=_slow_pass)) as mock_pass:
+                with patch.object(
+                    app, "_run_load_older_pass", new=AsyncMock(side_effect=_slow_pass)
+                ) as mock_pass:
                     await asyncio.gather(app._load_older_entries(), app._load_older_entries())
 
                 mock_pass.assert_awaited_once_with()
@@ -2931,7 +2950,9 @@ class TestLoadOlderEntries:
             assert app._transcript_is_at_bottom() is True
 
     @pytest.mark.asyncio
-    async def test_echo_user_line_rearms_follow_for_subsequent_streaming_after_window_activation(self) -> None:
+    async def test_echo_user_line_rearms_follow_for_subsequent_streaming_after_window_activation(
+        self,
+    ) -> None:
         """A stranded live viewport shows the submitted user turn and remains bottom-pinned while streaming."""
         app: SloTUI = self._build_history_app(entries=[])
         with patch("src.tui.app.TRANSCRIPT_WINDOW_SIZE", 5):
@@ -2999,10 +3020,7 @@ class TestHydrationEntryCursor:
         Returns:
             list[TranscriptEntryDAO]: Chronological assistant entries.
         """
-        return [
-            TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}")
-            for index in range(count)
-        ]
+        return [TranscriptEntryDAO(kind="assistant", answer=f"assistant-{index}") for index in range(count)]
 
     def _build_history_app(self, *, entries: list[TranscriptEntryDAO]) -> SloTUI:
         """Build a TUI whose replay path returns ``entries``.
@@ -3167,9 +3185,11 @@ class TestTypingNoReflow:
             # Install a spy that records every state passed to update_state.
             recorded_states: list[SlashSuggestionStateDAO] = []
             original_update_state = app._suggestion_menu.update_state
+
             def _spy_update_state(*, state: SlashSuggestionStateDAO) -> None:
                 recorded_states.append(state)
                 original_update_state(state=state)
+
             app._suggestion_menu.update_state = _spy_update_state  # type: ignore[method-assign]
             # Focus the prompt and type plain prose (no leading slash).
             app.set_focus(app._input)
@@ -3178,8 +3198,8 @@ class TestTypingNoReflow:
             await pilot.pause()
             # Every state the spy recorded must be non-visible.
             for recorded_state in recorded_states:
-                assert recorded_state.visible is False, (
-                    f"Expected visible=False for plain prose but got {recorded_state}"
-                )
+                assert (
+                    recorded_state.visible is False
+                ), f"Expected visible=False for plain prose but got {recorded_state}"
             # The final stored state on the menu must be non-visible.
             assert app._suggestion_menu._state.visible is False

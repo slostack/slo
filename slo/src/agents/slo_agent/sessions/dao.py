@@ -8,7 +8,7 @@ Canonical location for ``SessionConfigDAO`` and the
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Literal, Optional
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -16,17 +16,34 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.agents.hooks import Hook, ShouldStopAfterTurnHook
 from src.agents.providers.model_pool import ModelPoolDAO
 from src.agents.slo_agent.history.filesystem_store import default_history_root
+from src.agents.slo_agent.compaction.context_window import ContextWindowSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.reasoning_capabilities import ReasoningLevel
 
 __all__ = [
     "AgentEventSubscriber",
+    "ContextWindowSnapshotDAO",
+    "ManualCompactionResultDAO",
+    "ManualCompactionStatus",
     "SessionConfigDAO",
 ]
 
 
 AgentEventSubscriber = Callable[[AgentStreamEventDAO], Awaitable[None]]
 """Async callable invoked once per ``AgentStreamEventDAO`` the session yields."""
+
+ManualCompactionStatus = Literal["compacted", "nothing_to_compact", "unavailable", "failed"]
+"""Terminal states of one operator-requested Manual Compaction."""
+
+
+class ManualCompactionResultDAO(BaseModel):
+    """Typed operator outcome for one Manual Compaction."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: ManualCompactionStatus
+    context_window_snapshot: Optional[ContextWindowSnapshotDAO] = None
+    detail: Optional[str] = None
 
 
 class SessionConfigDAO(BaseModel):

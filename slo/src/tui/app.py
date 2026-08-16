@@ -19,6 +19,7 @@ from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
+from config.logger import log_error
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
@@ -523,6 +524,7 @@ class SloTUI(App):
         self._session.subscribe(handler=self._render_event)
         await self._initialize_session_delivery()
         self._refresh_title_bar()
+        await self._session.refresh_context_window_snapshot()
         self._refresh_usage_status_bar()
         if self._input is not None:
             self._input.focus()
@@ -1522,6 +1524,13 @@ class SloTUI(App):
             self._refresh_title_bar()
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
+            await self._session.refresh_context_window_snapshot()
+            self._refresh_usage_status_bar()
+        if result.refresh_context_window:
+            await self._session.refresh_context_window_snapshot()
+            self._refresh_usage_status_bar()
+        if result.refresh_usage_status:
+            self._refresh_usage_status_bar()
         if result.toggle_theme:
             self._toggle_theme()
         if result.open_auth_modal:
@@ -1559,7 +1568,7 @@ class SloTUI(App):
         await self._maybe_render_startup_notice()
         self._session.subscribe(handler=self._render_event)
         self._refresh_title_bar()
-        self._session.refresh_usage_snapshot()
+        await self._session.refresh_context_window_snapshot()
         self._refresh_usage_status_bar()
 
     async def _rename_current_session(self, *, session_name: str) -> None:
@@ -2128,11 +2137,19 @@ class SloTUI(App):
             if not saw_failed_event:
                 self._render_run_error(exc=exc)
         finally:
+            await self._refresh_context_window_after_prompt()
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
             await self._unmount_spinner()
             await self._cleanup_sub_agent_state()
             self._in_flight_task = None
+
+    async def _refresh_context_window_after_prompt(self) -> None:
+        """Refresh durable Context Window Snapshot exactly once at prompt cleanup."""
+        try:
+            await self._session.refresh_context_window_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            log_error(msg="context_window_prompt_refresh_failed", error=str(exc))
 
     def _render_run_error(self, *, exc: BaseException) -> None:
         """Render a run-level error into the transcript.

@@ -20,6 +20,7 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryMetadataDAO,
 )
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+from src.agents.slo_agent.compaction.compacter import CompactionResult
 
 __all__ = ["TreeBasedFilesystemSessionHistoryStore"]
 
@@ -246,6 +247,32 @@ class TreeBasedFilesystemSessionHistoryStore:
         self._last_entry_id = event.event_id
         return persisted
 
+    async def compact_to_boundary(
+        self,
+        *,
+        session_id: str,
+        events: list[SessionHistoryEventDAO],
+        result: CompactionResult,
+        turn_id: str,
+    ) -> SessionHistoryEventDAO:
+        """Delegate transactional compaction to the flat durable store.
+
+        Args:
+            session_id (str): Session identifier.
+            events (list[SessionHistoryEventDAO]): Validated pre-compaction events.
+            result (CompactionResult): Summary and retain-boundary result.
+            turn_id (str): Compaction-originating turn id.
+
+        Returns:
+            SessionHistoryEventDAO: Activated compaction summary event.
+        """
+        return await self._flat.compact_to_boundary(
+            session_id=session_id,
+            events=events,
+            result=result,
+            turn_id=turn_id,
+        )
+
     async def append_compaction_summary(
         self,
         *,
@@ -287,9 +314,7 @@ class TreeBasedFilesystemSessionHistoryStore:
         enriched_metadata["entry_id"] = compaction_event.event_id
         enriched_metadata["parent_entry_id"] = parent_id
 
-        enriched_payload = compaction_event.payload.model_copy(
-            update={"metadata": enriched_metadata}
-        )
+        enriched_payload = compaction_event.payload.model_copy(update={"metadata": enriched_metadata})
         enriched_event = compaction_event.model_copy(update={"payload": enriched_payload})
 
         self._last_entry_id = compaction_event.event_id

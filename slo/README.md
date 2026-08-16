@@ -25,6 +25,14 @@
 
 ---
 
+## Context Window Visibility and Manual Compaction
+
+The TUI exposes durable replay-history context separately from provider billing telemetry:
+
+- `/context-window` reports the routed model's Context Window capacity, Estimated Used Context, Available Context, and one-decimal percentage. The estimate counts selected durable replay events, not cumulative session billing totals.
+- `/compact` requests one lock-safe Manual Compaction while the session is idle. It reports a no-op when there is nothing to compact and rejects an in-flight prompt without touching history.
+- The usage footer appends `NN.N% context used` only when a durable Context Window Snapshot is available. It refreshes at bounded lifecycle points rather than on every streamed event.
+
 ## Preface
 
 This is not a feature list. This is a **narrative walkthrough** of Slo — a

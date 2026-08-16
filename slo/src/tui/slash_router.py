@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPreferencesStoreCorruptError
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
+from src.agents.slo_agent.sessions.dao import (
+    ContextWindowSnapshotDAO,
+    ManualCompactionResultDAO,
+    ManualCompactionStatus,
+)
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.reasoning_capabilities import (
     ModelReasoningCapabilityDAO,
@@ -42,6 +47,13 @@ __all__ = ["SlashCommandResultDAO", "SlashRouter"]
 SlashHandler = Callable[..., Awaitable["SlashCommandResultDAO"]]
 
 
+class ManualCompactionFormatter(Protocol):
+    """Keyword-only renderer for one Manual Compaction result."""
+
+    def __call__(self, *, result: ManualCompactionResultDAO) -> str:
+        """Render one typed terminal result."""
+
+
 class SlashCommandResultDAO(BaseModel):
     """Outcome of a slash command — what the TUI should do next.
 
@@ -66,6 +78,8 @@ class SlashCommandResultDAO(BaseModel):
             render the session tree using the format in ``tree_format``.
         tree_format (Optional[str]): Format for tree rendering
             (TEXTUAL, MARKDOWN, HTML). Defaults to TEXTUAL.
+        refresh_context_window (bool): Re-measure and repaint the Context Window Snapshot.
+        refresh_usage_status (bool): Repaint a cached usage status without measuring.
     """
 
     rendered: Optional[str] = None
@@ -81,6 +95,22 @@ class SlashCommandResultDAO(BaseModel):
     steer_pending_message: Optional[str] = None
     render_tree: Optional[object] = None
     tree_format: Optional[str] = None
+    refresh_context_window: bool = False
+    refresh_usage_status: bool = False
+
+    @model_validator(mode="after")
+    def _reject_duplicate_context_refresh(self) -> "SlashCommandResultDAO":
+        """Reject conflicting measurement and cached-repaint requests.
+
+        Returns:
+            SlashCommandResultDAO: Validated result.
+
+        Raises:
+            ValueError: When both context refresh flags are enabled.
+        """
+        if self.refresh_context_window and self.refresh_usage_status:
+            raise ValueError("only one context refresh mode may be selected")
+        return self
 
 
 class SlashRouter:
@@ -159,7 +189,9 @@ class SlashRouter:
             "reasoning": cls._handle_reasoning,
             "theme": cls._handle_theme,
             "tree": cls._handle_tree,
+            "context-window": cls._handle_context_window,
             "new": cls._handle_new,
+            "compact": cls._handle_compact,
             "rename": cls._handle_rename,
             "preferences": cls._handle_preferences,
             "workflows": cls._handle_workflows,
@@ -253,6 +285,159 @@ class SlashRouter:
             return SlashCommandResultDAO(rendered="usage: /steer <message>")
         session.steer(message=rest)
         return SlashCommandResultDAO(steer_pending_message=rest)
+
+    @classmethod
+    async def _handle_context_window(
+        cls,
+        *,
+        rest: str,
+        session: SloAgentSession,
+    ) -> SlashCommandResultDAO:
+        """Render the active Context Window Snapshot.
+
+        Args:
+            rest (str): Trailing arguments, which are not permitted.
+            session (SloAgentSession): Session to measure.
+
+        Returns:
+            SlashCommandResultDAO: Detailed rendering and measurement refresh request.
+        """
+        if rest.strip():
+            return SlashCommandResultDAO(rendered="usage: /context-window")
+        snapshot: ContextWindowSnapshotDAO = await session.context_window_snapshot()
+        return SlashCommandResultDAO(
+            rendered=cls._format_context_window(snapshot=snapshot),
+            refresh_context_window=True,
+        )
+
+    @staticmethod
+    def _format_context_window(*, snapshot: ContextWindowSnapshotDAO) -> str:
+        """Format one Context Window Snapshot for the transcript.
+
+        Args:
+            snapshot (ContextWindowSnapshotDAO): Session-owned snapshot.
+
+        Returns:
+            str: Operator-facing context-window line.
+        """
+        if not snapshot.estimate_available:
+            return (
+                f"context window ({snapshot.model_name}): {snapshot.context_window_tokens:,} tok total"
+                " · usage unavailable (session history is disabled or empty)"
+            )
+        return (
+            f"context window ({snapshot.model_name}): {snapshot.context_window_tokens:,} tok total"
+            f" · {snapshot.estimated_used_tokens:,} tok used"
+            f" · {snapshot.available_tokens:,} tok available"
+            f" · {snapshot.consumed_percent:.1f}% used"
+        )
+
+    @classmethod
+    async def _handle_compact(
+        cls,
+        *,
+        rest: str,
+        session: SloAgentSession,
+    ) -> SlashCommandResultDAO:
+        """Request one Manual Compaction from the session layer.
+
+        Args:
+            rest (str): Trailing arguments, which are not permitted.
+            session (SloAgentSession): Session to compact.
+
+        Returns:
+            SlashCommandResultDAO: Result rendering and cached-footer repaint request.
+        """
+        if rest.strip():
+            return SlashCommandResultDAO(rendered="usage: /compact")
+        result: ManualCompactionResultDAO = await session.compact_context()
+        return SlashCommandResultDAO(
+            rendered=cls._format_manual_compaction(result=result),
+            refresh_usage_status=True,
+        )
+
+    @classmethod
+    def _format_manual_compaction(cls, *, result: ManualCompactionResultDAO) -> str:
+        """Render a typed Manual Compaction result.
+
+        Args:
+            result (ManualCompactionResultDAO): Terminal session outcome.
+
+        Returns:
+            str: Operator-facing terminal line.
+        """
+        formatter: ManualCompactionFormatter = cls._manual_compaction_formatters()[result.status]
+        return formatter(result=result)
+
+    @staticmethod
+    def _manual_compaction_formatters() -> dict[ManualCompactionStatus, ManualCompactionFormatter]:
+        """Return the exhaustive Manual Compaction status formatter table.
+
+        Returns:
+            dict[ManualCompactionStatus, ManualCompactionFormatter]: Status renderers.
+        """
+        return {
+            "compacted": SlashRouter._format_compaction_success,
+            "nothing_to_compact": SlashRouter._format_compaction_noop,
+            "unavailable": SlashRouter._format_compaction_unavailable,
+            "failed": SlashRouter._format_compaction_failure,
+        }
+
+    @staticmethod
+    def _format_compaction_success(*, result: ManualCompactionResultDAO) -> str:
+        """Render a completed Manual Compaction.
+
+        Args:
+            result (ManualCompactionResultDAO): Successful result.
+
+        Returns:
+            str: Success line including refreshed usage when available.
+        """
+        snapshot: Optional[ContextWindowSnapshotDAO] = result.context_window_snapshot
+        if snapshot is None or not snapshot.estimate_available:
+            return "compaction complete"
+        return (
+            "compaction complete"
+            f" · {snapshot.estimated_used_tokens:,} tok used"
+            f" · {snapshot.consumed_percent:.1f}% of context window"
+        )
+
+    @staticmethod
+    def _format_compaction_noop(*, result: ManualCompactionResultDAO) -> str:
+        """Render a successful Manual Compaction no-op.
+
+        Args:
+            result (ManualCompactionResultDAO): No-op result.
+
+        Returns:
+            str: Fixed no-op copy.
+        """
+        del result
+        return "nothing to compact"
+
+    @staticmethod
+    def _format_compaction_unavailable(*, result: ManualCompactionResultDAO) -> str:
+        """Render a Manual Compaction rejection with its stable fallback.
+
+        Args:
+            result (ManualCompactionResultDAO): Unavailable operation result.
+
+        Returns:
+            str: Session detail or the unavailable fallback.
+        """
+        return result.detail or "compaction is unavailable"
+
+    @staticmethod
+    def _format_compaction_failure(*, result: ManualCompactionResultDAO) -> str:
+        """Render a Manual Compaction failure without leaking exception detail.
+
+        Args:
+            result (ManualCompactionResultDAO): Failed operation result.
+
+        Returns:
+            str: Session detail or the failure fallback.
+        """
+        return result.detail or "compaction failed"
 
     @classmethod
     async def _handle_auth(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:

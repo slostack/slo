@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
+from src.agents.slo_agent.compaction.context_window import ContextWindowSnapshotDAO
+
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO, TokenUsageTotalsDAO
 
 __all__ = ["UsageStatusBar"]
@@ -126,7 +128,27 @@ class UsageStatusBar(Static):
             limit_bits=limit_bits,
             cooldown_seconds_remaining=snapshot.cooldown_seconds_remaining,
         )
+        cls._append_context_percentage_if_known(limit_bits=limit_bits, snapshot=snapshot)
         return " · ".join(limit_bits) or "limits unknown"
+
+    @staticmethod
+    def _append_context_percentage_if_known(
+        *,
+        limit_bits: list[str],
+        snapshot: SessionUsageSnapshotDAO,
+    ) -> None:
+        """Append Context Consumed Percentage independently of provider telemetry.
+
+        Args:
+            limit_bits (list[str]): Mutable rendered limit parts.
+            snapshot (SessionUsageSnapshotDAO): Session-owned usage snapshot.
+        """
+        context_window_snapshot = snapshot.context_window_snapshot
+        if not isinstance(context_window_snapshot, ContextWindowSnapshotDAO):
+            return
+        if not context_window_snapshot.estimate_available:
+            return
+        limit_bits.append(f"{context_window_snapshot.consumed_percent:.1f}% context used")
 
     @staticmethod
     def _append_limit_if_known(*, limit_bits: list[str], value: int | None, label: str) -> None:

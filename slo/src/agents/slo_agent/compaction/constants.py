@@ -9,9 +9,19 @@ from __future__ import annotations
 
 __all__ = [
     "COMPACTION_INPUT_SAFETY_DIVISOR",
+    "DEFAULT_CONTEXT_WINDOW",
     "KEEP_RECENT_TOKENS",
     "RESERVED_TOKEN_LIMIT",
 ]
+
+DEFAULT_CONTEXT_WINDOW: int = 200_000
+"""Conservative input context window for models absent from the catalog.
+
+``200_000`` matches every current Claude and o-series model. A model whose
+real window is smaller (for example ``gpt-4o`` at 128k) must declare an
+explicit catalog ``context_window``. Over-estimating delays compaction past a
+provider hard cap and converts a recoverable overflow into a failed turn.
+"""
 
 RESERVED_TOKEN_LIMIT: int = 16_384
 """Tokens withheld from the compaction threshold.

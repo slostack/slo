@@ -18,6 +18,7 @@ Pipeline (Checker → Compacter → Updater):
 
 from src.agents.slo_agent.compaction.token_estimator import TokenEstimator
 from src.agents.slo_agent.compaction.constants import (
+    DEFAULT_CONTEXT_WINDOW,
     KEEP_RECENT_TOKENS,
     RESERVED_TOKEN_LIMIT,
 )
@@ -26,13 +27,20 @@ from src.agents.slo_agent.compaction.compacter import Compacter, CompactionResul
 from src.agents.slo_agent.compaction.compacted_session_updater import (
     CompactedSessionUpdater,
 )
+from src.agents.slo_agent.compaction.context_window import (
+    ContextWindowSnapshotDAO,
+    ContextWindowSnapshotService,
+)
 
 __all__ = [
     "TokenEstimator",
+    "DEFAULT_CONTEXT_WINDOW",
     "KEEP_RECENT_TOKENS",
     "RESERVED_TOKEN_LIMIT",
     "CompactionChecker",
     "Compacter",
     "CompactionResult",
     "CompactedSessionUpdater",
+    "ContextWindowSnapshotDAO",
+    "ContextWindowSnapshotService",
 ]

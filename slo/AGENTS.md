@@ -196,6 +196,24 @@ slo/
 └── CLAUDE.md  (loads AGENTS.md on every session)
 ```
 
+### Context Window Snapshot and manual compaction (spec 62)
+
+`ContextWindowSnapshotService` (`src/agents/slo_agent/compaction/context_window.py`) is a pure
+read model: it resolves routed-model capacity through the model catalog and sums only
+`SessionHistoryProjector.context_events()` (selected, message-producing durable replay events).
+It is intentionally distinct from cumulative provider `session_totals` and may be lower than the
+automatic compaction check because `assistant_delta` and incomplete/audit events do not replay.
+`SloAgentSession` owns history I/O and caches the snapshot in `SessionUsageSnapshotDAO`; the TUI
+performs bounded refreshes only at mount, session/model transitions, `/context-window`, session-owned
+manual compaction, and prompt cleanup, never on each streamed delta.
+
+`SessionHistoryStoreProtocol.compact_to_boundary()` is the single durable rewrite seam used by
+automatic, overflow, and manual compaction. The flat store writes+fsyncs a candidate, moves active
+history to a collision-free deterministic archive, activates the candidate, then writes metadata.
+Ordinary post-archive failures restore byte-identical active history and metadata;
+`HistoryCompactionRecoveryError` names active/archive paths if restoration itself fails, and readers
+restore the deterministic archive before loading. The tree store delegates this same transaction.
+
 ### Feature-request and specification artifacts
 
 - **Incoming feature requests:** `/Users/siddharth/Code/Pi/slo/feature-requests/`
@@ -426,8 +444,10 @@ streaming path too.
 does prefix-match autocomplete; `SlashSuggestionMenu` renders the dropdown.
 
 Available slash commands include: `/help`, `/new [session name]`, `/rename <session name>`,
-`/model <name>`, `/reasoning <level>`, `/abort`, `/steer <text>`, `/clear`, `/auth`,
-`/quit` (and aliases).
+`/model <name>`, `/reasoning <level>`, `/context-window`, `/compact`, `/abort`, `/steer <text>`,
+`/clear`, `/auth`, `/quit` (and aliases). `/context-window` reports the routed model's capacity
+and projector-faithful durable replay estimate; `/compact` requests one lock-safe, transactional
+manual compaction and rejects while a prompt owns the session lock.
 
 **`UsageStatusBar`** (`src/tui/widgets/usage_status_bar.py`) is a `Static` widget fixed
 above the footer. It is updated via `session.usage_snapshot` whenever `SloAgentSession`

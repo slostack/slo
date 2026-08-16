@@ -14,21 +14,10 @@ from __future__ import annotations
 from typing import Optional
 
 from config.ai_model_config import MODEL_DEFAULTS, ModelDefaults
-from src.agents.slo_agent.compaction.constants import RESERVED_TOKEN_LIMIT
+from src.agents.slo_agent.compaction.constants import DEFAULT_CONTEXT_WINDOW, RESERVED_TOKEN_LIMIT
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 
 __all__ = ["CompactionChecker"]
-
-
-_DEFAULT_CONTEXT_WINDOW: int = 200_000
-"""Conservative fallback for models absent from ``MODEL_DEFAULTS`` (or listed
-without an explicit ``context_window``).
-
-200_000 matches every current Claude / o-series model. Models with a SMALLER
-real window (e.g. ``gpt-4o`` at 128k) must be listed in ``MODEL_DEFAULTS`` so
-they are never over-estimated — over-estimating delays compaction past the
-provider's hard cap and triggers a context-overflow error.
-"""
 
 
 def _get_context_window(*, model_name: str) -> int:
@@ -44,13 +33,13 @@ def _get_context_window(*, model_name: str) -> int:
 
     Returns:
         int: Context-window size in tokens. Falls back to
-            ``_DEFAULT_CONTEXT_WINDOW`` (200 000) when the model is unlisted
+            ``DEFAULT_CONTEXT_WINDOW`` when the model is unlisted
             or carries no explicit ``context_window``.
     """
     defaults: Optional[ModelDefaults] = MODEL_DEFAULTS.get(model_name)
     if defaults is None:
-        return _DEFAULT_CONTEXT_WINDOW
-    return defaults.get("context_window", _DEFAULT_CONTEXT_WINDOW)
+        return DEFAULT_CONTEXT_WINDOW
+    return defaults.get("context_window", DEFAULT_CONTEXT_WINDOW)
 
 
 class CompactionChecker:
@@ -88,14 +77,10 @@ class CompactionChecker:
             bool: ``True`` when total token usage exceeds the threshold
                 and the compaction pipeline should be invoked.
         """
-        total_tokens: int = sum(
-            event.payload.token_usage or 0 for event in events
-        )
+        total_tokens: int = sum(event.payload.token_usage or 0 for event in events)
 
         effective_window: int = (
-            context_window
-            if context_window is not None
-            else _get_context_window(model_name=model_name)
+            context_window if context_window is not None else _get_context_window(model_name=model_name)
         )
 
         threshold: int = effective_window - RESERVED_TOKEN_LIMIT

@@ -24,25 +24,49 @@ from typing import Optional
 
 from config.cfg import SLO_HOME as _CFG_SLO_HOME
 
+from src.agents.slo_agent.compaction.compacter import CompactionResult
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
     SessionHistoryMetadataDAO,
 )
 
-# NOTE: ``TokenEstimator`` is imported lazily inside ``_append_event_sync``
-# rather than at module top level. The ``compaction`` package depends on
-# ``history.dao``, so a top-level import here would make ``history`` depend
-# back on ``compaction`` at init time — a circular dependency that breaks
-# when ``compaction`` (which re-exports the pipeline) is imported first.
-# Keeping ``history`` free of an init-time ``compaction`` edge keeps the
-# dependency DAG one-directional (compaction → history).
+# ``history`` owns persistence and accepts ``CompactionResult`` as a command
+# value.  The reverse dependency does not exist: compaction only consumes
+# history DAOs, so importing the result type here preserves a one-way graph.
+# ``TokenEstimator`` remains lazy in ``_append_event_sync`` because it belongs
+# to the compaction package and is only required when appending an unstamped event.
 
-__all__ = ["FilesystemSessionHistoryStore", "normalize_session_name_key"]
+__all__ = [
+    "FilesystemSessionHistoryStore",
+    "HistoryCompactionRecoveryError",
+    "normalize_session_name_key",
+]
 
 
 _DIR_MODE: int = 0o700
 _FILE_MODE: int = 0o600
+_COMPACTION_ARCHIVE_PREFIX: str = "events.pre-"
+
+
+class HistoryCompactionRecoveryError(RuntimeError):
+    """Report a failed compaction restore with deterministic recovery paths.
+
+    Reader-side recovery can restore ``archive_path`` to ``active_path`` before
+    parsing history, so callers must surface this error rather than treating a
+    partial activation as successful.
+    """
+
+    def __init__(self, *, active_path: Path, archive_path: Path) -> None:
+        """Capture the paths required for deterministic reader recovery.
+
+        Args:
+            active_path (Path): Missing or partially activated live event log.
+            archive_path (Path): Preserved pre-transaction event log.
+        """
+        self.active_path: Path = active_path
+        self.archive_path: Path = archive_path
+        super().__init__("compaction restoration failed; " f"active={active_path}; archive={archive_path}")
 
 
 def normalize_session_name_key(*, session_name: str) -> str:
@@ -322,6 +346,38 @@ class FilesystemSessionHistoryStore:
                 session_name=session_name,
             )
 
+    async def compact_to_boundary(
+        self,
+        *,
+        session_id: str,
+        events: list[SessionHistoryEventDAO],
+        result: CompactionResult,
+        turn_id: str,
+    ) -> SessionHistoryEventDAO:
+        """Atomically replace active history with a retained tail and summary.
+
+        The command writes the candidate active log before moving the old log to
+        its archive and only advances metadata after the new active file is in
+        place. A normal write failure leaves the active log and metadata intact.
+
+        Args:
+            session_id (str): Session whose history is compacted.
+            events (list[SessionHistoryEventDAO]): Validated pre-compaction events.
+            result (CompactionResult): Summary and retain-boundary result.
+            turn_id (str): Fresh or active turn id recorded on the summary.
+
+        Returns:
+            SessionHistoryEventDAO: The activated summary with its assigned sequence.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._compact_to_boundary_sync,
+                session_id=session_id,
+                events=events,
+                result=result,
+                turn_id=turn_id,
+            )
+
     async def append_compaction_summary(
         self,
         *,
@@ -523,8 +579,16 @@ class FilesystemSessionHistoryStore:
         *,
         session_id: str,
     ) -> list[SessionHistoryEventDAO]:
-        """Synchronously load and validate every event for ``session_id``."""
+        """Synchronously recover an interrupted archive then validate events.
+
+        Args:
+            session_id (str): Session whose active history is read.
+
+        Returns:
+            list[SessionHistoryEventDAO]: Validated active events in sequence order.
+        """
         events_path: Path = self._events_path(session_id=session_id)
+        self._recover_compaction_archive_if_needed(active_path=events_path)
         if not events_path.exists():
             return []
         raw_text: str = events_path.read_text(encoding="utf-8")
@@ -608,9 +672,7 @@ class FilesystemSessionHistoryStore:
         if len(matches) == 1:
             return matches[0].session_id
         if len(matches) > 1:
-            raise ValueError(
-                f"ambiguous session reference: {reference}; use the raw session id instead"
-            )
+            raise ValueError(f"ambiguous session reference: {reference}; use the raw session id instead")
         raise ValueError(f"unknown session reference: {reference}")
 
     def _rename_session_sync(
@@ -663,9 +725,7 @@ class FilesystemSessionHistoryStore:
                 continue
             if metadata.session_name_key != session_name_key:
                 continue
-            raise ValueError(
-                f"session name already in use: {metadata.session_name or session_name_key}"
-            )
+            raise ValueError(f"session name already in use: {metadata.session_name or session_name_key}")
 
     def _ensure_root(self) -> None:
         """Create the history root directory tree with private permissions."""
@@ -736,6 +796,60 @@ class FilesystemSessionHistoryStore:
         if is_new:
             path.chmod(_FILE_MODE)
 
+    def _compact_to_boundary_sync(
+        self,
+        *,
+        session_id: str,
+        events: list[SessionHistoryEventDAO],
+        result: CompactionResult,
+        turn_id: str,
+    ) -> SessionHistoryEventDAO:
+        """Synchronously commit one all-or-nothing compaction candidate.
+
+        Args:
+            session_id (str): Session owner.
+            events (list[SessionHistoryEventDAO]): Pre-compaction events.
+            result (CompactionResult): LLM-produced summary metadata.
+            turn_id (str): Compaction-originating turn id.
+
+        Returns:
+            SessionHistoryEventDAO: Summary assigned the transaction sequence.
+        """
+        metadata: SessionHistoryMetadataDAO = self._read_metadata_sync(session_id=session_id)
+        sequence: int = metadata.latest_sequence + 1
+        summary_event: SessionHistoryEventDAO = SessionHistoryEventDAO(
+            session_id=session_id,
+            turn_id=turn_id,
+            kind="compaction_summary",
+            sequence=sequence,
+            payload=SessionHistoryEventPayloadDAO(
+                content=result.summary_text,
+                token_usage=math.ceil(len(result.summary_text) / 4),
+                metadata={
+                    "first_kept_entry_id": result.first_kept_entry_id,
+                    "cut_point_entry_id": result.cut_point_entry_id,
+                    "tokens_before": result.tokens_before,
+                    "tokens_after": result.tokens_after,
+                },
+            ),
+        )
+        retain_from_sequence: int = self._resolve_retain_boundary_sequence(
+            events=events,
+            first_kept_entry_id=result.first_kept_entry_id,
+        )
+        candidate_events: list[SessionHistoryEventDAO] = self._build_post_compaction_events(
+            events=events,
+            retain_from_sequence=retain_from_sequence,
+            summary_event=summary_event,
+        )
+        self._commit_compaction_transaction(
+            session_id=session_id,
+            candidate_events=candidate_events,
+            metadata=metadata,
+            sequence=sequence,
+        )
+        return summary_event
+
     def _truncate_to_compaction_boundary_sync(
         self,
         *,
@@ -792,9 +906,7 @@ class FilesystemSessionHistoryStore:
         for event in events:
             if event.event_id == first_kept_entry_id:
                 return event.sequence
-        raise ValueError(
-            f"first_kept_entry_id {first_kept_entry_id!r} not found in events"
-        )
+        raise ValueError(f"first_kept_entry_id {first_kept_entry_id!r} not found in events")
 
     @staticmethod
     def _build_post_compaction_events(
@@ -825,33 +937,189 @@ class FilesystemSessionHistoryStore:
         session_id: str,
         new_events: list[SessionHistoryEventDAO],
     ) -> None:
-        """Replace events.jsonl atomically, archiving the old file.
+        """Replace active events using the recoverable compaction transaction.
 
-        Steps:
-            1. Write ``new_events`` to ``events.jsonl.tmp`` (fsync).
-            2. Rename ``events.jsonl`` → ``events.pre-<ts>.jsonl``.
-            3. Rename ``events.jsonl.tmp`` → ``events.jsonl``.
+        Compatibility callers do not update metadata, but still receive the
+        candidate/archive/activation recovery guarantees of the store command.
 
         Args:
             session_id (str): Session owner.
-            new_events (list[SessionHistoryEventDAO]): Events for the new file.
+            new_events (list[SessionHistoryEventDAO]): Events for the candidate log.
+        """
+        metadata: SessionHistoryMetadataDAO = self._read_metadata_sync(session_id=session_id)
+        self._commit_compaction_transaction(
+            session_id=session_id,
+            candidate_events=new_events,
+            metadata=metadata,
+            sequence=None,
+        )
+
+    def _commit_compaction_transaction(
+        self,
+        *,
+        session_id: str,
+        candidate_events: list[SessionHistoryEventDAO],
+        metadata: SessionHistoryMetadataDAO,
+        sequence: Optional[int],
+    ) -> None:
+        """Durably activate candidate events and optionally advance metadata.
+
+        The pre-transaction active and metadata files are left byte-identical on
+        every ordinary failure. If restoration fails after archival, the typed
+        error names the deterministic archive for reader-side recovery.
+
+        Args:
+            session_id (str): Session owner.
+            candidate_events (list[SessionHistoryEventDAO]): Candidate log contents.
+            metadata (SessionHistoryMetadataDAO): Pre-transaction metadata object.
+            sequence (Optional[int]): New high-water sequence, or ``None`` for
+                legacy truncation callers that do not advance metadata.
 
         Raises:
-            FileNotFoundError: When ``events.jsonl`` does not exist.
+            HistoryCompactionRecoveryError: When restoring an archived active log fails.
         """
         active_path: Path = self._events_path(session_id=session_id)
         if not active_path.exists():
             raise FileNotFoundError(
-                f"events.jsonl not found for session {session_id!r}; "
-                "call ensure_session first"
+                f"events.jsonl not found for session {session_id!r}; call ensure_session first"
             )
-        timestamp: str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        archive_path: Path = active_path.parent / f"events.pre-{timestamp}.jsonl"
-        tmp_path: Path = active_path.with_suffix(active_path.suffix + ".tmp")
+        candidate_path: Path = active_path.with_suffix(active_path.suffix + ".compaction-candidate")
+        archive_path: Path = self._next_compaction_archive_path(active_path=active_path)
+        self._write_events_to_path(path=candidate_path, events=candidate_events)
+        archive_created: bool = False
+        try:
+            active_path.replace(archive_path)
+            archive_created = True
+            candidate_path.replace(active_path)
+            self._write_compaction_metadata(
+                metadata=metadata,
+                sequence=sequence,
+            )
+        except Exception:
+            self._recover_failed_compaction_activation(
+                archive_created=archive_created,
+                active_path=active_path,
+                archive_path=archive_path,
+                candidate_path=candidate_path,
+            )
+            raise
 
-        self._write_events_to_path(path=tmp_path, events=new_events)
-        active_path.rename(archive_path)
-        tmp_path.rename(active_path)
+    def _recover_failed_compaction_activation(
+        self,
+        *,
+        archive_created: bool,
+        active_path: Path,
+        archive_path: Path,
+        candidate_path: Path,
+    ) -> None:
+        """Restore pre-transaction state after a failed activation step.
+
+        Args:
+            archive_created (bool): Whether the live file was moved to archive.
+            active_path (Path): Live event-log destination.
+            archive_path (Path): Preserved pre-transaction archive.
+            candidate_path (Path): Unactivated candidate file.
+        """
+        self._remove_path_if_exists(path=candidate_path)
+        if not archive_created:
+            return
+        self._restore_archived_active_or_raise(
+            active_path=active_path,
+            archive_path=archive_path,
+        )
+
+    def _write_compaction_metadata(
+        self,
+        *,
+        metadata: SessionHistoryMetadataDAO,
+        sequence: Optional[int],
+    ) -> None:
+        """Advance metadata only after the candidate has become active.
+
+        Args:
+            metadata (SessionHistoryMetadataDAO): Metadata copied from durable state.
+            sequence (Optional[int]): New sequence, or ``None`` when unchanged.
+        """
+        if sequence is None:
+            return
+        metadata.latest_sequence = sequence
+        metadata.updated_at = datetime.now(timezone.utc)
+        self._write_metadata_sync(metadata=metadata)
+
+    def _next_compaction_archive_path(self, *, active_path: Path) -> Path:
+        """Return a collision-free deterministic archive path for one transaction.
+
+        Args:
+            active_path (Path): Current active event-log path.
+
+        Returns:
+            Path: Unused archive path in the active log directory.
+        """
+        index: int = 1
+        while True:
+            candidate: Path = active_path.parent / f"{_COMPACTION_ARCHIVE_PREFIX}compaction-{index}.jsonl"
+            if not candidate.exists():
+                return candidate
+            index += 1
+
+    def _restore_archived_active_or_raise(
+        self,
+        *,
+        active_path: Path,
+        archive_path: Path,
+    ) -> None:
+        """Restore the archived active log after a post-archive transaction failure.
+
+        Args:
+            active_path (Path): Destination live log path.
+            archive_path (Path): Pre-transaction archive path.
+
+        Raises:
+            HistoryCompactionRecoveryError: When archive restoration itself fails.
+        """
+        try:
+            self._remove_path_if_exists(path=active_path)
+            archive_path.replace(active_path)
+        except OSError as exc:
+            raise HistoryCompactionRecoveryError(
+                active_path=active_path,
+                archive_path=archive_path,
+            ) from exc
+
+    def _recover_compaction_archive_if_needed(self, *, active_path: Path) -> None:
+        """Restore the oldest deterministic archive when no active log exists.
+
+        Args:
+            active_path (Path): Expected active events file.
+
+        Raises:
+            HistoryCompactionRecoveryError: When an archive exists but cannot be restored.
+        """
+        if active_path.exists():
+            return
+        archives: list[Path] = sorted(active_path.parent.glob(f"{_COMPACTION_ARCHIVE_PREFIX}*.jsonl"))
+        if not archives:
+            return
+        archive_path: Path = archives[0]
+        try:
+            archive_path.replace(active_path)
+        except OSError as exc:
+            raise HistoryCompactionRecoveryError(
+                active_path=active_path,
+                archive_path=archive_path,
+            ) from exc
+
+    @staticmethod
+    def _remove_path_if_exists(*, path: Path) -> None:
+        """Remove a file when present.
+
+        Args:
+            path (Path): Candidate file to remove.
+        """
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
 
     @staticmethod
     def _write_events_to_path(

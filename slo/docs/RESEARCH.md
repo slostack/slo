@@ -50,10 +50,11 @@ slo/
 | `turn_stream_accumulator.py` | Completed-state helper for one outer-loop turn |
 | `prompts/system_prompt.py` | `SystemPromptBuilder.invoke()` — assembles tools block, `<available_skills>` XML (via `SkillsLoader`), project context, cwd, custom prompt |
 | `history/dao.py` | `SessionHistoryEventDAO`, `SessionHistoryMetadataDAO`; `assistant_delta` canonical event kind; metadata includes `session_name` + `session_name_key` |
-| `history/filesystem_store.py` | Append-only JSONL store under `~/.slo/sessions/history/<session_id>/`; atomic rewrites; `0700`/`0600` permissions; `normalize_session_name_key()`, `rename_session()`, and `resolve_session_reference()` for resume-by-name |
+| `history/filesystem_store.py` | JSONL store under `~/.slo/sessions/history/<session_id>/`; `compact_to_boundary()` writes+fsyncs a candidate, archive/activates it, advances metadata, restores ordinary failures byte-identically, and reader-recovers a deterministic archive after `HistoryCompactionRecoveryError`; also owns naming/resume resolution |
 | `history/projector.py` | Projects canonical events → `list[BaseMessage]` for next-turn context |
 | `history/transcript.py` | `ReplayEntryProjector` + `TranscriptEntryDAO`; replay entries for TUI mounting + `transcript.md` export |
 | `tool_execution/` | Sub-package for tool execution helpers |
+| `compaction/context_window.py` | Pure `ContextWindowSnapshotDAO` / service; catalog canonical/alias capacity plus pre-reconciliation projector-selected durable replay estimate (spec 62, D1 excludes deltas/audit/incomplete events) |
 
 ---
 
@@ -61,9 +62,9 @@ slo/
 
 | File | Purpose |
 |---|---|
-| `app.py` | `SloTUI` (Textual app) + `PromptInput` (TextArea with custom `Submitted` message); owns in-flight task guard, `^C` interrupt, title-bar refresh, `/new` replacement, `/rename`, and prompt-history recall |
+| `app.py` | `SloTUI` (Textual app) + `PromptInput` (TextArea with custom `Submitted` message); owns in-flight task guard, bounded Context Window Snapshot refresh/repaint cadence, `/new` replacement, `/rename`, and prompt-history recall |
 | `prompt_history.py` | `PromptHistoryNavigator` — in-process `Up`/`Down` recall for submitted non-slash prompts |
-| `slash_router.py` | `SlashRouter.dispatch()` + `SlashCommandResultDAO`; handles `/help`, `/clear`, `/exit`, `/cwd`, `/abort`, `/steer`, `/model`, `/reasoning`, `/new`, and `/rename` |
+| `slash_router.py` | `SlashRouter.dispatch()` + `SlashCommandResultDAO`; handles `/help`, `/clear`, `/exit`, `/cwd`, `/abort`, `/steer`, `/model`, `/reasoning`, `/context-window`, `/compact`, `/new`, and `/rename` through typed session DAOs only |
 | `slash_command_registry.py` | `SlashCommandRegistry`, `SlashCommandSpecDAO`, `build_default_registry()` — canonical metadata for all slash commands (name, description, aliases, argument_mode, usage), including `/new` and `/rename` |
 | `slash_suggestion_engine.py` | `SlashSuggestionEngine` — pure suggestion logic; `SlashSuggestionRowDAO`, `SlashSuggestionStateDAO` |
 | `event_renderer.py` | Tool-line formatting helpers; legacy `ProgressEventDAO` renderer |
@@ -77,7 +78,8 @@ slo/
 | `widgets/assistant_stream_block.py` | Streaming assistant-turn widget; reasoning summary first, answer second; distinct reasoning/answer surfaces |
 | `widgets/tool_execution_block.py` | Live-updating tool call + result widget; Claude-Code-style rows with shared panel rhythm |
 | `widgets/slash_suggestion_menu.py` | Floating suggestion menu that appears when `/` is typed |
-| `widgets/usage_status_bar.py` | Status bar showing per-turn and session token totals + rate state |
+| `widgets/usage_status_bar.py` | Status bar showing per-turn/session billing totals, rate state, and cached Context Window Snapshot percentage |
+| `slash_router.py` | Also formats `/context-window` and `/compact` typed session outcomes (spec 62) |
 | `workflows/dao.py` | Detached-workflow receive-path DTOs and the only parsing/validation seams (`parse_workflow_lifecycle_message`, `parse_launch_workflow_result`); typed `DetachedWorkflowUiEffectDAO` vocabulary (`launch_visualizer`, `reset_launch_guard`) with a typed `WorkflowState` on every effect; no Textual |
 | `workflows/service.py` | `DetachedWorkflowAppService` — owns `WorkflowHandleStore` reconcile/update, legal durable transitions, and the `workflow_id → state` live-label cache (exit hint); terminal advances emit reset-only effects, never a launch effect |
 | `workflows/renderer.py` | `DetachedWorkflowRenderer` — owns the one-window-per-orchestrator-session launch guard, `VisualizerLauncher` calls, and transcript notices via `DetachedWorkflowNoticeSink`; guard resets only via a typed `reset_launch_guard` effect |

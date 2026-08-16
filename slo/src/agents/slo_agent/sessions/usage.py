@@ -11,6 +11,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.agents.slo_agent.compaction.context_window import ContextWindowSnapshotDAO
+
 __all__ = [
     "SessionUsageSnapshotDAO",
     "TokenUsageTotalsDAO",
@@ -83,3 +85,4 @@ class SessionUsageSnapshotDAO(BaseModel):
     latest_turn: TokenUsageTotalsDAO = Field(default_factory=TokenUsageTotalsDAO)
     session_totals: TokenUsageTotalsDAO = Field(default_factory=TokenUsageTotalsDAO)
     usage_available: bool = False
+    context_window_snapshot: Optional[ContextWindowSnapshotDAO] = None

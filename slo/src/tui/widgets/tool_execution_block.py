@@ -7,12 +7,12 @@ from typing import Any, Optional
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Static
 
 from src.tui.event_renderer import (
     format_tool_call_headline,
     format_tool_result_line,
 )
+from src.tui.widgets.literal_text_static import LiteralTextStatic
 
 __all__ = ["ToolExecutionBlock"]
 
@@ -85,10 +85,10 @@ class ToolExecutionBlock(Vertical):
         # A tool block is compact by default; expand only when the global
         # toggle explicitly forces it on.
         self._expanded: bool = force_expanded is True
-        self._headline: Static = Static("", classes="tool-call-headline")
-        self._hint: Static = Static("", classes="tool-call-hint")
-        self._expanded_body: Static = Static("")
-        self._result_line: Static = Static("", classes="tool-call-result")
+        self._headline: LiteralTextStatic = LiteralTextStatic("", classes="tool-call-headline")
+        self._hint: LiteralTextStatic = LiteralTextStatic("", classes="tool-call-hint")
+        self._expanded_body: LiteralTextStatic = LiteralTextStatic("")
+        self._result_line: LiteralTextStatic = LiteralTextStatic("", classes="tool-call-result")
         self._last_rendered_snapshot: tuple[str, str, str] = ("", "", "")
         self._marked_incomplete: bool = False
         self._refresh()

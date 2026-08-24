@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from rich.markdown import Markdown
+from rich.padding import Padding
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 
@@ -87,7 +89,11 @@ class TestUserMessageBlockExpansion:
         block: UserMessageBlock = UserMessageBlock(text="line one\nline two\nline three")
 
         assert block.text == "line one\nline two\nline three"
-        assert block._body.renderable.renderable.markup == "line one\nline two\nline three"
+        # ``_body.content`` is the stored ``Padding(Markdown(...))`` renderable;
+        # reaching into it for the markdown source is intentional for this assertion.
+        padding: Padding = block._body.content  # type: ignore[assignment]
+        markdown: Markdown = padding.renderable  # type: ignore[assignment]
+        assert markdown.markup == "line one\nline two\nline three"
 
     def test_set_expanded_is_a_noop_for_user_blocks(self) -> None:
         """``set_expanded`` never changes the tracked user-block state."""

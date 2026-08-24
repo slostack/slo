@@ -17,7 +17,6 @@ from src.tui.widgets.sub_agent_fleet_panel import (
     SubAgentFleetRowDAO,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -220,6 +219,30 @@ class TestSubAgentFleetRowFormat:
         assert result.startswith(_GLYPH) or _GLYPH in result
         assert "◉" not in result
 
+    def test_fleet_row_with_bracketed_activity_does_not_raise(self) -> None:
+        """A bracketed child activity is escaped so it never trips markup parsing.
+
+        The row keeps intentional ``[bold]``/``[dim]`` markup, so the dynamic
+        ``task_id`` and ``last_text`` segments must be escaped or a value like a
+        regex ``[a-z]+`` would be swallowed or raise a ``MarkupError`` when Rich
+        parses the row. Asserts the escaped form is present and that rendering the
+        row string through a real Rich console does not raise.
+        """
+        from rich.console import Console
+        from rich.markup import escape
+
+        dao: SubAgentFleetRowDAO = _make_dao(
+            task_id="task[x]",
+            status="running",
+            last_text="matched /[a-z]+/ 12 times",
+        )
+
+        result: str = SubAgentFleetRow._format(dao=dao)
+
+        assert escape("matched /[a-z]+/ 12 times") in result
+        assert escape("task[x]") in result
+        Console().render_str(result)
+
 
 # ---------------------------------------------------------------------------
 # TestSubAgentFleetPanelState — pure state logic (no DOM)
@@ -324,5 +347,6 @@ class TestSubAgentFleetPanelState:
     def test_no_pane_index_in_register_signature(self) -> None:
         """``register_row`` no longer accepts ``pane_index``."""
         import inspect
+
         sig = inspect.signature(SubAgentFleetPanel.register_row)
         assert "pane_index" not in sig.parameters

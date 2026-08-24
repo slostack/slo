@@ -344,6 +344,18 @@ for tests, copy, and replay. The classes are themed via `src/tui/app.tcss`:
 themes via the command palette, the entire transcript repaints with new
 colors because the palette only changes which RGB the tokens resolve to.
 
+**Copying text.** Drag the mouse across the transcript to select any range;
+releasing the drag **auto-copies** the selection to your clipboard — no
+keystroke needed. Delivery tries a local clipboard (`pyperclip`) first and
+always falls back to an OSC 52 escape, so copy works both locally and over
+SSH/tmux. The old keyboard binding (`ctrl+shift+c` / `meta+c`) still copies
+the focused block, prompt selection, or visible transcript, and now also
+emits OSC 52. Native selection needs Textual's selection API, so slo pins
+`textual >= 8.2.7`. One consequence of that version: `Static` treats `[...]`
+in a string as console markup, so every plain-text transcript surface is
+rendered through `LiteralTextStatic` (a `Static` with `markup=False`) to keep
+type hints (`list[str]`), timestamps, JSON, and regex spans literal.
+
 ### 2.5 Slash Commands
 
 Type `/` at the start of a line and press Enter to invoke a slash

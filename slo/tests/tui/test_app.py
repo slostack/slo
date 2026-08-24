@@ -38,7 +38,9 @@ from src.tui.app import (
 from src.tui.authentication import AuthenticationScreen
 from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 from src.tui.thinking_spinner import ThinkingSpinner
+from tests.tui._scroll_settle import pump_until
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
@@ -366,6 +368,57 @@ class TestSloTUISessionInbox:
             )
             assert await inbox_store.list_pending(session_id="session-1234") == []
             assert await inbox_store.list_done(session_id="session-1234") == [message]
+
+    @pytest.mark.asyncio
+    async def test_inbox_notice_bracket_prefix_renders_literally(self, tmp_path: Path) -> None:
+        """The ``[scheduled notice]`` prefix and bracketed body render verbatim.
+
+        The prefix is exactly the shape Textual's markup parser treats as a tag, so
+        this proves the notice mounts through ``LiteralTextStatic`` and neither the
+        prefix nor a bracketed body (``list[str]``) is swallowed after the 8.x bump.
+        """
+        history_root: Path = tmp_path / "history"
+        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
+        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = True
+        session.history_root = history_root
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=[])
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=MagicMock())
+
+        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            message_id="message-1",
+            session_id="session-1234",
+            schedule_id="schedule-1",
+            run_id="run-1",
+            kind="monitor_update",
+            delivery_mode="ui_notice",
+            title="type check",
+            text="annotate as list[str]",
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await inbox_store.enqueue(message=message)
+            await app._poll_session_inbox()
+            await pilot.pause()
+
+            assert app._transcript_content is not None
+            rendered: list[str] = [
+                str(child.render())
+                for child in app._transcript_content.children
+                if isinstance(child, LiteralTextStatic)
+            ]
+            assert any("[scheduled notice]" in text and "list[str]" in text for text in rendered)
 
     @pytest.mark.asyncio
     async def test_poll_session_inbox_starts_chat_turn(self, tmp_path: Path) -> None:
@@ -942,7 +995,7 @@ class TestSloTUISessionInbox:
             session.steer.assert_called_once_with(message="be terse")
             blocks = list(app.query(SteeringPendingBlock))
             assert len(blocks) == 1
-            assert "be terse" in blocks[0].renderable
+            assert "be terse" in str(blocks[0].render())
 
             await app._render_event(
                 AgentStreamEventDAO(kind="steering_applied", content="be terse"),
@@ -2794,11 +2847,12 @@ class TestLoadOlderEntries:
                 assert app._transcript_scroll is not None
                 app._transcript_scroll.scroll_to(y=1, animate=False)
                 await pilot.pause()
-                scroll_before: float = app._transcript_scroll.scroll_y
+                scroll = app._transcript_scroll
+                scroll_before: float = scroll.scroll_y
                 await app._load_older_entries()
-                await pilot.pause()
-                assert app._transcript_scroll.scroll_y > scroll_before
-                assert app._transcript_scroll.scroll_y <= app._transcript_scroll.max_scroll_y
+                await pump_until(pilot=pilot, predicate=lambda: scroll.scroll_y > scroll_before)
+                assert scroll.scroll_y > scroll_before
+                assert scroll.scroll_y <= scroll.max_scroll_y
 
     @pytest.mark.asyncio
     async def test_load_older_keeps_summary_when_cursor_is_still_positive(self) -> None:
@@ -2929,6 +2983,9 @@ class TestLoadOlderEntries:
             app._back_scroll_mode = True
 
             await app._echo_user_line(text="live prompt")
+            # Textual 8.x needs one extra refresh cycle to reconcile max_scroll_y
+            # with the force-reveal scroll restoration; behaviour is unchanged.
+            await pilot.pause()
             await pilot.pause()
 
             assert app._back_scroll_mode is False
@@ -2972,7 +3029,7 @@ class TestLoadOlderEntries:
                 await app._render_event(
                     event=AgentStreamEventDAO(kind="text_delta", delta="streaming tail", iteration=0)
                 )
-                await pilot.pause()
+                await pump_until(pilot=pilot, predicate=lambda: app._transcript_is_at_bottom())
 
                 assert app._transcript_is_at_bottom() is True
                 assert any(
@@ -3080,7 +3137,7 @@ class TestHydrationEntryCursor:
 
                 assert app._load_older_cursor == 7
                 assert app._earlier_summary is not None
-                assert "7 earlier messages hidden" in str(app._earlier_summary.renderable)
+                assert "7 earlier messages hidden" in str(app._earlier_summary.content)
 
     @pytest.mark.asyncio
     async def test_hydration_cursor_is_zero_when_history_fits_within_the_entry_limit(self) -> None:
@@ -3150,7 +3207,7 @@ class TestHydrationEntryCursor:
 
             assert app._load_older_cursor == 0
             assert app._earlier_summary is not None
-            summary_text: str = str(app._earlier_summary.renderable)
+            summary_text: str = str(app._earlier_summary.content)
             assert "0 earlier messages hidden" not in summary_text
             assert "scroll to the top" not in summary_text
 

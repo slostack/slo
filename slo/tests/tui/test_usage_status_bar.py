@@ -63,7 +63,7 @@ class TestUsageStatusBar:
             bars: list[UsageStatusBar] = list(app.query(selector=UsageStatusBar))
 
             assert len(bars) == 1
-            assert session.active_model_name in str(bars[0].renderable)
+            assert session.active_model_name in str(bars[0].content)
 
     @pytest.mark.asyncio
     async def test_completed_prompt_refreshes_usage_status_bar(self) -> None:
@@ -99,8 +99,8 @@ class TestUsageStatusBar:
 
             bars: list[UsageStatusBar] = list(app.query(selector=UsageStatusBar))
             assert len(bars) == 1
-            assert "turn 16 tok" in str(bars[0].renderable)
-            assert "session 16 tok" in str(bars[0].renderable)
+            assert "turn 16 tok" in str(bars[0].content)
+            assert "session 16 tok" in str(bars[0].content)
 
 
 class TestUsageStatusBarCacheRendering:

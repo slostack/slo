@@ -49,7 +49,7 @@ class TestOAuthStatusWidget:
             await pilot.pause()
 
             url_label: str = str(
-                pilot.app.query_one("#oauth-url", Static).renderable
+                pilot.app.query_one("#oauth-url", Static).content
             )
 
         assert "https://example.com/auth?x=1" in url_label
@@ -65,10 +65,10 @@ class TestOAuthStatusWidget:
             await pilot.pause()
 
             error_label: str = str(
-                pilot.app.query_one("#oauth-error", Static).renderable
+                pilot.app.query_one("#oauth-error", Static).content
             )
             status_label: str = str(
-                pilot.app.query_one("#oauth-status", Static).renderable
+                pilot.app.query_one("#oauth-status", Static).content
             )
 
         assert "timed out" in error_label.lower()

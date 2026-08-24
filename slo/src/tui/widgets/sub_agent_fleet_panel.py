@@ -13,6 +13,7 @@ import time
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from rich.markup import escape
 from textual.containers import Vertical
 from textual.widgets import Static
 
@@ -129,6 +130,12 @@ class SubAgentFleetRow(Static):
         Running rows show the task label in bold; terminal rows dim it so
         the user can tell at a glance which agents are still active.
 
+        The row keeps intentional ``[bold]``/``[dim]`` Rich markup, so the two
+        dynamic segments — the child ``task_id`` and its latest ``activity`` — are
+        escaped with ``rich.markup.escape`` before interpolation. Without that, a
+        child activity such as a regex ``[a-z]+`` or a JSON array would be swallowed
+        or raise a ``MarkupError`` once Rich parses the row after the 8.x bump.
+
         Args:
             dao (SubAgentFleetRowDAO): Current row state.
 
@@ -140,12 +147,14 @@ class SubAgentFleetRow(Static):
         activity: str = dao.last_text or dao.prompt_preview or "…"
         if len(activity) > _LAST_TEXT_MAX_CHARS:
             activity = f"{activity[:_LAST_TEXT_MAX_CHARS]}…"
+        safe_activity: str = escape(activity)
+        safe_task_id: str = escape(dao.task_id)
         label: str = (
-            f"[bold]{dao.task_id}[/bold]"
+            f"[bold]{safe_task_id}[/bold]"
             if dao.status in ("pending", "running")
-            else f"[dim]{dao.task_id}[/dim]"
+            else f"[dim]{safe_task_id}[/dim]"
         )
-        return f"{_GLYPH} {label}  {icon}  [dim]{elapsed}s[/dim]   {activity}"
+        return f"{_GLYPH} {label}  {icon}  [dim]{elapsed}s[/dim]   {safe_activity}"
 
 
 # ---------------------------------------------------------------------------

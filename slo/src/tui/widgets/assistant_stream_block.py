@@ -12,6 +12,8 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Static
 
+from src.tui.widgets.literal_text_static import LiteralTextStatic
+
 __all__ = ["AssistantStreamBlock"]
 
 _STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
@@ -137,14 +139,14 @@ class AssistantStreamBlock(Vertical):
         # The natural state shows reasoning whenever present; only an explicit
         # collapse-all (force_expanded=False) hides it.
         self._expanded: bool = True if force_expanded is None else force_expanded
-        self._label: Optional[Static] = (
-            Static(title_prefix, classes="sub-agent-label") if title_prefix else None
+        self._label: Optional[LiteralTextStatic] = (
+            LiteralTextStatic(title_prefix, classes="sub-agent-label") if title_prefix else None
         )
         self._thinking_body: Static = Static("", classes="assistant-thinking-body")
         self._thinking_body.display = False
         self._answer_body: Static = Static("", classes="assistant-answer-body")
         self._answer_body.display = False
-        self._terminal_note: Static = Static("", classes="assistant-terminal-warning")
+        self._terminal_note: LiteralTextStatic = LiteralTextStatic("", classes="assistant-terminal-warning")
         self._terminal_note.display = False
         self._thinking_text: str = ""
         self._answer_text: str = ""

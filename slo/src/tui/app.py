@@ -45,6 +45,7 @@ from src.tui.thinking_spinner import ThinkingSpinner
 from src.tui.transcript_projector import TranscriptProjector
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
@@ -1294,7 +1295,7 @@ class SloTUI(App):
 
             if isinstance(tree, SessionTreeNode):
                 md = TreeMarkdownExporter.export(tree=tree)
-                await self._transcript_scroll.mount(Static(md))
+                await self._transcript_scroll.mount(LiteralTextStatic(md))
         elif tree_format == TreeExportFormat.HTML.value:
             from src.agents.slo_agent.history.tree_builder import SessionTreeNode
 
@@ -1303,7 +1304,7 @@ class SloTUI(App):
                     tree=tree,
                     session_name=self._session.session_name or "unnamed",
                 )
-                await self._transcript_scroll.mount(Static(f"HTML tree written to: {path}"))
+                await self._transcript_scroll.mount(LiteralTextStatic(f"HTML tree written to: {path}"))
 
     def _resume_command_hint(self) -> str:
         """Return the copy-paste command that resumes the active session.
@@ -1375,6 +1376,64 @@ class SloTUI(App):
         if not text:
             return
         self.copy_to_clipboard(text)
+
+    async def on_text_selected(self, event: events.TextSelected) -> None:
+        """Auto-copy the mouse-selected transcript span to the clipboard.
+
+        Fired when the user releases a mouse drag over the transcript and the
+        screen posts ``events.TextSelected``. Reads the current selection via
+        ``Screen.get_selected_text`` and, when non-empty, hands it to the shared
+        ``copy_to_clipboard`` funnel (local clipboard then OSC 52). A no-op when the
+        selection is empty or ``None`` (e.g. a click with no drag).
+
+        Args:
+            event (events.TextSelected): The screen's selection-complete event.
+        """
+        del event
+        selection: Optional[str] = self.screen.get_selected_text()
+        if not selection:
+            return
+        self.copy_to_clipboard(selection)
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Deliver text to the clipboard via a local clipboard, then OSC 52.
+
+        The single clipboard funnel for the TUI, shared by the keyboard copy binding
+        (``action_copy_visible_text``) and mouse-selection auto-copy
+        (``on_text_selected``). Tries ``pyperclip`` first so a local clipboard works
+        even where OSC 52 does not (e.g. macOS Terminal), then always calls the
+        Textual base implementation, which emits an OSC 52 escape so copy also works
+        over SSH/tmux. A ``pyperclip`` import failure or copy error is swallowed and
+        never blocks the OSC 52 write.
+
+        Args:
+            text (str): The text to place on the clipboard.
+        """
+        self._copy_via_local_clipboard(text=text)
+        super().copy_to_clipboard(text)
+
+    @staticmethod
+    def _copy_via_local_clipboard(*, text: str) -> bool:
+        """Best-effort local-clipboard copy via ``pyperclip``.
+
+        Called only by ``copy_to_clipboard``. Import and copy errors are swallowed so
+        a missing or unusable ``pyperclip`` never blocks OSC 52 delivery.
+
+        Args:
+            text (str): The text to copy locally.
+
+        Returns:
+            bool: True when ``pyperclip`` copied without raising, else False.
+        """
+        try:
+            import pyperclip
+        except ImportError:
+            return False
+        try:
+            pyperclip.copy(text)
+        except Exception:  # best-effort local clipboard; must never block OSC 52
+            return False
+        return True
 
     async def action_scroll_to_bottom(self) -> None:
         """Scroll the transcript to the latest content (``ctrl+end``).
@@ -1888,7 +1947,7 @@ class SloTUI(App):
                 return
         text: str = self._earlier_summary_text(hidden_count=hidden_count)
         if self._earlier_summary is None:
-            self._earlier_summary = Static(text, id="transcript-earlier-summary")
+            self._earlier_summary = LiteralTextStatic(text, id="transcript-earlier-summary")
             await self._transcript_content.mount(self._earlier_summary, before=0)
             return
         self._earlier_summary.update(text)
@@ -2637,7 +2696,7 @@ class SloTUI(App):
         if style_class == "assistant-final":
             widget = Static(Markdown(line), classes=style_class)
         else:
-            widget = Static(line, classes=style_class)
+            widget = LiteralTextStatic(line, classes=style_class)
         if before is None:
             self._transcript_content.mount(widget)
             self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)

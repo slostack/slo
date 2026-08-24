@@ -9,7 +9,6 @@ import pytest
 from langchain_core.messages import AIMessage
 from rich.markdown import Markdown
 from rich.padding import Padding
-
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.faux import FauxChatModel
@@ -84,6 +83,24 @@ class TestAssistantStreamBlock:
         assert block._thinking_body.display is False
         assert block._answer_body.display is False
         assert block._terminal_note.display is False
+
+    def test_compose_includes_disabled_accessible_copy_button(self) -> None:
+        """Every response block composes an initially disabled copy control."""
+        block = AssistantStreamBlock()
+        widgets = list(block.compose())
+
+        assert block._copy_header in widgets
+        assert block._copy_control.disabled is True
+        assert str(block._copy_control.content) == "Copy"
+        assert block._copy_control.tooltip == "Copy response"
+
+    def test_answer_render_enables_copy_button(self) -> None:
+        """The copy control enables as soon as answer text is rendered."""
+        block = AssistantStreamBlock()
+
+        block.append_text(delta="copyable")
+
+        assert block._copy_control.disabled is False
 
     def test_streamed_reasoning_inserts_spacing_between_word_fragments(self) -> None:
         """Reasoning deltas from Codex-style word fragments stay readable while streaming."""
@@ -177,8 +194,8 @@ class TestAssistantStreamBlockTitlePrefix:
         widgets = list(block.compose())
 
         assert block._label not in widgets
-        # Three content widgets only
-        assert len(widgets) == 3
+        # Copy header plus three content widgets.
+        assert len(widgets) == 4
 
     def test_prefix_does_not_affect_text_accumulation(self) -> None:
         """A block with a prefix still accumulates answer text correctly."""
@@ -276,6 +293,50 @@ def _build_session() -> SloAgentSession:
         workdir=Path(".").resolve(),
         session_id=str(uuid4()),
     )
+
+
+class TestAssistantStreamBlockCopyButton:
+    """Per-response answer-only clipboard control."""
+
+    @pytest.mark.asyncio
+    async def test_press_copies_raw_answer_without_thinking_and_restores_feedback(self) -> None:
+        """A mounted button uses the app funnel for answer-only content and confirms it."""
+        session: SloAgentSession = _build_session()
+        app: SloTUI = SloTUI(session=session)
+        copied_texts: list[str] = []
+        app.copy_to_clipboard = copied_texts.append  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            block: AssistantStreamBlock = await app.mount_assistant_block()
+            block.append_thinking(delta="private reasoning")
+            block.append_text(delta="public answer")
+            await pilot.pause()
+
+            copy_control = block._copy_control
+            await pilot.click(copy_control)
+            await pilot.pause()
+
+            assert copied_texts == ["public answer"]
+            assert str(copy_control.content) == "Copied"
+            block._restore_copy_button()
+            assert str(copy_control.content) == "Copy"
+
+    @pytest.mark.asyncio
+    async def test_empty_answer_button_never_calls_clipboard(self) -> None:
+        """A disabled empty response button cannot produce a clipboard request."""
+        session: SloAgentSession = _build_session()
+        app: SloTUI = SloTUI(session=session)
+        copied_texts: list[str] = []
+        app.copy_to_clipboard = copied_texts.append  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            block: AssistantStreamBlock = await app.mount_assistant_block()
+            assert block._copy_control.disabled is True
+
+            block._copy_control._request_copy()
+            await pilot.pause()
+
+            assert copied_texts == []
 
 
 class TestAssistantStreamBlockCoalescing:

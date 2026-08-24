@@ -983,6 +983,18 @@ class SloTUI(App):
                 self._input.set_prompt_history_navigation_enabled(enabled=False)
         self._refresh_slash_suggestions()
 
+    def on_assistant_stream_block_copy_requested(self, event: AssistantStreamBlock.CopyRequested) -> None:
+        """Copy a response-only block payload through the shared clipboard funnel.
+
+        Args:
+            event (AssistantStreamBlock.CopyRequested): Answer-only copy request
+                emitted by an assistant response button.
+        """
+        if not event.answer_text:
+            return
+        self.copy_to_clipboard(event.answer_text)
+        event.block.show_copy_feedback()
+
     def on_assistant_stream_block_rendered(self, event: AssistantStreamBlock.Rendered) -> None:
         """Re-check scroll-follow after the coalescing timer renders a block.
 

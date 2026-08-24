@@ -69,7 +69,7 @@ class TestApiKeyInputWidget:
             await pilot.pause()
 
             error_label: str = str(
-                pilot.app.query_one("#api-key-error", Static).renderable
+                pilot.app.query_one("#api-key-error", Static).content
             )
 
         assert "required" in error_label.lower()

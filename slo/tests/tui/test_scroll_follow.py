@@ -13,6 +13,7 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI
+from tests.tui._scroll_settle import pump_until
 
 
 def _build_session() -> SloAgentSession:
@@ -122,6 +123,10 @@ class TestTranscriptFollowMode:
             await app._render_event(
                 AgentStreamEventDAO(kind="text_delta", delta="hello", iteration=0),
             )
-            await pilot.pause()
+            scroll = app._transcript_scroll
+            await pump_until(
+                pilot=pilot,
+                predicate=lambda: (scroll.max_scroll_y - scroll.scroll_y) <= 1.0,
+            )
 
-            assert (app._transcript_scroll.max_scroll_y - app._transcript_scroll.scroll_y) <= 1.0
+            assert (scroll.max_scroll_y - scroll.scroll_y) <= 1.0

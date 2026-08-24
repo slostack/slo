@@ -150,7 +150,7 @@ class TestAuthenticationScreenOAuthFailure:
             await pilot.pause()
             status: OAuthStatusWidget = pilot.app.screen.query_one(OAuthStatusWidget)
             from textual.widgets import Static
-            error_label: str = str(status.query_one("#oauth-error", Static).renderable)
+            error_label: str = str(status.query_one("#oauth-error", Static).content)
             assert "timed out" in error_label.lower()
 
         assert harness.dismissed_with is None
@@ -183,7 +183,7 @@ class TestAuthenticationScreenOAuthPortCollision:
             await pilot.pause()
             status: OAuthStatusWidget = pilot.app.screen.query_one(OAuthStatusWidget)
             from textual.widgets import Static
-            error_label: str = str(status.query_one("#oauth-error", Static).renderable)
+            error_label: str = str(status.query_one("#oauth-error", Static).content)
             assert "could not bind the local callback port" in error_label.lower()
 
 

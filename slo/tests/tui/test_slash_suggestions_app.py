@@ -75,7 +75,7 @@ class TestSloTUISlashSuggestions:
             await pilot.pause()
 
             assert app._suggestion_menu is not None
-            rendered_text: str = app._suggestion_menu.query_one(".slash-suggestion-lines").renderable
+            rendered_text: str = app._suggestion_menu.query_one(".slash-suggestion-lines").content
             assert "/help" in rendered_text
             assert "/reasoning" in rendered_text
             assert "/new" in rendered_text
@@ -151,9 +151,7 @@ class TestSloTUISlashSuggestions:
                 await pilot.pause()
 
                 assert app._suggestion_menu is not None
-                rendered_text: str = app._suggestion_menu.query_one(
-                    ".slash-suggestion-lines"
-                ).renderable
+                rendered_text: str = app._suggestion_menu.query_one(".slash-suggestion-lines").content
                 assert "gpt-5-codex" in rendered_text
                 assert "gpt-5.3-codex" in rendered_text
                 assert "gpt-5.2-codex" in rendered_text

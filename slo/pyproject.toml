@@ -42,7 +42,10 @@ dependencies = [
 
     # Logging
     "python-json-logger (>=4.0.0,<5.0.0)",
-    "textual (>=0.74,<1.0)",
+
+    # Web / TUI
+    "textual (>=8.2.7,<9.0.0)",
+    "pyperclip (>=1.11.0,<2.0.0)",
     "typer (>=0.12,<1.0)",
 ]
 

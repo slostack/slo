@@ -50,7 +50,7 @@ class TestRetryingStatusRendering:
             bars: list[UsageStatusBar] = list(app.query(selector=UsageStatusBar))
             assert len(spinners) == 1
             assert len(bars) == 1
-            assert "retrying in 1s" in str(spinners[0].renderable)
+            assert "retrying in 1s" in str(spinners[0].content)
 
 
 class TestCompactionStatusRendering:
@@ -69,7 +69,7 @@ class TestCompactionStatusRendering:
 
             spinners: list[ThinkingSpinner] = list(app.query(selector=ThinkingSpinner))
             assert len(spinners) == 1
-            assert "Compacting" in str(spinners[0].renderable)
+            assert "Compacting" in str(spinners[0].content)
 
     @pytest.mark.asyncio
     async def test_compaction_completed_updates_spinner_text(self) -> None:
@@ -84,7 +84,7 @@ class TestCompactionStatusRendering:
 
             spinners: list[ThinkingSpinner] = list(app.query(selector=ThinkingSpinner))
             assert len(spinners) == 1
-            assert "complete" in str(spinners[0].renderable).lower()
+            assert "complete" in str(spinners[0].content).lower()
 
     @pytest.mark.asyncio
     async def test_compaction_retrying_updates_spinner_text(self) -> None:
@@ -99,7 +99,7 @@ class TestCompactionStatusRendering:
 
             spinners: list[ThinkingSpinner] = list(app.query(selector=ThinkingSpinner))
             assert len(spinners) == 1
-            assert "Retrying" in str(spinners[0].renderable)
+            assert "Retrying" in str(spinners[0].content)
 
     @pytest.mark.asyncio
     async def test_compaction_failed_updates_spinner_text(self) -> None:
@@ -114,7 +114,7 @@ class TestCompactionStatusRendering:
 
             spinners: list[ThinkingSpinner] = list(app.query(selector=ThinkingSpinner))
             assert len(spinners) == 1
-            assert "failed" in str(spinners[0].renderable).lower()
+            assert "failed" in str(spinners[0].content).lower()
 
     @pytest.mark.asyncio
     async def test_compaction_events_do_not_clear_spinner_override(self) -> None:

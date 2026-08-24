@@ -39,7 +39,7 @@ class TestToolExecutionBlock:
         block.update_tool_call(tool_name="read", tool_input={"path": "README.md"})
 
         assert block.is_expandable is True
-        assert "Ctrl+O" in str(block._hint.renderable)
+        assert "Ctrl+O" in str(block._hint.content)
 
     def test_toggle_expanded_reveals_arguments_and_output(self) -> None:
         """Expanded mode reveals hidden argument and output detail."""
@@ -52,9 +52,42 @@ class TestToolExecutionBlock:
 
         block.toggle_expanded()
 
-        expanded_text: str = str(block._expanded_body.renderable)
+        expanded_text: str = str(block._expanded_body.content)
         assert '"path": "README.md"' in expanded_text
         assert "line one" in expanded_text
+
+    def test_tool_result_with_regex_renders_literally(self) -> None:
+        """A grep-style regex result keeps its ``[...]`` verbatim, not as markup.
+
+        The raw output carries the brackets in the expanded body; the collapsed
+        result line is only a summary count, so the literal check targets the
+        expanded output surface.
+        """
+        block: ToolExecutionBlock = ToolExecutionBlock(
+            tool_call_id="call_1",
+            tool_name="grep",
+        )
+
+        block.update_result(tool_name="grep", output="matches: /[a-z]+/  found 12")
+        block.toggle_expanded()
+
+        expanded_text: str = str(block._expanded_body.content)
+        assert "/[a-z]+/" in expanded_text
+
+    def test_expanded_body_with_json_array_renders_literally(self) -> None:
+        """Expanded args containing a JSON array keep the brackets verbatim."""
+        block: ToolExecutionBlock = ToolExecutionBlock(
+            tool_call_id="call_1",
+            tool_name="write",
+        )
+        block.update_tool_call(tool_name="write", tool_input={"paths": ["a", "b"]})
+
+        block.toggle_expanded()
+
+        expanded_text: str = str(block._expanded_body.content)
+        assert '"a"' in expanded_text
+        assert '"b"' in expanded_text
+        assert "[" in expanded_text and "]" in expanded_text
 
     def test_tool_block_exposes_shared_panel_rhythm_styling(self) -> None:
         """Tool blocks declare the same panel-like rhythm as other message widgets."""
@@ -70,7 +103,7 @@ class TestToolExecutionBlock:
 
         block.mark_incomplete()
 
-        result_text: str = str(block._result_line.renderable)
+        result_text: str = str(block._result_line.content)
         assert "may not have completed" in result_text
         assert block.result_output is None
         assert block._result_line.has_class("tool-call-incomplete")
@@ -95,12 +128,12 @@ class TestToolExecutionBlock:
             block.update_result(tool_name="read", output="body")
             await pilot.pause()
 
-            assert "arguments:" not in str(block._expanded_body.renderable)
+            assert "arguments:" not in str(block._expanded_body.content)
 
             await pilot.press("ctrl+o")
             await pilot.pause()
 
-            assert "arguments:" in str(block._expanded_body.renderable)
+            assert "arguments:" in str(block._expanded_body.content)
 
 
 class TestToolExecutionBlockGlobalExpand:

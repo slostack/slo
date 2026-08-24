@@ -9,7 +9,6 @@ import pytest
 from langchain_core.messages import AIMessage
 from rich.markdown import Markdown
 from rich.padding import Padding
-
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.faux import FauxChatModel
@@ -27,13 +26,13 @@ class TestAssistantStreamBlock:
         block.append_thinking(delta="  Inspecting the app  ")
 
         assert not hasattr(block, "_thinking_label")
-        assert isinstance(block._thinking_body.renderable, Padding)
-        assert isinstance(block._thinking_body.renderable.renderable, Markdown)
-        assert block._thinking_body.renderable.renderable.markup == "Inspecting the app"
-        assert block._thinking_body.renderable.top == 1
-        assert block._thinking_body.renderable.right == 1
-        assert block._thinking_body.renderable.bottom == 1
-        assert block._thinking_body.renderable.left == 1
+        assert isinstance(block._thinking_body.content, Padding)
+        assert isinstance(block._thinking_body.content.renderable, Markdown)
+        assert block._thinking_body.content.renderable.markup == "Inspecting the app"
+        assert block._thinking_body.content.top == 1
+        assert block._thinking_body.content.right == 1
+        assert block._thinking_body.content.bottom == 1
+        assert block._thinking_body.content.left == 1
 
     def test_answer_renders_as_padded_markdown(self) -> None:
         """Assistant answer text uses the same padded markdown surface."""
@@ -42,13 +41,13 @@ class TestAssistantStreamBlock:
         block.append_text(delta="Hello world")
 
         assert block._answer_body.display is True
-        assert isinstance(block._answer_body.renderable, Padding)
-        assert isinstance(block._answer_body.renderable.renderable, Markdown)
-        assert block._answer_body.renderable.renderable.markup == "Hello world"
-        assert block._answer_body.renderable.top == 1
-        assert block._answer_body.renderable.right == 1
-        assert block._answer_body.renderable.bottom == 1
-        assert block._answer_body.renderable.left == 1
+        assert isinstance(block._answer_body.content, Padding)
+        assert isinstance(block._answer_body.content.renderable, Markdown)
+        assert block._answer_body.content.renderable.markup == "Hello world"
+        assert block._answer_body.content.top == 1
+        assert block._answer_body.content.right == 1
+        assert block._answer_body.content.bottom == 1
+        assert block._answer_body.content.left == 1
 
     def test_answer_escapes_angle_brackets_before_markdown_render(self) -> None:
         """Answer text escapes angle brackets that destabilize markdown rendering."""
@@ -56,9 +55,9 @@ class TestAssistantStreamBlock:
 
         block.append_text(delta="Path: <repo>/src/file.py")
 
-        assert isinstance(block._answer_body.renderable, Padding)
-        assert isinstance(block._answer_body.renderable.renderable, Markdown)
-        assert block._answer_body.renderable.renderable.markup == r"Path: \<repo\>/src/file.py"
+        assert isinstance(block._answer_body.content, Padding)
+        assert isinstance(block._answer_body.content.renderable, Markdown)
+        assert block._answer_body.content.renderable.markup == r"Path: \<repo\>/src/file.py"
 
     def test_reasoning_normalizes_broken_heading_markdown(self) -> None:
         """Streamed reasoning fixes common broken heading emphasis markers."""
@@ -66,9 +65,9 @@ class TestAssistantStreamBlock:
 
         block.append_thinking(delta="*Summarizing unstaged changes**")
 
-        assert isinstance(block._thinking_body.renderable, Padding)
-        assert isinstance(block._thinking_body.renderable.renderable, Markdown)
-        assert block._thinking_body.renderable.renderable.markup == "**Summarizing unstaged changes**"
+        assert isinstance(block._thinking_body.content, Padding)
+        assert isinstance(block._thinking_body.content.renderable, Markdown)
+        assert block._thinking_body.content.renderable.markup == "**Summarizing unstaged changes**"
 
     def test_reasoning_and_answer_use_distinct_surface_classes(self) -> None:
         """Reasoning and answer surfaces keep distinct widget classes for styling."""
@@ -84,6 +83,24 @@ class TestAssistantStreamBlock:
         assert block._thinking_body.display is False
         assert block._answer_body.display is False
         assert block._terminal_note.display is False
+
+    def test_compose_includes_disabled_accessible_copy_button(self) -> None:
+        """Every response block composes an initially disabled copy control."""
+        block = AssistantStreamBlock()
+        widgets = list(block.compose())
+
+        assert block._copy_header in widgets
+        assert block._copy_control.disabled is True
+        assert str(block._copy_control.content) == "Copy"
+        assert block._copy_control.tooltip == "Copy response"
+
+    def test_answer_render_enables_copy_button(self) -> None:
+        """The copy control enables as soon as answer text is rendered."""
+        block = AssistantStreamBlock()
+
+        block.append_text(delta="copyable")
+
+        assert block._copy_control.disabled is False
 
     def test_streamed_reasoning_inserts_spacing_between_word_fragments(self) -> None:
         """Reasoning deltas from Codex-style word fragments stay readable while streaming."""
@@ -162,7 +179,7 @@ class TestAssistantStreamBlockTitlePrefix:
         block: AssistantStreamBlock = AssistantStreamBlock(title_prefix="⎇ imports")
 
         assert block._label is not None
-        assert str(block._label.renderable) == "⎇ imports"
+        assert str(block._label.content) == "⎇ imports"
 
     def test_compose_yields_label_first_when_prefix_set(self) -> None:
         """``compose()`` yields the label widget before the content regions."""
@@ -177,8 +194,8 @@ class TestAssistantStreamBlockTitlePrefix:
         widgets = list(block.compose())
 
         assert block._label not in widgets
-        # Three content widgets only
-        assert len(widgets) == 3
+        # Copy header plus three content widgets.
+        assert len(widgets) == 4
 
     def test_prefix_does_not_affect_text_accumulation(self) -> None:
         """A block with a prefix still accumulates answer text correctly."""
@@ -270,14 +287,56 @@ def _build_session() -> SloAgentSession:
     Returns:
         SloAgentSession: A session ready to drive a ``SloTUI``.
     """
-    agent: SloAgent = SloAgent(
-        llm=FauxChatModel(responses=[AIMessage(content="unused")])
-    )
+    agent: SloAgent = SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")]))
     return SloAgentSession(
         agent=agent,
         workdir=Path(".").resolve(),
         session_id=str(uuid4()),
     )
+
+
+class TestAssistantStreamBlockCopyButton:
+    """Per-response answer-only clipboard control."""
+
+    @pytest.mark.asyncio
+    async def test_press_copies_raw_answer_without_thinking_and_restores_feedback(self) -> None:
+        """A mounted button uses the app funnel for answer-only content and confirms it."""
+        session: SloAgentSession = _build_session()
+        app: SloTUI = SloTUI(session=session)
+        copied_texts: list[str] = []
+        app.copy_to_clipboard = copied_texts.append  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            block: AssistantStreamBlock = await app.mount_assistant_block()
+            block.append_thinking(delta="private reasoning")
+            block.append_text(delta="public answer")
+            await pilot.pause()
+
+            copy_control = block._copy_control
+            await pilot.click(copy_control)
+            await pilot.pause()
+
+            assert copied_texts == ["public answer"]
+            assert str(copy_control.content) == "Copied"
+            block._restore_copy_button()
+            assert str(copy_control.content) == "Copy"
+
+    @pytest.mark.asyncio
+    async def test_empty_answer_button_never_calls_clipboard(self) -> None:
+        """A disabled empty response button cannot produce a clipboard request."""
+        session: SloAgentSession = _build_session()
+        app: SloTUI = SloTUI(session=session)
+        copied_texts: list[str] = []
+        app.copy_to_clipboard = copied_texts.append  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            block: AssistantStreamBlock = await app.mount_assistant_block()
+            assert block._copy_control.disabled is True
+
+            block._copy_control._request_copy()
+            await pilot.pause()
+
+            assert copied_texts == []
 
 
 class TestAssistantStreamBlockCoalescing:
@@ -369,6 +428,15 @@ class TestAssistantStreamBlockCoalescing:
         assert block._last_rendered_answer == "partial"
         assert block._flush_timer is None
 
+    def test_terminal_note_error_with_brackets(self) -> None:
+        """A failure message containing ``[...]`` renders literally in the note."""
+        block = AssistantStreamBlock()
+
+        block.mark_failed(error_message="bad token [EOF]")
+
+        assert block.terminal_note_text == "(error: bad token [EOF])"
+        assert "[EOF]" in str(block._terminal_note.content)
+
     @pytest.mark.asyncio
     async def test_seal_flushes_last_delta_when_mounted(self) -> None:
         """seal renders the last un-flushed delta before stopping the timer."""
@@ -411,9 +479,11 @@ class TestAssistantStreamBlockCoalescing:
             await app._transcript_content.mount(block)
             # Patch _render_answer to count invocations.
             original_render = block._render_answer
+
             def _counting_render() -> None:
                 render_call_count[0] += 1
                 original_render()
+
             block._render_answer = _counting_render  # type: ignore[method-assign]
             # Issue several deltas synchronously — no pause between them.
             # A working coalescing timer must NOT render synchronously here.
@@ -422,9 +492,9 @@ class TestAssistantStreamBlockCoalescing:
             block.append_text(delta=" from")
             block.append_text(delta=" coalescing")
             # The timer should now be running (not None), and no render yet.
-            assert block._flush_timer is not None, (
-                "_flush_timer must be set after first delta on a mounted block"
-            )
+            assert (
+                block._flush_timer is not None
+            ), "_flush_timer must be set after first delta on a mounted block"
             # One pause lets the ~30 Hz timer tick and flush exactly once.
             await pilot.pause()
             # After one frame, the render should have fired exactly once.

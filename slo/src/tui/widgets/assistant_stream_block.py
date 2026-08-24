@@ -6,16 +6,67 @@ from typing import Optional
 
 from rich.markdown import Markdown
 from rich.padding import Padding
+from textual import events
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Static
+
+from src.tui.widgets.literal_text_static import LiteralTextStatic
 
 __all__ = ["AssistantStreamBlock"]
 
 _STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
 """Coalescing cadence for streamed reasoning/answer renders (~30 fps)."""
+
+_COPY_FEEDBACK_DURATION_SECONDS: float = 1.5
+"""Duration that the per-response copy control confirms a successful copy."""
+
+
+class AssistantCopyControl(LiteralTextStatic):
+    """A terminal-safe clickable response-copy affordance.
+
+    Textual button frames render in every supported terminal, but some terminal
+    backends fail to paint their label. This small ``Static``-based control
+    keeps the interactive semantics while rendering its label through the
+    same dependable plain-text path as the transcript.
+    """
+
+    can_focus: bool = True
+    ALLOW_SELECT = False
+    BINDINGS = [
+        Binding("enter", "copy", "Copy response", show=False),
+        Binding("space", "copy", "Copy response", show=False),
+    ]
+
+    class Pressed(Message):
+        """Posted when the control requests that its response be copied."""
+
+        def __init__(self, *, copy_control: "AssistantCopyControl") -> None:
+            super().__init__()
+            self.copy_control: AssistantCopyControl = copy_control
+
+    def __init__(self) -> None:
+        """Construct an initially-disabled copy control."""
+        super().__init__("Copy", id="copy-response-control", classes="assistant-copy-control")
+        self.tooltip = "Copy response"
+        self.disabled = True
+
+    def on_click(self, event: events.Click) -> None:
+        """Request a copy after a mouse click, unless no answer exists yet."""
+        event.stop()
+        self._request_copy()
+
+    def action_copy(self) -> None:
+        """Request a copy after keyboard activation."""
+        self._request_copy()
+
+    def _request_copy(self) -> None:
+        """Post the copy request only while the control is enabled."""
+        if not self.disabled:
+            self.post_message(AssistantCopyControl.Pressed(copy_control=self))
 
 
 class AssistantStreamBlock(Vertical):
@@ -29,6 +80,25 @@ class AssistantStreamBlock(Vertical):
     The reasoning region is optional. The answer region is always present
     once answer text arrives or the final completed answer is known.
     """
+
+    class CopyRequested(Message):
+        """Request answer-only clipboard delivery through the owning TUI.
+
+        ``SloTUI`` handles this message so button-driven copying uses its
+        shared local-clipboard plus OSC 52 funnel rather than a widget-local
+        clipboard implementation.
+        """
+
+        def __init__(self, *, block: "AssistantStreamBlock", answer_text: str) -> None:
+            """Initialise an answer-only copy request.
+
+            Args:
+                block (AssistantStreamBlock): Block whose button initiated the request.
+                answer_text (str): Raw assistant answer excluding reasoning text.
+            """
+            super().__init__()
+            self.block: AssistantStreamBlock = block
+            self.answer_text: str = answer_text
 
     class Rendered(Message):
         """Posted after the coalescing timer flushes at least one dirty region.
@@ -71,6 +141,36 @@ class AssistantStreamBlock(Vertical):
         margin: 1 0 1 0;
         padding: 1 1;
         background: $panel;
+    }
+
+    AssistantStreamBlock .assistant-copy-header {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+        margin: 0 0 1 0;
+        background: transparent;
+    }
+
+    AssistantStreamBlock .assistant-copy-control {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        color: $text;
+        background: $panel-lighten-1;
+        text-style: bold;
+    }
+
+    AssistantStreamBlock .assistant-copy-control:hover,
+    AssistantStreamBlock .assistant-copy-control:focus {
+        color: $text;
+        background: $primary-darken-2;
+        text-style: bold underline;
+    }
+
+    AssistantStreamBlock .assistant-copy-control:disabled {
+        color: $text-muted;
+        background: $panel-lighten-1;
+        text-style: dim;
     }
 
     AssistantStreamBlock .assistant-thinking-body {
@@ -137,14 +237,16 @@ class AssistantStreamBlock(Vertical):
         # The natural state shows reasoning whenever present; only an explicit
         # collapse-all (force_expanded=False) hides it.
         self._expanded: bool = True if force_expanded is None else force_expanded
-        self._label: Optional[Static] = (
-            Static(title_prefix, classes="sub-agent-label") if title_prefix else None
+        self._label: Optional[LiteralTextStatic] = (
+            LiteralTextStatic(title_prefix, classes="sub-agent-label") if title_prefix else None
         )
+        self._copy_control: AssistantCopyControl = AssistantCopyControl()
+        self._copy_header: Horizontal = Horizontal(self._copy_control, classes="assistant-copy-header")
         self._thinking_body: Static = Static("", classes="assistant-thinking-body")
         self._thinking_body.display = False
         self._answer_body: Static = Static("", classes="assistant-answer-body")
         self._answer_body.display = False
-        self._terminal_note: Static = Static("", classes="assistant-terminal-warning")
+        self._terminal_note: LiteralTextStatic = LiteralTextStatic("", classes="assistant-terminal-warning")
         self._terminal_note.display = False
         self._thinking_text: str = ""
         self._answer_text: str = ""
@@ -155,6 +257,7 @@ class AssistantStreamBlock(Vertical):
         self._last_rendered_answer: str = ""
         self._last_rendered_thinking: str = ""
         self._flush_timer: Optional[Timer] = None
+        self._copy_feedback_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
         """Compose the visible child widgets.
@@ -168,13 +271,54 @@ class AssistantStreamBlock(Vertical):
         """
         if self._label is not None:
             yield self._label
+        yield self._copy_header
         yield self._thinking_body
         yield self._answer_body
         yield self._terminal_note
 
     def on_unmount(self) -> None:
-        """Flush and cancel the coalescing timer when the block leaves the DOM."""
+        """Flush and cancel timers when the block leaves the DOM."""
         self._stop_flush_timer()
+        self._stop_copy_feedback_timer()
+
+    def on_assistant_copy_control_pressed(self, event: AssistantCopyControl.Pressed) -> None:
+        """Request answer-only clipboard delivery when this block's control is pressed.
+
+        Args:
+            event (AssistantCopyControl.Pressed): Press emitted by the response
+                copy control.
+        """
+        if event.copy_control is not self._copy_control or not self._answer_text:
+            return
+        event.stop()
+        self.post_message(
+            AssistantStreamBlock.CopyRequested(
+                block=self,
+                answer_text=self._answer_text,
+            )
+        )
+
+    def show_copy_feedback(self) -> None:
+        """Show the transient confirmation after the TUI accepts a copy request."""
+        self._stop_copy_feedback_timer()
+        self._copy_control.update("Copied")
+        self._copy_feedback_timer = self.set_timer(
+            delay=_COPY_FEEDBACK_DURATION_SECONDS,
+            callback=self._restore_copy_button,
+            name="assistant-copy-feedback",
+        )
+
+    def _restore_copy_button(self) -> None:
+        """Restore the copy-control label after its confirmation interval."""
+        self._copy_control.update("Copy")
+        self._copy_feedback_timer = None
+
+    def _stop_copy_feedback_timer(self) -> None:
+        """Stop the pending copy-feedback timer, if one exists."""
+        if self._copy_feedback_timer is None:
+            return
+        self._copy_feedback_timer.stop()
+        self._copy_feedback_timer = None
 
     def _ensure_flush_timer(self) -> None:
         """Start the coalescing timer on the first streamed delta, if mounted.
@@ -495,8 +639,10 @@ class AssistantStreamBlock(Vertical):
         if not self._answer_text:
             self._answer_body.update("")
             self._answer_body.display = False
+            self._copy_control.disabled = True
             return
         self._answer_body.display = True
+        self._copy_control.disabled = False
         self._answer_body.update(
             Padding(
                 Markdown(self._escape_markdown_breakers(text=self._answer_text)),

@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from pathlib import Path
 
 import pytest
 from langchain_core.tools import tool
+from PIL import Image
 
 from src.agents.slo_agent.tool_execution import (
     ConcurrentToolExecutor,
@@ -12,7 +15,8 @@ from src.agents.slo_agent.tool_execution import (
     ToolConcurrencyClass,
     ToolExecutionPlanDAO,
 )
-from src.agents.slo_agent.tool_execution.dao import ToolCallEnvelopeDAO
+from src.agents.slo_agent.tool_execution.dao import ToolCallEnvelopeDAO, ToolResultDAO
+from src.agents.tools.read import read_tool
 
 
 @tool
@@ -65,6 +69,15 @@ def _concurrent_plan() -> ToolExecutionPlanDAO:
                 concurrency_class=ToolConcurrencyClass.READ_ONLY,
             ),
         ],
+    )
+
+
+def _read_envelope(*, path: str, call_id: str = "tc_img") -> ToolCallEnvelopeDAO:
+    """Build an envelope that calls the production read tool."""
+    return ToolCallEnvelopeDAO(
+        source_index=0,
+        call={"id": call_id, "name": "read", "args": {"path": path}},
+        concurrency_class=ToolConcurrencyClass.READ_ONLY,
     )
 
 
@@ -172,3 +185,57 @@ async def test_concurrent_executor_rejects_mutating_call() -> None:
 
     with pytest.raises(ValueError):
         await executor.execute(plan=plan)
+
+
+@pytest.mark.asyncio
+async def test_read_image_through_executor_sets_image_reference(tmp_path: Path) -> None:
+    """The real executor separates image content from its durable reference."""
+    target: Path = tmp_path / "large.png"
+    Image.new("RGB", (3000, 2000), color="red").save(target, format="PNG")
+    executor = SequentialToolExecutor(tools_by_name={"read": read_tool})
+
+    _, message = await executor._invoke_one(envelope=_read_envelope(path=str(target)))
+
+    assert isinstance(message.content, list)
+    assert message.content[0]["type"] == "image"
+    base64.b64decode(message.content[0]["source"]["data"])
+    assert message.additional_kwargs["image_reference"].startswith("[image attached: large.png,")
+
+
+@pytest.mark.asyncio
+async def test_read_text_through_executor_has_no_image_reference(tmp_path: Path) -> None:
+    """The executor preserves the existing text result path unchanged."""
+    target: Path = tmp_path / "notes.txt"
+    target.write_text("hello world")
+    executor = SequentialToolExecutor(tools_by_name={"read": read_tool})
+
+    _, message = await executor._invoke_one(envelope=_read_envelope(path=str(target)))
+
+    assert isinstance(message.content, str)
+    assert "hello world" in message.content
+    assert message.additional_kwargs.get("image_reference") is None
+
+
+@pytest.mark.asyncio
+async def test_executor_splits_direct_tool_result_dao() -> None:
+    """The executor preserves ToolResultDAO content and metadata separately."""
+
+    @tool
+    async def fake_image() -> ToolResultDAO:
+        """Return structured content that exercises the executor split path."""
+        return ToolResultDAO(
+            content=[{"type": "image", "source": {"type": "base64", "data": "aGVsbG8="}}],
+            image_reference="[image attached: x.png, 10x10, ref /x.png]",
+        )
+
+    executor = SequentialToolExecutor(tools_by_name={"fake_image": fake_image})
+    envelope = ToolCallEnvelopeDAO(
+        source_index=0,
+        call={"id": "1", "name": "fake_image", "args": {}},
+        concurrency_class=ToolConcurrencyClass.READ_ONLY,
+    )
+
+    _, message = await executor._invoke_one(envelope=envelope)
+
+    assert message.content[0]["type"] == "image"
+    assert message.additional_kwargs["image_reference"] == "[image attached: x.png, 10x10, ref /x.png]"

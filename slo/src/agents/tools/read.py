@@ -7,11 +7,9 @@ function, ``__all__``, ``__main__`` block, ``log_info`` at entry.
 Description text is lifted verbatim from pi ``read.ts:215`` with the Python
 truncation constants interpolated at import time.
 
-Deviation note: returns ``str | list[ImageContentBlock]`` rather than a ``*ResultDAO``.
-Coding agents consume raw file text directly from ``ToolMessage.content``;
-JSON-wrapping the file body would force the model to parse it back out, and
-image attachments require the multimodal content-list shape natively. See
-``docs/RESEARCH.md`` for the full deviation rationale.
+Text results remain raw strings. Image results use ``ToolResultDAO`` so the
+executor can keep live multimodal content separate from the compact durable
+image reference. See ``docs/RESEARCH.md`` for the tool architecture.
 """
 
 from __future__ import annotations
@@ -25,8 +23,9 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.logger import log_error, log_info
+from src.agents.slo_agent.tool_execution.dao import ToolResultDAO
 from src.agents.tools._blocking import run_blocking_tool_call
-from src.agents.tools._image_content import ImageContent, ImageContentBlock
+from src.agents.tools._image_content import ImageContent, ImageResizeResult
 from src.agents.tools._truncate import Truncator
 
 __all__ = [
@@ -63,7 +62,7 @@ class ReadTool:
         path: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
-    ) -> str | list[ImageContentBlock]:
+    ) -> str | ToolResultDAO:
         """Read a file. See ``read_tool`` for the user-facing description.
 
         Args:
@@ -72,9 +71,9 @@ class ReadTool:
             limit (Optional[int]): Maximum number of lines to read.
 
         Returns:
-            str | list[ImageContentBlock]: File content as text, or a
-                LangChain multimodal content list with one image block for
-                image files. Errors are returned as ``"Error: ..."`` strings.
+            str | ToolResultDAO: File content as text, or structured image
+                content with a compact durable reference. Errors are returned
+                as ``"Error: ..."`` strings.
         """
         return await run_blocking_tool_call(
             func=cls._invoke_sync,
@@ -90,7 +89,7 @@ class ReadTool:
         path: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
-    ) -> str | list[ImageContentBlock]:
+    ) -> str | ToolResultDAO:
         """Read a file synchronously for thread-offloaded callers.
 
         Args:
@@ -99,8 +98,8 @@ class ReadTool:
             limit (Optional[int]): Maximum number of lines to read.
 
         Returns:
-            str | list[ImageContentBlock]: File content as text, or a
-                multimodal image block.
+            str | ToolResultDAO: File content as text, or structured image
+                content with a compact durable reference.
         """
         try:
             target = Path(path)
@@ -110,7 +109,11 @@ class ReadTool:
                 return f"Error: path is a directory, use ls: {path}"
 
             if ImageContent.is_image(path=target):
-                return [ImageContent.build_block(path=target)]
+                result: ImageResizeResult = ImageContent.build_block(path=target)
+                return ToolResultDAO(
+                    content=[dict(result["block"])],
+                    image_reference=result["reference"],
+                )
 
             if cls._is_pdf(path=target):
                 return f"Error: {path} is a PDF. Use read_pdf instead."
@@ -156,7 +159,7 @@ async def read_tool(
     path: str,
     offset: Optional[int] = None,
     limit: Optional[int] = None,
-) -> str | list[ImageContentBlock]:
+) -> str | ToolResultDAO:
     """Read the contents of a UTF-8 text file. Supports images (jpg, png, gif, webp) as attachments. PDFs should use ``read_pdf``. Binary files return an error. For text files, output is truncated to 2000 lines or 64KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.
 
     Args:
@@ -165,8 +168,8 @@ async def read_tool(
         limit (Optional[int]): Maximum number of lines to read.
 
     Returns:
-        str | list[ImageContentBlock]: File content as text, or a
-            multimodal content list with one image block for image files.
+        str | ToolResultDAO: File content as text, or structured image content
+            with a compact durable reference.
     """
     log_info(msg=f"Using Read Tool with path: {path}")
     return await ReadTool.invoke(path=path, offset=offset, limit=limit)

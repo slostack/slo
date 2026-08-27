@@ -40,6 +40,22 @@ receive the same validated before/after content as JSON. The agent tool uses the
 process working directory; `/diff` is session-workdir scoped. Both surfaces reject
 absolute/traversal/.git paths and never modify the repository.
 
+## Image Reads and Durable History
+
+The `read` tool identifies JPEG, PNG, GIF, and WEBP files by Pillow content sniffing.
+Images larger than **1568 px** on either edge are resized in memory before base64 encoding;
+this keeps routine vision inputs within the provider's **5 MB encoded-payload** limit while
+preserving aspect ratio. Dense images that still exceed the cap receive one JPEG fallback;
+if that single fallback remains over the cap, the read fails rather than returning a
+provider-rejected payload. Smaller images retain their original bytes, and source files are
+never modified.
+
+The current turn receives a real multimodal image block. Durable session history stores only
+`[image attached: <name>, <WxH>, ref <absolute_path>]`, rather than base64, so resumed
+sessions retain a useful reference without inflating context/token estimates. Coverage includes
+resize, alpha/paletted formats, payload fallback, text/PDF/binary regressions, executor
+threading, and executor-to-history integration.
+
 ## Context Window Visibility and Manual Compaction
 
 The TUI exposes durable replay-history context separately from provider billing telemetry:

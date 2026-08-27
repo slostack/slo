@@ -1602,7 +1602,12 @@ class SloAgent:
                 )
             ]
         if isinstance(message, ToolMessage):
-            content_text = message.content if isinstance(message.content, str) else str(message.content)
+            image_reference: str | None = message.additional_kwargs.get("image_reference")
+            tool_output: str = (
+                image_reference
+                if image_reference is not None
+                else (message.content if isinstance(message.content, str) else str(message.content))
+            )
             return [
                 AgentRuntimeEventDAO(
                     kind="tool_result",
@@ -1610,7 +1615,7 @@ class SloAgent:
                     payload=AgentRuntimePayloadDAO(
                         tool_name=message.name,
                         tool_call_id=getattr(message, "tool_call_id", None),
-                        tool_output=content_text,
+                        tool_output=tool_output,
                     ),
                 )
             ]

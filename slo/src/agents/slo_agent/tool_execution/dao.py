@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -12,6 +12,7 @@ __all__ = [
     "ToolConcurrencyClass",
     "ToolExecutionMode",
     "ToolExecutionPlanDAO",
+    "ToolResultDAO",
 ]
 
 
@@ -38,6 +39,21 @@ class ToolCallEnvelopeDAO(BaseModel):
     source_index: int
     call: dict[str, Any]
     concurrency_class: ToolConcurrencyClass
+
+
+class ToolResultDAO(BaseModel):
+    """Structured live tool content plus optional durable image metadata.
+
+    WHAT: Separates multimodal content sent to the current LLM turn from an
+        image reference persisted by the history trace.
+    WHO: Returned by ``ReadTool`` for images and split by ``ToolExecutor``
+        when it constructs the success-path ``ToolMessage``.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    content: str | list[dict[str, Any]]
+    image_reference: Optional[str] = None
 
 
 class ToolExecutionPlanDAO(BaseModel):

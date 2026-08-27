@@ -5,6 +5,7 @@ from src.agents.slo_agent.tool_execution.dao import (
     ToolConcurrencyClass,
     ToolExecutionMode,
     ToolExecutionPlanDAO,
+    ToolResultDAO,
 )
 from src.agents.slo_agent.tool_execution.executors import (
     ConcurrentToolExecutor,
@@ -21,6 +22,7 @@ __all__ = [
     "ToolConcurrencyClass",
     "ToolExecutionMode",
     "ToolExecutionPlanDAO",
+    "ToolResultDAO",
     "ToolExecutor",
     "plan_tool_batch",
 ]

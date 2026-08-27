@@ -13,6 +13,7 @@ from src.agents.slo_agent.tool_execution.dao import (
     ToolCallEnvelopeDAO,
     ToolConcurrencyClass,
     ToolExecutionPlanDAO,
+    ToolResultDAO,
 )
 
 
@@ -93,6 +94,21 @@ class ToolExecutor(ABC):
                 ),
             )
 
+        if isinstance(result, ToolResultDAO):
+            return (
+                envelope.source_index,
+                ToolMessage(
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    content=self._coerce_tool_content(result=result.content),
+                    additional_kwargs=(
+                        {"image_reference": result.image_reference}
+                        if result.image_reference is not None
+                        else {}
+                    ),
+                ),
+            )
+
         return (
             envelope.source_index,
             ToolMessage(
@@ -102,14 +118,15 @@ class ToolExecutor(ABC):
             ),
         )
 
-    def _coerce_tool_content(self, *, result: Any) -> str | list[dict]:
+    def _coerce_tool_content(self, *, result: Any) -> str | list[str | dict[Any, Any]]:
         """Normalize one tool return value into ``ToolMessage`` content.
 
         Args:
             result (Any): Raw tool return value.
 
         Returns:
-            str | list[dict]: Content accepted by LangChain ``ToolMessage``.
+            str | list[str | dict[Any, Any]]: Content accepted by LangChain
+                ``ToolMessage``.
         """
         if isinstance(result, (str, list)):
             return result

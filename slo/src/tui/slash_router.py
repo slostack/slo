@@ -80,6 +80,8 @@ class SlashCommandResultDAO(BaseModel):
             (TEXTUAL, MARKDOWN, HTML). Defaults to TEXTUAL.
         refresh_context_window (bool): Re-measure and repaint the Context Window Snapshot.
         refresh_usage_status (bool): Repaint a cached usage status without measuring.
+        git_diff_path (Optional[str]): Raw path the operator asked to diff; the
+            TUI loads it and pushes GitDiffScreen.
     """
 
     rendered: Optional[str] = None
@@ -97,6 +99,7 @@ class SlashCommandResultDAO(BaseModel):
     tree_format: Optional[str] = None
     refresh_context_window: bool = False
     refresh_usage_status: bool = False
+    git_diff_path: Optional[str] = None
 
     @model_validator(mode="after")
     def _reject_duplicate_context_refresh(self) -> "SlashCommandResultDAO":
@@ -192,6 +195,7 @@ class SlashRouter:
             "context-window": cls._handle_context_window,
             "new": cls._handle_new,
             "compact": cls._handle_compact,
+            "diff": cls._handle_diff,
             "rename": cls._handle_rename,
             "preferences": cls._handle_preferences,
             "workflows": cls._handle_workflows,
@@ -285,6 +289,35 @@ class SlashRouter:
             return SlashCommandResultDAO(rendered="usage: /steer <message>")
         session.steer(message=rest)
         return SlashCommandResultDAO(steer_pending_message=rest)
+
+    @classmethod
+    async def _handle_diff(
+        cls,
+        *,
+        rest: str,
+        session: SloAgentSession,
+    ) -> SlashCommandResultDAO:
+        """Return the requested Git diff path as a typed TUI intent.
+
+        WHAT: Leaves path validation to GitDiffContentService, the feature's
+        filesystem safety boundary.
+        WHO: SlashRouter.dispatch calls this for the ``/diff`` command.
+        WHEN: Runs before SloTUI loads content and pushes GitDiffScreen.
+
+        Args:
+            rest (str): Raw operator-supplied path argument.
+            session (SloAgentSession): Active session, retained for handler consistency.
+
+        Returns:
+            SlashCommandResultDAO: A diff intent or the command usage message.
+        """
+        del session
+        repository_relative_path: str = rest.strip()
+        if not repository_relative_path:
+            return SlashCommandResultDAO(
+                rendered="/diff requires a file path. Usage: /diff <repository-relative-path>"
+            )
+        return SlashCommandResultDAO(git_diff_path=repository_relative_path)
 
     @classmethod
     async def _handle_context_window(

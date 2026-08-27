@@ -147,6 +147,39 @@ class TestSlashRouterDispatch:
         session.steer.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_diff_with_path_returns_git_diff_intent(self) -> None:
+        """A populated /diff command leaves path safety to the content service."""
+        session: MagicMock = _build_session_stub()
+
+        result = await SlashRouter.dispatch(line="/diff src/tui/app.py", session=session)
+
+        assert result.git_diff_path == "src/tui/app.py"
+        assert result.rendered is None
+
+    @pytest.mark.asyncio
+    async def test_diff_with_path_containing_spaces_preserves_argument_for_service_validation(self) -> None:
+        """A free-text path remains intact so the content service owns validation and I/O."""
+        session: MagicMock = _build_session_stub()
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/diff docs/file name.md",
+            session=session,
+        )
+
+        assert result.git_diff_path == "docs/file name.md"
+        assert result.rendered is None
+
+    @pytest.mark.asyncio
+    async def test_diff_without_path_returns_usage(self) -> None:
+        """A blank /diff command opens no screen intent and explains its required argument."""
+        session: MagicMock = _build_session_stub()
+
+        result = await SlashRouter.dispatch(line="/diff   ", session=session)
+
+        assert result.git_diff_path is None
+        assert result.rendered == "/diff requires a file path. Usage: /diff <repository-relative-path>"
+
+    @pytest.mark.asyncio
     async def test_new_without_args_returns_replace_session_intent(self) -> None:
         """Bare `/new` requests session replacement without an initial name."""
         session: MagicMock = _build_session_stub()

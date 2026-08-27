@@ -51,9 +51,24 @@ class TestSlashCommandRegistry:
             "context-window",
             "new",
             "compact",
+            "diff",
             "rename",
             "preferences",
         ]
+
+    def test_default_registry_registers_diff_at_97_without_shifting_neighbors(self) -> None:
+        """The /diff command occupies the reserved order slot between compact and rename."""
+        registry: SlashCommandRegistry = build_default_registry()
+
+        diff_command = registry.resolve(token="diff")
+        compact_command = registry.resolve(token="compact")
+        rename_command = registry.resolve(token="rename")
+
+        assert diff_command is not None
+        assert diff_command.display_order == 97
+        assert diff_command.argument_mode == "free_text"
+        assert compact_command is not None and compact_command.display_order == 96
+        assert rename_command is not None and rename_command.display_order == 100
 
     def test_duplicate_canonical_names_raise_value_error(self) -> None:
         """Two canonical command names may not collide."""

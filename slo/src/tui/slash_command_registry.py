@@ -241,6 +241,14 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         display_order=96,
     ),
     SlashCommandSpecDAO(
+        name="diff",
+        description="show git diff for a file",
+        argument_mode="free_text",
+        usage="/diff <repository-relative-path>",
+        argument_hint="repository-relative path",
+        display_order=97,
+    ),
+    SlashCommandSpecDAO(
         name="rename",
         description="rename the current session",
         argument_mode="free_text",

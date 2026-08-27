@@ -18,7 +18,7 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 
 **What Slo does:**
 - Runs an unbounded ReAct loop (reason → act → observe → repeat) over a cloud LLM
-  with 9 file/shell tools bound at session start.
+  with 10 file/shell tools bound at session start.
 - Streams progress to the Textual TUI via `AgentStreamEventDAO` events.
 - Persists a full-fidelity JSONL event log per session under `~/.slo/sessions/history/`.
 - Loads project instruction files (`SLO.md` / `AGENTS.md` / `CLAUDE.md`) from the
@@ -123,7 +123,7 @@ slo/
 │   │   │   ├── bundles.py             # create_extended_tools() and the three pi-parity bundles
 │   │   │   ├── read.py / write.py / edit.py / bash.py
 │   │   │   ├── grep.py / find.py / ls.py
-│   │   │   ├── read_pdf.py / now.py
+│   │   │   ├── read_pdf.py / now.py / show_git_diff.py
 │   │   │   ├── a2a_peer.py            # outbound A2A peer delegation (not in default bundle)
 │   │   │   ├── echo.py                # demo/test tool
 │   │   │   ├── prompt_snippets.py     # TOOL_PROMPT_SNIPPETS dict → system prompt tool lines
@@ -154,6 +154,9 @@ slo/
 │   │   ├── headless_workflow_visualizer.py # `slo visualize` TUI — resizable panes, summary bar, markdown transcript
 │   │   ├── workflow_visualizer_loader.py   # WorkflowVisualizerLoader — reads parent/child session captures
 │   │   ├── visualizer_launcher.py     # VisualizerLauncher — opens `slo visualize` in a new OS terminal window
+│   │   ├── slodiff/                   # Clean-room extractable diff model + Textual widget
+│   │   ├── git_diff_content_service.py # Safe HEAD-versus-worktree content loader
+│   │   ├── git_diff_screen.py          # Focused /diff screen and controls
 │   │   ├── workflows/                 # Detached-workflow receive path (spec 57.a.5)
 │   │   │   ├── dao.py                 # Parsed lifecycle/launch DTOs, DetachedWorkflowUiEffectDAO
 │   │   │   ├── service.py             # DetachedWorkflowAppService — handles, state cache, typed effects
@@ -314,6 +317,7 @@ The default bundle is `create_extended_tools()` from `src/agents/tools/bundles.p
 | `ls` | `tools/ls.py` | List directory contents |
 | `read_pdf` | `tools/read_pdf.py` | Extract text from a PDF |
 | `now` | `tools/now.py` | Return the current datetime |
+| `show_git_diff` | `tools/show_git_diff.py` | Return safe JSON HEAD-versus-worktree content for one repository-relative UTF-8 text file |
 
 Three pi-parity sub-bundles also exist: `create_coding_tools()` (read/bash/edit/write),
 `create_read_only_tools()` (read/grep/find/ls), `create_all_tools()` (all seven pi tools).
@@ -443,7 +447,7 @@ streaming path too.
 (`SlashCommandSpecDAO`). `SlashSuggestionEngine` (`src/tui/slash_suggestion_engine.py`)
 does prefix-match autocomplete; `SlashSuggestionMenu` renders the dropdown.
 
-Available slash commands include: `/help`, `/new [session name]`, `/rename <session name>`,
+Available slash commands include: `/help`, `/diff <repository-relative-path>`, `/new [session name]`, `/rename <session name>`,
 `/model <name>`, `/reasoning <level>`, `/context-window`, `/compact`, `/abort`, `/steer <text>`,
 `/clear`, `/auth`, `/quit` (and aliases). `/context-window` reports the routed model's capacity
 and projector-faithful durable replay estimate; `/compact` requests one lock-safe, transactional

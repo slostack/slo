@@ -439,14 +439,14 @@ def test_custom_prompt_replaces_body_but_keeps_cwd_grounding(
 # ---------------------------------------------------------------------------
 
 
-def test_build_slo_agent_returns_slo_agent_build_result_with_nine_tools(
+def test_build_slo_agent_returns_slo_agent_build_result_with_ten_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``build_slo_agent`` with ``tools=None`` must surface the 9-tool extended bundle.
+    """``build_slo_agent`` with ``tools=None`` must surface the 10-tool extended bundle.
 
     This is the B1 regression guard: the function used to return only the
     compiled graph, discarding the resolved tool list. After the fix it
-    returns a ``SloAgentBuildResult`` whose ``tools`` field carries all 9
+    returns a ``SloAgentBuildResult`` whose ``tools`` field carries all 10
     default tools (connector tools are excluded when no credentials exist).
     """
     import pytest  # noqa: PLC0415

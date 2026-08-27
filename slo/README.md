@@ -25,6 +25,21 @@
 
 ---
 
+## Reviewing a Git Diff
+
+Use `/diff <repository-relative-path>` in the running TUI to open a full-screen,
+read-only Git-style unified diff of one worktree file against `HEAD`. Added lines
+have a green `+` gutter and removed lines have a red `-` gutter. Press `s` when you
+want an optional side-by-side comparison, `w` for wrapping, `a` for accessible line
+annotations, and `Escape` to return to the transcript. Long diffs scroll vertically.
+The viewer accepts UTF-8 text files up to 1 MB per side; binary, unchanged, unsafe,
+and unavailable files produce a safe transcript message instead of opening a screen.
+
+Agents can call `show_git_diff(repository_relative_path="src/tui/app.py")` to
+receive the same validated before/after content as JSON. The agent tool uses the
+process working directory; `/diff` is session-workdir scoped. Both surfaces reject
+absolute/traversal/.git paths and never modify the repository.
+
 ## Context Window Visibility and Manual Compaction
 
 The TUI exposes durable replay-history context separately from provider billing telemetry:

@@ -26,6 +26,7 @@ from src.agents.tools.ls import ls_tool
 from src.agents.tools.now import now_tool
 from src.agents.tools.read import read_tool
 from src.agents.tools.read_pdf import read_pdf_tool
+from src.agents.tools.show_git_diff import show_git_diff_tool
 from src.agents.tools.write import write_tool
 
 

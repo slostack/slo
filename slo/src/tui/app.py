@@ -1589,6 +1589,10 @@ class SloTUI(App):
             await self._render_steer_pending(message=result.steer_pending_message)
         if result.render_tree is not None:
             await self._mount_tree_viewer(tree=result.render_tree, tree_format=result.tree_format)
+        git_diff_path: Optional[str] = result.git_diff_path if isinstance(result.git_diff_path, str) else None
+        if git_diff_path is not None:
+            await self._open_git_diff(path=git_diff_path)
+            return
         if result.rendered is not None:
             self._write_adapter_line(content=result.rendered, classes="tool-result")
         if result.refresh_title:
@@ -1608,6 +1612,33 @@ class SloTUI(App):
             self._push_auth_modal()
         if result.should_exit:
             self.exit()
+
+    async def _open_git_diff(self, *, path: str) -> None:
+        """Load Git diff content and push its focused screen when it is safe.
+
+        WHAT: Delegates all filesystem and Git validation to GitDiffContentService,
+        then either pushes GitDiffScreen or writes its safe error message.
+        WHO: _dispatch_slash_command calls this for a git_diff_path intent.
+        WHEN: Immediately after the operator submits ``/diff <path>``.
+
+        Args:
+            path (str): Unvalidated repository-relative path from the slash router.
+        """
+        from src.tui.git_diff_content_service import (  # noqa: PLC0415
+            GitDiffContentError,
+            GitDiffContentService,
+        )
+        from src.tui.git_diff_screen import GitDiffScreen  # noqa: PLC0415
+
+        try:
+            content = await GitDiffContentService.invoke(
+                requested_path=path,
+                workdir=self._session.workdir,
+            )
+        except GitDiffContentError as exception:
+            self._write_adapter_line(content=exception.operator_message, classes="tool-result")
+            return
+        self.push_screen(GitDiffScreen(content=content))
 
     async def _start_new_session(self, *, requested_name: Optional[str]) -> None:
         """Replace the active session with a brand-new one.

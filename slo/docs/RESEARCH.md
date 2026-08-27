@@ -64,13 +64,16 @@ slo/
 |---|---|
 | `app.py` | `SloTUI` (Textual app) + `PromptInput` (TextArea with custom `Submitted` message); owns in-flight task guard, bounded Context Window Snapshot refresh/repaint cadence, `/new` replacement, `/rename`, and prompt-history recall |
 | `prompt_history.py` | `PromptHistoryNavigator` — in-process `Up`/`Down` recall for submitted non-slash prompts |
-| `slash_router.py` | `SlashRouter.dispatch()` + `SlashCommandResultDAO`; handles `/help`, `/clear`, `/exit`, `/cwd`, `/abort`, `/steer`, `/model`, `/reasoning`, `/context-window`, `/compact`, `/new`, and `/rename` through typed session DAOs only |
+| `slash_router.py` | `SlashRouter.dispatch()` + `SlashCommandResultDAO`; handles `/help`, `/diff`, `/clear`, `/exit`, `/cwd`, `/abort`, `/steer`, `/model`, `/reasoning`, `/context-window`, `/compact`, `/new`, and `/rename` through typed session DAOs only |
 | `slash_command_registry.py` | `SlashCommandRegistry`, `SlashCommandSpecDAO`, `build_default_registry()` — canonical metadata for all slash commands (name, description, aliases, argument_mode, usage), including `/new` and `/rename` |
 | `slash_suggestion_engine.py` | `SlashSuggestionEngine` — pure suggestion logic; `SlashSuggestionRowDAO`, `SlashSuggestionStateDAO` |
 | `event_renderer.py` | Tool-line formatting helpers; legacy `ProgressEventDAO` renderer |
 | `transcript_projector.py` | Stateful transcript projector for live `AgentStreamEventDAO`s and replay `TranscriptEntryDAO`s |
 | `model_catalog.py` | `ModelSuggestionEntryDAO`, `model_suggestion_entries()` — model list for `/model` autocomplete (now catalog-backed) |
 | `thinking_spinner.py` | Spinner widget shown during LLM reasoning |
+| `slodiff/` | Clean-room extractable core: pure model and Textual split/unified diff widget; no Slo imports |
+| `git_diff_content_service.py` | Read-only safety boundary for validated HEAD-versus-worktree UTF-8 file content |
+| `git_diff_screen.py` | Focused `/diff` screen with Escape, split, wrap, and accessibility controls |
 | `authentication/` | Sub-package for OAuth flow widgets |
 | `app.tcss` | Textual CSS styles |
 | `widgets/__init__.py` | Widget re-exports |
@@ -103,6 +106,7 @@ slo/
 | `ls` | `ls.py` | Sorted directory listing; `/` suffix on subdirs |
 | `read_pdf` | `read_pdf.py` | pypdf text extraction; 1-indexed page-range slicing |
 | `now` | `now.py` | Current UTC ISO 8601 timestamp |
+| `show_git_diff` | `show_git_diff.py` | Safe JSON HEAD-versus-worktree content for one repository-relative file |
 
 Supporting modules: `_truncate.py` (head/tail/line limits), `_gitignore.py` (walk-to-root filter), `_image_content.py` (Pillow sniff + base64), `_blocking.py` (bounded `asyncio.to_thread` semaphore), `bundles.py` (`create_coding_tools()`, `create_all_tools()`, etc.), `prompt_snippets.py` (`TOOL_PROMPT_SNIPPETS` registry), `a2a_peer.py` (outbound A2A peer delegation).
 

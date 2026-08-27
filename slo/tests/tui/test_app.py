@@ -36,6 +36,9 @@ from src.tui.app import (
     TranscriptScroll,
 )
 from src.tui.authentication import AuthenticationScreen
+from src.tui.git_diff_content_service import GitDiffContentDAO, GitDiffContentError
+from src.tui.git_diff_screen import GitDiffScreen
+from src.tui.slodiff.model import FileStateKind
 from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 from src.tui.thinking_spinner import ThinkingSpinner
 from tests.tui._scroll_settle import pump_until
@@ -107,6 +110,86 @@ def _visible_prompt_lines(*, app: SloTUI) -> int:
     """
     prompt_input: PromptInput = _require_prompt_input(app=app)
     return prompt_input.size.height
+
+
+class TestDiffSlashCommand:
+    """Pilot coverage for the operator-facing /diff screen flow."""
+
+    async def test_diff_command_when_content_loads_pushes_screen_and_escape_returns(
+        self, tmp_path: Path
+    ) -> None:
+        """The real slash route opens GitDiffScreen and Escape restores the transcript."""
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
+            workdir=tmp_path,
+            session_id=str(uuid4()),
+        )
+        content = GitDiffContentDAO(
+            repository_relative_path="example.py",
+            base_content="before\\n",
+            changed_content="after\\n",
+            file_state=FileStateKind.MODIFIED,
+        )
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test(size=(160, 24)) as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.git_diff_content_service.GitDiffContentService.invoke",
+                new=AsyncMock(return_value=content),
+            ):
+                await app._dispatch_slash_command(line="/diff example.py")
+                await pilot.pause()
+            assert isinstance(app.screen, GitDiffScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, GitDiffScreen)
+
+    async def test_diff_command_when_content_load_fails_writes_safe_message_without_screen(
+        self, tmp_path: Path
+    ) -> None:
+        """The TUI keeps the transcript active when the service rejects a requested path."""
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
+            workdir=tmp_path,
+            session_id=str(uuid4()),
+        )
+        app: SloTUI = SloTUI(session=session)
+        error = GitDiffContentError(operator_message="No changes detected for example.py.")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.git_diff_content_service.GitDiffContentService.invoke",
+                new=AsyncMock(side_effect=error),
+            ):
+                await app._dispatch_slash_command(line="/diff example.py")
+                await pilot.pause()
+            assert ("No changes detected for example.py.", "tool-result") in app._adapter.lines
+            assert not isinstance(app.screen, GitDiffScreen)
+
+    async def test_diff_command_when_service_io_fails_writes_safe_message_without_screen(
+        self, tmp_path: Path
+    ) -> None:
+        """A service-wrapped I/O failure stays in the transcript and never opens a screen."""
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
+            workdir=tmp_path,
+            session_id=str(uuid4()),
+        )
+        app: SloTUI = SloTUI(session=session)
+        error = GitDiffContentError(operator_message="Could not read HEAD version of file.")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "src.tui.git_diff_content_service.GitDiffContentService.invoke",
+                new=AsyncMock(side_effect=error),
+            ):
+                await app._dispatch_slash_command(line="/diff example.py")
+                await pilot.pause()
+            assert ("Could not read HEAD version of file.", "tool-result") in app._adapter.lines
+            assert not isinstance(app.screen, GitDiffScreen)
 
 
 class TestSloTUIActiveModelState:

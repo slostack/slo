@@ -1,5 +1,102 @@
 # Changelog
 
+## [0.15.0] — 2026-08-28
+
+**Clean-room Git diff viewer, terminal-safe transcript copying, and safe large-image reads.**
+
+Three feature streams land together in this minor release. The TUI gains a
+focused `/diff` review screen backed by an extractable clean-room diff core and a
+matching `show_git_diff` agent tool. Transcript text becomes copyable in
+terminals where Textual could not previously select nested Markdown renderables,
+at the cost of a `textual >= 8.2.7` floor. The `read` tool now bounds image
+payloads before they reach the provider and stores a compact image reference in
+durable history instead of stringified base64.
+
+### Added
+
+- **`/diff <repository-relative-path>` slash command and `GitDiffScreen`** — opens a
+  full-screen, read-only review of one session-workdir file against `HEAD`. The
+  default unified layout uses high-contrast red removed rows and green added rows,
+  scrolls vertically, and keeps an optional synchronized side-by-side mode (`s`),
+  wrapping (`w`), accessible line annotations (`a`), and `Escape` to return to the
+  transcript.
+- **Clean-room `slodiff` core** (`src/tui/slodiff/model.py`, `src/tui/slodiff/view.py`) —
+  an extractable diff model and Textual widget built only from stdlib `difflib` plus
+  Textual, with syntax highlighting and inline replacement spans. No third-party diff
+  library is vendored or imported.
+- **`GitDiffContentService`** (`src/tui/git_diff_content_service.py`) — safe
+  HEAD-versus-worktree content loader that resolves nested Git roots against the
+  session workdir, accepts UTF-8 text up to 1 MB per side, and rejects absolute
+  paths, `..` traversal, and `.git` paths.
+- **`show_git_diff` agent tool** (`src/agents/tools/show_git_diff.py`) — returns the
+  same validated before/after content as JSON, raising the default bundle from 9 to
+  10 tools. The tool is process-working-directory scoped; `/diff` is
+  session-workdir scoped. Neither surface modifies the repository. A vendored
+  `skills/tui/slodiff/SKILL.md` documents usage.
+- **Per-response Copy control on assistant transcript blocks** — a right-aligned
+  control on every assistant block copies the full agent response even in terminals
+  where nested Markdown renderables cannot be selected. It stays disabled until an
+  answer arrives, copies only the raw response, activates by click or Enter/Space,
+  and shows transient "Copied" feedback. Implemented as a `Static`-based interactive
+  control rather than a Textual `Button`, because affected terminal backends painted
+  the button frame but not its label.
+- **Drag-select auto-copy for transcript text** — releasing a mouse drag over the
+  transcript copies the selected range with no keystroke. Delivery tries the local
+  clipboard (`pyperclip`) first and always falls back to an OSC 52 escape, so copy
+  works locally and over SSH/tmux. The existing `ctrl+shift+c` / `meta+c` binding
+  still copies the focused block, prompt selection, or visible transcript, and now
+  also emits OSC 52.
+- **`LiteralTextStatic`** (`src/tui/widgets/literal_text_static.py`) — a `Static`
+  with `markup=False` used for every plain-text transcript surface, so type hints
+  (`list[str]`), timestamps, JSON, and regex spans render literally.
+- **In-memory image resizing in the `read` tool** — JPEG, PNG, GIF, and WebP inputs
+  are bounded to a 1568 px longest edge with aspect ratio preserved before base64
+  encoding. Images already within the bound retain their original bytes, and source
+  files are never modified.
+- **`ImageResizeResult` and `ToolResultDAO`** — keep the live multimodal image block
+  separate from a durable image reference. The executor attaches the reference to
+  `ToolMessage` metadata.
+
+### Changed
+
+- **`textual` floor raised to `>=8.2.7,<9.0.0`** (from `>=0.74,<1.0`) — required for
+  Textual's native selection API. A consequence of that version is that `Static`
+  treats `[...]` in a string as console markup, which is why plain-text transcript
+  surfaces now route through `LiteralTextStatic`.
+- **`pyperclip (>=1.11.0,<2.0.0)` added as a dependency** — local clipboard delivery
+  for the copy paths, with OSC 52 as the always-present fallback.
+- **Durable history stores a compact image reference** — history tracing persists
+  `[image attached: <name>, <WxH>, ref <absolute_path>]` instead of stringified
+  base64. Resumed sessions keep a useful reference without inflating context or
+  token estimates; projector and token-estimator behavior are unchanged.
+- **`AGENTS.md`, `README.md`, and `docs/RESEARCH.md`** — updated for the 10-tool
+  default bundle, the `/diff` command, the `slodiff` layout, the copy behavior and
+  its `textual` pin, and the image-read/durable-history contract.
+
+### Fixed
+
+- **Oversized image reads fail cleanly instead of being rejected by the provider** —
+  the 5 MiB encoded-image limit is enforced. A dense image still over the limit after
+  resizing gets one JPEG fallback re-encode; if the fallback is still over the limit,
+  the read returns a clear error rather than emitting a payload the provider will
+  reject.
+- **Empty agent responses cannot be copied** — the Copy control is guarded against
+  activation before an answer exists, and restores its label after transient
+  feedback.
+
+### Verification
+
+- Default suite green: 3,173 tests passed; 323 feature and impacted tests passed;
+  feature-scoped Black and mypy checks passed.
+- New coverage includes `tests/tui/slodiff/test_model.py`,
+  `tests/tui/slodiff/test_view.py`, `tests/tui/test_git_diff_content_service.py`,
+  `tests/tui/test_git_diff_screen.py`, `tests/tui/test_slodiff_import_regression.py`
+  (startup import containment), `tests/agents/tools/test_show_git_diff.py`,
+  `tests/tui/test_selection_copy.py`, `tests/tui/test_selection_copy_e2e.py`,
+  `tests/tui/test_literal_text_static.py`, `tests/tui/test_textual_version.py`,
+  `tests/agents/tools/test_image_content.py`, and
+  `tests/agents/slo_agent/test_agent_image_history.py`.
+
 ## [0.14.18] — 2026-08-16
 
 ### Added

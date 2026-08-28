@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.15.2] — 2026-09-08
+
+**Public, credential-free installer distribution.**
+
+### Changed
+
+- The Cloudflare Worker deployment helper now retrieves the canonical public
+  `install.sh` directly from GitLab without an operator GitLab token.
+- The hosted installer uses the public repository URL and never injects,
+  persists, or exposes deploy-token/PAT credentials, including when legacy
+  credential variables remain in an installer's environment.
+- Docker installer smoke coverage now validates the public path without
+  forwarding deployment credentials.
+- Installation documentation and command examples now use the credential-free
+  `curl -fsSL https://get-slo.sh/install.sh | bash` flow.
+
+### Removed
+
+- Deploy-token and personal-access-token handling from `install.sh` and the
+  Cloudflare installer deployment flow.
+
+---
+
 ## [0.15.0] — 2026-08-28
 
 **Clean-room Git diff viewer, terminal-safe transcript copying, and safe large-image reads.**

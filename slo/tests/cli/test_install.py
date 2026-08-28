@@ -439,51 +439,23 @@ class TestInstall:
         fake_bin.run(snippet="slo_install", env={"SLO_REF": "v1.2.3"})
         assert any("git+https://gitlab.com/core-27/slo.git@v1.2.3" in c for c in fake_bin.calls)
 
-    def test_injects_token_for_private_https(self, fake_bin: FakeBin) -> None:
-        fake_bin.add(name="pipx")
-        fake_bin.run(snippet="slo_install", env={"SLO_INSTALL_TOKEN": "glpat-secret"})
-        assert any(
-            "git+https://oauth2:glpat-secret@gitlab.com/core-27/slo.git@main" in c
-            for c in fake_bin.calls
-        )
-
-    def test_no_token_leaves_url_clean(self, fake_bin: FakeBin) -> None:
-        fake_bin.add(name="pipx")
-        fake_bin.run(snippet="slo_install")
-        assert not any("oauth2:" in c for c in fake_bin.calls)
-
-    def test_injects_deploy_token_username_and_password(self, fake_bin: FakeBin) -> None:
-        # A GitLab deploy token authenticates as <username>:<token>, not oauth2.
-        fake_bin.add(name="pipx")
-        fake_bin.run(
-            snippet="slo_install",
-            env={"SLO_DEPLOY_TOKEN_USERNAME": "gitlab+deploy-token-7", "SLO_DEPLOY_TOKEN": "dt-secret"},
-        )
-        assert any(
-            "git+https://gitlab+deploy-token-7:dt-secret@gitlab.com/core-27/slo.git@main" in c
-            for c in fake_bin.calls
-        )
-        assert not any("oauth2:" in c for c in fake_bin.calls)
-
-    def test_deploy_token_takes_precedence_over_pat(self, fake_bin: FakeBin) -> None:
+    def test_ignores_legacy_repository_credentials(self, fake_bin: FakeBin) -> None:
+        # The public installer must not put deploy tokens or PATs into the VCS
+        # URL, even if they remain in a user's environment from an old install.
         fake_bin.add(name="pipx")
         fake_bin.run(
             snippet="slo_install",
             env={
-                "SLO_DEPLOY_TOKEN_USERNAME": "dt-user",
+                "SLO_DEPLOY_TOKEN_USERNAME": "gitlab+deploy-token-7",
                 "SLO_DEPLOY_TOKEN": "dt-secret",
                 "SLO_INSTALL_TOKEN": "glpat-secret",
+                "SLO_USERNAME": "legacy-user",
+                "SLO_TOKEN": "legacy-token",
             },
         )
-        assert any("https://dt-user:dt-secret@" in c for c in fake_bin.calls)
-        assert not any("oauth2:" in c for c in fake_bin.calls)
-
-    def test_deploy_token_username_without_password_is_ignored(self, fake_bin: FakeBin) -> None:
-        # A half-configured deploy token must not produce a malformed URL.
-        fake_bin.add(name="pipx")
-        fake_bin.run(snippet="slo_install", env={"SLO_DEPLOY_TOKEN_USERNAME": "dt-user"})
         assert any("git+https://gitlab.com/core-27/slo.git@main" in c for c in fake_bin.calls)
-        assert not any("dt-user" in c for c in fake_bin.calls)
+        assert not any("@gitlab.com" in c for c in fake_bin.calls)
+        assert not any("dt-secret" in c or "glpat-secret" in c or "legacy-token" in c for c in fake_bin.calls)
 
     def test_targets_slo_subdirectory(self, fake_bin: FakeBin) -> None:
         # The project lives in the repo's slo/ subdir, so pip must be told where

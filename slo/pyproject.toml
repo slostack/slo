@@ -1,6 +1,6 @@
 [project]
 name = "slo"
-version = "0.15.0"
+version = "0.15.1"
 description = "Python ReAct agent harness, modelled on pi.dev"
 authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
 license = "GPL-2.0-only"
@@ -45,12 +45,6 @@ dependencies = [
 [project.scripts]
 slo = "src.cli:main"
 
-# 01.n note: skills/ are NOT declared as package data for v1. install.sh clones
-# the repo to ~/.slo/ and the editable pipx install lets ``cfg._resolve_skills_dir``
-# find the directory directly on disk. If/when slo ships to PyPI as a
-# proper wheel, add a ``[tool.poetry] include = [...]`` (or PEP 621
-# equivalent) so skills/ travels inside the artifact — see 01.n §8.7.
-
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
@@ -59,6 +53,14 @@ build-backend = "poetry.core.masonry.api"
   packages = [
       { include = "src" },
       { include = "config" },
+  ]
+
+  # skills/ ships inside the artifact so a non-editable ``pipx install`` finds
+  # it. The wheel places it at ``<site-packages>/skills``, which is exactly the
+  # path ``cfg._resolve_skills_dir`` derives from ``config/cfg.py``'s location.
+  # Without this the installed agent silently starts with vendored_count=0.
+  include = [
+      { path = "skills/**/*", format = ["sdist", "wheel"] },
   ]
   
 [dependency-groups]

@@ -72,9 +72,11 @@ pytest:
   rules:
   - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   - if: $CI_COMMIT_BRANCH
-  # Tags too: publish-installer gates on this job, so a tag whose suite is red
-  # must never reach the Cloudflare Worker.
-  - if: $CI_COMMIT_TAG
+  # Deliberately NOT on tags. A release tag points at a commit that already ran
+  # this suite green on its MR and again on main, so a tag pipeline would only
+  # re-run known-good tests and delay the publish. The trade-off is real: the
+  # tag itself is no longer gated, so tag only commits whose main pipeline is
+  # green.
 
 # Publishes install.sh to the Cloudflare Worker behind get-slo.sh, pinned to the
 # tag that triggered the pipeline. This is `make publish-installer` with two
@@ -97,8 +99,11 @@ pytest:
 publish-installer:
   stage: publish
   image: python:3.11
-  needs:
-  - pytest
+  # No `needs: [pytest]` — pytest does not run on tag pipelines, and a `needs`
+  # entry naming a job absent from the pipeline makes the whole pipeline fail
+  # to create. `needs: []` also starts the publish immediately instead of
+  # waiting on an empty test stage.
+  needs: []
   variables:
     CF_ZONE_NAME: get-slo.sh
     SLO_HOSTNAME: get-slo.sh

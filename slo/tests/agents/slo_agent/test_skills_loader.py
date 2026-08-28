@@ -313,6 +313,96 @@ class TestSkillsLoaderLoadMerged:
         assert len(result) == 1
         assert "user_workflows" in result[0].file_path
 
+    def test_populated_vendored_tree_does_not_short_circuit_user_dirs(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding vendored skills must not stop the user trees from loading.
+
+        Regression guard: the three trees are additive, never first-match-wins.
+        A populated vendored tree and populated user trees all contribute.
+        """
+        vendored_dir: Path = tmp_path / "vendored"
+        user_dir: Path = tmp_path / "user_skills"
+        workflows_dir: Path = tmp_path / "user_workflows"
+        _write_skill(directory=vendored_dir, slug="vendored-one", name="vendored-one")
+        _write_skill(directory=vendored_dir, slug="vendored-two", name="vendored-two")
+        _write_skill(directory=user_dir, slug="user-one", name="user-one")
+        _write_skill(directory=workflows_dir, slug="workflow-one", name="workflow-one")
+
+        result: list[SkillEntryDAO] = SkillsLoader.load_merged(
+            vendored_skills_dir=str(vendored_dir),
+            user_skills_dir=str(user_dir),
+            user_workflows_dir=str(workflows_dir),
+        )
+
+        names: set[str] = {entry.name for entry in result}
+        assert names == {"vendored-one", "vendored-two", "user-one", "workflow-one"}
+
+    def test_user_dirs_still_load_when_vendored_tree_is_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """The inverse: an absent vendored tree must not suppress user skills."""
+        user_dir: Path = tmp_path / "user_skills"
+        workflows_dir: Path = tmp_path / "user_workflows"
+        _write_skill(directory=user_dir, slug="user-one", name="user-one")
+        _write_skill(directory=workflows_dir, slug="workflow-one", name="workflow-one")
+
+        result: list[SkillEntryDAO] = SkillsLoader.load_merged(
+            vendored_skills_dir=str(tmp_path / "absent_vendored"),
+            user_skills_dir=str(user_dir),
+            user_workflows_dir=str(workflows_dir),
+        )
+
+        names: set[str] = {entry.name for entry in result}
+        assert names == {"user-one", "workflow-one"}
+
+    def test_logs_error_when_vendored_tree_yields_nothing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An empty vendored tree is logged at ERROR, not silently tolerated.
+
+        This is the signal that distinguishes a broken install from the model
+        simply choosing not to use a skill.
+        """
+        import logging
+
+        user_dir: Path = tmp_path / "user_skills"
+        _write_skill(directory=user_dir, slug="user-one", name="user-one")
+        missing_vendored: Path = tmp_path / "absent_vendored"
+
+        with caplog.at_level(logging.ERROR):
+            SkillsLoader.load_merged(
+                vendored_skills_dir=str(missing_vendored),
+                user_skills_dir=str(user_dir),
+                user_workflows_dir=str(tmp_path / "absent_workflows"),
+            )
+
+        assert any(
+            "no vendored skills found" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_logs_no_error_when_vendored_tree_is_populated(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The healthy path stays quiet so the error above keeps its meaning."""
+        import logging
+
+        vendored_dir: Path = tmp_path / "vendored"
+        _write_skill(directory=vendored_dir, slug="vendored-one", name="vendored-one")
+
+        with caplog.at_level(logging.ERROR):
+            SkillsLoader.load_merged(
+                vendored_skills_dir=str(vendored_dir),
+                user_skills_dir=str(tmp_path / "absent_user"),
+                user_workflows_dir=str(tmp_path / "absent_workflows"),
+            )
+
+        assert not any(
+            "no vendored skills found" in record.getMessage()
+            for record in caplog.records
+        )
+
     def test_logs_override_event(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """An override log event is emitted when a user skill displaces a vendored one."""
         import logging

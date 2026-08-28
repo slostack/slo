@@ -33,17 +33,35 @@ class TestResolveSkillsDir:
         assert result == str(nonexistent.resolve())
         assert os.path.isabs(result)
 
-    def test_installed_path_when_env_unset_and_dir_exists(
+    def test_installed_path_when_env_unset_and_tree_is_populated(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        monkeypatch.delenv("SLO_SKILLS_DIR", raising=False)
+        fake_home = tmp_path / "home"
+        installed = fake_home / ".slo" / "skills"
+        installed.mkdir(parents=True)
+        (installed / "INDEX.md").write_text("# index")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        result = _resolve_skills_dir()
+        assert result == str(installed)
+
+    def test_empty_installed_dir_does_not_shadow_packaged_tree(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A stale ``~/.slo/skills`` with no INDEX.md must fall through.
+
+        Regression guard: an empty leftover directory previously won the
+        precedence race and left the agent with zero vendored skills.
+        """
         monkeypatch.delenv("SLO_SKILLS_DIR", raising=False)
         fake_home = tmp_path / "home"
         (fake_home / ".slo" / "skills").mkdir(parents=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
         result = _resolve_skills_dir()
-        assert result == str(fake_home / ".slo" / "skills")
+        assert result != str(fake_home / ".slo" / "skills")
+        assert result.endswith(os.sep + "skills")
 
-    def test_repo_local_fallback_when_install_dir_missing(
+    def test_packaged_fallback_when_install_dir_missing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.delenv("SLO_SKILLS_DIR", raising=False)
@@ -51,11 +69,39 @@ class TestResolveSkillsDir:
         fake_home.mkdir()
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
         result = _resolve_skills_dir()
-        # The repo-local fallback derives from cfg.py's parent.parent / "skills".
+        # The packaged fallback derives from cfg.py's parent.parent / "skills":
+        # site-packages/ for a pipx install, the repo root for a dev clone.
         # We don't pin the exact absolute path (depends on the test machine);
         # we assert it's absolute and ends with /skills.
         assert os.path.isabs(result)
         assert result.endswith(os.sep + "skills")
+
+    def test_packaged_fallback_is_derived_from_cfg_module_location(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The fallback is ``<parent of config/>/skills``, wherever cfg.py lives.
+
+        That parent is ``site-packages/`` for a pipx install and the repo root
+        for a dev clone — the invariant that makes a shipped ``skills/``
+        directory discoverable. Driven off a synthetic layout so the assertion
+        does not depend on how this checkout happens to be installed.
+        """
+        import config.cfg as cfg_module
+
+        monkeypatch.delenv("SLO_SKILLS_DIR", raising=False)
+        fake_home = tmp_path / "home-without-slo"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        fake_install_root = tmp_path / "site-packages"
+        (fake_install_root / "config").mkdir(parents=True)
+        (fake_install_root / "skills").mkdir()
+        monkeypatch.setattr(
+            cfg_module, "__file__", str(fake_install_root / "config" / "cfg.py")
+        )
+
+        result = _resolve_skills_dir()
+        assert result == str(fake_install_root / "skills")
 
 
 class TestHeadlessTimeoutDefaults:

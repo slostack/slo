@@ -388,6 +388,12 @@ slo_install() {
     # clone, no editable checkout, nothing written to SLO_HOME. --force makes
     # re-runs upgrade in place.
     #
+    # Because nothing is written to SLO_HOME, skills/ cannot be found on disk
+    # after install — it must travel inside the wheel. That is what
+    # `[tool.poetry] include` in pyproject.toml is for; dropping it leaves the
+    # installed agent running with zero vendored skills. Guarded by
+    # tests/cli/test_wheel_contents.py.
+    #
     # pipx auto-selects a uv backend whenever any `uv` is on PATH but never
     # checks that it runs; a stale pyenv `uv` shim (uv present only in some
     # virtualenvs) then aborts the install. Fall back to pip when uv is present

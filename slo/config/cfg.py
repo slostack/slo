@@ -162,30 +162,55 @@ SLO_OAUTH_TIMEOUT_SECONDS = int(os.environ.get("SLO_OAUTH_TIMEOUT_SECONDS", "60"
 # SKILLS_DIR is the absolute path to the committed skills/ directory. The
 # system prompt references the index at ``<SKILLS_DIR>/INDEX.md``; the agent
 # reads it on demand via the ``read`` tool — there is no runtime injection.
+def _is_populated_skills_tree(*, candidate: Path) -> bool:
+    """Return whether ``candidate`` looks like a real skills tree.
+
+    A bare directory is not enough: a leftover empty ``~/.slo/skills`` from an
+    older install would otherwise shadow the tree that ships inside the wheel
+    and silently start the agent with zero vendored skills. ``INDEX.md`` is the
+    marker because the system prompt points the agent at it.
+
+    Args:
+        candidate (Path): Directory to test.
+
+    Returns:
+        bool: True when ``candidate/INDEX.md`` is a file.
+    """
+    return (candidate / "INDEX.md").is_file()
+
+
 def _resolve_skills_dir() -> str:
     """Pick the skills directory by precedence (sub-spec 01.n §5.4).
 
     Order:
-        1. ``$SLO_SKILLS_DIR`` if set (explicit override; honoured for tests
-           and one-off experiments).
-        2. ``~/.slo/skills`` if it exists (the pipx install path from 01.n).
-        3. The repo-local ``skills/`` directory next to this file (dev clones).
+        1. ``$SLO_SKILLS_DIR`` if set (explicit override; honoured verbatim so
+           a wrong value surfaces as a loud missing-directory error rather
+           than being silently swapped for a different tree).
+        2. ``~/.slo/skills`` when it is a populated skills tree (operator
+           override / legacy clone install).
+        3. The ``skills/`` directory alongside this file — ``site-packages/``
+           for a pipx install (shipped via ``[tool.poetry] include``) and the
+           repo root for a dev clone.
+
+    Candidates 2 and 3 must satisfy ``_is_populated_skills_tree``; an empty or
+    stale directory falls through to the next candidate instead of winning.
 
     Returns:
-        Absolute path string. Never ``None`` — falls through to the repo-local
-        path even if it does not exist, so misconfiguration surfaces as
-        "FileNotFoundError when reading INDEX.md" rather than a silent None.
+        Absolute path string. Never ``None`` — falls through to the
+        package-adjacent path even when nothing validates, so misconfiguration
+        surfaces as "FileNotFoundError when reading INDEX.md" rather than a
+        silent None. ``SkillsLoader.load_merged`` logs the zero-skill case.
     """
     override = os.environ.get("SLO_SKILLS_DIR")
     if override:
         return os.path.abspath(override)
 
     installed = Path.home() / ".slo" / "skills"
-    if installed.is_dir():
+    if _is_populated_skills_tree(candidate=installed):
         return str(installed)
 
-    repo_root = Path(__file__).resolve().parent.parent
-    return str(repo_root / "skills")
+    packaged = Path(__file__).resolve().parent.parent / "skills"
+    return str(packaged)
 
 
 SKILLS_DIR: str = _resolve_skills_dir()

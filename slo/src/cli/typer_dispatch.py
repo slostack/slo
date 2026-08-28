@@ -98,25 +98,6 @@ class TyperDispatch:
             SloTUI(session=session).run(mouse=True)
 
     @classmethod
-    def serve(cls, *, port: int) -> None:
-        """Boot the ``/healthz``-only FastAPI app via uvicorn.
-
-        Args:
-            port (int): Port to bind the FastAPI app to.
-        """
-        import uvicorn
-        from config.logger import LOGGING_CONFIG
-
-        slo_home: Path = _CFG_SLO_HOME
-        configure_app_file_logging(slo_home=slo_home)
-        uvicorn.run(
-            app="src.main:app",
-            host="127.0.0.1",
-            port=port,
-            log_config=LOGGING_CONFIG,
-        )
-
-    @classmethod
     def run_headless(
         cls,
         *,

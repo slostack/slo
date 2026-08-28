@@ -1,6 +1,6 @@
 """DAOs for the Slo agent (sub-spec 01.f §4.1).
 
-Two transports (SSE router, A2A executor) consume these shapes — keep
+The SSE router and the TUI event renderer consume these shapes — keep
 them stable.
 
 All DAOs are Pydantic ``BaseModel`` instances with the ``DAO`` suffix.
@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "StreamRequestDAO",
-    "QueryDAO",
     "ProgressEventDAO",
 ]
 
@@ -46,28 +45,10 @@ class StreamRequestDAO(BaseModel):
     )
 
 
-class QueryDAO(BaseModel):
-    """A2A skill input shape — wraps the same payload as StreamRequestDAO.
-
-    The A2A executor (sub-spec 01.h) parses an incoming ``DataPart`` into
-    this DAO before delegating to ``SloAgent.invoke``.
-    """
-
-    model_config = ConfigDict(
-        title="QueryDAO",
-        extra="ignore",
-        from_attributes=True,
-    )
-
-    query: str
-    history: Optional[list[dict]] = None
-    args: Optional[dict[str, Any]] = None
-
-
 class ProgressEventDAO(BaseModel):
     """One streamed event from ``SloAgent.invoke``.
 
-    Both the SSE router and the A2A executor consume this shape.
+    Both the SSE router and the TUI event renderer consume this shape.
 
     Fields:
         is_final: True iff this is the last event for the run.

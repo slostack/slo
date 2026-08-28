@@ -24,17 +24,15 @@ class TestAppSurface:
         assert resolve_version() in result.stdout
 
     def test_help_lists_subcommands(self) -> None:
-        """``slo --help`` lists ``serve`` / ``update`` / ``[<dir>]`` and excludes ``a2a``."""
+        """``slo --help`` lists ``update`` / ``[<dir>]``."""
         result = runner.invoke(app, ["--help"])
 
         assert result.exit_code == 0
-        assert "serve" in result.stdout
         assert "update" in result.stdout
         assert (
             "WORKDIR" in result.stdout.upper() or "workdir" in result.stdout
         )
         assert "session reference" in result.stdout.lower()
-        assert "a2a" not in result.stdout.lower()
 
     def test_bare_form_invokes_tui_with_cwd(self) -> None:
         """Bare ``slo`` reaches ``TyperDispatch.tui(workdir=None, resume_session_reference=None)``."""
@@ -105,14 +103,6 @@ class TestAppSurface:
             workspace_file=Path(str(workspace_file)),
             resume_session_reference="abc",
         )
-
-    def test_serve_subcommand_invokes_dispatch_with_port(self) -> None:
-        """``slo serve --port 8000`` calls ``TyperDispatch.serve(port=8000)``."""
-        with patch("src.cli.app.TyperDispatch.serve") as mock_serve:
-            result = runner.invoke(app, ["serve", "--port", "8000"])
-
-        assert result.exit_code == 0
-        mock_serve.assert_called_once_with(port=8000)
 
     def test_update_subcommand_passes_development_flag(self) -> None:
         """``slo update --development`` calls ``TyperDispatch.update(development=True, ref=None)``."""

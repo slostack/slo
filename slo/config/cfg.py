@@ -23,8 +23,6 @@ def is_staging() -> bool:
 
 APP_NAME = os.environ.get("SLO_APP_NAME", "slo")
 APP_DIR = os.environ.get("SLO_APP_DIR", None)
-BASE_URL = os.environ.get("SLO_BASE_URL", "http://localhost:7700/slo")
-DOMAIN = os.environ.get("SLO_DOMAIN", "localhost:7700")
 LOG_FORMAT = os.environ.get("SLO_LOG_FORMAT", "json")
 
 # Provider keys
@@ -32,21 +30,6 @@ ANTHROPIC_API_KEY = os.environ.get("SLO_ANTHROPIC_API_KEY", None)
 OPENAI_API_KEY = os.environ.get("SLO_OPENAI_API_KEY", None)
 KIMI_FOR_CODING_API_KEY = os.environ.get("SLO_KIMI_FOR_CODING_API_KEY", None)
 DEFAULT_MODEL_NAME = os.environ.get("SLO_DEFAULT_MODEL_NAME", "gpt-5.4")
-
-# Network ports
-A2A_PORT = int(os.environ.get("SLO_A2A_PORT", "9900"))
-A2A_PUBLIC_URL = os.environ.get("SLO_A2A_PUBLIC_URL", "http://localhost:9900")
-WEB_PORT = int(os.environ.get("SLO_WEB_PORT", "7700"))
-
-# A2A peer tool timeouts
-A2A_FETCH_TIMEOUT_SECONDS: float = positive_float_env(
-    primary_name="SLO_A2A_FETCH_TIMEOUT_SECONDS",
-    default=10.0,
-)
-A2A_INVOKE_TIMEOUT_SECONDS: float = positive_float_env(
-    primary_name="SLO_A2A_INVOKE_TIMEOUT_SECONDS",
-    default=300.0,
-)
 
 # Atlassian / Jira / Confluence integration
 ATLASSIAN_API_TOKEN: Optional[str] = os.environ.get("SLO_ATLASSIAN_API_TOKEN")
@@ -227,12 +210,8 @@ SLO_KB_DIR = os.environ.get("SLO_KB_DIR", None)
 SLO_KB_SOURCE = os.environ.get("SLO_KB_SOURCE", None)
 
 __cfg__: dict[str, str | None] = {
-    "A2A_FETCH_TIMEOUT_SECONDS": str(A2A_FETCH_TIMEOUT_SECONDS),
-    "A2A_INVOKE_TIMEOUT_SECONDS": str(A2A_INVOKE_TIMEOUT_SECONDS),
     "AUTO_VISUALIZE": "1" if AUTO_VISUALIZE else "0",
     "DETACHED_WORKFLOWS": "1" if DETACHED_WORKFLOWS else "0",
-    "A2A_PORT": str(A2A_PORT),
-    "A2A_PUBLIC_URL": A2A_PUBLIC_URL,
     "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
     "APP_DIR": APP_DIR,
     "APP_NAME": APP_NAME,
@@ -242,7 +221,6 @@ __cfg__: dict[str, str | None] = {
     "ATLASSIAN_TIMEOUT_SECONDS": (
         str(ATLASSIAN_TIMEOUT_SECONDS) if ATLASSIAN_TIMEOUT_SECONDS is not None else None
     ),
-    "BASE_URL": BASE_URL,
     "CONNECTORS_DIR": CONNECTORS_DIR,
     "CONNECTOR_PREFER_ENV": "1" if CONNECTOR_PREFER_ENV else "0",
     "DEBUGPY": DEBUGPY,
@@ -250,7 +228,6 @@ __cfg__: dict[str, str | None] = {
     "DEFAULT_MODEL_NAME": DEFAULT_MODEL_NAME,
     "DEPLOY_TOKEN": DEPLOY_TOKEN,
     "DEPLOY_TOKEN_USERNAME": DEPLOY_TOKEN_USERNAME,
-    "DOMAIN": DOMAIN,
     "ENV": env,
     "GITHUB_API_BASE_URL": GITHUB_API_BASE_URL,
     "GITHUB_TIMEOUT_SECONDS": str(GITHUB_TIMEOUT_SECONDS) if GITHUB_TIMEOUT_SECONDS is not None else None,
@@ -286,7 +263,6 @@ __cfg__: dict[str, str | None] = {
     "USER_WORKFLOWS_DIR": USER_WORKFLOWS_DIR,
     "VISUALIZER_REFRESH_SECONDS": str(VISUALIZER_REFRESH_SECONDS),
     "VISUALIZER_TERMINAL_APP": VISUALIZER_TERMINAL_APP,
-    "WEB_PORT": str(WEB_PORT),
 }
 
 

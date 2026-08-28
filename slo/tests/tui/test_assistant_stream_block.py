@@ -14,6 +14,7 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from tests.tui._scroll_settle import pump_until
 
 
 class TestAssistantStreamBlock:
@@ -306,13 +307,21 @@ class TestAssistantStreamBlockCopyButton:
         copied_texts: list[str] = []
         app.copy_to_clipboard = copied_texts.append  # type: ignore[method-assign]
 
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(100, 30)) as pilot:
             block: AssistantStreamBlock = await app.mount_assistant_block()
             block.append_thinking(delta="private reasoning")
             block.append_text(delta="public answer")
             await pilot.pause()
 
             copy_control = block._copy_control
+            # pilot.click resolves the widget to screen coordinates, so the control
+            # must be laid out and on screen before the click. Without this the click
+            # can land on empty space and copy nothing (an intermittent CI failure
+            # that surfaced as `assert [] == ["public answer"]`).
+            copy_control.scroll_visible(animate=False)
+            await pump_until(pilot=pilot, predicate=lambda: copy_control.region.area > 0)
+            assert copy_control.region.area > 0
+
             await pilot.click(copy_control)
             await pilot.pause()
 

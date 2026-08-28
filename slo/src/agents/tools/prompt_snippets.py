@@ -1,7 +1,6 @@
 """Prompt-facing one-line descriptions for built-in and connector tools (25.a.6)."""
 from __future__ import annotations
 
-from src.agents.tools.a2a_peer import A2A_PEER_PROMPT_SNIPPET
 from src.agents.tools.bash import BASH_PROMPT_SNIPPET
 from src.agents.tools.create_jira_issue import CREATE_JIRA_ISSUE_PROMPT_SNIPPET
 from src.agents.tools.edit import EDIT_PROMPT_SNIPPET
@@ -30,7 +29,6 @@ TOOL_PROMPT_SNIPPETS: dict[str, str] = {
     "ls": LS_PROMPT_SNIPPET,
     "now": NOW_PROMPT_SNIPPET,
     "read_pdf": READ_PDF_PROMPT_SNIPPET,
-    "a2a_peer": A2A_PEER_PROMPT_SNIPPET,
     # Confluence connector tools (25.a.2)
     "search_confluence_using_cql": SEARCH_CONFLUENCE_USING_CQL_PROMPT_SNIPPET,
     "get_confluence_page": GET_CONFLUENCE_PAGE_PROMPT_SNIPPET,

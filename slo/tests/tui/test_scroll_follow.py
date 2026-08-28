@@ -118,7 +118,12 @@ class TestTranscriptFollowMode:
 
             assert app._transcript_scroll is not None
             app._transcript_scroll.scroll_end(animate=False)
-            await pilot.pause()
+            # Wait for the scroll to actually land before dispatching. _render_event
+            # snapshots _transcript_is_at_bottom() at dispatch time; if scroll_end has
+            # not settled, the app correctly preserves position and no later pumping
+            # can undo that decision. A bare pause() was the flake.
+            await pump_until(pilot=pilot, predicate=app._transcript_is_at_bottom)
+            assert app._transcript_is_at_bottom()
 
             await app._render_event(
                 AgentStreamEventDAO(kind="text_delta", delta="hello", iteration=0),

@@ -222,18 +222,6 @@ def _run(
     raise typer.Exit(code=exit_code)
 
 
-@app.command(name="serve")
-def _serve(
-    port: int = typer.Option(
-        7700,
-        "--port",
-        help="Port to bind the FastAPI health-check app to.",
-    ),
-) -> None:
-    """Run the FastAPI ``/healthz``-only app via uvicorn."""
-    TyperDispatch.serve(port=port)
-
-
 @app.command(name="visualize")
 def _visualize(
     session: str = typer.Option(

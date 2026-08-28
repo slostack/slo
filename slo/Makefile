@@ -1,4 +1,4 @@
-.PHONY: help run tui test smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release
+.PHONY: help tui test smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -6,10 +6,6 @@ help:  ## Show this help message
 	  sort
 	@echo ""
 	@echo "  Usage: make <target> [VAR=value]"
-
-# Launch the main API service (poetry + uvicorn).
-run:  ## Launch the API server
-	bash launch.sh
 
 # Open the Textual TUI (sub-spec 02.a). Equivalent to running `slo` directly.
 tui:  ## Open the Textual TUI

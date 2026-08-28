@@ -40,6 +40,12 @@ pytest:
     SLO_DEFAULT_MODEL_NAME: gpt-5.4
     # Never let a test spawn a real `slo visualize` terminal on the runner.
     SLO_AUTO_VISUALIZE: '0'
+    # Not a credential. tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py
+    # drives a FauxChatModel and makes no network call, but SloAgentSession.build()
+    # still resolves provider credentials at construction time. On a developer
+    # machine that resolves against ~/.claude/.credentials.json; a CI runner has
+    # no such file, so those tests need a placeholder to get past resolution.
+    SLO_ANTHROPIC_API_KEY: 'ci-placeholder-tests-are-fully-mocked'
     # Textual pilot tests render to a headless driver; keep the size deterministic.
     COLUMNS: '120'
     LINES: '40'

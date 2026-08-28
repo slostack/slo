@@ -452,7 +452,7 @@ def test_build_slo_agent_returns_slo_agent_build_result_with_ten_tools(
     import pytest  # noqa: PLC0415
     from src.agents.slo_agent.graph import SloAgentBuildResult, build_slo_agent
 
-    # Clear connector credential env vars so the bundle returns exactly 9 tools.
+    # Clear connector credential env vars so the bundle returns exactly 10 tools.
     for var in (
         "SLO_ATLASSIAN_SITE_URL",
         "SLO_ATLASSIAN_EMAIL",
@@ -471,7 +471,7 @@ def test_build_slo_agent_returns_slo_agent_build_result_with_ten_tools(
     result = build_slo_agent(llm=FauxChatModel(responses=[]))
 
     assert isinstance(result, SloAgentBuildResult)
-    assert len(result.tools) == 9
+    assert len(result.tools) == 10
 
 
 def test_system_prompt_available_tools_block_is_not_none_by_default() -> None:

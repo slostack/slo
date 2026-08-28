@@ -1,6 +1,6 @@
 [project]
 name = "slo"
-version = "0.14.18"
+version = "0.15.0"
 description = "Python ReAct agent harness, modelled on pi.dev"
 authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
 license = "GPL-2.0-only"

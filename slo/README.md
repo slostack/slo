@@ -229,7 +229,7 @@ poetry install
 ```
 
 `poetry install` reads `pyproject.toml` and `poetry.lock`, then installs
-every runtime dependency (FastAPI, LangChain, LangGraph, Textual,
+every runtime dependency (LangChain, LangGraph, Textual,
 aiohttp, …), every dev dependency (`pytest`, `black`, `mypy`,
 `autoflake`), and finally registers the `slo` console script the same
 way `install.sh` does. After this you can run `slo` directly from any

@@ -48,7 +48,6 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 | `make format` | `poetry run black src/ tests/` (line length 110) |
 | `make build-skill-index` | Regenerate `skills/INDEX.md` from committed `SKILL.md` files |
 | `make install` | `install.sh` → pipx install to `~/.slo/` |
-| `make run` | uvicorn on :7700 (currently `/healthz` only) |
 
 ---
 
@@ -169,8 +168,6 @@ slo/
 │   │       ├── tool_execution_block.py   # ToolExecutionBlock — one tool call+result with panel surface styling
 │   │       ├── usage_status_bar.py       # UsageStatusBar — token/rate display
 │   │       └── slash_suggestion_menu.py  # SlashSuggestionMenu — autocomplete dropdown
-│   ├── main.py / web_app.py           # FastAPI app, /healthz, lifespan
-│   ├── routers/ / middleware/ / models/ / domains/ / services/
 │   └── exceptions.py
 ├── tests/
 │   ├── agents/
@@ -250,7 +247,7 @@ slo (console script → src/cli/__main__.py)
 **Layer responsibilities:**
 
 - `TyperDispatch` — parses CLI flags, resolves model/provider plus `--resume` session
-  references and optional `--workspace <file.code-workspace>`, launches the TUI or the FastAPI server.
+  references and optional `--workspace <file.code-workspace>`, and launches the TUI or a headless run.
 - `SloTUI` — Textual app. Owns the layout (header, scroll container, `UsageStatusBar`,
   `PromptInput`, footer), mounts transcript widgets, dispatches slash commands, owns
   `/new` session replacement + `/rename`, manages in-process prompt-history recall, and
@@ -698,7 +695,7 @@ rate-limit error and returns a `RateLimitRetryPlanDAO` with a `wait_seconds` val
   table of contents; no nested conditionals past 2 levels.
 - **Class convention** — core logic lives in a class with `@classmethod` methods; public
   entry is `invoke` (or `build` / `load` / `create`). Free functions are reserved for
-  `@tool` bridges, LangGraph nodes, FastAPI handlers, and test helpers.
+  `@tool` bridges, LangGraph nodes, and test helpers.
 
 ---
 

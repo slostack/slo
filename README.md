@@ -844,7 +844,6 @@ children, retries what failed, and folds finished work into the session.
 | **Textual** | The terminal UI framework (both the main TUI and the visualizer) |
 | **Typer** | The CLI — `slo`, `slo run`, `slo schedule`, `slo visualize` |
 | **Pydantic** | Every DAO; all data crossing a layer boundary is a typed model |
-| **FastAPI / uvicorn** | The optional `slo serve` HTTP surface |
 | **Pillow** | Image sniffing and resizing for the `read` tool |
 | **pypdf** | Text extraction for `read_pdf` |
 

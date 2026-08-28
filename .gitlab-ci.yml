@@ -7,6 +7,7 @@
 # See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
 stages:
 - test
+- publish
 - secret-detection
 
 variables:
@@ -71,6 +72,44 @@ pytest:
   rules:
   - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   - if: $CI_COMMIT_BRANCH
+  # Tags too: publish-installer gates on this job, so a tag whose suite is red
+  # must never reach the Cloudflare Worker.
+  - if: $CI_COMMIT_TAG
+
+# Publishes install.sh to the Cloudflare Worker behind get-slo.sh, pinned to the
+# tag that triggered the pipeline. This is `make publish-installer` with two
+# differences, both deliberate:
+#
+#   * PUBLISH_SLO_REF is $CI_COMMIT_TAG rather than `git tag | head -1`. The
+#     pipeline already knows which tag it is building; asking git would depend
+#     on the runner's fetched tag set.
+#   * INSTALL_SH points at the checkout instead of letting the script fetch
+#     slo/install.sh from the API. The checkout IS the committed copy at this
+#     tag — more correct than the script's `main` default — and it means no
+#     GitLab PAT is needed here.
+#
+# Requires three project CI/CD variables, all masked and protected:
+#   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID
+#
+# IMPORTANT: protected variables are only injected on protected refs. The tag
+# must match a protected tag pattern (Settings → Repository → Protected tags,
+# e.g. `v*`) or all three arrive empty and the job fails at its guard.
+publish-installer:
+  stage: publish
+  image: python:3.11
+  needs:
+  - pytest
+  variables:
+    CF_ZONE_NAME: get-slo.sh
+    SLO_HOSTNAME: get-slo.sh
+  script:
+  - test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "CLOUDFLARE_ACCOUNT_ID is empty — is the tag protected?" >&2; exit 1; }
+  - test -n "$CLOUDFLARE_API_TOKEN"  || { echo "CLOUDFLARE_API_TOKEN is empty — is the tag protected?" >&2; exit 1; }
+  - test -n "$CLOUDFLARE_ZONE_ID"    || { echo "CLOUDFLARE_ZONE_ID is empty — is the tag protected?" >&2; exit 1; }
+  - cd slo
+  - PUBLISH_SLO_REF="$CI_COMMIT_TAG" INSTALL_SH="$CI_PROJECT_DIR/slo/install.sh" bash deploy-install-worker.sh
+  rules:
+  - if: $CI_COMMIT_TAG
 
 secret_detection:
   stage: secret-detection

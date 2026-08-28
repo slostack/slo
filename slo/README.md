@@ -5,23 +5,44 @@
 > back at you. Read this once and you can navigate every file in the
 > repository.*
 
-> **Current capability snapshot (June 2026, v0.9.2):** Slo supports
+> **New here?** This document is the *internals* guide. For installation, the
+> architecture in plain language, how to run Slo, and the known limitations,
+> start with the [top-level README](../README.md) instead, or the hosted docs at
+> <https://www.get-slo.sh>.
+
+> **Current capability snapshot (August 2026, v0.15.0):** Slo supports
 > interactive multi-turn conversations via the Textual TUI, headless one-shot
-> runs (`slo run -p "..." --json`) for scripted/CI use, and **sub-agent
+> runs (`slo run -p "..."`, JSONL on stdout) for scripted/CI use, **sub-agent
 > orchestration** — the parent agent can spawn parallel or sequential child
-> agents via `spawn_sub_agents`, each running as an isolated `slo run`
-> process. User-defined skills and workflows can be dropped into
-> `~/.slo/user_skills/` and `~/.slo/user_workflows/` and are automatically
-> merged with the 100+ vendored skills at session start. v0.8.0 added a
-> **third AI provider: Kimi For Coding (KFC)** — an OpenAI-compatible API
-> from Moonshot AI with a `ModelPool` fallback router and automatic
-> credit-exhaustion handling (see
-> [Section 6.6](#66-kimi-for-coding-kfc-provider)). v0.9.0 **wires that
-> `ModelPool` into the production build path** and layers a three-tier
-> rate-limit defense on top of it — a history-aware preflight, an in-call
-> pool route-switch, and an iteration-scoped retry — opt-in via the
-> `SLO_MODEL_POOL` environment variable or the `default_model_pool` user
-> preference (see [Section 6.7](#67-multi-model-pool-and-rate-limit-defense)).
+> agents via `spawn_sub_agents`, each running as an isolated `slo run` process,
+> watchable live with `slo visualize` — and **scheduled runs** (`slo schedule`)
+> that fire a prompt from `launchd` or `cron`, with a lease-and-inbox model so a
+> timer can feed a live TUI session without creating a second writer.
+> User-defined skills and workflows can be dropped into `~/.slo/user_skills/`
+> and `~/.slo/user_workflows/` and are automatically merged with the 116
+> vendored skills at session start.
+>
+> v0.8.0 added a **third AI provider: Kimi For Coding (KFC)** — an
+> OpenAI-compatible API from Moonshot AI with a `ModelPool` fallback router and
+> automatic credit-exhaustion handling (see
+> [Section 6.6](#66-kimi-for-coding-kfc-provider)). v0.9.0 **wired that
+> `ModelPool` into the production build path** and layered a three-tier
+> rate-limit defense on top of it — a history-aware preflight, an in-call pool
+> route-switch, and an iteration-scoped retry — opt-in via the `SLO_MODEL_POOL`
+> environment variable or the `default_model_pool` user preference (see
+> [Section 6.7](#67-multi-model-pool-and-rate-limit-defense)).
+>
+> Since then: **v0.14.16** registered the spec-54 Anthropic catalog entries
+> (Opus 4.8, Sonnet 4.6, Haiku 4.5, and the 1M-context variants);
+> **v0.14.17** unified provider-error classification behind one
+> `ProviderErrorClassifier`; **v0.14.18** added context-window inspection and
+> transactional manual compaction (`/context-window`, `/compact`); and
+> **v0.15.0** added the clean-room Git diff viewer (`/diff` plus the
+> `show_git_diff` tool, raising the default bundle to **10 tools**),
+> terminal-safe transcript copying (drag-select auto-copy and a per-response
+> Copy control, requiring `textual >= 8.2.7`), and bounded image reads
+> (1568 px longest edge, 5 MiB payload cap) that store a compact
+> `[image attached: …]` reference in durable history instead of base64.
 
 ---
 
@@ -1497,7 +1518,6 @@ Additional tools available but **not** in the default bundle:
 
 | Tool | When available |
 |---|---|
-| `a2a_peer` | Explicit addition — outbound A2A delegation to remote agents |
 | `spawn_sub_agents` | Orchestrator sessions only — spawns child `slo run` processes |
 | `echo` | Debug/test sessions only |
 

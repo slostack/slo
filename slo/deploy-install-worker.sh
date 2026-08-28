@@ -38,7 +38,10 @@
 #   SLO_SOURCE_PATH   path of install.sh in the repo  (default: slo/install.sh)
 #   INSTALL_SH        local file to publish INSTEAD of the repo copy (testing)
 #   CF_ZONE_NAME      your domain/zone, e.g. example.com  (omit → workers.dev URL)
-#   SLO_HOSTNAME      full hostname, e.g. slo.example.com (with CF_ZONE_NAME)
+#   CLOUDFLARE_ZONE_ID  the zone id directly. Takes precedence over CF_ZONE_NAME
+#                     and skips the zones?name= lookup, so the token needs no
+#                     account-wide Zone:Read. (CF_ZONE_ID is accepted too.)
+#   SLO_HOSTNAME      full hostname, e.g. slo.example.com (with either zone var)
 #   WORKER_NAME       Worker script name              (default: slo-install)
 #
 # Tokens are read only from env vars; never printed or written to disk.
@@ -59,6 +62,7 @@ urlenc() { python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.arg
 # Accept env var names from environments/development.env with CF_* fallbacks.
 CF_API_TOKEN="${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}"
 CF_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-${CF_ACCOUNT_ID:-}}"
+CF_ZONE_ID="${CLOUDFLARE_ZONE_ID:-${CF_ZONE_ID:-}}"
 GITLAB_TOKEN="${SLO_GITLAB_PERSONAL_ACCESS_TOKEN:-${GITLAB_TOKEN:-}}"
 
 : "${CF_API_TOKEN:?set CLOUDFLARE_API_TOKEN (a scoped Cloudflare API token)}"
@@ -155,12 +159,19 @@ cf PUT "${CF_API}/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" \
 log "Worker uploaded"
 
 # ---- 6. publish a URL ------------------------------------------------------
-if [ -n "${CF_ZONE_NAME:-}" ]; then
-    : "${SLO_HOSTNAME:?set SLO_HOSTNAME (e.g. slo.${CF_ZONE_NAME}) when CF_ZONE_NAME is set}"
-    log "resolving zone id for ${CF_ZONE_NAME}"
-    zone_id="$(cf GET "${CF_API}/zones?name=${CF_ZONE_NAME}" \
-        | python3 -c "import json,sys; r=json.load(sys.stdin)['result']; print(r[0]['id'] if r else '')")"
-    [ -n "$zone_id" ] || die "no zone named '${CF_ZONE_NAME}' on this account/token"
+if [ -n "${CF_ZONE_ID:-}" ] || [ -n "${CF_ZONE_NAME:-}" ]; then
+    : "${SLO_HOSTNAME:?set SLO_HOSTNAME (e.g. slo.example.com) when CF_ZONE_ID or CF_ZONE_NAME is set}"
+    if [ -n "${CF_ZONE_ID:-}" ]; then
+        # An explicit zone id skips the zones?name= lookup, so the token does
+        # not need account-wide Zone:Read — useful for a scoped CI token.
+        log "using supplied zone id ${CF_ZONE_ID}"
+        zone_id="${CF_ZONE_ID}"
+    else
+        log "resolving zone id for ${CF_ZONE_NAME}"
+        zone_id="$(cf GET "${CF_API}/zones?name=${CF_ZONE_NAME}" \
+            | python3 -c "import json,sys; r=json.load(sys.stdin)['result']; print(r[0]['id'] if r else '')")"
+        [ -n "$zone_id" ] || die "no zone named '${CF_ZONE_NAME}' on this account/token"
+    fi
     log "binding ${SLO_HOSTNAME} → Worker ${WORKER_NAME} (auto-creates proxied DNS)"
     body="$(python3 -c "import json,sys; print(json.dumps({'environment':'production','hostname':sys.argv[1],'service':sys.argv[2],'zone_id':sys.argv[3]}))" \
         "$SLO_HOSTNAME" "$WORKER_NAME" "$zone_id")"

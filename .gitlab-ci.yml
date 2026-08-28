@@ -8,9 +8,66 @@
 stages:
 - test
 - secret-detection
+
 variables:
   SECRET_DETECTION_ENABLED: 'true'
+  # Poetry is pinned to the version that generated slo/poetry.lock (lock-version 2.1).
+  POETRY_VERSION: '2.4.1'
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  POETRY_NO_INTERACTION: '1'
+
+# Runs the same suite as `make test` in slo/. `slo/environments/tests.env` is
+# gitignored, so its (non-secret) contents are reproduced in `variables:` below
+# with $CI_PROJECT_DIR/slo substituted for the developer's absolute path.
+#
+# Scope: the default suite. `addopts = "-m 'not e2e'"` in slo/pyproject.toml
+# deselects tests marked `e2e` — those call real provider APIs or run the
+# installer in Docker, and need credentials CI does not hold. Run them locally
+# with `make install-smoke` / `pytest -m e2e`.
+pytest:
+  stage: test
+  # Full python:3.11 (not -slim): the Git-diff viewer tests shell out to `git`,
+  # which the slim image does not ship. slo/pyproject.toml pins python >=3.11,<3.12.
+  image: python:3.11
+  variables:
+    PYTHONPATH: "$CI_PROJECT_DIR/slo"
+    SLO_ENV: test
+    SLO_ROOT_DIR: "$CI_PROJECT_DIR/slo"
+    SLO_APP_DIR: "$CI_PROJECT_DIR/slo"
+    SLO_APP_NAME: slo
+    SLO_LOG_FORMAT: text
+    SLO_DEFAULT_MODEL_NAME: gpt-5.4
+    # Never let a test spawn a real `slo visualize` terminal on the runner.
+    SLO_AUTO_VISUALIZE: '0'
+    # Textual pilot tests render to a headless driver; keep the size deterministic.
+    COLUMNS: '120'
+    LINES: '40'
+  cache:
+    key:
+      files:
+      - slo/poetry.lock
+    paths:
+    - .cache/pip
+  before_script:
+  # slo/poetry.toml sets virtualenvs.create = false, so dependencies install
+  # into the image's own Python rather than a project venv.
+  - pip install "poetry==$POETRY_VERSION"
+  - cd slo
+  - poetry install --no-interaction
+  script:
+  - poetry run pytest -q --junitxml=../report.xml
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: report.xml
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH
+
 secret_detection:
   stage: secret-detection
+
 include:
 - template: Security/Secret-Detection.gitlab-ci.yml

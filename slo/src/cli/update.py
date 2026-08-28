@@ -48,7 +48,6 @@ class Updater:
 
     # Matches release tags like ``v0.3.2`` / ``1.2.10`` (3-part semver, optional v).
     _VERSION_TAG_RE: ClassVar[re.Pattern[str]] = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
-    _HTTPS_PREFIX: ClassVar[str] = "https://"
 
     @classmethod
     def invoke(cls, *, development: bool = False, ref: Optional[str] = None) -> None:
@@ -67,9 +66,8 @@ class Updater:
     def resolve_latest_release_tag(cls) -> str:
         """Return the highest ``vX.Y.Z`` tag published on the remote.
 
-        Uses ``git ls-remote --tags`` so it works over whatever git auth the
-        caller has (token-in-url / netrc / ssh) with no separate release-API
-        call — which the old GitHub/GitLab REST path never did for a private repo.
+        Uses ``git ls-remote --tags`` against the public repository, with no
+        separate release-API call.
 
         Returns:
             The latest release tag (e.g. ``v0.3.2``).
@@ -78,7 +76,7 @@ class Updater:
             SystemExit: When the remote exposes no ``vX.Y.Z`` tags.
         """
         completed = subprocess.run(
-            ["git", "ls-remote", "--tags", "--refs", cls._auth_url()],
+            ["git", "ls-remote", "--tags", "--refs", cls.REPO_URL],
             check=True,
             text=True,
             capture_output=True,
@@ -98,7 +96,7 @@ class Updater:
 
     @classmethod
     def _pipx_spec(cls, *, ref: str) -> str:
-        """Build the pip VCS requirement ``git+<auth-url>@<ref>#subdirectory=<subdir>``.
+        """Build the public pip VCS requirement ``git+<url>@<ref>#subdirectory=<subdir>``.
 
         Args:
             ref: The git ref to install.
@@ -106,43 +104,12 @@ class Updater:
         Returns:
             The pip requirement string passed to ``pipx install``.
         """
-        spec = f"git+{cls._auth_url()}@{ref}"
+        spec = f"git+{cls.REPO_URL}@{ref}"
         if cls.REPO_SUBDIR:
             spec += f"#subdirectory={cls.REPO_SUBDIR}"
         return spec
 
     @classmethod
-    def _auth_url(cls) -> str:
-        """Return ``REPO_URL`` with a fetch credential injected, if one is set.
-
-        On an https URL, inject a deploy-token credential using the same public
-        names as ``install.sh``:
-
-          ``SLO_USERNAME`` / ``SLO_TOKEN`` (public interface) or the internal
-          aliases ``SLO_DEPLOY_TOKEN_USERNAME`` / ``SLO_DEPLOY_TOKEN``.
-
-        The public names take precedence so users who set ``SLO_USERNAME`` and
-        ``SLO_TOKEN`` as instructed by the installer don't need a second pair
-        of env vars for ``slo update`` to work.
-
-        For any other scheme, or when no credential is set, the URL is returned
-        unchanged so ambient git auth (netrc / ssh / credential helper) is used.
-        A half-set credential (username without token) is ignored. Credentials
-        with URL-reserved characters must be percent-encoded by the caller.
-
-        Returns:
-            The clone URL to hand git / pip.
-        """
-        if not cls.REPO_URL.startswith(cls._HTTPS_PREFIX):
-            return cls.REPO_URL
-        rest = cls.REPO_URL[len(cls._HTTPS_PREFIX) :]
-        # SLO_USERNAME / SLO_TOKEN are the public names (install.sh interface);
-        # SLO_DEPLOY_TOKEN_USERNAME / SLO_DEPLOY_TOKEN are the internal aliases.
-        deploy_user = _cfg("SLO_USERNAME") or _cfg("SLO_DEPLOY_TOKEN_USERNAME")
-        deploy_token = _cfg("SLO_TOKEN") or _cfg("SLO_DEPLOY_TOKEN")
-        if deploy_user and deploy_token:
-            return f"{cls._HTTPS_PREFIX}{deploy_user}:{deploy_token}@{rest}"
-        return cls.REPO_URL
 
     @classmethod
     def _pipx_install(cls, *, spec: str) -> None:

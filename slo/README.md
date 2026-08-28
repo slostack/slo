@@ -143,10 +143,10 @@ specifications under `specifications/` and the Knowledge Base under
 
 > **Installing, updating, or hosting the one-line installer?** See
 > **[`docs/INSTALL.md`](docs/INSTALL.md)** — the authoritative guide to
-> `install.sh`, the `curl | bash` production flow (deploy-token auth, Cloudflare
-> hosting at `get-slo.sh`), `slo update`, uninstalling, and troubleshooting.
-> The narrative below predates the current pipx-based installer and is kept as
-> background reading.
+> `install.sh`, the credential-free `curl | bash` production flow (Cloudflare
+> Worker hosting at `get-slo.sh`), `slo update`, uninstalling, and
+> troubleshooting. The narrative below is a summary; that document supersedes
+> it wherever the two disagree.
 >
 > **Need architecture and runtime docs?** See
 > **[`docs/RESEARCH.md`](docs/RESEARCH.md)** for the codebase index,
@@ -176,9 +176,12 @@ suite green — until then, stay on 3.11.
 You also need:
 
 - **`pyenv`** with `pyenv-virtualenv` to manage interpreters and create
-  isolated venvs without contaminating system Python.
-- **Poetry 2.x** for dependency resolution and the editable install.
-- **`git`**, because `install.sh` clones the repo into `~/.slo/`.
+  isolated venvs without contaminating system Python. (`install.sh`
+  bootstraps this for you if it is missing.)
+- **Poetry 2.x** — developer path only, for dependency resolution and the
+  editable install.
+- **`git`**, because pip fetches the package straight from the public Git
+  repository.
 - **Either an Anthropic Claude subscription or an OpenAI ChatGPT
   subscription** for the OAuth path, *or* an API key from
   `console.anthropic.com` / `platform.openai.com` for the paste-a-key
@@ -187,26 +190,46 @@ You also need:
 
 ### 1.2 The Production Path — `install.sh`
 
-The script at the repository root handles the end-to-end install:
+The script at the repository root handles the end-to-end install. It is
+published as a Cloudflare Worker bound to `get-slo.sh`, served at both `/`
+and `/install.sh`:
 
 ```bash
-curl -fsSL https://example.com/install.sh | bash
+curl -fsSL https://get-slo.sh/install.sh | bash
 ```
 
-(The URL is a placeholder until the repo is published.) The script:
+Both the bootstrap script and its Git source are **public** — no
+`SLO_DEPLOY_TOKEN`, deploy token, or personal access token is required, and
+any such variables already in your environment are ignored. To pin a
+release instead of the hosted default, add `SLO_REF`:
 
-1. Clones the repository into `~/.slo/` (configurable via `SLO_HOME`).
-2. Creates a pyenv virtualenv named `slo` against Python 3.11.7.
-3. Runs `pipx install --editable --python python3.11 ~/.slo`. The
-   `--editable` flag means `pipx` symlinks the package into the
-   pyenv-managed venv; you can edit source under `~/.slo/slo/src/` and
-   the changes are live without reinstalling.
-4. Writes the `slo` console-script entry into your shell's `$PATH`.
-5. Prints the next-steps banner: *"Run `slo` to start."*
+```bash
+curl -fsSL https://get-slo.sh/install.sh | SLO_REF=v0.3.2 bash
+```
 
-`pyproject.toml:57` declares `slo = "src.cli:main"`. After install,
-`~/.pyenv/versions/3.11.7/envs/slo/bin/slo` is a thin shim that calls
-`src.cli:main`, which itself defers to the Typer app in `src/cli/app.py`.
+The script:
+
+1. Ensures the toolchain it needs — `git`, `pyenv`, Python 3.11.x, and
+   `pipx` — installing only what is missing. Each step is a no-op when
+   already satisfied.
+2. Resolves `SLO_HOME` (default `~/.slo`) and creates it if missing — as a
+   **data** directory, not a checkout. Install, upgrade, and uninstall
+   never write into it.
+3. Runs `pipx install --force --python <python3.11>
+   "git+https://gitlab.com/core-27/slo.git@<ref>#subdirectory=slo"`, which
+   builds an isolated venv and puts the `slo` binary on your `$PATH`. The
+   `#subdirectory=slo` fragment is required because the repo root has no
+   `pyproject.toml`.
+
+Re-running the installer upgrades in place; it is idempotent.
+
+`pyproject.toml` declares `slo = "src.cli:main"`. After install, the `slo`
+shim on your `$PATH` calls `src.cli:main`, which defers to the Typer app in
+`src/cli/app.py`.
+
+To upgrade later, run `slo update` (latest release tag), `slo update
+--development` (`main`), or `slo update --ref <ref>` — or simply re-run the
+`curl | bash` line above.
 
 ### 1.3 The Developer Path — pyenv + Poetry
 
@@ -239,9 +262,10 @@ directory.
 
 Two directories outside your working tree matter:
 
-- **`~/.slo/`** is Slo's persistent root. The installer clones the repo
-  here; the `skills/` library lives at `~/.slo/skills/`; persistent
-  session state will land at `~/.slo/sessions.db` once 01.o ships.
+- **`~/.slo/`** is Slo's persistent **data** root — not a checkout. pipx
+  owns the code in its own isolated venv; `~/.slo/` holds runtime state:
+  user skills at `~/.slo/user_skills/`, sessions, and logs. Install,
+  upgrade, and uninstall leave it untouched.
 - **`~/.slo/global/authentication.json`** is the credential store written
   by the auth modal. Mode `0600` on the file, `0700` on its parent. We
   walk through this in [Chapter 6](#chapter-6--credentials-and-the-auth-modal).

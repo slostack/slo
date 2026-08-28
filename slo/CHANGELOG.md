@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.4] — 2026-09-08
+
+**Quiet CLI startup.**
+
+### Fixed
+
+- Removed routine model-catalog startup log records from the interactive CLI
+  launch path, so they do not print before the TUI takes over the terminal.
+- Suppressed LangGraph's known `allowed_objects` pending-deprecation warning at
+  CLI startup while leaving unrelated dependency warnings visible.
+
+---
+
 ## [0.15.3] — 2026-09-08
 
 **Credential-free self-updates.**

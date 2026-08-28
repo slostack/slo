@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from config.logger import log_error, log_info
+from config.logger import log_error
 from src.agents.model_catalog.dao import (
     ModelAliasDAO,
     ModelCatalogEntryDAO,
@@ -53,15 +53,8 @@ class ModelCatalogService:
         """
         if cls._snapshot is not None:
             return cls._snapshot
-        log_info(msg="model_catalog_load_started")
         seed_snapshot: ModelCatalogSnapshotDAO = SeedModelCatalog.load()
-        log_info(msg="model_catalog_seed_loaded", entry_count=len(seed_snapshot.entries))
         cached_snapshot: Optional[ModelCatalogSnapshotDAO] = ModelCatalogStore.load_cache()
-        if cached_snapshot is not None:
-            log_info(
-                msg="model_catalog_cache_loaded",
-                entry_count=len(cached_snapshot.entries),
-            )
         merged_snapshot: ModelCatalogSnapshotDAO = cls._merge_seed_and_cache(
             seed_snapshot=seed_snapshot,
             cached_snapshot=cached_snapshot,

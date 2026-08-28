@@ -64,7 +64,6 @@ class ModelCatalogStore:
         """
         cache_path: Path = override_path or (_ensure_global_dir() / _CACHE_FILE_NAME)
         if not cache_path.exists():
-            log_info(msg="model_catalog_cache_missing", path=str(cache_path))
             return None
         try:
             raw_text: str = cache_path.read_text(encoding="utf-8")

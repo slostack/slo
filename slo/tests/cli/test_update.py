@@ -24,58 +24,20 @@ def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedPro
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
 
-class TestAuthUrl:
-    """``_auth_url`` injects a token for https only, else returns the URL clean."""
-
-    def test_no_token_returns_clean_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("SLO_USERNAME", raising=False)
-        monkeypatch.delenv("SLO_TOKEN", raising=False)
-        monkeypatch.delenv("SLO_DEPLOY_TOKEN_USERNAME", raising=False)
-        monkeypatch.delenv("SLO_DEPLOY_TOKEN", raising=False)
-        assert Updater._auth_url() == "https://gitlab.com/core-27/slo.git"
-
-    def test_slo_username_and_token_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Public interface: SLO_USERNAME / SLO_TOKEN (same names install.sh advertises).
-        monkeypatch.delenv("SLO_DEPLOY_TOKEN_USERNAME", raising=False)
-        monkeypatch.delenv("SLO_DEPLOY_TOKEN", raising=False)
-        monkeypatch.setenv("SLO_USERNAME", "slo-sid-deploy")
-        monkeypatch.setenv("SLO_TOKEN", "gldt-secret")
-        assert Updater._auth_url() == "https://slo-sid-deploy:gldt-secret@gitlab.com/core-27/slo.git"
-
-    def test_internal_alias_deploy_token_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Internal aliases work when the public names are absent.
-        monkeypatch.delenv("SLO_USERNAME", raising=False)
-        monkeypatch.delenv("SLO_TOKEN", raising=False)
-        monkeypatch.setenv("SLO_DEPLOY_TOKEN_USERNAME", "gitlab+deploy-token-7")
-        monkeypatch.setenv("SLO_DEPLOY_TOKEN", "dt-secret")
-        assert Updater._auth_url() == "https://gitlab+deploy-token-7:dt-secret@gitlab.com/core-27/slo.git"
-
-    def test_public_names_take_precedence_over_internal_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # SLO_USERNAME / SLO_TOKEN win over the internal aliases.
-        monkeypatch.setenv("SLO_USERNAME", "public-user")
-        monkeypatch.setenv("SLO_TOKEN", "public-token")
-        monkeypatch.setenv("SLO_DEPLOY_TOKEN_USERNAME", "internal-user")
-        monkeypatch.setenv("SLO_DEPLOY_TOKEN", "internal-token")
-        url = Updater._auth_url()
-        assert url == "https://public-user:public-token@gitlab.com/core-27/slo.git"
-
-    def test_half_set_credential_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Username without a token must not produce a malformed URL; fall through.
-        monkeypatch.setenv("SLO_USERNAME", "slo-sid-deploy")
-        monkeypatch.delenv("SLO_TOKEN", raising=False)
-        monkeypatch.delenv("SLO_DEPLOY_TOKEN_USERNAME", raising=False)
-        monkeypatch.delenv("SLO_DEPLOY_TOKEN", raising=False)
-        assert Updater._auth_url() == "https://gitlab.com/core-27/slo.git"
-
-
 class TestPipxSpec:
     """``_pipx_spec`` targets the slo/ subdirectory at the given ref."""
 
-    def test_spec_includes_subdirectory_and_ref(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("SLO_USERNAME", raising=False)
-        monkeypatch.delenv("SLO_TOKEN", raising=False)
+    def test_spec_ignores_legacy_repository_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SLO_USERNAME", "legacy-user")
+        monkeypatch.setenv("SLO_TOKEN", "legacy-token")
+        monkeypatch.setenv("SLO_DEPLOY_TOKEN_USERNAME", "deploy-user")
+        monkeypatch.setenv("SLO_DEPLOY_TOKEN", "deploy-token")
+        monkeypatch.setenv("SLO_INSTALL_TOKEN", "pat-token")
         spec = Updater._pipx_spec(ref="v0.3.2")
         assert spec == "git+https://gitlab.com/core-27/slo.git@v0.3.2#subdirectory=slo"
+        assert "legacy-token" not in spec
+        assert "deploy-token" not in spec
+        assert "pat-token" not in spec
 
 
 class TestResolveLatestReleaseTag:

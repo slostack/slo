@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.3] — 2026-09-08
+
+**Credential-free self-updates.**
+
+### Fixed
+
+- `slo update` now always uses the public repository URL and never injects
+  `SLO_USERNAME`, `SLO_TOKEN`, deploy-token aliases, or personal-access-token
+  variables into the pipx VCS requirement. This matches the public installer
+  behavior introduced in v0.15.2 and prevents credentials from appearing in
+  update output or process arguments.
+
+---
+
 ## [0.15.2] — 2026-09-08
 
 **Public, credential-free installer distribution.**

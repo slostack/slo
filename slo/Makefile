@@ -18,7 +18,7 @@ test:  ## Run the full test suite
 smoke:  ## Run smoke tests only
 	set -a && . ./environments/tests.env && set +a && PYTHONPATH=$(PWD) poetry run pytest tests/test_smoke.py -v
 
-install-smoke:  ## Real Ubuntu/Debian install smoke (needs Docker + SLO_DEPLOY_TOKEN_*)
+install-smoke:  ## Real public-installer Ubuntu/Debian smoke (needs Docker)
 	SLO_INSTALL_E2E=1 poetry run pytest tests/cli/test_install_smoke.py -m e2e -v
 
 lint:  ## Type-check src/ and tests/ with mypy

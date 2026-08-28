@@ -14,7 +14,7 @@ command (`src/cli/update.py`).
 ## 1. Mental model
 
 Slo installs as an **isolated [pipx](https://pipx.pypa.io) application**, built
-straight from the private GitLab repo:
+straight from the public GitHub repo:
 
 ```
 pipx install --force --python <python3.11> "git+https://gitlab.com/core-27/slo.git@<ref>#subdirectory=slo"
@@ -52,42 +52,24 @@ place, and every step is a no-op when already satisfied.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SLO_REPO_URL` | `https://gitlab.com/core-27/slo.git` | Git URL to install from |
+| `SLO_REPO_URL` | `https://gitlab.com/core-27/slo.git` | Public Git URL to install from |
 | `SLO_REF` | `main` | Branch / tag / commit to install |
 | `SLO_REPO_SUBDIR` | `slo` | Subdirectory holding `pyproject.toml` (set empty for a root-level project) |
 | `SLO_PYTHON_VERSION` | `3.11.7` | Pinned interpreter version |
 | `SLO_OS_RELEASE_FILE` | `/etc/os-release` | Linux distro-detection file (test-only override) |
-| `SLO_DEPLOY_TOKEN_USERNAME` | — | GitLab deploy-token username (with `SLO_DEPLOY_TOKEN`) |
-| `SLO_DEPLOY_TOKEN` | — | GitLab deploy-token secret (with the username above) |
-| `SLO_INSTALL_TOKEN` | — | Personal access token for a private HTTPS fetch |
 
 `bash install.sh --development` is an explicit alias for `SLO_REF=main`.
 
-### 2.1 Authentication for the private repo
+### 2.1 Public repository installation
 
-On an `https://` URL the installer injects a credential **for the fetch only**
-(it is not written to disk by the script). Precedence:
-
-1. **GitLab deploy token** — `SLO_DEPLOY_TOKEN_USERNAME` + `SLO_DEPLOY_TOKEN`,
-   injected as `https://<username>:<token>@…`. (Deploy tokens authenticate as
-   `username:token`, **not** `oauth2:token`.)
-2. **Personal access token** — `SLO_INSTALL_TOKEN`, injected as
-   `https://oauth2:<token>@…`.
-3. **Ambient git auth** — if neither is set, the URL is left untouched, so
-   `~/.netrc` (`machine gitlab.com login <user> password <token>`), an SSH
-   `SLO_REPO_URL`, or a credential helper is used.
-
-> Credentials containing URL-reserved characters (`:` `@` `/`) must be
-> percent-encoded by the caller.
+The installer installs from the public repository and does not read, inject,
+or persist repository credentials. Existing deploy-token or personal-access-token
+variables in the environment are ignored by `install.sh`.
 
 ### 2.2 Direct local run (operator / testing)
 
-If you already have the toolchain and want to install with a deploy token:
-
 ```bash
-SLO_DEPLOY_TOKEN_USERNAME='<deploy-token-username>' \
-SLO_DEPLOY_TOKEN='<deploy-token-secret>' \
-  bash install.sh
+bash install.sh
 ```
 
 Pin a release by adding `SLO_REF=v0.3.2`.
@@ -96,16 +78,8 @@ Pin a release by adding `SLO_REF=v0.3.2`.
 
 ## 3. Production install: `curl | bash`
 
-End users install with a single line. The catch for a **private** repo:
-
-> **A GitLab deploy token cannot fetch a raw file** (the Files API and the
-> `/-/raw/` web route both reject deploy tokens — they only authenticate
-> git-over-HTTPS and the container/package registries). So `install.sh` cannot
-> be served *from the private repo* to a deploy-token user.
-
-The standard pattern (rustup / nvm / Homebrew) applies: **the bootstrap script
-is hosted publicly** (it contains no secrets — the token arrives via env at
-runtime), and the token authenticates only the `pipx` git fetch.
+End users install with a single line. Both the bootstrap script and its Git
+source are public, so installation requires no repository credentials.
 
 ### 3.1 Hosted at `get-slo.sh` (Cloudflare Worker)
 
@@ -113,9 +87,7 @@ runtime), and the token authenticates only the `pipx` git fetch.
 the script at both `/` and `/install.sh`. End users run:
 
 ```bash
-curl -fsSL https://get-slo.sh/install.sh \
-  | SLO_DEPLOY_TOKEN_USERNAME='<deploy-token-username>' \
-    SLO_DEPLOY_TOKEN='<deploy-token-secret>' bash
+curl -fsSL https://get-slo.sh/install.sh | bash
 ```
 
 `curl -fsSL https://get-slo.sh | … bash` (no path) works too.
@@ -134,21 +106,17 @@ curl -fsSL https://get-slo.sh/install.sh \
 Cloudflare API with `curl` (no `wrangler`/Node needed). At a high level it:
 
 1. Verifies the Cloudflare token can reach the account's Workers.
-2. Fetches the **canonical** `install.sh` from `core-27/slo@<SLO_SOURCE_REF>`
-   (default `main`) using an operator PAT (`GITLAB_TOKEN`) — or publishes a
-   local file when `INSTALL_SH` is set (testing).
+2. Fetches the **canonical public** `install.sh` from GitHub
+   `core-27/slo@<SLO_SOURCE_REF>` (default `main`) — or publishes a local file
+   when `INSTALL_SH` is set (testing).
 3. Optionally pins the hosted default install ref (`PUBLISH_SLO_REF`).
 4. base64-embeds the script in a Worker and uploads it.
 5. Binds it to your hostname (auto-creating proxied DNS) or enables a
    `*.workers.dev` URL.
 
-**Three distinct credentials — don't conflate them:**
-
-| Credential | Used by | For |
-|---|---|---|
-| `CF_API_TOKEN` | operator (deploy script) | Deploying the Worker |
-| `GITLAB_TOKEN` (PAT) | operator (deploy script) | Fetching the canonical `install.sh` to publish (the Files API rejects deploy tokens) |
-| deploy token | **end user** | The `pipx` git fetch at `curl … \| bash` time |
+**Credential required:** `CF_API_TOKEN`, used only by the operator to deploy
+the Worker. The deploy helper fetches the public source without a repository
+token, and the generated installer contains no credentials.
 
 Required Cloudflare API token permissions: **Account → Workers Scripts: Edit**,
 and for a custom domain also **Zone → Zone: Read, DNS: Edit, Workers Routes:
@@ -167,9 +135,8 @@ Edit** scoped to the target zone.
 | `slo update --development` | `main` |
 | `slo update --ref <ref>` | An explicit branch / tag / commit |
 
-It honours `SLO_DEPLOY_TOKEN_USERNAME`/`SLO_DEPLOY_TOKEN`, then
-`SLO_INSTALL_TOKEN`, then ambient git auth — identical to the installer. Your
-`~/.slo` data is untouched.
+It uses the public repository URL, like the installer. Your `~/.slo` data is
+untouched.
 
 You can always upgrade by simply re-running the installer
 (`curl -fsSL https://get-slo.sh/install.sh | … bash`) instead.
@@ -204,7 +171,6 @@ Real failure modes (and fixes) seen while building this:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `curl … 401/403` fetching the script | Deploy tokens can't use the Files API / `/-/raw/` | Host the script publicly (§3); use a PAT only for operator fetches |
 | `Could not parse uv version … (rc=127)` | pipx auto-selects a `uv` backend but the `uv` on `PATH` is a broken pyenv shim | `install.sh`/`update.py` auto-fall back to `PIPX_DEFAULT_BACKEND=pip`; or set it yourself |
 | `pyenv: python3.11: command not found` during install | The bare `python3.11` shim only resolves when 3.11.x is the *active* pyenv version | Handled — the installer passes the **absolute** interpreter (`$(pyenv root)/versions/<ver>/bin/python3.11`) |
 | `ERROR: The Python ssl extension was not compiled` during `pyenv install` on Linux | pyenv build headers missing | Handled on Debian / Ubuntu — `slo_ensure_build_deps` apt-installs `libssl-dev` et al. before `pyenv install`; on non-Debian Linux, install pyenv's suggested build deps manually |
@@ -217,9 +183,8 @@ Real failure modes (and fixes) seen while building this:
 ## 7. Quick reference
 
 ```bash
-# End user, latest release, deploy-token auth:
-curl -fsSL https://get-slo.sh/install.sh \
-  | SLO_DEPLOY_TOKEN_USERNAME='<u>' SLO_DEPLOY_TOKEN='<t>' SLO_REF=v0.3.2 bash
+# End user, public install pinned to a release:
+curl -fsSL https://get-slo.sh/install.sh | SLO_REF=v0.3.2 bash
 
 # Update to the latest release:
 slo update

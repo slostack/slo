@@ -4,8 +4,8 @@
 # WHAT IT DOES (read before running):
 #   1. Verifies your Cloudflare API token can see the account.
 #   2. Resolves the install.sh to publish:
-#        - default: fetches the COMMITTED copy from GitLab at SLO_SOURCE_REF
-#          (canonical — needs GITLAB_TOKEN, an operator PAT), or
+#        - default: fetches the COMMITTED public copy from GitLab at
+#          SLO_SOURCE_REF (no repository credentials), or
 #        - override: if INSTALL_SH points at a local file, publishes that
 #          (for testing an un-committed copy — prints a warning).
 #   3. base64-encodes it (avoids every shell/JS escaping pitfall) and uploads a
@@ -13,12 +13,10 @@
 #   4. (zone given) binds https://<SLO_HOSTNAME>/ on your domain (auto-creates
 #      proxied DNS); otherwise enables the free *.workers.dev URL.
 #
-# THREE DISTINCT CREDENTIALS — don't conflate them:
+# CREDENTIALS:
 #   CF_API_TOKEN   operator: deploys the Worker (this script).
-#   GITLAB_TOKEN   operator: fetches the canonical install.sh to publish (PAT,
-#                  read_repository) — the GitLab Files API rejects deploy tokens.
-#   deploy token   END USER: supplied at `curl … | bash` time for the pipx git
-#                  fetch. NOT used here and NOT baked into anything.
+#   The source repository and installer are public. No repository credential is
+#   required, used, or baked into the Worker.
 #
 # REQUIRED env:
 #   CF_API_TOKEN    scoped Cloudflare API token. Permissions:
@@ -26,8 +24,6 @@
 #                   For a custom domain, also on your zone:
 #                     Zone → Zone: Read, DNS: Edit, Workers Routes: Edit
 #   CF_ACCOUNT_ID   your Cloudflare account id
-#   GITLAB_TOKEN    operator PAT (read_repository) — unless INSTALL_SH is set
-#
 # OPTIONAL env:
 #   SLO_SOURCE_REF    repo ref to publish the SCRIPT from (default: main)
 #   PUBLISH_SLO_REF   pin the hosted default INSTALL ref, e.g. v0.3.2. Bakes
@@ -35,7 +31,7 @@
 #                     installs that release (a user can still override SLO_REF).
 #                     Omit → the served script defaults to main.
 #   SLO_REPO_PROJECT  GitLab project path             (default: core-27/slo)
-#   SLO_SOURCE_PATH   path of install.sh in the repo  (default: slo/install.sh)
+#   SLO_SOURCE_PATH   path of install.sh in the repo  (default: install.sh)
 #   INSTALL_SH        local file to publish INSTEAD of the repo copy (testing)
 #   CF_ZONE_NAME      your domain/zone, e.g. example.com  (omit → workers.dev URL)
 #   CLOUDFLARE_ZONE_ID  the zone id directly. Takes precedence over CF_ZONE_NAME
@@ -52,7 +48,7 @@ WORKER_NAME="${WORKER_NAME:-slo-install}"
 COMPAT_DATE="2024-11-01"
 SLO_SOURCE_REF="${SLO_SOURCE_REF:-main}"
 SLO_REPO_PROJECT="${SLO_REPO_PROJECT:-core-27/slo}"
-SLO_SOURCE_PATH="${SLO_SOURCE_PATH:-slo/install.sh}"
+SLO_SOURCE_PATH="${SLO_SOURCE_PATH:-install.sh}"
 
 log() { printf '→ %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -63,8 +59,6 @@ urlenc() { python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.arg
 CF_API_TOKEN="${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}"
 CF_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-${CF_ACCOUNT_ID:-}}"
 CF_ZONE_ID="${CLOUDFLARE_ZONE_ID:-${CF_ZONE_ID:-}}"
-GITLAB_TOKEN="${SLO_GITLAB_PERSONAL_ACCESS_TOKEN:-${GITLAB_TOKEN:-}}"
-
 : "${CF_API_TOKEN:?set CLOUDFLARE_API_TOKEN (a scoped Cloudflare API token)}"
 : "${CF_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID}"
 command -v curl    >/dev/null || die "curl is required"
@@ -103,12 +97,11 @@ if [ -n "${INSTALL_SH:-}" ]; then
     log "WARNING: publishing LOCAL file ${INSTALL_SH} (not the committed repo copy)"
     cp "$INSTALL_SH" "$SRC"
 else
-    : "${GITLAB_TOKEN:?set GITLAB_TOKEN (read_repository PAT) to fetch the repo copy, or set INSTALL_SH to a local path}"
-    log "fetching ${SLO_SOURCE_PATH} from ${SLO_REPO_PROJECT}@${SLO_SOURCE_REF} (canonical committed copy)"
-    curl -fsS -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        "https://gitlab.com/api/v4/projects/$(urlenc "$SLO_REPO_PROJECT")/repository/files/$(urlenc "$SLO_SOURCE_PATH")/raw?ref=$(urlenc "$SLO_SOURCE_REF")" \
+    log "fetching ${SLO_SOURCE_PATH} from ${SLO_REPO_PROJECT}@${SLO_SOURCE_REF} (canonical public copy)"
+    curl -fsSL \
+        "https://gitlab.com/${SLO_REPO_PROJECT}/-/raw/$(urlenc "$SLO_SOURCE_REF")/${SLO_SOURCE_PATH}" \
         -o "$SRC" \
-        || die "failed to fetch install.sh from GitLab (check GITLAB_TOKEN read_repository, project, ref)"
+        || die "failed to fetch install.sh from public GitLab (check SLO_REPO_PROJECT, SLO_SOURCE_REF, and SLO_SOURCE_PATH)"
 fi
 [ -s "$SRC" ] || die "resolved install.sh is empty"
 
@@ -193,11 +186,11 @@ cat >&2 <<DONE
 ✅ Deployed (script source: ${INSTALL_SH:-${SLO_REPO_PROJECT}@${SLO_SOURCE_REF}}; default install ref: ${PUBLISH_SLO_REF:-main}).
 Production install command:
 
-   curl -fsSL ${INSTALL_URL} | SLO_USERNAME='<slo-username>' SLO_TOKEN='<slo-token>' SLO_VERSION=${PUBLISH_SLO_REF:-main} bash
+   curl -fsSL ${INSTALL_URL} | SLO_VERSION=${PUBLISH_SLO_REF:-main} bash
 
 Install the dev (main) branch:
 
-   curl -fsSL ${INSTALL_URL} | SLO_USERNAME='<slo-username>' SLO_TOKEN='<slo-token>' SLO_VERSION=dev bash
+   curl -fsSL ${INSTALL_URL} | SLO_VERSION=dev bash
 
 (DNS + edge propagation can take a minute on first custom-domain bind.)
 Re-run after a new install.sh is committed to publish the update.

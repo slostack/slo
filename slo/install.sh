@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — one-line installer for slo.
 #
-#   curl -fsSL <url>/install.sh | SLO_USERNAME='<user>' SLO_TOKEN='<token>' bash
+#   curl -fsSL <url>/install.sh | bash
 #
 # Installs slo as a normal pipx application straight from its git repository.
 # pipx builds the package in its own isolated venv and puts the `slo` binary on
@@ -17,12 +17,6 @@
 # re-running upgrades slo in place. No interactive prompts.
 #
 # Configuration (all overridable from the environment):
-#   SLO_USERNAME       credential username for the private repo fetch
-#   SLO_TOKEN          credential secret for the private repo fetch
-#   SLO_DEPLOY_TOKEN_USERNAME / SLO_DEPLOY_TOKEN
-#                      GitLab deploy token (authenticates as <user>:<token>)
-#   SLO_INSTALL_TOKEN  personal access token (injected as oauth2:<token>);
-#                      used only when no deploy token is set
 #   SLO_VERSION        version to install (default: pinned release baked in at
 #                      publish time). Pass "dev" to track the main branch.
 #   SLO_REPO_URL       git URL to install from (default below)
@@ -39,14 +33,11 @@ SLO_REPO_URL="${SLO_REPO_URL:-https://gitlab.com/core-27/slo.git}"
 SLO_REF="${SLO_REF:-main}"
 SLO_PYTHON_VERSION="${SLO_PYTHON_VERSION:-3.11.7}"
 
-# ---- User-facing credential and version aliases ----------------------------
-# SLO_USERNAME / SLO_TOKEN are the public names; map to internal deploy-token
-# vars used by slo_pipx_spec(). SLO_VERSION controls the git ref to install:
+# ---- Version selection ------------------------------------------------------
+# SLO_VERSION controls the git ref to install:
 #   unset / empty → use SLO_REF (default pinned at publish time by deploy script)
 #   "dev"         → main branch
 #   anything else → treated as a release tag or branch name
-SLO_DEPLOY_TOKEN_USERNAME="${SLO_USERNAME:-${SLO_DEPLOY_TOKEN_USERNAME:-}}"
-SLO_DEPLOY_TOKEN="${SLO_TOKEN:-${SLO_DEPLOY_TOKEN:-}}"
 if [ "${SLO_VERSION:-}" = "dev" ]; then
     SLO_REF="main"
 elif [ -n "${SLO_VERSION:-}" ]; then
@@ -339,23 +330,9 @@ slo_pipx_spec() {
     # The Python project lives in the repo's `slo/` subdirectory, not the repo
     # root, so pip must be told where pyproject.toml is via #subdirectory. Set
     # SLO_REPO_SUBDIR to override; set it to empty for a root-level project.
-    # On an https URL, inject a credential for this run. Two mechanisms, in
-    # precedence order (matches docs/INSTALL.md):
-    #   1. GitLab deploy token: SLO_DEPLOY_TOKEN_USERNAME + SLO_DEPLOY_TOKEN
-    #      authenticate as <user>:<token>.
-    #   2. Personal access token: SLO_INSTALL_TOKEN, injected as oauth2:<token>.
-    # Credentials with URL-reserved characters (e.g. ':' '@' '/') must be
-    # percent-encoded by the caller. The credential is only ever passed to git
-    # for this fetch — it is not written to disk by this script.
+    # The repository is public. Keep the URL exactly as configured so this
+    # installer never reads, embeds, or writes repository credentials.
     local url="$SLO_REPO_URL"
-    local rest="${url#https://}"
-    if [ "$rest" != "$url" ]; then
-        if [ -n "${SLO_DEPLOY_TOKEN_USERNAME:-}" ] && [ -n "${SLO_DEPLOY_TOKEN:-}" ]; then
-            url="https://${SLO_DEPLOY_TOKEN_USERNAME}:${SLO_DEPLOY_TOKEN}@${rest}"
-        elif [ -n "${SLO_INSTALL_TOKEN:-}" ]; then
-            url="https://oauth2:${SLO_INSTALL_TOKEN}@${rest}"
-        fi
-    fi
     local subdir="${SLO_REPO_SUBDIR-slo}"
     local frag=""
     [ -n "$subdir" ] && frag="#subdirectory=${subdir}"

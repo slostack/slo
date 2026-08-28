@@ -43,13 +43,10 @@ Slo installs with a single command. The installer pulls the pinned release,
 installs it with `pipx`, and drops the skill library into `~/.slo/`.
 
 ```bash
-curl -fsSL https://get-slo.sh/install.sh \
-  | SLO_USERNAME='<your-username>' \
-    SLO_TOKEN='<your-access-token>' bash
+curl -fsSL https://get-slo.sh/install.sh | bash
 ```
 
-Slo is in early access, so the installer needs a username and token. Request one
-from the website. Then:
+Then:
 
 ```bash
 cd ~/Code/my-project
@@ -65,10 +62,10 @@ The hosted installer is pinned to the latest release, but you can override it:
 
 ```bash
 # a specific release
-curl -fsSL https://get-slo.sh/install.sh | SLO_USERNAME=… SLO_TOKEN=… SLO_VERSION=v0.15.0 bash
+curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=v0.15.0 bash
 
 # the development branch
-curl -fsSL https://get-slo.sh/install.sh | SLO_USERNAME=… SLO_TOKEN=… SLO_VERSION=dev bash
+curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=dev bash
 ```
 
 ### Updating

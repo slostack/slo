@@ -3,8 +3,9 @@ When asked to write, modify, or reason about code in this repository, read `AGEN
 ## Feature-request and specification locations
 
 For Slo feature work:
-- read incoming requests from `/Users/siddharth/Code/Pi/slo/feature-requests/`;
-- write final specs under `/Users/siddharth/Code/Pi/slo/specifications/` or the repo-local `specifications/` symlink;
+- read incoming requests from the repo-local `feature-requests/` directory;
+- write final specs under the repo-local `specifications/` path (a symlink to the
+  canonical specification root on the operator's machine);
 - use one numbered folder per feature: `<number>-<title>/`;
 - the primary spec document is always named `overview.md` inside that folder;
 - sub-specs follow the naming convention `<spec-number>.<letter>.<index>-<title>.md`

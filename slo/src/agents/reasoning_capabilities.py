@@ -32,9 +32,6 @@ __all__ = [
 ]
 
 
-ReasoningLevel = ReasoningLevel
-
-
 REASONING_LEVELS: tuple[ReasoningLevel, ...] = (
     "off",
     "minimal",

@@ -2570,10 +2570,33 @@ class SloTUI(App):
         self._scroll_transcript_to_end()
 
     def _scroll_transcript_to_end(self) -> None:
-        """Keep the transcript viewport pinned to the latest content."""
+        """Keep the transcript viewport pinned to the latest content.
+
+        Latches ``_force_following_until_layout`` until the deferred scroll
+        actually lands. The scroll is deferred to ``call_after_refresh``, so
+        between scheduling and landing the viewport is transiently *not* at the
+        bottom. An ``AssistantStreamBlock`` coalescing flush that interleaves in
+        that window calls ``_check_app_at_bottom`` → ``_transcript_is_at_bottom``,
+        reads that transient state as ``False``, and posts
+        ``Rendered(was_following=False)`` — so
+        ``on_assistant_stream_block_rendered`` skips its re-pin. The queued
+        ``scroll_end`` then pins to the *pre-flush* bottom while the flush has
+        already expanded ``max_scroll_y``, leaving the transcript permanently
+        short of the bottom with nothing left to re-pin it. The latch makes the
+        in-flight intent visible to that flush so the re-pin still happens.
+        """
         if self._transcript_scroll is None:
             return
-        self.call_after_refresh(self._transcript_scroll.scroll_end, animate=False)
+        self._force_following_until_layout = True
+        self.call_after_refresh(self._pin_transcript_to_end_after_refresh)
+
+    def _pin_transcript_to_end_after_refresh(self) -> None:
+        """Perform the deferred pin, then release the follow latch."""
+        if self._transcript_scroll is None:
+            self._force_following_until_layout = False
+            return
+        self._transcript_scroll.scroll_end(animate=False)
+        self.call_after_refresh(self._clear_force_following_after_scroll_end)
 
     def _enable_back_scroll_mode(self) -> None:
         """Suspend top eviction so prepended history is not immediately removed."""

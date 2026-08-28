@@ -23,8 +23,6 @@ def is_staging() -> bool:
 
 APP_NAME = os.environ.get("SLO_APP_NAME", "slo")
 APP_DIR = os.environ.get("SLO_APP_DIR", None)
-BASE_URL = os.environ.get("SLO_BASE_URL", "http://localhost:7700/slo")
-DOMAIN = os.environ.get("SLO_DOMAIN", "localhost:7700")
 LOG_FORMAT = os.environ.get("SLO_LOG_FORMAT", "json")
 
 # Provider keys
@@ -32,21 +30,6 @@ ANTHROPIC_API_KEY = os.environ.get("SLO_ANTHROPIC_API_KEY", None)
 OPENAI_API_KEY = os.environ.get("SLO_OPENAI_API_KEY", None)
 KIMI_FOR_CODING_API_KEY = os.environ.get("SLO_KIMI_FOR_CODING_API_KEY", None)
 DEFAULT_MODEL_NAME = os.environ.get("SLO_DEFAULT_MODEL_NAME", "gpt-5.4")
-
-# Network ports
-A2A_PORT = int(os.environ.get("SLO_A2A_PORT", "9900"))
-A2A_PUBLIC_URL = os.environ.get("SLO_A2A_PUBLIC_URL", "http://localhost:9900")
-WEB_PORT = int(os.environ.get("SLO_WEB_PORT", "7700"))
-
-# A2A peer tool timeouts
-A2A_FETCH_TIMEOUT_SECONDS: float = positive_float_env(
-    primary_name="SLO_A2A_FETCH_TIMEOUT_SECONDS",
-    default=10.0,
-)
-A2A_INVOKE_TIMEOUT_SECONDS: float = positive_float_env(
-    primary_name="SLO_A2A_INVOKE_TIMEOUT_SECONDS",
-    default=300.0,
-)
 
 # Atlassian / Jira / Confluence integration
 ATLASSIAN_API_TOKEN: Optional[str] = os.environ.get("SLO_ATLASSIAN_API_TOKEN")
@@ -179,30 +162,55 @@ SLO_OAUTH_TIMEOUT_SECONDS = int(os.environ.get("SLO_OAUTH_TIMEOUT_SECONDS", "60"
 # SKILLS_DIR is the absolute path to the committed skills/ directory. The
 # system prompt references the index at ``<SKILLS_DIR>/INDEX.md``; the agent
 # reads it on demand via the ``read`` tool — there is no runtime injection.
+def _is_populated_skills_tree(*, candidate: Path) -> bool:
+    """Return whether ``candidate`` looks like a real skills tree.
+
+    A bare directory is not enough: a leftover empty ``~/.slo/skills`` from an
+    older install would otherwise shadow the tree that ships inside the wheel
+    and silently start the agent with zero vendored skills. ``INDEX.md`` is the
+    marker because the system prompt points the agent at it.
+
+    Args:
+        candidate (Path): Directory to test.
+
+    Returns:
+        bool: True when ``candidate/INDEX.md`` is a file.
+    """
+    return (candidate / "INDEX.md").is_file()
+
+
 def _resolve_skills_dir() -> str:
     """Pick the skills directory by precedence (sub-spec 01.n §5.4).
 
     Order:
-        1. ``$SLO_SKILLS_DIR`` if set (explicit override; honoured for tests
-           and one-off experiments).
-        2. ``~/.slo/skills`` if it exists (the pipx install path from 01.n).
-        3. The repo-local ``skills/`` directory next to this file (dev clones).
+        1. ``$SLO_SKILLS_DIR`` if set (explicit override; honoured verbatim so
+           a wrong value surfaces as a loud missing-directory error rather
+           than being silently swapped for a different tree).
+        2. ``~/.slo/skills`` when it is a populated skills tree (operator
+           override / legacy clone install).
+        3. The ``skills/`` directory alongside this file — ``site-packages/``
+           for a pipx install (shipped via ``[tool.poetry] include``) and the
+           repo root for a dev clone.
+
+    Candidates 2 and 3 must satisfy ``_is_populated_skills_tree``; an empty or
+    stale directory falls through to the next candidate instead of winning.
 
     Returns:
-        Absolute path string. Never ``None`` — falls through to the repo-local
-        path even if it does not exist, so misconfiguration surfaces as
-        "FileNotFoundError when reading INDEX.md" rather than a silent None.
+        Absolute path string. Never ``None`` — falls through to the
+        package-adjacent path even when nothing validates, so misconfiguration
+        surfaces as "FileNotFoundError when reading INDEX.md" rather than a
+        silent None. ``SkillsLoader.load_merged`` logs the zero-skill case.
     """
     override = os.environ.get("SLO_SKILLS_DIR")
     if override:
         return os.path.abspath(override)
 
     installed = Path.home() / ".slo" / "skills"
-    if installed.is_dir():
+    if _is_populated_skills_tree(candidate=installed):
         return str(installed)
 
-    repo_root = Path(__file__).resolve().parent.parent
-    return str(repo_root / "skills")
+    packaged = Path(__file__).resolve().parent.parent / "skills"
+    return str(packaged)
 
 
 SKILLS_DIR: str = _resolve_skills_dir()
@@ -227,12 +235,8 @@ SLO_KB_DIR = os.environ.get("SLO_KB_DIR", None)
 SLO_KB_SOURCE = os.environ.get("SLO_KB_SOURCE", None)
 
 __cfg__: dict[str, str | None] = {
-    "A2A_FETCH_TIMEOUT_SECONDS": str(A2A_FETCH_TIMEOUT_SECONDS),
-    "A2A_INVOKE_TIMEOUT_SECONDS": str(A2A_INVOKE_TIMEOUT_SECONDS),
     "AUTO_VISUALIZE": "1" if AUTO_VISUALIZE else "0",
     "DETACHED_WORKFLOWS": "1" if DETACHED_WORKFLOWS else "0",
-    "A2A_PORT": str(A2A_PORT),
-    "A2A_PUBLIC_URL": A2A_PUBLIC_URL,
     "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
     "APP_DIR": APP_DIR,
     "APP_NAME": APP_NAME,
@@ -242,7 +246,6 @@ __cfg__: dict[str, str | None] = {
     "ATLASSIAN_TIMEOUT_SECONDS": (
         str(ATLASSIAN_TIMEOUT_SECONDS) if ATLASSIAN_TIMEOUT_SECONDS is not None else None
     ),
-    "BASE_URL": BASE_URL,
     "CONNECTORS_DIR": CONNECTORS_DIR,
     "CONNECTOR_PREFER_ENV": "1" if CONNECTOR_PREFER_ENV else "0",
     "DEBUGPY": DEBUGPY,
@@ -250,7 +253,6 @@ __cfg__: dict[str, str | None] = {
     "DEFAULT_MODEL_NAME": DEFAULT_MODEL_NAME,
     "DEPLOY_TOKEN": DEPLOY_TOKEN,
     "DEPLOY_TOKEN_USERNAME": DEPLOY_TOKEN_USERNAME,
-    "DOMAIN": DOMAIN,
     "ENV": env,
     "GITHUB_API_BASE_URL": GITHUB_API_BASE_URL,
     "GITHUB_TIMEOUT_SECONDS": str(GITHUB_TIMEOUT_SECONDS) if GITHUB_TIMEOUT_SECONDS is not None else None,
@@ -286,7 +288,6 @@ __cfg__: dict[str, str | None] = {
     "USER_WORKFLOWS_DIR": USER_WORKFLOWS_DIR,
     "VISUALIZER_REFRESH_SECONDS": str(VISUALIZER_REFRESH_SECONDS),
     "VISUALIZER_TERMINAL_APP": VISUALIZER_TERMINAL_APP,
-    "WEB_PORT": str(WEB_PORT),
 }
 
 

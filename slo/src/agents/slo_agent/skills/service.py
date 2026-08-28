@@ -109,6 +109,10 @@ class SkillsLoader:
                 )
             merged[user_entry.name] = user_entry
 
+        cls._warn_when_no_vendored_skills(
+            vendored=vendored,
+            vendored_skills_dir=vendored_skills_dir,
+        )
         log_info(
             msg="SkillsLoader.load_merged: complete",
             vendored_count=len(vendored),
@@ -117,6 +121,37 @@ class SkillsLoader:
             total_count=len(merged),
         )
         return list(merged.values())
+
+    @classmethod
+    def _warn_when_no_vendored_skills(
+        cls,
+        *,
+        vendored: list[SkillEntryDAO],
+        vendored_skills_dir: str,
+    ) -> None:
+        """Log an error when the vendored skills tree resolved to nothing.
+
+        An agent with zero vendored skills still runs — it just silently loses
+        every workflow and convention skill, which reads as the model making
+        bad choices rather than as a packaging fault. This is the loud signal
+        that distinguishes the two.
+
+        Args:
+            vendored (list[SkillEntryDAO]): Entries loaded from the vendored tree.
+            vendored_skills_dir (str): The directory that was searched.
+        """
+        if vendored:
+            return
+        log_error(
+            msg=(
+                "SkillsLoader: no vendored skills found at "
+                f"{vendored_skills_dir!r} — the agent is running without any "
+                "vendored skill or workflow. Check that skills/ shipped with "
+                "the install, or set SLO_SKILLS_DIR."
+            ),
+            stack_trace=False,
+            vendored_skills_dir=vendored_skills_dir,
+        )
 
     @classmethod
     def _parse_skill_file(cls, *, skill_file: Path) -> Optional[SkillEntryDAO]:

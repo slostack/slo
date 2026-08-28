@@ -14,6 +14,7 @@ need to reach Confluence and Jira.
 credentials resolve at bundle-build time.  This keeps the prompt truthful:
 dead tools that cannot be authenticated are never shown.
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import BaseTool
@@ -110,8 +111,15 @@ def create_connector_tools() -> list[BaseTool]:
 def create_extended_tools() -> list[BaseTool]:
     """Pi-parity tools + slo-specific extensions (read_pdf, now, connectors).
 
-    Layers ``read_pdf``, ``now``, and any configured connector tools on top
-    of ``create_all_tools``.  Use this bundle for sessions that need document
-    awareness, timestamps, and optional remote planning-system access.
+    Layers ``read_pdf``, ``now``, ``show_git_diff``, and any configured
+    connector tools on top of ``create_all_tools``.  Use this bundle for
+    sessions that need document awareness, timestamps, HEAD-versus-worktree
+    diffs, and optional remote planning-system access.
     """
-    return [*create_all_tools(), read_pdf_tool, now_tool, *create_connector_tools()]
+    return [
+        *create_all_tools(),
+        read_pdf_tool,
+        now_tool,
+        show_git_diff_tool,
+        *create_connector_tools(),
+    ]

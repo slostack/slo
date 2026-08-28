@@ -7,10 +7,117 @@
 # See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
 stages:
 - test
+- publish
 - secret-detection
+
 variables:
   SECRET_DETECTION_ENABLED: 'true'
+  # Poetry is pinned to the version that generated slo/poetry.lock (lock-version 2.1).
+  POETRY_VERSION: '2.4.1'
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  POETRY_NO_INTERACTION: '1'
+
+# Runs the same suite as `make test` in slo/. `slo/environments/tests.env` is
+# gitignored, so its (non-secret) contents are reproduced in `variables:` below
+# with $CI_PROJECT_DIR/slo substituted for the developer's absolute path.
+#
+# Scope: the default suite. `addopts = "-m 'not e2e'"` in slo/pyproject.toml
+# deselects tests marked `e2e` — those call real provider APIs or run the
+# installer in Docker, and need credentials CI does not hold. Run them locally
+# with `make install-smoke` / `pytest -m e2e`.
+pytest:
+  stage: test
+  # Full python:3.11 (not -slim): the Git-diff viewer tests shell out to `git`,
+  # which the slim image does not ship. slo/pyproject.toml pins python >=3.11,<3.12.
+  image: python:3.11
+  variables:
+    PYTHONPATH: "$CI_PROJECT_DIR/slo"
+    SLO_ENV: test
+    SLO_ROOT_DIR: "$CI_PROJECT_DIR/slo"
+    SLO_APP_DIR: "$CI_PROJECT_DIR/slo"
+    SLO_APP_NAME: slo
+    SLO_LOG_FORMAT: text
+    SLO_DEFAULT_MODEL_NAME: gpt-5.4
+    # Never let a test spawn a real `slo visualize` terminal on the runner.
+    SLO_AUTO_VISUALIZE: '0'
+    # Not a credential. tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py
+    # drives a FauxChatModel and makes no network call, but SloAgentSession.build()
+    # still resolves provider credentials at construction time. On a developer
+    # machine that resolves against ~/.claude/.credentials.json; a CI runner has
+    # no such file, so those tests need a placeholder to get past resolution.
+    SLO_ANTHROPIC_API_KEY: 'ci-placeholder-tests-are-fully-mocked'
+    # Textual pilot tests render to a headless driver; keep the size deterministic.
+    COLUMNS: '120'
+    LINES: '40'
+  cache:
+    key:
+      files:
+      - slo/poetry.lock
+    paths:
+    - .cache/pip
+  before_script:
+  # slo/poetry.toml sets virtualenvs.create = false, so dependencies install
+  # into the image's own Python rather than a project venv.
+  - pip install "poetry==$POETRY_VERSION"
+  - cd slo
+  - poetry install --no-interaction
+  script:
+  - poetry run pytest -q --junitxml=../report.xml
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: report.xml
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH
+  # Deliberately NOT on tags. A release tag points at a commit that already ran
+  # this suite green on its MR and again on main, so a tag pipeline would only
+  # re-run known-good tests and delay the publish. The trade-off is real: the
+  # tag itself is no longer gated, so tag only commits whose main pipeline is
+  # green.
+
+# Publishes install.sh to the Cloudflare Worker behind get-slo.sh, pinned to the
+# tag that triggered the pipeline. This is `make publish-installer` with two
+# differences, both deliberate:
+#
+#   * PUBLISH_SLO_REF is $CI_COMMIT_TAG rather than `git tag | head -1`. The
+#     pipeline already knows which tag it is building; asking git would depend
+#     on the runner's fetched tag set.
+#   * INSTALL_SH points at the checkout instead of letting the script fetch
+#     slo/install.sh from the API. The checkout IS the committed copy at this
+#     tag — more correct than the script's `main` default — and it means no
+#     GitLab PAT is needed here.
+#
+# Requires three project CI/CD variables, all masked and protected:
+#   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID
+#
+# IMPORTANT: protected variables are only injected on protected refs. The tag
+# must match a protected tag pattern (Settings → Repository → Protected tags,
+# e.g. `v*`) or all three arrive empty and the job fails at its guard.
+publish-installer:
+  stage: publish
+  image: python:3.11
+  # No `needs: [pytest]` — pytest does not run on tag pipelines, and a `needs`
+  # entry naming a job absent from the pipeline makes the whole pipeline fail
+  # to create. `needs: []` also starts the publish immediately instead of
+  # waiting on an empty test stage.
+  needs: []
+  variables:
+    CF_ZONE_NAME: get-slo.sh
+    SLO_HOSTNAME: get-slo.sh
+  script:
+  - test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "CLOUDFLARE_ACCOUNT_ID is empty — is the tag protected?" >&2; exit 1; }
+  - test -n "$CLOUDFLARE_API_TOKEN"  || { echo "CLOUDFLARE_API_TOKEN is empty — is the tag protected?" >&2; exit 1; }
+  - test -n "$CLOUDFLARE_ZONE_ID"    || { echo "CLOUDFLARE_ZONE_ID is empty — is the tag protected?" >&2; exit 1; }
+  - cd slo
+  - PUBLISH_SLO_REF="$CI_COMMIT_TAG" INSTALL_SH="$CI_PROJECT_DIR/slo/install.sh" bash deploy-install-worker.sh
+  rules:
+  - if: $CI_COMMIT_TAG
+
 secret_detection:
   stage: secret-detection
+
 include:
 - template: Security/Secret-Detection.gitlab-ci.yml

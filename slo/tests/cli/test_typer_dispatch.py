@@ -211,22 +211,6 @@ class TestTyperDispatchTui:
         assert config.workspace_file is None
 
 
-class TestTyperDispatchServe:
-    """Cover ``TyperDispatch.serve``."""
-
-    def test_serve_invokes_uvicorn_with_main_app(self) -> None:
-        """``serve`` calls ``uvicorn.run`` with the FastAPI app target and port."""
-        with patch("uvicorn.run") as mock_uvicorn_run:
-            TyperDispatch.serve(port=7700)
-
-        mock_uvicorn_run.assert_called_once()
-        kwargs = mock_uvicorn_run.call_args.kwargs
-        assert kwargs["app"] == "src.main:app"
-        assert kwargs["host"] == "127.0.0.1"
-        assert kwargs["port"] == 7700
-        assert "log_config" in kwargs
-
-
 class TestTyperDispatchUpdate:
     """Cover ``TyperDispatch.update``."""
 

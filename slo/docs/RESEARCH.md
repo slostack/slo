@@ -18,12 +18,10 @@ slo/
 │   │   └── model_catalog/  # canonical model support: DAOs, seed, service, discovery, store
 │   ├── cli/              # Typer CLI entry point
 │   ├── exceptions.py     # typed ApiException hierarchy
-│   ├── main.py           # FastAPI entry (healthz only)
 │   ├── middleware/       # RequestCtxMiddleware
 │   ├── routers/          # health_controller, base_controller
 │   ├── scheduling/       # scheduler DAOs, store, runtime executor, OS integration
 │   ├── tui/              # Textual TUI, slash system, widgets
-│   └── web_app.py        # FastAPI initializer (middleware + routers)
 └── tests/                # pytest suite (faux-model only)
 ```
 
@@ -177,7 +175,6 @@ tests/
 ├── auth/               # credential resolver, refresher, store
 ├── cli/                # Typer dispatch
 ├── config/             # cfg, ai_model_config
-├── routers/            # healthz
 └── conftest.py         # shared test fixtures
 ```
 

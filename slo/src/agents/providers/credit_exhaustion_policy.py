@@ -4,6 +4,7 @@ from __future__ import annotations
 from enum import auto, Enum
 from typing import Optional
 
+from src.agents.providers.stream_recovery.service import StreamRecoveryService
 from src.auth.credential_dao import ProviderName
 
 __all__ = [
@@ -24,12 +25,14 @@ class ProviderErrorKind(Enum):
         RATE_LIMITED: Transient rate limit (HTTP 429).
         TRANSIENT_PROVIDER_FAILURE: Transient server-side failure (HTTP 500/502/
             503/529) — the provider lane is unhealthy but the request is valid.
+        STREAM_DISCONNECTED: A controlled provider transport-stream failure.
         OTHER: Any other error; propagated to the caller unchanged.
     """
 
     CREDIT_EXHAUSTED = auto()
     RATE_LIMITED = auto()
     TRANSIENT_PROVIDER_FAILURE = auto()
+    STREAM_DISCONNECTED = auto()
     OTHER = auto()
 
 
@@ -38,6 +41,7 @@ _SWITCHABLE_KINDS: frozenset[ProviderErrorKind] = frozenset(
         ProviderErrorKind.CREDIT_EXHAUSTED,
         ProviderErrorKind.RATE_LIMITED,
         ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE,
+        ProviderErrorKind.STREAM_DISCONNECTED,
     }
 )
 """The kinds for which ModelPool should cool the current member and switch.
@@ -146,6 +150,8 @@ class ProviderErrorClassifier:
         Returns:
             ProviderErrorKind: The classified kind of the error.
         """
+        if StreamRecoveryService.is_stream_disconnection(exc=error):
+            return ProviderErrorKind.STREAM_DISCONNECTED
         if provider == ProviderName.KIMI_FOR_CODING:
             return cls._classify_kimi_for_coding(error=error)
         if provider == ProviderName.ANTHROPIC:

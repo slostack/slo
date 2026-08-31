@@ -31,6 +31,7 @@ StreamEventKind = Literal[
     "tool_result",
     "steering_applied",     # a queued /steer message was drained into model context
     "run_retrying",
+    "stream_reconnecting",  # pre-commit provider stream reconnect audit (spec 70)
     # Compaction lifecycle — emitted by the session during overflow recovery:
     "compaction_started",   # session began a forced compaction pass
     "compaction_completed", # forced compaction succeeded

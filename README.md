@@ -46,6 +46,12 @@ installs it with `pipx`, and drops the skill library into `~/.slo/`.
 curl -fsSL https://get-slo.sh/install.sh | bash
 ```
 
+**Installation is credential-free.** Both the installer script and the Git
+repository it installs from are public, so no username, token, or account is
+needed to install. The only credentials Slo ever asks for are your model
+provider's, and that happens inside the TUI on first launch (see
+[§3.1](#31-connecting-a-model-provider)) — never at install time.
+
 Then:
 
 ```bash
@@ -58,14 +64,19 @@ are in.
 
 ### Choosing a version
 
-The hosted installer is pinned to the latest release, but you can override it:
+The hosted installer is pinned to the latest release by default. `SLO_VERSION`
+overrides what gets installed — a release tag, the `dev` shortcut for the
+`main` branch, or any other branch or ref name:
 
 ```bash
-# a specific release
+# a specific release version
 curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=v0.15.0 bash
 
-# the development branch
+# the development version — tracks the main branch
 curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=dev bash
+
+# any other development ref (branch, tag, or commit)
+curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=feature-my-branch bash
 ```
 
 ### Updating
@@ -1113,8 +1124,9 @@ An honest list. Some are deliberate trade-offs, some are just not built yet.
 
 ### Access and platform
 
-- **Early access.** Installing needs a username and token; there is no public
-  package on PyPI or Homebrew.
+- **Early access.** Installation is credential-free — the installer and its
+  Git source are public — but there is no package on PyPI or Homebrew; the
+  one-line installer is the only distribution channel.
 - **macOS and Linux only.** No Windows build. WSL is untested.
 - **Python 3.11 exactly** (`>=3.11,<3.12`). Not 3.12 — the dependency lock is
   validated on 3.11 and `pipx` installs against `python3.11`.

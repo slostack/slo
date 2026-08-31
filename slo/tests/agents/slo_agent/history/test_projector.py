@@ -521,6 +521,11 @@ class TestWorkflowUpdateProjection:
                 turn_id="wf-turn-1",
                 payload=SessionHistoryEventPayloadDAO(content="switched"),
             ),
+            _event(
+                kind="stream_reconnecting",
+                turn_id="wf-turn-1",
+                payload=SessionHistoryEventPayloadDAO(content="reconnecting"),
+            ),
         ]
 
         messages = await SessionHistoryProjector.build_message_history(events=events)

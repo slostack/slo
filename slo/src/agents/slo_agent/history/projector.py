@@ -336,7 +336,7 @@ class SessionHistoryProjector:
         prevent duplicate ``tool_use`` block IDs, which the Anthropic API
         rejects with a 400 ``invalid_request_error``.
 
-        ``run_retrying``, ``route_switched``, and ``run_recovering`` are
+        ``run_retrying``, ``route_switched``, ``stream_reconnecting``, and ``run_recovering`` are
         diagnostic/audit events (37.a.6, feature 50): they are explicitly
         excluded so audit volume never inflates the next request's context
         (which would defeat the history-aware estimation goal).
@@ -357,7 +357,7 @@ class SessionHistoryProjector:
         retained tail.
         """
         payload = event.payload
-        if event.kind in ("run_retrying", "route_switched", "run_recovering"):
+        if event.kind in ("run_retrying", "route_switched", "stream_reconnecting", "run_recovering"):
             return None
         if event.kind == "user_message":
             return HumanMessage(content=payload.content or "")

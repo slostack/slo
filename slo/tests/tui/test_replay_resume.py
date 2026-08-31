@@ -17,6 +17,11 @@ from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
 )
 from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.providers.stream_recovery.dao import (
+    ProviderStreamFailure,
+    StreamRecoveryAction,
+    StreamRecoveryDecisionDAO,
+)
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI
@@ -119,6 +124,59 @@ class TestHydrateTranscriptEntries:
         assistant_entries = [entry for entry in entries if entry.kind == "assistant"]
         assert any("hi there" in (entry.content or "") for entry in user_entries)
         assert any("hello back" in (entry.answer or "") for entry in assistant_entries)
+
+
+class TestTUIStreamReconnect:
+    """The real Textual TUI renders the public session reconnect boundary."""
+
+    @pytest.mark.asyncio
+    async def test_tui_renders_reconnect_then_completion_for_pre_commit_failure(self, tmp_path: Path) -> None:
+        """A pre-commit retry reaches the visible TUI transcript exactly once.
+
+        This functional Textual test drives ``_run_prompt`` through the public
+        session stream. Before the reconnect-yield fix, the session subscriber
+        saw the audit but the TUI loop never did, so no reconnect notice could
+        render here.
+        """
+        session: SloAgentSession = _build_session_with_history(
+            workdir=tmp_path,
+            history_root=tmp_path / "history",
+            responses=[FauxChatModel.assistant_message(content="unused")],
+        )
+        invocation_count: int = 0
+
+        async def _scripted_invoke(**_: object):
+            nonlocal invocation_count
+            invocation_count += 1
+            if invocation_count == 1:
+                raise ProviderStreamFailure(
+                    decision=StreamRecoveryDecisionDAO(
+                        action=StreamRecoveryAction.RETRY_FRESH_CONNECTION,
+                        reason_code="provider_stream_disconnected",
+                        retry_delay_seconds=0.0,
+                        exception_family="httpx.RemoteProtocolError",
+                    ),
+                    partial_output_committed=False,
+                    attempt_number=1,
+                )
+            yield AgentStreamEventDAO(kind="text_delta", delta="recovered")
+            yield AgentStreamEventDAO(kind="run_completed", content="recovered")
+
+        app: SloTUI = SloTUI(session=session)
+        from unittest.mock import patch
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(session.agent, "invoke", _scripted_invoke):
+                await app._run_prompt(text="functional retry")
+            await pilot.pause()
+
+        assert invocation_count == 2
+        assert app._adapter is not None
+        transcript: list[str] = [content for content, _classes in app._adapter.lines]
+        assert any("provider_stream_disconnected" in content for content in transcript)
+        assert session.is_running is False
+        assert app._in_flight_task is None
 
 
 class TestTUIHydration:

@@ -60,6 +60,7 @@ slo/
 │   │   ├── base.py                    # LLMFactory.create — the ONLY LLM construction point
 │   │   ├── hooks/                     # ShouldStopAfterTurnHook, Hook
 │   │   ├── providers/
+│   │   │   ├── stream_recovery/             # typed provider stream disconnect classification + config
 │   │   │   ├── anthropic_claude_code.py     # Claude OAuth / thinking payload builder
 │   │   │   ├── openai_codex.py              # ChatGPT / reasoning payload builder
 │   │   │   ├── credit_exhaustion_policy.py  # CreditExhaustionPolicy — classify errors by provider
@@ -475,6 +476,12 @@ forwarded into the new window. Disable with `SLO_AUTO_VISUALIZE=0`; pick the emu
 list, markdown transcript rendering matching the main TUI, and keyboard-resizable panes
 (`ctrl+←/→` for the sub-agent list width, `ctrl+↑/↓` for the diagnostics height).
 
+**Headless heartbeat and failure envelope (spec 70):** `HeadlessRunner` emits a stderr-only
+`headless_status` heartbeat every `SLO_HEADLESS_HEARTBEAT_SECONDS` (15 by default). Supervisors must
+accept only recognized same-session heartbeats as liveness. `SubAgentResultDAO` carries additive,
+redacted `failure_code`, `partial_output_committed`, `attempts`, and `safe_message` fields; cancellation
+remains SIGTERM → grace → SIGKILL → reap with one cached terminal result.
+
 **Detached-workflow receive path** (`src/tui/workflows/`, spec 57.a.5) — the strict
 delegation chain for headless-orchestrator lifecycle data:
 
@@ -579,6 +586,11 @@ of `ModelPool` in session.py. Pool config is parsed by
 - Anthropic: 402 or "credit balance"/"billing" → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 529 → `TRANSIENT_PROVIDER_FAILURE`
 - Kimi For Coding: 402 → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 500/502/503/529 → `TRANSIENT_PROVIDER_FAILURE`
 - OpenAI: `code in {"insufficient_quota", "billing_hard_limit_reached"}` → `CREDIT_EXHAUSTED`; 429 → `RATE_LIMITED`; 500/502/503 → `TRANSIENT_PROVIDER_FAILURE`; the status-less overload message ("our servers are currently overloaded") → `TRANSIENT_PROVIDER_FAILURE`.
+- **Provider stream disconnection (spec 70):** `stream_recovery/StreamRecoveryService` is the sole
+  concrete `httpx`/`httpcore` transport-family registry. It never inspects model identity. A known
+  pre-commit failure classifies as `STREAM_DISCONNECTED`; ModelPool may switch only before its first
+  chunk and records `provider_stream_disconnected` rather than raw error text. After committed output,
+  the typed decision is `DO_NOT_REPLAY`; no automatic replay or mid-stream switch occurs.
 - **Shared message-text fallback:** when no HTTP status settles the kind, `"rate limit"`/`"429"`
   in the message text → `RATE_LIMITED`. This preserves the former provider-agnostic session
   heuristic so a text-only rate limit still waits and retries under the unified classifier.
@@ -649,6 +661,13 @@ Human-readable naming is additive metadata in `session.json` via `session_name` 
 `retry_plan_from_error()` (`src/agents/slo_agent/rate_limit/service.py`) parses a caught
 rate-limit error and returns a `RateLimitRetryPlanDAO` with a `wait_seconds` value and a
 `retryable` flag.
+
+**Provider stream recovery and transport-progress policy (spec 70):** `StreamRecoveryService` supplies a
+redacted `RETRY_FRESH_CONNECTION` / `DO_NOT_REPLAY` decision from exception family plus the agent-owned
+commit boundary. The optional `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` (90),
+`SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` (120), and `SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS` (1.0)
+form the configurable fast transport policy beneath the unchanged outer watchdogs. `stream_reconnecting`
+is diagnostic-only history and is excluded from replay context.
 
 **Three-layer rate-limit defense (spec 37):**
 1. **Preflight (session)** — `estimate_request_tokens` is **history-aware** (counts replayed

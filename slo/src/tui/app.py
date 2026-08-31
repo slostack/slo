@@ -2344,6 +2344,9 @@ class SloTUI(App):
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
             return
+        if event.kind == "stream_reconnecting":
+            self._render_stream_reconnecting_event(event=event)
+            return
         self._apply_compaction_spinner_update(event=event)
         self._apply_recovery_spinner_update(event=event)
         if self._spinner is not None and event.kind not in {
@@ -2375,6 +2378,26 @@ class SloTUI(App):
         follow_snapshot = self._capture_follow_snapshot()
         await self._projector.project(event=event)
         self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+        self._session.refresh_usage_snapshot()
+        self._refresh_usage_status_bar()
+
+    def _render_stream_reconnecting_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Render the public pre-commit reconnect boundary without raw provider text.
+
+        ``_render_event`` calls this for the session-owned audit event before the
+        fresh provider request begins. The copy intentionally uses only the
+        approved reason code and exception family metadata.
+        """
+        reason_code: object = event.metadata.get("reason_code")
+        exception_family: object = event.metadata.get("exception_family")
+        reason: str = reason_code if isinstance(reason_code, str) else "provider_stream_disconnected"
+        family: str = exception_family if isinstance(exception_family, str) else "transport error"
+        if self._spinner is not None:
+            self._spinner.set_override_status(text="Reconnecting provider stream…")
+        self._write_adapter_line(
+            content=f"(reconnecting after {reason}: {family})",
+            classes="tool-result",
+        )
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
 

@@ -1,6 +1,7 @@
 """Tests for ``src.agents.providers.credit_exhaustion_policy`` (spec 28.a.2)."""
 from __future__ import annotations
 
+import httpx
 import pytest
 from unittest.mock import MagicMock
 
@@ -222,6 +223,23 @@ class TestCreditExhaustionPolicyUnknownProvider:
 # ---------------------------------------------------------------------------
 
 
+class TestStreamDisconnectionClassification:
+    @pytest.mark.parametrize(
+        "provider",
+        (ProviderName.ANTHROPIC, ProviderName.OPENAI, ProviderName.KIMI_FOR_CODING),
+    )
+    def test_classify_returns_stream_disconnected_for_every_provider(
+        self, provider: ProviderName
+    ) -> None:
+        """Transport classification is identical for every provider label."""
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
+            error=httpx.RemoteProtocolError("peer closed"),
+            provider=provider,
+        )
+
+        assert kind is ProviderErrorKind.STREAM_DISCONNECTED
+
+
 class TestShouldSwitch:
     def test_switches_on_credit_exhausted(self) -> None:
         """CREDIT_EXHAUSTED is switchable."""
@@ -234,6 +252,10 @@ class TestShouldSwitch:
     def test_switches_on_transient_provider_failure(self) -> None:
         """TRANSIENT_PROVIDER_FAILURE is switchable."""
         assert should_switch(kind=ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE) is True
+
+    def test_switches_on_stream_disconnected(self) -> None:
+        """STREAM_DISCONNECTED is switchable before a streamed chunk."""
+        assert should_switch(kind=ProviderErrorKind.STREAM_DISCONNECTED) is True
 
     def test_does_not_switch_on_other(self) -> None:
         """OTHER is the only non-switchable kind."""

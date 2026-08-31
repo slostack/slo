@@ -4,11 +4,13 @@ from __future__ import annotations
 import time
 from typing import Any, AsyncIterator, Optional
 
+import httpx
+
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from pydantic import ConfigDict
+from pydantic import ConfigDict, PrivateAttr
 from unittest.mock import MagicMock, patch
 
 from src.agents.providers.credit_exhaustion_policy import (
@@ -94,6 +96,34 @@ class _RaisingChatModel(BaseChatModel):
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> "_RaisingChatModel":
         return self
+
+
+class _CountingRaisingChatModel(_RaisingChatModel):
+    """Raising model that records provider invocations for bounded-switch tests."""
+
+    _calls: int = PrivateAttr(default=0)
+
+    def __init__(self, *, error: Exception, **data: Any) -> None:
+        """Initialise the model and reset its invocation counter."""
+        super().__init__(error=error, **data)
+        self._calls = 0
+
+    @property
+    def calls(self) -> int:
+        """Return the number of scripted streaming provider calls."""
+        return self._calls
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Record one streaming attempt then raise the scripted exception."""
+        self._calls += 1
+        async for chunk in super()._astream(messages=messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield chunk
 
 
 class _StreamingChatModel(BaseChatModel):
@@ -495,6 +525,23 @@ class TestModelPoolAstreamSwitching:
         assert "".join(str(c.message.content) for c in chunks) == "from-secondary"
         assert "gpt-5.4" in pool._cooldowns
 
+    async def test_switches_before_first_chunk_when_stream_disconnection(self) -> None:
+        """A pre-chunk disconnection cools once and exposes secondary chunks only."""
+        primary: _CountingRaisingChatModel = _CountingRaisingChatModel(
+            error=httpx.RemoteProtocolError("token=secret https://provider.invalid")
+        )
+        secondary: _StreamingChatModel = _StreamingChatModel(chunks=["from-secondary"])
+        pool: ModelPool = _switch_pool(primary=primary, secondary=secondary)
+
+        chunks: list[ChatGenerationChunk] = [chunk async for chunk in pool._astream(messages=_HI_MSGS)]
+        records: list[RouteSwitchRecordDAO] = pool.drain_route_switch_log()
+
+        assert "".join(str(chunk.message.content) for chunk in chunks) == "from-secondary"
+        assert primary.calls == 1
+        assert len(records) == 1
+        assert records[0].error_text == "provider_stream_disconnected"
+        assert pool._cooldowns["gpt-5.4"] > time.monotonic()
+
     async def test_does_not_switch_after_first_chunk(self) -> None:
         """A failure after the first chunk re-raises (no mid-stream switch)."""
         pool: ModelPool = _switch_pool(
@@ -509,6 +556,25 @@ class TestModelPoolAstreamSwitching:
                 seen.append(str(chunk.message.content))
         assert seen == ["partial"]
         assert "gpt-5.4" not in pool._cooldowns  # not switched
+
+    async def test_does_not_switch_after_first_chunk_when_stream_disconnection(self) -> None:
+        """Committed primary chunk prevents route switching for a disconnection."""
+        pool: ModelPool = _switch_pool(
+            primary=_StreamingChatModel(
+                chunks=["partial"],
+                fail_after_first=httpx.RemoteProtocolError("peer closed"),
+            ),
+            secondary=_StreamingChatModel(chunks=["never"]),
+        )
+        seen: list[str] = []
+
+        with pytest.raises(httpx.RemoteProtocolError):
+            async for chunk in pool._astream(messages=_HI_MSGS):
+                seen.append(str(chunk.message.content))
+
+        assert seen == ["partial"]
+        assert pool.drain_route_switch_log() == []
+        assert "gpt-5.4" not in pool._cooldowns
 
 
 # ---------------------------------------------------------------------------

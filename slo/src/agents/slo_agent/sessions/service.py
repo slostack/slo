@@ -45,6 +45,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from config.ai_model_config import MODEL_DEFAULTS
 from config.cfg import cfg
 from config.logger import log_error, log_info, log_warning
+from src.agents.providers.stream_recovery.dao import (
+    ProviderStreamFailure,
+    StreamRecoveryAction,
+    StreamRecoveryDecisionDAO,
+)
+from src.agents.providers.stream_recovery.service import provider_stream_continuation_max_attempts
 from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
     ProviderErrorClassifier,
@@ -175,7 +181,7 @@ class PromptAttemptPlanDAO(BaseModel):
     for a single attempt.
 
     Attributes:
-        attempt_kind (Literal["initial", "overflow_retry"]): Whether this
+        attempt_kind (Literal["initial", "overflow_retry", "stream_reconnect"]): Whether this
             is the first attempt or a same-prompt retry after a failure.
         text (str): The user prompt text to send to the agent.
         persist_user_message (bool): Whether this attempt should write a
@@ -199,7 +205,7 @@ class PromptAttemptPlanDAO(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    attempt_kind: Literal["initial", "overflow_retry"] = Field(
+    attempt_kind: Literal["initial", "overflow_retry", "stream_reconnect", "stream_continuation"] = Field(
         description="Whether this is the first attempt or a same-prompt retry after a failure."
     )
     text: str = Field(description="The user prompt text to send to the agent.")
@@ -218,6 +224,20 @@ class PromptAttemptPlanDAO(BaseModel):
     source_failed_turn_id: Optional[str] = Field(
         default=None,
         description="Turn id of the failed attempt that produced this retry, or None for initial.",
+    )
+    submission_attempt_number: int = Field(
+        default=1,
+        ge=1,
+        description="One-indexed session attempt number for the original prompt.",
+    )
+    max_submission_attempts: int = Field(
+        default=5,
+        ge=1,
+        description="Maximum total session attempts for the original prompt.",
+    )
+    original_text: str = Field(
+        default="",
+        description="Original user prompt retained for a safe continuation request.",
     )
 
 
@@ -305,6 +325,10 @@ class PromptAttemptTrackerDAO(BaseModel):
             "Set in _finalize_failed_attempt; read by _derive_next_attempt_plan."
         ),
     )
+    stream_failure: Optional[ProviderStreamFailure] = Field(
+        default=None,
+        description="Typed redacted provider stream failure eligible for one reconnect.",
+    )
 
 
 class PromptAttemptResultDAO(BaseModel):
@@ -345,6 +369,10 @@ class PromptAttemptResultDAO(BaseModel):
         description=(
             "True when the failure was a recognized provider context overflow " "on an initial attempt."
         ),
+    )
+    stream_failure: Optional[ProviderStreamFailure] = Field(
+        default=None,
+        description="Typed redacted provider stream failure from the agent attempt.",
     )
 
 
@@ -1563,10 +1591,14 @@ class SloAgentSession:
             plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
                 text=text,
             )
+            pending_session_events: list[AgentStreamEventDAO] = []
             while True:
                 prepared: PreparedPromptAttemptDAO = await self._prepare_attempt_context(
                     plan=plan,
                 )
+                for event in pending_session_events:
+                    yield event
+                pending_session_events = []
                 tracker: PromptAttemptTrackerDAO = self._build_attempt_tracker(
                     turn_id=prepared.turn_id,
                 )
@@ -1594,6 +1626,12 @@ class SloAgentSession:
                     result=result,
                 )
                 if next_plan is not None:
+                    if next_plan.attempt_kind == "stream_reconnect":
+                        pending_session_events.append(self._build_stream_reconnecting_event(result=result))
+                    if next_plan.attempt_kind == "stream_continuation":
+                        pending_session_events.append(
+                            self._build_stream_continuation_retrying_event(plan=next_plan)
+                        )
                     plan = next_plan
                     continue
                 self._raise_if_attempt_failed(
@@ -1668,6 +1706,9 @@ class SloAgentSession:
             excluded_turn_ids=frozenset(),
             preflight_compaction_mode="respect_dirty_flag",
             source_failed_turn_id=None,
+            submission_attempt_number=1,
+            max_submission_attempts=provider_stream_continuation_max_attempts(),
+            original_text=text,
         )
 
     async def _prepare_attempt_context(
@@ -2132,8 +2173,9 @@ class SloAgentSession:
                 kind="run_failed",
                 turn_id=turn_id,
                 payload=SessionHistoryEventPayloadDAO(
-                    error_message=f"{type(error).__name__}: {error}",
+                    error_message=self._safe_attempt_error_message(error=error),
                     model_name=self._resolve_active_model_name(),
+                    metadata=self._stream_failure_metadata(error=error),
                 ),
             ),
         )
@@ -2142,6 +2184,7 @@ class SloAgentSession:
         tracker.terminal_kind = "run_failed"
         tracker.terminal_event_appended = True
         tracker.overflow_recovery_eligible = self._is_context_overflow_error(exc=error)
+        tracker.stream_failure = error if isinstance(error, ProviderStreamFailure) else None
 
     async def _append_fallback_terminal_event_if_needed(
         self,
@@ -2276,6 +2319,7 @@ class SloAgentSession:
             aborted=tracker.aborted,
             error=tracker.error,
             overflow_recovery_eligible=tracker.overflow_recovery_eligible,
+            stream_failure=tracker.stream_failure,
         )
 
     async def _derive_next_attempt_plan(
@@ -2316,6 +2360,22 @@ class SloAgentSession:
             Optional[PromptAttemptPlanDAO]: Retry plan when overflow recovery
                 should continue, otherwise ``None``.
         """
+        stream_reconnect_plan: Optional[PromptAttemptPlanDAO] = (
+            await self._derive_stream_reconnect_attempt_plan(
+                plan=plan,
+                result=result,
+            )
+        )
+        if stream_reconnect_plan is not None:
+            return stream_reconnect_plan
+        stream_continuation_plan: Optional[PromptAttemptPlanDAO] = (
+            await self._derive_stream_continuation_attempt_plan(
+                plan=plan,
+                result=result,
+            )
+        )
+        if stream_continuation_plan is not None:
+            return stream_continuation_plan
         if not self._is_overflow_recovery_eligible(
             plan=plan,
             result=result,
@@ -2345,6 +2405,224 @@ class SloAgentSession:
             text=plan.text,
             failed_turn_id=result.turn_id,
         )
+
+    async def _derive_stream_reconnect_attempt_plan(
+        self,
+        *,
+        plan: PromptAttemptPlanDAO,
+        result: PromptAttemptResultDAO,
+    ) -> Optional[PromptAttemptPlanDAO]:
+        """Build and audit the one permitted fresh-connection attempt.
+
+        Called by the submission attempt planner after a failed initial attempt.
+        It never sleeps or replays committed output; the agent owns the typed
+        commit-state decision and this session owns durable audit state.
+        """
+        failure: Optional[ProviderStreamFailure] = result.stream_failure
+        if plan.attempt_kind != "initial" or failure is None:
+            return None
+        if failure.partial_output_committed:
+            return None
+        if failure.decision.action.value != "retry_fresh_connection":
+            return None
+        await self._persist_stream_reconnecting_event(
+            failed_turn_id=result.turn_id,
+            decision=failure.decision,
+        )
+        await asyncio.sleep(failure.decision.retry_delay_seconds)
+        return PromptAttemptPlanDAO(
+            attempt_kind="stream_reconnect",
+            text=plan.text,
+            persist_user_message=False,
+            excluded_turn_ids=frozenset({result.turn_id}),
+            preflight_compaction_mode="skip",
+            source_failed_turn_id=result.turn_id,
+            submission_attempt_number=plan.submission_attempt_number,
+            max_submission_attempts=plan.max_submission_attempts,
+            original_text=plan.original_text,
+        )
+
+    async def _derive_stream_continuation_attempt_plan(
+        self,
+        *,
+        plan: PromptAttemptPlanDAO,
+        result: PromptAttemptResultDAO,
+    ) -> Optional[PromptAttemptPlanDAO]:
+        """Build a safe continuation plan for one committed stream interruption."""
+        if not self._is_stream_continuation_eligible(plan=plan, result=result):
+            return None
+        continuation_plan: PromptAttemptPlanDAO = self._build_stream_continuation_attempt_plan(
+            plan=plan,
+            failed_turn_id=result.turn_id,
+        )
+        await self._persist_stream_continuation_retrying_event(
+            failed_turn_id=result.turn_id,
+            plan=continuation_plan,
+            failure=result.stream_failure,
+        )
+        return continuation_plan
+
+    @staticmethod
+    def _is_stream_continuation_eligible(
+        *,
+        plan: PromptAttemptPlanDAO,
+        result: PromptAttemptResultDAO,
+    ) -> bool:
+        """Return whether a committed stream interruption may continue safely."""
+        failure: ProviderStreamFailure | None = result.stream_failure
+        if failure is None:
+            return False
+        if failure.decision.action is not StreamRecoveryAction.DO_NOT_REPLAY:
+            return False
+        if not failure.partial_output_committed:
+            return False
+        return plan.submission_attempt_number < plan.max_submission_attempts
+
+    @staticmethod
+    def _build_stream_continuation_attempt_plan(
+        *,
+        plan: PromptAttemptPlanDAO,
+        failed_turn_id: str,
+    ) -> PromptAttemptPlanDAO:
+        """Build the next safe continuation request for the original task."""
+        attempt_number: int = plan.submission_attempt_number + 1
+        continuation_text: str = (
+            f"Continuation attempt {attempt_number}/{plan.max_submission_attempts}.\n\n"
+            "The prior provider stream ended unexpectedly after partial output. Before acting, "
+            "inspect the current worktree, git diff, and task artifacts. Do not repeat a completed "
+            "or side-effecting operation unless inspection shows it is still needed and safe. "
+            "Continue the original task from the verified state.\n\n"
+            f"Original task:\n{plan.original_text}"
+        )
+        return PromptAttemptPlanDAO(
+            attempt_kind="stream_continuation",
+            text=continuation_text,
+            persist_user_message=True,
+            excluded_turn_ids=frozenset(),
+            preflight_compaction_mode="respect_dirty_flag",
+            source_failed_turn_id=failed_turn_id,
+            submission_attempt_number=attempt_number,
+            max_submission_attempts=plan.max_submission_attempts,
+            original_text=plan.original_text,
+        )
+
+    async def _persist_stream_continuation_retrying_event(
+        self,
+        *,
+        failed_turn_id: str,
+        plan: PromptAttemptPlanDAO,
+        failure: ProviderStreamFailure | None,
+    ) -> None:
+        """Persist the redacted audit event before a stream continuation starts."""
+        if failure is None:
+            raise RuntimeError("stream continuation requires a typed stream failure")
+        metadata: dict[str, object] = {
+            "reason_code": failure.decision.reason_code,
+            "attempt": plan.submission_attempt_number,
+            "max_attempts": plan.max_submission_attempts,
+            "exception_family": failure.decision.exception_family,
+        }
+        await self._append_history_event(
+            event=self._build_event(
+                kind="run_retrying",
+                turn_id=failed_turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    message=self._stream_continuation_retry_message(plan=plan),
+                    metadata=metadata,
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _build_stream_continuation_retrying_event(*, plan: PromptAttemptPlanDAO) -> AgentStreamEventDAO:
+        """Build the public retrying event for a pending stream continuation."""
+        return AgentStreamEventDAO(
+            kind="run_retrying",
+            content=SloAgentSession._stream_continuation_retry_message(plan=plan),
+            metadata={
+                "reason_code": "provider_stream_interrupted",
+                "attempt": plan.submission_attempt_number,
+                "max_attempts": plan.max_submission_attempts,
+            },
+        )
+
+    @staticmethod
+    def _stream_continuation_retry_message(*, plan: PromptAttemptPlanDAO) -> str:
+        """Return the redacted status message for one continuation attempt."""
+        return (
+            "Provider stream interrupted; continuing from verified state "
+            f"(attempt {plan.submission_attempt_number}/{plan.max_submission_attempts})."
+        )
+
+    async def _persist_stream_reconnecting_event(
+        self,
+        *,
+        failed_turn_id: str,
+        decision: StreamRecoveryDecisionDAO,
+    ) -> None:
+        """Persist and render the redacted reconnect audit before the fresh request.
+
+        WHAT: Writes the diagnostic boundary event for the one permitted retry.
+        WHO: Called by the session attempt planner before it sleeps and re-invokes.
+        WHEN: Only after an initial pre-commit typed provider failure.
+        """
+        metadata: dict[str, object] = {
+            "reason_code": decision.reason_code,
+            "attempt": 1,
+            "exception_family": decision.exception_family,
+        }
+        await self._append_history_event(
+            event=self._build_event(
+                kind="stream_reconnecting",
+                turn_id=failed_turn_id,
+                payload=SessionHistoryEventPayloadDAO(metadata=metadata),
+            ),
+        )
+        await self._dispatch_event(
+            event=AgentStreamEventDAO(kind="stream_reconnecting", metadata=metadata),
+        )
+
+    @staticmethod
+    def _build_stream_reconnecting_event(
+        *,
+        result: PromptAttemptResultDAO,
+    ) -> AgentStreamEventDAO:
+        """Build the public reconnect event after the session persists its audit.
+
+        ``invoke`` calls this helper before starting the fresh attempt so TUI and
+        headless consumers receive the same reconnect boundary that subscribers
+        receive from ``_persist_stream_reconnecting_event``.
+        """
+        failure: ProviderStreamFailure | None = result.stream_failure
+        if failure is None:
+            raise RuntimeError("stream reconnect plan requires a typed stream failure")
+        return AgentStreamEventDAO(
+            kind="stream_reconnecting",
+            metadata={
+                "reason_code": failure.decision.reason_code,
+                "attempt": 1,
+                "exception_family": failure.decision.exception_family,
+            },
+        )
+
+    @staticmethod
+    def _safe_attempt_error_message(*, error: BaseException) -> str:
+        """Return redacted text for typed stream failures and legacy text otherwise."""
+        if isinstance(error, ProviderStreamFailure):
+            return str(error)
+        return f"{type(error).__name__}: {error}"
+
+    @staticmethod
+    def _stream_failure_metadata(*, error: BaseException) -> dict[str, object]:
+        """Return approved terminal metadata without provider exception content."""
+        if not isinstance(error, ProviderStreamFailure):
+            return {}
+        return {
+            "failure_code": error.decision.reason_code,
+            "partial_output_committed": error.partial_output_committed,
+            "attempts": error.attempt_number,
+            "exception_family": error.decision.exception_family,
+        }
 
     def _is_overflow_recovery_eligible(
         self,
@@ -2410,6 +2688,9 @@ class SloAgentSession:
             excluded_turn_ids=frozenset({failed_turn_id}),
             preflight_compaction_mode="skip",
             source_failed_turn_id=failed_turn_id,
+            submission_attempt_number=1,
+            max_submission_attempts=provider_stream_continuation_max_attempts(),
+            original_text=text,
         )
 
     async def _persist_overflow_retry_diagnostic_event(
@@ -2629,6 +2910,8 @@ class SloAgentSession:
         Returns:
             bool: True when a timed wait could plausibly let the iteration succeed.
         """
+        if isinstance(exc, ProviderStreamFailure):
+            return False
         if isinstance(exc, AllModelsExhaustedError):
             return True
         provider: Optional[ProviderName] = self._resolve_active_provider()
@@ -2641,6 +2924,7 @@ class SloAgentSession:
         return kind in {
             ProviderErrorKind.RATE_LIMITED,
             ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE,
+            ProviderErrorKind.STREAM_DISCONNECTED,
         }
 
     def _mirror_retry_cooldown(self, *, event: AgentStreamEventDAO) -> None:

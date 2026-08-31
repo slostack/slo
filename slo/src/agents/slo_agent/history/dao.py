@@ -37,6 +37,7 @@ HistoryEventKind = Literal[
     "tool_result",
     "run_retrying",        # a wait-and-retry decision (preflight / pool / rate limit) — 37.a.6
     "route_switched",      # a ModelPool route switch (audit) — 37.a.6
+    "stream_reconnecting", # provider stream reconnect audit — spec 70
     # LLM-driven recovery (feature 50):
     "run_recovering",        # audit: a recovery decision (excluded from model context)
     "recovery_observation",  # the synthetic observation message (included on replay)

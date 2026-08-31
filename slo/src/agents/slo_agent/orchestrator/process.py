@@ -41,9 +41,9 @@ the total forwarded bytes, so memory use is still bounded.
 """
 
 from config.logger import log_error, log_info, log_warning
-from config.timeout_resolver import positive_float_env
+from config.timeout_resolver import positive_float_env, positive_int_env
 from src.agents.model_catalog.prompt_clause import append_kimi_for_coding_clause
-from src.cli.headless_events import emit_lifecycle_event
+from src.cli.headless_events import HeadlessLifecycleEventDAO, emit_lifecycle_event
 
 from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
@@ -92,6 +92,12 @@ TERMINATE_GRACE_SECONDS: float = positive_float_env(
 
 Overridable via ``SLO_SUBAGENT_TERMINATE_GRACE_SECONDS``.
 """
+
+HEADLESS_HEARTBEAT_STALE_MULTIPLIER: int = positive_int_env(
+    primary_name="SLO_HEADLESS_HEARTBEAT_STALE_MULTIPLIER",
+    default=3,
+)
+"""Recognized heartbeat intervals tolerated before a child is considered stale."""
 
 CHILD_INACTIVITY_TIMEOUT_SECONDS: float = positive_float_env(
     primary_name="SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS",
@@ -193,6 +199,14 @@ class SubAgentProcess:
         self._forwarded_bytes: int = 0
         self._answer: str = ""
         self._stderr_tail: deque[str] = deque(maxlen=STDERR_TAIL_MAX_LINES)
+        self._last_liveness_at: Optional[float] = None
+        self._last_stdout_at: Optional[float] = None
+        self._heartbeat_seconds: float = positive_float_env(
+            primary_name="SLO_HEADLESS_HEARTBEAT_SECONDS",
+            default=15.0,
+        )
+        self._failure_envelope: dict[str, object] = {}
+        self._terminal_result_built: Optional[SubAgentResultDAO] = None
 
     def _write_spawn_context(self) -> None:
         """Write spawn_context.json to the child capture directory.
@@ -387,20 +401,16 @@ class SubAgentProcess:
                 try:
                     raw: bytes = await asyncio.wait_for(
                         stream.readline(),
-                        timeout=CHILD_INACTIVITY_TIMEOUT_SECONDS,
+                        timeout=self._next_child_liveness_timeout_seconds(),
                     )
                 except asyncio.TimeoutError as exc:
-                    # The child produced no output for the full inactivity window:
-                    # treat it as hung, tear it down (SIGTERM → grace → SIGKILL),
-                    # and surface the stall as a failure rather than blocking the
-                    # parent on a wait that may never return.
-                    await self.cancel()
-                    raise TimeoutError(
-                        f"sub-agent produced no output for "
-                        f"{CHILD_INACTIVITY_TIMEOUT_SECONDS:.0f}s; treated as hung"
-                    ) from exc
+                    await self._cancel_stale_child_if_needed(
+                        now_seconds=asyncio.get_running_loop().time(),
+                    )
+                    raise TimeoutError(self._liveness_timeout_message()) from exc
                 if not raw:
                     return
+                self._last_stdout_at = asyncio.get_running_loop().time()
                 if capture is not None:
                     capture.write(raw)
                     capture.flush()
@@ -443,6 +453,7 @@ class SubAgentProcess:
                         capture.flush()
                     except OSError:
                         capture = None  # stop writing after first IO failure
+                self._record_headless_heartbeat(raw=raw)
                 line_text: str = raw.decode("utf-8", errors="replace").rstrip()
                 if line_text:
                     self._stderr_tail.append(line_text[:STDERR_LINE_MAX_CHARS])
@@ -481,6 +492,7 @@ class SubAgentProcess:
 
         if event.is_terminal:
             self._answer = event.content or self._answer
+            self._capture_failure_envelope(event=event)
 
         if self._forwarded_bytes >= PER_TASK_OUTPUT_CAP and not event.is_terminal:
             return  # cap reached; drop non-terminal events
@@ -501,6 +513,71 @@ class SubAgentProcess:
         )
         await self._relay(tagged)
 
+    def _record_headless_heartbeat(self, *, raw: bytes) -> bool:
+        """Accept only a valid same-session status lifecycle record as liveness proof."""
+        try:
+            lifecycle: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO.model_validate_json(raw)
+        except Exception:
+            return False
+        if lifecycle.kind != "headless_status" or lifecycle.session_id != self._session_id:
+            return False
+        self._last_liveness_at = asyncio.get_running_loop().time()
+        return True
+
+    def _heartbeat_is_stale(self, *, now_seconds: float) -> bool:
+        """Return whether a previously healthy child missed the bounded heartbeat deadline."""
+        if self._last_liveness_at is None:
+            return False
+        return now_seconds - self._last_liveness_at >= self._heartbeat_stale_seconds()
+
+    def _heartbeat_stale_seconds(self) -> float:
+        """Return the bounded heartbeat liveness interval for the active child."""
+        return self._heartbeat_seconds * HEADLESS_HEARTBEAT_STALE_MULTIPLIER
+
+    def _next_child_liveness_timeout_seconds(self) -> float:
+        """Select the next stdout-read timeout from recognized heartbeat state."""
+        if self._last_liveness_at is None:
+            return CHILD_INACTIVITY_TIMEOUT_SECONDS
+        elapsed: float = asyncio.get_running_loop().time() - self._last_liveness_at
+        return max(0.001, min(CHILD_INACTIVITY_TIMEOUT_SECONDS, self._heartbeat_stale_seconds() - elapsed))
+
+    def _liveness_timeout_message(self) -> str:
+        """Return the safe timeout message for the current supervision deadline."""
+        if self._heartbeat_is_stale(now_seconds=asyncio.get_running_loop().time()):
+            return "sub-agent headless heartbeat became stale; treated as hung"
+        return f"sub-agent produced no output for {CHILD_INACTIVITY_TIMEOUT_SECONDS:.0f}s; treated as hung"
+
+    async def _cancel_stale_child_if_needed(self, *, now_seconds: float) -> None:
+        """Cancel a child after a selected heartbeat or stdout liveness timeout.
+
+        WHAT: Records a redacted stale-heartbeat envelope then performs cleanup.
+        WHO: Called by the stdout supervisor after its selected read deadline.
+        WHEN: Before the controlled timeout escapes to the process run owner.
+        """
+        if self._heartbeat_is_stale(now_seconds=now_seconds):
+            self._failure_envelope = {
+                "failure_code": "headless_heartbeat_stale",
+                "partial_output_committed": None,
+                "attempts": None,
+                "safe_message": "Headless child heartbeat became stale; child was cancelled.",
+            }
+        await self.cancel()
+
+    def _capture_failure_envelope(self, *, event: AgentStreamEventDAO) -> None:
+        """Copy only valid typed stream-failure metadata from a terminal child event."""
+        if event.kind != "run_failed":
+            return
+        metadata: dict[str, object] = event.metadata
+        failure_code: object = metadata.get("failure_code")
+        if failure_code not in {"provider_stream_disconnected", "provider_stream_interrupted"}:
+            return
+        self._failure_envelope = {
+            "failure_code": failure_code,
+            "partial_output_committed": metadata.get("partial_output_committed"),
+            "attempts": metadata.get("attempts"),
+            "safe_message": "Provider stream interrupted; inspect durable artifacts before continuing.",
+        }
+
     def _terminal_result(self, *, exit_code: int) -> SubAgentResultDAO:
         """Map the child exit code and accumulated answer to a result DAO.
 
@@ -513,13 +590,20 @@ class SubAgentProcess:
         Returns:
             SubAgentResultDAO: Terminal result DAO.
         """
-        return SubAgentResultDAO(
+        if self._terminal_result_built is not None:
+            return self._terminal_result_built
+        self._terminal_result_built = SubAgentResultDAO(
             task_id=self._task.task_id,
             session_id=self._session_id,
             status=self._status_for(exit_code=exit_code),  # type: ignore[arg-type]
             answer=self._resolve_answer(exit_code=exit_code),
             exit_code=exit_code,
+            failure_code=self._failure_envelope.get("failure_code"),  # type: ignore[arg-type]
+            partial_output_committed=self._failure_envelope.get("partial_output_committed"),  # type: ignore[arg-type]
+            attempts=self._failure_envelope.get("attempts"),  # type: ignore[arg-type]
+            safe_message=self._failure_envelope.get("safe_message"),  # type: ignore[arg-type]
         )
+        return self._terminal_result_built
 
     def _status_for(self, *, exit_code: int) -> str:
         """Map a child exit code to its terminal status string.
@@ -582,10 +666,25 @@ class SubAgentProcess:
         if self._proc is None or self._proc.returncode is not None:
             return
         self._proc.terminate()
+        await self._await_termination_or_kill()
+
+    async def _await_termination_or_kill(self) -> None:
+        """Wait for SIGTERM, escalate once, and reap after SIGKILL.
+
+        WHAT: Completes the cancellation protocol even when a child ignores SIGTERM.
+        WHO: Called by ``cancel`` after it has sent the graceful signal.
+        WHEN: Runs during parent abort and all timeout cleanup paths.
+        """
+        if self._proc is None:
+            return
         try:
-            await asyncio.wait_for(
-                self._proc.wait(),
-                timeout=TERMINATE_GRACE_SECONDS,
-            )
+            await asyncio.wait_for(self._proc.wait(), timeout=TERMINATE_GRACE_SECONDS)
+            return
         except asyncio.TimeoutError:
-            self._proc.kill()
+            if self._proc.returncode is not None:
+                return
+        self._proc.kill()
+        try:
+            await asyncio.wait_for(self._proc.wait(), timeout=TERMINATE_GRACE_SECONDS)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("sub-agent did not exit after SIGKILL") from exc

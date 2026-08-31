@@ -4,6 +4,7 @@ Covers the public surface (``invoke``, ``steer``, ``abort``) plus the
 multi-turn ReAct loop that now lives inside ``SloAgent.invoke``.
 """
 
+import asyncio
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -1615,3 +1616,99 @@ class TestExecuteRun:
 
         assert any(e.kind == "run_aborted" for e in events)
         assert not any(e.kind == "run_completed" for e in events)
+
+class TestProviderStreamProgressDeadlines:
+    """Provider stream read deadlines preserve typed pre-commit failure semantics."""
+
+    @pytest.mark.asyncio
+    async def test_raises_first_progress_timeout_when_graph_yields_no_item(self) -> None:
+        """A silent graph read raises the typed first-progress timeout before outer watchdogs."""
+        from langchain_core.messages import HumanMessage
+        from src.agents.providers.stream_recovery.dao import ProviderStreamProgressTimeout
+
+        class _SilentGraph:
+            async def astream(self, *_args, **_kwargs):
+                await asyncio.Event().wait()
+                yield None  # pragma: no cover
+
+        agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
+        agent._graph = _SilentGraph()  # type: ignore[assignment]
+        with pytest.raises(ProviderStreamProgressTimeout, match="first_progress"):
+            async for _event in agent._stream_graph_turn(
+                accumulated_messages=[HumanMessage(content="prompt")],
+                normalizer=AssistantChunkNormalizer(iteration=0),
+                turn=TurnStreamAccumulator(),
+                iteration=0,
+                runtime_handler=None,
+                first_progress_timeout_seconds=0.01,
+                idle_timeout_seconds=1.0,
+            ):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_does_not_apply_idle_timeout_while_a_tool_update_is_in_flight(self) -> None:
+        """A tool update disables the provider-read deadline until the graph yields again.
+
+        This guards the orchestrator failure where a long local tool execution was
+        misclassified as a silent provider stream. ``_stream_graph_turn`` calls
+        this policy after it receives an updates-mode item that starts tool work.
+        """
+        from langchain_core.messages import HumanMessage
+
+        class _ToolThenSlowCompletionGraph:
+            async def astream(self, *_args, **_kwargs):
+                yield (
+                    "messages",
+                    AIMessageChunk(
+                        content="",
+                        tool_call_chunks=[
+                            {"name": "slow_tool", "args": "{}", "id": "call-1", "index": 0}
+                        ],
+                    ),
+                )
+                await asyncio.sleep(0.03)
+                yield ("updates", {"agent": {"messages": [AIMessage(content="done")]}})
+
+        agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
+        agent._graph = _ToolThenSlowCompletionGraph()  # type: ignore[assignment]
+
+        events = [
+            event
+            async for event in agent._stream_graph_turn(
+                accumulated_messages=[HumanMessage(content="prompt")],
+                normalizer=AssistantChunkNormalizer(iteration=0),
+                turn=TurnStreamAccumulator(),
+                iteration=0,
+                runtime_handler=None,
+                first_progress_timeout_seconds=0.01,
+                idle_timeout_seconds=0.01,
+            )
+        ]
+
+        assert any(event.kind == "tool_call_start" for event in events)
+
+    @pytest.mark.asyncio
+    async def test_raises_idle_timeout_after_provider_progress(self) -> None:
+        """A graph that progresses once then stalls raises the typed idle timeout."""
+        from langchain_core.messages import HumanMessage
+        from src.agents.providers.stream_recovery.dao import ProviderStreamProgressTimeout
+
+        class _OneThenSilentGraph:
+            async def astream(self, *_args, **_kwargs):
+                yield ("messages", AIMessageChunk(content="partial"))
+                await asyncio.Event().wait()
+                yield None  # pragma: no cover
+
+        agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
+        agent._graph = _OneThenSilentGraph()  # type: ignore[assignment]
+        with pytest.raises(ProviderStreamProgressTimeout, match="idle"):
+            async for _event in agent._stream_graph_turn(
+                accumulated_messages=[HumanMessage(content="prompt")],
+                normalizer=AssistantChunkNormalizer(iteration=0),
+                turn=TurnStreamAccumulator(),
+                iteration=0,
+                runtime_handler=None,
+                first_progress_timeout_seconds=1.0,
+                idle_timeout_seconds=0.01,
+            ):
+                pass

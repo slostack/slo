@@ -213,27 +213,33 @@ class SubAgentPool:
             slo_home=SLO_HOME,
         )
         self._active.append(process)
-        async with self._semaphore:
-            self._registry.mark_running(session_id=session_id)
-            result: SubAgentResultDAO = await process.run()
-        terminal_kind: str
+        try:
+            async with self._semaphore:
+                self._registry.mark_running(session_id=session_id)
+                result: SubAgentResultDAO = await process.run()
+            terminal_kind: str = self._terminal_lifecycle_kind(result=result)
+            await self._emit_lifecycle(
+                kind=terminal_kind,
+                task_id=task.task_id,
+                session_id=session_id,
+            )
+            self._registry.mark_terminal(
+                session_id=session_id,
+                status=result.status,
+                answer=result.answer,
+            )
+            return result
+        finally:
+            self._active.remove(process)
+
+    @staticmethod
+    def _terminal_lifecycle_kind(*, result: SubAgentResultDAO) -> str:
+        """Map one cached child result to its single orchestrator lifecycle kind."""
         if result.status == "completed":
-            terminal_kind = "sub_agent_completed"
-        elif result.status == "aborted":
-            terminal_kind = "sub_agent_aborted"
-        else:
-            terminal_kind = "sub_agent_failed"
-        await self._emit_lifecycle(
-            kind=terminal_kind,
-            task_id=task.task_id,
-            session_id=session_id,
-        )
-        self._registry.mark_terminal(
-            session_id=session_id,
-            status=result.status,
-            answer=result.answer,
-        )
-        return result
+            return "sub_agent_completed"
+        if result.status == "aborted":
+            return "sub_agent_aborted"
+        return "sub_agent_failed"
 
     async def _run_chain(
         self,

@@ -475,6 +475,7 @@ class ModelPool(BaseChatModel):
         short_cooldown_kinds = (
             ProviderErrorKind.RATE_LIMITED,
             ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE,
+            ProviderErrorKind.STREAM_DISCONNECTED,
         )
         seconds: int = (
             entry.rate_limit_cooldown_seconds
@@ -511,9 +512,23 @@ class ModelPool(BaseChatModel):
                 from_model_name=from_entry.model_name,
                 to_model_name=to_model_name,
                 kind=kind.name,
-                error_text=str(error)[:500],
+                error_text=self._safe_route_switch_error_text(kind=kind, error=error),
             )
         )
+
+    def _safe_route_switch_error_text(self, *, kind: ProviderErrorKind, error: Exception) -> str:
+        """Return a route-switch audit value safe for the classified failure kind.
+
+        Args:
+            kind (ProviderErrorKind): Shared classification that caused the route switch.
+            error (Exception): Original exception retained only for existing failure kinds.
+
+        Returns:
+            str: Stable stream-disconnection code or the legacy bounded error text.
+        """
+        if kind is ProviderErrorKind.STREAM_DISCONNECTED:
+            return "provider_stream_disconnected"
+        return str(error)[:500]
 
     def drain_route_switch_log(self) -> list[RouteSwitchRecordDAO]:
         """Return and clear the accumulated route-switch records.

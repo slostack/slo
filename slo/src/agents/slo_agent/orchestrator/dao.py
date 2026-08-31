@@ -193,6 +193,22 @@ class SubAgentResultDAO(BaseModel):
     answer: str = ""
     exit_code: int = -1
     usage: dict[str, int] = Field(default_factory=dict)
+    failure_code: Optional[str] = Field(
+        default=None,
+        description="Machine-readable redacted terminal failure cause.",
+    )
+    partial_output_committed: Optional[bool] = Field(
+        default=None,
+        description="Whether the child crossed its commit boundary before failing.",
+    )
+    attempts: Optional[int] = Field(
+        default=None,
+        description="Provider attempts consumed by the child run.",
+    )
+    safe_message: Optional[str] = Field(
+        default=None,
+        description="Redacted operator-facing failure summary.",
+    )
 
 
 class OrchestratorResultDAO(BaseModel):

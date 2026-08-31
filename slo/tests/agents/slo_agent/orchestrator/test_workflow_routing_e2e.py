@@ -194,6 +194,16 @@ def build_orchestrator_session(
 
     session._build_agent = _patched_build_agent  # type: ignore[method-assign]
 
+    async def _skip_credential_refresh() -> None:
+        """Keep the Faux-backed routing harness offline and credential-free.
+
+        ``_ensure_agent_ready`` calls this only before the patched builder
+        returns the scripted model. Production sessions retain credential
+        refresh; this test seam proves routing without provider access.
+        """
+
+    session._refresh_oauth_credential_if_needed = _skip_credential_refresh  # type: ignore[method-assign]
+
     return session
 
 

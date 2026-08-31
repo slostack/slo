@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
+from src.agents.providers.stream_recovery.dao import ProviderStreamFailure
 from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
     ProviderErrorClassifier,
@@ -80,6 +81,11 @@ class RecoveryPolicy:
         Returns:
             RecoveryDecisionDAO: The classified recovery decision.
         """
+        if isinstance(exc, ProviderStreamFailure):
+            return RecoveryDecisionDAO(
+                recovery_class=RecoveryClass.MECHANICAL,
+                reason="Owned by the provider stream recovery layer.",
+            )
         if cls._is_fatal(exc=exc):
             return RecoveryDecisionDAO(
                 recovery_class=RecoveryClass.FATAL,

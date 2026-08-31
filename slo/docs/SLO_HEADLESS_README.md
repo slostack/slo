@@ -103,6 +103,12 @@ When a run starts, the session id is resolved in this order (first non-`None` wi
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | Maximum tasks accepted per single `spawn_sub_agents` call. |
 | `SLO_VISUALIZER_REFRESH_SECONDS` | `1.0` | Default polling cadence for `slo visualize`. Overridden by `--refresh-seconds`. |
 | `SLO_OAUTH_TIMEOUT_SECONDS` | `60` | OAuth callback server timeout (interactive auth only). |
+| `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` | `90` | Maximum wait for first provider-stream progress before one reconnect may be considered. |
+| `SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` | `120` | Maximum gap between provider-stream progress events. |
+| `SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS` | `1.0` | Base jittered delay for the single fresh-connection stream reconnect. |
+| `SLO_PROVIDER_STREAM_CONTINUATION_MAX_ATTEMPTS` | `5` | Total TUI/headless submission attempts after a committed stream interruption. |
+| `SLO_HEADLESS_HEARTBEAT_SECONDS` | `15` | Stderr-only `headless_status` cadence while a headless run is active. |
+| `SLO_HEADLESS_HEARTBEAT_STALE_MULTIPLIER` | `3` | Recognized heartbeat intervals tolerated by a child supervisor. |
 | `DEFAULT_MODEL_NAME` | provider default | Fallback model when no preference and no `--model`. |
 | `ANTHROPIC_API_KEY` | — | Anthropic credential. |
 | `KIMI_FOR_CODING_API_KEY` | — | Kimi For Coding credential. |
@@ -110,7 +116,39 @@ When a run starts, the session id is resolved in this order (first non-`None` wi
 
 ---
 
+## Provider Stream Recovery and Heartbeats
+
+A provider stream disconnection before **committed output** can receive one bounded
+fresh-connection reconnect. A reconnect is a **new provider request**, not a
+resumption of the broken HTTP stream. After text/thinking output or a tool call has
+been committed, Slo does not automatically replay or switch provider mid-stream.
+Instead, the session starts a new continuation turn, up to
+`SLO_PROVIDER_STREAM_CONTINUATION_MAX_ATTEMPTS` total attempts. The continuation
+instructs the agent to inspect the worktree and task artifacts before continuing,
+so it does not blindly repeat a completed side effect. This common session path
+applies to both the TUI and spawned headless sub-agents. A final terminal result
+still carries a redacted failure envelope when available: `failure_code`,
+`partial_output_committed`, `attempts`, and `safe_message`.
+
+During a headless run, `HeadlessRunner` emits `headless_status` records to stderr
+every `SLO_HEADLESS_HEARTBEAT_SECONDS`. Their payload contains only `phase`,
+`last_event_age_seconds`, and `attempt`; never prompt text, answers, headers,
+bodies, tokens, URLs, or raw transport errors. A parent treats only a valid
+same-session heartbeat as liveness—ordinary stderr is diagnostic output, not a
+health signal.
+
 ## Your First Headless Run
+
+Install Slo from the public source (installation itself requires no `SLO_USERNAME`,
+`SLO_TOKEN`, or other credentials):
+
+```bash
+curl -fsSL https://get-slo.sh/install.sh | bash
+```
+
+With `SLO_VERSION` unset, the installer uses the hosted/published `SLO_REF`.
+`SLO_VERSION=dev` uses `main`; any other nonempty value is the ref to install
+(tag or branch). Provider authentication is a separate runtime requirement.
 
 Prerequisites:
 

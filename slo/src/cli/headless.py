@@ -15,15 +15,18 @@ histories.  Operators can opt in with ``--enable-history``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+import time
 from typing import Optional
 
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+from config.timeout_resolver import positive_float_env
 from src.cli.headless_events import emit_lifecycle_event
 
 __all__ = ["HeadlessRunner"]
@@ -82,6 +85,9 @@ class HeadlessRunner:
         self._last_spawn_result_json: str = "{}"
         self._terminal_kind: str = "run_failed"
         self._terminal_content: str = ""
+        self._last_event_at: float = time.monotonic()
+        self._heartbeat_phase: str = "awaiting_provider_stream"
+        self._heartbeat_attempt: int = 1
 
     async def invoke(self, *, prompt: str) -> int:
         """Run one prompt to completion and return the POSIX exit code.
@@ -127,8 +133,14 @@ class HeadlessRunner:
         session.subscribe(handler=self._emit)
         self._notifier = self._resolve_notifier(orchestrator_session_id=session.session_id)
         await self._notify_started(prompt=prompt)
-        async for _event in session.invoke(text=prompt):
-            pass
+        heartbeat_task: asyncio.Task[None] = asyncio.create_task(
+            self._emit_headless_heartbeats(session_id=session.session_id)
+        )
+        try:
+            async for _event in session.invoke(text=prompt):
+                pass
+        finally:
+            await self._cancel_and_await_heartbeat_task(heartbeat_task=heartbeat_task)
         await self._notify_terminal()
         lifecycle_kind: str = _TERMINAL_KIND_TO_LIFECYCLE.get(
             self._terminal_kind,
@@ -155,6 +167,9 @@ class HeadlessRunner:
         Args:
             event (AgentStreamEventDAO): The event to serialise and emit.
         """
+        self._last_event_at = time.monotonic()
+        self._heartbeat_phase = self._phase_for_event(event=event)
+        self._heartbeat_attempt = self._attempt_for_event(event=event)
         if event.is_terminal:
             self._terminal_kind = event.kind
             if not event.is_sub_agent_event:
@@ -162,6 +177,54 @@ class HeadlessRunner:
         sys.stdout.write(event.model_dump_json() + "\n")
         sys.stdout.flush()
         await self._maybe_notify_phase(event=event)
+
+    async def _emit_headless_heartbeats(self, *, session_id: str) -> None:
+        """Emit stderr-only liveness records until the active run reaches a terminal state.
+
+        WHAT: Periodically emits a bounded ``headless_status`` lifecycle event.
+        WHO: Started by ``invoke`` alongside the session stream for child-process supervisors.
+        DATA FLOW: Writes safe phase, age, and attempt fields to stderr via lifecycle JSONL.
+        LIFETIME: Runs until ``invoke`` cancels and awaits it before terminal lifecycle output.
+        """
+        heartbeat_seconds: float = positive_float_env(
+            primary_name="SLO_HEADLESS_HEARTBEAT_SECONDS",
+            default=15.0,
+        )
+        while True:
+            await asyncio.sleep(heartbeat_seconds)
+            emit_lifecycle_event(
+                kind="headless_status",
+                session_id=session_id,
+                message="headless heartbeat",
+                payload={
+                    "phase": self._heartbeat_phase,
+                    "last_event_age_seconds": max(0, int(time.monotonic() - self._last_event_at)),
+                    "attempt": self._heartbeat_attempt,
+                },
+            )
+
+    async def _cancel_and_await_heartbeat_task(self, *, heartbeat_task: asyncio.Task[None]) -> None:
+        """Cancel and await the run-owned heartbeat without masking run completion."""
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            return
+
+    @staticmethod
+    def _phase_for_event(*, event: AgentStreamEventDAO) -> str:
+        """Map a safe stream event category to its heartbeat phase label."""
+        if event.kind.startswith("tool_"):
+            return "running_tools"
+        if event.kind in {"thinking_delta", "text_delta", "text_start", "thinking_start"}:
+            return "streaming"
+        return "awaiting_provider_stream"
+
+    @staticmethod
+    def _attempt_for_event(*, event: AgentStreamEventDAO) -> int:
+        """Extract the safe provider attempt count when a stream event carries it."""
+        attempt: object = event.metadata.get("attempt")
+        return attempt if isinstance(attempt, int) and attempt > 0 else 1
 
     # ── workflow notification tap (spec 57.a.3) ──────────────────────────────
 

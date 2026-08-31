@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.15.5] — 2026-08-31
+
+**Provider stream-disconnection recovery.**
+
+### Added
+
+- Typed provider stream-disconnection classification and a one-shot,
+  pre-commit fresh-connection retry path.
+- Provider stream first-progress and idle deadlines, plus headless child
+  heartbeat supervision and typed failure-envelope fields.
+- Deterministic recovery, ModelPool, session, subprocess, and Textual TUI
+  regression coverage.
+
+### Fixed
+
+- A long-running local tool or sub-agent wait no longer trips the provider
+  stream idle deadline.
+- The TUI now receives and renders the safe `stream_reconnecting` boundary
+  before a fresh provider request begins.
+
+---
+
 ## [0.15.4] — 2026-09-08
 
 **Quiet CLI startup.**

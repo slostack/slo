@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional, Sequence
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Literal, Optional, Sequence
 
 from langchain_core.messages import (
     AIMessage,
@@ -47,6 +47,12 @@ from src.agents.slo_agent.graph import SloAgentBuildResult, SloAgentStateDAO, bu
 from src.agents.slo_agent.graph_stream_parser import parse_graph_stream_item
 from src.agents.slo_agent.message_text import assistant_message_text
 from src.agents.slo_agent.rate_limit.service import int_or_none, IterationRetryPolicy
+from src.agents.providers.stream_recovery.dao import ProviderStreamFailure
+from src.agents.providers.stream_recovery.service import (
+    StreamRecoveryService,
+    provider_stream_first_progress_timeout_seconds,
+    provider_stream_idle_timeout_seconds,
+)
 from src.agents.slo_agent.rate_limit.dao import RateLimitRetryPlanDAO
 from src.agents.slo_agent.recovery.dao import RecoveryClass, RecoveryDecisionDAO
 from src.agents.slo_agent.recovery.service import (
@@ -614,6 +620,8 @@ class SloAgent:
         turn: TurnStreamAccumulator,
         iteration: int,
         runtime_handler: Optional[AgentRuntimeHandler],
+        first_progress_timeout_seconds: Optional[float] = None,
+        idle_timeout_seconds: Optional[float] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Stream one LangGraph turn and yield all resulting stream events.
 
@@ -639,47 +647,134 @@ class SloAgent:
         Raises:
             Exception: Any exception raised by ``self._graph.astream``.
         """
+        first_progress_timeout: float = (
+            first_progress_timeout_seconds
+            if first_progress_timeout_seconds is not None
+            else provider_stream_first_progress_timeout_seconds()
+        )
+        idle_timeout: float = (
+            idle_timeout_seconds if idle_timeout_seconds is not None else provider_stream_idle_timeout_seconds()
+        )
         turn_state: SloAgentStateDAO = SloAgentStateDAO(messages=list(accumulated_messages))
-        async for raw_item in self._graph.astream(
-            turn_state,
-            stream_mode=["messages", "updates"],
-        ):
-            if self._abort_event.is_set():
-                await self._emit_trace_event(
-                    runtime_handler=runtime_handler,
-                    event=AgentRuntimeEventDAO(kind="run_aborted", iteration=iteration),
+        graph_stream = self._graph.astream(turn_state, stream_mode=["messages", "updates"])
+        first_progress_pending: bool = True
+        provider_read_pending: bool = True
+        try:
+            while True:
+                raw_item = await self._read_next_graph_stream_item(
+                    graph_stream=graph_stream,
+                    first_progress_pending=first_progress_pending,
+                    first_progress_timeout_seconds=first_progress_timeout,
+                    idle_timeout_seconds=idle_timeout,
+                    provider_read_pending=provider_read_pending,
                 )
-                yield AgentStreamEventDAO(
-                    kind="run_aborted",
-                    iteration=iteration,
-                    content="<aborted>",
-                )
-                return
-
-            parsed = parse_graph_stream_item(raw_item=raw_item)
-
-            if parsed.mode == "messages":
-                if not isinstance(parsed.message_chunk, AIMessageChunk):
+                if raw_item is None:
+                    return
+                first_progress_pending = False
+                if self._abort_event.is_set():
+                    await self._emit_trace_event(
+                        runtime_handler=runtime_handler,
+                        event=AgentRuntimeEventDAO(kind="run_aborted", iteration=iteration),
+                    )
+                    yield AgentStreamEventDAO(
+                        kind="run_aborted",
+                        iteration=iteration,
+                        content="<aborted>",
+                    )
+                    return
+                parsed = parse_graph_stream_item(raw_item=raw_item)
+                if parsed.mode == "messages":
+                    if not isinstance(parsed.message_chunk, AIMessageChunk):
+                        continue
+                    stream_events: list[AgentStreamEventDAO] = await self._process_messages_mode_chunk(
+                        chunk=parsed.message_chunk,
+                        normalizer=normalizer,
+                        runtime_handler=runtime_handler,
+                    )
+                    provider_read_pending = not self._starts_local_tool_work(events=stream_events)
+                    for event in stream_events:
+                        yield event
                     continue
-                for event in await self._process_messages_mode_chunk(
-                    chunk=parsed.message_chunk,
+                if parsed.update_chunk is None:
+                    continue
+                provider_read_pending = True
+                for event in await self._process_updates_mode_chunk(
+                    chunk=parsed.update_chunk,
+                    accumulated_messages=accumulated_messages,
+                    turn=turn,
+                    iteration=iteration,
                     normalizer=normalizer,
                     runtime_handler=runtime_handler,
                 ):
                     yield event
-                continue
+        finally:
+            await self._close_graph_stream(graph_stream=graph_stream)
 
-            if parsed.update_chunk is None:
-                continue
-            for event in await self._process_updates_mode_chunk(
-                chunk=parsed.update_chunk,
-                accumulated_messages=accumulated_messages,
-                turn=turn,
-                iteration=iteration,
-                normalizer=normalizer,
-                runtime_handler=runtime_handler,
-            ):
-                yield event
+    @staticmethod
+    async def _close_graph_stream(*, graph_stream: AsyncIterator[object]) -> None:
+        """Close a generator-backed graph stream when the provider read loop exits."""
+        if not isinstance(graph_stream, AsyncGenerator):
+            return
+        await graph_stream.aclose()
+
+    async def _read_next_graph_stream_item(
+        self,
+        *,
+        graph_stream: AsyncIterator[object],
+        first_progress_pending: bool,
+        first_progress_timeout_seconds: float,
+        idle_timeout_seconds: float,
+        provider_read_pending: bool,
+    ) -> object | None:
+        """Read one graph item under the provider transport-progress deadline.
+
+        WHAT: Applies the first-progress deadline before the initial graph item and
+            the idle deadline thereafter, translating only deadline expiry into a
+            typed provider-stream failure.
+        WHO: Called by ``_stream_graph_turn`` at the LangGraph/provider read boundary.
+        WHEN: Once for every pending ``anext`` while one ReAct iteration is live.
+        """
+        if not provider_read_pending:
+            return await self._read_graph_item_without_provider_deadline(graph_stream=graph_stream)
+        timeout: float = first_progress_timeout_seconds if first_progress_pending else idle_timeout_seconds
+        try:
+            return await asyncio.wait_for(anext(graph_stream), timeout=timeout)
+        except StopAsyncIteration:
+            return None
+        except asyncio.TimeoutError as exc:
+            from src.agents.providers.stream_recovery.dao import (  # noqa: PLC0415
+                ProviderStreamProgressTimeout,
+            )
+
+            phase: Literal["first_progress", "idle"] = "first_progress" if first_progress_pending else "idle"
+            raise ProviderStreamProgressTimeout(phase=phase) from exc
+
+    @staticmethod
+    async def _read_graph_item_without_provider_deadline(
+        *,
+        graph_stream: AsyncIterator[object],
+    ) -> object | None:
+        """Read a graph item while LangGraph waits for a local tool result.
+
+        A ``tool_call_start`` has already crossed the commit boundary. LangGraph
+        can legitimately pause the combined graph iterator while it executes that
+        local tool, so ``_stream_graph_turn`` calls this helper instead of applying
+        a provider-byte idle timeout during that interval.
+        """
+        try:
+            return await anext(graph_stream)
+        except StopAsyncIteration:
+            return None
+
+    @staticmethod
+    def _starts_local_tool_work(*, events: list[AgentStreamEventDAO]) -> bool:
+        """Return whether a provider chunk starts local tool execution.
+
+        ``_stream_graph_turn`` calls this after normalizing a messages-mode chunk
+        so its next graph read does not mistake LangGraph's local tool wait for a
+        provider transport stall.
+        """
+        return any(event.kind == "tool_call_start" for event in events)
 
     async def _finalize_iteration(
         self,
@@ -778,7 +873,7 @@ class SloAgent:
         attempt: int = 0
         while True:
             attempt += 1
-            saw_visible: bool = False
+            partial_output_committed: bool = False
             normalizer: AssistantChunkNormalizer = AssistantChunkNormalizer(iteration=iteration)
             turn: TurnStreamAccumulator = TurnStreamAccumulator()
             try:
@@ -789,18 +884,28 @@ class SloAgent:
                     iteration=iteration,
                     runtime_handler=runtime_handler,
                 ):
-                    if self._is_visible_output_event(event=event):
-                        saw_visible = True
+                    if self._is_committed_output_event(event=event):
+                        partial_output_committed = True
                     yield event
                 if self._abort_event.is_set():
                     return  # run_aborted already yielded; skip finalization and break
                 self._active_turn = turn
                 break
             except Exception as exc:
+                stream_decision = StreamRecoveryService.classify(
+                    exc=exc,
+                    partial_output_committed=partial_output_committed,
+                )
+                if stream_decision.action.value != "propagate":
+                    raise ProviderStreamFailure(
+                        decision=stream_decision,
+                        partial_output_committed=partial_output_committed,
+                        attempt_number=attempt,
+                    ) from exc
                 retry_decision: RateLimitRetryPlanDAO = self._decide_iteration_retry(
                     iteration_retry_policy=iteration_retry_policy,
                     exc=exc,
-                    saw_visible_output_this_iteration=saw_visible,
+                    saw_visible_output_this_iteration=partial_output_committed,
                     attempt_number=attempt,
                 )
                 if not retry_decision.retryable:
@@ -1183,6 +1288,16 @@ class SloAgent:
     # ---- Private helpers --------------------------------------------------
 
     @staticmethod
+    def _is_committed_output_event(*, event: AgentStreamEventDAO) -> bool:
+        """Return whether an event crosses the iteration commit boundary.
+
+        A delta, a tool-call start, a tool result, or a completed assistant
+        update can represent visible or side-effecting work. The session must
+        never automatically replay that iteration after this point.
+        """
+        return event.kind in {"thinking_delta", "text_delta", "tool_call_start", "tool_result", "text_end"}
+
+    @staticmethod
     def _is_visible_output_event(*, event: AgentStreamEventDAO) -> bool:
         """Return True when ``event`` is visible transcript output for the iteration.
 
@@ -1196,7 +1311,7 @@ class SloAgent:
         Returns:
             bool: True for thinking/text deltas, tool-call starts, and tool results.
         """
-        return event.kind in {"thinking_delta", "text_delta", "tool_call_start", "tool_result"}
+        return SloAgent._is_committed_output_event(event=event)
 
     def _decide_iteration_retry(
         self,

@@ -149,6 +149,138 @@ class TestSloAgentSessionPromptStreaming:
             session._is_running = False
 
     @pytest.mark.asyncio
+    async def test_invoke_yields_reconnect_event_and_retries_once_before_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-commit typed failure yields one reconnect event and one fresh completion.
+
+        This is a public session-path regression test. Before the fix the reconnect
+        audit reached subscribers only, leaving consumers of ``session.invoke``
+        unable to observe the retry boundary.
+        """
+        from src.agents.providers.stream_recovery.dao import (
+            ProviderStreamFailure,
+            StreamRecoveryAction,
+            StreamRecoveryDecisionDAO,
+        )
+
+        session: SloAgentSession = _build_faux_session(
+            workdir=tmp_path,
+            responses=[FauxChatModel.assistant_message(content="unused")],
+        )
+        invocation_count: int = 0
+
+        async def _scripted_invoke(**_: object):
+            nonlocal invocation_count
+            invocation_count += 1
+            if invocation_count == 1:
+                decision: StreamRecoveryDecisionDAO = StreamRecoveryDecisionDAO(
+                    action=StreamRecoveryAction.RETRY_FRESH_CONNECTION,
+                    reason_code="provider_stream_disconnected",
+                    retry_delay_seconds=0.0,
+                    exception_family="httpx.RemoteProtocolError",
+                )
+                raise ProviderStreamFailure(
+                    decision=decision,
+                    partial_output_committed=False,
+                    attempt_number=1,
+                )
+            yield AgentStreamEventDAO(kind="run_completed", content="recovered")
+
+        events: list[AgentStreamEventDAO] = []
+        with patch.object(session.agent, "invoke", _scripted_invoke):
+            async for event in session.invoke(text="recover"):
+                events.append(event)
+
+        assert invocation_count == 2
+        assert [event.kind for event in events] == ["stream_reconnecting", "run_completed"]
+
+    @pytest.mark.asyncio
+    async def test_invoke_continues_after_committed_stream_interruption(self, tmp_path: Path) -> None:
+        """A committed stream interruption starts a safe continuation attempt."""
+        from src.agents.providers.stream_recovery.dao import (
+            ProviderStreamFailure,
+            StreamRecoveryAction,
+            StreamRecoveryDecisionDAO,
+        )
+
+        session: SloAgentSession = _build_faux_session(
+            workdir=tmp_path,
+            responses=[FauxChatModel.assistant_message(content="unused")],
+        )
+        invocation_texts: list[str] = []
+
+        async def _scripted_invoke(*, query: str, **_: object):
+            invocation_texts.append(query)
+            if len(invocation_texts) == 1:
+                decision: StreamRecoveryDecisionDAO = StreamRecoveryDecisionDAO(
+                    action=StreamRecoveryAction.DO_NOT_REPLAY,
+                    reason_code="provider_stream_interrupted",
+                    exception_family="httpx.ReadTimeout",
+                )
+                raise ProviderStreamFailure(
+                    decision=decision,
+                    partial_output_committed=True,
+                    attempt_number=1,
+                )
+            yield AgentStreamEventDAO(kind="run_completed", content="recovered")
+
+        events: list[AgentStreamEventDAO] = []
+        with patch.object(session.agent, "invoke", _scripted_invoke):
+            async for event in session.invoke(text="finish the task"):
+                events.append(event)
+
+        assert [event.kind for event in events] == ["run_retrying", "run_completed"]
+        assert invocation_texts[0] == "finish the task"
+        assert "Continuation attempt 2/5." in invocation_texts[1]
+        assert "finish the task" in invocation_texts[1]
+        assert "httpx.ReadTimeout" not in invocation_texts[1]
+
+    @pytest.mark.asyncio
+    async def test_invoke_stops_after_five_committed_stream_interruptions(self, tmp_path: Path) -> None:
+        """A stream continuation cannot start a sixth submission attempt."""
+        from src.agents.providers.stream_recovery.dao import (
+            ProviderStreamFailure,
+            StreamRecoveryAction,
+            StreamRecoveryDecisionDAO,
+        )
+
+        session: SloAgentSession = _build_faux_session(
+            workdir=tmp_path,
+            responses=[FauxChatModel.assistant_message(content="unused")],
+        )
+        invocation_count: int = 0
+
+        async def _always_interrupt(*, query: str, **_: object):
+            nonlocal invocation_count
+            invocation_count += 1
+            decision: StreamRecoveryDecisionDAO = StreamRecoveryDecisionDAO(
+                action=StreamRecoveryAction.DO_NOT_REPLAY,
+                reason_code="provider_stream_interrupted",
+                exception_family="httpx.ReadTimeout",
+            )
+            raise ProviderStreamFailure(
+                decision=decision,
+                partial_output_committed=True,
+                attempt_number=1,
+            )
+            yield AgentStreamEventDAO(kind="run_completed", content=query)
+
+        events: list[AgentStreamEventDAO] = []
+        with patch.object(session.agent, "invoke", _always_interrupt):
+            with pytest.raises(ProviderStreamFailure):
+                async for event in session.invoke(text="finish the task"):
+                    events.append(event)
+
+        assert invocation_count == 5
+        assert [event.kind for event in events] == [
+            "run_retrying",
+            "run_retrying",
+            "run_retrying",
+            "run_retrying",
+        ]
+
+    @pytest.mark.asyncio
     async def test_invoke_times_out_when_main_stream_goes_silent(self, tmp_path: Path) -> None:
         """A silent main stream is treated as hung instead of spinning forever."""
         session: SloAgentSession = _build_faux_session(
@@ -224,9 +356,13 @@ class TestSloAgentSessionPromptStreaming:
                 "_allocate_turn_id",
                 side_effect=lambda: order.append("allocate_turn") or "turn-123",
             ),
-            patch.object(session, "_ensure_history_session", new=AsyncMock(side_effect=_ensure_history_session)),
+            patch.object(
+                session, "_ensure_history_session", new=AsyncMock(side_effect=_ensure_history_session)
+            ),
             patch.object(session, "_ensure_agent_ready", new=AsyncMock(side_effect=_ensure_agent_ready)),
-            patch.object(session, "_preflight_compaction_if_dirty", new=AsyncMock(side_effect=_preflight_compaction)),
+            patch.object(
+                session, "_preflight_compaction_if_dirty", new=AsyncMock(side_effect=_preflight_compaction)
+            ),
             patch.object(session, "_load_message_history", new=AsyncMock(side_effect=_load_message_history)),
             patch.object(session, "_resolve_attempt_policy", return_value=policy),
         ):
@@ -378,7 +514,6 @@ class TestSloAgentSessionWorkspaceFile:
         )
 
         assert agent.workspace_folders == []
-
 
     @pytest.mark.asyncio
     async def test_resume_reuses_persisted_workspace_file_from_session_metadata(self, tmp_path: Path) -> None:
@@ -662,9 +797,7 @@ class TestSloAgentSessionLazyBuild:
         assert session.is_running is False
 
     @pytest.mark.asyncio
-    async def test_invoke_refreshes_stale_openai_oauth_before_lazy_build(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_invoke_refreshes_stale_openai_oauth_before_lazy_build(self, tmp_path: Path) -> None:
         """The proactive OAuth refresh runs at the async session seam, not in LLMFactory.
 
         This is the regression guard for the ``asyncio.run() cannot be
@@ -731,9 +864,7 @@ def _build_faux_agent(tmp_path: Path) -> SloAgent:
         SloAgent: Lightweight agent for unit-level session tests.
     """
     return SloAgent(
-        llm=FauxChatModel(
-            responses=[FauxChatModel.assistant_message(content="ok")]
-        ),
+        llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
         cwd=str(tmp_path),
         tools=[],
     )
@@ -755,9 +886,7 @@ class TestSloAgentSessionEventRelay:
 
         assert callable(relay)
 
-    async def test_event_relay_accepts_positional_call(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_event_relay_accepts_positional_call(self, tmp_path: Path) -> None:
         """``event_relay`` called with a POSITIONAL argument dispatches correctly.
 
         Regression: returning ``self._dispatch_event`` directly failed because
@@ -785,9 +914,7 @@ class TestSloAgentSessionEventRelay:
         assert len(received) == 1
         assert received[0].kind == "text_delta"
 
-    async def test_event_relay_sub_agent_event_roundtrip(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_event_relay_sub_agent_event_roundtrip(self, tmp_path: Path) -> None:
         """A sub-agent lifecycle event dispatched via ``event_relay`` reaches subscribers.
 
         Verifies the full path: pool emits ``sub_agent_spawned`` via relay →
@@ -822,9 +949,7 @@ class TestSloAgentSessionEventRelay:
 class TestSloAgentSessionAttachSubAgentPool:
     """``attach_sub_agent_pool()`` promotion seam (sub-spec 03.a)."""
 
-    def test_attach_pool_merges_spawn_tool_into_extra_tools(
-        self, tmp_path: Path
-    ) -> None:
+    def test_attach_pool_merges_spawn_tool_into_extra_tools(self, tmp_path: Path) -> None:
         """After attach, ``_config.extra_tools`` contains the spawn tool."""
         from unittest.mock import MagicMock
         from langchain_core.tools import BaseTool
@@ -928,9 +1053,7 @@ class TestSloAgentSessionAttachSubAgentPool:
         with pytest.raises(ValueError, match="at least one tool"):
             session.attach_sub_agent_pool(pool=_build_pool_mock())
 
-    def test_attach_pool_raises_when_agent_already_built(
-        self, tmp_path: Path
-    ) -> None:
+    def test_attach_pool_raises_when_agent_already_built(self, tmp_path: Path) -> None:
         """``attach_sub_agent_pool`` raises ``RuntimeError`` when called after first prompt."""
         from unittest.mock import MagicMock
         from langchain_core.tools import BaseTool
@@ -950,9 +1073,7 @@ class TestSloAgentSessionAttachSubAgentPool:
                 spawn_tool=mock_tool,
             )
 
-    async def test_abort_calls_pool_cancel_all_when_pool_attached(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_abort_calls_pool_cancel_all_when_pool_attached(self, tmp_path: Path) -> None:
         """``abort()`` calls ``pool.cancel_all()`` when a pool is attached."""
         import asyncio
         from unittest.mock import MagicMock
@@ -1119,9 +1240,7 @@ def _two_member_dao() -> ModelPoolDAO:
     return ModelPoolDAO(
         entries=[
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1),
         ]
     )
 
@@ -1131,9 +1250,7 @@ def _openai_anthropic_kfc_dao() -> ModelPoolDAO:
     return ModelPoolDAO(
         entries=[
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1),
             ModelPoolEntryDAO(
                 model_name="kimi-for-coding", provider=ProviderName.KIMI_FOR_CODING, priority=2
             ),
@@ -1166,9 +1283,7 @@ def _injected_pool_agent(*, active: str, workdir: Path) -> SloAgent:
     """Build a pre-built agent whose injected ModelPool routes to ``active`` first."""
     dao = ModelPoolDAO(
         entries=[
-            ModelPoolEntryDAO(
-                model_name=active, provider=provider_for_model(model_name=active), priority=0
-            ),
+            ModelPoolEntryDAO(model_name=active, provider=provider_for_model(model_name=active), priority=0),
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=1),
         ]
     )
@@ -1205,14 +1320,10 @@ def _require_stub(*, provider: ProviderName):
 
 
 class TestSessionPoolBuild:
-    def test_build_agent_passes_pool_dao(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_build_agent_passes_pool_dao(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """_build_agent threads config.model_pool_dao into the SloAgent constructor."""
         captured: dict = {}
-        monkeypatch.setattr(
-            "src.agents.slo_agent.sessions.service.SloAgent", _capturing_agent(captured)
-        )
+        monkeypatch.setattr("src.agents.slo_agent.sessions.service.SloAgent", _capturing_agent(captured))
         session = _session_with_pool(_two_member_dao(), workdir=tmp_path)
         _ = session.agent
         assert captured["model_pool_dao"] is not None
@@ -1226,9 +1337,7 @@ class TestSessionPoolBuild:
     ) -> None:
         """A single-model session passes model_pool_dao=None."""
         captured: dict = {}
-        monkeypatch.setattr(
-            "src.agents.slo_agent.sessions.service.SloAgent", _capturing_agent(captured)
-        )
+        monkeypatch.setattr("src.agents.slo_agent.sessions.service.SloAgent", _capturing_agent(captured))
         session = _single_model_session("gpt-5.4", workdir=tmp_path)
         _ = session.agent
         assert captured["model_pool_dao"] is None
@@ -1357,12 +1466,8 @@ class TestHistoryAwarePreflight:
         session._recent_request_token_estimates.append((now, policy.tokens_per_minute - 9000))
         big_history = [_HumanMessage(content="x" * 4000), _AIMessage(content="y" * 4000)]
 
-        wait_without = session._preflight_wait_duration(
-            text="hi", message_history=[], policy=policy
-        )
-        wait_with = session._preflight_wait_duration(
-            text="hi", message_history=big_history, policy=policy
-        )
+        wait_without = session._preflight_wait_duration(text="hi", message_history=[], policy=policy)
+        wait_with = session._preflight_wait_duration(text="hi", message_history=big_history, policy=policy)
 
         assert wait_without == 0
         assert wait_with > 0
@@ -1421,9 +1526,7 @@ class TestSwitchModelClearsPool:
         assert session.active_model_name == "claude-sonnet-4-6"
 
     @pytest.mark.asyncio
-    async def test_switch_model_new_name_persists_via_next_turn_mechanism(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_switch_model_new_name_persists_via_next_turn_mechanism(self, tmp_path: Path) -> None:
         """Contract: /model persists the new model on the next turn, not immediately.
 
         ``switch_model`` is synchronous, so ``session.json`` is updated by the next
@@ -1515,9 +1618,7 @@ class TestRecordWorkflowUpdate:
         )
 
     @pytest.mark.asyncio
-    async def test_record_workflow_update_appends_synthetic_completed_turn(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_record_workflow_update_appends_synthetic_completed_turn(self, tmp_path: Path) -> None:
         """One workflow note becomes one terminal-by-construction one-event turn."""
         session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
 
@@ -1542,9 +1643,7 @@ class TestRecordWorkflowUpdate:
         assert same_turn_events == [event]
 
     @pytest.mark.asyncio
-    async def test_record_workflow_update_is_idempotent_on_message_id(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_record_workflow_update_is_idempotent_on_message_id(self, tmp_path: Path) -> None:
         """A re-claimed inbox message persists at most one event."""
         session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
 
@@ -1562,14 +1661,10 @@ class TestRecordWorkflowUpdate:
         assert len([event for event in events if event.kind == "workflow_update"]) == 1
 
     @pytest.mark.asyncio
-    async def test_record_workflow_update_idempotency_survives_reload(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_record_workflow_update_idempotency_survives_reload(self, tmp_path: Path) -> None:
         """The seen-set reseeds from disk after a simulated TUI restart."""
         session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
-        await session.record_workflow_update(
-            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
-        )
+        await session.record_workflow_update(text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a")
 
         resumed: SloAgentSession = self._build_history_session(
             tmp_path=tmp_path,
@@ -1604,12 +1699,8 @@ class TestRecordWorkflowUpdate:
     async def test_resume_context_equals_live_context(self, tmp_path: Path) -> None:
         """A reloaded session projects the same message history as the live one."""
         session: SloAgentSession = self._build_history_session(tmp_path=tmp_path)
-        await session.record_workflow_update(
-            text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a"
-        )
-        await session.record_workflow_update(
-            text="phase 2 done", message_id="msg-2", workflow_id="wf-3f2a"
-        )
+        await session.record_workflow_update(text="phase 1 done", message_id="msg-1", workflow_id="wf-3f2a")
+        await session.record_workflow_update(text="phase 2 done", message_id="msg-2", workflow_id="wf-3f2a")
         live_history = await session._load_message_history()
 
         resumed: SloAgentSession = self._build_history_session(

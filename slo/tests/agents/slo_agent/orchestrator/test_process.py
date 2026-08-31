@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -907,3 +908,56 @@ class TestSubAgentProcessRunConcurrentPumping:
         assert "_pump_stderr" in src, (
             "SubAgentProcess.run() must call _pump_stderr for concurrent stderr draining"
         )
+
+class TestSubAgentProcessHeartbeatSupervision:
+    """Heartbeat state selects the child supervisor deadline and stale cleanup."""
+
+    def test_recognized_same_session_heartbeat_selects_remaining_stale_budget(self) -> None:
+        """A valid heartbeat changes stdout supervision from the two-hour outer guard."""
+        from src.cli.headless_events import HeadlessLifecycleEventDAO
+
+        process, _ = _make_process(session_id="child-1")
+        heartbeat: bytes = HeadlessLifecycleEventDAO(
+            kind="headless_status",
+            session_id="child-1",
+            message="heartbeat",
+        ).model_dump_json().encode()
+        with patch("asyncio.get_running_loop") as loop:
+            loop.return_value.time.return_value = 10.0
+            assert process._record_headless_heartbeat(raw=heartbeat)
+            loop.return_value.time.return_value = 20.0
+            assert process._next_child_liveness_timeout_seconds() < 7200.0
+
+    async def test_stale_heartbeat_cancels_and_uses_redacted_failure_envelope(self) -> None:
+        """A stale recognized heartbeat invokes cleanup and stores only controlled metadata."""
+        process, _ = _make_process()
+        process._last_liveness_at = 1.0
+        process._heartbeat_seconds = 1.0
+        with patch.object(process, "cancel", new=AsyncMock()) as cancel:
+            await process._cancel_stale_child_if_needed(now_seconds=5.0)
+        cancel.assert_awaited_once()
+        assert process._failure_envelope["failure_code"] == "headless_heartbeat_stale"
+
+
+class TestSubAgentProcessCancellationRace:
+    """Cancellation reaps after SIGKILL and terminal results remain cached."""
+
+    async def test_cancel_escalates_and_reaps_when_sigterm_is_ignored(self) -> None:
+        """SIGTERM timeout sends SIGKILL once and awaits the settled child process."""
+        process, _ = _make_process()
+        proc: MagicMock = MagicMock()
+        proc.returncode = None
+        proc.wait = AsyncMock(side_effect=[asyncio.TimeoutError(), 0])
+        process._proc = proc
+        with patch("src.agents.slo_agent.orchestrator.process.TERMINATE_GRACE_SECONDS", 0.01):
+            await process.cancel()
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+        assert proc.wait.await_count == 2
+
+    def test_terminal_result_is_cached_when_two_paths_finalize(self) -> None:
+        """Concurrent cleanup paths receive the identical already-built terminal result."""
+        process, _ = _make_process()
+        first = process._terminal_result(exit_code=1)
+        second = process._terminal_result(exit_code=2)
+        assert first is second

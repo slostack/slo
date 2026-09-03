@@ -266,6 +266,7 @@ If you can verify neither the model file nor the live data (e.g. behind a firewa
 **Goal:** Pull the precedents that the spec should follow so it doesn't reinvent patterns.
 
 - Find the **closest analogous feature** already implemented and capture the file layout it used (router + app service + domain `dao.py`/`model.py`/`service.py`).
+- Find the **existing owners** of every capability the feature implies. The system may already do this work wholly, do part of it, or own the responsibility the feature is about to duplicate — and the existing component is usually named differently, which is why it gets missed. For each hit, record the symbol and `file:line`, whether the overlap is whole, partial, or adjacent, and whether the spec should consolidate by deleting and replacing it, encapsulating the new behavior in it, or re-designing it to absorb the new functionality. Redundant artefacts, entities, and domains are a design defect; the briefing must give the spec writer what it needs to keep the design DRY.
 - Pull the matching **coding skill** from `skills/coding/` (e.g., `skills/coding/build-routers/SKILL.md`, `skills/coding/build-application-services/SKILL.md`, `skills/coding/build-event-handlers/SKILL.md`, `skills/coding/build-dbos-workflow-orchestration-pattern/SKILL.md`).
 - Note any **conventions** that apply: named args, type hints, Google docstrings, declarative method structure, single-responsibility app services.
 - Note any **gotchas** from `KB/<repo>/gotchas.md` that the spec must respect.
@@ -296,6 +297,7 @@ Produce a single, scannable briefing **before** invoking `feature-specifications
 
 ## 3. Implementation Precedents
 - Closest analogous feature: <path + brief>
+- Existing owners / consolidation candidates: <capability — existing symbol at file:line — whole|partial|adjacent overlap — delete-and-replace|encapsulate|re-design; or "no existing owner found">
 - Code-prompts that apply: <list>
 - Gotchas in scope: <bullets from gotchas.md>
 
@@ -330,4 +332,5 @@ After the user signs off (or after the spec is generated, depending on the flow)
 4. **Non-disruptive.** The user's working tree must look identical after the gather. Use worktrees by default.
 5. **Business first.** The briefing leads with *why*, not *what files*.
 6. **Surface the gaps.** Tell the user what is missing, not just what was found.
-7. **Hand off cleanly.** The output is a briefing the user can paste forward — `feature-specifications.md` should be able to consume it directly.
+7. **Surface the duplicates too.** Say what already exists that the feature would otherwise rebuild, so the spec consolidates instead of adding a second owner for the same responsibility.
+8. **Hand off cleanly.** The output is a briefing the user can paste forward — `feature-specifications.md` should be able to consume it directly.

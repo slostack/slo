@@ -1,7 +1,9 @@
 ---
 name: feature-specifications-post-hook
 description: Self-review pass that runs after a feature specification is drafted with
-  feature-specifications. Catches gaps, convention drift, oversized scope, weak examples,
+  feature-specifications. Always runs a DRY consolidation pass over the entities and
+  data structures the spec introduces, and catches gaps, convention drift, redundant
+  functionality that already exists in the code, oversized scope, weak examples,
   spec-mode mismatches, and missing test coverage before the spec is handed to a developer
   or published.
 when_to_use: Use as the mandatory post-hook for feature-specifications.
@@ -15,7 +17,7 @@ source_prompt: analyze/feature-specifications-post-hook.md
 ## Skill summary
 
 - **Name:** `feature-specifications-post-hook`
-- **Description:** Self-review pass that runs after a feature specification is drafted with feature-specifications. Catches gaps, convention drift, oversized scope, weak examples, spec-mode mismatches, and missing test coverage before the spec is handed to a developer or published.
+- **Description:** Self-review pass that runs after a feature specification is drafted with feature-specifications. Always runs a DRY consolidation pass over the entities and data structures the spec introduces, and catches gaps, convention drift, redundant functionality that already exists in the code, oversized scope, weak examples, spec-mode mismatches, and missing test coverage before the spec is handed to a developer or published.
 - **When to use:** Use as the mandatory post-hook for feature-specifications.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
@@ -23,7 +25,7 @@ source_prompt: analyze/feature-specifications-post-hook.md
 
 ## Examples
 
-- The user asks for an end-to-end workflow that fits: Self-review pass that runs after a feature specification is drafted with feature-specifications. Catches gaps, convention drift, oversized scope, weak examples, spec-mode mismatches, and missing test coverage before the spec is handed to a developer or published.
+- The user asks for an end-to-end workflow that fits: Self-review pass that runs after a feature specification is drafted with feature-specifications. Always runs a DRY consolidation pass over the entities and data structures the spec introduces, and catches gaps, convention drift, redundant functionality that already exists in the code, oversized scope, weak examples, spec-mode mismatches, and missing test coverage before the spec is handed to a developer or published.
 - Use as the mandatory post-hook for feature-specifications.
 
 ## Slo defaults for request and specification artifacts
@@ -53,7 +55,9 @@ Use one folder per feature:
 
 ## Purpose
 
-A self-review pass that runs **after** a feature specification has been drafted using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to catch gaps, convention drift, oversized scope, weak examples, missing test coverage, and **spec-mode mismatches** before the spec is handed to a developer or published to the wiki.
+A self-review pass that runs **after** a feature specification has been drafted using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to catch gaps, convention drift, **redundant functionality that already exists in the code**, oversized scope, weak examples, missing test coverage, and **spec-mode mismatches** before the spec is handed to a developer or published to the wiki.
+
+One of those passes is unconditional: the hook **always** runs the DRY consolidation pass in Step 2.5 over the entities and data structures the spec introduces, so the design never ships a second owner for a responsibility the system already has.
 
 Treat this hook as **non-optional**. A feature spec is not done until this hook has produced a clean report.
 
@@ -187,6 +191,54 @@ For each violation, record:
 
 ---
 
+## Step 2.5 — DRY consolidation pass (mandatory)
+
+A drafted specification frequently proposes functionality that **already exists in the code**. The existing implementation may be doing the same work wholly, doing part of it, or already owning the responsibility the new design is about to duplicate. Left alone, the spec creates redundant artefacts, entities, and domains — and that redundancy is the most expensive kind of confusion, because two components now claim the same responsibility and neither one is authoritative.
+
+The design must always keep the system **DRY**. Responsibilities must be **single, isolated, and clean**. Boundaries between them must be distinguishable and documented in the comments and docstrings, and adjacent responsibilities must be reached through **explicit interfaces** rather than through duplicated logic.
+
+The POST hook must therefore **always run a consolidation pass** over the data structures and entities the spec introduces. This pass is unconditional — run it even when the spec looks entirely greenfield.
+
+### 2.5.1 — Inventory what the spec introduces
+
+List every new artefact the draft proposes: domains, models, DAOs, services, application services, routers, workers, events, agents, tools, clients, config keys, CLI commands, and frontend stores or components.
+
+### 2.5.2 — Search the code for the same or adjacent responsibility
+
+For each artefact, search the codebase for something that already does that work — wholly, partially, or under a different name. Use the PRE-Hook Context Bundle's affected-surface inventory as the starting point, then widen the search: the duplicate is usually named differently, which is exactly why the draft missed it.
+
+Classify each artefact:
+
+| Verdict | Meaning |
+|---|---|
+| **Genuinely new** | No existing component owns this responsibility or any part of it. |
+| **Duplicate** | An existing component already does this work wholly. |
+| **Partial overlap** | An existing component does part of this work, or owns the responsibility this work belongs under. |
+| **Adjacent** | A neighbouring component owns a related responsibility; the boundary between the two must be drawn and documented explicitly. |
+
+### 2.5.3 — Consolidate
+
+Anything not classified **Genuinely new** must be consolidated in the spec before it can be READY. Consolidation takes one of three forms:
+
+1. **Delete and replace** — remove the existing functionality and replace it with the new construct. The spec must name the files and symbols to delete, the call sites to repoint, and the migration or data-backfill implications.
+2. **Encapsulate** — fold the new behavior into the existing component, elegantly and within the rules of our conventions, so a single owner remains.
+3. **Re-design** — reshape the existing component so it honors the conventions and absorbs the new functionality, eliminating the redundant behavior instead of growing a parallel implementation.
+
+Whichever form is chosen, the spec must state the resulting responsibility boundary in prose and show it in the docstrings or comments of the code samples, along with the interface adjacent components use to reach it.
+
+For every unconsolidated artefact, record:
+
+```markdown
+**REDUNDANCY GAP:** <new artefact> — duplicates / overlaps <existing symbol at file:line>
+- Overlap: <wholly | partially | adjacent responsibility>
+- Consolidation: <delete-and-replace | encapsulate | re-design>
+- Required edit: <what the spec must say — files to delete, owner to keep, boundary to document, interface to expose>
+```
+
+Any unresolved **REDUNDANCY GAP** is an automatic **REVISE**. A spec that adds a second owner for an existing responsibility is not READY, no matter how well it is written.
+
+---
+
 ## Step 3 — Granularity check
 
 A spec that tries to do too much produces inconsistent implementations and stale wiki pages. Decide whether the spec should be split before it leaves this hook.
@@ -304,6 +356,7 @@ Aggregate the findings from Steps 0–5 into a single revision plan:
 | Architectural layers verified | X / Y |
 | Narrative gaps | N |
 | Convention gaps | N |
+| Redundancy gaps | N |
 | Example gaps | N |
 | Test gaps | N |
 | Granularity | OK / SPLIT |
@@ -313,6 +366,7 @@ Aggregate the findings from Steps 0–5 into a single revision plan:
 Rules:
 
 - Any non-zero **Narrative gap** count is automatic **REVISE**.
+- Any non-zero **Redundancy gap** count is automatic **REVISE**.
 - Any **mode mismatch** is automatic **REVISE**.
 - Any missing mandatory Mode B section is automatic **REVISE**.
 - Any missing prose before code blocks is automatic **REVISE**.

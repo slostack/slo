@@ -65,7 +65,7 @@ This prompt is wrapped by two non-optional hooks. The agent must run them in ord
 
 1. **PRE hook — [`feature-specifications-pre-hook.md`](../feature-specifications-pre-hook/SKILL.md).** Run this *before* writing a single line of the spec. It loads skills/orientation/claude/SKILL.md, AGENTS.md, skills/orientation/research/SKILL.md, MEMORY.md, the Knowledge Base, the affected code surface, the relevant `build-*.md` conventions, and the second-order requirements (scale, latency, logging, idempotency, deployment posture). Its output — the **PRE-Hook Context Bundle** — is the brief this style guide is applied against. Do not draft the spec until the bundle exists in the conversation.
 
-2. **POST hook — [`feature-specifications-post-hook.md`](../feature-specifications-post-hook/SKILL.md).** Run this *immediately after* the spec body is drafted (or revised). It invokes [`feature-specification-verification.md`](../feature-specification-verification/SKILL.md), cross-checks the spec against every applicable code-convention prompt, decides whether the scope should be split via [`breakdown-feature-spec-to-tasks.md`](../breakdown-feature-spec-to-tasks/SKILL.md), audits example richness, validates the human-readable narrative sections enumerated below, validates test coverage per `skills/coding/test-verification-policy/SKILL.md`, and validates the chosen spec mode. If the verdict is REVISE, the agent edits the spec in place and re-runs the hook until it returns READY. Only a READY verdict makes the spec eligible for commit / wiki publication / hand-off.
+2. **POST hook — [`feature-specifications-post-hook.md`](../feature-specifications-post-hook/SKILL.md).** Run this *immediately after* the spec body is drafted (or revised). It invokes [`feature-specification-verification.md`](../feature-specification-verification/SKILL.md), cross-checks the spec against every applicable code-convention prompt, always runs the DRY consolidation pass over the entities and data structures the spec introduces, decides whether the scope should be split via [`breakdown-feature-spec-to-tasks.md`](../breakdown-feature-spec-to-tasks/SKILL.md), audits example richness, validates the human-readable narrative sections enumerated below, validates test coverage per `skills/coding/test-verification-policy/SKILL.md`, and validates the chosen spec mode. If the verdict is REVISE, the agent edits the spec in place and re-runs the hook until it returns READY. Only a READY verdict makes the spec eligible for commit / wiki publication / hand-off.
 
 A feature specification produced without both hooks is considered incomplete.
 
@@ -226,6 +226,25 @@ Engineering implementation sub-specs must use this canonical structure unless th
 - `## 6. End-to-End Flow` must walk the reader through the runtime slice this sub-spec owns, even if a later control-flow section dives deeper.
 - `## 7. Implementation Details` should include implementation order, verification commands, and manual smoke guidance when applicable.
 - `## 10. Dependencies` must clearly state what blocks this slice and what it blocks downstream.
+
+---
+
+## DRY Design: No Redundant Artefacts, Entities, or Domains
+
+A specification written without checking the code first will happily invent functionality that **already exists**. The existing implementation may be doing the same work wholly, doing part of it, or already owning the responsibility the new design is about to duplicate. Every such duplicate is a defect in the design, not a harmless extra: two components now claim the same responsibility, neither is authoritative, and every future reader has to guess which one to change.
+
+Our design must always keep the system **DRY**. Responsibilities are **single, isolated, and clean**. Boundaries between them are distinguishable and stated in the comments and docstrings, and adjacent responsibilities are reached through **explicit interfaces** rather than through duplicated logic.
+
+Concretely, before the spec proposes any new domain, model, DAO, service, application service, router, worker, event, agent, tool, client, CLI command, or frontend store:
+
+- search the code for something that already does that work, or owns the responsibility it belongs under — the duplicate is usually named differently, which is exactly why it gets missed;
+- if something exists, the spec must consolidate rather than add. Consolidation takes one of three forms:
+  1. **Delete and replace** — remove the existing functionality and replace it with the new construct, naming the files and symbols to delete and the call sites to repoint;
+  2. **Encapsulate** — fold the new behavior into the existing component, elegantly and within the rules of our conventions, so a single owner remains;
+  3. **Re-design** — reshape the existing component so it honors the conventions and absorbs the new functionality, eliminating the redundant behavior instead of growing a parallel implementation;
+- state the resulting responsibility boundary in prose, show it in the docstrings or comments of the code samples, and name the interface adjacent components use to reach it.
+
+The POST hook runs a mandatory consolidation pass over the entities and data structures the spec introduces and treats any surviving redundancy as an automatic REVISE. Writing the consolidation into the spec up front is how that pass comes back clean.
 
 ---
 
@@ -414,6 +433,8 @@ Engineering implementation sub-specs should also state:
 12. **Drift correction** — when older spec text is stale, say so explicitly and correct it.
 13. **Code samples as grounding** — every behavioral claim is backed by real source, copied faithfully with a `file:line` citation. Silent prose is banned as surely as silent code dumps.
 14. **Ideal before break** — bug and analysis specs walk the correct design end to end before pinpointing where it fails.
+15. **DRY design** — never add an artefact, entity, or domain that duplicates work the code already does. Consolidate by deleting and replacing, encapsulating, or re-designing the existing component.
+16. **Single, isolated responsibilities** — one owner per responsibility, with distinguishable boundaries documented in the comments and explicit interfaces to adjacent responsibilities.
 
 ---
 
@@ -426,6 +447,7 @@ Engineering implementation sub-specs should also state:
 - Use the exact structure required by the chosen mode.
 - Include concrete examples with realistic data and file paths.
 - Ground every behavioral claim in a real code sample with a `file:line` citation — never describe control flow in prose alone.
+- Before proposing any new artefact, search the code for an existing owner of that responsibility; when one exists, consolidate (delete and replace, encapsulate, or re-design) instead of adding a redundant construct.
 - For a bug or analysis spec, lead with the problem, then walk the ideal behavior end to end, then restate exactly where it breaks.
 - Show the complete picture: why, current truth, proposed shape, flow, code, tests, and dependencies.
 - Think like a developer reading this at 2am trying to implement the feature without follow-up questions.

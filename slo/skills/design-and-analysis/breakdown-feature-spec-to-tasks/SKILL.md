@@ -102,6 +102,21 @@ Default to **Pattern B** when the parent doc spans multiple layers, multiple run
 
 ---
 
+### 1.5 Catalog the consolidation work
+
+The parent spec's POST hook ran a DRY consolidation pass, so the spec may commit to deleting existing functionality, encapsulating new behavior inside an existing component, or re-designing a component so it absorbs the new work instead of a redundant parallel implementation.
+
+That work is not optional cleanup — it is what keeps responsibilities single, isolated, and clean. Catalog every consolidation the spec commits to and carry it into the task list:
+
+- deletions and the call sites that must be repointed,
+- encapsulations that keep a single owner for a responsibility,
+- re-designs of existing components,
+- the responsibility boundaries and interfaces the spec documented.
+
+Each of these belongs in a specific dependency-ordered task, sequenced so the replacement lands before or with the deletion. A breakdown that ships the new construct and leaves the redundant one in place has reintroduced exactly the duplication the spec set out to remove.
+
+---
+
 ## Step 2 — Identify Components and Dependencies
 
 Decompose the feature into natural implementation layers.

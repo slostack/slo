@@ -7,14 +7,14 @@ description: "Overview of Slo's formal workflow system: pipeline vs parallel exe
   request ('headless' / 'detached' / 'independent' dynamic workflows, or a named
   workflow with detach wording) = detached headless orchestrator via launch_workflow;
   a detached orchestrator never calls launch_workflow."
-when_to_use: Use only when the user explicitly asks about workflows, asks to use a
+when_to_use: 'Use only when the user explicitly asks about workflows, asks to use a
   named workflow, wants a compound task executed through a formal multi-step workflow
   instead of ad-hoc skill loading, or says "dynamic workflows" / "dyanmic workflows"
   to request in-session orchestrated multi-agent workflow execution. Note: an
   unqualified "dynamic workflows" phrase runs in-session (sync dynamic workflow); only
   a detach-qualified phrase ("headless dynamic workflows", "detached dynamic
   workflows", "independent dynamic workflows") routes to the headless-orchestration
-  skill.
+  skill.'
 group: design-and-analysis
 kind: skill
 source_prompt: workflows/overview.md

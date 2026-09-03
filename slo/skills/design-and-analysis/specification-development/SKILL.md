@@ -38,6 +38,16 @@ spec-file naming rule (`specifications/<number>-<title>/overview.md`; never
 condition. Do not re-derive the steps from this entry — read the workflow file
 and execute it.
 
+One rule is worth stating here because it governs every step: the design must
+stay **DRY**. A generated specification frequently proposes functionality that
+already exists in the code — wholly, partially, or as the responsibility an
+existing component already owns. The POST hook always runs a consolidation pass
+over the entities and data structures the spec introduces, consolidating by
+deleting and replacing, encapsulating within our conventions, or re-designing
+the existing component to absorb the new functionality. Responsibilities stay
+single, isolated, and clean, with distinguishable boundaries documented in the
+comments and explicit interfaces to adjacent responsibilities.
+
 Sub-skills the workflow sequences (loaded on demand per step):
 
 - Step 1 — `feature-specifications-pre-hook`, `feature-specifications`,

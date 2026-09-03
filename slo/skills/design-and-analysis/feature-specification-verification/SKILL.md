@@ -1,6 +1,7 @@
 ---
 name: feature-specification-verification
-description: Reviewing a draft spec for gaps and ambiguities before implementation
+description: Reviewing a draft spec for gaps, ambiguities, and redundant
+  functionality that duplicates code the system already has, before implementation
   begins.
 when_to_use: Use as a post-hook after writing a spec — surfaces missing decisions,
   underspecified edge cases, and inconsistent acceptance criteria.
@@ -14,7 +15,7 @@ source_prompt: analyze/feature-specification-verification.md
 ## Skill summary
 
 - **Name:** `feature-specification-verification`
-- **Description:** Reviewing a draft spec for gaps and ambiguities before implementation begins.
+- **Description:** Reviewing a draft spec for gaps, ambiguities, and redundant functionality that duplicates code the system already has, before implementation begins.
 - **When to use:** Use as a post-hook after writing a spec — surfaces missing decisions, underspecified edge cases, and inconsistent acceptance criteria.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
@@ -22,7 +23,7 @@ source_prompt: analyze/feature-specification-verification.md
 
 ## Examples
 
-- The user asks for an end-to-end workflow that fits: Reviewing a draft spec for gaps and ambiguities before implementation begins.
+- The user asks for an end-to-end workflow that fits: Reviewing a draft spec for gaps, ambiguities, and redundant functionality that duplicates code the system already has, before implementation begins.
 - Use as a post-hook after writing a spec — surfaces missing decisions, underspecified edge cases, and inconsistent acceptance criteria.
 
 ## Slo defaults for request and specification artifacts
@@ -276,6 +277,31 @@ For each operation, ask what happens if:
 
 ---
 
+## Step 4.5 — Redundancy and DRY Review
+
+Architectural completeness asks whether the spec builds enough. This step asks the opposite question: **does the spec build something the system already has?**
+
+A specification frequently proposes functionality that already exists in the code. The existing implementation may be doing the same work wholly, doing part of it, or already owning the responsibility the new design duplicates. The result is redundant artefacts, entities, and domains — two owners for one responsibility, neither authoritative. That is a CRITICAL defect, not a stylistic nit.
+
+For every artefact the spec introduces — domain, model, DAO, service, application service, router, worker, event, agent, tool, client, config key, CLI command, frontend store — verify:
+
+- [ ] the spec names the existing component that owns this responsibility today, or states explicitly that none exists
+- [ ] where an owner exists, the spec consolidates rather than adds, by one of:
+  - [ ] **delete and replace** — existing functionality removed, replaced by the new construct, with files/symbols to delete and call sites to repoint named
+  - [ ] **encapsulate** — new behavior folded into the existing component within the rules of our conventions, leaving a single owner
+  - [ ] **re-design** — existing component reshaped to honor the conventions and absorb the new functionality, eliminating the redundant behavior
+- [ ] responsibilities remain **single, isolated, and clean** — no artefact in the spec shares an owner with another
+- [ ] boundaries between adjacent responsibilities are distinguishable and documented in the comments or docstrings of the spec's code samples
+- [ ] adjacent responsibilities are reached through an explicit interface, not through duplicated logic
+- [ ] data structures and entities are consolidated — the spec does not introduce a second model, DAO, or payload shape for a concept that already has one
+- [ ] naming follows `ubiquitous-language` — a second name for an existing concept is duplication in disguise
+
+Search the codebase independently rather than trusting the spec's claim of novelty. The duplicate is usually named differently, which is exactly why the draft missed it.
+
+Record each finding using the **REDUNDANCY** format in Step 6.5a.
+
+---
+
 ## Step 5 — Style, Structure, and Mode Review
 
 ### 5.1 Shared structure compliance
@@ -354,6 +380,7 @@ For both modes, verify:
 | **Spec Mode** | Mode A / Mode B |
 | **JIRA Requirements Covered** | X / Y (Z%) |
 | **Architectural Layers Complete** | X / Y |
+| **Redundancy Gaps Found** | N |
 | **Critical Gaps Found** | N |
 | **Minor Gaps Found** | N |
 | **Style / Structure Compliance** | Pass / Partial / Fail |
@@ -390,6 +417,21 @@ For both modes, verify:
 **Recommendation:** ...
 ```
 
+### 6.5a Redundancy gaps
+
+```markdown
+### REDUNDANCY: [Short description]
+
+**New artefact:** ...
+**Existing owner:** `path/to/file.py:LINE` — ...
+**Overlap:** wholly / partially / adjacent responsibility
+**Why it matters:** ...
+**Consolidation:** delete-and-replace / encapsulate / re-design
+**Required correction:** <what the spec must say — files to delete, owner to keep, boundary to document, interface to expose>
+```
+
+Treat every redundancy gap as CRITICAL.
+
 ### 6.5 Mode / structure gaps
 
 ```markdown
@@ -416,6 +458,7 @@ Include a table if the feature requires changes in repos not covered by the spec
 Before presenting results:
 
 - [ ] every critical gap is substantiated,
+- [ ] every redundancy claim cites the existing owner by `file:line`,
 - [ ] no false positives,
 - [ ] adjacent features were checked to confirm the gap is real,
 - [ ] the review is actionable,
@@ -434,3 +477,4 @@ Before presenting results:
 - Check all relevant repos.
 - Read before judging.
 - When the draft is an engineering implementation sub-spec, treat missing `Current State`, missing drift correction, or dependence on the parent spec as serious structural defects, not stylistic nits.
+- Treat redundancy as a design defect. A spec that adds a second owner for a responsibility the code already has must be revised to consolidate — delete and replace, encapsulate, or re-design — before it is approved.

@@ -3,7 +3,9 @@ name: feature-specifications-pre-hook
 description: Context-gathering pass that runs before drafting or revising a feature
   specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails
   (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current
-  state of the affected surface so the resulting spec respects existing patterns.
+  state of the affected surface so the resulting spec respects existing patterns,
+  and identifies the existing owners the spec must consolidate with instead of
+  duplicating.
 when_to_use: Use as the mandatory pre-hook for feature-specifications.
 group: design-and-analysis
 kind: workflow
@@ -15,7 +17,7 @@ source_prompt: analyze/feature-specifications-pre-hook.md
 ## Skill summary
 
 - **Name:** `feature-specifications-pre-hook`
-- **Description:** Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns.
+- **Description:** Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns, and identifies the existing owners the spec must consolidate with instead of duplicating.
 - **When to use:** Use as the mandatory pre-hook for feature-specifications.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
@@ -23,7 +25,7 @@ source_prompt: analyze/feature-specifications-pre-hook.md
 
 ## Examples
 
-- The user asks for an end-to-end workflow that fits: Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns.
+- The user asks for an end-to-end workflow that fits: Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns, and identifies the existing owners the spec must consolidate with instead of duplicating.
 - Use as the mandatory pre-hook for feature-specifications.
 
 ## Slo defaults for request and specification artifacts
@@ -179,6 +181,32 @@ If the sub-spec is supposed to be standalone, identify which parent-spec facts m
 
 ---
 
+## Step 4.5 — Identify redundancy and consolidation candidates
+
+The surface inventory answers "what will this feature sit next to". This step answers the harder question: **what already does this work?**
+
+A spec drafted without that answer creates redundant artefacts, entities, and domains — the existing implementation may be doing the same work wholly, doing part of it, or already owning the responsibility the new design is about to duplicate. Two owners for one responsibility is confusion that outlives the feature, so the duplication has to be found here, before a line of the spec is written.
+
+For every capability the feature implies — each domain, model, DAO, service, application service, router, worker, event, agent, tool, client, CLI command, config key, or frontend store it will likely need — search the code for an existing owner. Search by behavior, not by the name the ask happens to use: the existing component is usually named differently, which is exactly why it gets missed.
+
+Record each hit:
+
+| Capability the feature needs | Existing owner (`file:line`) | Overlap | Consolidation candidate |
+|---|---|---|---|
+| ... | ... | wholly / partially / adjacent responsibility | delete-and-replace / encapsulate / re-design |
+
+Consolidation candidates take one of three forms, and the PRE hook should state which one it expects:
+
+1. **Delete and replace** — the existing functionality is removed and replaced by the new construct.
+2. **Encapsulate** — the new behavior is folded into the existing component, within the rules of our conventions, so a single owner remains.
+3. **Re-design** — the existing component is reshaped to honor the conventions and absorb the new functionality, eliminating redundant behavior rather than growing a parallel implementation.
+
+Also note, for each adjacent responsibility, where the boundary should fall and what interface the new work should use to reach across it. Those boundaries must be documented in the spec's prose and in the docstrings or comments of its code samples.
+
+If nothing overlaps, say so explicitly — "no existing owner found for X" is a finding, not an omission.
+
+---
+
 ## Step 5 — Read the matching code-convention prompts
 
 Once you know the surface area, read **every** matching rule under `skills/coding/`. Err toward reading more rather than fewer — a missed convention is the most common source of spec rework.
@@ -301,6 +329,11 @@ Before drafting the spec, produce a short synthesis block in the conversation. T
 - Idempotency / concurrency: <...>
 - Testing: <...>
 - Deployment: <...>
+
+**Redundancy and consolidation candidates:**
+- <capability> — already owned by <existing symbol at file:line> (<wholly | partially | adjacent>) → <delete-and-replace | encapsulate | re-design>
+- <capability> — no existing owner found; genuinely new
+- Boundaries to document: <where the responsibility line falls, and the interface across it>
 
 **KB lessons to apply:**
 - <KB entry path> — <one-line failure mode to pre-empt>

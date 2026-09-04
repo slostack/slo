@@ -24,6 +24,7 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI
+from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,6 +83,22 @@ def _text_delta(
         sub_agent_id=session_id,
         task_id=task_id,
         delta=delta,
+    )
+
+
+def _thinking_delta(
+    *,
+    task_id: str = "task-A",
+    session_id: str = "s1",
+    delta: str = "child reasoning",
+) -> AgentStreamEventDAO:
+    """Build a ``thinking_delta`` event tagged as a sub-agent event."""
+    return AgentStreamEventDAO(
+        kind="thinking_delta",
+        sub_agent_id=session_id,
+        task_id=task_id,
+        delta=delta,
+        block_id="thinking:0:0",
     )
 
 
@@ -219,6 +236,27 @@ class TestSubAgentEventRouting:
             row = app._fleet_panel._rows.get("s1")
             assert row is not None
             assert row.last_text == "analyzing files"
+
+    @pytest.mark.asyncio
+    async def test_child_thinking_delta_updates_fleet_activity_and_never_mounts_a_foreground_thinking_block(
+        self,
+    ) -> None:
+        """A child ``thinking_delta`` is fleet activity only — no foreground thinking widget."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+            await app._render_event(
+                _thinking_delta(task_id="task-A", session_id="s1", delta="child reasoning")
+            )
+            await pilot.pause()
+
+            assert app._fleet_panel is not None
+            row = app._fleet_panel._rows.get("s1")
+            assert row is not None
+            assert row.last_text == "child reasoning"
+            assert list(app.query(selector=AssistantStreamThinkingBlock)) == []
 
     @pytest.mark.asyncio
     async def test_tool_call_end_updates_fleet_last_text(self) -> None:

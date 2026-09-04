@@ -1,113 +1,155 @@
-"""Streaming assistant-turn widget for transcript-visible reasoning summaries."""
+"""Streaming assistant-answer widget for transcript-visible answer text."""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, cast
 
+from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.padding import Padding
-from textual import events
-from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.app import ComposeResult, RenderResult
+from textual.containers import Vertical
 from textual.message import Message
+from textual.selection import Selection
 from textual.timer import Timer
+from textual.visual import Visual, VisualType
 from textual.widgets import Static
 
 from src.tui.widgets.literal_text_static import LiteralTextStatic
+from src.tui.widgets.selectable_rich_visual import SelectableRichVisual
 
 __all__ = ["AssistantStreamBlock"]
 
 _STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
-"""Coalescing cadence for streamed reasoning/answer renders (~30 fps)."""
-
-_COPY_FEEDBACK_DURATION_SECONDS: float = 1.5
-"""Duration that the per-response copy control confirms a successful copy."""
+"""Coalescing cadence for streamed answer renders (~30 fps)."""
 
 
-class AssistantCopyControl(LiteralTextStatic):
-    """A terminal-safe clickable response-copy affordance.
+class AssistantAnswerBody(Static):
+    """Answer-only markdown surface whose raw text stays selectable.
 
-    Textual button frames render in every supported terminal, but some terminal
-    backends fail to paint their label. This small ``Static``-based control
-    keeps the interactive semantics while rendering its label through the
-    same dependable plain-text path as the transcript.
+    WHAT: Renders the accumulated assistant answer as vertically padded
+    markdown through ``SelectableRichVisual`` (so the mouse-selection
+    highlight is baked into its strips and tracks the content across
+    scrolls) and serves the raw answer text to Textual's selection machinery
+    through the documented ``Widget.get_selection`` seam (the base
+    implementation cannot extract text from a Rich markdown visual).
+    WHO: ``AssistantStreamBlock`` owns one instance as ``_answer_body``;
+    ``Screen.get_selected_text`` queries it after a mouse selection.
+    WHEN: Updated at every answer render boundary; queried whenever the
+    screen extracts selected text.
     """
 
-    can_focus: bool = True
-    ALLOW_SELECT = False
-    BINDINGS = [
-        Binding("enter", "copy", "Copy response", show=False),
-        Binding("space", "copy", "Copy response", show=False),
-    ]
+    def __init__(self, *, classes: Optional[str] = None) -> None:
+        """Initialise an empty answer surface.
 
-    class Pressed(Message):
-        """Posted when the control requests that its response be copied."""
+        Args:
+            classes (Optional[str]): Space-separated CSS classes.
+        """
+        super().__init__(content="", classes=classes)
+        self._answer_text: str = ""
 
-        def __init__(self, *, copy_control: "AssistantCopyControl") -> None:
-            super().__init__()
-            self.copy_control: AssistantCopyControl = copy_control
+    def show_answer(self, *, text: str) -> None:
+        """Render the answer with vertical-only Rich padding.
 
-    def __init__(self) -> None:
-        """Construct an initially-disabled copy control."""
-        super().__init__("Copy", id="copy-response-control", classes="assistant-copy-control")
-        self.tooltip = "Copy response"
-        self.disabled = True
+        WHAT: Stores the raw answer for selection extraction, then updates
+        the padded-markdown renderable, or hides the surface when no answer
+        text exists.
+        WHO: ``AssistantStreamBlock._render_answer`` calls it after accepted
+        streamed or final text.
+        WHEN: Runs at an answer render boundary.
 
-    def on_click(self, event: events.Click) -> None:
-        """Request a copy after a mouse click, unless no answer exists yet."""
-        event.stop()
-        self._request_copy()
+        Args:
+            text (str): Raw assistant answer text.
+        """
+        self._answer_text = text
+        if not text:
+            self.update("")
+            self.display = False
+            return
+        self.display = True
+        self.update(
+            Padding(
+                renderable=Markdown(self._escape_markdown_breakers(text=text)),
+                pad=(1, 0, 1, 0),
+            )
+        )
 
-    def action_copy(self) -> None:
-        """Request a copy after keyboard activation."""
-        self._request_copy()
+    def render(self) -> RenderResult:
+        """Render the stored markdown through the selection-aware visual.
 
-    def _request_copy(self) -> None:
-        """Post the copy request only while the control is enabled."""
-        if not self.disabled:
-            self.post_message(AssistantCopyControl.Pressed(copy_control=self))
+        WHAT: Wraps the padded-markdown content in ``SelectableRichVisual``
+        so the mouse-selection highlight is baked into this surface's strips
+        in content coordinates and tracks the text across parent scrolls;
+        plain string content (the empty state) falls through unchanged.
+        WHO: Textual's ``Widget._render`` calls it on every repaint.
+        WHEN: At every render pass while the body is mounted.
+
+        Returns:
+            RenderResult: The selection-aware visual wrapping the stored
+                renderable, or the raw string content when empty.
+        """
+        content: VisualType = self.content
+        if isinstance(content, (str, Visual)):
+            return content
+        return SelectableRichVisual(widget=self, renderable=cast(RenderableType, content))
+
+    def get_selection(self, selection: Selection) -> Optional[tuple[str, str]]:
+        """Return the selected slice of the raw answer text.
+
+        WHAT: Serves the raw (unescaped) answer text through Textual's
+        documented custom-widget selection seam so a mouse drag over the
+        flattened answer surface yields the answer itself.
+        WHO: ``Screen.get_selected_text`` calls it for every widget captured
+        by a mouse selection.
+        WHEN: After a drag selection starts, moves, or completes.
+
+        Args:
+            selection (Selection): The selected range in content coordinates.
+
+        Returns:
+            Optional[tuple[str, str]]: Extracted answer text and its line
+                ending, or ``None`` when no answer text exists.
+        """
+        if not self._answer_text:
+            return None
+        return selection.extract(self._answer_text), "\n"
+
+    @staticmethod
+    def _escape_markdown_breakers(*, text: str) -> str:
+        """Escape angle-bracket fragments that break transcript readability.
+
+        Args:
+            text (str): Raw assistant answer text.
+
+        Returns:
+            str: Stabilized markdown text.
+        """
+        return text.replace("<", "\\<").replace(">", "\\>")
 
 
 class AssistantStreamBlock(Vertical):
-    """Render one in-flight assistant turn.
+    """Render one in-flight assistant answer.
 
-    The block maintains two visible transcript regions:
-
-    1. reasoning summary text,
-    2. assistant answer text.
-
-    The reasoning region is optional. The answer region is always present
-    once answer text arrives or the final completed answer is known.
+    WHAT: Owns answer text, answer rendering/coalescing, terminal state, and
+    the optional title prefix. Copy behaviour lives entirely on the shared
+    TUI clipboard paths (focus-chord and mouse selection); no card-local copy
+    control exists after ``72.a.3``.
+    WHO: ``TranscriptProjector`` updates it for ``text_*`` and terminal events.
+    WHEN: One block is mounted per outer-loop answer iteration. Thinking renders
+    in a separate ``AssistantStreamThinkingBlock`` segment.
     """
 
-    class CopyRequested(Message):
-        """Request answer-only clipboard delivery through the owning TUI.
-
-        ``SloTUI`` handles this message so button-driven copying uses its
-        shared local-clipboard plus OSC 52 funnel rather than a widget-local
-        clipboard implementation.
-        """
-
-        def __init__(self, *, block: "AssistantStreamBlock", answer_text: str) -> None:
-            """Initialise an answer-only copy request.
-
-            Args:
-                block (AssistantStreamBlock): Block whose button initiated the request.
-                answer_text (str): Raw assistant answer excluding reasoning text.
-            """
-            super().__init__()
-            self.block: AssistantStreamBlock = block
-            self.answer_text: str = answer_text
-
     class Rendered(Message):
-        """Posted after the coalescing timer flushes at least one dirty region.
+        """Posted after either assistant-side widget flushes a changed buffer.
 
-        The app handles this to re-check scroll-follow: because the timer fires
-        *after* the per-mount ``_restore_follow_after_mutation`` has already run,
-        the ``Static.update`` inside ``_render_answer`` / ``_render_thinking``
-        expands ``max_scroll_y`` without a scroll-end call. This message lets
-        the app schedule a scroll restoration on the next refresh.
+        Both ``AssistantStreamBlock`` (answer updates) and
+        ``AssistantStreamThinkingBlock`` (reasoning updates) post this shared
+        message after their coalescing timer applies a ``Static.update``. The
+        app handles it to re-check scroll-follow: because the timer fires
+        *after* the per-mount ``_restore_follow_after_mutation`` has already
+        run, the ``Static.update`` expands ``max_scroll_y`` without a
+        scroll-end call. This message lets the app schedule a scroll
+        restoration on the next refresh.
 
         ``was_following`` carries the pre-flush follow state so the app can
         restore scroll-end when the viewport was at the bottom before the
@@ -139,55 +181,18 @@ class AssistantStreamBlock(Vertical):
         width: 100%;
         height: auto;
         margin: 1 0 1 0;
-        padding: 1 1;
-        background: $panel;
-    }
-
-    AssistantStreamBlock .assistant-copy-header {
-        width: 100%;
-        height: auto;
-        align-horizontal: right;
-        margin: 0 0 1 0;
-        background: transparent;
-    }
-
-    AssistantStreamBlock .assistant-copy-control {
-        width: auto;
-        height: 1;
         padding: 0 1;
-        color: $text;
-        background: $panel-lighten-1;
-        text-style: bold;
-    }
-
-    AssistantStreamBlock .assistant-copy-control:hover,
-    AssistantStreamBlock .assistant-copy-control:focus {
-        color: $text;
-        background: $primary-darken-2;
-        text-style: bold underline;
-    }
-
-    AssistantStreamBlock .assistant-copy-control:disabled {
-        color: $text-muted;
-        background: $panel-lighten-1;
-        text-style: dim;
-    }
-
-    AssistantStreamBlock .assistant-thinking-body {
-        color: $text-muted;
-        text-style: italic;
-        margin: 0 0 1 0;
-        background: $surface;
+        background: transparent;
     }
 
     AssistantStreamBlock .assistant-answer-body {
         color: $text;
-        background: $surface;
+        background: transparent;
         text-style: none;
     }
 
     AssistantStreamBlock .assistant-answer-body Heading {
-        color: $accent;
+        color: $md-heading;
         text-style: bold;
     }
 
@@ -205,7 +210,7 @@ class AssistantStreamBlock(Vertical):
 
     AssistantStreamBlock .assistant-answer-body CodeBlock {
         color: $text;
-        background: $surface;
+        background: transparent;
     }
 
     AssistantStreamBlock .assistant-terminal-warning {
@@ -218,113 +223,55 @@ class AssistantStreamBlock(Vertical):
         self,
         *,
         title_prefix: Optional[str] = None,
-        force_expanded: Optional[bool] = None,
     ) -> None:
-        """Seed an empty assistant streaming block.
+        """Seed an empty assistant answer block.
 
         Args:
             title_prefix (Optional[str]): When set, renders a dim single-line
                 label above the block's content using the ``sub-agent-label``
                 CSS class. ``None`` (default) produces no label and the block
                 renders identically to the pre-feature behaviour.
-            force_expanded (Optional[bool]): Initial expansion state from the
-                global expand-all toggle. ``None`` (default) keeps the natural
-                behaviour (reasoning shown whenever present); ``False`` hides
-                the reasoning region; ``True`` shows it.
         """
         super().__init__()
         self._title_prefix: Optional[str] = title_prefix
-        # The natural state shows reasoning whenever present; only an explicit
-        # collapse-all (force_expanded=False) hides it.
-        self._expanded: bool = True if force_expanded is None else force_expanded
         self._label: Optional[LiteralTextStatic] = (
             LiteralTextStatic(title_prefix, classes="sub-agent-label") if title_prefix else None
         )
-        self._copy_control: AssistantCopyControl = AssistantCopyControl()
-        self._copy_header: Horizontal = Horizontal(self._copy_control, classes="assistant-copy-header")
-        self._thinking_body: Static = Static("", classes="assistant-thinking-body")
-        self._thinking_body.display = False
-        self._answer_body: Static = Static("", classes="assistant-answer-body")
+        self._answer_body: AssistantAnswerBody = AssistantAnswerBody(classes="assistant-answer-body")
         self._answer_body.display = False
         self._terminal_note: LiteralTextStatic = LiteralTextStatic("", classes="assistant-terminal-warning")
         self._terminal_note.display = False
-        self._thinking_text: str = ""
         self._answer_text: str = ""
         self._terminal_note_text: str = ""
         self._finalized: bool = False
         self._answer_dirty: bool = False
-        self._thinking_dirty: bool = False
         self._last_rendered_answer: str = ""
-        self._last_rendered_thinking: str = ""
         self._flush_timer: Optional[Timer] = None
-        self._copy_feedback_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
         """Compose the visible child widgets.
 
-        Yields the optional label first, then the three logical transcript
-        regions (thinking, answer, terminal note). Omits the label when
-        ``title_prefix`` was not supplied.
+        Yields the optional label first, then the two logical transcript
+        regions (answer, terminal note). Omits the label when ``title_prefix``
+        was not supplied.
 
         Yields:
-            ComposeResult: Optional label then the three content regions.
+            ComposeResult: Optional label then the answer-side regions.
         """
         if self._label is not None:
             yield self._label
-        yield self._copy_header
-        yield self._thinking_body
         yield self._answer_body
         yield self._terminal_note
 
     def on_unmount(self) -> None:
-        """Flush and cancel timers when the block leaves the DOM."""
+        """Flush and cancel the timer when the block leaves the DOM."""
         self._stop_flush_timer()
-        self._stop_copy_feedback_timer()
-
-    def on_assistant_copy_control_pressed(self, event: AssistantCopyControl.Pressed) -> None:
-        """Request answer-only clipboard delivery when this block's control is pressed.
-
-        Args:
-            event (AssistantCopyControl.Pressed): Press emitted by the response
-                copy control.
-        """
-        if event.copy_control is not self._copy_control or not self._answer_text:
-            return
-        event.stop()
-        self.post_message(
-            AssistantStreamBlock.CopyRequested(
-                block=self,
-                answer_text=self._answer_text,
-            )
-        )
-
-    def show_copy_feedback(self) -> None:
-        """Show the transient confirmation after the TUI accepts a copy request."""
-        self._stop_copy_feedback_timer()
-        self._copy_control.update("Copied")
-        self._copy_feedback_timer = self.set_timer(
-            delay=_COPY_FEEDBACK_DURATION_SECONDS,
-            callback=self._restore_copy_button,
-            name="assistant-copy-feedback",
-        )
-
-    def _restore_copy_button(self) -> None:
-        """Restore the copy-control label after its confirmation interval."""
-        self._copy_control.update("Copy")
-        self._copy_feedback_timer = None
-
-    def _stop_copy_feedback_timer(self) -> None:
-        """Stop the pending copy-feedback timer, if one exists."""
-        if self._copy_feedback_timer is None:
-            return
-        self._copy_feedback_timer.stop()
-        self._copy_feedback_timer = None
 
     def _ensure_flush_timer(self) -> None:
         """Start the coalescing timer on the first streamed delta, if mounted.
 
-        Called by the schedulers. No-op when unmounted (the scheduler renders
-        synchronously instead), when already running, or once finalized.
+        Called by the answer scheduler. No-op when unmounted (the scheduler
+        renders synchronously instead), when already running, or once finalized.
         """
         if self._flush_timer is None and self.is_mounted and not self._finalized:
             self._flush_timer = self.set_interval(
@@ -347,22 +294,17 @@ class AssistantStreamBlock(Vertical):
             self._flush_timer = None
 
     def _flush_dirty_regions(self) -> None:
-        """Render whichever streamed surfaces changed since the last tick.
+        """Flush a changed answer and emit the shared scroll-follow message.
 
-        The ~30 fps ``set_interval`` callback and the only place a mounted block
-        calls into the real render methods, so per-frame render cost is bounded
-        to one answer render and one reasoning render regardless of delta count.
-        Posts ``AssistantStreamBlock.Rendered`` when mounted and at least one
-        surface was dirty, carrying the pre-flush follow state so the app can
-        restore scroll-end after the ``Static.update`` expands ``max_scroll_y``.
+        WHAT: Retains the existing answer timer callback name while making one
+        answer-only render decision.
+        WHO: The answer timer and terminal paths call it.
+        WHEN: After answer deltas or at an answer terminal boundary.
         """
-        if not self._answer_dirty and not self._thinking_dirty:
+        if not self._answer_dirty:
             return
         was_following: bool = self._check_app_at_bottom()
-        if self._answer_dirty:
-            self._flush_answer()
-        if self._thinking_dirty:
-            self._flush_thinking()
+        self._flush_answer()
         if self.is_mounted:
             self.post_message(AssistantStreamBlock.Rendered(was_following=was_following))
 
@@ -398,20 +340,6 @@ class AssistantStreamBlock(Vertical):
         self._last_rendered_answer = self._answer_text
         self._render_answer()
 
-    def _flush_thinking(self) -> None:
-        """Render the accumulated reasoning, skipping work when text is unchanged.
-
-        Tracks text only — visibility is handled by ``set_expanded``, which
-        calls ``_render_thinking`` directly and deliberately bypasses the flusher.
-        Clears the thinking dirty flag and re-renders only when the accumulated
-        text differs from the last rendered snapshot.
-        """
-        self._thinking_dirty = False
-        if self._thinking_text == self._last_rendered_thinking:
-            return
-        self._last_rendered_thinking = self._thinking_text
-        self._render_thinking()
-
     def _schedule_answer_render(self) -> None:
         """Mark the answer dirty; render now when unmounted, else coalesce.
 
@@ -427,34 +355,12 @@ class AssistantStreamBlock(Vertical):
             return
         self._ensure_flush_timer()
 
-    def _schedule_thinking_render(self) -> None:
-        """Mark the reasoning dirty; render now when unmounted, else coalesce.
-
-        Called by ``append_thinking``. Mirrors ``_schedule_answer_render`` for
-        the reasoning surface: synchronous when unmounted, coalesced once
-        mounted.
-        """
-        self._thinking_dirty = True
-        if not self.is_mounted:
-            self._flush_thinking()
-            return
-        self._ensure_flush_timer()
-
-    @property
-    def thinking_text(self) -> str:
-        """Return the accumulated visible reasoning summary text.
-
-        Returns:
-            str: Accumulated reasoning text.
-        """
-        return self._thinking_text
-
     @property
     def answer_text(self) -> str:
-        """Return the accumulated visible answer text.
+        """Return accumulated answer text.
 
         Returns:
-            str: Accumulated answer text.
+            str: Raw answer text used by terminal treatment and focused copy.
         """
         return self._answer_text
 
@@ -477,58 +383,12 @@ class AssistantStreamBlock(Vertical):
         return self._finalized
 
     def get_copyable_text(self) -> str:
-        """Return the visible assistant text for clipboard copy.
-
-        Combines reasoning summary and answer text with a blank line
-        separator when both are present. Called by
-        ``SloTUI.action_copy_visible_text`` when this block holds focus.
+        """Return only answer text for the established focused-copy action.
 
         Returns:
-            str: Reasoning + answer text joined by a blank line, or just
-                whichever part is non-empty.
+            str: This block's answer, never a reasoning segment.
         """
-        parts: list[str] = [p for p in (self._thinking_text, self._answer_text) if p]
-        return "\n\n".join(parts)
-
-    def set_expanded(self, *, expanded: bool) -> None:
-        """Set the expansion state from the global expand-all toggle.
-
-        Only the reasoning region is gated; the answer is always shown. A
-        re-render re-evaluates reasoning visibility against the new state.
-
-        Args:
-            expanded (bool): True shows reasoning when present; False hides it.
-        """
-        if expanded == self._expanded:
-            return
-        self._expanded = expanded
-        self._render_thinking()
-
-    def append_thinking(self, *, delta: str) -> None:
-        """Append visible reasoning summary text.
-
-        Args:
-            delta (str): Incremental visible reasoning summary text.
-        """
-        if self._finalized or not delta:
-            return
-        self._thinking_text = self._merge_reasoning_delta(
-            existing=self._thinking_text,
-            delta=delta,
-        )
-        self._schedule_thinking_render()
-
-    def set_thinking(self, *, content: str) -> None:
-        """Replace the visible reasoning summary with completed truth.
-
-        Args:
-            content (str): Completed visible reasoning summary text.
-        """
-        if self._finalized or not content:
-            return
-        self._thinking_text = content
-        self._thinking_dirty = True
-        self._flush_thinking()
+        return self._answer_text
 
     def append_text(self, *, delta: str) -> None:
         """Append visible assistant answer text.
@@ -600,123 +460,23 @@ class AssistantStreamBlock(Vertical):
 
         Called by ``TranscriptProjector._finalize_completed_run`` when
         ``run_completed`` fires with no confirmed final text. Stops the block
-        from accepting further ``append_text`` / ``append_thinking`` deltas
-        while preserving whatever was already streamed into the answer and
-        reasoning regions. Flushes pending dirty regions before stopping the
-        timer so the last streamed delta is always on screen.
+        from accepting further ``append_text`` deltas while preserving
+        whatever was already streamed into the answer region. Flushes pending
+        dirty regions before stopping the timer so the last streamed delta is
+        always on screen.
         """
         if self._finalized:
             return
         self._finalized = True
         self._stop_flush_timer()
 
-    def _render_thinking(self) -> None:
-        """Render the current reasoning summary with Pi-style padding.
-
-        Reasoning text is already semantically distinct from answer text,
-        so Slo does not prepend a redundant literal "Thinking" label.
-        It is rendered as muted italic markdown with horizontal padding.
-        """
-        if not self._thinking_text.strip():
-            self._thinking_body.update("")
-            self._thinking_body.display = False
-            return
-        # Keep the content current even while hidden, so a later expand-all
-        # reveals the full reasoning without a re-render gap. Visibility is
-        # gated by the global expand-all state.
-        self._thinking_body.update(
-            Padding(
-                Markdown(
-                    self._stabilize_reasoning_markdown(text=self._thinking_text.strip()), style="italic"
-                ),
-                pad=(1, 1, 1, 1),
-            )
-        )
-        self._thinking_body.display = self._expanded
-
     def _render_answer(self) -> None:
-        """Render the current assistant answer with Pi-style padding."""
-        if not self._answer_text:
-            self._answer_body.update("")
-            self._answer_body.display = False
-            self._copy_control.disabled = True
-            return
-        self._answer_body.display = True
-        self._copy_control.disabled = False
-        self._answer_body.update(
-            Padding(
-                Markdown(self._escape_markdown_breakers(text=self._answer_text)),
-                pad=(1, 1, 1, 1),
-            )
-        )
+        """Render the current answer on the answer surface.
 
-    @staticmethod
-    def _escape_markdown_breakers(*, text: str) -> str:
-        """Escape angle-bracket fragments that break transcript readability.
-
-        Args:
-            text (str): Raw assistant answer text.
-
-        Returns:
-            str: Stabilized markdown text.
+        WHAT: Hands the accumulated raw answer text to the answer surface,
+        which renders vertically padded markdown or hides itself when no
+        answer text exists.
+        WHO: ``_flush_answer`` calls it after accepted streamed or final text.
+        WHEN: Runs at an answer render boundary.
         """
-        return text.replace("<", "\\<").replace(">", "\\>")
-
-    @classmethod
-    def _stabilize_reasoning_markdown(cls, *, text: str) -> str:
-        """Normalize common streamed-markdown glitches in reasoning text.
-
-        Args:
-            text (str): Raw streamed reasoning text.
-
-        Returns:
-            str: Markdown-safe reasoning text that keeps headings readable.
-        """
-        escaped_text: str = cls._escape_markdown_breakers(text=text)
-        normalized_lines: list[str] = []
-        for line in escaped_text.splitlines():
-            normalized_lines.append(cls._normalize_reasoning_line(line=line))
-        return "\n".join(normalized_lines)
-
-    @staticmethod
-    def _normalize_reasoning_line(*, line: str) -> str:
-        """Normalize one reasoning line for markdown rendering.
-
-        Args:
-            line (str): One raw reasoning line.
-
-        Returns:
-            str: Normalized line.
-        """
-        stripped_line: str = line.strip()
-        if (
-            stripped_line.startswith("*")
-            and not stripped_line.startswith("**")
-            and stripped_line.endswith("**")
-            and stripped_line.count("*") == 3
-        ):
-            return f"**{stripped_line[1:-2].strip()}**"
-        if stripped_line.startswith("*") and stripped_line.endswith("*") and stripped_line.count("*") == 2:
-            return f"**{stripped_line[1:-1].strip()}**"
-        return line
-
-    @staticmethod
-    def _merge_reasoning_delta(*, existing: str, delta: str) -> str:
-        """Append one streamed reasoning fragment with lightweight spacing repair.
-
-        Args:
-            existing (str): Previously accumulated reasoning text.
-            delta (str): New streamed fragment.
-
-        Returns:
-            str: Combined reasoning text.
-        """
-        if not existing or not delta:
-            return existing + delta
-        if existing[-1].isspace() or delta[0].isspace():
-            return existing + delta
-        if delta[0] in ",.;:!?)]}%\"'”’" or existing[-1] in '([{$"“‘':
-            return existing + delta
-        if delta[0] in "-/\\_`" or existing[-1] in "-/\\_`'’":
-            return existing + delta
-        return f"{existing} {delta}"
+        self._answer_body.show_answer(text=self._answer_text)

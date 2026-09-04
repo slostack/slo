@@ -3,11 +3,11 @@
 Follows ``awesome-agi/build-agent-tools.md`` conventions. Description text is
 lifted verbatim from pi ``bash.ts:279``.
 """
+
 from __future__ import annotations
 
 BASH_PROMPT_SNIPPET: str = (
-    "run a bash command in the working directory with optional timeout "
-    "(output is truncated)"
+    "run a bash command in the working directory with optional timeout (output is truncated)"
 )
 
 import asyncio
@@ -21,8 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from config.cfg import cfg
 from config.logger import log_error, log_info
+from src.agents.tools._blocking import run_blocking_tool_call
 from src.agents.tools._truncate import Truncator
-
 
 __all__ = [
     "BashSchemaDAO",
@@ -152,7 +152,11 @@ class BashTool:
                 await cls._terminate_process_group(process=process)
                 return f"Error: command exceeded {effective_timeout}s timeout"
 
-            return cls._format_result(process=process, stdout_bytes=stdout_bytes)
+            return await run_blocking_tool_call(
+                func=cls._format_result,
+                process=process,
+                stdout_bytes=stdout_bytes,
+            )
         except Exception as exc:  # noqa: BLE001 — surface to model, never raise into the graph
             log_error(msg=f"BashTool failed for command: {command[:80]!r}", e=exc, stack_trace=False)
             return f"Error: bash failed: {exc}"
@@ -268,19 +272,27 @@ class BashTool:
         process: asyncio.subprocess.Process,
         stdout_bytes: bytes,
     ) -> str:
-        """Frame and truncate the command output.
+        """Frame and truncate completed command output in a worker thread.
 
-        Called by ``invoke`` on the success path. Decodes the captured bytes,
-        prepends the ``exit_code:`` line, then tail-truncates with a spill footer
-        when the body exceeds the truncation budget.
+        WHAT: Decodes captured bytes, frames the exit code, tail-truncates, and
+            writes the complete spill file only when truncation occurs.
+        WHO: ``BashTool.invoke`` calls this method through
+            ``run_blocking_tool_call`` after async communication completes.
+        WHEN: It runs only on a successful subprocess completion; spawn,
+            communication, timeout process-group termination, and reap remain
+            on the caller event loop.
+
+        This synchronous leaf runs in the shared blocking-tool worker thread,
+        so it must stay free of asyncio primitives — it uses only decode,
+        string, and tempfile work.
 
         Args:
-            process (asyncio.subprocess.Process): The completed process (for its
-                return code).
-            stdout_bytes (bytes): The interleaved stdout/stderr bytes.
+            process (asyncio.subprocess.Process): Completed process providing the
+                return code.
+            stdout_bytes (bytes): Interleaved stdout and stderr bytes.
 
         Returns:
-            str: The framed, possibly-truncated output string.
+            str: Framed output, optionally truncated with a spill footer.
         """
         raw: str = stdout_bytes.decode("utf-8", errors="replace")
         exit_code: int = process.returncode if process.returncode is not None else -1

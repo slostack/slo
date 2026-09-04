@@ -178,8 +178,10 @@ slo/
 │   │   ├── authentication/            # AuthenticationScreen + widgets (api_key, oauth, …)
 │   │   └── widgets/
 │   │       ├── user_message_block.py     # UserMessageBlock — one user turn with panel surface styling
-│   │       ├── assistant_stream_block.py # AssistantStreamBlock — one assistant turn; reasoning/answer split surfaces
+│   │       ├── assistant_stream_block.py # AssistantStreamBlock — one assistant answer turn (answer-only)
+│   │       ├── assistant_stream_thinking_block.py # AssistantStreamThinkingBlock — one thinking segment per normalized block_id
 │   │       ├── tool_execution_block.py   # ToolExecutionBlock — one tool call+result with panel surface styling
+│   │       ├── queued_prompt_block.py    # QueuedPromptBlock — one visible latest-wins held ordinary prompt
 │   │       ├── usage_status_bar.py       # UsageStatusBar — token/rate display
 │   │       └── slash_suggestion_menu.py  # SlashSuggestionMenu — autocomplete dropdown
 │   └── exceptions.py
@@ -335,8 +337,14 @@ The default bundle is `create_extended_tools()` from `src/agents/tools/bundles.p
 Three pi-parity sub-bundles also exist: `create_coding_tools()` (read/bash/edit/write),
 `create_read_only_tools()` (read/grep/find/ls), `create_all_tools()` (all seven pi tools).
 
-Blocking leaf work (file I/O, PDF extraction) is offloaded via `asyncio.to_thread` behind a
-per-event-loop semaphore in `tools/_blocking.py` so read-heavy batches do not stall Textual.
+Blocking leaf work in the local tools (file I/O, PDF extraction) and bash post-processing
+(`BashTool._format_result` — decode, exit-code framing, tail truncation, and optional
+full-output spill after a subprocess completes) are offloaded via `run_blocking_tool_call`
+in `tools/_blocking.py` (`asyncio.to_thread` behind a per-event-loop semaphore) so
+read-heavy batches and large bash outputs do not stall Textual. Bash subprocess ownership
+(`_spawn`, `_communicate_with_timeout`, `_terminate_process_group`) stays async on the
+caller loop; only the synchronous formatting leaf crosses the gateway, and
+`_spill_to_tempfile` remains a plain leaf called from `_format_result` (no nested offload).
 
 ---
 
@@ -439,13 +447,91 @@ slow test suites".
 
 **Per-component transcript model:** every conversational entry is a dedicated Textual widget:
 - `UserMessageBlock` — one user turn, rendered with `Rich.Markdown`.
-- `AssistantStreamBlock` — one assistant turn; reasoning and answer text stream into it in
-  real time. One block per outer-loop iteration.
+- `AssistantStreamThinkingBlock` — one normalized parent thinking segment, keyed by the
+  normalizer's stable `block_id`; it is sealed by its content-bearing repair end or the
+  terminal-run sweep (a contentless `thinking_end` leaves the segment open and live).
+- `AssistantStreamBlock` — one answer-only assistant iteration; reasoning never renders here.
 - `ToolExecutionBlock` — one tool call + result pair; updates as the tool executes.
 
 Non-conversational notices (system messages, slash-command echoes) remain flat `Static`
 lines. **Both the live path and the replay path use the same widgets** — resumed sessions
 render identically to live.
+
+**Pi design restyle (spec 72.a.5):** both `Theme.variables` mappings in `src/tui/theme.py`
+define the same seven canonical Pi-derived semantic tokens — `user-msg-bg`,
+`tool-pending-bg`, `tool-success-bg`, `tool-error-bg`, `thinking-text`, `md-heading`,
+`border-muted` — and widget `DEFAULT_CSS` consumes them via `$<token>` references (no
+hard-coded role colors). A user turn is a quiet `user-msg-bg` band; thinking segments and
+answers stay bare on the canvas (thinking is muted italic `thinking-text`, answer headings
+use warm `md-heading`); a `ToolExecutionBlock` paints pending/success/error fills and
+gains the CSS-state hooks `-done` (added by `update_result()`) and `-error` (added by
+`mark_incomplete()`) purely as styling seams — `_result_output`/`is_incomplete` remain the
+lifecycle truth used by `_is_block_live`. The turn separator is a muted `─` rule
+(`_TranscriptAdapter.TURN_SEPARATOR`, `border-muted`). `UsageStatusBar` renders Pi-style
+compact token quantities (`6.0k`, `12k`, `1.0M`) for token values only — rpm, cooldown
+seconds, and context percent keep their raw units. `SloTUI._refresh_title_bar()` collapses
+the session workdir to `~`/`~/...` via `_collapse_home_in_path` (`Path.relative_to`
+ancestry, so home-prefix lookalikes stay absolute); the usage bar owns no cwd display.
+
+`TranscriptProjector` owns parent `block_id` routing and mounts replay reasoning as a
+sealed thinking block immediately before its answer block (replay adjacency). `SloTUI`
+owns child/sub-agent events: child thinking updates fleet activity only and never mounts
+a foreground transcript block.
+
+**Queued prompt (spec 72.a.4 + input-adjacent anchoring):** an ordinary (non-slash) prompt
+submitted while a run is active is held in a one-deep, latest-wins app-owned slot
+(`_queued_prompt_text` plus its mounted `QueuedPromptBlock`, rendered as `⏳ Queued: <text>`);
+a newer busy submission replaces the held text in place rather than FIFO-appending. The
+visible block mounts into `#chat-shell` directly before `PromptInput` — anchored immediately
+above the bottom input area, outside the scroll region — so it stays visible while the
+transcript scrolls; it is never a transcript child, so transcript window eviction cannot
+reach it and `_is_block_live` carries no `QueuedPromptBlock` branch. There is still exactly
+one `session.invoke()` task at all times — `_prompt_submission_lock` serializes acceptance
+with the run-completion handoff (`_finish_prompt_run` → `_start_queued_prompt_if_idle`),
+which removes the anchored block before echoing and starting the held turn through the
+standard transcript path. `/abort` (and Ctrl+C) preserve the held prompt and write a
+single survival notice; `/clear` and an allowed `/new` replacement discard it (clear
+explicitly removes the anchored block). Slash commands and inbox `chat_turn` items never
+enter the user queue.
+
+**Transcript copy and output padding (spec 72.a.3):** there is no card-local copy
+control on any transcript block. Copy runs through `SloTUI` only — the focus chord
+(`ctrl+shift+c` / `meta+c` → `action_copy_visible_text` → the focused block's
+`get_copyable_text()`) and mouse drag selection (`on_text_selected`) both funnel into
+`copy_to_clipboard` (pyperclip → OSC 52). The flattened answer surface
+(`AssistantAnswerBody`, owned by `AssistantStreamBlock` as its `._answer_body`) serves
+its raw answer text through Textual's documented `Widget.get_selection` seam, so a
+drag over the markdown answer lands the answer itself — never a card-control label —
+on the shared funnel. All four message widgets
+(`UserMessageBlock`, `AssistantStreamThinkingBlock`, `AssistantStreamBlock`,
+`ToolExecutionBlock`) follow the uniform `TRANSCRIPT_OUTPUT_PAD` convention: CSS
+`padding: 0 1`, with Rich `Padding` horizontal zero / vertical one on user, thinking,
+and answer content; the `#transcript-content` outer-frame padding is unchanged.
+Terminal-native copy currently means flattened selection plus these existing clipboard
+paths: OSC 133 prompt-zone markers are deferred pending a Textual-supported
+terminal-output seam that preserves raw zero-cell controls end-to-end (in pinned
+Textual 8.2.8, raw OSC bytes inside a `Strip` segment add cells and are mangled by
+compositor cropping, and `Driver.write` is unsynchronized with compositor output).
+
+**Selection highlight on the AI surfaces (spec 72 follow-up):** Textual 8.2.8's
+`RichVisual.render_strips` silently drops the render-time selection option, and
+Rich-rendered strips carry no offset meta, so a drag over `AssistantAnswerBody`
+or `AssistantThinkingBody` (the thinking block's body, which now mirrors the
+answer body's `get_selection` seam) falls back to a whole-widget `SELECT_ALL`
+entry in `Screen.selections` and never painted the highlight at all. Both bodies
+override `render()` to wrap their padded-markdown content in
+`SelectableRichVisual` (`src/tui/widgets/selectable_rich_visual.py`), which
+re-applies `options.selection` to the rendered strips in content coordinates —
+the highlight is baked into the widget's own strips and therefore tracks the
+selected text exactly across transcript scrolls (no stale screen-space paint).
+The approved UX: a drag over either AI surface highlights the whole body — the
+same span that copy extracts — and the selection is never cleared to hide paint.
+`tests/tui/test_selection_scroll_highlight.py` pins this at compositor level.
+Both themes pin explicit `screen-selection-background` /
+`screen-selection-foreground` variables (bright accent band + dark text, the
+same readability precedent as `button-color-foreground`): Textual's default of
+`primary.with_alpha(0.5)` + transparent foreground made selected text
+illegible on these palettes.
 
 **Session replay:** `ReplayEntryProjector.build_entries()` reads the on-disk JSONL and
 emits `TranscriptEntryDAO` objects. `TranscriptProjector.project_replay_entry()` mounts the
@@ -474,7 +560,10 @@ non-slash prompts, gives slash suggestions precedence, and restores the preserve
 history navigation exits.
 
 **`ThinkingSpinner`** (`src/tui/thinking_spinner.py`) is mounted above `PromptInput` while
-the agent is running.
+the agent is running. It is a `Horizontal` with two child `Static`s: an accent braille
+activity glyph rotating every 0.08 s (`_BRAILLE_FRAMES`) and a muted italic text surface
+that rotates verbs every `interval_seconds` (default 1.5 s) or carries a retry/compaction
+override via `set_override_status(text=...)` — overrides never stop the glyph.
 
 **Workflow visualizer auto-launch:** when a TUI session is promoted to orchestrator mode and
 the first sub-agent is spawned, `SloTUI._maybe_launch_visualizer` opens a separate terminal

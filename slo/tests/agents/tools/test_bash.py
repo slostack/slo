@@ -1,10 +1,14 @@
 """Tests for the ``bash`` tool (sub-spec 01.d §5.4)."""
+
 import asyncio
 import os
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
+from src.agents.tools import bash as bash_module
+from src.agents.tools._blocking import run_blocking_tool_call
 from src.agents.tools._truncate import DEFAULT_MAX_LINES
 from src.agents.tools.bash import (
     BashTool,
@@ -54,6 +58,37 @@ async def test_bash_truncates_and_spills() -> None:
 def test_bash_tool_metadata() -> None:
     assert bash_tool.name == "bash"
     assert "Execute a bash command" in bash_tool.description
+
+
+@pytest.mark.asyncio
+async def test_format_result_runs_through_blocking_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful invoke offloads ``_format_result`` through ``run_blocking_tool_call``.
+
+    The mock delegates to the real gateway so result formatting still really
+    runs; the assertion proves the offload seam rather than re-testing output.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Patches the bash module's gateway seam.
+    """
+    gateway_mock: AsyncMock = AsyncMock(side_effect=run_blocking_tool_call)
+    monkeypatch.setattr(
+        target=bash_module,
+        name="run_blocking_tool_call",
+        value=gateway_mock,
+    )
+
+    result: str = await BashTool.invoke(command="echo gateway-routed")
+
+    gateway_mock.assert_awaited_once()
+    call = gateway_mock.await_args
+    assert call is not None
+    assert call.kwargs["func"] == BashTool._format_result
+    assert call.kwargs["process"].returncode == 0
+    assert b"gateway-routed" in call.kwargs["stdout_bytes"]
+    assert "exit_code: 0" in result
+    assert "gateway-routed" in result
 
 
 class TestDefaultBashTimeoutSeconds:
@@ -126,9 +161,7 @@ class TestBashProcessGroupTermination:
         died); after the process-group kill it returns at the timeout boundary.
         """
         start: float = time.monotonic()
-        result: str = await bash_tool.ainvoke(
-            {"command": "sleep 30 && echo done", "timeout": 1}
-        )
+        result: str = await bash_tool.ainvoke({"command": "sleep 30 && echo done", "timeout": 1})
         elapsed: float = time.monotonic() - start
 
         assert "exceeded" in result and "timeout" in result
@@ -152,9 +185,9 @@ class TestBashProcessGroupTermination:
         deadline: float = time.monotonic() + 5
         while time.monotonic() < deadline:
             try:
-                os.killpg(pgid, 0)            # signal 0 == existence probe
+                os.killpg(pgid, 0)  # signal 0 == existence probe
             except ProcessLookupError:
-                break                          # whole group gone — success
+                break  # whole group gone — success
             await asyncio.sleep(0.1)
         else:
             pytest.fail(f"process group {pgid} still had live members after teardown")

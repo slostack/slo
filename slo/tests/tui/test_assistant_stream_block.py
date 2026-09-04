@@ -1,14 +1,17 @@
-"""Direct tests for ``AssistantStreamBlock`` formatting."""
+"""Direct tests for ``AssistantStreamBlock`` answer-only formatting (spec 72.a.2)."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
 from rich.markdown import Markdown
 from rich.padding import Padding
+from textual.selection import SELECT_ALL
+from textual.widget import Widget
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.faux import FauxChatModel
@@ -18,25 +21,10 @@ from tests.tui._scroll_settle import pump_until
 
 
 class TestAssistantStreamBlock:
-    """Pi-style reasoning / answer rendering details."""
-
-    def test_thinking_renders_without_redundant_label_and_with_padding(self) -> None:
-        """Reasoning text renders as padded markdown without a literal label."""
-        block = AssistantStreamBlock()
-
-        block.append_thinking(delta="  Inspecting the app  ")
-
-        assert not hasattr(block, "_thinking_label")
-        assert isinstance(block._thinking_body.content, Padding)
-        assert isinstance(block._thinking_body.content.renderable, Markdown)
-        assert block._thinking_body.content.renderable.markup == "Inspecting the app"
-        assert block._thinking_body.content.top == 1
-        assert block._thinking_body.content.right == 1
-        assert block._thinking_body.content.bottom == 1
-        assert block._thinking_body.content.left == 1
+    """Pi-style answer rendering details; thinking lives in its own widget."""
 
     def test_answer_renders_as_padded_markdown(self) -> None:
-        """Assistant answer text uses the same padded markdown surface."""
+        """Assistant answer text uses vertical-only padding (spec 72.a.3)."""
         block = AssistantStreamBlock()
 
         block.append_text(delta="Hello world")
@@ -46,9 +34,14 @@ class TestAssistantStreamBlock:
         assert isinstance(block._answer_body.content.renderable, Markdown)
         assert block._answer_body.content.renderable.markup == "Hello world"
         assert block._answer_body.content.top == 1
-        assert block._answer_body.content.right == 1
+        assert block._answer_body.content.right == 0
         assert block._answer_body.content.bottom == 1
-        assert block._answer_body.content.left == 1
+        assert block._answer_body.content.left == 0
+
+    def test_widget_css_uses_transcript_output_pad(self) -> None:
+        """The block declares the uniform ``TRANSCRIPT_OUTPUT_PAD`` convention."""
+        block_rule: str = AssistantStreamBlock.DEFAULT_CSS.split("AssistantStreamBlock {")[1].split("}")[0]
+        assert "padding: 0 1;" in block_rule
 
     def test_answer_escapes_angle_brackets_before_markdown_render(self) -> None:
         """Answer text escapes angle brackets that destabilize markdown rendering."""
@@ -60,64 +53,110 @@ class TestAssistantStreamBlock:
         assert isinstance(block._answer_body.content.renderable, Markdown)
         assert block._answer_body.content.renderable.markup == r"Path: \<repo\>/src/file.py"
 
-    def test_reasoning_normalizes_broken_heading_markdown(self) -> None:
-        """Streamed reasoning fixes common broken heading emphasis markers."""
+    def test_answer_surface_keeps_its_widget_class(self) -> None:
+        """The answer surface keeps the distinct answer widget class for styling."""
         block = AssistantStreamBlock()
 
-        block.append_thinking(delta="*Summarizing unstaged changes**")
-
-        assert isinstance(block._thinking_body.content, Padding)
-        assert isinstance(block._thinking_body.content.renderable, Markdown)
-        assert block._thinking_body.content.renderable.markup == "**Summarizing unstaged changes**"
-
-    def test_reasoning_and_answer_use_distinct_surface_classes(self) -> None:
-        """Reasoning and answer surfaces keep distinct widget classes for styling."""
-        block = AssistantStreamBlock()
-
-        assert "assistant-thinking-body" in block._thinking_body.classes
         assert "assistant-answer-body" in block._answer_body.classes
 
+    def test_answer_block_and_body_paint_bare_canvas(self) -> None:
+        """Answer block and body stay bare on the terminal canvas (spec 72.a.5)."""
+        block_rule: str = AssistantStreamBlock.DEFAULT_CSS.split("AssistantStreamBlock {")[1].split("}")[0]
+        body_rule: str = AssistantStreamBlock.DEFAULT_CSS.split(
+            "AssistantStreamBlock .assistant-answer-body {"
+        )[1].split("}")[0]
+
+        assert "background: transparent;" in block_rule
+        assert "background: transparent;" in body_rule
+        assert "background: $panel;" not in AssistantStreamBlock.DEFAULT_CSS
+        assert "background: $surface;" not in AssistantStreamBlock.DEFAULT_CSS
+
+    def test_answer_headings_use_canonical_md_heading_token(self) -> None:
+        """Assistant markdown headings use the warm ``$md-heading`` role (spec 72.a.5)."""
+        heading_rule: str = AssistantStreamBlock.DEFAULT_CSS.split(
+            "AssistantStreamBlock .assistant-answer-body Heading {"
+        )[1].split("}")[0]
+
+        assert "color: $md-heading;" in heading_rule
+
     def test_empty_surfaces_start_hidden(self) -> None:
-        """Empty thinking / answer / terminal regions do not reserve blank layout rows."""
+        """Empty answer / terminal regions do not reserve blank layout rows."""
         block = AssistantStreamBlock()
 
-        assert block._thinking_body.display is False
         assert block._answer_body.display is False
         assert block._terminal_note.display is False
 
-    def test_compose_includes_disabled_accessible_copy_button(self) -> None:
-        """Every response block composes an initially disabled copy control."""
+    def test_assistant_block_composes_no_focusable_card_control(self) -> None:
+        """Verify the flattened assistant block has no focusable card control.
+
+        A retired card-local copy control would reappear as an extra focusable
+        composed child, so the composed-children list and their focusability
+        are the behavioral guard that no card control remains (spec 72.a.3).
+
+        WHO: The spec-72.a.3 regression suite calls this after constructing the
+            answer block.
+        """
+        block: AssistantStreamBlock = AssistantStreamBlock()
+
+        children: list[Widget] = list(block.compose())
+
+        assert children == [block._answer_body, block._terminal_note]
+        assert all(not child.can_focus for child in children)
+        assert block.can_focus is True
+
+    def test_block_css_targets_only_answer_side_surfaces(self) -> None:
+        """Verify the stylesheet styles only the answer-side surfaces.
+
+        A retired copy header or control rule would reappear as an extra CSS
+        selector, so the exact selector set is the behavioral guard that no
+        card-control styling remains (spec 72.a.3).
+
+        WHO: The spec-72.a.3 regression suite calls this against the class CSS.
+        """
+        selectors: set[str] = {
+            line.strip().removesuffix("{").strip()
+            for line in AssistantStreamBlock.DEFAULT_CSS.splitlines()
+            if "{" in line
+        }
+
+        assert selectors == {
+            "AssistantStreamBlock .sub-agent-label",
+            "AssistantStreamBlock",
+            "AssistantStreamBlock .assistant-answer-body",
+            "AssistantStreamBlock .assistant-answer-body Heading",
+            "AssistantStreamBlock .assistant-answer-body BulletList",
+            "AssistantStreamBlock .assistant-answer-body OrderedList",
+            "AssistantStreamBlock .assistant-answer-body BlockQuote",
+            "AssistantStreamBlock .assistant-answer-body CodeBlock",
+            "AssistantStreamBlock .assistant-terminal-warning",
+        }
+
+
+class TestAssistantStreamBlockAnswerOnly:
+    """The answer block owns no thinking state, helpers, or API (spec 72.a.2)."""
+
+    def test_no_thinking_state_or_api_remains(self) -> None:
+        """All thinking surface, buffer, scheduler, and merge helpers are gone."""
         block = AssistantStreamBlock()
+
+        assert not hasattr(block, "_thinking_body")
+        assert not hasattr(block, "_thinking_text")
+        assert not hasattr(block, "_thinking_dirty")
+        assert not hasattr(block, "_last_rendered_thinking")
+        assert not hasattr(block, "thinking_text")
+        assert not hasattr(block, "append_thinking")
+        assert not hasattr(block, "set_thinking")
+        assert not hasattr(block, "set_expanded")
+        assert not hasattr(block, "_stabilize_reasoning_markdown")
+        assert not hasattr(block, "_normalize_reasoning_line")
+        assert not hasattr(block, "_merge_reasoning_delta")
+
+    def test_compose_yields_answer_and_terminal_note_only(self) -> None:
+        """``compose()`` yields exactly the answer-side regions when no label is set."""
+        block: AssistantStreamBlock = AssistantStreamBlock()
         widgets = list(block.compose())
 
-        assert block._copy_header in widgets
-        assert block._copy_control.disabled is True
-        assert str(block._copy_control.content) == "Copy"
-        assert block._copy_control.tooltip == "Copy response"
-
-    def test_answer_render_enables_copy_button(self) -> None:
-        """The copy control enables as soon as answer text is rendered."""
-        block = AssistantStreamBlock()
-
-        block.append_text(delta="copyable")
-
-        assert block._copy_control.disabled is False
-
-    def test_streamed_reasoning_inserts_spacing_between_word_fragments(self) -> None:
-        """Reasoning deltas from Codex-style word fragments stay readable while streaming."""
-        block = AssistantStreamBlock()
-
-        block.append_thinking(delta="I")
-        block.append_thinking(delta="need")
-        block.append_thinking(delta="to")
-        block.append_thinking(delta="plan")
-        block.append_thinking(delta=",")
-        block.append_thinking(delta="not")
-        block.append_thinking(delta="re")
-        block.append_thinking(delta="-")
-        block.append_thinking(delta="plan")
-
-        assert block.thinking_text == "I need to plan, not re-plan"
+        assert widgets == [block._answer_body, block._terminal_note]
 
 
 class TestAssistantStreamBlockSeal:
@@ -139,15 +178,6 @@ class TestAssistantStreamBlockSeal:
         block.seal()
 
         assert block.answer_text == "I'll prepare the read call now."
-
-    def test_seal_preserves_streamed_thinking_text(self) -> None:
-        """``seal()`` does not overwrite previously streamed reasoning text."""
-        block = AssistantStreamBlock()
-        block.append_thinking(delta="Inspecting the file")
-
-        block.seal()
-
-        assert block.thinking_text == "Inspecting the file"
 
     def test_seal_is_idempotent_on_already_finalized_block(self) -> None:
         """``seal()`` is a no-op once the block has already been finalized."""
@@ -195,8 +225,8 @@ class TestAssistantStreamBlockTitlePrefix:
         widgets = list(block.compose())
 
         assert block._label not in widgets
-        # Copy header plus three content widgets.
-        assert len(widgets) == 4
+        # Two content widgets (answer + terminal note); no copy header remains.
+        assert len(widgets) == 2
 
     def test_prefix_does_not_affect_text_accumulation(self) -> None:
         """A block with a prefix still accumulates answer text correctly."""
@@ -214,72 +244,67 @@ class TestAssistantStreamBlockTitlePrefix:
         assert block.answer_text == "answer"
 
 
-class TestAssistantStreamBlockExpansion:
-    """Global expand/collapse behaviour for ``AssistantStreamBlock`` (sub-spec 42.a.12)."""
-
-    def test_natural_default_shows_reasoning(self) -> None:
-        """Reasoning is visible by default once present."""
-        block = AssistantStreamBlock()
-        block.set_thinking(content="deep reasoning")
-
-        assert block._thinking_body.display is True
-
-    def test_force_expanded_false_hides_reasoning(self) -> None:
-        """Reasoning is hidden when the block mounts under collapse-all."""
-        block = AssistantStreamBlock(force_expanded=False)
-        block.set_thinking(content="deep reasoning")
-
-        assert block._thinking_body.display is False
-
-    def test_set_expanded_toggles_reasoning_visibility(self) -> None:
-        """``set_expanded`` shows/hides reasoning while preserving its content."""
-        block = AssistantStreamBlock()
-        block.set_thinking(content="deep reasoning")
-
-        block.set_expanded(expanded=False)
-        assert block._thinking_body.display is False
-
-        block.set_expanded(expanded=True)
-        assert block._thinking_body.display is True
-
-    def test_answer_visible_regardless_of_collapse(self) -> None:
-        """The answer region stays visible even when collapsed."""
-        block = AssistantStreamBlock(force_expanded=False)
-        block.set_answer(content="the answer")
-
-        assert block._answer_body.display is True
-
-
 class TestAssistantStreamBlockCopyableText:
-    """``get_copyable_text`` protocol for clipboard copy (spec 56)."""
+    """``get_copyable_text`` returns answer text only (spec 72.a.2)."""
 
-    def test_combines_thinking_and_answer_with_blank_line(self) -> None:
-        """``get_copyable_text`` joins both parts with a blank-line separator."""
+    def test_returns_answer_text_only(self) -> None:
+        """Focused copy yields exactly the block's answer text."""
         block = AssistantStreamBlock()
-        block._thinking_text = "thinking"
-        block._answer_text = "answer"
+        block.append_text(delta="public answer")
 
-        assert block.get_copyable_text() == "thinking\n\nanswer"
+        assert block.get_copyable_text() == "public answer"
 
-    def test_skips_empty_thinking_when_absent(self) -> None:
-        """``get_copyable_text`` returns only the answer when thinking is empty."""
-        block = AssistantStreamBlock()
-        block._answer_text = "answer only"
-
-        assert block.get_copyable_text() == "answer only"
-
-    def test_skips_empty_answer_when_absent(self) -> None:
-        """``get_copyable_text`` returns only thinking when answer is empty."""
-        block = AssistantStreamBlock()
-        block._thinking_text = "thinking only"
-
-        assert block.get_copyable_text() == "thinking only"
-
-    def test_returns_empty_string_when_both_absent(self) -> None:
-        """``get_copyable_text`` returns empty string when the block has no content."""
+    def test_returns_empty_string_when_no_answer(self) -> None:
+        """Focused copy yields an empty string before any answer text arrives."""
         block = AssistantStreamBlock()
 
         assert block.get_copyable_text() == ""
+
+
+class TestAssistantAnswerBodySelection:
+    """The answer surface serves raw text through Textual's selection seam (spec 72.a.3)."""
+
+    def test_get_selection_returns_none_without_answer_text(self) -> None:
+        """An empty answer surface offers no selectable text.
+
+        WHO: The spec-72.a.3 regression suite calls this on a fresh block.
+        """
+        block: AssistantStreamBlock = AssistantStreamBlock()
+
+        assert block._answer_body.get_selection(SELECT_ALL) is None
+
+    def test_get_selection_extracts_raw_answer_text(self) -> None:
+        """A full-surface selection yields the raw answer text, unescaped.
+
+        The markdown renderable escapes angle brackets for display, but the
+        selection seam must serve the raw answer so a drag-selection copy
+        lands the true text on the shared clipboard funnel.
+
+        WHO: The spec-72.a.3 regression suite calls this after streamed text.
+        """
+        block: AssistantStreamBlock = AssistantStreamBlock()
+        block.append_text(delta="select me <now>")
+
+        selected: Optional[tuple[str, str]] = block._answer_body.get_selection(SELECT_ALL)
+
+        assert selected == ("select me <now>", "\n")
+
+    def test_finalize_with_empty_text_hides_previously_rendered_answer_surface(self) -> None:
+        """Hide stale answer text when the completed answer is empty.
+
+        WHAT: Verifies an empty completed answer clears a previously visible
+            surface and withdraws its selection.
+        WHO: The spec-72.a.3 regression suite calls this after streamed text.
+        WHEN: A terminal assistant event supplies no completed answer text.
+        """
+        block: AssistantStreamBlock = AssistantStreamBlock()
+        block.append_text(delta="partial answer")
+
+        block.finalize(final_text="")
+
+        assert block._answer_body.display is False
+        assert str(block._answer_body.content) == ""
+        assert block._answer_body.get_selection(SELECT_ALL) is None
 
 
 def _build_session() -> SloAgentSession:
@@ -294,58 +319,6 @@ def _build_session() -> SloAgentSession:
         workdir=Path(".").resolve(),
         session_id=str(uuid4()),
     )
-
-
-class TestAssistantStreamBlockCopyButton:
-    """Per-response answer-only clipboard control."""
-
-    @pytest.mark.asyncio
-    async def test_press_copies_raw_answer_without_thinking_and_restores_feedback(self) -> None:
-        """A mounted button uses the app funnel for answer-only content and confirms it."""
-        session: SloAgentSession = _build_session()
-        app: SloTUI = SloTUI(session=session)
-        copied_texts: list[str] = []
-        app.copy_to_clipboard = copied_texts.append  # type: ignore[method-assign]
-
-        async with app.run_test(size=(100, 30)) as pilot:
-            block: AssistantStreamBlock = await app.mount_assistant_block()
-            block.append_thinking(delta="private reasoning")
-            block.append_text(delta="public answer")
-            await pilot.pause()
-
-            copy_control = block._copy_control
-            # pilot.click resolves the widget to screen coordinates, so the control
-            # must be laid out and on screen before the click. Without this the click
-            # can land on empty space and copy nothing (an intermittent CI failure
-            # that surfaced as `assert [] == ["public answer"]`).
-            copy_control.scroll_visible(animate=False)
-            await pump_until(pilot=pilot, predicate=lambda: copy_control.region.area > 0)
-            assert copy_control.region.area > 0
-
-            await pilot.click(copy_control)
-            await pilot.pause()
-
-            assert copied_texts == ["public answer"]
-            assert str(copy_control.content) == "Copied"
-            block._restore_copy_button()
-            assert str(copy_control.content) == "Copy"
-
-    @pytest.mark.asyncio
-    async def test_empty_answer_button_never_calls_clipboard(self) -> None:
-        """A disabled empty response button cannot produce a clipboard request."""
-        session: SloAgentSession = _build_session()
-        app: SloTUI = SloTUI(session=session)
-        copied_texts: list[str] = []
-        app.copy_to_clipboard = copied_texts.append  # type: ignore[method-assign]
-
-        async with app.run_test() as pilot:
-            block: AssistantStreamBlock = await app.mount_assistant_block()
-            assert block._copy_control.disabled is True
-
-            block._copy_control._request_copy()
-            await pilot.pause()
-
-            assert copied_texts == []
 
 
 class TestAssistantStreamBlockCoalescing:
@@ -375,29 +348,23 @@ class TestAssistantStreamBlockCoalescing:
         block.set_answer(content="done")
         assert block._last_rendered_answer == "done"
 
-    def test_unmounted_append_thinking_renders_synchronously(self) -> None:
-        """Before mount, a thinking delta renders immediately."""
+    def test_flush_dirty_regions_is_a_noop_when_the_answer_is_clean(self) -> None:
+        """_flush_dirty_regions renders nothing when the answer surface is not dirty."""
         block = AssistantStreamBlock()
-        block.append_thinking(delta="reasoning here")
-        assert block._last_rendered_thinking == "reasoning here"
-        assert block._thinking_dirty is False
+        block.append_text(delta="Hello")
+        render_calls: list[int] = [0]
+        original_render = block._render_answer
 
-    def test_set_thinking_renders_completed_truth_synchronously(self) -> None:
-        """set_thinking renders immediately (completed truth is eager)."""
-        block = AssistantStreamBlock()
-        block.set_thinking(content="full reasoning")
-        assert block._last_rendered_thinking == "full reasoning"
+        def _counting_render() -> None:
+            render_calls[0] += 1
+            original_render()
 
-    def test_flush_dirty_regions_only_renders_dirty_surfaces(self) -> None:
-        """_flush_dirty_regions processes only surfaces that are marked dirty."""
-        block = AssistantStreamBlock()
-        block._answer_text = "A"
-        block._answer_dirty = True
-        block._thinking_dirty = False
+        block._render_answer = _counting_render  # type: ignore[method-assign]
+
         block._flush_dirty_regions()
-        # Answer was dirty so it rendered; thinking was not dirty.
-        assert block._last_rendered_answer == "A"
-        assert block._last_rendered_thinking == ""
+
+        assert render_calls[0] == 0
+        assert block._last_rendered_answer == "Hello"
 
     def test_finalize_flushes_and_marks_timer_none(self) -> None:
         """finalize flushes pending text and leaves _flush_timer as None."""

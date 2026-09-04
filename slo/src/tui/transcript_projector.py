@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
+from config.logger import log_warning
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.event_renderer import format_tool_call_headline, format_tool_result_line
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
 
@@ -41,11 +43,23 @@ class TranscriptMountHost(Protocol):
         title_prefix: Optional[str] = None,
         before: Optional[int] = None,
     ) -> AssistantStreamBlock:
-        """Mount and return a fresh assistant block.
+        """Mount and return a fresh answer-only assistant block.
 
         Args:
-            title_prefix (Optional[str]): Optional dim label above content.
-                Used by the sub-agent path to tag child output with task id.
+            title_prefix (Optional[str]): Optional dim label above the answer
+                content. The parent projector path never sets it; the parameter
+                is retained for host-interface compatibility only.
+        """
+        ...
+
+    async def mount_thinking_block(
+        self,
+        *,
+        before: Optional[int] = None,
+    ) -> AssistantStreamThinkingBlock:
+        """Mount and return a fresh thinking-segment block.
+
+        The only projector-to-app seam for mounting a new thinking widget.
         """
         ...
 
@@ -79,8 +93,13 @@ class TranscriptProjector:
 
     Assistant reasoning / answer content must stay in chronological transcript
     order. A single prompt can span multiple outer-loop assistant iterations,
-    so the projector maintains one ``AssistantStreamBlock`` per iteration
-    instead of mutating the very first block for the entire run.
+    so the projector maintains one answer ``AssistantStreamBlock`` per
+    iteration. Thinking segments are identified by the normalizer's stable
+    ``block_id`` and mounted as their own ``AssistantStreamThinkingBlock``
+    children, so a repair ``thinking_end`` updates its original widget even
+    after answer or tool output arrived in between. Child sub-agent events
+    never reach this projector — ``SloTUI._route_sub_agent_event`` is the sole
+    owner of the fleet/child route.
     """
 
     def __init__(self, *, host: TranscriptMountHost) -> None:
@@ -92,13 +111,15 @@ class TranscriptProjector:
         """
         self._host: TranscriptMountHost = host
         self._assistant_blocks: dict[int, AssistantStreamBlock] = {}
+        self._thinking_blocks: dict[str, AssistantStreamThinkingBlock] = {}
+        """Normalized thinking ``block_id`` to mounted widget for this prompt."""
+        self._thinking_block_iterations: dict[str, int] = {}
+        """Thinking ``block_id`` to outer iteration for diagnostics only."""
+        self._open_thinking_block_ids: set[str] = set()
+        """Normalized ids that may still receive their matching ``thinking_end``."""
         self._tool_blocks: dict[str, ToolExecutionBlock] = {}
         self._tool_argument_buffers: dict[str, str] = {}
         self._recorded_tool_calls: set[str] = set()
-        # Sub-agent routing state (sub-spec 03.c):
-        self._sub_agent_assistant_blocks: dict[str, AssistantStreamBlock] = {}
-        self._sub_agent_tool_blocks: dict[str, ToolExecutionBlock] = {}
-        self._sub_agent_argument_buffers: dict[str, str] = {}
         self._replay_projectors: dict[str, Callable[..., Awaitable[None]]] = {
             "user": self._project_replay_user,
             "assistant": self._project_replay_assistant,
@@ -109,48 +130,54 @@ class TranscriptProjector:
     def reset_for_new_run(self) -> None:
         """Reset run-scoped projector state before a new prompt starts."""
         self._assistant_blocks.clear()
+        self._thinking_blocks.clear()
+        self._thinking_block_iterations.clear()
+        self._open_thinking_block_ids.clear()
         self._tool_blocks.clear()
         self._tool_argument_buffers.clear()
         self._recorded_tool_calls.clear()
-        self._sub_agent_assistant_blocks.clear()
-        self._sub_agent_tool_blocks.clear()
-        self._sub_agent_argument_buffers.clear()
 
     async def project(self, *, event: AgentStreamEventDAO) -> None:
         """Apply one normalized stream event to the transcript.
 
-        Sub-agent events (``event.is_sub_agent_event is True``) are intercepted
-        first and dispatched to ``_project_sub_agent_event`` so the existing
-        orchestrator kind-chain is never entered for child events.
+        Parent/orchestrator events only: the app intercepts every
+        ``sub_agent_id`` event before this projector is called, so no child
+        route exists here. Thinking branches route by the normalizer's stable
+        ``block_id``; iteration is diagnostic context, never identity.
 
         Args:
             event (AgentStreamEventDAO): Normalized stream event.
         """
-        if event.is_sub_agent_event:
-            await self._project_sub_agent_event(event=event)
-            return
-
         if event.kind == "thinking_delta":
             if not (event.delta or ""):
                 return  # no content — do not mount an empty block
-            thinking_block: AssistantStreamBlock = await self._ensure_assistant_block(
+            if not event.block_id:
+                log_warning(
+                    "TranscriptProjector: ignoring thinking_delta with no block_id",
+                    iteration=event.iteration,
+                )
+                return
+            thinking_block: AssistantStreamThinkingBlock = await self._ensure_thinking_block(
+                block_id=event.block_id,
                 iteration=event.iteration,
             )
             thinking_block.append_thinking(delta=event.delta or "")
             return
 
         if event.kind == "thinking_end":
-            maybe_thinking_block: AssistantStreamBlock | None = self._assistant_blocks.get(event.iteration)
-            if maybe_thinking_block is not None and event.content:
-                maybe_thinking_block.set_thinking(content=event.content)
+            if not event.block_id:
+                log_warning(
+                    "TranscriptProjector: ignoring thinking_end with no block_id",
+                    iteration=event.iteration,
+                )
+                return
+            self._finalize_thinking_block(block_id=event.block_id, content=event.content)
             return
 
         if event.kind == "text_delta":
             if not (event.delta or ""):
                 return  # no content — do not mount an empty block
-            answer_block: AssistantStreamBlock = await self._ensure_assistant_block(
-                iteration=event.iteration
-            )
+            answer_block: AssistantStreamBlock = await self._ensure_assistant_block(iteration=event.iteration)
             answer_block.append_text(delta=event.delta or "")
             return
 
@@ -326,13 +353,27 @@ class TranscriptProjector:
     ) -> None:
         """Mount a finalized assistant turn and record its logical line.
 
+        Persisted reasoning mounts one sealed thinking block immediately
+        before the replayed answer block, mirroring the live path's
+        chronological children. No replay thinking registry is created and no
+        synthetic ``thinking_end`` is emitted.
+
         Args:
             entry (TranscriptEntryDAO): A ``kind="assistant"`` entry.
             before (Optional[int]): Child index to insert before. ``None``
                 appends at the end.
         """
+        if entry.reasoning:
+            thinking_block: AssistantStreamThinkingBlock = await self._host.mount_thinking_block(
+                before=before
+            )
+            thinking_block.set_thinking(content=entry.reasoning)
+            thinking_block.seal()
+            if before is not None:
+                # The answer must follow its thinking block: mounting both at
+                # the same prepend index would reverse their order.
+                before = before + 1
         block: AssistantStreamBlock = await self._host.mount_assistant_block(before=before)
-        self._seed_replay_reasoning(block=block, reasoning=entry.reasoning)
         content, classes = self._finalize_replay_assistant(block=block, entry=entry)
         self._host.record_transcript_line(content=content, classes=classes)
 
@@ -379,18 +420,6 @@ class TranscriptProjector:
         else:
             block.update_result(tool_name=entry.tool_name, output=entry.output)
         self._record_replay_tool_lines(entry=entry)
-
-    @staticmethod
-    def _seed_replay_reasoning(*, block: AssistantStreamBlock, reasoning: Optional[str]) -> None:
-        """Seed a replayed assistant block's reasoning region, if any.
-
-        Args:
-            block (AssistantStreamBlock): The mounted assistant block.
-            reasoning (Optional[str]): Completed reasoning summary text.
-        """
-        if not reasoning:
-            return
-        block.set_thinking(content=reasoning)
 
     @staticmethod
     def _finalize_replay_assistant(
@@ -466,187 +495,69 @@ class TranscriptProjector:
         """
         return f"replay:{entry.iteration}:{entry.tool_name or 'tool'}"
 
-    async def _project_sub_agent_event(
-        self, *, event: AgentStreamEventDAO
-    ) -> None:
-        """Render one sub-agent event inline with a task-id prefix.
-
-        Lifecycle events (``sub_agent_spawned``, ``sub_agent_completed``,
-        ``sub_agent_failed``) produce a single notice line. Content events
-        (``text_delta``, ``thinking_delta``, ``tool_call_*``, ``tool_result``)
-        are routed to task-keyed blocks reusing the same widget types as the
-        orchestrator path. All other event kinds are silently dropped.
-
-        Args:
-            event (AgentStreamEventDAO): A sub-agent stream event (guaranteed
-                ``is_sub_agent_event is True``).
-        """
-        task_id: str = event.task_id or event.sub_agent_id or "sub-agent"
-
-        if event.kind == "sub_agent_spawned":
-            self._host.write_transcript_line(
-                content=f"\u2387 {task_id}: spawned",
-                classes="sub-agent-notice",
-            )
-            return
-
-        if event.kind == "sub_agent_completed":
-            self._host.write_transcript_line(
-                content=f"\u2387 {task_id}: completed",
-                classes="sub-agent-notice",
-            )
-            return
-
-        if event.kind == "sub_agent_failed":
-            self._host.write_transcript_line(
-                content=f"\u2387 {task_id}: failed",
-                classes="sub-agent-notice",
-            )
-            return
-
-        if event.kind == "thinking_delta":
-            block: AssistantStreamBlock = await self._ensure_sub_agent_assistant_block(
-                task_id=task_id,
-            )
-            block.append_thinking(delta=event.delta or "")
-            return
-
-        if event.kind == "thinking_end":
-            block = await self._ensure_sub_agent_assistant_block(task_id=task_id)
-            if event.content:
-                block.set_thinking(content=event.content)
-            return
-
-        if event.kind == "text_delta":
-            block = await self._ensure_sub_agent_assistant_block(task_id=task_id)
-            block.append_text(delta=event.delta or "")
-            return
-
-        if event.kind == "text_end":
-            block = await self._ensure_sub_agent_assistant_block(task_id=task_id)
-            if event.content:
-                block.set_answer(content=event.content)
-            return
-
-        if event.kind in ("tool_call_delta", "tool_call_end"):
-            composite_id: str = (
-                f"{task_id}:{event.tool_call_id or event.block_id or 'tool'}"
-            )
-            tool_block: ToolExecutionBlock = await self._ensure_sub_agent_tool_block(
-                composite_id=composite_id,
-                tool_name=event.tool_name or "tool",
-            )
-            if event.tool_arguments_delta:
-                self._sub_agent_argument_buffers[composite_id] = (
-                    self._sub_agent_argument_buffers.get(composite_id, "")
-                    + event.tool_arguments_delta
-                )
-            parsed_input: dict[str, Any] = event.tool_input or self._best_effort_parse_tool_input(
-                raw_arguments=self._sub_agent_argument_buffers.get(composite_id, ""),
-            )
-            tool_block.update_tool_call(
-                tool_name=event.tool_name,
-                tool_input=parsed_input,
-            )
-            return
-
-        if event.kind == "tool_result":
-            composite_id = f"{task_id}:{event.tool_call_id or 'tool'}"
-            if composite_id in self._sub_agent_tool_blocks:
-                tool_block = self._sub_agent_tool_blocks.pop(composite_id)
-                tool_block.update_result(
-                    tool_name=event.tool_name,
-                    output=event.content or "",
-                )
-                self._sub_agent_argument_buffers.pop(composite_id, None)
-            return
-
-        if event.kind == "run_completed":
-            # Finalize the sub-agent block with the LLM-confirmed final text.
-            # Without this, the AssistantStreamBlock remains in its "streaming"
-            # state permanently since the pane projector never receives an
-            # explicit finalize call from any other path.
-            assistant_block = self._sub_agent_assistant_blocks.get(task_id)
-            if assistant_block is not None:
-                assistant_block.finalize(final_text=event.content or assistant_block.answer_text)
-            return
-
-        if event.kind == "run_aborted":
-            assistant_block = self._sub_agent_assistant_blocks.get(task_id)
-            if assistant_block is not None:
-                assistant_block.mark_aborted()
-            else:
-                self._host.write_transcript_line(
-                    content="(sub-agent aborted)",
-                    classes="assistant-aborted",
-                )
-            return
-
-        if event.kind == "run_failed":
-            assistant_block = self._sub_agent_assistant_blocks.get(task_id)
-            error: str = event.content or "unknown error"
-            if assistant_block is not None:
-                assistant_block.mark_failed(error_message=error)
-            else:
-                self._host.write_transcript_line(
-                    content=f"(sub-agent error: {error})",
-                    classes="assistant-aborted",
-                )
-            return
-
-        # All other kinds (run_retrying, tool_call_start, etc.) are silently
-        # dropped for sub-agent events. Terminal lifecycle state is communicated
-        # via sub_agent_completed / sub_agent_failed lifecycle events.
-
-    async def _ensure_sub_agent_assistant_block(
-        self, *, task_id: str
-    ) -> AssistantStreamBlock:
-        """Return or mount the assistant block for ``task_id``.
-
-        Sub-agent assistant blocks are keyed by ``task_id`` so all content
-        events from one child task stream into the same block. Each block
-        receives a ``\u2387 {task_id}`` title prefix so the user can tell
-        which child produced which output.
-
-        Args:
-            task_id (str): Caller-assigned task identifier.
-
-        Returns:
-            AssistantStreamBlock: Mounted or cached sub-agent assistant block.
-        """
-        block: AssistantStreamBlock | None = self._sub_agent_assistant_blocks.get(task_id)
-        if block is not None:
-            return block
-        block = await self._host.mount_assistant_block(
-            title_prefix=f"\u2387 {task_id}",
-        )
-        self._sub_agent_assistant_blocks[task_id] = block
-        return block
-
-    async def _ensure_sub_agent_tool_block(
+    async def _ensure_thinking_block(
         self,
         *,
-        composite_id: str,
-        tool_name: str,
-    ) -> ToolExecutionBlock:
-        """Return or mount a tool execution block keyed by composite ``task_id:tool_call_id``.
+        block_id: str,
+        iteration: int,
+    ) -> AssistantStreamThinkingBlock:
+        """Return the thinking widget identified by normalized stream identity.
+
+        Called by the parent ``thinking_delta`` branch. The normalizer owns
+        provider-content segmentation; preserving ``block_id`` lets a later
+        repair ``thinking_end`` update the original mounted widget.
 
         Args:
-            composite_id (str): ``"{task_id}:{tool_call_id}"`` composite key.
-            tool_name (str): Tool name for the block header.
+            block_id (str): Stable normalized thinking-content identifier.
+            iteration (int): Outer assistant iteration for diagnostics only.
 
         Returns:
-            ToolExecutionBlock: Mounted or cached sub-agent tool block.
+            AssistantStreamThinkingBlock: Mounted or cached thinking widget.
         """
-        block: ToolExecutionBlock | None = self._sub_agent_tool_blocks.get(composite_id)
+        block: AssistantStreamThinkingBlock | None = self._thinking_blocks.get(block_id)
         if block is not None:
             return block
-        block = await self._host.mount_tool_execution_block(
-            tool_call_id=composite_id,
-            tool_name=tool_name,
-        )
-        self._sub_agent_tool_blocks[composite_id] = block
+        block = await self._host.mount_thinking_block()
+        self._thinking_blocks[block_id] = block
+        self._thinking_block_iterations[block_id] = iteration
+        self._open_thinking_block_ids.add(block_id)
         return block
+
+    def _finalize_thinking_block(self, *, block_id: str, content: Optional[str]) -> None:
+        """Apply a completed repair to one open thinking segment.
+
+        WHAT: Replaces and seals only the segment eligible for its matching
+            end; a retired or unknown id, and a contentless end, are no-ops.
+        WHO: ``project`` calls this for parent ``thinking_end`` events.
+        WHEN: Contentless ends leave the segment open (and unevictable) for
+            their repair; terminal sweeps retire every id, so a late or
+            duplicate end can never mutate a sealed segment.
+
+        Args:
+            block_id (str): Stable normalized thinking-content identifier.
+            content (Optional[str]): Completed reasoning text, if supplied.
+        """
+        if block_id not in self._open_thinking_block_ids:
+            return
+        if not content:
+            return
+        block: AssistantStreamThinkingBlock | None = self._thinking_blocks.get(block_id)
+        if block is None:
+            return
+        block.set_thinking(content=content)
+        block.seal()
+        self._open_thinking_block_ids.discard(block_id)
+
+    def _seal_all_thinking_blocks(self) -> None:
+        """Settle every retained parent thinking block at a terminal run event.
+
+        Called first by each terminal helper (``_finalize_completed_run``,
+        ``_finalize_aborted_run``, ``_finalize_failed_run``) so no thinking
+        widget stays live once its run can no longer produce a repair end.
+        """
+        for block in self._thinking_blocks.values():
+            block.seal()
+        self._open_thinking_block_ids.clear()
 
     async def _ensure_assistant_block(self, *, iteration: int) -> AssistantStreamBlock:
         """Return the assistant block for ``iteration``, sealing the block(s) it replaces.
@@ -798,6 +709,7 @@ class TranscriptProjector:
             iteration (int): Outer-loop assistant iteration.
             content (str): Completed assistant answer text.
         """
+        self._seal_all_thinking_blocks()
         block: AssistantStreamBlock | None = self._assistant_blocks.get(iteration)
         if not content:
             # No confirmed final text: seal any existing block without clearing
@@ -823,6 +735,7 @@ class TranscriptProjector:
         Args:
             iteration (int): Outer-loop assistant iteration.
         """
+        self._seal_all_thinking_blocks()
         block: AssistantStreamBlock | None = self._assistant_blocks.get(iteration)
         if block is None:
             self._host.write_transcript_line(
@@ -849,6 +762,7 @@ class TranscriptProjector:
             error_message (str): One-line user-visible error summary.
         """
         rendered_error: str = f"(error: {error_message})"
+        self._seal_all_thinking_blocks()
         block: AssistantStreamBlock | None = self._assistant_blocks.get(iteration)
         if block is None:
             self._host.write_transcript_line(

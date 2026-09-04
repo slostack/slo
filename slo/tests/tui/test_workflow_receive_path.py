@@ -26,6 +26,7 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowState,
 )
 from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.app import SloTUI
 
@@ -52,7 +53,12 @@ def _mock_session(*, history_root: Path) -> MagicMock:
     session.unsubscribe = MagicMock()
     session.hydrate_transcript_entries = AsyncMock(return_value=[])
     session.should_show_startup_notice = AsyncMock(return_value=False)
-    session.usage_snapshot = MagicMock(return_value=MagicMock())
+    session.usage_snapshot = MagicMock(
+        return_value=SessionUsageSnapshotDAO(
+            active_model_name="claude-sonnet-4-6",
+            active_reasoning_level="high",
+        )
+    )
     session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
     session.record_workflow_update = AsyncMock(return_value=True)
     return session

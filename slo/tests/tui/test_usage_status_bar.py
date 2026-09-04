@@ -31,7 +31,7 @@ class TestUsageStatusBar:
         rendered: str = bar._render_snapshot(snapshot=snapshot)
 
         assert "usage unavailable" in rendered
-        assert "out 8192" in rendered
+        assert "out 8.2k" in rendered
 
     def test_renders_codex_model_name(self) -> None:
         """Codex model names render cleanly in the usage bar."""
@@ -46,7 +46,7 @@ class TestUsageStatusBar:
 
         assert "gpt-5-codex" in rendered
         assert "xhigh" in rendered
-        assert "out 8192" in rendered
+        assert "out 8.2k" in rendered
 
     @pytest.mark.asyncio
     async def test_app_mount_renders_usage_status_bar(self) -> None:
@@ -103,6 +103,94 @@ class TestUsageStatusBar:
             assert "session 16 tok" in str(bars[0].content)
 
 
+class TestFormatTokenCount:
+    """Pi-compatible compact token formatting boundaries (spec 72.a.5)."""
+
+    @pytest.mark.parametrize(
+        "count,expected",
+        [
+            (999, "999"),
+            (1_000, "1.0k"),
+            (1_250, "1.3k"),
+            (9_999, "10.0k"),
+            (10_000, "10k"),
+            (12_500, "13k"),
+            (999_999, "1000k"),
+            (1_000_000, "1.0M"),
+            (1_250_000, "1.3M"),
+            (9_999_999, "10.0M"),
+            (10_000_000, "10M"),
+            (10_500_000, "11M"),
+        ],
+    )
+    def test_format_token_count_boundaries(self, count: int, expected: str) -> None:
+        """Each magnitude band renders its exact compact representation."""
+        assert UsageStatusBar._format_token_count(count=count) == expected
+
+
+class TestUsageStatusBarCompactRendering:
+    """Compact formatting is applied only to token quantities (spec 72.a.5)."""
+
+    def test_usage_text_compacts_turn_and_session_token_totals(self) -> None:
+        """Turn and session token totals render with Pi-style compact units."""
+        bar: UsageStatusBar = UsageStatusBar()
+        snapshot: SessionUsageSnapshotDAO = SessionUsageSnapshotDAO(
+            active_model_name="claude-sonnet-4-6",
+            active_reasoning_level="off",
+            usage_available=True,
+            latest_turn=TokenUsageTotalsDAO(total_tokens=6000),
+            session_totals=TokenUsageTotalsDAO(total_tokens=12000),
+        )
+
+        rendered: str = bar._render_snapshot(snapshot=snapshot)
+
+        assert "turn 6.0k tok" in rendered
+        assert "session 12k tok" in rendered
+
+    def test_token_limits_compact_but_rpm_keeps_raw_count(self) -> None:
+        """Out/budget/tpm limits compact; rpm stays a raw request count."""
+        bar: UsageStatusBar = UsageStatusBar()
+        snapshot: SessionUsageSnapshotDAO = SessionUsageSnapshotDAO(
+            active_model_name="gpt-5.4",
+            active_reasoning_level="high",
+            output_cap_tokens=32000,
+            provider_budget_tokens=6_000_000,
+            tokens_per_minute_limit=12000,
+            requests_per_minute_limit=5000,
+        )
+
+        rendered: str = bar._render_snapshot(snapshot=snapshot)
+
+        assert "out 32k" in rendered
+        assert "budget 6.0M" in rendered
+        assert "tpm 12k" in rendered
+        assert "rpm 5000" in rendered
+
+    def test_cooldown_seconds_and_context_percent_keep_original_units(self) -> None:
+        """Retry seconds and context percent are not token quantities."""
+        from src.agents.slo_agent.compaction.context_window import ContextWindowSnapshotDAO
+
+        bar: UsageStatusBar = UsageStatusBar()
+        snapshot: SessionUsageSnapshotDAO = SessionUsageSnapshotDAO(
+            active_model_name="gpt-5.4",
+            active_reasoning_level="high",
+            cooldown_seconds_remaining=45,
+            context_window_snapshot=ContextWindowSnapshotDAO(
+                model_name="gpt-5.4",
+                context_window_tokens=272000,
+                estimated_used_tokens=12000,
+                available_tokens=260000,
+                consumed_percent=4.4,
+                estimate_available=True,
+            ),
+        )
+
+        rendered: str = bar._render_snapshot(snapshot=snapshot)
+
+        assert "retry in 45s" in rendered
+        assert "% context used" in rendered
+
+
 class TestUsageStatusBarCacheRendering:
     """Cache token counts appear in the usage bar when present."""
 
@@ -123,7 +211,7 @@ class TestUsageStatusBarCacheRendering:
 
         rendered: str = bar._render_snapshot(snapshot=snapshot)
 
-        assert "cache write 6000" in rendered
+        assert "cache write 6.0k" in rendered
         assert "cache read 600" in rendered
 
     def test_cache_fields_absent_when_none(self) -> None:

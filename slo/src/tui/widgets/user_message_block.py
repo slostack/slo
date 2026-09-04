@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.padding import Padding
 from textual.app import ComposeResult
@@ -27,14 +28,14 @@ class UserMessageBlock(Vertical):
         width: 100%;
         height: auto;
         margin: 1 0 1 0;
-        padding: 0 0;
-        background: $panel;
+        padding: 0 1;
+        background: $user-msg-bg;
     }
 
     UserMessageBlock .user-message-body {
-        color: $accent;
+        color: $text;
         text-style: bold;
-        background: $panel;
+        background: $user-msg-bg;
     }
     """
 
@@ -100,18 +101,22 @@ class UserMessageBlock(Vertical):
         return self._text
 
     @staticmethod
-    def _renderable(*, text: str):
-        """Build the padded-markdown renderable for the user text.
+    def _renderable(*, text: str) -> RenderableType:
+        """Build the user message renderable with vertical-only Rich padding.
 
-        Whitespace-only text renders nothing so an empty submission does
-        not leave a blank padded block in the transcript.
+        WHAT: Returns blank content for whitespace-only prompts and padded
+        Markdown otherwise, so an empty submission leaves no blank padded
+        block in the transcript.
+        WHO: ``UserMessageBlock.__init__`` calls it before Textual mounts the
+        body.
+        WHEN: Runs once while constructing a user transcript block.
 
         Args:
-            text (str): The raw user prompt text.
+            text (str): Raw user prompt text.
 
         Returns:
-            RenderableType: Padded markdown, or an empty string when blank.
+            RenderableType: Blank text or vertically padded Markdown.
         """
         if not text.strip():
             return ""
-        return Padding(Markdown(text.strip()), pad=(1, 1, 1, 1))
+        return Padding(Markdown(text.strip()), pad=(1, 0, 1, 0))

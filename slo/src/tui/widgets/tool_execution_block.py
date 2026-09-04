@@ -27,8 +27,16 @@ class ToolExecutionBlock(Vertical):
         width: 100%;
         height: auto;
         margin: 1 0 1 0;
-        padding: 1 1;
-        background: $panel;
+        padding: 0 1;
+        background: $tool-pending-bg;
+    }
+
+    ToolExecutionBlock.-done {
+        background: $tool-success-bg;
+    }
+
+    ToolExecutionBlock.-error {
+        background: $tool-error-bg;
     }
 
     ToolExecutionBlock.-active {
@@ -39,7 +47,7 @@ class ToolExecutionBlock(Vertical):
     ToolExecutionBlock .tool-call-headline {
         color: $success;
         text-style: bold;
-        background: $panel;
+        background: transparent;
     }
 
     ToolExecutionBlock .tool-call-result {
@@ -50,13 +58,13 @@ class ToolExecutionBlock(Vertical):
     ToolExecutionBlock .tool-call-hint {
         color: $text-muted;
         text-style: italic;
-        background: $panel;
+        background: transparent;
     }
 
     ToolExecutionBlock .tool-call-incomplete {
         color: $warning;
         text-style: italic;
-        background: $panel;
+        background: transparent;
     }
     """
 
@@ -222,7 +230,12 @@ class ToolExecutionBlock(Vertical):
         tool_name: Optional[str],
         output: str,
     ) -> None:
-        """Refresh the visible tool result summary line.
+        """Store a recorded tool result and select its completed visual state.
+
+        Called by ``TranscriptProjector`` when a tool-result event arrives. The
+        method preserves result formatting and expansion behavior; the classes
+        are CSS hooks only and do not replace ``_result_output`` as lifecycle
+        truth.
 
         Args:
             tool_name (Optional[str]): Latest tool name when known.
@@ -231,6 +244,8 @@ class ToolExecutionBlock(Vertical):
         if tool_name:
             self._tool_name = tool_name
         self._result_output = output
+        self.remove_class("-error")
+        self.add_class("-done")
         self._result_line.update(
             format_tool_result_line(
                 name=self._tool_name,
@@ -240,17 +255,16 @@ class ToolExecutionBlock(Vertical):
         self._refresh()
 
     def mark_incomplete(self) -> None:
-        """Mark this tool call as never having recorded a result.
+        """Mark a terminal no-result tool call and select its error visual state.
 
-        Rendered for replayed tool calls whose ``tool_result`` was never
-        persisted — the tool hung, the process died, or the session was
-        aborted mid-call. The block stays visible (the user can still see
-        what was attempted) and carries a small highlighted note instead of
-        a blank result line, so a partial transcript never reads as a clean
-        empty result.
+        Called by replay/projector recovery when no tool result can arrive. The
+        existing ``is_incomplete`` field remains the source used by transcript
+        liveness; these classes merely make that state visually legible.
         """
         self._result_output = None
         self._marked_incomplete = True
+        self.remove_class("-done")
+        self.add_class("-error")
         self._result_line.remove_class("tool-call-result")
         self._result_line.add_class("tool-call-incomplete")
         self._result_line.update(

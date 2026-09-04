@@ -89,9 +89,15 @@ class TestToolExecutionBlock:
         assert '"b"' in expanded_text
         assert "[" in expanded_text and "]" in expanded_text
 
-    def test_tool_block_exposes_shared_panel_rhythm_styling(self) -> None:
-        """Tool blocks declare the same panel-like rhythm as other message widgets."""
-        assert "background: $panel;" in ToolExecutionBlock.DEFAULT_CSS
+    def test_tool_block_uses_pending_fill_by_default(self) -> None:
+        """A not-yet-terminal tool block paints the pending token fill (spec 72.a.5)."""
+        block_rule: str = ToolExecutionBlock.DEFAULT_CSS.split("ToolExecutionBlock {")[1].split("}")[0]
+        assert "background: $tool-pending-bg;" in block_rule
+
+    def test_widget_css_uses_transcript_output_pad(self) -> None:
+        """The widget declares the uniform ``TRANSCRIPT_OUTPUT_PAD`` convention."""
+        block_rule: str = ToolExecutionBlock.DEFAULT_CSS.split("ToolExecutionBlock {")[1].split("}")[0]
+        assert "padding: 0 1;" in block_rule
 
     def test_mark_incomplete_renders_highlighted_note_and_clears_output(self) -> None:
         """A tool call with no recorded result shows a highlighted incomplete note."""
@@ -134,6 +140,68 @@ class TestToolExecutionBlock:
             await pilot.pause()
 
             assert "arguments:" in str(block._expanded_body.content)
+
+
+class TestToolExecutionBlockTerminalStateClasses:
+    """CSS-state hooks ``-done`` / ``-error`` at terminal transitions (spec 72.a.5)."""
+
+    def test_fresh_block_has_neither_done_nor_error_class(self) -> None:
+        """A pending tool block carries no terminal-state class."""
+        block: ToolExecutionBlock = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")
+
+        assert not block.has_class("-done")
+        assert not block.has_class("-error")
+
+    def test_update_result_adds_done_class(self) -> None:
+        """A recorded result selects the completed visual state."""
+        block: ToolExecutionBlock = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")
+
+        block.update_result(tool_name="bash", output="file.txt")
+
+        assert block.has_class("-done")
+        assert not block.has_class("-error")
+
+    def test_update_result_clears_pre_existing_error_class(self) -> None:
+        """A late result removes the error hook left by an earlier incomplete mark."""
+        block: ToolExecutionBlock = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")
+        block.mark_incomplete()
+        assert block.has_class("-error")
+
+        block.update_result(tool_name="bash", output="file.txt")
+
+        assert block.has_class("-done")
+        assert not block.has_class("-error")
+
+    def test_mark_incomplete_adds_error_class_and_clears_done(self) -> None:
+        """A terminal no-result call selects the error visual state."""
+        block: ToolExecutionBlock = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")
+        block.update_result(tool_name="bash", output="partial")
+        assert block.has_class("-done")
+
+        block.mark_incomplete()
+
+        assert block.has_class("-error")
+        assert not block.has_class("-done")
+        assert block.is_incomplete is True
+        assert block.result_output is None
+
+    def test_active_class_coexists_with_terminal_state_class(self) -> None:
+        """``-active`` remains orthogonal: it survives alongside ``-done``/``-error``."""
+        block: ToolExecutionBlock = ToolExecutionBlock(tool_call_id="tc", tool_name="bash")
+        block.set_active(active=True)
+
+        block.update_result(tool_name="bash", output="file.txt")
+
+        assert block.has_class("-active")
+        assert block.has_class("-done")
+
+    def test_css_paints_pending_done_and_error_token_selectors(self) -> None:
+        """The stylesheet maps each lifecycle class to its canonical token fill."""
+        done_rule: str = ToolExecutionBlock.DEFAULT_CSS.split("ToolExecutionBlock.-done {")[1].split("}")[0]
+        error_rule: str = ToolExecutionBlock.DEFAULT_CSS.split("ToolExecutionBlock.-error {")[1].split("}")[0]
+
+        assert "background: $tool-success-bg;" in done_rule
+        assert "background: $tool-error-bg;" in error_rule
 
 
 class TestToolExecutionBlockGlobalExpand:

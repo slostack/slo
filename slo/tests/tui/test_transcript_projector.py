@@ -7,6 +7,7 @@ import pytest
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.transcript_projector import TranscriptProjector
+from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 
 
 def _user_entry(*, content: str) -> TranscriptEntryDAO:
@@ -40,29 +41,19 @@ def _tool_entry(*, tool_name: str, tool_input: dict, output: str) -> TranscriptE
 
 
 class FakeAssistantBlock:
-    """Minimal assistant block fake for projector tests."""
+    """Minimal answer-only assistant block fake for projector tests."""
 
     def __init__(self) -> None:
-        self.thinking: str = ""
         self.answer: str = ""
+        self.title_prefix: str | None = None
         self.finalized_with: str | None = None
         self.sealed: bool = False
         self.aborted: bool = False
         self.failed_with: str | None = None
 
     @property
-    def thinking_text(self) -> str:
-        return self.thinking
-
-    @property
     def answer_text(self) -> str:
         return self.answer
-
-    def append_thinking(self, *, delta: str) -> None:
-        self.thinking += delta
-
-    def set_thinking(self, *, content: str) -> None:
-        self.thinking = content
 
     def append_text(self, *, delta: str) -> None:
         self.answer += delta
@@ -81,6 +72,37 @@ class FakeAssistantBlock:
 
     def mark_failed(self, *, error_message: str) -> None:
         self.failed_with = error_message
+
+
+class FakeThinkingBlock(AssistantStreamThinkingBlock):
+    """Minimal thinking-segment block fake for projector tests.
+
+    Subclasses the real widget so ``FakeHost.mount_thinking_block`` stays
+    return-type compatible with ``TranscriptMountHost``; every method the
+    projector touches is overridden and ``__init__`` deliberately skips
+    ``super().__init__()`` so no Textual state is constructed.
+    """
+
+    def __init__(self) -> None:
+        self.thinking: str = ""
+        self.sealed: bool = False
+
+    @property
+    def thinking_text(self) -> str:
+        return self.thinking
+
+    @property
+    def finalized(self) -> bool:
+        return self.sealed
+
+    def append_thinking(self, *, delta: str) -> None:
+        self.thinking += delta
+
+    def set_thinking(self, *, content: str) -> None:
+        self.thinking = content
+
+    def seal(self) -> None:
+        self.sealed = True
 
 
 class FakeToolBlock:
@@ -120,8 +142,10 @@ class FakeHost:
 
     def __init__(self) -> None:
         self.blocks: list[FakeAssistantBlock] = []
+        self.thinking_blocks: list[FakeThinkingBlock] = []
         self.tool_blocks: dict[str, FakeToolBlock] = {}
         self.user_blocks: list[FakeUserBlock] = []
+        self.mount_order: list[str] = []
         self.separators: int = 0
         self.lines: list[tuple[str, str]] = []
         self.recorded: list[tuple[str, str]] = []
@@ -130,6 +154,7 @@ class FakeHost:
         del before
         block = FakeUserBlock(text=text)
         self.user_blocks.append(block)
+        self.mount_order.append("user")
         return block
 
     def mount_turn_separator_if_needed(self, *, before: int | None = None) -> bool:
@@ -145,6 +170,26 @@ class FakeHost:
         block = FakeAssistantBlock()
         block.title_prefix = title_prefix
         self.blocks.append(block)
+        self.mount_order.append("answer")
+        return block
+
+    async def mount_thinking_block(self, *, before: int | None = None) -> FakeThinkingBlock:
+        """Build a fake mounted thinking segment.
+
+        WHAT: Records thinking-block mount order and returns a controllable fake.
+        WHO: ``TranscriptProjector`` calls this through the fake host in projector tests.
+        WHEN: A tested parent ``thinking_delta`` first introduces a normalized block id.
+
+        Args:
+            before (int | None): Requested prepend index, when replay inserts content.
+
+        Returns:
+            FakeThinkingBlock: The fake segment used by assertions.
+        """
+        del before
+        block: FakeThinkingBlock = FakeThinkingBlock()
+        self.thinking_blocks.append(block)
+        self.mount_order.append("thinking")
         return block
 
     async def mount_tool_execution_block(
@@ -157,6 +202,7 @@ class FakeHost:
         del before
         block = FakeToolBlock(tool_call_id=tool_call_id, tool_name=tool_name)
         self.tool_blocks[tool_call_id] = block
+        self.mount_order.append("tool")
         return block
 
     def write_transcript_line(self, *, content: str, classes: str, before: int | None = None) -> None:
@@ -172,16 +218,22 @@ class TestTranscriptProjector:
 
     @pytest.mark.asyncio
     async def test_first_visible_delta_mounts_block(self) -> None:
-        """The first visible delta mounts an assistant block and writes into it."""
+        """The first visible thinking delta mounts a thinking block and writes into it."""
         host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="working", iteration=0),
+            event=AgentStreamEventDAO(
+                kind="thinking_delta",
+                delta="working",
+                iteration=0,
+                block_id="thinking:0:0",
+            ),
         )
 
-        assert len(host.blocks) == 1
-        assert host.blocks[0].thinking == "working"
+        assert len(host.thinking_blocks) == 1
+        assert host.thinking_blocks[0].thinking == "working"
+        assert host.blocks == []
 
     @pytest.mark.asyncio
     async def test_text_end_can_replace_partial_answer_with_completed_text(self) -> None:
@@ -205,13 +257,23 @@ class TestTranscriptProjector:
         projector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="Ineed", iteration=0),
+            event=AgentStreamEventDAO(
+                kind="thinking_delta",
+                delta="Ineed",
+                iteration=0,
+                block_id="thinking:0:0",
+            ),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_end", content="I need spacing.", iteration=0),
+            event=AgentStreamEventDAO(
+                kind="thinking_end",
+                content="I need spacing.",
+                iteration=0,
+                block_id="thinking:0:0",
+            ),
         )
 
-        assert host.blocks[0].thinking == "I need spacing."
+        assert host.thinking_blocks[0].thinking == "I need spacing."
 
     @pytest.mark.asyncio
     async def test_second_thinking_end_with_content_repairs_malformed_concatenated_text(
@@ -220,24 +282,40 @@ class TestTranscriptProjector:
         """A second thinking_end carrying content replaces the malformed concatenated thinking text.
 
         This exercises the end-to-end repair path: deltas accumulate without
-        spaces, the first (contentless) thinking_end is a no-op, then the
-        repair thinking_end emitted by finalize_open_blocks replaces the
-        malformed text with the provider's correctly formatted truth.
+        spaces, the first (contentless) thinking_end is a no-op that leaves the
+        segment open and live, then the repair thinking_end emitted by
+        finalize_open_blocks replaces the malformed text with the provider's
+        correctly formatted truth and seals the segment.
         """
         host: FakeHost = FakeHost()
         projector: TranscriptProjector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="I", iteration=0),
+            event=AgentStreamEventDAO(
+                kind="thinking_delta",
+                delta="I",
+                iteration=0,
+                block_id="thinking:0:0",
+            ),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="can", iteration=0),
+            event=AgentStreamEventDAO(
+                kind="thinking_delta",
+                delta="can",
+                iteration=0,
+                block_id="thinking:0:0",
+            ),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="outline", iteration=0),
+            event=AgentStreamEventDAO(
+                kind="thinking_delta",
+                delta="outline",
+                iteration=0,
+                block_id="thinking:0:0",
+            ),
         )
 
-        # The contentless implicit-close emitted by _emit_text_delta — must be a no-op.
+        # The contentless implicit-close emitted by _emit_text_delta.
         await projector.project(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
@@ -246,9 +324,12 @@ class TestTranscriptProjector:
             ),
         )
 
-        assert host.blocks[0].thinking == "Icanoutline"
+        assert host.thinking_blocks[0].thinking == "Icanoutline"
+        # A contentless end never seals: the segment stays live for its repair.
+        assert host.thinking_blocks[0].sealed is False
 
-        # The repair event emitted by finalize_open_blocks.
+        # The repair event emitted by finalize_open_blocks re-applies to the
+        # original block_id widget.
         await projector.project(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
@@ -258,7 +339,52 @@ class TestTranscriptProjector:
             ),
         )
 
-        assert host.blocks[0].thinking == "I can outline."
+        assert host.thinking_blocks[0].thinking == "I can outline."
+        assert host.thinking_blocks[0].sealed is True
+
+    @pytest.mark.asyncio
+    async def test_duplicate_content_bearing_thinking_end_does_not_mutate_sealed_segment(
+        self,
+    ) -> None:
+        """A second content-bearing ``thinking_end`` never overwrites a sealed segment.
+
+        Once a repair end seals the segment and retires its ``block_id`` from
+        the open set, a duplicate or late end for the same id is a no-op —
+        sealed reasoning is immutable.
+        """
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta",
+                delta="draft",
+                iteration=0,
+                block_id="thinking:0:0",
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_end",
+                iteration=0,
+                block_id="thinking:0:0",
+                content="final",
+            ),
+        )
+
+        assert host.thinking_blocks[0].sealed is True
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_end",
+                iteration=0,
+                block_id="thinking:0:0",
+                content="overwrite",
+            ),
+        )
+
+        assert host.thinking_blocks[0].thinking == "final"
+        assert host.thinking_blocks[0].sealed is True
 
     @pytest.mark.asyncio
     async def test_tool_call_delta_updates_tool_block_with_parsed_arguments(self) -> None:
@@ -406,13 +532,15 @@ class TestTranscriptProjector:
         projector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="", iteration=0),
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="", iteration=0, block_id="thinking:0:0"),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta=None, iteration=0),
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta=None, iteration=0, block_id="thinking:0:0"
+            ),
         )
 
-        assert host.blocks == []
+        assert host.thinking_blocks == []
 
     @pytest.mark.asyncio
     async def test_run_completed_empty_content_seals_existing_block_without_clearing(self) -> None:
@@ -449,12 +577,12 @@ class TestTranscriptProjector:
 
     @pytest.mark.asyncio
     async def test_second_iteration_mounts_a_new_assistant_block_in_order(self) -> None:
-        """Later assistant iterations mount new blocks instead of rewriting older ones."""
+        """Later assistant iterations mount new answer blocks instead of rewriting older ones."""
         host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="first", iteration=0),
+            event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
         await projector.project(
             event=AgentStreamEventDAO(
@@ -465,12 +593,12 @@ class TestTranscriptProjector:
             ),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="second", iteration=1),
+            event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
 
         assert len(host.blocks) == 2
-        assert host.blocks[0].thinking == "first"
-        assert host.blocks[1].thinking == "second"
+        assert host.blocks[0].answer == "first"
+        assert host.blocks[1].answer == "second"
 
     @pytest.mark.asyncio
     async def test_run_aborted_marks_active_block_and_records_terminal_line(self) -> None:
@@ -540,16 +668,22 @@ class TestTranscriptProjector:
         assert host.recorded == []
 
     def test_reset_for_new_run_clears_run_scoped_state(self) -> None:
-        """Reset clears run-scoped assistant and tool state between prompts."""
+        """Reset clears run-scoped assistant, thinking, and tool state between prompts."""
         host = FakeHost()
         projector = TranscriptProjector(host=host)
         projector._assistant_blocks = {0: FakeAssistantBlock()}  # type: ignore[attr-defined]
         projector._tool_blocks = {"call_1": FakeToolBlock(tool_call_id="call_1", tool_name="read")}  # type: ignore[attr-defined]
+        projector._thinking_blocks = {"thinking:0:0": FakeThinkingBlock()}
+        projector._thinking_block_iterations = {"thinking:0:0": 0}
+        projector._open_thinking_block_ids = {"thinking:0:0"}
 
         projector.reset_for_new_run()
 
         assert projector._assistant_blocks == {}  # type: ignore[attr-defined]
         assert projector._tool_blocks == {}  # type: ignore[attr-defined]
+        assert projector._thinking_blocks == {}  # type: ignore[attr-defined]
+        assert projector._thinking_block_iterations == {}
+        assert projector._open_thinking_block_ids == set()
 
     # -- 61.a.1: _seal_stale_assistant_blocks direct decision-point coverage --
 
@@ -756,10 +890,10 @@ class TestTranscriptProjector:
         projector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="first", iteration=0),
+            event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="second", iteration=1),
+            event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
 
         assert host.blocks[0].sealed is True
@@ -775,13 +909,13 @@ class TestTranscriptProjector:
         projector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="first", iteration=0),
+            event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="second", iteration=1),
+            event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="third", iteration=2),
+            event=AgentStreamEventDAO(kind="text_delta", delta="third", iteration=2),
         )
 
         assert host.blocks[0].sealed is True
@@ -797,18 +931,275 @@ class TestTranscriptProjector:
         projector = TranscriptProjector(host=host)
 
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="first", iteration=0),
+            event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="second", iteration=1),
+            event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
         host.blocks[0].sealed = False
         await projector.project(
-            event=AgentStreamEventDAO(kind="thinking_delta", delta="more", iteration=1),
+            event=AgentStreamEventDAO(kind="text_delta", delta="more", iteration=1),
         )
 
         assert host.blocks[0].sealed is False
         assert len(host.blocks) == 2
+
+
+class TestThinkingSegmentRouting:
+    """Normalized ``block_id`` owns thinking-segment identity (spec 72.a.2)."""
+
+    @pytest.mark.asyncio
+    async def test_thinking_delta_without_block_id_mounts_nothing(self) -> None:
+        """A malformed thinking delta with no ``block_id`` is ignored, never guessed."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_delta", delta="orphan", iteration=0),
+        )
+
+        assert host.thinking_blocks == []
+        assert host.blocks == []
+
+    @pytest.mark.asyncio
+    async def test_thinking_delta_with_same_block_id_reuses_the_mounted_block(self) -> None:
+        """Two deltas for one normalized ``block_id`` stream into one widget."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="part1 ", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="part2", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+
+        assert len(host.thinking_blocks) == 1
+        assert host.thinking_blocks[0].thinking == "part1 part2"
+
+    @pytest.mark.asyncio
+    async def test_two_thinking_block_ids_in_one_iteration_mount_separate_blocks_in_order(self) -> None:
+        """Two normalized thinking blocks in one iteration mount as separate children."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="working", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
+            ),
+        )
+
+        assert len(host.thinking_blocks) == 2
+        assert host.thinking_blocks[0].thinking == "plan"
+        assert host.thinking_blocks[1].thinking == "verify"
+        assert host.mount_order == ["thinking", "answer", "thinking"]
+
+    @pytest.mark.asyncio
+    async def test_repair_thinking_end_after_answer_and_tool_updates_and_seals_the_original_block(
+        self,
+    ) -> None:
+        """A late repair ``thinking_end`` targets its original ``block_id`` widget."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="I will", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="tool_call_end",
+                tool_call_id="call_1",
+                tool_name="read",
+                tool_input={"path": "a.py"},
+                iteration=0,
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
+            ),
+        )
+
+        # The repair end for t0 arrives after answer/tool/t1 output.
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_end",
+                iteration=0,
+                block_id="thinking:0:0",
+                content="plan files",
+            ),
+        )
+
+        assert host.thinking_blocks[0].thinking == "plan files"
+        assert host.thinking_blocks[0].sealed is True
+        # The newer segment is untouched by the older id's end event.
+        assert host.thinking_blocks[1].thinking == "verify"
+        assert host.thinking_blocks[1].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_thinking_end_with_unknown_block_id_cannot_mutate_a_newer_block(self) -> None:
+        """An unknown ``block_id`` end event is a no-op, never applied to another block."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_end",
+                iteration=0,
+                block_id="thinking:0:missing",
+                content="bad",
+            ),
+        )
+
+        assert len(host.thinking_blocks) == 1
+        assert host.thinking_blocks[0].thinking == "verify"
+        assert host.thinking_blocks[0].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_thinking_end_without_block_id_is_ignored(self) -> None:
+        """A malformed thinking end with no ``block_id`` cannot seal or mutate anything."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="thinking_end", iteration=0, content="bad"),
+        )
+
+        assert host.thinking_blocks[0].thinking == "verify"
+        assert host.thinking_blocks[0].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_text_and_tool_events_do_not_seal_an_open_thinking_segment(self) -> None:
+        """Answer/tool routing retains an open segment for its later repair end."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="text_delta", delta="I will", iteration=0),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="tool_call_end",
+                tool_call_id="call_1",
+                tool_name="read",
+                tool_input={"path": "a.py"},
+                iteration=0,
+            ),
+        )
+
+        assert host.thinking_blocks[0].sealed is False
+
+    @pytest.mark.asyncio
+    async def test_run_completed_seals_every_retained_thinking_block(self) -> None:
+        """Terminal completion settles all thinking segments before answer treatment."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_completed", content="done", iteration=0),
+        )
+
+        assert host.thinking_blocks[0].sealed is True
+        assert host.thinking_blocks[1].sealed is True
+        assert projector._open_thinking_block_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_run_aborted_seals_every_retained_thinking_block(self) -> None:
+        """Terminal abort settles all thinking segments before answer treatment."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_aborted", content="<aborted>", iteration=0),
+        )
+
+        assert host.thinking_blocks[0].sealed is True
+        assert projector._open_thinking_block_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_run_failed_seals_every_retained_thinking_block(self) -> None:
+        """Terminal failure settles all thinking segments before answer treatment."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
+            ),
+        )
+        await projector.project(
+            event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=0),
+        )
+
+        assert host.thinking_blocks[0].sealed is True
+        assert projector._open_thinking_block_ids == set()
+
+
+class TestTranscriptProjectorHasNoChildRoute:
+    """The projector owns no parallel sub-agent transcript renderer (spec 72.a.2)."""
+
+    def test_projector_has_no_sub_agent_route_or_registries(self) -> None:
+        """All projector-side child rendering state and helpers are deleted."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        assert not hasattr(projector, "_project_sub_agent_event")
+        assert not hasattr(projector, "_ensure_sub_agent_assistant_block")
+        assert not hasattr(projector, "_ensure_sub_agent_tool_block")
+        assert not hasattr(projector, "_sub_agent_assistant_blocks")
+        assert not hasattr(projector, "_sub_agent_tool_blocks")
+        assert not hasattr(projector, "_sub_agent_argument_buffers")
+
+    def test_projector_has_no_seed_replay_reasoning_helper(self) -> None:
+        """Replay reasoning mounts a real thinking block; the seeding shim is gone."""
+        assert not hasattr(TranscriptProjector, "_seed_replay_reasoning")
 
 
 class TestUserTurn:
@@ -859,10 +1250,40 @@ class TestProjectReplayEntry:
         )
 
         block = host.blocks[-1]
-        assert block.thinking == "why"
         assert block.finalized_with == "answer"
         assert block.aborted is False
         assert ("answer", "assistant-final") in host.recorded
+
+    @pytest.mark.asyncio
+    async def test_replay_reasoning_mounts_a_sealed_thinking_block_before_the_answer_block(
+        self,
+    ) -> None:
+        """Persisted reasoning mounts one sealed thinking block ahead of the answer."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project_replay_entry(
+            entry=_assistant_entry(reasoning="why", answer="answer"),
+        )
+
+        assert len(host.thinking_blocks) == 1
+        assert host.thinking_blocks[0].thinking == "why"
+        assert host.thinking_blocks[0].sealed is True
+        assert host.mount_order == ["thinking", "answer"]
+        # The logical assistant line is recorded exactly once.
+        assert host.recorded == [("answer", "assistant-final")]
+
+    @pytest.mark.asyncio
+    async def test_replay_assistant_entry_without_reasoning_mounts_answer_only(self) -> None:
+        """An entry with no reasoning mounts no thinking block."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project_replay_entry(entry=_assistant_entry(answer="answer"))
+
+        assert host.thinking_blocks == []
+        assert host.mount_order == ["answer"]
+        assert host.blocks[-1].finalized_with == "answer"
 
     @pytest.mark.asyncio
     async def test_aborted_assistant_entry_marks_aborted_not_finalized(self) -> None:
@@ -929,179 +1350,6 @@ class TestProjectReplayEntry:
         classes = [classes for _content, classes in host.recorded]
         assert "tool-call-incomplete" in classes
         assert "tool-result" not in classes
-
-
-class TestTranscriptProjectorSubAgentRouting:
-    """Routing gate: ``is_sub_agent_event`` events never enter the orchestrator chain (03.c)."""
-
-    @pytest.mark.asyncio
-    async def test_sub_agent_text_delta_does_not_create_orchestrator_block(
-        self,
-    ) -> None:
-        """A ``text_delta`` with ``sub_agent_id`` routes to a sub-agent block, not orchestrator."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="text_delta",
-                delta="child output",
-                sub_agent_id="s-abc",
-                task_id="imports",
-            )
-        )
-
-        # One block created for the sub-agent
-        assert len(host.blocks) == 1
-        assert host.blocks[0].title_prefix == "⎇ imports"
-        # The orchestrator assistant blocks dict is empty
-        assert len(projector._assistant_blocks) == 0
-        # The sub-agent assistant blocks dict has one entry
-        assert "imports" in projector._sub_agent_assistant_blocks
-
-    @pytest.mark.asyncio
-    async def test_orchestrator_text_delta_unaffected(self) -> None:
-        """A ``text_delta`` without ``sub_agent_id`` still routes to orchestrator block."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(kind="text_delta", delta="orch output", iteration=0)
-        )
-
-        assert len(host.blocks) == 1
-        # Sub-agent dicts untouched
-        assert len(projector._sub_agent_assistant_blocks) == 0
-
-
-class TestTranscriptProjectorLifecycleNotices:
-    """Lifecycle notice lines rendered by ``_project_sub_agent_event`` (03.c)."""
-
-    @pytest.mark.asyncio
-    async def test_sub_agent_spawned_writes_notice_line(self) -> None:
-        """``sub_agent_spawned`` writes '⎇ task-1: spawned' to transcript."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="sub_agent_spawned",
-                sub_agent_id="s-1",
-                task_id="task-1",
-            )
-        )
-
-        assert ("⎇ task-1: spawned", "sub-agent-notice") in host.lines
-
-    @pytest.mark.asyncio
-    async def test_sub_agent_completed_writes_notice_line(self) -> None:
-        """``sub_agent_completed`` writes '⎇ task-1: completed' to transcript."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="sub_agent_completed",
-                sub_agent_id="s-1",
-                task_id="task-1",
-            )
-        )
-
-        assert ("⎇ task-1: completed", "sub-agent-notice") in host.lines
-
-    @pytest.mark.asyncio
-    async def test_sub_agent_failed_writes_notice_line(self) -> None:
-        """``sub_agent_failed`` writes '⎇ task-1: failed' to transcript."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="sub_agent_failed",
-                sub_agent_id="s-1",
-                task_id="task-1",
-            )
-        )
-
-        assert ("⎇ task-1: failed", "sub-agent-notice") in host.lines
-
-
-class TestTranscriptProjectorSubAgentBlocks:
-    """Sub-agent block creation and caching (03.c)."""
-
-    @pytest.mark.asyncio
-    async def test_two_text_deltas_same_task_id_reuse_block(self) -> None:
-        """Two ``text_delta`` events with the same ``task_id`` stream into one block."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="text_delta",
-                delta="part1 ",
-                sub_agent_id="s-1",
-                task_id="t1",
-            )
-        )
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="text_delta",
-                delta="part2",
-                sub_agent_id="s-1",
-                task_id="t1",
-            )
-        )
-
-        # Only one block mounted
-        assert len(host.blocks) == 1
-        assert host.blocks[0].answer == "part1 part2"
-
-    @pytest.mark.asyncio
-    async def test_different_task_ids_create_separate_blocks(self) -> None:
-        """Two children with different ``task_id`` values get separate blocks."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="text_delta",
-                delta="child A",
-                sub_agent_id="s-1",
-                task_id="taskA",
-            )
-        )
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="text_delta",
-                delta="child B",
-                sub_agent_id="s-2",
-                task_id="taskB",
-            )
-        )
-
-        assert len(host.blocks) == 2
-
-    @pytest.mark.asyncio
-    async def test_reset_clears_sub_agent_blocks(self) -> None:
-        """``reset_for_new_run`` clears sub-agent assistant and tool block dicts."""
-        host = FakeHost()
-        projector = TranscriptProjector(host=host)
-
-        await projector.project(
-            event=AgentStreamEventDAO(
-                kind="text_delta",
-                delta="x",
-                sub_agent_id="s-1",
-                task_id="t1",
-            )
-        )
-        assert len(projector._sub_agent_assistant_blocks) == 1
-
-        projector.reset_for_new_run()
-
-        assert len(projector._sub_agent_assistant_blocks) == 0
-        assert len(projector._sub_agent_tool_blocks) == 0
-        assert len(projector._sub_agent_argument_buffers) == 0
 
 
 class TestCompactionEventProjection:

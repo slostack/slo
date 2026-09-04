@@ -33,6 +33,10 @@ def _status_error(*, status_code: int) -> MagicMock:
     err: MagicMock = MagicMock(spec=Exception)
     err.status_code = status_code
     err.code = None
+    # Pin str(error): a bare MagicMock stringifies with its random id, whose
+    # digits can accidentally contain the policy's "429" rate-limit text
+    # marker and flake the classification under test (~0.2% per run).
+    err.configure_mock(**{"__str__.return_value": f"HTTP error {status_code}"})
     return err
 
 

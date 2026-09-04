@@ -45,7 +45,9 @@ from src.tui.thinking_spinner import ThinkingSpinner
 from src.tui.transcript_projector import TranscriptProjector
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
+from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
@@ -416,6 +418,12 @@ class SloTUI(App):
     ) -> None:
         """Compose the TUI around a pre-built session.
 
+        WHAT: Registers themes and initialises every app-owned piece of state,
+        including the one-deep queued-prompt slot and its submission gate.
+        WHO: ``TyperDispatch`` builds it for the interactive path; pilot tests
+        construct it directly around a session fixture.
+        WHEN: Once per interactive process or per test app instance.
+
         Args:
             session (SloAgentSession): The in-process session to drive.
             inbox_store (Optional[SessionInboxStore]): Optional injected inbox
@@ -434,6 +442,7 @@ class SloTUI(App):
         self._attach_pool_to_session(session=self._session)
         self._transcript_scroll: Optional[TranscriptScroll] = None
         self._transcript_content: Optional[Vertical] = None
+        self._chat_shell: Optional[Vertical] = None
         self._hidden_block_count: int = 0
         self._load_older_cursor: int = 0
         self._load_older_running: bool = False
@@ -454,6 +463,12 @@ class SloTUI(App):
         self._global_expand_all: Optional[bool] = None
         self._adapter: Optional[_TranscriptAdapter] = None
         self._in_flight_task: Optional[asyncio.Task[None]] = None
+        self._prompt_submission_lock: asyncio.Lock = asyncio.Lock()
+        """Serializes ordinary-prompt acceptance and run-completion handoff only."""
+        self._queued_prompt_text: Optional[str] = None
+        """One-deep latest-wins ordinary text not yet accepted as a user turn."""
+        self._queued_prompt_block: Optional[QueuedPromptBlock] = None
+        """Mounted visual counterpart of ``_queued_prompt_text``, when mounted."""
         self._spinner: Optional[ThinkingSpinner] = None
         # Pending steering blocks awaiting consumption, oldest first. Each
         # ``steering_applied`` event drains one (FIFO), matching the agent's
@@ -491,7 +506,8 @@ class SloTUI(App):
             Header, the transcript + input vertical, and Footer.
         """
         yield Header(show_clock=False)
-        with Vertical(id="chat-shell"):
+        self._chat_shell = Vertical(id="chat-shell")
+        with self._chat_shell:
             self._transcript_scroll = TranscriptScroll(id="transcript-scroll")
             self._transcript_content = Vertical(id="transcript-content")
             with self._transcript_scroll:
@@ -696,6 +712,29 @@ class SloTUI(App):
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
 
+    @staticmethod
+    def _collapse_home_in_path(*, path: Path) -> str:
+        """Render ``path`` below the user home directory with a ``~`` prefix.
+
+        Called by ``_refresh_title_bar`` for title-only compact cwd display. Paths
+        outside home, including textual-prefix lookalikes, remain absolute because
+        ``Path.relative_to`` validates actual path ancestry.
+
+        Args:
+            path (Path): Absolute session working directory.
+
+        Returns:
+            str: ``~``, a ``~/...`` descendant, or the original absolute path.
+        """
+        home: Path = Path.home()
+        try:
+            relative_path: Path = path.relative_to(home)
+        except ValueError:
+            return str(path)
+        if relative_path == Path("."):
+            return "~"
+        return f"~/{relative_path}"
+
     def _refresh_title_bar(self, *, subject: Optional[str] = None) -> None:
         """Render title and subtitle from the session's active runtime state.
 
@@ -703,8 +742,9 @@ class SloTUI(App):
             subject (Optional[str]): Optional authenticated subject to
                 append to the subtitle.
         """
+        workdir_text: str = self._collapse_home_in_path(path=self._session.workdir)
         self.title = (
-            f"slo · {self._session.workdir} · {self._session.routed_model_name} · "
+            f"slo · {workdir_text} · {self._session.routed_model_name} · "
             f"reasoning {self._session.active_reasoning_level}"
         )
         if self._session.session_name is not None:
@@ -802,10 +842,25 @@ class SloTUI(App):
         )
 
     async def _poll_session_inbox(self) -> None:
-        """Claim and process at most one inbox item when the session is idle."""
+        """Claim and process at most one inbox item only when the app is idle.
+
+        WHAT: Serializes inbox claim/start with local prompt acceptance and drain.
+        WHO: The mounted TUI's inbox timer calls it at its existing interval.
+        WHEN: It runs for the TUI lifetime; it never holds the gate during a model run.
+        """
         if self._inbox_store is None:
             return
-        if self._in_flight_task is not None:
+        async with self._prompt_submission_lock:
+            await self._claim_and_handle_idle_inbox_message()
+
+    async def _claim_and_handle_idle_inbox_message(self) -> None:
+        """Claim, handle, and acknowledge one inbox item under the prompt gate.
+
+        WHAT: Leaves the inbox untouched when a local or prior inbox task is active.
+        WHO: ``_poll_session_inbox`` calls it while owning the submission gate.
+        WHEN: The inbox timer finds a configured store.
+        """
+        if self._inbox_store is None or self._in_flight_task is not None:
             return
         message: Optional[SessionInboxMessageDAO] = await self._inbox_store.claim_next(
             session_id=self._session.session_id,
@@ -897,6 +952,12 @@ class SloTUI(App):
     async def _start_inbox_chat_turn(self, *, message: SessionInboxMessageDAO) -> None:
         """Submit one claimed inbox item as a real chat turn.
 
+        Called while the caller holds ``_prompt_submission_lock`` (see
+        ``_claim_and_handle_idle_inbox_message``), so the machine turn's task
+        creation is atomic with local prompt acceptance. A machine turn never
+        enters the user queue: it must not call ``_queue_prompt``,
+        ``_prompt_history.record``, or ``_echo_user_line``.
+
         Args:
             message (SessionInboxMessageDAO): Claimed inbox item.
         """
@@ -983,25 +1044,14 @@ class SloTUI(App):
                 self._input.set_prompt_history_navigation_enabled(enabled=False)
         self._refresh_slash_suggestions()
 
-    def on_assistant_stream_block_copy_requested(self, event: AssistantStreamBlock.CopyRequested) -> None:
-        """Copy a response-only block payload through the shared clipboard funnel.
-
-        Args:
-            event (AssistantStreamBlock.CopyRequested): Answer-only copy request
-                emitted by an assistant response button.
-        """
-        if not event.answer_text:
-            return
-        self.copy_to_clipboard(event.answer_text)
-        event.block.show_copy_feedback()
-
     def on_assistant_stream_block_rendered(self, event: AssistantStreamBlock.Rendered) -> None:
-        """Re-check scroll-follow after the coalescing timer renders a block.
+        """Re-check scroll-follow after an answer or thinking flush renders a block.
 
-        The coalescing timer in ``AssistantStreamBlock`` fires after
+        The coalescing timer in ``AssistantStreamBlock`` (answer) or
+        ``AssistantStreamThinkingBlock`` (reasoning) fires after
         ``_restore_follow_after_mutation`` has already run for the mount event,
-        so the ``Static.update`` inside ``_render_answer`` / ``_render_thinking``
-        expands ``max_scroll_y`` without a matching ``scroll_end`` call. This
+        so the ``Static.update`` inside the widget's render expands
+        ``max_scroll_y`` without a matching ``scroll_end`` call. This
         handler re-schedules ``scroll_end`` when the transcript was already
         following before the flush, so streaming text keeps the viewport pinned
         at the bottom.
@@ -1150,10 +1200,15 @@ class SloTUI(App):
         self._load_prompt_history_text(text=recalled_text)
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
-        """Route one submitted line through the session.
+        """Route a submitted input line as a slash command, new turn, or held prompt.
+
+        WHAT: Preserves immediate slash dispatch, then serializes normal-prompt
+        acceptance with the active-run completion handoff.
+        WHO: ``PromptInput`` posts this event after the operator submits text.
+        WHEN: Runs once per Enter submission while the TUI is mounted.
 
         Args:
-            event (PromptInput.Submitted): The custom submission event.
+            event (PromptInput.Submitted): Custom input submission message.
         """
         text: str = (event.text or "").strip()
         self._hide_slash_suggestions()
@@ -1168,23 +1223,123 @@ class SloTUI(App):
             # on ``session.is_running``.
             await self._dispatch_slash_command(line=text)
             return
-        if self._in_flight_task is not None:
-            self._render_busy_line()
-            return
+        await self._submit_or_queue_prompt(text=text)
+
+    async def _submit_or_queue_prompt(self, *, text: str) -> None:
+        """Accept an idle ordinary prompt or replace the one held behind a run.
+
+        WHAT: Makes the app's task check and its consequent state transition atomic.
+        WHO: ``on_prompt_input_submitted`` calls it for non-slash non-empty input.
+        WHEN: Runs at operator submission time; it does not hold the lock during a run.
+
+        Args:
+            text (str): Normalized ordinary prompt text.
+        """
+        async with self._prompt_submission_lock:
+            if self._in_flight_task is not None:
+                await self._queue_prompt(text=text)
+                return
+            await self._start_accepted_prompt(text=text)
+
+    async def _start_accepted_prompt(self, *, text: str) -> None:
+        """Record, echo, and start one already-admitted ordinary prompt.
+
+        WHAT: Converts text from either idle input or completion drain into a real
+        user turn and starts the single app task.
+        WHO: The submission and completion-handoff methods call it while holding
+        ``_prompt_submission_lock``.
+        WHEN: Only after the caller has established that no other app task may start.
+
+        Args:
+            text (str): Accepted text to persist through the normal session invoke path.
+        """
         self._prompt_history.record(text=text)
         await self._echo_user_line(text=text)
         self._in_flight_task = asyncio.create_task(self._run_prompt(text=text))
 
+    async def _queue_prompt(self, *, text: str) -> None:
+        """Store the newest held text and mount or update its one visible block.
+
+        WHAT: Applies one-deep latest-wins policy without creating a user turn.
+        WHO: ``_submit_or_queue_prompt`` calls it under the submission gate.
+        WHEN: An ordinary prompt arrives while an app-owned run task is active.
+
+        Args:
+            text (str): Newest ordinary prompt text.
+        """
+        self._queued_prompt_text = text
+        if self._queued_prompt_block is not None:
+            self._queued_prompt_block.replace_text(text=text)
+            return
+        await self._mount_queued_prompt_block(text=text)
+
+    async def _mount_queued_prompt_block(self, *, text: str) -> None:
+        """Mount the visible held-prompt block directly above the prompt input.
+
+        WHAT: Anchors the block as a ``#chat-shell`` child immediately before
+        ``PromptInput`` — outside the scroll region, so it stays visible while
+        the transcript scrolls and window eviction can never reach it.
+        WHO: ``_queue_prompt`` calls it only for an empty visual slot.
+        WHEN: The first ordinary busy submission fills the one-deep queue.
+
+        Args:
+            text (str): Text to render in the new queued-prompt block.
+        """
+        if self._chat_shell is None or self._input is None:
+            return
+        block: QueuedPromptBlock = QueuedPromptBlock(text=text)
+        await self._chat_shell.mount(block, before=self._input)
+        self._queued_prompt_block = block
+
+    async def _remove_queued_prompt_block(self) -> None:
+        """Remove the current queue block and release its tracked reference.
+
+        WHAT: Keeps the block registered until its asynchronous Textual removal is
+        complete, then clears the tracked slot-block reference.
+        WHO: ``_start_queued_prompt_if_idle`` and the clear path call it under the
+        submission gate.
+        WHEN: Immediately before a held prompt becomes an echoed user turn, or when
+        ``/clear``/an allowed ``/new`` discards the held prompt.
+        """
+        block: Optional[QueuedPromptBlock] = self._queued_prompt_block
+        if block is None:
+            return
+        await block.remove()
+        self._queued_prompt_block = None
+
     # ---- Actions ----------------------------------------------------------
 
     async def action_interrupt(self) -> None:
-        """``^C``: abort the in-flight run, or quit if idle."""
+        """``^C``: abort the in-flight run, or quit if idle.
+
+        WHAT: Requests the session's cooperative abort, arms hard-cancel
+        escalation, announces queued-prompt survival, and writes the aborting
+        marker; an idle ``^C`` exits the app instead.
+        WHO: Textual invokes it for the ``ctrl+c`` key binding.
+        WHEN: Whenever the operator presses ``^C`` while the TUI is mounted.
+        """
         if self._in_flight_task is None:
             self.exit()
             return
         self._session.abort()
         self._escalate_abort()
+        self._announce_queued_prompt_survival()
         self._write_adapter_line(content="(aborting…)", classes="tool-result")
+
+    def _announce_queued_prompt_survival(self) -> None:
+        """Explain that an abort retains the held prompt when one exists.
+
+        WHAT: Writes one operator-facing notice without changing queue/task state.
+        WHO: ``action_interrupt`` and ``_dispatch_slash_command`` call it after an
+        abort has been requested.
+        WHEN: Only while a user-held prompt remains queued behind the aborted run.
+        """
+        if self._queued_prompt_text is None:
+            return
+        self._write_adapter_line(
+            content=("(queued prompt held — it will run next; resubmit to replace it, " "/clear to drop it)"),
+            classes="tool-result",
+        )
 
     def _escalate_abort(self) -> None:
         """Schedule a hard cancel of the in-flight task after the abort grace.
@@ -1351,7 +1506,26 @@ class SloTUI(App):
         return self._workflow_app_service.live_workflow_labels()
 
     async def action_clear(self) -> None:
-        """``^L``: clear the transcript without affecting agent state."""
+        """Clear transcript state and discard any held ordinary prompt.
+
+        WHAT: Removes visible transcript children and clears their app-owned state.
+        WHO: The Ctrl+L binding and slash-command result dispatch call it.
+        WHEN: It may run while an agent task remains active; that task continues, but
+        the held next prompt is intentionally discarded.
+        """
+        async with self._prompt_submission_lock:
+            await self._clear_transcript_and_prompt_queue()
+
+    async def _clear_transcript_and_prompt_queue(self) -> None:
+        """Perform clear mutations while the prompt-submission gate is held.
+
+        WHAT: Drops queued prompt state before removing all transcript children, then
+        executes the existing projector/window/reset behavior.
+        WHO: ``action_clear`` and an allowed ``_start_new_session`` call it.
+        WHEN: Runs only under ``_prompt_submission_lock`` to avoid a drain/clear race.
+        """
+        self._queued_prompt_text = None
+        await self._remove_queued_prompt_block()
         if self._adapter is not None:
             self._adapter.lines.clear()
         if self._transcript_content is not None:
@@ -1585,6 +1759,7 @@ class SloTUI(App):
             return
         if result.abort_run:
             self._escalate_abort()
+            self._announce_queued_prompt_survival()
         if result.steer_pending_message is not None:
             await self._render_steer_pending(message=result.steer_pending_message)
         if result.render_tree is not None:
@@ -1641,17 +1816,40 @@ class SloTUI(App):
         self.push_screen(GitDiffScreen(content=content))
 
     async def _start_new_session(self, *, requested_name: Optional[str]) -> None:
-        """Replace the active session with a brand-new one.
+        """Replace the active idle session and discard any app-local queued prompt.
+
+        WHAT: Serializes session replacement with prompt acceptance and the
+        completion handoff; a mid-run or mid-handoff `/new` is rejected with
+        the existing operator notice.
+        WHO: ``_dispatch_slash_command`` calls it for `/new` router results.
+        WHEN: Only an idle app proceeds; the replacement's clear path runs
+        under ``_prompt_submission_lock`` so no queue state crosses sessions.
+
+        Args:
+            requested_name (Optional[str]): Optional replacement session name.
+        """
+        async with self._prompt_submission_lock:
+            if self._in_flight_task is not None or self._session.is_running:
+                self._write_adapter_line(
+                    content="cannot start a new session while a prompt is in flight; run /abort first",
+                    classes="tool-result",
+                )
+                return
+            await self._replace_idle_session_and_clear_queue(requested_name=requested_name)
+
+    async def _replace_idle_session_and_clear_queue(self, *, requested_name: Optional[str]) -> None:
+        """Swap in a fresh session and clear transcript plus queue state.
+
+        WHAT: Runs the unsubscribe/build/rename/assign/re-subscribe sequence and
+        clears the transcript through the gate-held clear body, so no queue
+        reference can cross into the replacement session.
+        WHO: ``_start_new_session`` calls it only while holding
+        ``_prompt_submission_lock`` after establishing the app is idle.
+        WHEN: The operator requests `/new` while no run is active.
 
         Args:
             requested_name (Optional[str]): Optional initial human-readable session name.
         """
-        if self._session.is_running:
-            self._write_adapter_line(
-                content="cannot start a new session while a prompt is in flight; run /abort first",
-                classes="tool-result",
-            )
-            return
         old_session: SloAgentSession = self._session
         old_session.unsubscribe(handler=self._render_event)
         new_session: SloAgentSession = SloAgentSession.build(
@@ -1661,7 +1859,7 @@ class SloTUI(App):
         if requested_name is not None:
             await new_session.rename_session(session_name=requested_name)
         self._session = new_session
-        await self.action_clear()
+        await self._clear_transcript_and_prompt_queue()
         self._prompt_history.clear_navigation()
         self._prompt_history = PromptHistoryNavigator()
         if self._input is not None:
@@ -1694,7 +1892,9 @@ class SloTUI(App):
 
         The orchestrator transcript is always in the foreground; sub-agent
         content never appears there. Lifecycle events write a one-line notice
-        to the main transcript. Content events update the fleet panel's
+        to the main transcript. Content events — including child
+        ``thinking_delta`` events, which update fleet activity only and never
+        mount an ``AssistantStreamThinkingBlock`` — update the fleet panel's
         live-activity field so the user can see what each sub-agent is doing
         without leaving the orchestrator view.
 
@@ -1863,6 +2063,13 @@ class SloTUI(App):
     def _is_block_live(self, *, child: Widget) -> bool:
         """Return True when a transcript child is still being written to.
 
+        WHAT: Classifies each transcript block type by its owner-tracked
+        liveness rule. ``QueuedPromptBlock`` never appears here: it mounts
+        above ``PromptInput`` outside the scroll region, so window eviction
+        cannot reach it and it needs no liveness classification.
+        WHO: ``_eviction_candidates`` calls it for every transcript child.
+        WHEN: During transcript-window enforcement, before any eviction.
+
         Live children must never be evicted by the window: the projector or the
         steer-drain still holds a reference and will update or remove them later.
         Evicting one would drop content or double-remove (the hazard action_clear
@@ -1874,6 +2081,10 @@ class SloTUI(App):
         Returns:
             bool: True when the child is still receiving updates.
         """
+        if isinstance(child, AssistantStreamThinkingBlock):
+            # An unsealed thinking segment may still receive its matching
+            # repair ``thinking_end``; a sealed one is settled and evictable.
+            return not child.finalized
         if isinstance(child, AssistantStreamBlock):
             return not child.finalized
         if isinstance(child, ToolExecutionBlock):
@@ -2080,7 +2291,7 @@ class SloTUI(App):
 
         Idempotent in effect: a no-op on the first turn (nothing to
         separate). Writing through ``_write_adapter_line`` both mounts the
-        visible ``┈┈┈`` separator and records its logical line.
+        visible ``───`` rule and records its logical line.
 
         Args:
             before (Optional[int]): Child index to insert before. ``None``
@@ -2098,20 +2309,50 @@ class SloTUI(App):
         )
         return True
 
+    async def _mount_transcript_widget(
+        self,
+        *,
+        block: Widget,
+        before: Optional[int] = None,
+    ) -> None:
+        """Mount one transcript widget using the shared window policy.
+
+        WHAT: Applies the append follow/window behavior, or a pure prepend
+            insertion when replay is inserting history.
+        WHO: The ``mount_assistant_block`` and ``mount_thinking_block`` host
+            methods call it after constructing their typed block.
+        WHEN: ``TranscriptProjector`` requests a new transcript child.
+
+        Args:
+            block (Widget): Newly constructed transcript child.
+            before (Optional[int]): Prepend index, if replay is inserting
+                history. ``None`` appends at the end.
+        """
+        if self._transcript_content is None:
+            return
+        if before is not None:
+            await self._transcript_content.mount(block, before=before)
+            return
+        follow_snapshot: bool = self._capture_follow_snapshot()
+        await self._transcript_content.mount(block)
+        if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
+            await self._enforce_transcript_window()
+        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+
     async def mount_assistant_block(
         self,
         *,
         title_prefix: Optional[str] = None,
         before: Optional[int] = None,
     ) -> AssistantStreamBlock:
-        """Mount a fresh assistant streaming block into the transcript flow.
+        """Mount a fresh answer-only assistant streaming block into the transcript flow.
 
         Args:
             title_prefix (Optional[str]): Optional dim label shown above the
-                block's reasoning and answer surfaces. Used by the sub-agent
-                rendering path to tag child output with its task id.
-                ``None`` (default) produces a label-free block identical to
-                the pre-feature behaviour.
+                block's answer surface. No current caller sets it: child
+                sub-agent events route to the fleet panel only and never mount
+                a foreground transcript block. ``None`` (default) produces a
+                label-free block identical to the pre-feature behaviour.
             before (Optional[int]): Child index to insert before. ``None``
                 appends at the end.
 
@@ -2120,18 +2361,31 @@ class SloTUI(App):
         """
         block: AssistantStreamBlock = AssistantStreamBlock(
             title_prefix=title_prefix,
+        )
+        await self._mount_transcript_widget(block=block, before=before)
+        return block
+
+    async def mount_thinking_block(
+        self,
+        *,
+        before: Optional[int] = None,
+    ) -> AssistantStreamThinkingBlock:
+        """Construct and mount one thinking segment for the projector.
+
+        The projector's only seam for mounting a thinking widget; the shared
+        mount/window policy lives in ``_mount_transcript_widget``.
+
+        Args:
+            before (Optional[int]): Child index to insert before. ``None``
+                appends at the end.
+
+        Returns:
+            AssistantStreamThinkingBlock: The constructed thinking segment.
+        """
+        block: AssistantStreamThinkingBlock = AssistantStreamThinkingBlock(
             force_expanded=self._global_expand_all,
         )
-        if self._transcript_content is None:
-            return block
-        follow_snapshot: bool = self._capture_follow_snapshot()
-        if before is None:
-            await self._transcript_content.mount(block)
-            if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
-                await self._enforce_transcript_window()
-            self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
-            return block
-        await self._transcript_content.mount(block, before=before)
+        await self._mount_transcript_widget(block=block, before=before)
         return block
 
     async def mount_tool_execution_block(
@@ -2216,6 +2470,14 @@ class SloTUI(App):
     async def _run_prompt(self, *, text: str) -> None:
         """Drain ``session.invoke`` to completion.
 
+        WHAT: Renders one run's stream events, surfaces failures inline, and
+        hands off to any held queued prompt from its ``finally``.
+        WHO: ``_start_accepted_prompt`` and ``_start_inbox_chat_turn`` schedule
+        it as the single app-owned run task.
+        WHEN: Once per accepted user turn or claimed inbox chat turn; success,
+        provider failure, cooperative abort, and hard cancellation all reach
+        the same terminal cleanup.
+
         Args:
             text (str): The user prompt.
         """
@@ -2244,7 +2506,52 @@ class SloTUI(App):
             self._refresh_usage_status_bar()
             await self._unmount_spinner()
             await self._cleanup_sub_agent_state()
+            await self._finish_prompt_run()
+
+    async def _finish_prompt_run(self) -> None:
+        """Atomically hand off a completed run to its queued successor.
+
+        WHAT: Keeps the completed task as the app run guard until the queue is
+        consumed or the app becomes idle.
+        WHO: ``_run_prompt`` calls it as its final cleanup step.
+        WHEN: Runs after successful, failed, aborted, or cancelled prompt runs.
+        """
+        completed_task: Optional[asyncio.Task[None]] = self._in_flight_task
+        if completed_task is None or completed_task is not asyncio.current_task():
+            return
+
+        async with self._prompt_submission_lock:
+            tracked_task: Optional[asyncio.Task[None]] = self._in_flight_task
+            if tracked_task is None or tracked_task is not completed_task:
+                return
+            await self._start_queued_prompt_if_idle(completed_task=tracked_task)
+
+    async def _start_queued_prompt_if_idle(
+        self,
+        *,
+        completed_task: asyncio.Task[None],
+    ) -> None:
+        """Consume the held prompt or mark the completed app run idle.
+
+        WHAT: Removes and starts the held prompt before releasing app task ownership.
+        WHO: ``_finish_prompt_run`` calls it while holding the submission gate.
+        WHEN: Immediately after the tracked run reaches its terminal cleanup.
+
+        Args:
+            completed_task (asyncio.Task[None]): The finished run task that must
+                still own the app run guard for the handoff to proceed.
+        """
+        if self._in_flight_task is not completed_task:
+            return
+
+        text: Optional[str] = self._queued_prompt_text
+        if text is None:
             self._in_flight_task = None
+            return
+
+        self._queued_prompt_text = None
+        await self._remove_queued_prompt_block()
+        await self._start_accepted_prompt(text=text)
 
     async def _refresh_context_window_after_prompt(self) -> None:
         """Refresh durable Context Window Snapshot exactly once at prompt cleanup."""
@@ -2480,13 +2787,6 @@ class SloTUI(App):
         await self._projector.project_user_turn(text=text)
         self._force_reveal_and_rearm()
 
-    def _render_busy_line(self) -> None:
-        """Render the busy reply when the input arrives during a run."""
-        self._write_adapter_line(
-            content="(prompt in flight — wait, or steer with `/steer <msg>`)",
-            classes="tool-result",
-        )
-
     def _write_adapter_line(
         self,
         *,
@@ -2498,8 +2798,8 @@ class SloTUI(App):
 
         The adapter is the single test seam — every line that lands in the
         transcript also lands in ``self._adapter.lines``. Slash output, the
-        ``> <text>`` echo, the busy reply, and the ``(aborting…)`` marker all
-        go through here; the streaming event path goes through
+        ``> <text>`` echo, the queued-survival notice, and the ``(aborting…)``
+        marker all go through here; the streaming event path goes through
         ``EventRenderer.render`` and reaches the same adapter on its own.
 
         Args:
@@ -2810,7 +3110,7 @@ class _TranscriptAdapter:
     longer flow through ``write`` as ``user-line`` entries.
     """
 
-    TURN_SEPARATOR: str = "┈" * 18
+    TURN_SEPARATOR: str = "─" * 18
 
     def __init__(self, *, tui: SloTUI) -> None:
         """Wrap the owning ``SloTUI``.

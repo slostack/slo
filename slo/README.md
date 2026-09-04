@@ -402,8 +402,10 @@ This project is a Python coding agent built on LangGraph and Textual…
 The transcript is a scrollable column of widgets — a
 `VerticalScroll(#transcript-scroll)` wrapping a `Vertical(#transcript-content)`
 into which each conversational entry is mounted as its own component (see
-Chapter 4): a `UserMessageBlock` for your turn, an `AssistantStreamBlock`
-for the reasoning + answer, and a `ToolExecutionBlock` per tool call. Only
+Chapter 4): a `UserMessageBlock` for your turn, an
+`AssistantStreamThinkingBlock` per thinking segment, an answer-only
+`AssistantStreamBlock` per assistant iteration, and a `ToolExecutionBlock`
+per tool call. Only
 non-conversational notices (slash-command output, the `(aborting…)` marker)
 mount as plain `Static`s. Every entry also records a logical line with a
 *semantic class* — `user-line`, `tool-line`, `tool-result`,
@@ -747,7 +749,8 @@ The participants, roughly in order of appearance:
 | `AgentStreamEventDAO` | `src/agents/slo_agent/stream_event_dao.py` | The normalized stream-event contract — 13 `kind`s |
 | `TranscriptProjector` | `src/tui/transcript_projector.py` | Projects live events **and** replay entries into per-message transcript widgets |
 | `UserMessageBlock` | `src/tui/widgets/user_message_block.py` | One user turn, rendered as padded markdown |
-| `AssistantStreamBlock` | `src/tui/widgets/assistant_stream_block.py` | One assistant turn: a reasoning region + an answer region |
+| `AssistantStreamThinkingBlock` | `src/tui/widgets/assistant_stream_thinking_block.py` | One thinking segment, keyed by normalized `block_id`; sealed by its repair end or a terminal sweep |
+| `AssistantStreamBlock` | `src/tui/widgets/assistant_stream_block.py` | One assistant iteration, answer-only (thinking lives on the sibling thinking block) |
 | `ToolExecutionBlock` | `src/tui/widgets/tool_execution_block.py` | One live tool call: a ⏺ headline + a ⎿ result line |
 | `TranscriptEntryDAO` | `src/agents/slo_agent/history/transcript.py` | One completed entry for replay (the replay counterpart to `AgentStreamEventDAO`) |
 | `ReplayEntryProjector` | `src/agents/slo_agent/history/transcript.py` | Folds canonical history events into ordered `TranscriptEntryDAO`s for replay |
@@ -810,7 +813,7 @@ async def on_prompt_input_submitted(
     if not text:
         return                                # bare Enter on empty buffer → no-op
     if self._in_flight_task is not None:
-        self._render_busy_line()              # already running → busy message
+        await self._queue_prompt(text=text)   # already running → visible one-deep queue
         return
     if text.startswith("/"):
         await self._dispatch_slash_command(line=text)
@@ -824,7 +827,10 @@ Read it top-to-bottom. Each line is one decision:
 1. Strip and capture the text.
 2. Clear the input box.
 3. Empty? No-op.
-4. Already running? Render the busy line; refuse a second prompt.
+4. Already running? Hold the prompt in the visible one-deep queue
+   (`⏳ Queued: …`); it auto-submits when the current run ends. A second
+   mid-run submission *replaces* the held one. `/abort` keeps the held
+   prompt (with a notice); `/clear` drops it.
 5. Slash command? Dispatch to the router (covered in 4.10).
 6. Echo `> <text>` into the transcript with class `user-line`.
 7. Spawn the prompt as a background asyncio task.
@@ -1198,11 +1204,14 @@ event loop and produced the "mangled, unspaced markdown" symptom.
   `on_mount`), because setting a `Static`'s content mid-mount-cycle races
   the child's first render and Textual raises while compositing.
 
-- **`AssistantStreamBlock`** (`widgets/assistant_stream_block.py`) is a
-  `Vertical` with two `Static` regions — a reasoning region and an answer
-  region — plus a terminal-note line. `append_thinking` / `append_text`
-  accumulate into that block's own buffers and re-render **only that
-  block's** `Static`:
+- **`AssistantStreamBlock`** (`widgets/assistant_stream_block.py`) is an
+  answer-only `Vertical` — one `AssistantAnswerBody` surface plus a
+  terminal-note line. Reasoning lives on the sibling
+  **`AssistantStreamThinkingBlock`** (`widgets/assistant_stream_thinking_block.py`),
+  one widget per normalized thinking segment (keyed by `block_id`), mounted
+  in true chronological order between answer and tool blocks.
+  `append_thinking` / `append_text` accumulate into each block's own buffer
+  and re-render **only that block's** `Static`:
 
   ```python
   def _render_thinking(self) -> None:
@@ -1269,8 +1278,9 @@ of **that block's answer `Static` only**:
   once more with the runtime's authoritative final text, so any
   streamed-delta spacing/markdown artifacts are discarded.
 
-The reasoning region is likewise replaced once via `set_thinking` on
-`thinking_end`. By contrast, the **`UserMessageBlock`** renders its markdown
+The thinking block is likewise replaced once via `set_thinking` on a
+content-bearing repair `thinking_end` (a contentless end leaves the segment
+open for its repair). By contrast, the **`UserMessageBlock`** renders its markdown
 exactly once at construction and is never reprocessed, and a
 **`ToolExecutionBlock`** reparses its result line only when its single
 `tool_result` arrives. So the end-of-stream markdown reprocessing is scoped
@@ -1406,7 +1416,7 @@ Hydration runs **before** the live renderer subscribes, so the replayed
 tail and live events never interleave. Each mounted entry still records its
 logical line into `_TranscriptAdapter.lines` (the copy / dedupe seam), and
 encrypted/redacted reasoning is never surfaced as visible text — it simply
-produces no reasoning region, matching the live path.
+mounts no thinking block, matching the live path.
 
 The `async for` in `_run_prompt` exits; the `finally` unmounts the
 spinner and clears `_in_flight_task`. The TUI is idle. Your next prompt
@@ -2518,7 +2528,8 @@ into replay.
 | **`TurnStreamAccumulator`** | Per-turn; holds completed-node truth (final text, tool messages) for the stop-hook and final answer. |
 | **`TranscriptProjector`** | Stateful event→widget machine. Mounts live stream events *and* replay entries: one `UserMessageBlock` per user turn, one `AssistantStreamBlock` per iteration, one `ToolExecutionBlock` per tool call. |
 | **`UserMessageBlock`** | A mounted widget for one user turn — padded markdown, rendered once at construction. |
-| **`AssistantStreamBlock`** | A mounted widget for one assistant turn — a reasoning region + an answer region. Re-renders only itself; the answer region is the one reparsed at end-of-stream. |
+| **`AssistantStreamThinkingBlock`** | A mounted widget for one thinking segment, keyed by normalized `block_id`; sealed by its repair end or a terminal sweep. |
+| **`AssistantStreamBlock`** | A mounted answer-only widget for one assistant iteration. Re-renders only itself; the answer surface is the one reparsed at end-of-stream. |
 | **`ToolExecutionBlock`** | A mounted widget for one live tool call — ⏺ headline + ⎿ result. |
 | **`TranscriptEntryDAO`** | The replay-time counterpart to `AgentStreamEventDAO` — one completed entry (`user`/`assistant`/`tool`) reconstructed from history. |
 | **`ReplayEntryProjector`** | Folds canonical history events into ordered `TranscriptEntryDAO`s for replay (renamed from the old history `TranscriptProjector`; also still renders `transcript.md`). |

@@ -56,7 +56,8 @@ PromptInput {
 }
 
 .turn-separator {
-    color: $text-muted;
+    color: $border-muted;
+    text-style: dim;
 }
 
 .user-line {
@@ -88,8 +89,4 @@ PromptInput {
     text-style: italic;
 }
 
-.thinking-spinner {
-    color: $accent;
-    text-style: italic;
-    padding: 0 1;
-}
+/* Spinner glyph/text styling lives in ThinkingSpinner.DEFAULT_CSS (72.a.5). */

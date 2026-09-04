@@ -22,6 +22,7 @@ from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
@@ -63,6 +64,46 @@ class TestMouseSelectionE2E:
     """End-to-end mouse-drag selection → clipboard proof."""
 
     @pytest.mark.asyncio
+    async def test_drag_across_answer_block_selects_answer_without_copy_label(self) -> None:
+        """A real drag across an answer block selects the answer text, never ``Copy`` (spec 72.a.3).
+
+        Before the copy-header deletion, a drag over an answer block captured
+        the selectable header control, so the word ``Copy`` contaminated the
+        selection rectangle. The flattened block's answer surface is
+        selectable through Textual's documented ``Widget.get_selection`` seam,
+        so the drag must land the raw answer text — and only that text — on
+        the shared clipboard funnel.
+        """
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            block: AssistantStreamBlock = await app.mount_assistant_block()
+            block.finalize(final_text="answer spans the block")
+            await pilot.pause(delay=0.1)
+
+            region = block.region
+            assert region.area > 0
+            start: tuple[int, int] = (region.x, region.y)
+            end: tuple[int, int] = (region.x + region.width - 1, region.y + region.height - 1)
+
+            await pilot.mouse_down(offset=start)
+            await pilot.mouse_up(offset=end)
+            await pilot.pause()
+
+            selection: Optional[str] = app.screen.get_selected_text()
+            assert selection is not None
+            assert "answer spans the block" in selection
+            assert "Copy" not in selection
+            assert app._clipboard == selection
+            captured_widgets = list(app.screen.selections)
+            assert captured_widgets, "drag should capture at least the answer surface"
+            for widget in captured_widgets:
+                assert widget is block or widget in block.query(
+                    "*"
+                ), "selection must stay on answer-block surfaces"
+
+    @pytest.mark.asyncio
     async def test_mouse_drag_selection_auto_copies_to_clipboard(self) -> None:
         """A raw Pilot mouse drag across a block auto-copies the span to clipboard."""
         app: SloTUI = SloTUI(session=_build_session())
@@ -96,27 +137,41 @@ class TestNoRegressionSweep:
 
     @pytest.mark.asyncio
     async def test_streaming_with_brackets_no_regression(self) -> None:
-        """Streamed reasoning/answer/tool text with ``[...]`` renders literally."""
+        """Streamed reasoning/answer/tool text with ``[...]`` renders literally.
+
+        Ownership is deliberately split: reasoning lands on an
+        ``AssistantStreamThinkingBlock``; answer text lands on an
+        ``AssistantStreamBlock``.
+        """
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             await app._render_event(
-                event=AgentStreamEventDAO(kind="thinking_delta", delta="type is list[str]", iteration=0)
+                event=AgentStreamEventDAO(
+                    kind="thinking_delta",
+                    delta="type is list[str]",
+                    iteration=0,
+                    block_id="thinking:0:0",
+                )
             )
             await app._render_event(
                 event=AgentStreamEventDAO(kind="text_delta", delta="range [a-z]+ ok", iteration=0)
             )
             await pilot.pause(delay=0.1)
 
-            block: Optional[AssistantStreamBlock] = None
+            thinking_block: Optional[AssistantStreamThinkingBlock] = None
+            answer_block: Optional[AssistantStreamBlock] = None
             assert app._transcript_content is not None
             for child in app._transcript_content.children:
+                if isinstance(child, AssistantStreamThinkingBlock):
+                    thinking_block = child
                 if isinstance(child, AssistantStreamBlock):
-                    block = child
-            assert block is not None
-            assert "list[str]" in block.thinking_text
-            assert "[a-z]+" in block.answer_text
+                    answer_block = child
+            assert thinking_block is not None
+            assert answer_block is not None
+            assert "list[str]" in thinking_block.thinking_text
+            assert "[a-z]+" in answer_block.answer_text
 
             tool: ToolExecutionBlock = await app.mount_tool_execution_block(
                 tool_call_id="call_1",

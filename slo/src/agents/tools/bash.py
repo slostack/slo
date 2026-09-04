@@ -31,14 +31,15 @@ __all__ = [
 ]
 
 
-_DEFAULT_BASH_TIMEOUT_SECONDS: float = 600.0
+_DEFAULT_BASH_TIMEOUT_SECONDS: float = 1800.0
 """Effective timeout applied when a bash call supplies no explicit timeout.
 
 A command issued with ``timeout=None`` that orphans a long-lived descendant
 would otherwise block until that descendant dies (potentially forever). This
-conservative ceiling caps that risk while staying well under the agent stream
-inactivity watchdog. Set ``SLO_BASH_DEFAULT_TIMEOUT_SECONDS=0`` to disable the
-ceiling and restore the run-forever behaviour.
+conservative ceiling caps that risk. The provider-stream idle watchdog does not
+constrain this value: it only times provider reads, never local tool execution.
+Set ``SLO_BASH_DEFAULT_TIMEOUT_SECONDS=0`` to disable the ceiling and restore
+the run-forever behaviour.
 """
 
 _DEFAULT_BASH_TEARDOWN_GRACE_SECONDS: float = 5.0

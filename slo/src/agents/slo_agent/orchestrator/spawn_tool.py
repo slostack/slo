@@ -372,7 +372,7 @@ When running headlessly, you are the sole oversight layer. After dispatching eac
 |---|---|---|---|
 | `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `10800` | `10800` | Orchestrator's own LLM stream inactivity guard. Keep it at or above the shipped default. |
 | `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `7200` | `7200` | Child sub-agent stdout inactivity guard. |
-| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1200` | `600` | Per-command bash tool ceiling inside sub-agents. |
+| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1800` | `1800` | Per-command bash tool ceiling inside sub-agents. |
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `4` | Maximum simultaneous child processes. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | `8` | Maximum tasks per `spawn_sub_agents` call. |
 """

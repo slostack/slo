@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
 import json
+import multiprocessing
+import queue
+from multiprocessing.synchronize import Event
 import stat
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
+from src.agents.slo_agent.orchestrator.dao import OrchestratorStatusDAO
+from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -70,6 +80,122 @@ def _build_handle(
     )
 
 
+def _build_status(
+    *,
+    state: str = "running",
+    updated_at: datetime | None = None,
+    workflow_id: str = "wf-3f2a",
+    orchestrator_session_id: str = "orch-session-1",
+) -> OrchestratorStatusDAO:
+    """Build one deterministic self-reported orchestrator status.
+
+    Args:
+        state (str, optional): Self-reported workflow state. Defaults to ``"running"``.
+        updated_at (datetime | None, optional): Evidence timestamp override.
+        workflow_id (str, optional): Workflow identity for evidence matching.
+        orchestrator_session_id (str, optional): Orchestrator identity for matching.
+
+    Returns:
+        OrchestratorStatusDAO: Status evidence for the fixture orchestrator.
+    """
+    return OrchestratorStatusDAO(
+        workflow_id=workflow_id,
+        orchestrator_session_id=orchestrator_session_id,
+        pid=4242,
+        state=state,  # type: ignore[arg-type]
+        updated_at=(updated_at or datetime.now(timezone.utc)).isoformat(),
+    )
+
+
+def _write_status(*, tmp_path: Path, status: OrchestratorStatusDAO) -> None:
+    """Persist status evidence where reconcile resolves it.
+
+    Args:
+        tmp_path (Path): Pytest temporary directory.
+        status (OrchestratorStatusDAO): Self-reported evidence to persist.
+    """
+    AtomicFileWriter.write_json(
+        path=OrchestrationLayout.orchestrator_status_path(
+            history_root=tmp_path / "history",
+            orchestrator_session_id=status.orchestrator_session_id,
+        ),
+        model=status,
+    )
+
+
+def _update_state_in_child(*, history_root: str, result_queue: multiprocessing.Queue[str]) -> None:
+    """Attempt one handle transition from a separate operating-system process.
+
+    Args:
+        history_root (str): String form of the temporary history root.
+        result_queue (multiprocessing.Queue[str]): IPC queue for the result state.
+    """
+    child_store: WorkflowHandleStore = WorkflowHandleStore(
+        history_root=Path(history_root),
+        pid_alive=lambda pid: True,
+    )
+    updated: WorkflowHandleDAO = asyncio.run(
+        child_store.update_state(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-3f2a",
+            state="running",
+        )
+    )
+    result_queue.put(updated.state)
+
+
+def _reconcile_in_child(
+    *,
+    history_root: str,
+    ready_queue: multiprocessing.Queue[str],
+    start_event: Event,
+    result_queue: multiprocessing.Queue[str],
+    lock_attempt_queue: multiprocessing.Queue[str] | None = None,
+) -> None:
+    """Reconcile matching terminal evidence from a separate operating-system process.
+
+    WHAT: Waits for a shared start signal, then reconciles one durable workflow
+        handle using a store constructed in this child process.
+    WHO: Called by the concurrent correction regression test.
+    WHEN: Whenever correction locking or evidence reconciliation changes.
+
+    Args:
+        history_root (str): Temporary durable-history root.
+        ready_queue (multiprocessing.Queue[str]): Signals child readiness.
+        start_event (Event): Releases both child reconciliations together.
+        result_queue (multiprocessing.Queue[str]): Receives the reconciled state.
+        lock_attempt_queue (multiprocessing.Queue[str] | None): Optional signal
+            emitted at the real ``flock(LOCK_EX)`` call boundary.
+    """
+    child_store: WorkflowHandleStore = WorkflowHandleStore(
+        history_root=Path(history_root),
+        pid_alive=lambda pid: False,
+    )
+    ready_queue.put("ready")
+    start_event.wait(timeout=2)
+
+    if lock_attempt_queue is None:
+        reconciled: list[WorkflowHandleDAO] = asyncio.run(
+            child_store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+        )
+    else:
+        original_flock = fcntl.flock
+
+        def signal_lock_attempt(lock_file: object, operation: int) -> object:
+            """Signal immediately before the correction path invokes ``flock``."""
+            if operation == fcntl.LOCK_EX:
+                lock_attempt_queue.put("attempt")
+            return original_flock(lock_file, operation)
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.workflow_registry.fcntl.flock",
+            side_effect=signal_lock_attempt,
+        ):
+            reconciled = asyncio.run(child_store.reconcile(owner_session_id=_OWNER_SESSION_ID))
+
+    result_queue.put(reconciled[0].state)
+
+
 async def _seed_handle(
     *,
     store: WorkflowHandleStore,
@@ -85,6 +211,40 @@ async def _seed_handle(
         Path: Persisted handle path.
     """
     return await store.write(handle=handle)
+
+
+class TestDefaultPidAlive:
+    """``WorkflowHandleStore`` delegates PID liveness to ``ProcessProbe``."""
+
+    def test_default_pid_alive_returns_false_for_missing_pid(self) -> None:
+        """A missing-process probe result remains false through the store seam."""
+        with patch(
+            "src.agents.slo_agent.orchestrator.workflow_registry.ProcessProbe.is_alive",
+            return_value=False,
+        ) as probe:
+            assert WorkflowHandleStore._default_pid_alive(pid=1234) is False
+
+        probe.assert_called_once_with(pid=1234)
+
+    def test_default_pid_alive_returns_true_for_eprem(self) -> None:
+        """A permission-denied probe result remains true through the store seam."""
+        with patch(
+            "src.agents.slo_agent.orchestrator.workflow_registry.ProcessProbe.is_alive",
+            return_value=True,
+        ) as probe:
+            assert WorkflowHandleStore._default_pid_alive(pid=1234) is True
+
+        probe.assert_called_once_with(pid=1234)
+
+    def test_default_pid_alive_returns_true_for_other_oserror(self) -> None:
+        """An indeterminate OS-error probe result remains true through the store seam."""
+        with patch(
+            "src.agents.slo_agent.orchestrator.workflow_registry.ProcessProbe.is_alive",
+            return_value=True,
+        ) as probe:
+            assert WorkflowHandleStore._default_pid_alive(pid=1234) is True
+
+        probe.assert_called_once_with(pid=1234)
 
 
 class TestWriteAndRead:
@@ -276,7 +436,7 @@ class TestUpdateState:
             ("running", "launching"),
         ],
     )
-    async def test_update_state_rejects_illegal_transition(
+    async def test_update_state_rejects_correction_edges(
         self,
         tmp_path: Path,
         current: str,
@@ -318,10 +478,246 @@ class TestUpdateState:
             )
 
 
-class TestReconcile:
-    """reconcile() pid-liveness state repair."""
+class TestEvidenceCorrection:
+    """correct_from_evidence() correction-edge behavior."""
 
-    async def test_reconcile_marks_dead_pid_running_stalled(self, tmp_path: Path) -> None:
+    async def test_correct_from_evidence_rejects_mismatched_evidence(self, tmp_path: Path) -> None:
+        """Terminal corrections reject evidence whose state differs from the target."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _seed_handle(store=store, handle=_build_handle(state="stalled"))
+
+        with pytest.raises(WorkflowStateTransitionError):
+            await store.correct_from_evidence(
+                owner_session_id=_OWNER_SESSION_ID,
+                workflow_id="wf-3f2a",
+                state="completed",
+                evidence=_build_status(state="failed"),
+            )
+
+    async def test_correct_from_evidence_noops_when_already_in_state(self, tmp_path: Path) -> None:
+        """An evidence correction leaves an already-agreeing handle unchanged."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _seed_handle(store=store, handle=_build_handle(state="completed"))
+
+        corrected: WorkflowHandleDAO = await store.correct_from_evidence(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-3f2a",
+            state="completed",
+            evidence=_build_status(state="completed"),
+        )
+
+        assert corrected.state == "completed"
+
+    @pytest.mark.parametrize(
+        ("workflow_id", "orchestrator_session_id"),
+        [
+            ("wf-other", "orch-session-1"),
+            ("wf-3f2a", "orch-session-other"),
+        ],
+    )
+    async def test_correct_from_evidence_rejects_foreign_identity(
+        self,
+        tmp_path: Path,
+        workflow_id: str,
+        orchestrator_session_id: str,
+    ) -> None:
+        """Evidence for another workflow or orchestrator cannot correct this handle.
+
+        WHAT: Rejects identity-mismatched durable evidence before it reaches a
+            correction-only workflow transition.
+        WHO: The evidence-backed reconcile regression suite.
+        WHEN: Whenever the status admission rule changes.
+        """
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _seed_handle(store=store, handle=_build_handle(state="stalled"))
+        evidence: OrchestratorStatusDAO = _build_status(
+            state="completed",
+            workflow_id=workflow_id,
+            orchestrator_session_id=orchestrator_session_id,
+        )
+
+        with pytest.raises(WorkflowStateTransitionError, match="does not identify"):
+            await store.correct_from_evidence(
+                owner_session_id=_OWNER_SESSION_ID,
+                workflow_id="wf-3f2a",
+                state="completed",
+                evidence=evidence,
+            )
+
+
+class TestReconcile:
+    """reconcile() evidence ladder and legacy PID fallback."""
+
+    async def test_reconcile_corrects_to_completed_from_terminal_evidence(self, tmp_path: Path) -> None:
+        """Terminal self-report corrects a running handle before probing its pid."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="running"))
+        _write_status(tmp_path=tmp_path, status=_build_status(state="completed"))
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "completed"
+
+    @pytest.mark.parametrize(
+        ("workflow_id", "orchestrator_session_id"),
+        [
+            ("wf-other", "orch-session-1"),
+            ("wf-3f2a", "orch-session-other"),
+        ],
+    )
+    async def test_reconcile_ignores_foreign_status_identity(
+        self,
+        tmp_path: Path,
+        workflow_id: str,
+        orchestrator_session_id: str,
+    ) -> None:
+        """Foreign status evidence falls through to legacy dead-PID reconciliation.
+
+        WHAT: Writes a foreign payload at the expected status path and proves
+            identity validation prevents it from keeping or completing this handle.
+        WHO: The evidence-backed reconcile regression suite.
+        WHEN: Whenever durable status evidence is admitted.
+        """
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="running"))
+        foreign_status: OrchestratorStatusDAO = _build_status(
+            state="completed",
+            workflow_id=workflow_id,
+            orchestrator_session_id=orchestrator_session_id,
+        )
+        AtomicFileWriter.write_json(
+            path=OrchestrationLayout.orchestrator_status_path(
+                history_root=tmp_path / "history",
+                orchestrator_session_id="orch-session-1",
+            ),
+            model=foreign_status,
+        )
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "stalled"
+
+    async def test_reconcile_corrects_stalled_to_completed(self, tmp_path: Path) -> None:
+        """Terminal self-report repairs a premature stalled label."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="stalled"))
+        _write_status(tmp_path=tmp_path, status=_build_status(state="completed"))
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "completed"
+
+    async def test_reconcile_corrects_launching_to_completed(self, tmp_path: Path) -> None:
+        """Terminal self-report repairs a fast workflow before its start note arrives."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="launching"))
+        _write_status(tmp_path=tmp_path, status=_build_status(state="completed"))
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "completed"
+
+    async def test_reconcile_corrects_launching_to_aborted(self, tmp_path: Path) -> None:
+        """Terminal abort evidence repairs a workflow before its start note is claimed."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="launching"))
+        _write_status(tmp_path=tmp_path, status=_build_status(state="aborted"))
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "aborted"
+
+    async def test_reconcile_keeps_running_on_fresh_evidence_despite_dead_pid(self, tmp_path: Path) -> None:
+        """Fresh running evidence takes precedence over a false dead-pid probe."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="running"))
+        _write_status(tmp_path=tmp_path, status=_build_status())
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "running"
+
+    async def test_reconcile_advances_launching_on_fresh_evidence(self, tmp_path: Path) -> None:
+        """Fresh running evidence proves a launching orchestrator has started."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="launching"))
+        _write_status(tmp_path=tmp_path, status=_build_status())
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "running"
+
+    async def test_reconcile_repairs_stalled_to_running_on_fresh_evidence(self, tmp_path: Path) -> None:
+        """Fresh heartbeat evidence repairs a stalled handle after resume."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="stalled"))
+        _write_status(tmp_path=tmp_path, status=_build_status())
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "running"
+
+    async def test_reconcile_repairs_failed_to_running_on_fresh_evidence(self, tmp_path: Path) -> None:
+        """Fresh heartbeat evidence repairs a failed handle after resume."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="failed"))
+        _write_status(tmp_path=tmp_path, status=_build_status())
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "running"
+
+    async def test_reconcile_stalls_on_stale_evidence_and_dead_pid(self, tmp_path: Path) -> None:
+        """Stale heartbeat evidence falls through to the dead-pid stall path."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="running"))
+        _write_status(
+            tmp_path=tmp_path,
+            status=_build_status(updated_at=datetime(2020, 1, 1, tzinfo=timezone.utc)),
+        )
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "stalled"
+
+    async def test_reconcile_falls_back_to_pid_on_corrupt_status(self, tmp_path: Path) -> None:
+        """Unreadable status evidence falls back to the legacy dead-pid result."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="running"))
+        status_path: Path = OrchestrationLayout.orchestrator_status_path(
+            history_root=tmp_path / "history",
+            orchestrator_session_id="orch-session-1",
+        )
+        status_path.parent.mkdir(parents=True)
+        status_path.write_text("{corrupt", encoding="utf-8")
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "stalled"
+
+    async def test_reconcile_falls_back_to_pid_when_status_timestamp_is_invalid(self, tmp_path: Path) -> None:
+        """Parseable status JSON with an invalid timestamp is not liveness evidence."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="running"))
+        invalid_timestamp_status: OrchestratorStatusDAO = _build_status().model_copy(
+            update={"updated_at": "not-a-date"},
+        )
+        _write_status(tmp_path=tmp_path, status=invalid_timestamp_status)
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "stalled"
+
+    async def test_reconcile_leaves_stalled_stalled_without_new_evidence(self, tmp_path: Path) -> None:
+        """A stalled handle remains stalled when no new durable evidence exists."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="stalled"))
+
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "stalled"
+
+    async def test_reconcile_legacy_pid_fallback_without_status_file(self, tmp_path: Path) -> None:
         """A dead-pid running handle flips to stalled."""
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
         await _seed_handle(store=store, handle=_build_handle(state="running"))
@@ -380,27 +776,148 @@ class TestReconcile:
 
         assert reconciled[0].state == "launching"
 
-    async def test_reconcile_leaves_live_and_terminal_untouched(self, tmp_path: Path) -> None:
-        """Live-pid and terminal handles keep their states."""
+    async def test_reconcile_legacy_keeps_live_pid(self, tmp_path: Path) -> None:
+        """A live PID keeps a legacy running handle unchanged without status evidence."""
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=True)
-        await _seed_handle(store=store, handle=_build_handle(workflow_id="wf-live", state="running"))
-        await _seed_handle(
-            store=store,
-            handle=_build_handle(
-                workflow_id="wf-done",
-                state="completed",
-                started_at=datetime(2026, 7, 21, 12, 30, tzinfo=timezone.utc),
-            ),
-        )
+        await _seed_handle(store=store, handle=_build_handle(state="running"))
 
-        reconciled: list[WorkflowHandleDAO] = await store.reconcile(
+        reconciled: list[WorkflowHandleDAO] = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+
+        assert reconciled[0].state == "running"
+
+    async def test_concurrent_corrections_do_not_lose_updates(self, tmp_path: Path) -> None:
+        """Two independent reconciles serialize one terminal evidence correction.
+
+        WHAT: Releases two processes against the same stalled handle and proves
+            both reconcile calls and the durable projection end completed.
+        WHO: The evidence-backed reconciliation regression suite.
+        WHEN: The correction writer or its flock scope changes.
+
+        Args:
+            tmp_path (Path): Temporary durable-history root supplied by pytest.
+        """
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="stalled"))
+        _write_status(tmp_path=tmp_path, status=_build_status(state="completed"))
+        process_context: multiprocessing.context.BaseContext = multiprocessing.get_context("fork")
+        ready_queue: multiprocessing.Queue[str] = process_context.Queue()
+        result_queue: multiprocessing.Queue[str] = process_context.Queue()
+        start_event: Event = process_context.Event()
+        processes: list[multiprocessing.Process] = [
+            process_context.Process(
+                target=_reconcile_in_child,
+                kwargs={
+                    "history_root": str(tmp_path / "history"),
+                    "ready_queue": ready_queue,
+                    "start_event": start_event,
+                    "result_queue": result_queue,
+                },
+            )
+            for _ in range(2)
+        ]
+
+        for process in processes:
+            process.start()
+
+        assert [ready_queue.get(timeout=2), ready_queue.get(timeout=2)] == ["ready", "ready"]
+        start_event.set()
+        assert sorted([result_queue.get(timeout=2), result_queue.get(timeout=2)]) == [
+            "completed",
+            "completed",
+        ]
+
+        for process in processes:
+            process.join(timeout=2)
+            assert process.exitcode == 0
+
+        persisted: WorkflowHandleDAO | None = await store.read(
             owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-3f2a",
         )
 
-        assert {handle.workflow_id: handle.state for handle in reconciled} == {
-            "wf-live": "running",
-            "wf-done": "completed",
-        }
+        assert persisted is not None
+        assert persisted.state == "completed"
+
+    async def test_reconcile_waits_for_cross_process_handle_lock(self, tmp_path: Path) -> None:
+        """Terminal evidence correction waits for its handle flock before writing.
+
+        WHAT: Holds the stalled handle's sibling lock while a child process starts
+            a matching terminal-evidence reconciliation.
+        WHO: The correction-writer concurrency regression suite.
+        WHEN: The correction lock scope or reconcile write path changes.
+
+        Args:
+            tmp_path (Path): Temporary durable-history root supplied by pytest.
+        """
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _seed_handle(store=store, handle=_build_handle(state="stalled"))
+        _write_status(tmp_path=tmp_path, status=_build_status(state="completed"))
+        handle_path: Path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / "wf-3f2a.json"
+        lock_path: Path = handle_path.with_suffix(handle_path.suffix + ".lock")
+        process_context: multiprocessing.context.BaseContext = multiprocessing.get_context("fork")
+        ready_queue: multiprocessing.Queue[str] = process_context.Queue()
+        result_queue: multiprocessing.Queue[str] = process_context.Queue()
+        lock_attempt_queue: multiprocessing.Queue[str] = process_context.Queue()
+        start_event: Event = process_context.Event()
+
+        with lock_path.open("w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            process: multiprocessing.Process = process_context.Process(
+                target=_reconcile_in_child,
+                kwargs={
+                    "history_root": str(tmp_path / "history"),
+                    "ready_queue": ready_queue,
+                    "start_event": start_event,
+                    "result_queue": result_queue,
+                    "lock_attempt_queue": lock_attempt_queue,
+                },
+            )
+            process.start()
+            assert ready_queue.get(timeout=2) == "ready"
+            start_event.set()
+            assert lock_attempt_queue.get(timeout=2) == "attempt"
+            time.sleep(0.1)
+            with pytest.raises(queue.Empty):
+                result_queue.get_nowait()
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+        assert result_queue.get(timeout=2) == "completed"
+        process.join(timeout=2)
+        assert process.exitcode == 0
+        persisted: WorkflowHandleDAO | None = await store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-3f2a",
+        )
+        assert persisted is not None
+        assert persisted.state == "completed"
+
+    async def test_update_state_waits_for_cross_process_handle_lock(self, tmp_path: Path) -> None:
+        """A second process cannot mutate a handle until its sibling flock is released."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _seed_handle(store=store, handle=_build_handle(state="launching"))
+        handle_path: Path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / "wf-3f2a.json"
+        lock_path: Path = handle_path.with_suffix(handle_path.suffix + ".lock")
+        process_context: multiprocessing.context.BaseContext = multiprocessing.get_context("fork")
+        result_queue: multiprocessing.Queue[str] = process_context.Queue()
+
+        with lock_path.open("w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            process: multiprocessing.Process = process_context.Process(
+                target=_update_state_in_child,
+                kwargs={
+                    "history_root": str(tmp_path / "history"),
+                    "result_queue": result_queue,
+                },
+            )
+            process.start()
+            time.sleep(0.1)
+            with pytest.raises(queue.Empty):
+                result_queue.get_nowait()
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+        assert result_queue.get(timeout=2) == "running"
+        process.join(timeout=2)
+        assert process.exitcode == 0
 
 
 class TestAtomicWrite:
@@ -423,7 +940,10 @@ class TestAtomicWrite:
 
         path: Path = await _seed_handle(store=store, handle=_build_handle())
 
-        assert sorted(entry.name for entry in path.parent.iterdir()) == ["wf-3f2a.json"]
+        assert sorted(entry.name for entry in path.parent.iterdir()) == [
+            "wf-3f2a.json",
+            "wf-3f2a.json.lock",
+        ]
 
 
 class TestWorkflowStatusTool:

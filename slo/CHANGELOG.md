@@ -1,5 +1,55 @@
 # Changelog
 
+## [Unreleased]
+
+
+## [0.16.0] — 2026-09-04
+
+**Resilient detached workflows and evolved TUI experience.**
+
+### Added
+
+- **Durable detached-workflow supervision (spec 71).** Orchestrator, fleet,
+  abort-request, and child terminal-status records are now persisted atomically.
+  The TUI can reconcile lifecycle state, show fleet and cleanup diagnostics, and
+  resume stalled or failed workflows in place with `/workflows resume <workflow-id>`.
+- Advisory headless heartbeat telemetry, watchdog diagnostics, incremental
+  visualizer capture tails, process liveness probing, and safe relaunch support.
+- TUI transcript improvements: dedicated thinking blocks, one-deep queued prompts,
+  terminal-native selection/copy surfaces, clearer tool-state styling, and improved
+  visualizer/transcript streaming.
+
+### Fixed
+
+- **Headless workflow supervision (spec 71).** Detached workflows now use
+  durable orchestrator, fleet, abort-request, and child-status evidence rather
+  than a stale-heartbeat kill window. Child stdout inactivity is the only
+  cancellation authority; advisory heartbeat liveness is surfaced as healthy,
+  degraded, or silent and cleanup reaps every child.
+
+### Added
+
+- **`/workflows resume <workflow-id>`.** Relaunches stalled or failed detached
+  workflows against their original orchestrator session history, appending the
+  existing captures and returning the durable handle to `launching` until its
+  next fresh self-report confirms `running`.
+
+### Removed
+
+- The retired stale-heartbeat multiplier configuration; operators no longer
+  tune a second child-cancellation clock.
+
+### Changed
+
+- Child stdout inactivity remains the sole cancellation authority; heartbeat
+  evidence is advisory (`healthy`, `degraded`, or `silent`) rather than a second
+  kill clock.
+- Cleanup now reaps confirmed children and protects against PID reuse and stale
+  cross-process state.
+- Expanded timeout, reconciliation, cleanup, relaunch, visualizer, TUI, and
+  provider-policy regression coverage, together with headless-operation docs.
+
+
 ## [0.15.5] — 2026-08-31
 
 **Provider stream-disconnection recovery.**

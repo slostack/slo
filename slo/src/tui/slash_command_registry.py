@@ -184,11 +184,11 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
     ),
     SlashCommandSpecDAO(
         name="workflows",
-        description="list detached workflows; abort <id>; dismiss <id>",
+        description="list detached workflows; abort <id>; dismiss <id>; resume <id>",
         aliases=["wf"],
         argument_mode="enumerated",
-        usage="/workflows [abort <workflow-id> | dismiss <workflow-id>]",
-        argument_hint="abort <id> | dismiss <id>",
+        usage="/workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]",
+        argument_hint="abort <id> | dismiss <id> | resume <id>",
         display_order=75,
     ),
     SlashCommandSpecDAO(

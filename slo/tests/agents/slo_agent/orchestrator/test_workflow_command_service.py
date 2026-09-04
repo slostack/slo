@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import os
 import signal
 from pathlib import Path
 from typing import Callable, Optional
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, SubAgentStatusDAO
+from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
+from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowCommandService,
     WorkflowHandleDAO,
     WorkflowHandleStore,
     WorkflowState,
+    WorkflowStateTransitionError,
 )
 
 _OWNER_SESSION_ID: str = "session-1234"
@@ -31,7 +37,7 @@ class _KillRecorder:
         self.calls: list[tuple[int, int]] = []
         self._raise_process_lookup: bool = raise_process_lookup
 
-    def __call__(self, pid: int, signal_number: int) -> None:
+    def __call__(self, *, pid: int, signal_number: int) -> None:
         """Record one delivery attempt.
 
         Args:
@@ -50,7 +56,7 @@ class _ScheduleRecorder:
         """Seed the empty capture list."""
         self.scheduled: list[tuple[float, Callable[[], None]]] = []
 
-    def __call__(self, delay_seconds: float, callback: Callable[[], None]) -> None:
+    def __call__(self, *, delay_seconds: float, callback: Callable[[], None]) -> None:
         """Capture one delayed callback.
 
         Args:
@@ -150,10 +156,72 @@ class TestListText:
         rows: list[str] = listing.splitlines()
         assert len(rows) == 2
         started: str = first.started_at.strftime("%H:%M")
-        assert rows[0] == (
-            f"wf-1  running  orch 9c41aaaa  started {started}  (abort: /workflows abort wf-1)"
-        )
+        assert rows[0] == (f"wf-1  running  orch 9c41aaaa  started {started}  (abort: /workflows abort wf-1)")
         assert rows[1].startswith("wf-2  completed  orch 9c41aaaa  started ")
+
+    @pytest.mark.asyncio
+    async def test_format_row_shows_live_and_degraded_for_running(self, tmp_path: Path) -> None:
+        """Running rows use fleet truth for live and degraded child counts."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=True)
+        handle: WorkflowHandleDAO = await _write_handle(store=store)
+        FleetStore(
+            history_root=tmp_path / "history",
+            orchestrator_session_id=handle.orchestrator_session_id,
+        ).persist(
+            entries=[SubAgentStatusDAO(task_id="t1", session_id="s1", status="running", pid=os.getpid())]
+        )
+        service: WorkflowCommandService = _build_service(store=store)
+
+        assert "· 1 live · 1 degraded" in service._format_row(handle=handle)
+
+    @pytest.mark.asyncio
+    async def test_format_row_shows_cleanup_summary_when_drained(self, tmp_path: Path) -> None:
+        """A drained terminal fleet appends its cleanup summary to the row."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="completed")
+        FleetStore(
+            history_root=tmp_path / "history",
+            orchestrator_session_id=handle.orchestrator_session_id,
+        ).persist(
+            entries=[
+                SubAgentStatusDAO(
+                    task_id="t1",
+                    session_id="s1",
+                    status="completed",
+                    terminal_reason="completed",
+                )
+            ]
+        )
+        service: WorkflowCommandService = _build_service(store=store)
+
+        assert "fleet: 1 completed · 0 live" in service._format_row(handle=handle)
+
+    @pytest.mark.asyncio
+    async def test_format_row_warns_when_terminal_with_live_children(self, tmp_path: Path) -> None:
+        """A terminal workflow with a live child remains visibly abortable."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="completed")
+        FleetStore(
+            history_root=tmp_path / "history",
+            orchestrator_session_id=handle.orchestrator_session_id,
+        ).persist(
+            entries=[SubAgentStatusDAO(task_id="t1", session_id="s1", status="running", pid=os.getpid())]
+        )
+        service: WorkflowCommandService = _build_service(store=store)
+
+        row: str = service._format_row(handle=handle)
+
+        assert "⚠ 1 live children" in row
+        assert "/workflows abort wf-1" in row
+
+    @pytest.mark.asyncio
+    async def test_format_row_unchanged_without_snapshot(self, tmp_path: Path) -> None:
+        """Rows retain their legacy text when the fleet file does not exist."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        handle: WorkflowHandleDAO = await _write_handle(store=store)
+        service: WorkflowCommandService = _build_service(store=store)
+
+        assert service._format_row(handle=handle) == service._base_row(handle=handle)
 
     @pytest.mark.asyncio
     async def test_list_text_reports_no_workflows(self, tmp_path: Path) -> None:
@@ -175,8 +243,159 @@ class TestListText:
         assert "(dismiss: /workflows dismiss wf-1)" in listing
 
 
+class TestTerminalFleetSweep:
+    """Terminal workflow listings reap survivors only after owner death."""
+
+    async def test_sweep_skips_when_orchestrator_alive(self, tmp_path: Path, monkeypatch) -> None:
+        """A live terminal owner remains the only permitted fleet writer."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="completed", pid=4242)
+        snapshot: FleetSnapshotDAO = FleetSnapshotDAO(
+            orchestrator_session_id=handle.orchestrator_session_id,
+            entries=[SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)],
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+        service: WorkflowCommandService = _build_service(store=store, pid_alive=True)
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.ProcessProbe.is_alive", lambda *, pid: True
+        )
+
+        remaining: int = await service._sweep_terminal_fleet(handle=handle, snapshot=snapshot)
+
+        assert remaining == 1
+
+    async def test_sweep_reaps_and_persists_fleet_corrections(self, tmp_path: Path, monkeypatch) -> None:
+        """A dead owner permits a verified child reap and durable sweep correction."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="completed", pid=4242)
+        fleet_store: FleetStore = FleetStore(
+            history_root=tmp_path / "history", orchestrator_session_id=handle.orchestrator_session_id
+        )
+        fleet_store.persist(
+            entries=[SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)]
+        )
+        snapshot = fleet_store.load()
+        assert snapshot is not None
+        service: WorkflowCommandService = _build_service(store=store, pid_alive=False)
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.ProcessProbe.is_alive", lambda *, pid: True
+        )
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.child_identity_outcome",
+            lambda *, pid, session_id: "matching",
+        )
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.reap",
+            pytest.importorskip("unittest.mock").AsyncMock(return_value="graceful"),
+        )
+
+        remaining: int = await service._sweep_terminal_fleet(handle=handle, snapshot=snapshot)
+
+        persisted = fleet_store.load()
+        assert remaining == 0
+        assert persisted is not None
+        assert persisted.entries[0].terminal_reason == "reaped_orphan"
+        assert persisted.entries[0].terminated_by == "sweep"
+
+    async def test_sweep_records_recycled_pid_without_signaling(self, tmp_path: Path, monkeypatch) -> None:
+        """A foreign argv is accounted for as failed without touching that pid."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="completed", pid=4242)
+        snapshot: FleetSnapshotDAO = FleetSnapshotDAO(
+            orchestrator_session_id=handle.orchestrator_session_id,
+            entries=[SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)],
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+        service: WorkflowCommandService = _build_service(store=store, pid_alive=False)
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.child_identity_outcome",
+            lambda *, pid, session_id: "recycled_pid",
+        )
+        reap = pytest.importorskip("unittest.mock").AsyncMock()
+        monkeypatch.setattr("src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.reap", reap)
+
+        remaining: int = await service._sweep_terminal_fleet(handle=handle, snapshot=snapshot)
+
+        assert remaining == 0
+        reap.assert_not_awaited()
+        persisted: FleetSnapshotDAO | None = FleetStore.load_snapshot(
+            path=OrchestrationLayout.fleet_path(
+                history_root=tmp_path / "history",
+                orchestrator_session_id=handle.orchestrator_session_id,
+            )
+        )
+        assert persisted is not None
+        assert persisted.entries[0].status == "failed"
+        assert persisted.entries[0].terminated_by == "sweep"
+
+    async def test_list_text_shows_zero_live_after_sweep(self, tmp_path: Path, monkeypatch) -> None:
+        """A successful terminal sweep renders durable zero-live cleanup accounting."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="completed", pid=4242)
+        FleetStore(
+            history_root=tmp_path / "history", orchestrator_session_id=handle.orchestrator_session_id
+        ).persist(entries=[SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)])
+        service: WorkflowCommandService = _build_service(store=store, pid_alive=False)
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.ProcessProbe.is_alive", lambda *, pid: True
+        )
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.child_identity_outcome",
+            lambda *, pid, session_id: "matching",
+        )
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.reap",
+            pytest.importorskip("unittest.mock").AsyncMock(return_value="killed"),
+        )
+
+        listing: str = await service.list_text()
+
+        assert "0 live" in listing
+        assert "⚠" not in listing
+
+
 class TestAbort:
     """``/workflows abort <id>``."""
+
+    @pytest.mark.asyncio
+    async def test_abort_writes_durable_abort_request(self, tmp_path: Path) -> None:
+        """Abort persists its watchdog order before signalling the process group."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        handle: WorkflowHandleDAO = await _write_handle(store=store)
+        service: WorkflowCommandService = _build_service(store=store)
+
+        await service.abort(workflow_id=handle.workflow_id)
+
+        assert OrchestrationLayout.abort_request_path(
+            history_root=tmp_path / "history",
+            orchestrator_session_id=handle.orchestrator_session_id,
+        ).exists()
+
+    @pytest.mark.asyncio
+    async def test_abort_request_write_failure_returns_safe_failure_without_signal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unavailable durable abort channel prevents signal-only cancellation."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, pid=4242)
+        kill: _KillRecorder = _KillRecorder()
+        service: WorkflowCommandService = _build_service(store=store, kill=kill)
+
+        def _raise_write(*, path: Path, text: str, private: bool = True) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.AtomicFileWriter.write_text",
+            _raise_write,
+        )
+
+        result: str = await service.abort(workflow_id="wf-1")
+
+        assert "could not record" in result.lower()
+        assert kill.calls == []
+        handle = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-1")
+        assert handle is not None
+        assert handle.state == "running"
 
     @pytest.mark.asyncio
     async def test_abort_sends_sigterm_to_process_group(self, tmp_path: Path) -> None:
@@ -294,6 +513,38 @@ class TestAbort:
         assert refusal == "no live workflow wf-1 (state completed)"
         assert kill.calls == []
 
+    @pytest.mark.asyncio
+    async def test_abort_terminal_handle_sweeps_verified_live_fleet_children(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Terminal abort uses the verified per-child sweep, never child killpg."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="completed")
+        fleet_store: FleetStore = FleetStore(
+            history_root=tmp_path / "history",
+            orchestrator_session_id=handle.orchestrator_session_id,
+        )
+        fleet_store.persist(
+            entries=[SubAgentStatusDAO(task_id="t1", session_id="s1", status="running", pid=4242)]
+        )
+        kill: _KillRecorder = _KillRecorder()
+        service: WorkflowCommandService = _build_service(store=store, kill=kill, pid_alive=False)
+        monkeypatch.setattr(
+            "src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.child_identity_outcome",
+            lambda *, pid, session_id: "matching",
+        )
+        reap = pytest.importorskip("unittest.mock").AsyncMock(return_value="graceful")
+        monkeypatch.setattr("src.agents.slo_agent.orchestrator.workflow_registry.FleetReaper.reap", reap)
+
+        confirmation: str = await service.abort(workflow_id=handle.workflow_id)
+        snapshot = fleet_store.load()
+
+        assert confirmation == "workflow wf-1 child cleanup completed"
+        assert kill.calls == []
+        assert snapshot is not None
+        assert snapshot.entries[0].terminal_reason == "reaped_orphan"
+        reap.assert_awaited_once_with(pid=4242)
+
 
 class TestDismiss:
     """``/workflows dismiss <id>``."""
@@ -329,6 +580,155 @@ class TestDismiss:
         service: WorkflowCommandService = _build_service(store=_build_store(tmp_path=tmp_path))
 
         assert await service.dismiss(workflow_id="wf-nope") == "no workflow wf-nope"
+
+
+class TestResume:
+    """``/workflows resume <id>``."""
+
+    @pytest.mark.asyncio
+    async def test_resume_reports_unknown_workflow(self, tmp_path: Path) -> None:
+        """An unknown workflow id returns a one-line error without spawning."""
+        service: WorkflowCommandService = _build_service(store=_build_store(tmp_path=tmp_path))
+
+        assert await service.resume(workflow_id="wf-nope") == "no workflow wf-nope"
+
+    @pytest.mark.asyncio
+    async def test_resume_refuses_running_workflow(self, tmp_path: Path) -> None:
+        """A live workflow cannot be relaunched before it reaches a dead state."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, state="running")
+        service: WorkflowCommandService = _build_service(store=store)
+
+        result: str = await service.resume(workflow_id="wf-1")
+
+        assert result == "workflow wf-1 is running — only stalled or failed workflows can be resumed"
+
+    @pytest.mark.asyncio
+    async def test_resume_refuses_stale_terminal_handle_with_fresh_running_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Fresh self-report evidence prevents a duplicate resumed orchestrator.
+
+        WHAT: Verifies resume reconciles a stale terminal projection before it
+            considers spawning a replacement process.
+        WHO: The workflow command service regression suite calls this test.
+        WHEN: Whenever resume admission or durable evidence handling changes.
+
+        Args:
+            tmp_path (Path): Test-scoped history root.
+        """
+        from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
+        from src.agents.slo_agent.orchestrator.dao import OrchestratorStatusDAO
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        handle: WorkflowHandleDAO = await _write_handle(store=store, state="stalled")
+        AtomicFileWriter.write_json(
+            path=OrchestrationLayout.orchestrator_status_path(
+                history_root=tmp_path / "history",
+                orchestrator_session_id=handle.orchestrator_session_id,
+            ),
+            model=OrchestratorStatusDAO(
+                workflow_id=handle.workflow_id,
+                orchestrator_session_id=handle.orchestrator_session_id,
+                pid=5678,
+                state="running",
+                updated_at="2999-01-01T00:00:00+00:00",
+            ),
+        )
+        service: WorkflowCommandService = _build_service(store=store)
+
+        with patch.object(WorkflowRelauncher, "invoke", new=AsyncMock()) as relaunch:
+            result: str = await service.resume(workflow_id="wf-1")
+
+        assert result == "workflow wf-1 is running — only stalled or failed workflows can be resumed"
+        relaunch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resume_reaps_process_when_relaunch_transition_loses_race(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected post-spawn transition sends the fresh group through shutdown.
+
+        WHAT: Verifies a concurrent durable-state change cannot leave a resumed
+            orchestrator process untracked.
+        WHO: The workflow command service regression suite calls this test.
+        WHEN: Whenever relaunch admission or transition failure handling changes.
+
+        Args:
+            tmp_path (Path): Test-scoped history root.
+            monkeypatch (pytest.MonkeyPatch): Pytest store-transition replacement fixture.
+        """
+        from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO, WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, state="failed")
+        kill: _KillRecorder = _KillRecorder()
+        schedule: _ScheduleRecorder = _ScheduleRecorder()
+        service: WorkflowCommandService = _build_service(store=store, kill=kill, schedule=schedule)
+        monkeypatch.setattr(
+            store,
+            "relaunch",
+            AsyncMock(side_effect=WorkflowStateTransitionError("workflow wf-1 is running")),
+        )
+
+        with patch.object(
+            WorkflowRelauncher,
+            "invoke",
+            new=AsyncMock(return_value=RelaunchOutcomeDAO(pid=5678)),
+        ):
+            result: str = await service.resume(workflow_id="wf-1")
+
+        assert result == "could not relaunch workflow wf-1: workflow wf-1 is running"
+        assert kill.calls == [(5678, signal.SIGTERM)]
+        assert len(schedule.scheduled) == 1
+
+    @pytest.mark.asyncio
+    async def test_resume_reports_spawn_failure_without_state_change(self, tmp_path: Path) -> None:
+        """A failed relaunch leaves the durable terminal handle unchanged."""
+        from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, state="stalled")
+        service: WorkflowCommandService = _build_service(store=store)
+        with patch(
+            "src.agents.slo_agent.orchestrator.relaunch.WorkflowRelauncher.invoke",
+            new=AsyncMock(return_value=RelaunchOutcomeDAO(error="workflow resume failed: unavailable")),
+        ):
+            result: str = await service.resume(workflow_id="wf-1")
+
+        handle: Optional[WorkflowHandleDAO] = await store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-1",
+        )
+        assert result == "workflow resume failed: unavailable"
+        assert handle is not None
+        assert handle.state == "stalled"
+
+    @pytest.mark.asyncio
+    async def test_resume_confirms_with_new_pid(self, tmp_path: Path) -> None:
+        """A successful relaunch moves the handle to launching and names its pid."""
+        from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        service: WorkflowCommandService = _build_service(store=store)
+        with patch(
+            "src.agents.slo_agent.orchestrator.relaunch.WorkflowRelauncher.invoke",
+            new=AsyncMock(return_value=RelaunchOutcomeDAO(pid=5678)),
+        ):
+            result: str = await service.resume(workflow_id="wf-1")
+
+        handle: Optional[WorkflowHandleDAO] = await store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-1",
+        )
+        assert result == (
+            "workflow wf-1 resumed (pid 5678); history replaying — state advances to running on the first heartbeat"
+        )
+        assert handle is not None
+        assert handle.state == "launching"
+        assert handle.pid == 5678
 
 
 class TestAbortPidSafety:

@@ -2273,9 +2273,11 @@ code:
 | `run_aborted` | 2 | Aborted by user/orchestrator |
 | `run_failed` | 1 | Unhandled error |
 
-History is **disabled by default** for headless runs — the orchestrator
-links children by session id, not by replaying their histories. Use
-`--enable-history` to opt in.
+History is **disabled by default** for direct headless runs. Use
+`--enable-history` to opt in. Pool-spawned sub-agents are the deliberate
+exception: the pool always passes its assigned `--session-id` and
+`--enable-history`, so each child's heartbeat, captures, history record, and
+future `--resume` reference use one stable identity.
 
 ### 9.2 Orchestrator Domain (`src/agents/slo_agent/orchestrator/`)
 

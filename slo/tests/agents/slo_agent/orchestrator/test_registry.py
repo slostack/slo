@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from src.agents.slo_agent.orchestrator.dao import SubAgentTaskDAO
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 
@@ -118,6 +120,34 @@ class TestProcessRegistryTransitions:
         assert entry is not None
         assert entry.status == "failed"
 
+    def test_mark_terminal_preserves_existing_operator_abort(self) -> None:
+        """A natural completion cannot overwrite durable operator-abort evidence."""
+        reg: ProcessRegistry = ProcessRegistry()
+        reg.register(task_id="t1", session_id="s1", task=_task())
+        reg.mark_terminal(
+            session_id="s1",
+            status="aborted",
+            answer="aborted by operator",
+            exit_code=2,
+            terminal_reason="operator_abort",
+            terminated_by="abort",
+        )
+
+        reg.mark_terminal(
+            session_id="s1",
+            status="failed",
+            answer="natural result arrived late",
+            exit_code=1,
+            terminal_reason="failed",
+            terminated_by="natural",
+        )
+
+        entry = reg.get(session_id="s1")
+        assert entry is not None
+        assert entry.status == "aborted"
+        assert entry.terminal_reason == "operator_abort"
+        assert entry.terminated_by == "abort"
+
     def test_unknown_session_id_is_a_noop_for_all_write_methods(self) -> None:
         """All write methods silently no-op for unregistered session ids."""
         reg: ProcessRegistry = ProcessRegistry()
@@ -132,6 +162,126 @@ class TestProcessRegistryTransitions:
         )
 
         assert reg.get(session_id="nonexistent") is None
+
+
+class TestProcessRegistryDurableTransitions:
+    """Registry durable projection and high-frequency write behavior."""
+
+    def test_register_persists_snapshot(self) -> None:
+        """Registering a child persists its pending fleet entry."""
+        store: MagicMock = MagicMock()
+        registry: ProcessRegistry = ProcessRegistry(fleet_store=store)
+
+        registry.register(task_id="t1", session_id="s1", task=_task())
+
+        store.persist.assert_called_once_with(entries=registry.snapshot())
+
+    def test_mark_running_records_pid_and_persists(self) -> None:
+        """Post-spawn running transition stores process identity durably."""
+        store: MagicMock = MagicMock()
+        registry: ProcessRegistry = ProcessRegistry(fleet_store=store)
+        registry.register(task_id="t1", session_id="s1", task=_task())
+        store.reset_mock()
+
+        registry.mark_running(session_id="s1", pid=1234, started_at=10.0)
+
+        entry = registry.get(session_id="s1")
+        assert entry is not None
+        assert entry.status == "running"
+        assert entry.pid == 1234
+        assert entry.started_at == 10.0
+        store.persist.assert_called_once_with(entries=registry.snapshot())
+
+    def test_record_heartbeat_does_not_persist(self) -> None:
+        """Heartbeat telemetry updates memory without a durable write."""
+        store: MagicMock = MagicMock()
+        registry: ProcessRegistry = ProcessRegistry(fleet_store=store)
+        registry.register(task_id="t1", session_id="s1", task=_task())
+        store.reset_mock()
+
+        registry.record_heartbeat(session_id="s1", phase="streaming", at_seconds=11.0)
+
+        entry = registry.get(session_id="s1")
+        assert entry is not None
+        assert entry.last_heartbeat_at == 11.0
+        assert entry.heartbeat_phase == "streaming"
+        store.persist.assert_not_called()
+
+    def test_record_stdout_does_not_persist(self) -> None:
+        """Stdout receipt updates memory without a durable write."""
+        store: MagicMock = MagicMock()
+        registry: ProcessRegistry = ProcessRegistry(fleet_store=store)
+        registry.register(task_id="t1", session_id="s1", task=_task())
+        store.reset_mock()
+
+        registry.record_stdout(session_id="s1", at_seconds=11.0)
+
+        entry = registry.get(session_id="s1")
+        assert entry is not None
+        assert entry.last_stdout_at == 11.0
+        store.persist.assert_not_called()
+
+    def test_mark_terminal_records_reason_and_persists(self) -> None:
+        """Terminal transitions persist exit and cleanup evidence."""
+        store: MagicMock = MagicMock()
+        registry: ProcessRegistry = ProcessRegistry(fleet_store=store)
+        registry.register(task_id="t1", session_id="s1", task=_task())
+        store.reset_mock()
+
+        registry.mark_terminal(
+            session_id="s1",
+            status="completed",
+            answer="done",
+            exit_code=0,
+            terminal_reason="completed",
+            terminated_by="natural",
+        )
+
+        entry = registry.get(session_id="s1")
+        assert entry is not None
+        assert entry.exit_code == 0
+        assert entry.terminal_reason == "completed"
+        assert entry.terminated_by == "natural"
+        store.persist.assert_called_once_with(entries=registry.snapshot())
+
+    def test_mark_running_noops_for_unknown_session(self) -> None:
+        """Unknown post-spawn transitions do not create a fleet entry."""
+        registry: ProcessRegistry = ProcessRegistry()
+
+        registry.mark_running(session_id="unknown", pid=1234, started_at=10.0)
+
+        assert registry.get(session_id="unknown") is None
+
+    def test_record_heartbeat_noops_for_unknown_session(self) -> None:
+        """Unknown heartbeat telemetry does not create a fleet entry."""
+        registry: ProcessRegistry = ProcessRegistry()
+
+        registry.record_heartbeat(session_id="unknown", phase="streaming", at_seconds=10.0)
+
+        assert registry.get(session_id="unknown") is None
+
+    def test_record_stdout_noops_for_unknown_session(self) -> None:
+        """Unknown stdout telemetry does not create a fleet entry."""
+        registry: ProcessRegistry = ProcessRegistry()
+
+        registry.record_stdout(session_id="unknown", at_seconds=10.0)
+
+        assert registry.get(session_id="unknown") is None
+
+    def test_mark_terminal_noops_for_unknown_session(self) -> None:
+        """Unknown terminal transitions do not create a fleet entry."""
+        registry: ProcessRegistry = ProcessRegistry()
+
+        registry.mark_terminal(
+            session_id="unknown",
+            status="failed",
+            answer="error",
+            exit_code=1,
+            terminal_reason="failed",
+            terminated_by="natural",
+        )
+
+        assert registry.get(session_id="unknown") is None
 
 
 class TestProcessRegistrySnapshot:

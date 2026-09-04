@@ -12,12 +12,14 @@ thinking/tool transcript entries from stdout.jsonl captures.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from config.cfg import VISUALIZER_REFRESH_SECONDS as _CFG_VISUALIZER_REFRESH_SECONDS
+from config.timeout_resolver import positive_float_env
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
     SessionHistoryMetadataDAO,
@@ -31,26 +33,34 @@ from src.agents.slo_agent.orchestrator.context_dao import (
     OrchestratorContextDAO,
     SpawnContextDAO,
 )
+from src.agents.slo_agent.orchestrator.dao import (
+    FleetSnapshotDAO,
+    SubAgentResultDAO,
+    SubAgentStatusDAO,
+    status_for_lifecycle_kind,
+)
+from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
+from src.agents.slo_agent.orchestrator.process import CHILD_INACTIVITY_TIMEOUT_SECONDS
+from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+from src.tui.jsonl_tail import JsonlTail
+from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.tui.tree_export_format import TreeExportFormat
 
 __all__ = [
     "HeadlessWorkflowVisualizerConfigDAO",
     "ChildSessionSummaryDAO",
+    "OrchestratorNodeDAO",
     "WorkflowDataDAO",
     "WorkflowVisualizerLoader",
 ]
 
 _DEFAULT_REFRESH_SECONDS: float = _CFG_VISUALIZER_REFRESH_SECONDS
-
-_TERMINAL_EVENT_KINDS: frozenset[str] = frozenset(
-    {"run_completed", "run_aborted", "run_failed"}
+_HEARTBEAT_SECONDS: float = positive_float_env(
+    primary_name="SLO_HEADLESS_HEARTBEAT_SECONDS",
+    default=15.0,
 )
 
-_TERMINAL_KIND_TO_STATUS: dict[str, str] = {
-    "sub_agent_completed": "completed",
-    "sub_agent_failed": "failed",
-    "sub_agent_aborted": "aborted",
-}
+_TERMINAL_EVENT_KINDS: frozenset[str] = frozenset({"run_completed", "run_aborted", "run_failed"})
 
 
 class HeadlessWorkflowVisualizerConfigDAO(BaseModel):
@@ -93,6 +103,35 @@ class ChildSessionSummaryDAO(BaseModel):
     has_stderr_capture: bool = False
     has_spawn_context: bool = False
     prompt_preview: str = ""
+    pid: Optional[int] = None
+    heartbeat_phase: Optional[str] = None
+    last_stdout_at: Optional[float] = None
+    liveness_state: Optional[str] = None
+    exit_code: Optional[int] = None
+    terminal_reason: Optional[str] = None
+    terminated_by: Optional[str] = None
+
+
+class OrchestratorNodeDAO(BaseModel):
+    """First-class visualizer entry for the headless orchestrator.
+
+    Attributes:
+        session_id (str): Orchestrator session identifier.
+        state (str): Self-reported workflow state, or ``unknown`` before 71.
+        phase (str): Latest self-reported heartbeat phase.
+        pid (Optional[int]): Self-reported operating-system process id.
+        updated_at (Optional[str]): Self-report timestamp.
+        has_stdout_capture (bool): Whether the session stdout capture exists.
+        has_stderr_capture (bool): Whether the session stderr capture exists.
+    """
+
+    session_id: str
+    state: str = "unknown"
+    phase: str = "awaiting_provider_stream"
+    pid: Optional[int] = None
+    updated_at: Optional[str] = None
+    has_stdout_capture: bool = False
+    has_stderr_capture: bool = False
 
 
 class WorkflowDataDAO(BaseModel):
@@ -120,6 +159,8 @@ class WorkflowDataDAO(BaseModel):
     children: list[ChildSessionSummaryDAO] = Field(default_factory=list)
     is_complete: bool = False
     orchestrator_context: Optional[OrchestratorContextDAO] = None
+    orchestrator: Optional[OrchestratorNodeDAO] = None
+    fleet_snapshot: Optional[FleetSnapshotDAO] = None
 
 
 class WorkflowVisualizerLoader:
@@ -144,9 +185,9 @@ class WorkflowVisualizerLoader:
                 ``None`` constructs a default store rooted at ``~/.slo``.
         """
         self._config: HeadlessWorkflowVisualizerConfigDAO = config
-        self._store: FilesystemSessionHistoryStore = (
-            store or FilesystemSessionHistoryStore()
-        )
+        self._store: FilesystemSessionHistoryStore = store or FilesystemSessionHistoryStore()
+        self._stdout_tails: dict[Path, JsonlTail] = {}
+        self._parent_session_id: Optional[str] = None
 
     async def load(self) -> WorkflowDataDAO:
         """Resolve the parent session and discover all child sessions.
@@ -158,8 +199,9 @@ class WorkflowVisualizerLoader:
             ValueError: When the session reference cannot be resolved.
         """
         parent_session_id: str = await self._resolve_parent_session_id()
-        parent_metadata: Optional[SessionHistoryMetadataDAO] = (
-            await self._load_parent_metadata(session_id=parent_session_id)
+        self._parent_session_id = parent_session_id
+        parent_metadata: Optional[SessionHistoryMetadataDAO] = await self._load_parent_metadata(
+            session_id=parent_session_id
         )
         parent_events: list[SessionHistoryEventDAO] = await self._load_parent_events(
             session_id=parent_session_id,
@@ -168,9 +210,13 @@ class WorkflowVisualizerLoader:
             parent_session_id=parent_session_id,
             parent_events=parent_events,
         )
+        fleet: Optional[FleetSnapshotDAO] = self._load_fleet_snapshot(
+            parent_session_id=parent_session_id,
+        )
+        children = [self._overlay_fleet(child=child, fleet=fleet) for child in children]
         is_complete: bool = self._detect_workflow_complete(events=parent_events)
-        orchestrator_context: Optional[OrchestratorContextDAO] = (
-            self.load_orchestrator_context(parent_session_id=parent_session_id)
+        orchestrator_context: Optional[OrchestratorContextDAO] = self.load_orchestrator_context(
+            parent_session_id=parent_session_id
         )
         return WorkflowDataDAO(
             parent_session_id=parent_session_id,
@@ -179,6 +225,8 @@ class WorkflowVisualizerLoader:
             children=children,
             is_complete=is_complete,
             orchestrator_context=orchestrator_context,
+            orchestrator=self._build_orchestrator_node(parent_session_id=parent_session_id),
+            fleet_snapshot=fleet,
         )
 
     def load_orchestrator_context(
@@ -198,15 +246,11 @@ class WorkflowVisualizerLoader:
             Optional[OrchestratorContextDAO]: Parsed DAO, or ``None`` when the
                 file does not exist or cannot be parsed.
         """
-        path: Path = (
-            self._store.root / parent_session_id / "orchestrator_context.json"
-        )
+        path: Path = self._store.root / parent_session_id / "orchestrator_context.json"
         if not path.exists():
             return None
         try:
-            return OrchestratorContextDAO.model_validate_json(
-                path.read_bytes()
-            )
+            return OrchestratorContextDAO.model_validate_json(path.read_bytes())
         except (OSError, ValidationError, ValueError):
             return None
 
@@ -292,11 +336,221 @@ class WorkflowVisualizerLoader:
         if not stderr_path.exists():
             return []
         try:
-            return stderr_path.read_text(
-                encoding="utf-8", errors="replace"
-            ).splitlines()
+            return stderr_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             return []
+
+    def load_node_stderr_lines(
+        self,
+        *,
+        parent_session_id: str,
+        session_id: str,
+    ) -> list[str]:
+        """Return stderr capture lines for a child or its orchestrator.
+
+        Args:
+            parent_session_id (str): Orchestrator session that owns child captures.
+            session_id (str): Selected child or orchestrator session id.
+
+        Returns:
+            list[str]: Decoded stderr lines, or an empty list when absent or unreadable.
+        """
+        path: Path = self._stderr_capture_path(
+            parent_session_id=parent_session_id,
+            session_id=session_id,
+        )
+        if not path.exists():
+            return []
+        try:
+            return path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+
+    def _stderr_capture_path(self, *, parent_session_id: str, session_id: str) -> Path:
+        """Resolve the selected node's stderr capture path.
+
+        Args:
+            parent_session_id (str): Orchestrator parent session id.
+            session_id (str): Selected child or orchestrator session id.
+
+        Returns:
+            Path: Child stderr JSONL path or orchestrator stderr log path.
+        """
+        if session_id == parent_session_id:
+            return OrchestrationLayout.capture_path(
+                history_root=self._store.root,
+                session_id=session_id,
+                name="stderr.log",
+            )
+        return self._child_capture_path(
+            parent_session_id=parent_session_id,
+            child_session_id=session_id,
+            filename="stderr.jsonl",
+        )
+
+    def read_child_stdout_tail(self, *, session_id: str) -> list[bytes]:
+        """Read newly captured stdout lines for a child or orchestrator session.
+
+        WHAT: Reuses one offset-tracked tail for a session stdout capture.
+        WHO: Called by HeadlessWorkflowVisualizer for its live detail pane.
+        WHEN: On refreshes while the selected node is still running.
+
+        Args:
+            session_id (str): Child or orchestrator session owning stdout.jsonl.
+
+        Returns:
+            list[bytes]: Newly completed JSONL lines without newline bytes.
+        """
+        path: Path = self._stdout_capture_path(session_id=session_id)
+        tail: JsonlTail = self._stdout_tails.setdefault(path, JsonlTail(path=path))
+        return tail.read_new()
+
+    def _load_fleet_snapshot(self, *, parent_session_id: str) -> Optional[FleetSnapshotDAO]:
+        """Load durable fleet evidence for the current orchestrator session.
+
+        Args:
+            parent_session_id (str): Orchestrator session owning fleet.json.
+
+        Returns:
+            Optional[FleetSnapshotDAO]: Fleet snapshot when a valid file exists.
+        """
+        path: Path = OrchestrationLayout.fleet_path(
+            history_root=self._store.root,
+            orchestrator_session_id=parent_session_id,
+        )
+        return FleetStore.load_snapshot(path=path)
+
+    def _overlay_fleet(
+        self,
+        *,
+        child: ChildSessionSummaryDAO,
+        fleet: Optional[FleetSnapshotDAO],
+    ) -> ChildSessionSummaryDAO:
+        """Merge matching fleet and terminal status evidence into one child summary.
+
+        Args:
+            child (ChildSessionSummaryDAO): Summary produced by child discovery.
+            fleet (Optional[FleetSnapshotDAO]): Durable fleet evidence, if present.
+
+        Returns:
+            ChildSessionSummaryDAO: Original summary without a matching entry, or
+                a summary enriched with fleet and terminal fields.
+        """
+        if fleet is None:
+            return child
+        entry: Optional[SubAgentStatusDAO] = next(
+            (item for item in fleet.entries if item.session_id == child.session_id),
+            None,
+        )
+        if entry is None:
+            return child
+        result: Optional[SubAgentResultDAO] = self._load_child_terminal_result(
+            parent_session_id=fleet.orchestrator_session_id,
+            child_session_id=child.session_id,
+        )
+        return child.model_copy(
+            update={
+                "status": result.status if result is not None else entry.status,
+                "pid": entry.pid,
+                "heartbeat_phase": entry.heartbeat_phase,
+                "last_stdout_at": entry.last_stdout_at,
+                "liveness_state": entry.liveness(
+                    now_seconds=time.monotonic(),
+                    heartbeat_seconds=_HEARTBEAT_SECONDS,
+                    inactivity_seconds=CHILD_INACTIVITY_TIMEOUT_SECONDS,
+                ),
+                "exit_code": result.exit_code if result is not None else entry.exit_code,
+                "terminal_reason": entry.terminal_reason,
+                "terminated_by": entry.terminated_by,
+            }
+        )
+
+    def _load_child_terminal_result(
+        self,
+        *,
+        parent_session_id: str,
+        child_session_id: str,
+    ) -> Optional[SubAgentResultDAO]:
+        """Load the parent-written terminal result for one child when available.
+
+        Args:
+            parent_session_id (str): Orchestrator session that owns the child.
+            child_session_id (str): Terminal child session identifier.
+
+        Returns:
+            Optional[SubAgentResultDAO]: Parsed status result, or ``None``.
+        """
+        path: Path = OrchestrationLayout.child_status_path(
+            history_root=self._store.root,
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+        )
+        if not path.exists():
+            return None
+        try:
+            return SubAgentResultDAO.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _build_orchestrator_node(self, *, parent_session_id: str) -> OrchestratorNodeDAO:
+        """Build an orchestrator list node from status evidence and captures.
+
+        Args:
+            parent_session_id (str): Orchestrator session to render.
+
+        Returns:
+            OrchestratorNodeDAO: Self-reported node, or an unknown pre-71 node.
+        """
+        session_dir: Path = OrchestrationLayout.session_dir(
+            history_root=self._store.root,
+            session_id=parent_session_id,
+        )
+        status = OrchestratorStatusStore.load_status(
+            path=OrchestrationLayout.orchestrator_status_path(
+                history_root=self._store.root,
+                orchestrator_session_id=parent_session_id,
+            )
+        )
+        if status is None:
+            return OrchestratorNodeDAO(
+                session_id=parent_session_id,
+                has_stdout_capture=(session_dir / "stdout.jsonl").exists(),
+                has_stderr_capture=(session_dir / "stderr.log").exists(),
+            )
+        return OrchestratorNodeDAO(
+            session_id=parent_session_id,
+            state=status.state,
+            phase=status.phase,
+            pid=status.pid,
+            updated_at=status.updated_at,
+            has_stdout_capture=(session_dir / "stdout.jsonl").exists(),
+            has_stderr_capture=(session_dir / "stderr.log").exists(),
+        )
+
+    def _stdout_capture_path(self, *, session_id: str) -> Path:
+        """Return the stdout capture path for a child or orchestrator session.
+
+        Args:
+            session_id (str): Node session identifier.
+
+        Returns:
+            Path: Existing child capture path when present, else session stdout.
+        """
+        child_path: Path = (
+            OrchestrationLayout.children_dir(
+                history_root=self._store.root,
+                parent_session_id=self._parent_session_id or self._config.session_reference,
+            )
+            / session_id
+            / "stdout.jsonl"
+        )
+        if child_path.exists():
+            return child_path
+        return OrchestrationLayout.capture_path(
+            history_root=self._store.root,
+            session_id=session_id,
+            name="stdout.jsonl",
+        )
 
     # ── private helpers ──────────────────────────────────────────────────────
 
@@ -364,16 +618,12 @@ class WorkflowVisualizerLoader:
         Returns:
             list[ChildSessionSummaryDAO]: Deduplicated summaries.
         """
-        from_events: list[ChildSessionSummaryDAO] = (
-            self._discover_children_from_events(
-                parent_session_id=parent_session_id,
-                parent_events=parent_events,
-            )
+        from_events: list[ChildSessionSummaryDAO] = self._discover_children_from_events(
+            parent_session_id=parent_session_id,
+            parent_events=parent_events,
         )
-        from_dirs: list[ChildSessionSummaryDAO] = (
-            self._discover_children_from_capture_dirs(
-                parent_session_id=parent_session_id,
-            )
+        from_dirs: list[ChildSessionSummaryDAO] = self._discover_children_from_capture_dirs(
+            parent_session_id=parent_session_id,
         )
         return self._merge_child_discoveries(
             from_events=from_events,
@@ -410,15 +660,11 @@ class WorkflowVisualizerLoader:
                 )
             elif event.kind == "sub_agent_completed":
                 child_id = event.payload.metadata.get("sub_agent_id", "")
-                terminal_kind: str = event.payload.metadata.get(
-                    "terminal_kind", "sub_agent_failed"
-                )
+                terminal_kind: str = event.payload.metadata.get("terminal_kind", "sub_agent_failed")
                 if not child_id or child_id not in summaries:
                     continue
-                status: str = _TERMINAL_KIND_TO_STATUS.get(terminal_kind, "failed")
-                summaries[child_id] = summaries[child_id].model_copy(
-                    update={"status": status}
-                )
+                status: str = status_for_lifecycle_kind(kind=terminal_kind)
+                summaries[child_id] = summaries[child_id].model_copy(update={"status": status})
         return list(summaries.values())
 
     def _discover_children_from_capture_dirs(
@@ -434,7 +680,10 @@ class WorkflowVisualizerLoader:
         Returns:
             list[ChildSessionSummaryDAO]: Summaries for each capture directory.
         """
-        children_root: Path = self._store.root / parent_session_id / "children"
+        children_root: Path = OrchestrationLayout.children_dir(
+            history_root=self._store.root,
+            parent_session_id=parent_session_id,
+        )
         if not children_root.is_dir():
             return []
         result: list[ChildSessionSummaryDAO] = []
@@ -516,9 +765,7 @@ class WorkflowVisualizerLoader:
             list[ChildSessionSummaryDAO]: Merged deduplicated list.
         """
         seen: set[str] = {s.session_id for s in from_events}
-        extras: list[ChildSessionSummaryDAO] = [
-            s for s in from_dirs if s.session_id not in seen
-        ]
+        extras: list[ChildSessionSummaryDAO] = [s for s in from_dirs if s.session_id not in seen]
         return from_events + extras
 
     @staticmethod
@@ -553,13 +800,12 @@ class WorkflowVisualizerLoader:
         Returns:
             Path: Absolute path to the capture file.
         """
-        return (
-            self._store.root
-            / parent_session_id
-            / "children"
-            / child_session_id
-            / filename
+        child_capture_dir: Path = OrchestrationLayout.child_capture_dir(
+            history_root=self._store.root,
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
         )
+        return child_capture_dir / filename
 
     async def _load_transcript_from_canonical_history(
         self,
@@ -685,9 +931,7 @@ def _project_stdout_capture(*, path: Path) -> list[TranscriptEntryDAO]:
     from src.agents.slo_agent.events.stream import AgentStreamEventDAO  # noqa: PLC0415
 
     try:
-        raw_lines: list[str] = path.read_text(
-            encoding="utf-8", errors="replace"
-        ).splitlines()
+        raw_lines: list[str] = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
 
@@ -711,9 +955,7 @@ def _project_stdout_capture(*, path: Path) -> list[TranscriptEntryDAO]:
             thinking_text += event.delta
         elif kind == "thinking_end":
             if thinking_text:
-                entries.append(
-                    TranscriptEntryDAO(kind="thinking", content=thinking_text)
-                )
+                entries.append(TranscriptEntryDAO(kind="thinking", content=thinking_text))
                 thinking_text = ""
         elif kind == "tool_call_start" and event.block_id and event.tool_name:
             pending_tools[event.block_id] = _ToolBuffers(tool_name=event.tool_name)
@@ -734,9 +976,7 @@ def _project_stdout_capture(*, path: Path) -> list[TranscriptEntryDAO]:
             assistant_text += event.delta
         elif kind in ("text_end", "run_completed"):
             if assistant_text:
-                entries.append(
-                    TranscriptEntryDAO(kind="assistant", answer=assistant_text)
-                )
+                entries.append(TranscriptEntryDAO(kind="assistant", answer=assistant_text))
                 assistant_text = ""
 
     if thinking_text:

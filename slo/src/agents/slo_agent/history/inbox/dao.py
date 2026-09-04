@@ -29,6 +29,8 @@ InboxMessageKind: TypeAlias = Literal[
     "workflow_phase_update",
     "workflow_completed",
     "workflow_failed",
+    # Fleet progress snapshots (spec 71.a.5 writer / receive path):
+    "workflow_fleet_update",
 ]
 InboxPriority: TypeAlias = Literal["low", "normal", "high"]
 InboxDeliveryMode: TypeAlias = Literal["ui_notice", "transcript_note", "chat_turn", "context_note"]

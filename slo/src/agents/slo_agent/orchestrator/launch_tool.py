@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 import config.cfg as cfg_module
 from config.logger import log_info
 from src.agents.slo_agent.history.filesystem_store import default_history_root
+from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env, open_capture_file_append
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -42,10 +43,6 @@ class _ProcessLike(Protocol):
 
 
 SpawnCallable = Callable[..., Awaitable[_ProcessLike]]
-
-_ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("SLO_",)
-_ENV_ALLOWLIST_EXACT: tuple[str, ...] = ("PATH", "HOME", "LANG", "TERM", "PYENV_ROOT", "PYENV_VERSION")
-_ENV_SECRET_MARKERS: tuple[str, ...] = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 
 class LaunchWorkflowSchemaDAO(BaseModel):
@@ -106,64 +103,6 @@ def _build_argv(
     if model is not None:
         argv += ["--model", model]
     return argv
-
-
-def _is_secret_env_name(*, name: str) -> bool:
-    """Return whether an env var name carries a secret marker token.
-
-    Args:
-        name (str): Environment variable name.
-
-    Returns:
-        bool: True when the upper-cased name contains a secret marker.
-    """
-    upper_name: str = name.upper()
-    return any(marker in upper_name for marker in _ENV_SECRET_MARKERS)
-
-
-def _allowlisted_env(*, workflow_id: str) -> dict[str, str]:
-    """Build the child environment from the non-secret allowlist.
-
-    Keeps the exact names in ``_ENV_ALLOWLIST_EXACT`` plus every ``SLO_*``
-    variable whose name carries no secret marker (credentials resolve inside
-    the child via ``CredentialResolver``, which reads the store file — no
-    secrets need forwarding). Adds ``SLO_WORKFLOW_ID`` so the notifier
-    (spec 57.a.3) can stamp its inbox messages.
-
-    Args:
-        workflow_id (str): Workflow id injected as ``SLO_WORKFLOW_ID``.
-
-    Returns:
-        dict[str, str]: Sanitised child environment.
-    """
-    child_env: dict[str, str] = {}
-    for name, value in os.environ.items():
-        if name in _ENV_ALLOWLIST_EXACT:
-            child_env[name] = value
-            continue
-        if not name.startswith(_ENV_ALLOWLIST_PREFIXES):
-            continue
-        if _is_secret_env_name(name=name):
-            continue
-        child_env[name] = value
-    child_env["SLO_WORKFLOW_ID"] = workflow_id
-    return child_env
-
-
-def _open_capture_file(*, history_root: Path, session_id: str, name: str) -> IO[bytes]:
-    """Open one orchestrator capture file for appending, creating directories.
-
-    Args:
-        history_root (Path): Session-history root directory.
-        session_id (str): Orchestrator session id owning the capture files.
-        name (str): File name (``stdout.jsonl`` / ``stderr.log``).
-
-    Returns:
-        IO[bytes]: Open binary append handle.
-    """
-    capture_dir: Path = history_root / session_id
-    capture_dir.mkdir(parents=True, exist_ok=True)
-    return (capture_dir / name).open("ab")
 
 
 class LaunchWorkflowTool:
@@ -254,6 +193,10 @@ class LaunchWorkflowTool:
             )
             if cap_refusal is not None:
                 return cap_refusal
+            history_warning: Optional[str] = cls._history_backing_warning(
+                history_root=_history_root,
+                owner_session_id=owner_session_id,
+            )
             workflow_id: str = f"wf-{uuid4().hex[:4]}"
             orchestrator_session_id: str = str(uuid4())
             resolved_cwd: str = cwd or os.getcwd()
@@ -275,6 +218,7 @@ class LaunchWorkflowTool:
                 history_root=_history_root,
                 handle=handle,
                 model=model or _default_model,
+                history_warning=history_warning,
             )
 
         return launch_workflow
@@ -319,6 +263,7 @@ class LaunchWorkflowTool:
         history_root: Path,
         handle: WorkflowHandleDAO,
         model: Optional[str],
+        history_warning: Optional[str],
     ) -> str:
         """Spawn the detached orchestrator and patch the handle with its pid.
 
@@ -340,14 +285,14 @@ class LaunchWorkflowTool:
         with contextlib.ExitStack() as capture_files:
             try:
                 stdout_file: IO[bytes] = capture_files.enter_context(
-                    _open_capture_file(
+                    open_capture_file_append(
                         history_root=history_root,
                         session_id=handle.orchestrator_session_id,
                         name="stdout.jsonl",
                     )
                 )
                 stderr_file: IO[bytes] = capture_files.enter_context(
-                    _open_capture_file(
+                    open_capture_file_append(
                         history_root=history_root,
                         session_id=handle.orchestrator_session_id,
                         name="stderr.log",
@@ -368,7 +313,7 @@ class LaunchWorkflowTool:
                     start_new_session=True,
                     stdout=stdout_file,
                     stderr=stderr_file,
-                    env=_allowlisted_env(workflow_id=handle.workflow_id),
+                    env=build_headless_child_env(workflow_id=handle.workflow_id),
                 )
             except OSError as exc:
                 await cls._mark_failed_best_effort(store=store, handle=handle)
@@ -390,7 +335,32 @@ class LaunchWorkflowTool:
                     )
                 }
             )
-        return patched.model_dump_json()
+        payload: dict[str, object] = patched.model_dump(mode="json")
+        if history_warning is not None:
+            payload["warning"] = history_warning
+        return json.dumps(payload)
+
+    @staticmethod
+    def _history_backing_warning(*, history_root: Path, owner_session_id: str) -> Optional[str]:
+        """Return a monitoring warning when the owner session has no history directory.
+
+        WHAT: Detects whether inbox delivery and later monitoring have durable backing.
+        WHO: Called by launch_workflow after it patches a successful handle.
+        WHEN: Once per detached workflow launch result.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            owner_session_id (str): Session expected to receive workflow notes.
+
+        Returns:
+            Optional[str]: Warning text without history backing, otherwise None.
+        """
+        if (history_root / owner_session_id).exists():
+            return None
+        return (
+            "owner session has no history backing — workflow notes, fleet monitoring, "
+            "and resume will not be available for this workflow"
+        )
 
     @classmethod
     async def _reap_if_aborted(

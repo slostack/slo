@@ -46,7 +46,12 @@ from src.agents.slo_agent.orchestrator.task_payload import (
 if TYPE_CHECKING:
     from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 
-__all__ = ["SpawnSubAgentsTool", "SpawnSubAgentsSchemaDAO", "ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM", "DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT"]
+__all__ = [
+    "SpawnSubAgentsTool",
+    "SpawnSubAgentsSchemaDAO",
+    "ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM",
+    "DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT",
+]
 
 
 class SpawnSubAgentsSchemaDAO(BaseModel):
@@ -462,9 +467,7 @@ def _resolution_from_task_dicts(
         SubAgentTaskResolutionDAO: Validated tasks + notes, or an error.
     """
     try:
-        resolved_tasks: list[SubAgentTaskDAO] = [
-            SubAgentTaskDAO(**entry) for entry in task_dicts
-        ]
+        resolved_tasks: list[SubAgentTaskDAO] = [SubAgentTaskDAO(**entry) for entry in task_dicts]
     except Exception as exc:  # noqa: BLE001 — validation errors must not raise
         return SubAgentTaskResolutionDAO(error=f"Invalid task definition: {exc}")
     return SubAgentTaskResolutionDAO(tasks=resolved_tasks, recovery_notes=recovery_notes)
@@ -615,6 +618,6 @@ class SpawnSubAgentsTool:
                 mode=mode,
                 tasks=batch,
             )
-            return result.model_dump_json()
+            return result.model_dump_json(exclude_none=True)
 
         return spawn_sub_agents

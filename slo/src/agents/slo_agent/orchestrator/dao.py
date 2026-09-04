@@ -18,12 +18,175 @@ __all__ = [
     "ReasoningLevel",
     "SubAgentMode",
     "SubAgentStatus",
+    "LivenessState",
+    "TerminalReason",
+    "TerminatedBy",
     "SubAgentTaskDAO",
     "SubAgentTaskResolutionDAO",
     "SubAgentStatusDAO",
+    "FleetSnapshotDAO",
     "SubAgentResultDAO",
+    "OrchestratorRunState",
+    "OrchestratorStatusDAO",
     "OrchestratorResultDAO",
+    "exit_code_for_terminal_kind",
+    "lifecycle_kind_for_status",
+    "run_state_for_terminal_kind",
+    "status_for_lifecycle_kind",
+    "terminal_reason_for_status",
+    "project_fleet_entries",
+    "build_cleanup_summary",
+    "TERMINAL_KIND_TO_HEADLESS_LIFECYCLE",
 ]
+
+
+TERMINAL_KIND_TO_EXIT_CODE: dict[str, int] = {"run_completed": 0, "run_aborted": 2}
+"""Terminal event kind to POSIX exit code; unrecognized kinds exit with 1."""
+
+TERMINAL_KIND_TO_HEADLESS_LIFECYCLE: dict[str, str] = {
+    "run_completed": "headless_run_completed",
+    "run_aborted": "headless_run_aborted",
+}
+"""Terminal event kind to the matching stderr lifecycle event kind."""
+
+TERMINAL_KIND_TO_RUN_STATE: dict[str, str] = {
+    "run_completed": "completed",
+    "run_aborted": "aborted",
+    "run_failed": "failed",
+}
+"""Terminal event kind to durable orchestrator run state."""
+
+SUB_AGENT_STATUS_TO_LIFECYCLE_KIND: dict[str, str] = {
+    "completed": "sub_agent_completed",
+    "aborted": "sub_agent_aborted",
+    "failed": "sub_agent_failed",
+}
+"""Child terminal status to pool lifecycle event kind."""
+
+SUB_AGENT_LIFECYCLE_KIND_TO_STATUS: dict[str, str] = {
+    "sub_agent_completed": "completed",
+    "sub_agent_aborted": "aborted",
+    "sub_agent_failed": "failed",
+}
+"""Pool lifecycle event kind to child terminal status."""
+
+SUB_AGENT_STATUS_TO_TERMINAL_REASON: dict[str, str] = {
+    "completed": "completed",
+    "aborted": "operator_abort",
+    "failed": "failed",
+}
+"""Child terminal status to its default terminal reason."""
+
+
+def exit_code_for_terminal_kind(*, kind: str) -> int:
+    """Return the POSIX exit code for a terminal event kind.
+
+    WHAT: Projects an event terminal kind to its process exit code.
+    WHO: Called by HeadlessRunner after the session stream ends.
+    WHEN: Once per headless process exit.
+
+    Args:
+        kind (str): Terminal event kind.
+
+    Returns:
+        int: Mapped POSIX exit code, or 1 for an unknown kind.
+    """
+    return TERMINAL_KIND_TO_EXIT_CODE.get(kind, 1)
+
+
+def run_state_for_terminal_kind(*, kind: str) -> str:
+    """Return the durable run state for a terminal event kind.
+
+    WHAT: Projects terminal stream vocabulary to orchestrator state vocabulary.
+    WHO: Called by the status store in a later feature slice.
+    WHEN: When terminal evidence is persisted.
+
+    Args:
+        kind (str): Terminal event kind.
+
+    Returns:
+        str: Mapped run state, or ``failed`` for an unknown kind.
+    """
+    return TERMINAL_KIND_TO_RUN_STATE.get(kind, "failed")
+
+
+def lifecycle_kind_for_status(*, status: str) -> str:
+    """Return the pool lifecycle event kind for a child terminal status.
+
+    WHAT: Projects a child status to the event sent through the pool relay.
+    WHO: Called by SubAgentPool after a child returns a terminal result.
+    WHEN: Once for each completed child wrapper.
+
+    Args:
+        status (str): Child terminal status.
+
+    Returns:
+        str: Mapped lifecycle kind, or the failed kind for an unknown status.
+    """
+    return SUB_AGENT_STATUS_TO_LIFECYCLE_KIND.get(status, "sub_agent_failed")
+
+
+def status_for_lifecycle_kind(*, kind: str) -> str:
+    """Return the child terminal status for a pool lifecycle event kind.
+
+    WHAT: Projects a pool lifecycle event kind to the visualizer's child status.
+    WHO: Called by WorkflowVisualizerLoader after it reads terminal child events.
+    WHEN: While building a child summary from durable parent history.
+
+    Args:
+        kind (str): Pool lifecycle event kind.
+
+    Returns:
+        str: Mapped child terminal status, or ``failed`` for an unknown kind.
+    """
+    return SUB_AGENT_LIFECYCLE_KIND_TO_STATUS.get(kind, "failed")
+
+
+def terminal_reason_for_status(*, status: str) -> str:
+    """Return the default terminal reason for a child terminal status.
+
+    WHAT: Projects child status to its default operator-visible terminal reason.
+    WHO: Called by fleet persistence in a later feature slice.
+    WHEN: When a child terminal record is written.
+
+    Args:
+        status (str): Child terminal status.
+
+    Returns:
+        str: Mapped terminal reason, or ``failed`` for an unknown status.
+    """
+    return SUB_AGENT_STATUS_TO_TERMINAL_REASON.get(status, "failed")
+
+
+OrchestratorRunState = Literal["running", "completed", "failed", "aborted"]
+"""Self-reported state of one detached orchestrator run."""
+
+
+class OrchestratorStatusDAO(BaseModel):
+    """Self-reported status of one detached orchestrator in ``orchestrator.json``.
+
+    The HeadlessRunner is the single writer. Workflow reconcile, the TUI, and
+    the visualizer read this durable evidence to determine workflow state.
+
+    Attributes:
+        workflow_id (str): Detached workflow identifier from ``SLO_WORKFLOW_ID``.
+        orchestrator_session_id (str): Session identifier of this headless run.
+        pid (int): Self-reported operating-system process identifier.
+        state (OrchestratorRunState): Running heartbeat or terminal state.
+        phase (str): Current safe heartbeat phase label.
+        updated_at (str): UTC ISO-8601 timestamp of this write.
+        exit_code (Optional[int]): POSIX exit code on terminal writes only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str
+    orchestrator_session_id: str
+    pid: int
+    state: OrchestratorRunState
+    phase: str = "awaiting_provider_stream"
+    updated_at: str
+    exit_code: Optional[int] = None
 
 
 SubAgentMode = Literal["parallel", "chain", "single"]
@@ -44,6 +207,32 @@ SubAgentStatus = Literal["pending", "running", "completed", "failed", "aborted"]
 ``failed``    — child exited non-zero or crashed during spawn or streaming.
 ``aborted``   — child was cancelled (SIGTERM/SIGKILL) by the orchestrator.
 """
+
+LivenessState = Literal["healthy", "degraded", "silent"]
+"""Read-time liveness classification for one fleet entry.
+
+``healthy`` is terminal or has a fresh heartbeat. ``degraded`` has overdue
+heartbeat telemetry but recent stdout. ``silent`` has neither; it is
+informational and never a cancellation trigger.
+"""
+
+TerminalReason = Literal["completed", "failed", "operator_abort", "orchestrator_died", "reaped_orphan"]
+"""How a sub-agent ended; None while the child remains live."""
+
+TerminatedBy = Literal["natural", "abort", "watchdog", "sweep"]
+"""Which reaper ended a sub-agent; None while the child remains live."""
+
+_HEARTBEAT_STALE_MULTIPLIER: int = 3
+"""Internal number of heartbeat intervals considered fresh for display."""
+
+_CLEANUP_REASON_LABELS: dict[str, str] = {
+    "completed": "completed",
+    "failed": "failed",
+    "operator_abort": "aborted (operator)",
+    "orchestrator_died": "died with orchestrator",
+    "reaped_orphan": "reaped orphan",
+}
+"""Terminal reason to operator-facing cleanup summary label."""
 
 
 class SubAgentTaskDAO(BaseModel):
@@ -154,6 +343,16 @@ class SubAgentStatusDAO(BaseModel):
             Updated on each ``text_delta`` event relayed from the child.
         prompt_preview (str): First 120 characters of the task prompt.
             Used as a human-readable label in the TUI fleet status.
+        last_heartbeat_at (Optional[float]): Monotonic timestamp of the most
+            recent recognized child heartbeat.
+        last_stdout_at (Optional[float]): Monotonic timestamp of the most
+            recent child stdout line.
+        pid (Optional[int]): Child process id recorded after spawn.
+        started_at (Optional[float]): Wall-clock spawn time.
+        heartbeat_phase (Optional[str]): Most recent heartbeat phase label.
+        exit_code (Optional[int]): Child exit code at terminal time.
+        terminal_reason (Optional[TerminalReason]): How the child ended.
+        terminated_by (Optional[TerminatedBy]): Which reaper ended the child.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -163,6 +362,121 @@ class SubAgentStatusDAO(BaseModel):
     status: SubAgentStatus = "pending"
     last_text: Optional[str] = None
     prompt_preview: str = ""
+    last_heartbeat_at: Optional[float] = None
+    last_stdout_at: Optional[float] = None
+    pid: Optional[int] = None
+    started_at: Optional[float] = None
+    heartbeat_phase: Optional[str] = None
+    exit_code: Optional[int] = None
+    terminal_reason: Optional[TerminalReason] = None
+    terminated_by: Optional[TerminatedBy] = None
+
+    def liveness(
+        self,
+        *,
+        now_seconds: float,
+        heartbeat_seconds: float,
+        inactivity_seconds: float,
+    ) -> LivenessState:
+        """Classify this entry's liveness at ``now_seconds``.
+
+        WHAT: Answers healthy, degraded, or silent from activity ages.
+        WHO: Called by registry snapshot consumers such as the TUI and visualizer.
+        WHEN: At read time while a fleet snapshot is rendered; never stored.
+
+        Args:
+            now_seconds (float): Current monotonic time.
+            heartbeat_seconds (float): Configured heartbeat interval.
+            inactivity_seconds (float): Child stdout inactivity budget.
+
+        Returns:
+            LivenessState: Classification for rendering.
+        """
+        if self.status != "running":
+            return "healthy"
+        if self._heartbeat_is_fresh(now_seconds=now_seconds, heartbeat_seconds=heartbeat_seconds):
+            return "healthy"
+        if self._stdout_is_fresh(now_seconds=now_seconds, inactivity_seconds=inactivity_seconds):
+            return "degraded"
+        return "silent"
+
+    def _heartbeat_is_fresh(self, *, now_seconds: float, heartbeat_seconds: float) -> bool:
+        """Return whether heartbeat telemetry is within the display bound."""
+        if self.last_heartbeat_at is None:
+            return False
+        return now_seconds - self.last_heartbeat_at < heartbeat_seconds * _HEARTBEAT_STALE_MULTIPLIER
+
+    def _stdout_is_fresh(self, *, now_seconds: float, inactivity_seconds: float) -> bool:
+        """Return whether child stdout is within the inactivity budget."""
+        if self.last_stdout_at is None:
+            return False
+        return now_seconds - self.last_stdout_at < inactivity_seconds
+
+
+def project_fleet_entries(*, entries: list[SubAgentStatusDAO]) -> tuple[list[dict[str, object]], int]:
+    """Project registry entries into the compact fleet-note payload.
+
+    WHAT: Retains only child identity, status, and heartbeat phase for inbox notes.
+    WHO: Called by HeadlessRunner's pool lifecycle tap.
+    WHEN: Once for every relayed child lifecycle event.
+
+    Args:
+        entries (list[SubAgentStatusDAO]): Registry snapshot in registration order.
+
+    Returns:
+        tuple[list[dict[str, object]], int]: Compact entries and running-child count.
+    """
+    projected: list[dict[str, object]] = [
+        {
+            "task_id": entry.task_id,
+            "status": entry.status,
+            "heartbeat_phase": entry.heartbeat_phase or "",
+        }
+        for entry in entries
+    ]
+    live_count: int = sum(1 for entry in entries if entry.status == "running")
+    return projected, live_count
+
+
+def build_cleanup_summary(*, entries: list[SubAgentStatusDAO], live_count: int) -> str:
+    """Compose the terminal fleet accounting line.
+
+    WHAT: Counts terminal reasons and appends the pid-verified live count.
+    WHO: Called by HeadlessRunner terminal notifications and workflow rows.
+    WHEN: After a workflow reaches a terminal state or its row is rendered.
+
+    Args:
+        entries (list[SubAgentStatusDAO]): Final durable fleet entries.
+        live_count (int): Pid-verified count of still-running children.
+
+    Returns:
+        str: One-line operator-facing cleanup summary.
+    """
+    parts: list[str] = [
+        f"{sum(1 for entry in entries if entry.terminal_reason == reason)} {label}"
+        for reason, label in _CLEANUP_REASON_LABELS.items()
+        if any(entry.terminal_reason == reason for entry in entries)
+    ]
+    parts.append(f"{live_count} live")
+    return "fleet: " + " · ".join(parts)
+
+
+class FleetSnapshotDAO(BaseModel):
+    """Durable snapshot of one orchestrator's fleet, persisted as ``fleet.json``.
+
+    Attributes:
+        orchestrator_session_id (str): Session owning the fleet.
+        workflow_id (Optional[str]): Detached workflow identifier when known.
+        entries (list[SubAgentStatusDAO]): Fleet entries in registration order.
+        updated_at (str): UTC ISO-8601 durable write time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    orchestrator_session_id: str
+    workflow_id: Optional[str] = None
+    entries: list[SubAgentStatusDAO] = Field(default_factory=list)
+    updated_at: str
 
 
 class SubAgentResultDAO(BaseModel):
@@ -232,3 +546,4 @@ class OrchestratorResultDAO(BaseModel):
     results: list[SubAgentResultDAO] = Field(default_factory=list)
     all_completed: bool = True
     failed_task_ids: list[str] = Field(default_factory=list)
+    error: Optional[str] = None

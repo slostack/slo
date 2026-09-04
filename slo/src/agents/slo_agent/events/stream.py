@@ -49,6 +49,7 @@ StreamEventKind = Literal[
     "sub_agent_completed",  # child process finished successfully (exit 0)
     "sub_agent_failed",     # child process failed or crashed (non-zero, non-abort)
     "sub_agent_aborted",    # child process was cancelled by the orchestrator (exit 2)
+    "sub_agent_reaped",     # child required SIGKILL during an ordered cleanup
 ]
 """Canonical streamed event kinds surfaced by Slo's interactive runtime."""
 

@@ -11,7 +11,7 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleStore,
     WorkflowState,
 )
-from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, LiveWorkflowLabelDAO
+from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, LiveWorkflowLabelDAO, ParsedFleetUpdateDAO
 from src.tui.workflows.service import DetachedWorkflowAppService
 
 _OWNER_SESSION_ID: str = "session-1234"
@@ -124,6 +124,28 @@ class TestReconcileSnapshot:
 
 class TestAdvanceFromInboxMessage:
     """Inbox lifecycle translation into durable state and UI effects."""
+
+    async def test_fleet_update_updates_cache_without_handle_advance(self, tmp_path: Path) -> None:
+        """Fleet notes refresh the cache but never mutate a workflow handle or UI effects."""
+        store: WorkflowHandleStore = _build_store(history_root=tmp_path)
+        await _write_handle(store=store, state="launching")
+        service: DetachedWorkflowAppService = _build_service(store=store)
+        payload: dict[str, object] = {
+            "workflow_id": "wf-1",
+            "entries": [{"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}],
+            "live_count": 1,
+        }
+
+        outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
+            kind="workflow_fleet_update",
+            payload=payload,
+        )
+
+        assert outcome == HandleAdvanceOutcomeDAO(workflow_id="wf-1")
+        assert service.fleet_update_for(workflow_id="wf-1") == ParsedFleetUpdateDAO(**payload)
+        handle = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-1")
+        assert handle is not None
+        assert handle.state == "launching"
 
     async def test_nonworkflow_kind_is_a_noop(self, tmp_path: Path) -> None:
         """Non-lifecycle kinds advance nothing and emit no effects."""

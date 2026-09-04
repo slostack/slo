@@ -3,17 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import signal
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Literal, Optional, TypeAlias
+from typing import Callable, Iterator, List, Literal, Optional, Protocol, TextIO, TypeAlias
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.logger import log_info
+from config.timeout_resolver import positive_float_env
+from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
+from src.agents.slo_agent.orchestrator.dao import (
+    FleetSnapshotDAO,
+    OrchestratorStatusDAO,
+    SubAgentStatusDAO,
+    build_cleanup_summary,
+)
+from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
+from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
+from src.agents.slo_agent.orchestrator.process_probe import ProcessProbe
+from src.agents.slo_agent.orchestrator.reaper import (
+    FleetReaper,
+    IdentityVerificationOutcome,
+    ReapOutcome,
+)
+from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 
 __all__ = [
     "WorkflowCommandService",
@@ -25,12 +44,28 @@ __all__ = [
     "WorkflowStatusTool",
 ]
 
-WorkflowState: TypeAlias = Literal[
-    "launching", "running", "completed", "failed", "aborted", "stalled"
-]
+WorkflowState: TypeAlias = Literal["launching", "running", "completed", "failed", "aborted", "stalled"]
 PidAliveProbe = Callable[[int], bool]
-KillCallable = Callable[[int, int], None]
-EscalationScheduler = Callable[[float, Callable[[], None]], None]
+
+
+class ProcessGroupKiller(Protocol):
+    """Kill one process group for a durable workflow abort request."""
+
+    def __call__(self, *, pid: int, signal_number: int) -> None:
+        """Deliver one signal to the process group identified by pid."""
+
+
+class EscalationScheduler(Protocol):
+    """Schedule one workflow process-group escalation callback."""
+
+    def __call__(self, *, delay_seconds: float, callback: Callable[[], None]) -> None:
+        """Schedule callback after delay_seconds."""
+
+
+def _default_kill_process_group(*, pid: int, signal_number: int) -> None:
+    """Kill the process group identified by pid for WorkflowCommandService."""
+    os.killpg(pid, signal_number)
+
 
 _ABORT_ESCALATION_SECONDS: float = 5.0
 """Grace after SIGTERM before a surviving workflow process group is SIGKILLed.
@@ -48,6 +83,23 @@ _LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     "stalled": frozenset({"failed"}),
 }
 
+_RELAUNCH_TRANSITIONS: dict[str, frozenset[str]] = {
+    "stalled": frozenset({"launching"}),
+    "failed": frozenset({"launching"}),
+}
+"""Relaunch-only edges that resume a terminal workflow with a fresh pid."""
+
+_EVIDENCE_TRANSITIONS: dict[str, frozenset[str]] = {
+    "launching": frozenset({"completed", "failed"}),
+    "running": frozenset({"completed", "failed", "aborted"}),
+    "stalled": frozenset({"completed", "failed", "running"}),
+    "failed": frozenset({"running"}),
+}
+"""Correction edges reachable only through verified self-reported evidence."""
+
+_STATUS_STALE_MULTIPLIER: int = 3
+"""Heartbeat intervals tolerated before a running self-report becomes stale."""
+
 _LAUNCH_GRACE_SECONDS: float = 30.0
 """Age below which a pid-0 ``launching`` handle is exempt from reconcile.
 
@@ -59,9 +111,6 @@ reap the brand-new handle as ``failed`` — doing so would also turn the tool's
 post-spawn pid-patch write into an illegal transition. A pid-0 ``launching``
 handle older than this grace is genuinely dead (the spawn never completed) and
 reconciles to ``failed``."""
-
-_DIR_MODE: int = 0o700
-_FILE_MODE: int = 0o600
 
 _UNSAFE_WORKFLOW_ID_MARKERS: tuple[str, ...] = ("/", "\\", "..", "\x00")
 """Path-meta sequences rejected in workflow ids before any filesystem join.
@@ -198,6 +247,77 @@ class WorkflowHandleStore:
                 state=state,
             )
 
+    async def relaunch(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        new_pid: int,
+    ) -> WorkflowHandleDAO:
+        """Move one dead workflow handle back to launching with its fresh pid.
+
+        WHAT: Validates the relaunch-only state edge and atomically patches the
+            orchestrator process id while holding the durable handle flock.
+        WHO: WorkflowCommandService.resume calls this after WorkflowRelauncher spawns.
+        WHEN: Once per successful operator-requested workflow resume.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow handle identifier.
+            new_pid (int): Positive pid of the newly spawned orchestrator.
+
+        Returns:
+            WorkflowHandleDAO: Relaunched handle in the launching state.
+
+        Raises:
+            FileNotFoundError: If the handle is missing or its id is unsafe.
+            WorkflowStateTransitionError: If the handle cannot be relaunched.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._relaunch_sync,
+                owner_session_id=owner_session_id,
+                workflow_id=workflow_id,
+                new_pid=new_pid,
+            )
+
+    async def correct_from_evidence(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        state: WorkflowState,
+        evidence: OrchestratorStatusDAO,
+    ) -> WorkflowHandleDAO:
+        """Correct a handle state with matching durable self-reported evidence.
+
+        WHAT: Persists correction-only state transitions after verifying the
+            supplied evidence names the requested terminal target.
+        WHO: Called by the reconcile ladder and future workflow resume flow.
+        WHEN: When a self-reported status corrects a stale handle projection.
+
+        Args:
+            owner_session_id (str): TUI session that owns the handle.
+            workflow_id (str): Workflow handle identifier.
+            state (WorkflowState): Evidence-backed target state.
+            evidence (OrchestratorStatusDAO): Verified orchestrator self-report.
+
+        Returns:
+            WorkflowHandleDAO: Corrected durable handle.
+
+        Raises:
+            FileNotFoundError: If the handle is missing or its id is unsafe.
+            WorkflowStateTransitionError: If evidence does not permit the correction.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._correct_from_evidence_sync,
+                owner_session_id=owner_session_id,
+                workflow_id=workflow_id,
+                state=state,
+                evidence=evidence,
+            )
+
     async def reconcile(self, *, owner_session_id: str) -> List[WorkflowHandleDAO]:
         """Refresh liveness-backed workflow state for one owning session.
 
@@ -223,13 +343,14 @@ class WorkflowHandleStore:
             owner_session_id=handle.owner_session_id,
             workflow_id=handle.workflow_id,
         )
-        existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
-        if existing is not None and existing.state != handle.state:
-            raise WorkflowStateTransitionError(
-                f"write() may not bypass state transitions for {handle.workflow_id}: "
-                f"{existing.state} -> {handle.state}"
-            )
-        self._write_handle(path=path, handle=handle)
+        with self._locked_handle(path=path) as lock_file:
+            existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
+            if existing is not None and existing.state != handle.state:
+                raise WorkflowStateTransitionError(
+                    f"write() may not bypass state transitions for {handle.workflow_id}: "
+                    f"{existing.state} -> {handle.state}"
+                )
+            self._write_handle_locked(path=path, handle=handle, lock_file=lock_file)
         return path
 
     def _read_sync(self, *, owner_session_id: str, workflow_id: str) -> Optional[WorkflowHandleDAO]:
@@ -289,29 +410,172 @@ class WorkflowHandleStore:
         if not self._is_path_safe_workflow_id(workflow_id=workflow_id):
             raise FileNotFoundError(workflow_id)
         path: Path = self._handle_path(owner_session_id=owner_session_id, workflow_id=workflow_id)
-        existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
-        if existing is None:
-            raise FileNotFoundError(path)
-        if existing.state == state:
-            return existing
-        if state not in _LEGAL_TRANSITIONS.get(existing.state, frozenset()):
-            raise WorkflowStateTransitionError(
-                f"illegal workflow transition for {workflow_id}: {existing.state} -> {state}"
+        with self._locked_handle(path=path) as lock_file:
+            existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
+            if existing is None:
+                raise FileNotFoundError(path)
+            if existing.state == state:
+                return existing
+            if state not in _LEGAL_TRANSITIONS.get(existing.state, frozenset()):
+                raise WorkflowStateTransitionError(
+                    f"illegal workflow transition for {workflow_id}: {existing.state} -> {state}"
+                )
+            updated: WorkflowHandleDAO = existing.model_copy(update={"state": state})
+            self._write_handle_locked(path=path, handle=updated, lock_file=lock_file)
+            return updated
+
+    def _reject_relaunch_status(self, *, status: OrchestratorStatusDAO) -> None:
+        """Reject durable evidence that makes a relaunch unsafe.
+
+        WHAT: Refuses a replacement when same-identity status evidence proves
+            the prior orchestrator is running, completed, or aborted.
+        WHO: _reject_live_relaunch_locked calls this under the handle flock.
+        WHEN: Immediately before a dead handle receives a replacement pid.
+
+        Args:
+            status (OrchestratorStatusDAO): Same-identity orchestrator evidence.
+
+        Raises:
+            WorkflowStateTransitionError: If the evidence proves relaunch is unsafe.
+        """
+        if status.state in {"completed", "aborted"}:
+            raise WorkflowStateTransitionError(f"workflow {status.workflow_id} is {status.state}")
+        if status.state == "running" and self._status_is_fresh(status=status):
+            raise WorkflowStateTransitionError(f"workflow {status.workflow_id} has fresh running evidence")
+
+    def _reject_live_relaunch_locked(self, *, handle: WorkflowHandleDAO) -> None:
+        """Reject a relaunch when locked durable evidence proves the workflow lives.
+
+        WHAT: Checks same-identity status evidence and legacy PID liveness at
+            the atomic relaunch boundary.
+        WHO: _relaunch_sync calls this while holding the handle flock.
+        WHEN: Before it writes a new launching pid for /workflows resume.
+
+        Args:
+            handle (WorkflowHandleDAO): Current handle loaded under its flock.
+
+        Raises:
+            WorkflowStateTransitionError: If current evidence proves the workflow is live.
+        """
+        status: Optional[OrchestratorStatusDAO] = OrchestratorStatusStore.load_status(
+            path=OrchestrationLayout.orchestrator_status_path(
+                history_root=self._history_root,
+                orchestrator_session_id=handle.orchestrator_session_id,
             )
-        updated: WorkflowHandleDAO = existing.model_copy(update={"state": state})
-        self._write_handle(path=path, handle=updated)
-        return updated
+        )
+        if status is not None and self._status_matches_handle(handle=handle, status=status):
+            self._reject_relaunch_status(status=status)
+        if handle.pid > 0 and self._pid_alive(handle.pid):
+            raise WorkflowStateTransitionError(f"workflow {handle.workflow_id} still has a live pid")
+
+    def _relaunch_sync(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        new_pid: int,
+    ) -> WorkflowHandleDAO:
+        """Persist one evidence-safe relaunch transition while the flock is held.
+
+        WHAT: Rechecks durable liveness evidence, validates the relaunch edge,
+            and atomically records the replacement orchestrator pid.
+        WHO: WorkflowHandleStore.relaunch invokes this in its worker thread.
+        WHEN: After WorkflowCommandService.resume successfully spawns a child.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow handle identifier.
+            new_pid (int): Positive pid of the newly spawned orchestrator.
+
+        Returns:
+            WorkflowHandleDAO: Relaunched handle with state launching and new_pid.
+
+        Raises:
+            FileNotFoundError: If the handle is missing or its id is unsafe.
+            WorkflowStateTransitionError: If evidence or state makes relaunch unsafe.
+        """
+        if not self._is_path_safe_workflow_id(workflow_id=workflow_id):
+            raise FileNotFoundError(workflow_id)
+        if new_pid <= 0:
+            raise WorkflowStateTransitionError(f"relaunch requires a positive pid for {workflow_id}")
+        path: Path = self._handle_path(owner_session_id=owner_session_id, workflow_id=workflow_id)
+        with self._locked_handle(path=path) as lock_file:
+            existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
+            if existing is None:
+                raise FileNotFoundError(path)
+            self._reject_live_relaunch_locked(handle=existing)
+            if "launching" not in _RELAUNCH_TRANSITIONS.get(existing.state, frozenset()):
+                raise WorkflowStateTransitionError(
+                    f"illegal workflow relaunch for {workflow_id}: {existing.state} -> launching"
+                )
+            updated: WorkflowHandleDAO = existing.model_copy(update={"state": "launching", "pid": new_pid})
+            self._write_handle_locked(path=path, handle=updated, lock_file=lock_file)
+            return updated
+
+    def _correct_from_evidence_sync(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        state: WorkflowState,
+        evidence: OrchestratorStatusDAO,
+    ) -> WorkflowHandleDAO:
+        """Validate and persist one correction while the handle lock is held."""
+        if not self._is_path_safe_workflow_id(workflow_id=workflow_id):
+            raise FileNotFoundError(workflow_id)
+        path: Path = self._handle_path(owner_session_id=owner_session_id, workflow_id=workflow_id)
+        with self._locked_handle(path=path) as lock_file:
+            existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
+            if existing is None:
+                raise FileNotFoundError(path)
+            if not self._status_matches_handle(handle=existing, status=evidence):
+                raise WorkflowStateTransitionError(
+                    f"evidence does not identify workflow {existing.workflow_id}"
+                )
+            if existing.state == state:
+                return existing
+            if state not in _EVIDENCE_TRANSITIONS.get(existing.state, frozenset()):
+                raise WorkflowStateTransitionError(
+                    f"no evidence-backed correction for {workflow_id}: {existing.state} -> {state}"
+                )
+            self._require_evidence_supports(state=state, evidence=evidence)
+            updated: WorkflowHandleDAO = existing.model_copy(update={"state": state})
+            self._write_handle_locked(path=path, handle=updated, lock_file=lock_file)
+            return updated
+
+    @staticmethod
+    def _status_matches_handle(*, handle: WorkflowHandleDAO, status: OrchestratorStatusDAO) -> bool:
+        """Return whether durable status evidence identifies one workflow handle.
+
+        WHAT: Compares workflow and orchestrator session identities before the
+            reconcile ladder trusts a status payload.
+        WHO: Called by evidence correction and reconciliation.
+        WHEN: Before durable status can change or keep a handle state.
+
+        Args:
+            handle (WorkflowHandleDAO): Handle the evidence proposes to change.
+            status (OrchestratorStatusDAO): Self-reported durable status evidence.
+
+        Returns:
+            bool: True only when both stable identifiers agree.
+        """
+        return (
+            status.workflow_id == handle.workflow_id
+            and status.orchestrator_session_id == handle.orchestrator_session_id
+        )
+
+    @staticmethod
+    def _require_evidence_supports(*, state: WorkflowState, evidence: OrchestratorStatusDAO) -> None:
+        """Reject terminal corrections whose durable evidence names another state."""
+        if state == "running":
+            return
+        if evidence.state != state:
+            raise WorkflowStateTransitionError(
+                f"evidence state {evidence.state} does not support correction to {state}"
+            )
 
     def _reconcile_sync(self, *, owner_session_id: str) -> List[WorkflowHandleDAO]:
-        """Synchronously flip dead-pid live workflows to their reconciled state.
-
-        A dead ``running`` workflow becomes ``stalled`` (it made progress but
-        its process vanished); a dead ``launching`` workflow becomes ``failed``
-        (the spawn never produced a live process — the crash-safe path for a
-        handle written before a spawn that never happened). A pid-0
-        ``launching`` handle younger than ``_LAUNCH_GRACE_SECONDS`` is left
-        untouched: its spawn is still in flight and the pid patch has not
-        landed yet.
+        """Refresh workflow handles from self-reported evidence before PID fallback.
 
         Args:
             owner_session_id (str): Owning TUI session id.
@@ -320,26 +584,148 @@ class WorkflowHandleStore:
             list[WorkflowHandleDAO]: Reconciled handles sorted by ``started_at``.
         """
         handles: list[WorkflowHandleDAO] = self._list_sync(owner_session_id=owner_session_id)
-        reconciled: list[WorkflowHandleDAO] = []
-        for handle in handles:
-            if handle.state not in {"launching", "running"}:
-                reconciled.append(handle)
-                continue
-            if handle.pid > 0 and self._pid_alive(handle.pid):
-                reconciled.append(handle)
-                continue
-            if self._is_within_launch_grace(handle=handle):
-                reconciled.append(handle)
-                continue
-            dead_state: WorkflowState = "stalled" if handle.state == "running" else "failed"
-            updated: WorkflowHandleDAO = self._update_state_sync(
-                owner_session_id=owner_session_id,
-                workflow_id=handle.workflow_id,
-                state=dead_state,
-            )
-            reconciled.append(updated)
+        reconciled: list[WorkflowHandleDAO] = [self._reconcile_one(handle=handle) for handle in handles]
         reconciled.sort(key=lambda item: item.started_at)
         return reconciled
+
+    def _reconcile_one(self, *, handle: WorkflowHandleDAO) -> WorkflowHandleDAO:
+        """Apply the terminal, fresh, then PID evidence ladder to one handle."""
+        if handle.state not in {"launching", "running", "stalled", "failed"}:
+            return handle
+        status: Optional[OrchestratorStatusDAO] = OrchestratorStatusStore.load_status(
+            path=OrchestrationLayout.orchestrator_status_path(
+                history_root=self._history_root,
+                orchestrator_session_id=handle.orchestrator_session_id,
+            )
+        )
+        if status is None or not self._status_matches_handle(handle=handle, status=status):
+            return self._reconcile_by_pid(handle=handle)
+        if status.state != "running":
+            return self._correct_to_terminal(handle=handle, status=status)
+        if self._status_is_fresh(status=status):
+            return self._keep_live_from_evidence(handle=handle, status=status)
+        return self._reconcile_by_pid(handle=handle)
+
+    def _correct_to_terminal(
+        self,
+        *,
+        handle: WorkflowHandleDAO,
+        status: OrchestratorStatusDAO,
+    ) -> WorkflowHandleDAO:
+        """Persist the terminal state proven by an orchestrator self-report.
+
+        WHAT: Applies a legal terminal transition or an evidence-only correction
+            after the self-report is verified to name the requested target.
+        WHO: Called by ``_reconcile_one`` for a terminal ``orchestrator.json`` record.
+        WHEN: Before fresh-heartbeat and legacy PID reconciliation are considered.
+
+        Args:
+            handle (WorkflowHandleDAO): Durable workflow projection being reconciled.
+            status (OrchestratorStatusDAO): Terminal self-report for the orchestrator.
+
+        Returns:
+            WorkflowHandleDAO: Handle whose terminal state agrees with the evidence.
+        """
+        target_state: WorkflowState = status.state
+        if handle.state == target_state:
+            return handle
+        self._require_evidence_supports(state=target_state, evidence=status)
+        if target_state in _LEGAL_TRANSITIONS.get(handle.state, frozenset()):
+            return self._update_state_sync(
+                owner_session_id=handle.owner_session_id,
+                workflow_id=handle.workflow_id,
+                state=target_state,
+            )
+        return self._correct_from_evidence_sync(
+            owner_session_id=handle.owner_session_id,
+            workflow_id=handle.workflow_id,
+            state=target_state,
+            evidence=status,
+        )
+
+    def _keep_live_from_evidence(
+        self,
+        *,
+        handle: WorkflowHandleDAO,
+        status: OrchestratorStatusDAO,
+    ) -> WorkflowHandleDAO:
+        """Keep a fresh handle live or repair it to running from self-report evidence."""
+        if handle.state == "running":
+            return handle
+        if handle.state == "launching":
+            return self._update_state_sync(
+                owner_session_id=handle.owner_session_id,
+                workflow_id=handle.workflow_id,
+                state="running",
+            )
+        return self._correct_from_evidence_sync(
+            owner_session_id=handle.owner_session_id,
+            workflow_id=handle.workflow_id,
+            state="running",
+            evidence=status,
+        )
+
+    def _reconcile_by_pid(self, *, handle: WorkflowHandleDAO) -> WorkflowHandleDAO:
+        """Apply legacy PID reconciliation when self-report evidence is absent or stale."""
+        if handle.state not in {"launching", "running"}:
+            return handle
+        if handle.pid > 0 and self._pid_alive(handle.pid):
+            return handle
+        if self._is_within_launch_grace(handle=handle):
+            return handle
+        state: WorkflowState = "stalled" if handle.state == "running" else "failed"
+        return self._update_state_sync(
+            owner_session_id=handle.owner_session_id,
+            workflow_id=handle.workflow_id,
+            state=state,
+        )
+
+    def _status_is_fresh(self, *, status: OrchestratorStatusDAO) -> bool:
+        """Return whether a running self-report is inside the tolerated silence bound.
+
+        WHAT: Treats only a timezone-aware, parseable status timestamp inside the
+            heartbeat bound as liveness evidence.
+        WHO: Called by ``_reconcile_one`` before it chooses PID fallback.
+        WHEN: For each running orchestrator self-report during reconciliation.
+
+        Args:
+            status (OrchestratorStatusDAO): Self-report carrying the timestamp.
+
+        Returns:
+            bool: True only when the self-report timestamp is valid and fresh.
+        """
+        updated_at: Optional[datetime] = self._parse_status_updated_at(status=status)
+        if updated_at is None:
+            return False
+        age_seconds: float = (datetime.now(timezone.utc) - updated_at).total_seconds()
+        return age_seconds < self._heartbeat_seconds() * _STATUS_STALE_MULTIPLIER
+
+    @staticmethod
+    def _parse_status_updated_at(*, status: OrchestratorStatusDAO) -> Optional[datetime]:
+        """Parse a timezone-aware timestamp from one self-report.
+
+        WHAT: Converts durable status text into a safe UTC-comparable timestamp.
+        WHO: Called only by ``_status_is_fresh``.
+        WHEN: Before reconcile trusts a running status as liveness evidence.
+
+        Args:
+            status (OrchestratorStatusDAO): Self-report carrying the timestamp.
+
+        Returns:
+            Optional[datetime]: Parsed aware timestamp, or ``None`` for corrupt evidence.
+        """
+        try:
+            updated_at: datetime = datetime.fromisoformat(status.updated_at)
+        except ValueError:
+            return None
+        if updated_at.tzinfo is None:
+            return None
+        return updated_at
+
+    @staticmethod
+    def _heartbeat_seconds() -> float:
+        """Read the shared headless heartbeat interval for evidence staleness."""
+        return positive_float_env(primary_name="SLO_HEADLESS_HEARTBEAT_SECONDS", default=15.0)
 
     @staticmethod
     def _is_within_launch_grace(*, handle: WorkflowHandleDAO) -> bool:
@@ -384,7 +770,10 @@ class WorkflowHandleStore:
         Returns:
             Path: ``<history_root>/<owner_session_id>/workflows``.
         """
-        return self._history_root / owner_session_id / "workflows"
+        return OrchestrationLayout.workflows_dir(
+            history_root=self._history_root,
+            owner_session_id=owner_session_id,
+        )
 
     def _handle_path(self, *, owner_session_id: str, workflow_id: str) -> Path:
         """Return the on-disk path for one workflow handle.
@@ -396,19 +785,11 @@ class WorkflowHandleStore:
         Returns:
             Path: Absolute handle path.
         """
-        return self._workflows_dir(owner_session_id=owner_session_id) / f"{workflow_id}.json"
-
-    @classmethod
-    def _ensure_dir(cls, *, path: Path) -> None:
-        """Create or chmod a private directory.
-
-        Args:
-            path (Path): Directory to create or normalize.
-        """
-        if not path.exists():
-            path.mkdir(parents=True, mode=_DIR_MODE)
-            return
-        path.chmod(_DIR_MODE)
+        return OrchestrationLayout.workflow_handle_path(
+            history_root=self._history_root,
+            owner_session_id=owner_session_id,
+            workflow_id=workflow_id,
+        )
 
     @classmethod
     def _read_path(cls, *, path: Path) -> Optional[WorkflowHandleDAO]:
@@ -428,36 +809,46 @@ class WorkflowHandleStore:
             log_info(msg="workflow_handle_skipped", path=str(path))
             return None
 
+    @staticmethod
+    @contextmanager
+    def _locked_handle(*, path: Path) -> Iterator[TextIO]:
+        """Hold a cross-process advisory lock for one handle mutation."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path: Path = path.with_suffix(path.suffix + ".lock")
+        with lock_path.open("w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield lock_file
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
     @classmethod
-    def _write_handle(cls, *, path: Path, handle: WorkflowHandleDAO) -> None:
-        """Atomically persist one handle file.
+    def _write_handle_locked(cls, *, path: Path, handle: WorkflowHandleDAO, lock_file: TextIO) -> None:
+        """Persist a handle while the caller holds its advisory file lock.
 
         Args:
             path (Path): Final handle path.
             handle (WorkflowHandleDAO): Handle to serialize.
+            lock_file (TextIO): Locked sibling lock file for the mutation.
         """
-        cls._ensure_dir(path=path.parent)
-        tmp_path: Path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(handle.model_dump_json(indent=2), encoding="utf-8")
-        tmp_path.chmod(_FILE_MODE)
-        os.replace(tmp_path, path)
-        path.chmod(_FILE_MODE)
+        del lock_file
+        AtomicFileWriter.write_json(path=path, model=handle)
 
     @staticmethod
     def _default_pid_alive(pid: int) -> bool:
         """Return whether ``pid`` is a currently live process.
 
+        WHAT: Delegates conservative PID liveness to the shared process probe.
+        WHO: Called by workflow reconcile and injected into command services.
+        WHEN: When durable handles need legacy process evidence.
+
         Args:
             pid (int): Process id to probe.
 
         Returns:
-            bool: True when ``os.kill(pid, 0)`` succeeds.
+            bool: False only when the process is proven missing.
         """
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return False
-        return True
+        return ProcessProbe.is_alive(pid=pid)
 
 
 class WorkflowStatusTool:
@@ -529,7 +920,7 @@ class WorkflowCommandService:
         *,
         store: WorkflowHandleStore,
         owner_session_id: str,
-        kill: Optional[KillCallable] = None,
+        kill: Optional[ProcessGroupKiller] = None,
         pid_alive: Optional[PidAliveProbe] = None,
         schedule: Optional[EscalationScheduler] = None,
     ) -> None:
@@ -547,8 +938,9 @@ class WorkflowCommandService:
                 ``call_later``.
         """
         self._store: WorkflowHandleStore = store
+        self._history_root: Path = store._history_root
         self._owner_session_id: str = owner_session_id
-        self._kill: KillCallable = kill or os.killpg
+        self._kill: ProcessGroupKiller = kill or _default_kill_process_group
         self._pid_alive: PidAliveProbe = pid_alive or WorkflowHandleStore._default_pid_alive
         self._schedule: EscalationScheduler = schedule or self._default_schedule
 
@@ -567,29 +959,26 @@ class WorkflowCommandService:
         )
         if not handles:
             return "no detached workflows for this session"
-        return "\n".join(self._format_row(handle=handle) for handle in handles)
+        rows: list[str] = []
+        for handle in handles:
+            await self._sweep_terminal_handle_if_needed(handle=handle)
+            rows.append(self._format_row(handle=handle))
+        return "\n".join(rows)
 
     async def abort(self, *, workflow_id: str) -> str:
-        """SIGTERM the workflow's process group and mark it aborted.
+        """Request shutdown for a live workflow or surviving fleet children.
 
-        Invoked by ``/workflows abort <id>``. Escalates to SIGKILL after
-        ``_ABORT_ESCALATION_SECONDS`` when the pid survives. A pid that is
-        already dead (``ProcessLookupError``) still marks ``aborted`` — the
-        operator's intent is honoured either way. A handle whose pid was never
-        patched (``pid=0``, spawn still in flight or never happened) is marked
-        ``aborted`` with **no signal sent**: signalling pid 0 would target the
-        caller's own process group.
-
-        Known gap: the escalation timer rides this process's event loop, so
-        quitting the TUI inside the grace window skips the SIGKILL for a
-        process group that survived SIGTERM. The handle already reads
-        ``aborted``; a surviving group remains visible via ``ps`` only.
+        WHAT: Persists a durable abort order before stopping the orchestrator or
+            children that outlived a terminal workflow handle.
+        WHO: Called by the ``/workflows abort <id>`` slash-command handler.
+        WHEN: When an operator cancels a live workflow or cleans up an orphaned
+            live child group shown on a terminal workflow row.
 
         Args:
-            workflow_id (str): Workflow to abort.
+            workflow_id (str): Workflow whose active processes require shutdown.
 
         Returns:
-            str: One-line confirmation or error text for the transcript.
+            str: One-line confirmation or explanation when no target remains.
         """
         handle: Optional[WorkflowHandleDAO] = await self._store.read(
             owner_session_id=self._owner_session_id,
@@ -597,15 +986,9 @@ class WorkflowCommandService:
         )
         if handle is None:
             return f"no workflow {workflow_id}"
-        if handle.state not in ("launching", "running"):
-            return f"no live workflow {workflow_id} (state {handle.state})"
-        if handle.pid > 0:
-            self._signal_process_group(pid=handle.pid, signal_number=signal.SIGTERM)
-            self._schedule(
-                _ABORT_ESCALATION_SECONDS,
-                lambda: self._escalate(pid=handle.pid),
-            )
-        return await self._mark_aborted(handle=handle)
+        if handle.state in ("launching", "running"):
+            return await self._abort_live_workflow(handle=handle)
+        return await self._abort_terminal_fleet_children(handle=handle)
 
     async def dismiss(self, *, workflow_id: str) -> str:
         """Acknowledge a stalled workflow (``stalled → failed``).
@@ -637,6 +1020,55 @@ class WorkflowCommandService:
             return f"could not dismiss workflow {workflow_id}: {exc}"
         return f"workflow {workflow_id} dismissed (stalled → failed)"
 
+    async def resume(self, *, workflow_id: str) -> str:
+        """Relaunch a dead workflow orchestrator with its persisted history.
+
+        WHAT: Spawns a fresh orchestrator for a stalled or failed handle, then
+            applies the dedicated relaunch transition with its new process id.
+        WHO: SlashRouter invokes this for /workflows resume <workflow-id>.
+        WHEN: When an operator recovers a workflow whose prior orchestrator died.
+
+        Args:
+            workflow_id (str): Identifier of the workflow to resume.
+
+        Returns:
+            str: One-line transcript confirmation or safe refusal text.
+        """
+        from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO, WorkflowRelauncher
+
+        handles: List[WorkflowHandleDAO] = await self._store.reconcile(
+            owner_session_id=self._owner_session_id,
+        )
+        handle: Optional[WorkflowHandleDAO] = next(
+            (candidate for candidate in handles if candidate.workflow_id == workflow_id),
+            None,
+        )
+        if handle is None:
+            return f"no workflow {workflow_id}"
+        if handle.state not in ("stalled", "failed"):
+            return (
+                f"workflow {workflow_id} is {handle.state} — only stalled or failed workflows can be resumed"
+            )
+        outcome: RelaunchOutcomeDAO = await WorkflowRelauncher.invoke(
+            handle=handle,
+            history_root=self._history_root,
+        )
+        if outcome.error is not None or outcome.pid is None:
+            return outcome.error or f"workflow {workflow_id} resume failed: no pid returned"
+        try:
+            await self._store.relaunch(
+                owner_session_id=self._owner_session_id,
+                workflow_id=workflow_id,
+                new_pid=outcome.pid,
+            )
+        except (FileNotFoundError, WorkflowStateTransitionError) as exc:
+            self._request_group_shutdowns(pids=[outcome.pid])
+            return f"could not relaunch workflow {workflow_id}: {exc}"
+        return (
+            f"workflow {workflow_id} resumed (pid {outcome.pid}); "
+            "history replaying — state advances to running on the first heartbeat"
+        )
+
     def _format_row(self, *, handle: WorkflowHandleDAO) -> str:
         """Render one listing row for a workflow handle.
 
@@ -646,6 +1078,140 @@ class WorkflowCommandService:
         Returns:
             str: ``<id>  <state>  orch <sid[:8]>  started <HH:MM>  <hint>``.
         """
+        row: str = self._base_row(handle=handle)
+        snapshot: Optional[FleetSnapshotDAO] = FleetStore.load_snapshot(
+            path=OrchestrationLayout.fleet_path(
+                history_root=self._history_root,
+                orchestrator_session_id=handle.orchestrator_session_id,
+            )
+        )
+        if snapshot is None:
+            return row
+        live_count: int = self._count_live_entries(entries=snapshot.entries)
+        if handle.state in ("launching", "running"):
+            return f"{row}  · {live_count} live{self._degraded_suffix(entries=snapshot.entries)}"
+        if live_count > 0:
+            return (
+                f"{row}  · ⚠ {live_count} live children (reap pending or orphaned; "
+                f"abort: /workflows abort {handle.workflow_id})"
+            )
+        return f"{row}  · {build_cleanup_summary(entries=snapshot.entries, live_count=live_count)}"
+
+    async def _sweep_terminal_handle_if_needed(self, *, handle: WorkflowHandleDAO) -> None:
+        """Sweep a terminal handle's live fleet only after its owner is proven dead.
+
+        WHAT: Loads durable fleet evidence and delegates the terminal sweep when needed.
+        WHO: Called by list_text before it renders each workflow row.
+        WHEN: Only for terminal workflow handles with a fleet snapshot.
+        """
+        if handle.state not in {"completed", "failed", "aborted", "stalled"}:
+            return
+        snapshot: Optional[FleetSnapshotDAO] = FleetStore.load_snapshot(
+            path=OrchestrationLayout.fleet_path(
+                history_root=self._history_root,
+                orchestrator_session_id=handle.orchestrator_session_id,
+            )
+        )
+        if snapshot is None:
+            return
+        if self._count_live_entries(entries=snapshot.entries) == 0:
+            return
+        await self._sweep_terminal_fleet(handle=handle, snapshot=snapshot)
+
+    async def _sweep_terminal_fleet(self, *, handle: WorkflowHandleDAO, snapshot: FleetSnapshotDAO) -> int:
+        """Reap verified live children of a terminal workflow with a dead owner.
+
+        WHAT: Applies the terminal sweep backstop and persists corrected fleet facts.
+        WHO: Called by list_text's terminal-handle preparation helper.
+        WHEN: Only when a terminal handle has pid-verified live fleet entries.
+
+        Args:
+            handle (WorkflowHandleDAO): Terminal workflow being inspected.
+            snapshot (FleetSnapshotDAO): Durable fleet snapshot to correct.
+
+        Returns:
+            int: Live child count remaining after the sweep.
+        """
+        if handle.pid > 0 and self._pid_alive(handle.pid):
+            return self._count_live_entries(entries=snapshot.entries)
+        corrected_entries: list[SubAgentStatusDAO] = []
+        changed: bool = False
+        for entry in snapshot.entries:
+            corrected_entry: SubAgentStatusDAO = await self._sweep_one(entry=entry)
+            corrected_entries.append(corrected_entry)
+            changed = changed or corrected_entry != entry
+        if changed:
+            self._persist_sweep_corrections(handle=handle, entries=corrected_entries)
+        return self._count_live_entries(entries=corrected_entries)
+
+    async def _sweep_one(self, *, entry: SubAgentStatusDAO) -> SubAgentStatusDAO:
+        """Return one terminal-sweep correction without signaling an unverified pid.
+
+        WHAT: Reaps exact children and records dead or recycled entries as terminal.
+        WHO: Called by _sweep_terminal_fleet for every durable fleet entry.
+        WHEN: After the workflow owner is proven dead.
+        """
+        if entry.status != "running" or entry.pid is None:
+            return entry
+        identity: IdentityVerificationOutcome = FleetReaper.child_identity_outcome(
+            pid=entry.pid,
+            session_id=entry.session_id,
+        )
+        if identity == "unreadable":
+            return entry
+        if identity == "recycled_pid":
+            return entry.model_copy(
+                update={
+                    "status": "failed",
+                    "last_text": "recorded pid belongs to a different process; not signalled",
+                    "exit_code": 1,
+                    "terminal_reason": "failed",
+                    "terminated_by": "sweep",
+                }
+            )
+        if identity == "already_dead":
+            return entry.model_copy(
+                update={
+                    "status": "failed",
+                    "last_text": "child was already absent during terminal sweep",
+                    "exit_code": 1,
+                    "terminal_reason": "failed",
+                    "terminated_by": "sweep",
+                }
+            )
+        outcome: ReapOutcome = await FleetReaper.reap(pid=entry.pid)
+        if outcome == "unresolved":
+            return entry
+        return entry.model_copy(
+            update={
+                "status": "aborted" if outcome != "already_dead" else "failed",
+                "last_text": (
+                    "reaped during terminal sweep"
+                    if outcome != "already_dead"
+                    else "child exited during terminal sweep"
+                ),
+                "exit_code": -9 if outcome == "killed" else -15,
+                "terminal_reason": "reaped_orphan" if outcome != "already_dead" else "failed",
+                "terminated_by": "sweep",
+            }
+        )
+
+    def _persist_sweep_corrections(
+        self, *, handle: WorkflowHandleDAO, entries: list[SubAgentStatusDAO]
+    ) -> None:
+        """Persist terminal-sweep fleet corrections through the durable fleet store.
+
+        WHAT: Writes corrected entries only after the owner-death single-writer guard.
+        WHO: Called by _sweep_terminal_fleet after at least one entry changes.
+        WHEN: After identity-verified terminal child reaping.
+        """
+        FleetStore(
+            history_root=self._history_root,
+            orchestrator_session_id=handle.orchestrator_session_id,
+        ).persist(entries=entries)
+
+    def _base_row(self, *, handle: WorkflowHandleDAO) -> str:
+        """Render the legacy handle row before fleet evidence is appended."""
         started: str = handle.started_at.strftime("%H:%M")
         hint_template: str = self._STATE_HINTS.get(handle.state, "")
         hint: str = hint_template.format(workflow_id=handle.workflow_id)
@@ -656,6 +1222,154 @@ class WorkflowCommandService:
         if hint:
             row += f"  {hint}"
         return row
+
+    @staticmethod
+    def _count_live_entries(*, entries: list[SubAgentStatusDAO]) -> int:
+        """Count running fleet entries whose pid remains alive at render time."""
+        return sum(
+            1
+            for entry in entries
+            if entry.status == "running" and entry.pid is not None and ProcessProbe.is_alive(pid=entry.pid)
+        )
+
+    @staticmethod
+    def _degraded_suffix(*, entries: list[SubAgentStatusDAO]) -> str:
+        """Render the advisory degraded count for running children when present."""
+        import time
+
+        degraded_count: int = sum(
+            1
+            for entry in entries
+            if entry.status == "running"
+            and entry.liveness(
+                now_seconds=time.monotonic(), heartbeat_seconds=15.0, inactivity_seconds=7200.0
+            )
+            in ("degraded", "silent")
+        )
+        return f" · {degraded_count} degraded" if degraded_count else ""
+
+    async def _abort_live_workflow(self, *, handle: WorkflowHandleDAO) -> str:
+        """Write a durable order, stop a live orchestrator group, and mark it aborted.
+
+        Args:
+            handle (WorkflowHandleDAO): Live workflow handle receiving the order.
+
+        Returns:
+            str: Transcript-safe confirmation or durable-write failure text.
+        """
+        if not self._write_abort_request(handle=handle):
+            return f"could not record durable abort request for workflow {handle.workflow_id}"
+        self._request_group_shutdowns(pids=[handle.pid])
+        return await self._mark_aborted(handle=handle)
+
+    async def _abort_terminal_fleet_children(self, *, handle: WorkflowHandleDAO) -> str:
+        """Sweep verified children whose terminal workflow owner is dead.
+
+        WHAT: Reuses the identity-verified terminal sweep instead of child killpg calls.
+        WHO: Called by abort for terminal workflow handles.
+        WHEN: After an operator explicitly requests terminal survivor cleanup.
+
+        Args:
+            handle (WorkflowHandleDAO): Terminal workflow whose fleet may contain survivors.
+
+        Returns:
+            str: Cleanup result naming whether verified survivors remain.
+        """
+        snapshot: Optional[FleetSnapshotDAO] = FleetStore.load_snapshot(
+            path=OrchestrationLayout.fleet_path(
+                history_root=self._history_root,
+                orchestrator_session_id=handle.orchestrator_session_id,
+            )
+        )
+        if snapshot is None:
+            return f"no live workflow {handle.workflow_id} (state {handle.state})"
+        remaining: int = await self._sweep_terminal_fleet(handle=handle, snapshot=snapshot)
+        if remaining > 0:
+            return f"workflow {handle.workflow_id} has {remaining} unverified live children; not signalled"
+        return f"workflow {handle.workflow_id} child cleanup completed"
+
+    def _live_fleet_child_pids(self, *, handle: WorkflowHandleDAO) -> list[int]:
+        """Return unique live child process-group leaders from durable fleet truth.
+
+        Args:
+            handle (WorkflowHandleDAO): Handle identifying the fleet snapshot.
+
+        Returns:
+            list[int]: Sorted positive process-group leaders still reported alive.
+        """
+        snapshot: Optional[FleetSnapshotDAO] = FleetStore.load_snapshot(
+            path=OrchestrationLayout.fleet_path(
+                history_root=self._history_root,
+                orchestrator_session_id=handle.orchestrator_session_id,
+            )
+        )
+        if snapshot is None:
+            return []
+        return sorted(
+            {
+                entry.pid
+                for entry in snapshot.entries
+                if entry.status == "running"
+                and entry.pid is not None
+                and entry.pid > 0
+                and self._pid_alive(entry.pid)
+            }
+        )
+
+    def _request_group_shutdowns(self, *, pids: list[int]) -> None:
+        """Send SIGTERM and arm SIGKILL escalation for each positive group leader.
+
+        Args:
+            pids (list[int]): Process-group leaders targeted by one abort request.
+        """
+        for pid in pids:
+            if pid <= 0:
+                continue
+            self._signal_process_group(pid=pid, signal_number=signal.SIGTERM)
+            self._schedule_group_escalation(pid=pid)
+
+    def _schedule_group_escalation(self, *, pid: int) -> None:
+        """Arm SIGKILL escalation for one process group after its SIGTERM grace.
+
+        Args:
+            pid (int): Process-group leader captured for this one callback.
+        """
+
+        def escalate_group() -> None:
+            """Escalate the process group captured by this scheduling call."""
+            self._escalate(pid=pid)
+
+        self._schedule(
+            delay_seconds=_ABORT_ESCALATION_SECONDS,
+            callback=escalate_group,
+        )
+
+    def _write_abort_request(self, *, handle: WorkflowHandleDAO) -> bool:
+        """Write the watchdog abort order before the immediate signal channel.
+
+        WHAT: Persists the durable half of an operator abort before any signal.
+        WHO: Called by abort for each live workflow handle.
+        WHEN: Immediately before the SIGTERM and delayed SIGKILL channels.
+
+        Args:
+            handle (WorkflowHandleDAO): Live handle receiving the abort order.
+
+        Returns:
+            bool: True when the watchdog can observe the durable order.
+        """
+        path: Path = OrchestrationLayout.abort_request_path(
+            history_root=self._history_root,
+            orchestrator_session_id=handle.orchestrator_session_id,
+        )
+        try:
+            AtomicFileWriter.write_text(
+                path=path,
+                text=json.dumps({"requested_at": datetime.now(timezone.utc).isoformat()}),
+            )
+        except OSError as exc:
+            log_info(msg="workflow_abort_request_write_failed", error=str(exc))
+            return False
+        return True
 
     async def _mark_aborted(self, *, handle: WorkflowHandleDAO) -> str:
         """Persist the ``aborted`` state and build the confirmation line.
@@ -679,10 +1393,7 @@ class WorkflowCommandService:
         except (FileNotFoundError, WorkflowStateTransitionError) as exc:
             return f"could not mark workflow {handle.workflow_id} aborted: {exc}"
         if handle.pid > 0:
-            return (
-                f"workflow {handle.workflow_id} aborted "
-                f"(SIGTERM sent to process group {handle.pid})"
-            )
+            return f"workflow {handle.workflow_id} aborted " f"(SIGTERM sent to process group {handle.pid})"
         return f"workflow {handle.workflow_id} aborted (no live process to signal)"
 
     def _signal_process_group(self, *, pid: int, signal_number: int) -> None:
@@ -700,7 +1411,7 @@ class WorkflowCommandService:
             log_info(msg="workflow_signal_skipped", pid=pid, error="non-positive pid")
             return
         try:
-            self._kill(pid, signal_number)
+            self._kill(pid=pid, signal_number=signal_number)
         except (ProcessLookupError, PermissionError) as exc:
             log_info(msg="workflow_signal_skipped", pid=pid, error=str(exc))
 
@@ -722,7 +1433,7 @@ class WorkflowCommandService:
         self._signal_process_group(pid=pid, signal_number=signal.SIGKILL)
 
     @staticmethod
-    def _default_schedule(delay_seconds: float, callback: Callable[[], None]) -> None:
+    def _default_schedule(*, delay_seconds: float, callback: Callable[[], None]) -> None:
         """Arm one delayed callback on the running event loop.
 
         Args:

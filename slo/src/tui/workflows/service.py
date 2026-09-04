@@ -22,8 +22,10 @@ from src.tui.workflows.dao import (
     HandleAdvanceOutcomeDAO,
     LaunchResultOutcome,
     LiveWorkflowLabelDAO,
+    ParsedFleetUpdateDAO,
     ParsedLaunchResultDAO,
     ParsedWorkflowLifecycleMessageDAO,
+    parse_fleet_update_message,
     parse_launch_workflow_result,
     parse_workflow_lifecycle_message,
 )
@@ -56,6 +58,7 @@ class DetachedWorkflowAppService:
         self._store: WorkflowHandleStore = workflow_handle_store
         self._owner_session_id: str = owner_session_id
         self._workflow_states: dict[str, WorkflowState] = {}
+        self._fleet_cache: dict[str, ParsedFleetUpdateDAO] = {}
 
     async def reconcile_snapshot(self) -> dict[str, WorkflowState]:
         """Refresh the cached workflow states from a pid-liveness reconcile pass.
@@ -106,6 +109,13 @@ class DetachedWorkflowAppService:
                 invalid payloads, and handle-store failures all produce a
                 no-effect outcome — inbox delivery never fails on them.
         """
+        fleet_update: Optional[ParsedFleetUpdateDAO] = parse_fleet_update_message(
+            kind=kind,
+            payload=payload,
+        )
+        if fleet_update is not None:
+            self._fleet_cache[fleet_update.workflow_id] = fleet_update
+            return HandleAdvanceOutcomeDAO(workflow_id=fleet_update.workflow_id)
         parsed: Optional[ParsedWorkflowLifecycleMessageDAO] = parse_workflow_lifecycle_message(
             kind=kind,
             payload=payload,
@@ -148,6 +158,21 @@ class DetachedWorkflowAppService:
         if parsed.workflow_id:
             self._workflow_states[parsed.workflow_id] = parsed.state
         return "launched"
+
+    def fleet_update_for(self, *, workflow_id: str) -> Optional[ParsedFleetUpdateDAO]:
+        """Return the latest claimed fleet note for a workflow renderer.
+
+        WHAT: Exposes progress-cache data without reading or advancing durable handles.
+        WHO: Called by detached-workflow renderers that need recent note progress.
+        WHEN: After the inbox claim path has parsed a fleet update.
+
+        Args:
+            workflow_id (str): Workflow whose cached fleet snapshot is requested.
+
+        Returns:
+            Optional[ParsedFleetUpdateDAO]: Latest note snapshot, or None.
+        """
+        return self._fleet_cache.get(workflow_id)
 
     def live_workflow_labels(self) -> List[LiveWorkflowLabelDAO]:
         """Return labels for workflows whose cached state is live.

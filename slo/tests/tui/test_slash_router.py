@@ -615,6 +615,7 @@ class TestSlashPreferencesHandler:
         """With saved preferences, /preferences shows the saved model and reasoning."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         UserPreferencesStore.upsert(model_name="claude-sonnet-4-5", reasoning_level="high")
         session: MagicMock = _build_session_stub()
 
@@ -632,6 +633,7 @@ class TestSlashPreferencesHandler:
         path = tmp_path / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         UserPreferencesStore.upsert(model_name="x")
         session: MagicMock = _build_session_stub()
 
@@ -675,6 +677,7 @@ class TestSlashModelPreferencePersistence:
             await SlashRouter.dispatch(line="/model claude-sonnet-4-6", session=session)
 
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         prefs = UserPreferencesStore.load()
         assert prefs.default_model_name == "claude-sonnet-4-6"
 
@@ -693,6 +696,7 @@ class TestSlashModelPreferencePersistence:
         await SlashRouter.dispatch(line="/reasoning high", session=session)
 
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         prefs = UserPreferencesStore.load()
         assert prefs.default_reasoning_level == "high"
 
@@ -781,6 +785,26 @@ class TestSlashWorkflowsHandler:
         assert result.rendered == "workflow wf-1 aborted"
 
     @pytest.mark.asyncio
+    async def test_slash_router_dispatches_workflows_resume(self, tmp_path: Path) -> None:
+        """``/workflows resume wf-1`` delegates to the workflow resume service."""
+        from unittest.mock import AsyncMock
+
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        service: MagicMock = MagicMock()
+        service.resume = AsyncMock(return_value="workflow wf-1 resumed (pid 5678)")
+        with patch(
+            "src.tui.slash_router.WorkflowCommandService",
+            return_value=service,
+        ):
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(
+                line="/workflows resume wf-1",
+                session=session,
+            )
+
+        service.resume.assert_awaited_once_with(workflow_id="wf-1")
+        assert result.rendered == "workflow wf-1 resumed (pid 5678)"
+
+    @pytest.mark.asyncio
     async def test_workflows_dismiss_routes_to_service(self, tmp_path: Path) -> None:
         """``/workflows dismiss wf-1`` renders the service's dismiss text."""
         session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
@@ -814,7 +838,7 @@ class TestSlashWorkflowsHandler:
             session=session,
         )
 
-        usage: str = "usage: /workflows [abort <workflow-id> | dismiss <workflow-id>]"
+        usage: str = "usage: /workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]"
         assert result.rendered == usage
         assert result_missing_id.rendered == usage
 
@@ -867,5 +891,8 @@ class TestSlashWorkflowsHandler:
         )
 
         assert result.rendered is not None
-        assert "/workflows [abort <workflow-id> | dismiss <workflow-id>]" in result.rendered
+        assert (
+            "/workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]"
+            in result.rendered
+        )
         assert "list detached workflows" in result.rendered

@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.agents.slo_agent.orchestrator.dao import (
+    OrchestratorResultDAO,
     SubAgentResultDAO,
     SubAgentTaskDAO,
 )
 from src.agents.slo_agent.orchestrator.pool import MAX_CONCURRENCY, MAX_PARALLEL_TASKS, SubAgentPool
+from src.agents.slo_agent.orchestrator.process import SubAgentProcess
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -83,8 +86,7 @@ class TestSubAgentPoolBatchRejection:
         """An oversized batch returns a failed ``OrchestratorResultDAO`` immediately."""
         pool, relayed = _make_pool()
         tasks: list[SubAgentTaskDAO] = [
-            SubAgentTaskDAO(task_id=f"t{i}", prompt="x")
-            for i in range(MAX_PARALLEL_TASKS + 1)
+            SubAgentTaskDAO(task_id=f"t{i}", prompt="x") for i in range(MAX_PARALLEL_TASKS + 1)
         ]
 
         result = await pool.dispatch(mode="parallel", tasks=tasks)
@@ -118,6 +120,41 @@ class TestSubAgentPoolLifecycleEvents:
         kinds: list[str] = [e.kind for e in relayed]
         assert "sub_agent_spawned" in kinds
         assert "sub_agent_completed" in kinds
+
+    async def test_terminal_event_observes_terminal_registry_entry(self) -> None:
+        """Terminal lifecycle observers receive the already-terminal fleet snapshot.
+
+        WHAT: Snapshots the pool registry inside the terminal relay callback.
+        WHO: The fleet-reporting regression suite.
+        WHEN: The terminal lifecycle ordering changes.
+        """
+        terminal_statuses: list[str] = []
+        pool: SubAgentPool
+
+        async def capture_terminal_snapshot(event: AgentStreamEventDAO) -> None:
+            """Record the registry state visible at a terminal lifecycle relay."""
+            if event.kind != "sub_agent_completed":
+                return
+            terminal_statuses.append(pool.registry.snapshot()[0].status)
+
+        pool = SubAgentPool(
+            orchestrator_session_id="orch-1",
+            default_model=None,
+            relay=capture_terminal_snapshot,
+        )
+        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+
+        async def fake_process_run(self_proc) -> SubAgentResultDAO:
+            """Return one completed process result without spawning a subprocess."""
+            return _completed_result(self_proc._task.task_id)
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.pool.SubAgentProcess.run",
+            new=fake_process_run,
+        ):
+            await pool.dispatch(mode="single", tasks=[task])
+
+        assert terminal_statuses == ["completed"]
 
     async def test_failed_task_emits_sub_agent_failed_event(self) -> None:
         """A failed task emits ``sub_agent_failed`` instead of ``sub_agent_completed``."""
@@ -242,9 +279,7 @@ class TestResolveChildSessionId:
             session_id="explicit-child-id",
         )
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.pool.FilesystemSessionHistoryStore"
-        ) as MockStore:
+        with patch("src.agents.slo_agent.orchestrator.pool.FilesystemSessionHistoryStore") as MockStore:
             result: str = await pool._resolve_child_session_id(task=task)
 
         assert result == "explicit-child-id"
@@ -260,9 +295,7 @@ class TestResolveChildSessionId:
         )
 
         mock_store: AsyncMock = AsyncMock()
-        mock_store.resolve_session_reference = AsyncMock(
-            return_value="resolved-canonical-id"
-        )
+        mock_store.resolve_session_reference = AsyncMock(return_value="resolved-canonical-id")
 
         with patch(
             "src.agents.slo_agent.orchestrator.pool.FilesystemSessionHistoryStore",
@@ -271,9 +304,7 @@ class TestResolveChildSessionId:
             result: str = await pool._resolve_child_session_id(task=task)
 
         assert result == "resolved-canonical-id"
-        mock_store.resolve_session_reference.assert_called_once_with(
-            reference="my-session-ref"
-        )
+        mock_store.resolve_session_reference.assert_called_once_with(reference="my-session-ref")
 
     async def test_falls_back_to_new_uuid_when_reference_unresolvable(self) -> None:
         """When the history store raises ``ValueError`` a fresh uuid4 is returned."""
@@ -285,9 +316,7 @@ class TestResolveChildSessionId:
         )
 
         mock_store: AsyncMock = AsyncMock()
-        mock_store.resolve_session_reference = AsyncMock(
-            side_effect=ValueError("not found")
-        )
+        mock_store.resolve_session_reference = AsyncMock(side_effect=ValueError("not found"))
 
         with patch(
             "src.agents.slo_agent.orchestrator.pool.FilesystemSessionHistoryStore",
@@ -298,6 +327,7 @@ class TestResolveChildSessionId:
         # Result must be a fresh UUID4 (not the reference string, not the error)
         assert result != "missing-ref"
         import re
+
         assert re.match(
             r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             result,
@@ -309,12 +339,11 @@ class TestResolveChildSessionId:
         pool, _ = _make_pool()
         task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t4", prompt="x")
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.pool.FilesystemSessionHistoryStore"
-        ) as MockStore:
+        with patch("src.agents.slo_agent.orchestrator.pool.FilesystemSessionHistoryStore") as MockStore:
             result: str = await pool._resolve_child_session_id(task=task)
 
         import re
+
         assert re.match(
             r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             result,
@@ -406,6 +435,245 @@ class TestSubAgentPoolAbortedStatus:
         assert "sub_agent_aborted" not in kinds
 
 
+class TestSubAgentPoolTerminalReasons:
+    """Pool terminal statuses use the shared durable reason mapping."""
+
+    async def test_terminal_reason_for_completed(self) -> None:
+        """Completed child results persist the completed terminal reason."""
+        pool, _ = _make_pool()
+
+        async def _fake_process_run(self_proc) -> SubAgentResultDAO:
+            return _completed_result(self_proc._task.task_id)
+
+        with patch("src.agents.slo_agent.orchestrator.pool.SubAgentProcess.run", new=_fake_process_run):
+            await pool.dispatch(mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x")])
+
+        entry = pool.registry.snapshot()[0]
+        assert entry.terminal_reason == "completed"
+
+    async def test_terminal_reason_for_failed(self) -> None:
+        """Failed child results persist the failed terminal reason."""
+        pool, _ = _make_pool()
+
+        async def _fake_process_run(self_proc) -> SubAgentResultDAO:
+            return _failed_result(self_proc._task.task_id)
+
+        with patch("src.agents.slo_agent.orchestrator.pool.SubAgentProcess.run", new=_fake_process_run):
+            await pool.dispatch(mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x")])
+
+        entry = pool.registry.snapshot()[0]
+        assert entry.terminal_reason == "failed"
+
+    async def test_terminal_reason_for_aborted(self) -> None:
+        """Aborted child results persist the operator-abort terminal reason."""
+        pool, _ = _make_pool()
+
+        async def _fake_process_run(self_proc) -> SubAgentResultDAO:
+            return SubAgentResultDAO(
+                task_id=self_proc._task.task_id,
+                session_id="s",
+                status="aborted",
+                exit_code=2,
+            )
+
+        with patch("src.agents.slo_agent.orchestrator.pool.SubAgentProcess.run", new=_fake_process_run):
+            await pool.dispatch(mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x")])
+
+        entry = pool.registry.snapshot()[0]
+        assert entry.terminal_reason == "operator_abort"
+
+    async def test_snapshot_omits_workflow_id_when_not_detached(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-detached pool persists a fleet snapshot without workflow identity."""
+        monkeypatch.delenv("SLO_WORKFLOW_ID", raising=False)
+
+        async def _relay(event: AgentStreamEventDAO) -> None:
+            return None
+
+        with patch("src.agents.slo_agent.orchestrator.pool.default_history_root", return_value=tmp_path):
+            pool: SubAgentPool = SubAgentPool(
+                orchestrator_session_id="orchestrator-1",
+                default_model=None,
+                relay=_relay,
+            )
+
+            async def _fake_process_run(self_proc) -> SubAgentResultDAO:
+                return _completed_result(self_proc._task.task_id)
+
+            with patch("src.agents.slo_agent.orchestrator.pool.SubAgentProcess.run", new=_fake_process_run):
+                await pool.dispatch(mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x")])
+
+        fleet_path: Path = tmp_path / "orchestrator-1" / "fleet.json"
+        assert fleet_path.exists()
+        assert '"workflow_id": null' in fleet_path.read_text(encoding="utf-8")
+
+
+class TestSubAgentPoolAbortAndDrain:
+    """Ordered pool abort records and reports every active child."""
+
+    async def test_dispatch_returns_sealed_error_after_abort(self) -> None:
+        """A sealed pool rejects a new task batch without spawning children."""
+        pool, _ = _make_pool()
+        pool._sealed = True
+        tasks: list[SubAgentTaskDAO] = [SubAgentTaskDAO(task_id="t1", prompt="x")]
+
+        result = await pool.dispatch(mode="single", tasks=tasks)
+
+        assert result.error == "pool sealed by abort; no new sub-agents will be spawned"
+        assert result.failed_task_ids == ["t1"]
+
+    async def test_abort_and_drain_noops_when_already_sealed(self) -> None:
+        """A second ordered abort does not repeat child cancellation or recording."""
+        pool, _ = _make_pool()
+        pool._sealed = True
+        pool.cancel_all = AsyncMock()
+
+        await pool.abort_and_drain()
+
+        pool.cancel_all.assert_not_called()
+
+    async def test_abort_and_drain_concurrent_callers_join_one_shutdown(self) -> None:
+        """Concurrent abort callers wait for the same ordered pool shutdown."""
+        pool, _ = _make_pool()
+        started: asyncio.Event = asyncio.Event()
+        release: asyncio.Event = asyncio.Event()
+
+        async def cancel_all() -> None:
+            started.set()
+            await release.wait()
+
+        pool.cancel_all = AsyncMock(side_effect=cancel_all)
+        first: asyncio.Task[None] = asyncio.create_task(pool.abort_and_drain())
+        await started.wait()
+        second: asyncio.Task[None] = asyncio.create_task(pool.abort_and_drain())
+        await asyncio.sleep(0)
+
+        assert second.done() is False
+        release.set()
+        await asyncio.gather(first, second)
+        pool.cancel_all.assert_awaited_once()
+
+    async def test_run_completion_after_abort_keeps_operator_abort_record(self) -> None:
+        """A late natural wrapper result projects the durable operator-abort result."""
+        pool, _ = _make_pool()
+        started: asyncio.Event = asyncio.Event()
+        release: asyncio.Event = asyncio.Event()
+        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+
+        async def process_run(process: SubAgentProcess) -> SubAgentResultDAO:
+            process._registry.mark_running(session_id=process._session_id, pid=123, started_at=1.0)
+            started.set()
+            await release.wait()
+            return _completed_result(process._task.task_id)
+
+        with patch.object(SubAgentProcess, "run", new=process_run):
+            dispatch: asyncio.Task[OrchestratorResultDAO] = asyncio.create_task(
+                pool.dispatch(mode="single", tasks=[task])
+            )
+            await started.wait()
+            await pool.abort_and_drain()
+            release.set()
+            result: OrchestratorResultDAO = await dispatch
+
+        entry = pool.registry.snapshot()[0]
+        assert entry.status == "aborted"
+        assert entry.terminal_reason == "operator_abort"
+        assert entry.terminated_by == "abort"
+        assert result.results[0].status == "aborted"
+
+    async def test_sealed_pool_does_not_spawn_task_waiting_for_capacity(self) -> None:
+        """A queued task is terminalized without spawning after the pool seals.
+
+        WHAT: Seals the pool while a wrapper waits on its concurrency semaphore.
+        WHO: The cleanup-guarantee regression suite.
+        WHEN: Pre-spawn abort handling changes.
+        """
+        pool, _ = _make_pool()
+        pool._semaphore = asyncio.Semaphore(0)
+        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+
+        with patch.object(SubAgentProcess, "run", new=AsyncMock()) as run:
+            queued: asyncio.Task[SubAgentResultDAO] = asyncio.create_task(pool._run_one(task=task))
+            await asyncio.sleep(0)
+            await pool.abort_and_drain()
+            pool._semaphore.release()
+            result: SubAgentResultDAO = await queued
+
+        assert result.status == "aborted"
+        run.assert_not_awaited()
+        entry = pool.registry.snapshot()[0]
+        assert entry.status == "aborted"
+        assert entry.terminal_reason == "operator_abort"
+
+    async def test_record_abort_outcomes_marks_running_entries(self) -> None:
+        """Running registry entries become operator-aborted by the abort drain."""
+        pool, _ = _make_pool()
+        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+        pool.registry.register(task_id="t1", session_id="child-1", task=task)
+        pool.registry.mark_running(session_id="child-1", pid=123, started_at=1.0)
+
+        await pool._record_abort_outcomes()
+
+        entry = pool.registry.snapshot()[0]
+        assert entry.status == "aborted"
+        assert entry.terminal_reason == "operator_abort"
+        assert entry.terminated_by == "abort"
+
+    async def test_record_abort_outcomes_leaves_unresolved_child_running(self) -> None:
+        """An unreadable active child stays visible for the terminal drain gate.
+
+        WHAT: Verifies abort accounting never calls an unresolved child reaped.
+        WHO: The cleanup-guarantee regression suite.
+        WHEN: Pool cancellation outcome handling changes.
+        """
+        pool, _ = _make_pool()
+        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+        pool.registry.register(task_id="t1", session_id="child-1", task=task)
+        pool.registry.mark_running(session_id="child-1", pid=123, started_at=1.0)
+        pool._cancel_outcomes = {"child-1": "unresolved"}
+
+        await pool._record_abort_outcomes()
+
+        entry = pool.registry.snapshot()[0]
+        assert entry.status == "running"
+        assert entry.terminal_reason is None
+
+    async def test_record_abort_outcomes_skips_terminal_entries(self) -> None:
+        """Already terminal entries retain their prior terminal cleanup facts."""
+        pool, _ = _make_pool()
+        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+        pool.registry.register(task_id="t1", session_id="child-1", task=task)
+        pool.registry.mark_terminal(
+            session_id="child-1",
+            status="completed",
+            answer="done",
+            exit_code=0,
+            terminal_reason="completed",
+            terminated_by="natural",
+        )
+
+        await pool._record_abort_outcomes()
+
+        entry = pool.registry.snapshot()[0]
+        assert entry.status == "completed"
+        assert entry.terminal_reason == "completed"
+
+    async def test_sub_agent_reaped_emitted_only_for_killed_children(self) -> None:
+        """Only a SIGKILL outcome emits the hard-reap lifecycle event."""
+        pool, relayed = _make_pool()
+        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+        pool.registry.register(task_id="t1", session_id="child-1", task=task)
+        pool.registry.mark_running(session_id="child-1", pid=123, started_at=1.0)
+        pool._cancel_outcomes = {"child-1": "killed"}
+
+        await pool._record_abort_outcomes()
+
+        assert [event.kind for event in relayed] == ["sub_agent_reaped"]
+
+
 class TestSubAgentPoolCancelAll:
     """``cancel_all()`` calls ``cancel()`` on every active process."""
 
@@ -425,10 +693,13 @@ class TestSubAgentPoolCancelAll:
         """``cancel_all()`` continues even when one process's ``cancel`` raises."""
         pool, _ = _make_pool()
         failing_proc: AsyncMock = AsyncMock()
+        failing_proc._session_id = "child-failing"
         failing_proc.cancel = AsyncMock(side_effect=RuntimeError("cancel failed"))
         succeeding_proc: AsyncMock = AsyncMock()
+        succeeding_proc._session_id = "child-succeeding"
         pool._active = [failing_proc, succeeding_proc]
 
         await pool.cancel_all()  # must not raise
 
         succeeding_proc.cancel.assert_called_once()
+        assert pool._cancel_outcomes["child-failing"] == "unresolved"

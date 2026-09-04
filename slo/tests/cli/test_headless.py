@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.agents.slo_agent.orchestrator.dao import exit_code_for_terminal_kind
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.cli.headless import HeadlessRunner
@@ -55,9 +57,7 @@ def _make_session_mock(events: list[AgentStreamEventDAO]) -> AsyncMock:
 class TestHeadlessRunnerEmitsJSONL:
     """``HeadlessRunner`` writes one valid JSON line per ``AgentStreamEventDAO``."""
 
-    async def test_emits_one_json_line_per_event(
-        self, tmp_path, capsys
-    ) -> None:
+    async def test_emits_one_json_line_per_event(self, tmp_path, capsys) -> None:
         """Each event dispatched by the session appears as one JSON line on stdout."""
         events: list[AgentStreamEventDAO] = [
             AgentStreamEventDAO(kind="text_start"),
@@ -76,9 +76,7 @@ class TestHeadlessRunnerEmitsJSONL:
             exit_code: int = await runner.invoke(prompt="hi")
 
         captured = capsys.readouterr()
-        lines: list[str] = [
-            line for line in captured.out.strip().split("\n") if line
-        ]
+        lines: list[str] = [line for line in captured.out.strip().split("\n") if line]
 
         assert len(lines) == len(events)
         for line, event in zip(lines, events):
@@ -87,9 +85,7 @@ class TestHeadlessRunnerEmitsJSONL:
 
         assert exit_code == 0
 
-    async def test_each_line_is_independently_parseable(
-        self, tmp_path, capsys
-    ) -> None:
+    async def test_each_line_is_independently_parseable(self, tmp_path, capsys) -> None:
         """Every stdout line is a self-contained valid JSON object."""
         events: list[AgentStreamEventDAO] = [
             AgentStreamEventDAO(kind="run_completed", content="done"),
@@ -140,9 +136,7 @@ class TestHeadlessRunnerExitCodes:
 
         assert exit_code == expected_exit
 
-    async def test_default_exit_code_is_1_when_no_terminal_event(
-        self, tmp_path
-    ) -> None:
+    async def test_default_exit_code_is_1_when_no_terminal_event(self, tmp_path) -> None:
         """When no terminal event is dispatched the exit code defaults to 1 (failed)."""
         non_terminal_event: AgentStreamEventDAO = AgentStreamEventDAO(
             kind="text_delta",
@@ -160,23 +154,23 @@ class TestHeadlessRunnerExitCodes:
 
 
 class TestHeadlessRunnerExitCodeHelper:
-    """``HeadlessRunner._exit_code_for_terminal_kind`` unit tests."""
+    """Shared terminal exit-code vocabulary unit tests."""
 
     def test_run_completed_maps_to_zero(self) -> None:
         """``run_completed`` returns exit code 0."""
-        assert HeadlessRunner._exit_code_for_terminal_kind(kind="run_completed") == 0
+        assert exit_code_for_terminal_kind(kind="run_completed") == 0
 
     def test_run_aborted_maps_to_two(self) -> None:
         """``run_aborted`` returns exit code 2."""
-        assert HeadlessRunner._exit_code_for_terminal_kind(kind="run_aborted") == 2
+        assert exit_code_for_terminal_kind(kind="run_aborted") == 2
 
     def test_run_failed_maps_to_one(self) -> None:
         """``run_failed`` returns exit code 1."""
-        assert HeadlessRunner._exit_code_for_terminal_kind(kind="run_failed") == 1
+        assert exit_code_for_terminal_kind(kind="run_failed") == 1
 
     def test_unknown_kind_maps_to_one(self) -> None:
         """Unrecognised terminal kind defaults to exit code 1."""
-        assert HeadlessRunner._exit_code_for_terminal_kind(kind="unknown_kind") == 1
+        assert exit_code_for_terminal_kind(kind="unknown_kind") == 1
 
 
 class TestSloRunCommand:
@@ -250,22 +244,30 @@ class _RecordingNotifier:
         """
         self.calls.append(("phase_update", {"phase_summary": phase_summary}))
 
-    async def completed(self, *, synthesis: str, result_json: str) -> None:
-        """Record a completed call.
+    async def fleet_update(self, *, entries: list[dict[str, object]], live_count: int) -> None:
+        """Record a compact fleet-update call from the lifecycle tap."""
+        self.calls.append(("fleet_update", {"entries": entries, "live_count": live_count}))
 
-        Args:
-            synthesis (str): Final answer text.
-            result_json (str): Last spawn result JSON.
-        """
-        self.calls.append(("completed", {"synthesis": synthesis, "result_json": result_json}))
+    async def completed(self, *, synthesis: str, result_json: str, cleanup_summary: str = "") -> None:
+        """Record a completed call with final fleet cleanup accounting."""
+        self.calls.append(
+            (
+                "completed",
+                {
+                    "synthesis": synthesis,
+                    "result_json": result_json,
+                    "cleanup_summary": cleanup_summary,
+                },
+            )
+        )
 
-    async def failed(self, *, error: str) -> None:
+    async def failed(self, *, error: str, cleanup_summary: str = "") -> None:
         """Record a failed call.
 
         Args:
             error (str): Terminal error description.
         """
-        self.calls.append(("failed", {"error": error}))
+        self.calls.append(("failed", {"error": error, "cleanup_summary": cleanup_summary}))
 
 
 def _spawn_result_event(*, content: str) -> AgentStreamEventDAO:
@@ -318,6 +320,51 @@ class TestHeadlessRunnerWorkflowNotifications:
             return_value=_make_session_mock(events=events),
         ):
             return await runner.invoke(prompt=prompt)
+
+    async def test_maybe_notify_fleet_sends_note_on_spawned(self, tmp_path) -> None:
+        """A relayed child spawn sends one complete fleet update through the notifier."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        runner._notifier = notifier  # type: ignore[assignment]
+        runner._fleet_snapshot_supplier = lambda: (
+            [{"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}],
+            1,
+        )
+
+        await runner._maybe_notify_fleet(
+            event=AgentStreamEventDAO(kind="sub_agent_spawned", sub_agent_id="child-1", task_id="t1")
+        )
+
+        assert notifier.calls == [
+            (
+                "fleet_update",
+                {
+                    "entries": [{"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}],
+                    "live_count": 1,
+                },
+            )
+        ]
+
+    async def test_maybe_notify_fleet_ignores_text_delta(self, tmp_path) -> None:
+        """Non-lifecycle stream events do not create fleet inbox traffic."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        runner._notifier = notifier  # type: ignore[assignment]
+        runner._fleet_snapshot_supplier = lambda: ([], 0)
+
+        await runner._maybe_notify_fleet(event=AgentStreamEventDAO(kind="text_delta", delta="working"))
+
+        assert notifier.calls == []
+
+    async def test_maybe_notify_fleet_noops_without_pool(self, tmp_path) -> None:
+        """Plain headless runs have no pool supplier and emit no fleet note."""
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        runner._notifier = notifier  # type: ignore[assignment]
+
+        await runner._maybe_notify_fleet(event=AgentStreamEventDAO(kind="sub_agent_spawned"))
+
+        assert notifier.calls == []
 
     async def test_started_and_completed_bracket_the_run(self, tmp_path, capsys) -> None:
         """A notified run sends started first and completed last."""
@@ -478,9 +525,7 @@ class TestHeadlessRunnerWorkflowNotifications:
         assert notifier.calls == []
         assert runner._notifier is None
 
-    async def test_workflow_id_read_from_env_with_fallback(
-        self, tmp_path, capsys, monkeypatch
-    ) -> None:
+    async def test_workflow_id_read_from_env_with_fallback(self, tmp_path, capsys, monkeypatch) -> None:
         """The real notifier is built with SLO_WORKFLOW_ID, else 'wf-unknown'."""
         monkeypatch.setenv("SLO_WORKFLOW_ID", "wf-3f2a")
         runner: HeadlessRunner = HeadlessRunner(
@@ -498,6 +543,273 @@ class TestHeadlessRunnerWorkflowNotifications:
         fallback = runner._resolve_notifier(orchestrator_session_id="orch-1")
         assert fallback is not None
         assert fallback._workflow_id == "wf-unknown"
+
+
+class TestHeadlessRunnerWatchdogControls:
+    """Cooperative shutdown and self-reporting helpers."""
+
+    def test_request_cooperative_abort_first_reason_wins(self, tmp_path) -> None:
+        """The first watchdog or signal reason owns the session abort request."""
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        session = MagicMock()
+        runner._session = session
+
+        runner._request_cooperative_abort(reason="operator_abort")
+        runner._request_cooperative_abort(reason="orchestrator_died")
+
+        assert runner._abort_reason == "operator_abort"
+        session.abort.assert_called_once()
+
+    def test_sigterm_handler_requests_operator_abort(self, tmp_path) -> None:
+        """The installed SIGTERM handler schedules the cooperative abort funnel."""
+        import signal
+
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        loop = MagicMock()
+        with patch("src.cli.headless.signal.signal") as install:
+            runner._install_sigterm_handler(loop=loop)
+        handler = install.call_args.args[1]
+
+        handler(signal.SIGTERM, None)
+
+        loop.call_soon_threadsafe.assert_called_once_with(runner._request_cooperative_abort, "operator_abort")
+
+    def test_build_status_store_only_in_workflow_mode(self, tmp_path, monkeypatch) -> None:
+        """Only workflow-mode runs bind a durable orchestrator status store."""
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        monkeypatch.delenv("SLO_WORKFLOW_ID", raising=False)
+        assert runner._build_status_store(session_id="resolved-session") is None
+
+        monkeypatch.setenv("SLO_WORKFLOW_ID", "workflow-1")
+        with patch("src.cli.headless.default_history_root", return_value=tmp_path / "history"):
+            store = runner._build_status_store(session_id="resolved-session")
+        assert store is not None
+
+    async def test_workflow_status_and_abort_paths_use_resolved_session_id(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Workflow evidence and control bind to the session built by the runner."""
+
+        class _RecordingWatchdog:
+            """Record HeadlessRunner watchdog configuration without starting a thread."""
+
+            instances: list["_RecordingWatchdog"] = []
+
+            def __init__(self, **kwargs: object) -> None:
+                """Store the runner-supplied watchdog arguments."""
+                self.kwargs: dict[str, object] = kwargs
+                self.instances.append(self)
+
+            def start(self) -> None:
+                """Provide the watchdog start seam used by HeadlessRunner."""
+
+            def stop(self) -> None:
+                """Provide the watchdog stop seam used by HeadlessRunner."""
+
+        config: SessionConfigDAO = _make_config(tmp_path)
+        session_mock: AsyncMock = _make_session_mock(events=[AgentStreamEventDAO(kind="run_completed")])
+        session_mock.session_id = "resolved-session"
+        monkeypatch.setenv("SLO_WORKFLOW_ID", "workflow-1")
+        with (
+            patch("src.cli.headless.SloAgentSession.build", return_value=session_mock),
+            patch("src.cli.headless.default_history_root", return_value=tmp_path / "history"),
+            patch("src.cli.headless.HeadlessWatchdog", side_effect=_RecordingWatchdog),
+        ):
+            exit_code: int = await HeadlessRunner(config=config).invoke(prompt="hi")
+
+        watchdog: _RecordingWatchdog = _RecordingWatchdog.instances[0]
+        assert exit_code == 0
+        assert watchdog.kwargs["abort_request_path"] == (
+            tmp_path / "history" / "resolved-session" / "abort_request.json"
+        )
+        status_path = tmp_path / "history" / "resolved-session" / "orchestrator.json"
+        assert status_path.exists()
+        assert not (tmp_path / "history" / "orchestrator.json").exists()
+
+    async def test_parent_death_cancels_blocked_stream_and_records_abort(self, tmp_path, monkeypatch) -> None:
+        """Parent death cancels a blocked session after cooperative abort grace expires."""
+
+        class _BlockedSession:
+            """Session double whose provider stream never reaches the next graph update."""
+
+            def __init__(self) -> None:
+                """Create a known identity and subscriber collection."""
+                self.session_id: str = "child-session"
+                self._subscribers: list = []
+                self.abort: MagicMock = MagicMock()
+
+            def subscribe(self, *, handler) -> None:
+                """Register the runner stdout emitter."""
+                self._subscribers.append(handler)
+
+            async def invoke(self, *, text: str):
+                """Block forever to model an in-flight provider await."""
+                await asyncio.Event().wait()
+                yield AgentStreamEventDAO(kind="run_completed")  # pragma: no cover
+
+        blocked_session: _BlockedSession = _BlockedSession()
+        capture_dir = tmp_path / "capture"
+        monkeypatch.setenv("SLO_WORKFLOW_ID", "workflow-1")
+        monkeypatch.setenv("SLO_PARENT_PID", "1234")
+        monkeypatch.setenv("SLO_CAPTURE_DIR", str(capture_dir))
+        monkeypatch.setenv("SLO_HEADLESS_HEARTBEAT_SECONDS", "0.01")
+        with (
+            patch("src.cli.headless.SloAgentSession.build", return_value=blocked_session),
+            patch("src.cli.headless.default_history_root", return_value=tmp_path / "history"),
+            patch("src.cli.headless_watchdog.ProcessProbe.is_alive", return_value=False),
+            patch("src.cli.headless.COOPERATIVE_ABORT_GRACE_SECONDS", 0.01),
+        ):
+            exit_code: int = await asyncio.wait_for(
+                HeadlessRunner(config=_make_config(tmp_path)).invoke(prompt="hi"), timeout=1.0
+            )
+
+        status: dict = json.loads(
+            (tmp_path / "history" / "child-session" / "orchestrator.json").read_text(encoding="utf-8")
+        )
+        orphan_status: dict = json.loads((capture_dir / "status.json").read_text(encoding="utf-8"))
+        assert exit_code == 2
+        assert blocked_session.abort.call_count == 1
+        assert status["state"] == "aborted"
+        assert status["exit_code"] == 2
+        assert orphan_status["failure_code"] == "orchestrator_died"
+
+    def test_parent_pid_from_env_rejects_non_numeric(self, monkeypatch) -> None:
+        """Malformed parent identity cannot enable the parent-death watch."""
+        monkeypatch.setenv("SLO_PARENT_PID", "pid-abc")
+        assert HeadlessRunner._parent_pid_from_env() is None
+
+    def test_orphan_status_written_only_on_parent_death(self, tmp_path, monkeypatch) -> None:
+        """Only parent-death shutdown writes child-owned orphan terminal evidence."""
+        capture_dir = tmp_path / "capture"
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        runner._abort_reason = "operator_abort"
+        monkeypatch.setenv("SLO_CAPTURE_DIR", str(capture_dir))
+        runner._write_orphan_status_if_needed(session_id="child-1")
+        assert not (capture_dir / "status.json").exists()
+
+        runner._abort_reason = "orchestrator_died"
+        runner._write_orphan_status_if_needed(session_id="child-1")
+        payload: dict = json.loads((capture_dir / "status.json").read_text(encoding="utf-8"))
+        assert payload["status"] == "aborted"
+        assert payload["failure_code"] == "orchestrator_died"
+
+
+class TestHeadlessRunnerDrainGate:
+    """Terminal workflow status is gated on a drained fleet."""
+
+    async def test_write_terminal_status_drains_before_writing(self, tmp_path) -> None:
+        """Fleet drain completes before the terminal status store is written."""
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        runner._status_store = MagicMock()
+        runner._drain_fleet = AsyncMock()
+
+        await runner._write_terminal_status()
+
+        runner._drain_fleet.assert_awaited_once()
+        runner._status_store.write_terminal.assert_called_once()
+
+    async def test_write_terminal_status_withholds_unresolved_fleet(self, tmp_path) -> None:
+        """Terminal evidence is withheld while a live fleet entry is unresolved."""
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        runner._status_store = MagicMock()
+        runner._drain_fleet = AsyncMock(return_value=False)
+
+        await runner._write_terminal_status()
+
+        runner._status_store.write_terminal.assert_not_called()
+
+    async def test_drain_records_reaped_orphan_for_straggler(self, tmp_path, monkeypatch) -> None:
+        """A verified running child becomes a sweep-owned reaped orphan."""
+        from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
+
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        registry: MagicMock = MagicMock()
+        entry: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1", session_id="child-1", status="running", pid=123
+        )
+        registry.snapshot.return_value = [entry]
+        pool: MagicMock = MagicMock()
+        pool.registry = registry
+        runner._attached_pool = lambda: pool
+        monkeypatch.setattr(
+            "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "matching"
+        )
+        monkeypatch.setattr("src.cli.headless.FleetReaper.reap", AsyncMock(return_value="killed"))
+
+        await runner._drain_fleet()
+
+        registry.mark_terminal.assert_called_once_with(
+            session_id="child-1",
+            status="aborted",
+            answer="reaped during terminal drain",
+            exit_code=-9,
+            terminal_reason="reaped_orphan",
+            terminated_by="sweep",
+        )
+
+    async def test_drain_never_signals_recycled_pid(self, tmp_path, monkeypatch) -> None:
+        """A running entry with foreign argv is never passed to the reaper."""
+        from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
+
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        registry: MagicMock = MagicMock()
+        registry.snapshot.return_value = [
+            SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)
+        ]
+        pool: MagicMock = MagicMock()
+        pool.registry = registry
+        runner._attached_pool = lambda: pool
+        monkeypatch.setattr(
+            "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "recycled_pid"
+        )
+        reap: AsyncMock = AsyncMock()
+        monkeypatch.setattr("src.cli.headless.FleetReaper.reap", reap)
+        monkeypatch.setattr("src.cli.headless.ProcessProbe.is_alive", lambda *, pid: True)
+
+        await runner._drain_fleet()
+
+        reap.assert_not_awaited()
+        registry.mark_terminal.assert_called_once_with(
+            session_id="child-1",
+            status="failed",
+            answer="recorded pid belongs to a different process; not signalled",
+            exit_code=1,
+            terminal_reason="failed",
+            terminated_by="sweep",
+        )
+
+    async def test_drain_leaves_unreadable_live_pid_unresolved(self, tmp_path, monkeypatch) -> None:
+        """Unreadable live argv withholds terminal status instead of signaling blindly."""
+        from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
+
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        registry: MagicMock = MagicMock()
+        registry.snapshot.return_value = [
+            SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)
+        ]
+        pool: MagicMock = MagicMock()
+        pool.registry = registry
+        runner._attached_pool = lambda: pool
+        monkeypatch.setattr(
+            "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "unreadable"
+        )
+        reap: AsyncMock = AsyncMock()
+        monkeypatch.setattr("src.cli.headless.FleetReaper.reap", reap)
+
+        is_drained: bool = await runner._drain_fleet()
+
+        assert is_drained is False
+        reap.assert_not_awaited()
+        registry.mark_terminal.assert_not_called()
+
+    async def test_write_terminal_status_noops_without_store(self, tmp_path) -> None:
+        """A plain headless run skips drain work without workflow status storage."""
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        runner._drain_fleet = AsyncMock()
+
+        await runner._write_terminal_status()
+
+        runner._drain_fleet.assert_not_awaited()
 
 
 class TestHeadlessNotifyEndToEnd:
@@ -549,9 +861,7 @@ class TestHeadlessNotifyEndToEnd:
         assert all(message.payload["workflow_id"] == "wf-3f2a" for message in pending)
         assert "workflow synthesis" in pending[-1].text
 
-    async def test_exploding_inbox_never_alters_exit_code_or_stdout(
-        self, tmp_path, capsys
-    ) -> None:
+    async def test_exploding_inbox_never_alters_exit_code_or_stdout(self, tmp_path, capsys) -> None:
         """An inbox that raises on every call leaves the run's output untouched."""
         from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
 

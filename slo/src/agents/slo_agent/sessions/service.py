@@ -1428,6 +1428,19 @@ class SloAgentSession:
         self._sub_agent_pool = pool
 
     @property
+    def sub_agent_pool(self) -> Optional["SubAgentPool"]:
+        """Return the pool attached by orchestrator bootstrap, if any.
+
+        WHAT: Exposes the session-owned pool without transferring ownership.
+        WHO: Called by HeadlessRunner cleanup paths.
+        WHEN: After bootstrap attaches orchestrator tools and before teardown.
+
+        Returns:
+            Optional[SubAgentPool]: Attached pool, or None for ordinary sessions.
+        """
+        return self._sub_agent_pool
+
+    @property
     def orchestration_tools(self) -> list[BaseTool]:
         """Return the orchestrator tools attached by ``attach_sub_agent_pool``.
 
@@ -1451,15 +1464,13 @@ class SloAgentSession:
     def abort(self) -> None:
         """Request graceful cancellation of the in-flight run.
 
-        Aborts the active ``SloAgent`` turn and, when an orchestrator pool
-        is active, also cancels all child sub-agent processes via
-        ``cancel_all()``. Child cancellation is scheduled as a future so it
-        does not block the abort signal path.
+        Aborts the active ``SloAgent`` turn and schedules the pool's ordered
+        seal-and-drain shutdown when an orchestrator pool is active.
         """
         if self._agent is not None:
             self._agent.abort()
         if self._sub_agent_pool is not None:
-            asyncio.ensure_future(self._sub_agent_pool.cancel_all())
+            asyncio.ensure_future(self._sub_agent_pool.abort_and_drain())
 
     def switch_model(self, *, model_name: str) -> None:
         """Switch the active model and invalidate lazy-built agent state.
@@ -1920,6 +1931,14 @@ class SloAgentSession:
                             turn_id=prepared.turn_id,
                         )
                     yield event
+            except asyncio.CancelledError:
+                tracker.aborted = True
+                await self._finalize_successful_attempt(
+                    tracker=tracker,
+                    turn_id=prepared.turn_id,
+                )
+                yield AgentStreamEventDAO(kind="run_aborted", content="<aborted>")
+                return
             except Exception as exc:
                 await self._finalize_failed_attempt(
                     tracker=tracker,

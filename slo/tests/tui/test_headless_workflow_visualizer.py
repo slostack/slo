@@ -1,9 +1,14 @@
 """Tests for WorkflowVisualizerLoader and HeadlessWorkflowVisualizer (sub-spec 53.a.5)."""
+
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Optional
+
+from textual.content import Content
+from textual.widgets import Label, RichLog
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -18,11 +23,11 @@ from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.workflow_visualizer_loader import (
     ChildSessionSummaryDAO,
+    OrchestratorNodeDAO,
     HeadlessWorkflowVisualizerConfigDAO,
     WorkflowDataDAO,
     WorkflowVisualizerLoader,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers / factories
@@ -345,10 +350,8 @@ class TestDiscoverChildrenFromCaptureDirs:
         store = _mock_store(root=tmp_path)
         loader = WorkflowVisualizerLoader(config=_config(), store=store)
 
-        result: list[ChildSessionSummaryDAO] = (
-            loader._discover_children_from_capture_dirs(
-                parent_session_id="parent-x",
-            )
+        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
+            parent_session_id="parent-x",
         )
 
         assert result == []
@@ -362,18 +365,14 @@ class TestDiscoverChildrenFromCaptureDirs:
         store = _mock_store(root=tmp_path)
         loader = WorkflowVisualizerLoader(config=_config(), store=store)
 
-        result: list[ChildSessionSummaryDAO] = (
-            loader._discover_children_from_capture_dirs(
-                parent_session_id="parent-x",
-            )
+        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
+            parent_session_id="parent-x",
         )
 
         assert len(result) == 1
         assert result[0].session_id == child_id
 
-    def test_capture_presence_flags_set_when_files_exist(
-        self, tmp_path: Path
-    ) -> None:
+    def test_capture_presence_flags_set_when_files_exist(self, tmp_path: Path) -> None:
         """has_stdout_capture and has_stderr_capture are set from file existence."""
         child_id: str = str(uuid4())
         child_dir: Path = tmp_path / "parent-x" / "children" / child_id
@@ -384,18 +383,14 @@ class TestDiscoverChildrenFromCaptureDirs:
         store = _mock_store(root=tmp_path)
         loader = WorkflowVisualizerLoader(config=_config(), store=store)
 
-        result: list[ChildSessionSummaryDAO] = (
-            loader._discover_children_from_capture_dirs(
-                parent_session_id="parent-x",
-            )
+        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
+            parent_session_id="parent-x",
         )
 
         assert result[0].has_stdout_capture is True
         assert result[0].has_stderr_capture is True
 
-    def test_capture_presence_flags_false_when_files_absent(
-        self, tmp_path: Path
-    ) -> None:
+    def test_capture_presence_flags_false_when_files_absent(self, tmp_path: Path) -> None:
         """has_stdout_capture and has_stderr_capture are False when files do not exist."""
         child_id: str = str(uuid4())
         child_dir: Path = tmp_path / "parent-x" / "children" / child_id
@@ -404,10 +399,8 @@ class TestDiscoverChildrenFromCaptureDirs:
         store = _mock_store(root=tmp_path)
         loader = WorkflowVisualizerLoader(config=_config(), store=store)
 
-        result: list[ChildSessionSummaryDAO] = (
-            loader._discover_children_from_capture_dirs(
-                parent_session_id="parent-x",
-            )
+        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
+            parent_session_id="parent-x",
         )
 
         assert result[0].has_stdout_capture is False
@@ -427,11 +420,9 @@ class TestMergeChildDiscoveries:
         evt_child = ChildSessionSummaryDAO(session_id="from-event", status="completed")
         dir_child = ChildSessionSummaryDAO(session_id="from-dir", status="running")
 
-        result: list[ChildSessionSummaryDAO] = (
-            WorkflowVisualizerLoader._merge_child_discoveries(
-                from_events=[evt_child],
-                from_dirs=[dir_child],
-            )
+        result: list[ChildSessionSummaryDAO] = WorkflowVisualizerLoader._merge_child_discoveries(
+            from_events=[evt_child],
+            from_dirs=[dir_child],
         )
 
         assert result[0].session_id == "from-event"
@@ -442,11 +433,9 @@ class TestMergeChildDiscoveries:
         shared = ChildSessionSummaryDAO(session_id="shared-id", status="completed")
         dir_duplicate = ChildSessionSummaryDAO(session_id="shared-id", status="running")
 
-        result: list[ChildSessionSummaryDAO] = (
-            WorkflowVisualizerLoader._merge_child_discoveries(
-                from_events=[shared],
-                from_dirs=[dir_duplicate],
-            )
+        result: list[ChildSessionSummaryDAO] = WorkflowVisualizerLoader._merge_child_discoveries(
+            from_events=[shared],
+            from_dirs=[dir_duplicate],
         )
 
         assert len(result) == 1
@@ -517,9 +506,7 @@ class TestLoadChildTranscriptEntries:
     """Transcript loading — canonical history vs stdout capture fallback."""
 
     @pytest.mark.asyncio
-    async def test_uses_canonical_history_when_child_session_exists(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_uses_canonical_history_when_child_session_exists(self, tmp_path: Path) -> None:
         """When the child has canonical history, transcript comes from there."""
         child_id: str = str(uuid4())
         child_event = _event(kind="user_message")
@@ -543,9 +530,7 @@ class TestLoadChildTranscriptEntries:
         assert isinstance(entries, list)
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_stdout_capture_when_no_canonical_history(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_falls_back_to_stdout_capture_when_no_canonical_history(self, tmp_path: Path) -> None:
         """When child has no canonical history, stdout.jsonl capture is used."""
         from src.agents.slo_agent.events.stream import AgentStreamEventDAO  # noqa: PLC0415
 
@@ -576,9 +561,7 @@ class TestLoadChildTranscriptEntries:
         assert entries[0].answer == "hello from child"
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_history_and_no_capture(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_returns_empty_when_no_history_and_no_capture(self, tmp_path: Path) -> None:
         """No canonical history and no capture file → empty transcript."""
         store = _mock_store(root=tmp_path, child_exists=False)
         loader = WorkflowVisualizerLoader(config=_config(), store=store)
@@ -842,8 +825,8 @@ class TestFollowTimerLifecycle:
         app = HeadlessWorkflowVisualizer(config=cfg, loader=mock_loader)
 
         async with app.run_test() as pilot:
-            await pilot.press("f")   # follow off → timer None
-            await pilot.press("f")   # follow on  → one timer
+            await pilot.press("f")  # follow off → timer None
+            await pilot.press("f")  # follow on  → one timer
             assert app._follow is True
             assert app._refresh_timer is not None
 
@@ -894,9 +877,7 @@ class TestLoadOrchestratorContext:
             user_prompt="go",
             model="claude-sonnet-4-6",
         )
-        (session_dir / "orchestrator_context.json").write_bytes(
-            dao.model_dump_json().encode()
-        )
+        (session_dir / "orchestrator_context.json").write_bytes(dao.model_dump_json().encode())
 
         store = _mock_store(root=tmp_path)
         loader = WorkflowVisualizerLoader(config=_config(), store=store)
@@ -929,6 +910,53 @@ class TestLoadOrchestratorContext:
 # ---------------------------------------------------------------------------
 # WorkflowVisualizerLoader — load_spawn_context (sub-spec 54.a.4)
 # ---------------------------------------------------------------------------
+
+
+class TestChildCapturePath:
+    """Child capture-path delegation."""
+
+    def test_delegates_child_directory_to_orchestration_layout(self, tmp_path: Path) -> None:
+        """Child capture paths use the shared orchestration layout vocabulary."""
+        store: MagicMock = _mock_store(root=tmp_path)
+        loader = WorkflowVisualizerLoader(config=_config(), store=store)
+        canonical_dir: Path = tmp_path / "parent" / "children" / "child"
+
+        with patch(
+            "src.tui.workflow_visualizer_loader.OrchestrationLayout.child_capture_dir",
+            return_value=canonical_dir,
+        ) as child_capture_dir:
+            path: Path = loader._child_capture_path(
+                parent_session_id="parent",
+                child_session_id="child",
+                filename="stdout.jsonl",
+            )
+
+        assert path == canonical_dir / "stdout.jsonl"
+        child_capture_dir.assert_called_once_with(
+            history_root=tmp_path,
+            parent_session_id="parent",
+            child_session_id="child",
+        )
+
+    def test_discovery_delegates_children_directory_to_orchestration_layout(self, tmp_path: Path) -> None:
+        """Child discovery uses the shared children-directory vocabulary."""
+        store: MagicMock = _mock_store(root=tmp_path)
+        loader = WorkflowVisualizerLoader(config=_config(), store=store)
+        canonical_dir: Path = tmp_path / "canonical-children"
+
+        with patch(
+            "src.tui.workflow_visualizer_loader.OrchestrationLayout.children_dir",
+            return_value=canonical_dir,
+        ) as children_dir:
+            summaries: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
+                parent_session_id="parent",
+            )
+
+        assert summaries == []
+        children_dir.assert_called_once_with(
+            history_root=tmp_path,
+            parent_session_id="parent",
+        )
 
 
 class TestLoadSpawnContext:
@@ -1094,9 +1122,7 @@ class TestWorkflowDataDAOOrchestratorContext:
         """orchestrator_context is stored when supplied."""
         from src.agents.slo_agent.orchestrator.context_dao import OrchestratorContextDAO
 
-        ctx = OrchestratorContextDAO.build(
-            system_prompt="s", user_prompt="u", model=None
-        )
+        ctx = OrchestratorContextDAO.build(system_prompt="s", user_prompt="u", model=None)
         dao = WorkflowDataDAO(parent_session_id="p", orchestrator_context=ctx)
         assert dao.orchestrator_context is not None
         assert dao.orchestrator_context.system_prompt == "s"
@@ -1200,9 +1226,7 @@ class TestOrchestratorContextToggle:
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         mock_loader = MagicMock()
-        mock_loader.load = AsyncMock(
-            return_value=WorkflowDataDAO(parent_session_id="p", children=[])
-        )
+        mock_loader.load = AsyncMock(return_value=WorkflowDataDAO(parent_session_id="p", children=[]))
         mock_loader.load_orchestrator_context = MagicMock(return_value=None)
         app = HeadlessWorkflowVisualizer(config=_config(), loader=mock_loader)
 
@@ -1218,9 +1242,7 @@ class TestOrchestratorContextToggle:
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         mock_loader = MagicMock()
-        mock_loader.load = AsyncMock(
-            return_value=WorkflowDataDAO(parent_session_id="p", children=[])
-        )
+        mock_loader.load = AsyncMock(return_value=WorkflowDataDAO(parent_session_id="p", children=[]))
         mock_loader.load_orchestrator_context = MagicMock(return_value=None)
         app = HeadlessWorkflowVisualizer(config=_config(), loader=mock_loader)
 
@@ -1238,9 +1260,7 @@ class TestOrchestratorContextToggle:
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         mock_loader = MagicMock()
-        mock_loader.load = AsyncMock(
-            return_value=WorkflowDataDAO(parent_session_id="p", children=[])
-        )
+        mock_loader.load = AsyncMock(return_value=WorkflowDataDAO(parent_session_id="p", children=[]))
         mock_loader.load_orchestrator_context = MagicMock(return_value=None)
         app = HeadlessWorkflowVisualizer(config=_config(), loader=mock_loader)
 
@@ -1255,6 +1275,301 @@ class TestOrchestratorContextToggle:
             assert "hidden" in panel.classes
 
 
+class TestVisualizerOrchestratorAndStreaming:
+    """Sub-spec 71.a.7 visualizer rendering decisions."""
+
+    @pytest.mark.asyncio
+    async def test_child_list_starts_with_orchestrator_node(self) -> None:
+        """Places the always-present orchestrator before discovered children."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        loader: MagicMock = MagicMock()
+        loader.load = AsyncMock(
+            return_value=WorkflowDataDAO(
+                parent_session_id="parent",
+                orchestrator=OrchestratorNodeDAO(session_id="parent", state="running"),
+                children=[ChildSessionSummaryDAO(session_id="child")],
+            )
+        )
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            first_row = app.query_one("#child-list").children[0]
+            rendered = first_row.query_one(Label).render()
+            assert isinstance(rendered, Content)
+            assert "orchestrator" in rendered.plain
+
+    def test_child_row_shows_liveness_suffix(self) -> None:
+        """Shows liveness, heartbeat phase, and stdout activity age on child rows."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        label = HeadlessWorkflowVisualizer._child_label(
+            child=ChildSessionSummaryDAO(
+                session_id="child", liveness_state="healthy", heartbeat_phase="streaming", last_stdout_at=0.0
+            )
+        )
+
+        assert "healthy" in label.plain
+        assert "streaming" in label.plain
+        assert "ago" in label.plain
+
+    def test_child_row_shows_liveness_before_first_heartbeat(self) -> None:
+        """Fleet-backed startup rows retain liveness and activity with a phase fallback."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        label = HeadlessWorkflowVisualizer._child_label(
+            child=ChildSessionSummaryDAO(
+                session_id="child",
+                liveness_state="degraded",
+                last_stdout_at=time.monotonic(),
+            )
+        )
+
+        assert "degraded" in label.plain
+        assert "awaiting heartbeat" in label.plain
+        assert "out" in label.plain
+
+    def test_child_row_shows_reaped_icon(self) -> None:
+        """Uses the reaped aborted icon for a swept orphan child."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        label = HeadlessWorkflowVisualizer._child_label(
+            child=ChildSessionSummaryDAO(session_id="child", terminal_reason="reaped_orphan")
+        )
+
+        assert "⊘ reaped" in label.plain
+
+    def test_child_label_when_terminal_includes_exit_reason_and_terminator(self) -> None:
+        """Terminal facts remain visible in the child-list row."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        label = HeadlessWorkflowVisualizer._child_label(
+            child=ChildSessionSummaryDAO(
+                session_id="child",
+                status="failed",
+                exit_code=7,
+                terminal_reason="failed",
+                terminated_by="sweep",
+            )
+        )
+
+        assert "failed" in label.plain
+        assert "exit 7" in label.plain
+        assert "sweep" in label.plain
+
+    def test_append_live_event_when_tool_call_ends_appends_the_buffered_call(self) -> None:
+        """A completed live tool call renders its buffered JSON input."""
+        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=MagicMock())
+
+        app._append_live_event(
+            session_id="child",
+            event=AgentStreamEventDAO(kind="tool_call_start", block_id="call", tool_name="bash"),
+        )
+        app._append_live_event(
+            session_id="child",
+            event=AgentStreamEventDAO(
+                kind="tool_call_delta", block_id="call", tool_arguments_delta='{"command":'
+            ),
+        )
+        app._append_live_event(
+            session_id="child",
+            event=AgentStreamEventDAO(kind="tool_call_delta", block_id="call", tool_arguments_delta='"pwd"}'),
+        )
+        app._append_live_event(
+            session_id="child",
+            event=AgentStreamEventDAO(kind="tool_call_end", block_id="call"),
+        )
+
+        entry = app._live_entries["child"][0]
+        assert entry.kind == "tool"
+        assert entry.tool_name == "bash"
+        assert entry.tool_input == {"command": "pwd"}
+
+    def test_append_live_event_when_tool_result_matches_call_appends_result(self) -> None:
+        """A matching live tool result renders after its call entry."""
+        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=MagicMock())
+
+        app._append_live_event(
+            session_id="child",
+            event=AgentStreamEventDAO(kind="tool_call_start", block_id="call", tool_name="bash"),
+        )
+        app._append_live_event(
+            session_id="child",
+            event=AgentStreamEventDAO(kind="tool_call_end", block_id="call"),
+        )
+        app._append_live_event(
+            session_id="child",
+            event=AgentStreamEventDAO(kind="tool_result", tool_call_id="call", content="/repo"),
+        )
+
+        entry = app._live_entries["child"][1]
+        assert entry.kind == "tool"
+        assert entry.tool_name == "bash"
+        assert entry.output == "/repo"
+
+    @pytest.mark.asyncio
+    async def test_detail_pane_coalesces_text_deltas(self) -> None:
+        """Appends consecutive live text deltas into one assistant entry."""
+        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        loader: MagicMock = MagicMock()
+        loader.load = AsyncMock(
+            return_value=WorkflowDataDAO(
+                parent_session_id="parent", children=[ChildSessionSummaryDAO(session_id="child")]
+            )
+        )
+        loader.read_child_stdout_tail = MagicMock(
+            return_value=[
+                AgentStreamEventDAO(kind="text_delta", delta="hello ").model_dump_json().encode(),
+                AgentStreamEventDAO(kind="text_delta", delta="world").model_dump_json().encode(),
+            ]
+        )
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert len(app._live_entries["child"]) == 1
+            assert app._live_entries["child"][0].answer == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_detail_pane_closes_block_on_terminal_event(self) -> None:
+        """Clears the active live assistant block after a terminal capture event."""
+        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        loader: MagicMock = MagicMock()
+        loader.load = AsyncMock(
+            return_value=WorkflowDataDAO(
+                parent_session_id="parent", children=[ChildSessionSummaryDAO(session_id="child")]
+            )
+        )
+        loader.read_child_stdout_tail = MagicMock(
+            return_value=[
+                AgentStreamEventDAO(kind="text_delta", delta="answer").model_dump_json().encode(),
+                AgentStreamEventDAO(kind="run_completed").model_dump_json().encode(),
+            ]
+        )
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert "child" not in app._live_open_assistant
+
+    @pytest.mark.asyncio
+    async def test_summary_bar_shows_cleanup_line(self) -> None:
+        """Shows durable cleanup accounting whenever the loader has fleet evidence."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+        from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, SubAgentStatusDAO
+
+        loader: MagicMock = MagicMock()
+        loader.load = AsyncMock(
+            return_value=WorkflowDataDAO(
+                parent_session_id="parent",
+                fleet_snapshot=FleetSnapshotDAO(
+                    orchestrator_session_id="parent",
+                    updated_at="now",
+                    entries=[
+                        SubAgentStatusDAO(
+                            task_id="t", session_id="c", status="completed", terminal_reason="completed"
+                        )
+                    ],
+                ),
+            )
+        )
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            rendered = app.query_one("#workflow-summary", Label).render()
+            assert isinstance(rendered, Content)
+            assert "fleet:" in rendered.plain
+
+    @pytest.mark.asyncio
+    async def test_summary_bar_shows_all_reaped(self) -> None:
+        """Confirms a terminal workflow whose recorded fleet has no live children."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+        from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, SubAgentStatusDAO
+
+        loader: MagicMock = MagicMock()
+        loader.load = AsyncMock(
+            return_value=WorkflowDataDAO(
+                parent_session_id="parent",
+                is_complete=True,
+                fleet_snapshot=FleetSnapshotDAO(
+                    orchestrator_session_id="parent",
+                    updated_at="now",
+                    entries=[SubAgentStatusDAO(task_id="t", session_id="c", status="completed")],
+                ),
+            )
+        )
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            rendered = app.query_one("#workflow-summary", Label).render()
+            assert isinstance(rendered, Content)
+            assert "all sub-processes reaped" in rendered.plain
+
+    @pytest.mark.asyncio
+    async def test_summary_bar_omits_all_reaped_when_fleet_has_pending_entry(self) -> None:
+        """A pending durable fleet entry prevents a false drained confirmation."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+        from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, SubAgentStatusDAO
+
+        loader: MagicMock = MagicMock()
+        loader.load = AsyncMock(
+            return_value=WorkflowDataDAO(
+                parent_session_id="parent",
+                is_complete=True,
+                fleet_snapshot=FleetSnapshotDAO(
+                    orchestrator_session_id="parent",
+                    updated_at="now",
+                    entries=[SubAgentStatusDAO(task_id="t", session_id="c", status="pending")],
+                ),
+            )
+        )
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            rendered = app.query_one("#workflow-summary", Label).render()
+            assert isinstance(rendered, Content)
+            assert "fleet:" in rendered.plain
+            assert "all sub-processes reaped" not in rendered.plain
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_when_orchestrator_selected_reads_orchestrator_stderr(self) -> None:
+        """The first-row orchestrator routes diagnostics to its stderr capture."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        loader: MagicMock = MagicMock()
+        loader.load = AsyncMock(
+            return_value=WorkflowDataDAO(
+                parent_session_id="parent",
+                orchestrator=OrchestratorNodeDAO(session_id="parent", state="running"),
+            )
+        )
+        loader.read_child_stdout_tail = MagicMock(return_value=[])
+        loader.load_node_stderr_lines = MagicMock(return_value=["orchestrator error"])
+        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            loader.load_node_stderr_lines.assert_called_once_with(
+                parent_session_id="parent",
+                session_id="parent",
+            )
+            assert "orchestrator error" in app.query_one("#diagnostics-log", RichLog).lines[0].text
+
+
 class TestDetailViewToggle:
     """``action_toggle_detail_view`` switches between transcript and invocation."""
 
@@ -1264,9 +1579,7 @@ class TestDetailViewToggle:
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         mock_loader = MagicMock()
-        mock_loader.load = AsyncMock(
-            return_value=WorkflowDataDAO(parent_session_id="p", children=[])
-        )
+        mock_loader.load = AsyncMock(return_value=WorkflowDataDAO(parent_session_id="p", children=[]))
         app = HeadlessWorkflowVisualizer(config=_config(), loader=mock_loader)
 
         async with app.run_test() as pilot:
@@ -1279,9 +1592,7 @@ class TestDetailViewToggle:
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         mock_loader = MagicMock()
-        mock_loader.load = AsyncMock(
-            return_value=WorkflowDataDAO(parent_session_id="p", children=[])
-        )
+        mock_loader.load = AsyncMock(return_value=WorkflowDataDAO(parent_session_id="p", children=[]))
         app = HeadlessWorkflowVisualizer(config=_config(), loader=mock_loader)
 
         async with app.run_test() as pilot:
@@ -1296,9 +1607,7 @@ class TestDetailViewToggle:
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         mock_loader = MagicMock()
-        mock_loader.load = AsyncMock(
-            return_value=WorkflowDataDAO(parent_session_id="p", children=[])
-        )
+        mock_loader.load = AsyncMock(return_value=WorkflowDataDAO(parent_session_id="p", children=[]))
         app = HeadlessWorkflowVisualizer(config=_config(), loader=mock_loader)
 
         async with app.run_test() as pilot:

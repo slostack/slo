@@ -903,7 +903,7 @@ class SlashRouter:
         rest: str,
         session: SloAgentSession,
     ) -> SlashCommandResultDAO:
-        """List, abort, or dismiss detached workflows (spec 57.a.6).
+        """List, abort, dismiss, or resume detached workflows.
 
         Deliberately does NOT self-guard on ``session.is_running`` — listing
         and aborting while the main lane is busy is a primary use case. Every
@@ -912,7 +912,8 @@ class SlashRouter:
 
         Args:
             rest (str): Trailing argument text — empty for list, or
-                ``abort <workflow-id>`` / ``dismiss <workflow-id>``.
+                ``abort <workflow-id>``, ``dismiss <workflow-id>``, or
+                ``resume <workflow-id>``.
             session (SloAgentSession): Session whose workflows are managed.
 
         Returns:
@@ -935,8 +936,10 @@ class SlashRouter:
             return SlashCommandResultDAO(rendered=await service.abort(workflow_id=workflow_id))
         if subcommand == "dismiss" and workflow_id:
             return SlashCommandResultDAO(rendered=await service.dismiss(workflow_id=workflow_id))
+        if subcommand == "resume" and workflow_id:
+            return SlashCommandResultDAO(rendered=await service.resume(workflow_id=workflow_id))
         return SlashCommandResultDAO(
-            rendered="usage: /workflows [abort <workflow-id> | dismiss <workflow-id>]",
+            rendered="usage: /workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]",
         )
 
     @classmethod

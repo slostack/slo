@@ -1318,7 +1318,7 @@ to one `Static` — the answer region of the current turn's
 
 Mounting one widget per semantic unit is what makes streaming cheap, but it
 also means a long session accumulates widgets without bound. `TRANSCRIPT_WINDOW_SIZE`
-(`src/tui/app.py`, currently `80`) caps how many children stay mounted under
+(`src/tui/app.py`, currently `500`) caps how many children stay mounted under
 `#transcript-content`. Every transcript mount calls `_enforce_transcript_window`,
 which runs a single-flight `_run_window_enforcement_pass` that walks the children
 **oldest first** and removes settled ones until the overflow is absorbed.
@@ -1366,7 +1366,7 @@ Three changes close this (spec `61-deleting-user-message-fix`):
   window below the tail must patch both.
 
 `tests/tui/test_app.py::TestProtectedTail` reproduces the original threshold sweep
-(`29 / 60 / 79 / 80 / 90` stuck-live blocks) against the real eviction algorithm,
+(`29 / 60 / 79 / 80 / 90 / 500 / 510` stuck-live blocks) against the real eviction algorithm,
 and `TestLivenessLeakReproduction` drives the whole stack — agent, projector, and
 widgets — to prove a multi-iteration turn no longer hides the next prompt.
 

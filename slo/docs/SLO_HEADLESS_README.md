@@ -108,7 +108,6 @@ When a run starts, the session id is resolved in this order (first non-`None` wi
 | `SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS` | `1.0` | Base jittered delay for the single fresh-connection stream reconnect. |
 | `SLO_PROVIDER_STREAM_CONTINUATION_MAX_ATTEMPTS` | `5` | Total TUI/headless submission attempts after a committed stream interruption. |
 | `SLO_HEADLESS_HEARTBEAT_SECONDS` | `15` | Stderr-only `headless_status` cadence while a headless run is active. |
-| `SLO_HEADLESS_HEARTBEAT_STALE_MULTIPLIER` | `3` | Recognized heartbeat intervals tolerated by a child supervisor. |
 | `DEFAULT_MODEL_NAME` | provider default | Fallback model when no preference and no `--model`. |
 | `ANTHROPIC_API_KEY` | — | Anthropic credential. |
 | `KIMI_FOR_CODING_API_KEY` | — | Kimi For Coding credential. |
@@ -130,12 +129,37 @@ applies to both the TUI and spawned headless sub-agents. A final terminal result
 still carries a redacted failure envelope when available: `failure_code`,
 `partial_output_committed`, `attempts`, and `safe_message`.
 
-During a headless run, `HeadlessRunner` emits `headless_status` records to stderr
-every `SLO_HEADLESS_HEARTBEAT_SECONDS`. Their payload contains only `phase`,
-`last_event_age_seconds`, and `attempt`; never prompt text, answers, headers,
-bodies, tokens, URLs, or raw transport errors. A parent treats only a valid
-same-session heartbeat as liveness—ordinary stderr is diagnostic output, not a
-health signal.
+During a headless run, `HeadlessRunner` emits `headless_status` records from a
+watchdog thread to stderr every `SLO_HEADLESS_HEARTBEAT_SECONDS`. Their payload
+contains only `phase`, `last_event_age_seconds`, and `attempt`; never prompt
+text, answers, headers, bodies, tokens, URLs, or raw transport errors. A valid
+same-session heartbeat is advisory liveness telemetry: `healthy`, `degraded`,
+and `silent` describe what operators can observe, but heartbeat age never
+cancels a child. Ordinary stderr is diagnostic output, not a health signal.
+
+### Durable workflow supervision files
+
+A detached workflow keeps its durable evidence under
+`$SLO_HOME/sessions/history/`. The TUI owns the workflow handle; each other
+file has one dedicated writer:
+
+```text
+<owner-session>/workflows/wf-xxxx.json       # TUI-owned workflow handle
+<orchestrator-session>/orchestrator.json     # HeadlessRunner status heartbeat
+<orchestrator-session>/fleet.json            # SubAgentPool fleet snapshot
+<orchestrator-session>/abort_request.json    # TUI abort request
+<orchestrator-session>/children/<child>/status.json  # child terminal result
+```
+
+`SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` is the sole child-cancellation
+authority. It measures child stdout inactivity; advisory heartbeat state never
+shortens that budget. Cooperative abort and terminal cleanup use SIGTERM,
+grace, SIGKILL, and reap, leaving no live child behind.
+
+From the TUI, use `/workflows resume <workflow-id>` to relaunch a `stalled` or
+`failed` workflow with its original orchestrator session history. The handle
+immediately returns to `launching` with the new pid and becomes `running` after
+the first fresh status heartbeat.
 
 ## Your First Headless Run
 
@@ -286,14 +310,18 @@ slo run -p "Analyze the codebase" \
   --json
 ```
 
-History is stored at `$SLO_HOME/sessions/history/<session_id>/`:
+History is stored at `$SLO_HOME/sessions/history/<session_id>/` by the default
+`TreeBasedFileSystemSessionHistoryStore`:
 
 ```
 ~/.slo/sessions/history/<session_id>/
 ├── session.json       # metadata: id, name, model, workdir, timestamps
-├── events.jsonl       # append-only canonical event log
+├── tree.json          # authoritative turn-grouped event history
 └── transcript.md      # human-readable derived transcript
 ```
+
+The legacy `FilesystemSessionHistoryStore` uses `events.jsonl` instead of
+`tree.json` only when it is explicitly selected.
 
 ### `--resume`
 
@@ -475,7 +503,12 @@ The left pane lists every discovered sub-agent session. Each row shows:
 - The first 8 characters of the child session id.
 - The pool task id (first 8 chars) if one is known.
 
-The right pane shows the transcript of the selected child: user messages, assistant answers, and tool calls. If the child has a canonical history entry (i.e., it ran with `--enable-history`), the transcript is projected from the canonical event log. If it ran without history (the default for sub-agents), the transcript is reconstructed from the child's captured `stdout.jsonl`.
+The right pane shows the selected child's canonical history: user messages,
+assistant answers, tool calls, tool results, and reasoning. Pool-spawned
+children always receive the pool-assigned `--session-id` and `--enable-history`,
+so this projection always has durable child history. Their appended
+`stdout.jsonl` capture remains diagnostic evidence for live tailing and
+post-mortem inspection; it is not the normal substitute for pool-child history.
 
 The status bar at the bottom shows:
 - Parent session id (first 8 chars)
@@ -679,14 +712,18 @@ The session id appears in stderr at startup:
 {"msg": "session_built", "session_id": "a1b2c3d4-...", "workdir": "/home/user/project"}
 ```
 
-History is stored at `$SLO_HOME/sessions/history/<session_id>/`:
+History is stored at `$SLO_HOME/sessions/history/<session_id>/` by the default
+`TreeBasedFileSystemSessionHistoryStore`:
 
 ```
 ~/.slo/sessions/history/a1b2c3d4-1234-5678-abcd-ef0123456789/
 ├── session.json       # metadata: id, name, model, workdir, created_at, updated_at
-├── events.jsonl       # canonical append-only event log
+├── tree.json          # authoritative turn-grouped event history
 └── transcript.md      # human-readable derived transcript (generated on demand)
 ```
+
+The legacy `FilesystemSessionHistoryStore` uses `events.jsonl` in place of
+`tree.json` only when explicitly selected.
 
 ### Inspect the history directly
 
@@ -697,10 +734,10 @@ ls ~/.slo/sessions/history/
 # View session metadata
 cat ~/.slo/sessions/history/<session_id>/session.json
 
-# View the raw event log
-cat ~/.slo/sessions/history/<session_id>/events.jsonl
+# View the default authoritative turn-grouped history
+jq . ~/.slo/sessions/history/<session_id>/tree.json
 
-# Count events by kind
+# Legacy flat-history stores expose events.jsonl when explicitly selected
 jq -r '.kind' ~/.slo/sessions/history/<session_id>/events.jsonl | sort | uniq -c
 ```
 
@@ -929,7 +966,8 @@ And stderr to:
 $SLO_HOME/sessions/history/<parent_session_id>/children/<child_session_id>/stderr.jsonl
 ```
 
-This is what the visualizer reads when a child does not have its own canonical history entry. The captures persist after the run and can be inspected directly.
+Pool-spawned children always have their own canonical history entry. The
+captures persist as diagnostic evidence and can be inspected directly.
 
 ### Pool configuration via environment variables
 
@@ -1273,11 +1311,15 @@ The visualizer discovers children two ways:
 
 The second method provides resilience: if the parent's history was written but a spawning event was missed, the child's capture directory still makes it visible. Both sources are merged and deduplicated.
 
-### Transcripts: canonical history vs. captured stdout
+### Transcripts: canonical history and diagnostic captures
 
-If a child ran with `--enable-history`, its transcript is projected from its canonical `events.jsonl`. This is rich: you see user messages, assistant turns, tool calls, tool results, and reasoning blocks.
+Pool-spawned children always receive the pool-assigned `--session-id` and
+`--enable-history`. The visualizer projects their canonical `tree.json`
+history, including user messages, assistant turns, tool calls, tool results,
+and reasoning blocks.
 
-If a child ran without history (the default), the transcript is reconstructed from the captured `stdout.jsonl`. This is lighter: you see the streamed text output but not the full event breakdown. For most debugging purposes, this is sufficient.
+`stdout.jsonl` is an appended diagnostic capture for live tailing and
+post-mortem inspection. It is not the normal substitute for pool-child history.
 
 ### Reading child stderr
 
@@ -1760,8 +1802,10 @@ python -m src.cli visualize \
 
 ### Sub-agents appear in the visualizer but their transcripts are empty
 
-- The children ran without `--enable-history` (normal) and their `stdout.jsonl` captures are empty. This can happen if the child exited before writing any output.
-- Check the raw capture: `cat ~/.slo/sessions/history/<parent_id>/children/<child_id>/stdout.jsonl`.
+- Pool-spawned children always have history enabled. Check that the child
+  session directory exists and that its `tree.json` is readable.
+- Check the diagnostic capture for an early process failure:
+  `cat ~/.slo/sessions/history/<parent_id>/children/<child_id>/stdout.jsonl`.
 
 ### Exit code 2 from a timed-out run
 

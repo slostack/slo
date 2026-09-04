@@ -20,7 +20,7 @@ import asyncio
 import base64
 import os
 import sys
-import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from typing import IO, Optional
@@ -41,12 +41,20 @@ the total forwarded bytes, so memory use is still bounded.
 """
 
 from config.logger import log_error, log_info, log_warning
-from config.timeout_resolver import positive_float_env, positive_int_env
+from config.timeout_resolver import positive_float_env
 from src.agents.model_catalog.prompt_clause import append_kimi_for_coding_clause
 from src.cli.headless_events import HeadlessLifecycleEventDAO, emit_lifecycle_event
 
+from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
 from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
+from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
+from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
+from src.agents.slo_agent.orchestrator.reaper import (
+    FleetReaper,
+    IdentityVerificationOutcome,
+    ReapOutcome,
+)
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 
@@ -92,12 +100,6 @@ TERMINATE_GRACE_SECONDS: float = positive_float_env(
 
 Overridable via ``SLO_SUBAGENT_TERMINATE_GRACE_SECONDS``.
 """
-
-HEADLESS_HEARTBEAT_STALE_MULTIPLIER: int = positive_int_env(
-    primary_name="SLO_HEADLESS_HEARTBEAT_STALE_MULTIPLIER",
-    default=3,
-)
-"""Recognized heartbeat intervals tolerated before a child is considered stale."""
 
 CHILD_INACTIVITY_TIMEOUT_SECONDS: float = positive_float_env(
     primary_name="SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS",
@@ -196,15 +198,13 @@ class SubAgentProcess:
         self._parent_session_id: Optional[str] = parent_session_id
         self._slo_home: Optional[Path] = slo_home
         self._proc: Optional[asyncio.subprocess.Process] = None
+        self._spawn_in_progress: bool = False
+        self._spawn_ready: asyncio.Event = asyncio.Event()
         self._forwarded_bytes: int = 0
         self._answer: str = ""
         self._stderr_tail: deque[str] = deque(maxlen=STDERR_TAIL_MAX_LINES)
-        self._last_liveness_at: Optional[float] = None
+        self._last_heartbeat_at: Optional[float] = None
         self._last_stdout_at: Optional[float] = None
-        self._heartbeat_seconds: float = positive_float_env(
-            primary_name="SLO_HEADLESS_HEARTBEAT_SECONDS",
-            default=15.0,
-        )
         self._failure_envelope: dict[str, object] = {}
         self._terminal_result_built: Optional[SubAgentResultDAO] = None
 
@@ -216,10 +216,7 @@ class SubAgentProcess:
         a retry scenario) does not overwrite the original record. Failures are
         caught and logged; they must not propagate into ``run()``.
         """
-        from src.agents.slo_agent.orchestrator.context_dao import (  # noqa: PLC0415
-            SpawnContextDAO,
-            dump_json_bytes,
-        )
+        from src.agents.slo_agent.orchestrator.context_dao import SpawnContextDAO  # noqa: PLC0415
 
         effective_prompt: str = append_kimi_for_coding_clause(
             prompt=self._task.prompt,
@@ -243,11 +240,7 @@ class SubAgentProcess:
                 reasoning_level=self._task.reasoning_level,
                 cwd=self._task.cwd,
             )
-            data: bytes = dump_json_bytes(model=context)
-            with tempfile.NamedTemporaryFile(dir=capture_dir, delete=False) as tmp:
-                tmp.write(data)
-                tmp_name: str = tmp.name
-            os.replace(tmp_name, spawn_path)
+            AtomicFileWriter.write_json(path=spawn_path, model=context)
         except OSError as exc:
             log_warning(
                 msg="spawn_context_write_failed",
@@ -261,7 +254,9 @@ class SubAgentProcess:
 
         Uses ``sys.executable -m src.cli`` rather than a bare ``slo`` on PATH
         so the child always runs under the same interpreter and virtualenv as
-        the orchestrator in both dev and installed layouts.
+        the orchestrator in both dev and installed layouts. The pool-assigned
+        session id and history flag are unconditional so child captures,
+        heartbeats, and history share one identity.
 
         Returns:
             list[str]: Argv for ``create_subprocess_exec``.
@@ -278,6 +273,9 @@ class SubAgentProcess:
             "--json",
             "-p",
             effective_prompt,
+            "--session-id",
+            self._session_id,
+            "--enable-history",
         ]
         if self._model is not None:
             argv += ["--model", self._model]
@@ -287,10 +285,6 @@ class SubAgentProcess:
             argv += ["--reasoning", self._task.reasoning_level]
         if self._task.resume_session_reference is not None:
             argv += ["--resume", self._task.resume_session_reference]
-        if self._task.session_id is not None:
-            argv += ["--session-id", self._task.session_id]
-        if self._task.enable_history is True:
-            argv += ["--enable-history"]
         if self._task.system_prompt is not None:
             encoded: str = base64.b64encode(self._task.system_prompt.encode()).decode()
             argv += ["--system-prompt-b64", encoded]
@@ -308,8 +302,10 @@ class SubAgentProcess:
         """
         if self._parent_session_id is None or self._slo_home is None:
             return None
-        return (
-            self._slo_home / "sessions" / "history" / self._parent_session_id / "children" / self._session_id
+        return OrchestrationLayout.child_capture_dir(
+            history_root=self._slo_home / "sessions" / "history",
+            parent_session_id=self._parent_session_id,
+            child_session_id=self._session_id,
         )
 
     def _open_capture_file(self, *, name: str) -> Optional[IO[bytes]]:
@@ -334,6 +330,23 @@ class SubAgentProcess:
         except OSError:
             return None
 
+    def _build_child_spawn_env(self) -> dict[str, str]:
+        """Build the allowlisted environment for this pool-owned child.
+
+        WHAT: Adds the current orchestrator PID and this child's canonical
+            capture directory to the shared non-secret child environment.
+        WHO: Called by run before it creates the headless child process.
+        WHEN: Once for each SubAgentProcess spawn.
+
+        Returns:
+            dict[str, str]: Allowlisted child environment with watchdog identity.
+        """
+        capture_dir: Optional[Path] = self._capture_dir()
+        extra: dict[str, str] = {"SLO_PARENT_PID": str(os.getpid())}
+        if capture_dir is not None:
+            extra["SLO_CAPTURE_DIR"] = str(capture_dir)
+        return build_headless_child_env(extra=extra)
+
     async def run(self) -> SubAgentResultDAO:
         """Spawn the child, stream its events, and return the terminal result.
 
@@ -349,13 +362,23 @@ class SubAgentProcess:
         """
         try:
             self._write_spawn_context()
-            self._proc = await asyncio.create_subprocess_exec(
-                *self._build_argv(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=_STDOUT_STREAM_LIMIT,
-                cwd=self._task.cwd,
-            )
+            self._spawn_in_progress = True
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    *self._build_argv(),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    limit=_STDOUT_STREAM_LIMIT,
+                    cwd=self._task.cwd,
+                    env=self._build_child_spawn_env(),
+                )
+                self._registry.mark_running(
+                    session_id=self._session_id,
+                    pid=self._proc.pid,
+                    started_at=time.time(),
+                )
+            finally:
+                self._spawn_ready.set()
             await asyncio.gather(
                 self._pump_stdout(stream=self._proc.stdout),
                 self._pump_stderr(stream=self._proc.stderr),
@@ -370,13 +393,34 @@ class SubAgentProcess:
                 e=exc,
                 stack_trace=True,
             )
-            return SubAgentResultDAO(
-                task_id=self._task.task_id,
-                session_id=self._session_id,
-                status="failed",
-                answer=f"{type(exc).__name__}: {exc}",
-                exit_code=1,
-            )
+            return self._failed_result_from_exception(error=exc)
+
+    def _failed_result_from_exception(self, *, error: Exception) -> SubAgentResultDAO:
+        """Build a failed result while retaining bounded child diagnostics.
+
+        WHAT: Returns retained stderr diagnostics, falling back to error text when
+        there are no child diagnostics.
+        WHO: Called by ``run`` after a spawn, stream, or inactivity failure.
+        WHEN: Once when the wrapper maps an exception to a terminal result.
+
+        Args:
+            error (Exception): Failure raised during child execution.
+
+        Returns:
+            SubAgentResultDAO: Failed result with bounded diagnostic output.
+        """
+        answer: str = self._stderr_fallback_answer()
+        if not answer:
+            answer = f"{type(error).__name__}: {error}"
+        result: SubAgentResultDAO = SubAgentResultDAO(
+            task_id=self._task.task_id,
+            session_id=self._session_id,
+            status="failed",
+            answer=answer,
+            exit_code=1,
+        )
+        self._write_child_status(result=result)
+        return result
 
     async def _pump_stdout(
         self,
@@ -387,7 +431,9 @@ class SubAgentProcess:
 
         Opens a capture file for this child's stdout when the process is
         configured with ``parent_session_id`` and ``slo_home``. Lines are
-        written to the capture file before being parsed and relayed.
+        written to the capture file before being parsed and relayed. The read
+        deadline is always the inactivity budget; heartbeat telemetry never
+        tightens it.
 
         Args:
             stream (Optional[asyncio.StreamReader]): The child's stdout reader.
@@ -400,17 +446,19 @@ class SubAgentProcess:
             while True:
                 try:
                     raw: bytes = await asyncio.wait_for(
-                        stream.readline(),
-                        timeout=self._next_child_liveness_timeout_seconds(),
+                        fut=stream.readline(),
+                        timeout=CHILD_INACTIVITY_TIMEOUT_SECONDS,
                     )
                 except asyncio.TimeoutError as exc:
-                    await self._cancel_stale_child_if_needed(
-                        now_seconds=asyncio.get_running_loop().time(),
-                    )
-                    raise TimeoutError(self._liveness_timeout_message()) from exc
+                    await self.cancel()
+                    raise TimeoutError(self._inactivity_timeout_message()) from exc
                 if not raw:
                     return
                 self._last_stdout_at = asyncio.get_running_loop().time()
+                self._registry.record_stdout(
+                    session_id=self._session_id,
+                    at_seconds=self._last_stdout_at,
+                )
                 if capture is not None:
                     capture.write(raw)
                     capture.flush()
@@ -514,54 +562,37 @@ class SubAgentProcess:
         await self._relay(tagged)
 
     def _record_headless_heartbeat(self, *, raw: bytes) -> bool:
-        """Accept only a valid same-session status lifecycle record as liveness proof."""
+        """Record telemetry from a valid same-session status lifecycle record.
+
+        WHAT: Stamps the advisory heartbeat timestamp without changing child supervision.
+        WHO: Called by the stderr reader for every child stderr line.
+        WHEN: While the child runs; fleet snapshot readers use the timestamp later.
+
+        Args:
+            raw (bytes): One raw stderr lifecycle line.
+
+        Returns:
+            bool: Whether the line was a recognized same-session heartbeat.
+        """
         try:
             lifecycle: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO.model_validate_json(raw)
         except Exception:
             return False
         if lifecycle.kind != "headless_status" or lifecycle.session_id != self._session_id:
             return False
-        self._last_liveness_at = asyncio.get_running_loop().time()
+        self._last_heartbeat_at = asyncio.get_running_loop().time()
+        phase: object = lifecycle.payload.get("phase")
+        self._registry.record_heartbeat(
+            session_id=self._session_id,
+            phase=phase if isinstance(phase, str) else "unknown",
+            at_seconds=self._last_heartbeat_at,
+        )
         return True
 
-    def _heartbeat_is_stale(self, *, now_seconds: float) -> bool:
-        """Return whether a previously healthy child missed the bounded heartbeat deadline."""
-        if self._last_liveness_at is None:
-            return False
-        return now_seconds - self._last_liveness_at >= self._heartbeat_stale_seconds()
-
-    def _heartbeat_stale_seconds(self) -> float:
-        """Return the bounded heartbeat liveness interval for the active child."""
-        return self._heartbeat_seconds * HEADLESS_HEARTBEAT_STALE_MULTIPLIER
-
-    def _next_child_liveness_timeout_seconds(self) -> float:
-        """Select the next stdout-read timeout from recognized heartbeat state."""
-        if self._last_liveness_at is None:
-            return CHILD_INACTIVITY_TIMEOUT_SECONDS
-        elapsed: float = asyncio.get_running_loop().time() - self._last_liveness_at
-        return max(0.001, min(CHILD_INACTIVITY_TIMEOUT_SECONDS, self._heartbeat_stale_seconds() - elapsed))
-
-    def _liveness_timeout_message(self) -> str:
-        """Return the safe timeout message for the current supervision deadline."""
-        if self._heartbeat_is_stale(now_seconds=asyncio.get_running_loop().time()):
-            return "sub-agent headless heartbeat became stale; treated as hung"
+    @staticmethod
+    def _inactivity_timeout_message() -> str:
+        """Return the sole child-cancellation message for stdout inactivity."""
         return f"sub-agent produced no output for {CHILD_INACTIVITY_TIMEOUT_SECONDS:.0f}s; treated as hung"
-
-    async def _cancel_stale_child_if_needed(self, *, now_seconds: float) -> None:
-        """Cancel a child after a selected heartbeat or stdout liveness timeout.
-
-        WHAT: Records a redacted stale-heartbeat envelope then performs cleanup.
-        WHO: Called by the stdout supervisor after its selected read deadline.
-        WHEN: Before the controlled timeout escapes to the process run owner.
-        """
-        if self._heartbeat_is_stale(now_seconds=now_seconds):
-            self._failure_envelope = {
-                "failure_code": "headless_heartbeat_stale",
-                "partial_output_committed": None,
-                "attempts": None,
-                "safe_message": "Headless child heartbeat became stale; child was cancelled.",
-            }
-        await self.cancel()
 
     def _capture_failure_envelope(self, *, event: AgentStreamEventDAO) -> None:
         """Copy only valid typed stream-failure metadata from a terminal child event."""
@@ -603,7 +634,48 @@ class SubAgentProcess:
             attempts=self._failure_envelope.get("attempts"),  # type: ignore[arg-type]
             safe_message=self._failure_envelope.get("safe_message"),  # type: ignore[arg-type]
         )
+        self._write_child_status(result=self._terminal_result_built)
         return self._terminal_result_built
+
+    def _write_child_status(self, *, result: SubAgentResultDAO) -> None:
+        """Persist one terminal child result without interrupting the wrapper.
+
+        WHAT: Writes the immutable terminal result to the canonical child status path.
+        WHO: Called by _terminal_result and _failed_result_from_exception after they build a result.
+        WHEN: Once after a child exits or the wrapper maps a run-path exception to failure.
+
+        Args:
+            result (SubAgentResultDAO): Terminal child result to persist.
+        """
+        status_path: Optional[Path] = self._child_status_path()
+        if status_path is None:
+            return
+        try:
+            AtomicFileWriter.write_json(path=status_path, model=result)
+        except OSError as exc:
+            log_warning(
+                msg="child_status_write_failed",
+                session_id=self._session_id,
+                error=str(exc),
+            )
+
+    def _child_status_path(self) -> Optional[Path]:
+        """Return the canonical terminal status path when child capture is configured.
+
+        WHAT: Delegates child terminal-path construction to OrchestrationLayout.
+        WHO: Called only by _write_child_status.
+        WHEN: Once for each terminal-result persistence attempt.
+
+        Returns:
+            Optional[Path]: Canonical status path, or None when capture is disabled.
+        """
+        if self._parent_session_id is None or self._slo_home is None:
+            return None
+        return OrchestrationLayout.child_status_path(
+            history_root=self._slo_home / "sessions" / "history",
+            parent_session_id=self._parent_session_id,
+            child_session_id=self._session_id,
+        )
 
     def _status_for(self, *, exit_code: int) -> str:
         """Map a child exit code to its terminal status string.
@@ -655,36 +727,33 @@ class SubAgentProcess:
         tail_text: str = "\n".join(self._stderr_tail)[-STDERR_TAIL_MAX_CHARS:]
         return f"child exited without an answer; stderr tail:\n{tail_text}"
 
-    async def cancel(self) -> None:
-        """Terminate the child gracefully, escalating to SIGKILL after the grace period.
+    async def cancel(self) -> Optional[ReapOutcome]:
+        """Terminate the child through FleetReaper and reap its process handle.
 
-        Invoked by ``SubAgentPool.cancel_all()`` when the orchestrator aborts.
-        Sends SIGTERM first, waits up to ``TERMINATE_GRACE_SECONDS``, then
-        sends SIGKILL if the child is still running. No-op when no process
-        is running or the process has already exited.
+        WHAT: Adapts the child process handle to the shared per-pid terminate protocol.
+        WHO: Called by SubAgentPool.cancel_all during an ordered abort.
+        WHEN: When an active child must stop; no-op when it already has no live handle.
+
+        Returns:
+            Optional[ReapOutcome]: Shared reaper outcome, or None when no child was running.
         """
+        if self._proc is None and self._spawn_in_progress:
+            await self._spawn_ready.wait()
         if self._proc is None or self._proc.returncode is not None:
-            return
-        self._proc.terminate()
-        await self._await_termination_or_kill()
-
-    async def _await_termination_or_kill(self) -> None:
-        """Wait for SIGTERM, escalate once, and reap after SIGKILL.
-
-        WHAT: Completes the cancellation protocol even when a child ignores SIGTERM.
-        WHO: Called by ``cancel`` after it has sent the graceful signal.
-        WHEN: Runs during parent abort and all timeout cleanup paths.
-        """
-        if self._proc is None:
-            return
-        try:
-            await asyncio.wait_for(self._proc.wait(), timeout=TERMINATE_GRACE_SECONDS)
-            return
-        except asyncio.TimeoutError:
-            if self._proc.returncode is not None:
-                return
-        self._proc.kill()
-        try:
-            await asyncio.wait_for(self._proc.wait(), timeout=TERMINATE_GRACE_SECONDS)
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError("sub-agent did not exit after SIGKILL") from exc
+            return None
+        identity: IdentityVerificationOutcome = FleetReaper.child_identity_outcome(
+            pid=self._proc.pid,
+            session_id=self._session_id,
+        )
+        if identity == "already_dead":
+            await self._proc.wait()
+            return "already_dead"
+        if identity == "unreadable":
+            return "unresolved"
+        if identity != "matching":
+            return "recycled_pid"
+        outcome: ReapOutcome = await FleetReaper.reap(pid=self._proc.pid)
+        if outcome == "unresolved":
+            return outcome
+        await self._proc.wait()
+        return outcome

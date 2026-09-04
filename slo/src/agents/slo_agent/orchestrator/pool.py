@@ -11,6 +11,7 @@ Sub-spec 01-sub-agents 01.d.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -18,11 +19,16 @@ from uuid import uuid4
 from config.cfg import SLO_HOME, SUBAGENT_MAX_CONCURRENCY, SUBAGENT_MAX_TASKS
 from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorResultDAO,
+    lifecycle_kind_for_status,
+    terminal_reason_for_status,
     SubAgentMode,
     SubAgentResultDAO,
+    SubAgentStatusDAO,
     SubAgentTaskDAO,
 )
+from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.process import SubAgentProcess
+from src.agents.slo_agent.orchestrator.reaper import ReapOutcome
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -93,8 +99,16 @@ class SubAgentPool:
         self._relay: AgentEventSubscriber = relay
         self._child_system_prompt: str = child_system_prompt
         self._semaphore: asyncio.Semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-        self._registry: ProcessRegistry = ProcessRegistry()
+        fleet_store: FleetStore = FleetStore(
+            history_root=default_history_root(),
+            orchestrator_session_id=orchestrator_session_id,
+            workflow_id=os.environ.get("SLO_WORKFLOW_ID"),
+        )
+        self._registry: ProcessRegistry = ProcessRegistry(fleet_store=fleet_store)
         self._active: list[SubAgentProcess] = []
+        self._sealed: bool = False
+        self._abort_and_drain_task: Optional[asyncio.Task[None]] = None
+        self._cancel_outcomes: dict[str, ReapOutcome] = {}
 
     @property
     def registry(self) -> ProcessRegistry:
@@ -124,6 +138,14 @@ class SubAgentPool:
         Returns:
             OrchestratorResultDAO: Aggregated batch result.
         """
+        if self._sealed:
+            return OrchestratorResultDAO(
+                mode=mode,
+                results=[],
+                all_completed=False,
+                failed_task_ids=[task.task_id for task in tasks],
+                error="pool sealed by abort; no new sub-agents will be spawned",
+            )
         if len(tasks) > MAX_PARALLEL_TASKS:
             return OrchestratorResultDAO(
                 mode=mode,
@@ -133,9 +155,7 @@ class SubAgentPool:
         if mode == "chain":
             results: list[SubAgentResultDAO] = await self._run_chain(tasks=tasks)
         else:
-            results = list(
-                await asyncio.gather(*[self._run_one(task=t) for t in tasks])
-            )
+            results = list(await asyncio.gather(*[self._run_one(task=t) for t in tasks]))
         return self._aggregate(mode=mode, results=results)
 
     async def _resolve_child_session_id(self, *, task: SubAgentTaskDAO) -> str:
@@ -171,6 +191,7 @@ class SubAgentPool:
                 )
             except (ValueError, OSError):
                 from config.logger import log_info  # noqa: PLC0415
+
                 log_info(
                     msg="sub_agent_resume_reference_unresolvable",
                     task_id=task.task_id,
@@ -182,7 +203,7 @@ class SubAgentPool:
         """Spawn and await one task under the concurrency semaphore.
 
         Lifecycle: register → emit spawned → acquire semaphore → mark running
-        → run process → emit completed/failed → mark terminal → return result.
+        → run process → mark terminal → emit completed/failed → return result.
 
         Args:
             task (SubAgentTaskDAO): The task to run.
@@ -191,6 +212,8 @@ class SubAgentPool:
             SubAgentResultDAO: Terminal result for this task.
         """
         session_id: str = await self._resolve_child_session_id(task=task)
+        if self._sealed:
+            return self._sealed_task_result(task=task, session_id=session_id)
         self._registry.register(
             task_id=task.task_id,
             session_id=session_id,
@@ -215,31 +238,53 @@ class SubAgentPool:
         self._active.append(process)
         try:
             async with self._semaphore:
-                self._registry.mark_running(session_id=session_id)
+                if self._sealed:
+                    return self._sealed_task_result(task=task, session_id=session_id)
                 result: SubAgentResultDAO = await process.run()
-            terminal_kind: str = self._terminal_lifecycle_kind(result=result)
-            await self._emit_lifecycle(
-                kind=terminal_kind,
-                task_id=task.task_id,
-                session_id=session_id,
-            )
+            recorded: Optional[SubAgentStatusDAO] = self._registry.get(session_id=session_id)
+            if recorded is not None and recorded.status in {"completed", "failed", "aborted"}:
+                await self._emit_lifecycle(
+                    kind=lifecycle_kind_for_status(status=recorded.status),
+                    task_id=task.task_id,
+                    session_id=session_id,
+                )
+                return result.model_copy(
+                    update={
+                        "status": recorded.status,
+                        "answer": recorded.last_text or result.answer,
+                        "exit_code": (
+                            recorded.exit_code if recorded.exit_code is not None else result.exit_code
+                        ),
+                    }
+                )
+            terminal_kind: str = lifecycle_kind_for_status(status=result.status)
             self._registry.mark_terminal(
                 session_id=session_id,
                 status=result.status,
                 answer=result.answer,
+                exit_code=result.exit_code,
+                terminal_reason=terminal_reason_for_status(status=result.status),  # type: ignore[arg-type]
+                terminated_by="natural",
+            )
+            await self._emit_lifecycle(
+                kind=terminal_kind,
+                task_id=task.task_id,
+                session_id=session_id,
             )
             return result
         finally:
             self._active.remove(process)
 
     @staticmethod
-    def _terminal_lifecycle_kind(*, result: SubAgentResultDAO) -> str:
-        """Map one cached child result to its single orchestrator lifecycle kind."""
-        if result.status == "completed":
-            return "sub_agent_completed"
-        if result.status == "aborted":
-            return "sub_agent_aborted"
-        return "sub_agent_failed"
+    def _sealed_task_result(*, task: SubAgentTaskDAO, session_id: str) -> SubAgentResultDAO:
+        """Build the terminal result for work blocked by the pool seal."""
+        return SubAgentResultDAO(
+            task_id=task.task_id,
+            session_id=session_id,
+            status="aborted",
+            answer="pool sealed by abort before child spawn",
+            exit_code=2,
+        )
 
     async def _run_chain(
         self,
@@ -271,17 +316,76 @@ class SubAgentPool:
             previous_answer = result.answer
         return results
 
-    async def cancel_all(self) -> None:
-        """Cancel every active child process.
+    async def abort_and_drain(self) -> None:
+        """Seal the pool and await one shared ordered abort shutdown.
 
-        Invoked when the orchestrator session receives an abort signal.
-        Uses ``gather(..., return_exceptions=True)`` so one child's
-        cancellation failure never blocks the others.
+        WHAT: Makes concurrent abort callers join the same seal, cancel, and record work.
+        WHO: Called by session abort and HeadlessRunner terminal cleanup paths.
+        WHEN: After the first cooperative abort request; later callers wait for completion.
         """
-        await asyncio.gather(
-            *[p.cancel() for p in self._active],
+        if self._abort_and_drain_task is None:
+            if self._sealed:
+                return
+            self._abort_and_drain_task = asyncio.create_task(self._run_abort_and_drain())
+        await asyncio.shield(self._abort_and_drain_task)
+
+    async def _run_abort_and_drain(self) -> None:
+        """Perform the pool-owned ordered abort sequence.
+
+        WHAT: Seals new dispatches, cancels active children, then records abort facts.
+        WHO: Started exactly once by abort_and_drain.
+        WHEN: During the pool's first cooperative abort request.
+        """
+        self._sealed = True
+        await self.cancel_all()
+        await self._record_abort_outcomes()
+
+    async def cancel_all(self) -> None:
+        """Cancel every active child and retain its shared-reaper outcome.
+
+        WHAT: Delegates each wrapper cancellation without allowing one failure to block peers.
+        WHO: Called by abort_and_drain during the ordered pool shutdown.
+        WHEN: After the pool is sealed and before terminal fleet records are written.
+        """
+        processes: list[SubAgentProcess] = list(self._active)
+        outcomes: list[object] = await asyncio.gather(
+            *[process.cancel() for process in processes],
             return_exceptions=True,
         )
+        for process, outcome in zip(processes, outcomes):
+            if isinstance(outcome, BaseException):
+                self._cancel_outcomes[process._session_id] = "unresolved"
+                continue
+            if outcome in {"graceful", "killed", "already_dead", "recycled_pid", "unresolved"}:
+                self._cancel_outcomes[process._session_id] = outcome  # type: ignore[assignment]
+
+    async def _record_abort_outcomes(self) -> None:
+        """Mark running fleet entries aborted and report hard reaps.
+
+        WHAT: Persists operator-abort ownership only for still-running entries.
+        WHO: Called by abort_and_drain after child cancellation returns.
+        WHEN: Once after a pool has completed its ordered shutdown.
+        """
+        for entry in self._registry.snapshot():
+            if entry.status not in {"pending", "running"}:
+                continue
+            if self._cancel_outcomes.get(entry.session_id) == "unresolved":
+                continue
+            self._registry.mark_terminal(
+                session_id=entry.session_id,
+                status="aborted",
+                answer="aborted by operator",
+                exit_code=2,
+                terminal_reason="operator_abort",
+                terminated_by="abort",
+            )
+            if self._cancel_outcomes.get(entry.session_id) != "killed":
+                continue
+            await self._emit_lifecycle(
+                kind="sub_agent_reaped",
+                task_id=entry.task_id,
+                session_id=entry.session_id,
+            )
 
     async def _emit_lifecycle(
         self,
@@ -330,9 +434,7 @@ class SubAgentPool:
         Returns:
             OrchestratorResultDAO: Aggregated batch result.
         """
-        failed: list[str] = [
-            r.task_id for r in results if r.status != "completed"
-        ]
+        failed: list[str] = [r.task_id for r in results if r.status != "completed"]
         return OrchestratorResultDAO(
             mode=mode,
             results=results,

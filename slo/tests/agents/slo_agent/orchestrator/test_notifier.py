@@ -7,6 +7,7 @@ from pathlib import Path
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 
 _TARGET_SESSION_ID: str = "tui-session-1"
 _ORCH_SESSION_ID: str = "orch-session-1"
@@ -74,9 +75,7 @@ async def _pending(*, store: SessionInboxStore) -> list[SessionInboxMessageDAO]:
 class TestStarted:
     """``started()`` — the workflow_started context note."""
 
-    async def test_started_enqueues_context_note_with_identity_payload(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_started_enqueues_context_note_with_identity_payload(self, tmp_path: Path) -> None:
         """The started note is a context_note carrying the identity pair."""
         notifier, store = _build_notifier(tmp_path=tmp_path)
 
@@ -123,12 +122,54 @@ class TestPhaseUpdate:
         assert all(message.delivery_mode == "context_note" for message in pending)
 
 
+class TestFleetUpdate:
+    """``fleet_update()`` — lifecycle fleet context notes."""
+
+    async def test_fleet_update_does_not_enqueue_after_terminal_status(self, tmp_path: Path) -> None:
+        """A terminal orchestrator status suppresses delayed child fleet traffic."""
+        store: SessionInboxStore = SessionInboxStore(history_root=tmp_path / "history")
+        status_store: OrchestratorStatusStore = OrchestratorStatusStore(
+            history_root=tmp_path / "history",
+            orchestrator_session_id=_ORCH_SESSION_ID,
+            workflow_id=_WORKFLOW_ID,
+        )
+        status_store.write_terminal(state="completed", exit_code=0, phase="complete")
+        notifier: WorkflowNotifier = WorkflowNotifier(
+            target_session_id=_TARGET_SESSION_ID,
+            orchestrator_session_id=_ORCH_SESSION_ID,
+            workflow_id=_WORKFLOW_ID,
+            inbox_store=store,
+            status_store=status_store,
+        )
+
+        await notifier.fleet_update(entries=[], live_count=0)
+
+        assert await _pending(store=store) == []
+
+    async def test_fleet_update_enqueues_compact_context_note(self, tmp_path: Path) -> None:
+        """A fleet transition ships its complete compact snapshot to the inbox."""
+        notifier, store = _build_notifier(tmp_path=tmp_path)
+        entries: list[dict[str, object]] = [
+            {"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}
+        ]
+
+        await notifier.fleet_update(entries=entries, live_count=1)
+        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+
+        assert pending[0].kind == "workflow_fleet_update"
+        assert pending[0].payload == {
+            "workflow_id": _WORKFLOW_ID,
+            "orchestrator_session_id": _ORCH_SESSION_ID,
+            "entries": entries,
+            "live_count": 1,
+        }
+        assert pending[0].text == "fleet: 1 live (t1 streaming)"
+
+
 class TestTerminal:
     """``completed()`` / ``failed()`` — the terminal chat_turn messages."""
 
-    async def test_completed_enqueues_chat_turn_with_synthesis_and_json(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_completed_enqueues_chat_turn_with_synthesis_and_json(self, tmp_path: Path) -> None:
         """The completion message carries the synthesis and result JSON."""
         notifier, store = _build_notifier(tmp_path=tmp_path)
 
@@ -140,6 +181,19 @@ class TestTerminal:
         assert message.delivery_mode == "chat_turn"
         assert "all phases green" in message.text
         assert '{"all_completed": true}' in message.text
+
+    async def test_completed_note_includes_cleanup_summary(self, tmp_path: Path) -> None:
+        """The terminal completion note puts cleanup accounting on its own line."""
+        notifier, store = _build_notifier(tmp_path=tmp_path)
+
+        await notifier.completed(
+            synthesis="all phases green",
+            result_json='{"all_completed": true}',
+            cleanup_summary="fleet: 1 completed · 0 live",
+        )
+        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+
+        assert "fleet: 1 completed · 0 live" in pending[0].text
 
     async def test_failed_enqueues_chat_turn_with_error(self, tmp_path: Path) -> None:
         """The failure message carries the terminal error description."""

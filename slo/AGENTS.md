@@ -98,10 +98,23 @@ slo/
 │   │   │   │   └── system_prompt.py   # All static string constants (ROLE_LINE, KB_BLOCK, …)
 │   │   │   ├── dao.py                 # SloAgentConfigDAO and related
 │   │   │   ├── history/
+│   │   │   │   ├── atomic_io.py       # AtomicFileWriter — shared temp+replace durable-state writer
 │   │   │   │   ├── dao.py             # HistoryEventKind, SessionHistoryEventDAO, metadata incl. session_name/session_name_key
 │   │   │   │   ├── filesystem_store.py # FilesystemSessionHistoryStore — JSONL writer + resume-by-name resolution
 │   │   │   │   ├── projector.py       # SessionHistoryProjector → list[BaseMessage]
 │   │   │   │   └── transcript.py      # TranscriptEntryDAO, ReplayEntryProjector
+│   │   │   ├── orchestrator/
+│   │   │   │   ├── dao.py              # Sub-agent DAOs and centralized terminal projections
+│   │   │   │   ├── fleet_store.py       # FleetStore — durable ProcessRegistry projection to fleet.json
+│   │   │   │   ├── status_store.py      # OrchestratorStatusStore — self-reported orchestrator.json owner
+│   │   │   │   ├── layout.py           # OrchestrationLayout — canonical workflow/fleet/capture paths
+│   │   │   │   ├── process_probe.py    # ProcessProbe — conservative shared PID liveness semantic
+│   │   │   │   ├── spawn_env.py        # Shared allowlisted headless-child env and capture opener
+│   │   │   │   ├── process.py          # SubAgentProcess — child spawn, stream relay, captures
+│   │   │   │   ├── pool.py             # SubAgentPool — bounded sub-agent dispatch
+│   │   │   │   ├── launch_tool.py      # launch_workflow — detached orchestrator spawn
+│   │   │   │   ├── relaunch.py          # WorkflowRelauncher — resume a dead detached workflow
+│   │   │   │   └── workflow_registry.py # WorkflowHandleStore and workflow commands
 │   │   │   ├── tool_execution/
 │   │   │   │   ├── service.py         # plan_tool_batch — parallel vs sequential planning
 │   │   │   │   ├── dao.py             # ToolExecutionPlanDAO
@@ -446,7 +459,8 @@ does prefix-match autocomplete; `SlashSuggestionMenu` renders the dropdown.
 
 Available slash commands include: `/help`, `/diff <repository-relative-path>`, `/new [session name]`, `/rename <session name>`,
 `/model <name>`, `/reasoning <level>`, `/context-window`, `/compact`, `/abort`, `/steer <text>`,
-`/clear`, `/auth`, `/quit` (and aliases). `/context-window` reports the routed model's capacity
+`/clear`, `/auth`, `/quit` (and aliases), and `/workflows [abort|dismiss|resume] <workflow-id>`.
+`/context-window` reports the routed model's capacity
 and projector-faithful durable replay estimate; `/compact` requests one lock-safe, transactional
 manual compaction and rejects while a prompt owns the session lock.
 
@@ -476,11 +490,21 @@ forwarded into the new window. Disable with `SLO_AUTO_VISUALIZE=0`; pick the emu
 list, markdown transcript rendering matching the main TUI, and keyboard-resizable panes
 (`ctrl+←/→` for the sub-agent list width, `ctrl+↑/↓` for the diagnostics height).
 
-**Headless heartbeat and failure envelope (spec 70):** `HeadlessRunner` emits a stderr-only
-`headless_status` heartbeat every `SLO_HEADLESS_HEARTBEAT_SECONDS` (15 by default). Supervisors must
-accept only recognized same-session heartbeats as liveness. `SubAgentResultDAO` carries additive,
-redacted `failure_code`, `partial_output_committed`, `attempts`, and `safe_message` fields; cancellation
-remains SIGTERM → grace → SIGKILL → reap with one cached terminal result.
+**Headless heartbeat and failure envelope (specs 70/71):** `HeadlessRunner` emits a stderr-only
+`headless_status` heartbeat from a watchdog thread every `SLO_HEADLESS_HEARTBEAT_SECONDS` (15 by
+default). A recognized same-session heartbeat is advisory liveness telemetry (`healthy`, `degraded`, or
+`silent`); it never cancels a child or shortens the sole stdout-inactivity authority,
+`SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`. `SubAgentResultDAO` carries additive, redacted
+`failure_code`, `partial_output_committed`, `attempts`, and `safe_message` fields; cancellation remains
+SIGTERM → grace → SIGKILL → reap with one cached terminal result.
+
+**Detached workflow supervision:** workflow handles live at
+`<owner_session>/workflows/wf-*.json` (TUI-owned); each orchestrator session also has
+`orchestrator.json` (HeadlessRunner self-report), `fleet.json` (pool projection),
+`abort_request.json` (TUI durable abort channel), and each child has `status.json` (terminal result).
+`/workflows resume <workflow-id>` relaunches a `stalled` or `failed` handle against its original
+orchestrator session with `--resume`; the dedicated flock-protected store transition returns it to
+`launching`, and fresh self-reported evidence advances it to `running`.
 
 **Detached-workflow receive path** (`src/tui/workflows/`, spec 57.a.5) — the strict
 delegation chain for headless-orchestrator lifecycle data:
@@ -605,6 +629,10 @@ Laid out under `~/.slo/sessions/history/<session_id>/`:
 session.json    # SessionHistoryMetadataDAO — atomic temp+rename on update; includes session_name/session_name_key
 tree.json       # SessionTreeDAO — turn-grouped event tree (new default)
 transcript.md   # derived; not authoritative
+orchestrator.json # detached-orchestrator self-report when applicable
+fleet.json        # durable child fleet projection when applicable
+abort_request.json # TUI-to-orchestrator abort channel when applicable
+children/<child_session_id>/status.json # child terminal result when applicable
 ```
 
 The legacy flat store (`FilesystemSessionHistoryStore`) uses `events.jsonl` instead of

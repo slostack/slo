@@ -23,6 +23,7 @@ Kind vocabulary:
 from __future__ import annotations
 
 import sys
+import threading
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
@@ -33,6 +34,10 @@ __all__ = [
     "LifecycleKind",
     "emit_lifecycle_event",
 ]
+
+_LIFECYCLE_WRITE_LOCK: threading.Lock = threading.Lock()
+"""Serialize stderr lifecycle writes across the event loop and watchdog thread."""
+
 
 LifecycleKind = Literal[
     "headless_session_started",
@@ -77,7 +82,8 @@ def emit_lifecycle_event(
 
     The line is written with a trailing newline and immediately flushed so
     that parent processes reading the child's stderr pipe receive it without
-    buffering delay.
+    buffering delay. Thread-safe: concurrent callers serialize complete JSONL
+    records before writing.
 
     Args:
         kind (LifecycleKind): Event kind from the controlled vocabulary.
@@ -95,5 +101,6 @@ def emit_lifecycle_event(
         message=message,
         payload=payload or {},
     )
-    sys.stderr.write(event.model_dump_json() + "\n")
-    sys.stderr.flush()
+    with _LIFECYCLE_WRITE_LOCK:
+        sys.stderr.write(event.model_dump_json() + "\n")
+        sys.stderr.flush()

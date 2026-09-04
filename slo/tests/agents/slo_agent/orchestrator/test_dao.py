@@ -8,6 +8,9 @@ import pytest
 from pydantic import ValidationError
 
 from src.agents.slo_agent.orchestrator.dao import (
+    FleetSnapshotDAO,
+    build_cleanup_summary,
+    project_fleet_entries,
     OrchestratorResultDAO,
     SubAgentResultDAO,
     SubAgentStatusDAO,
@@ -179,6 +182,156 @@ class TestSubAgentStatusDAO:
                 status=status,  # type: ignore[arg-type]
             )
             assert dao.status == status
+
+    def test_accepts_durable_process_and_cleanup_fields(self) -> None:
+        """Fleet entries retain process identity and terminal cleanup evidence."""
+        dao: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1",
+            session_id="s1",
+            pid=123,
+            started_at=10.0,
+            heartbeat_phase="streaming",
+            exit_code=0,
+            terminal_reason="completed",
+            terminated_by="natural",
+        )
+
+        assert dao.pid == 123
+        assert dao.started_at == 10.0
+        assert dao.heartbeat_phase == "streaming"
+        assert dao.exit_code == 0
+        assert dao.terminal_reason == "completed"
+        assert dao.terminated_by == "natural"
+
+
+class TestFleetSnapshotDAO:
+    """``FleetSnapshotDAO`` durable envelope behavior."""
+
+    def test_preserves_orchestrator_identity_and_ordered_entries(self) -> None:
+        """Snapshots serialize the owner, optional workflow, and fleet order."""
+        entry: SubAgentStatusDAO = SubAgentStatusDAO(task_id="t1", session_id="s1")
+        snapshot: FleetSnapshotDAO = FleetSnapshotDAO(
+            orchestrator_session_id="orchestrator-1",
+            workflow_id="workflow-1",
+            entries=[entry],
+            updated_at="2026-09-06T00:00:00+00:00",
+        )
+
+        assert snapshot.orchestrator_session_id == "orchestrator-1"
+        assert snapshot.workflow_id == "workflow-1"
+        assert snapshot.entries == [entry]
+
+
+class TestSubAgentStatusDAOLiveness:
+    """``SubAgentStatusDAO.liveness`` read-time classifications."""
+
+    def test_liveness_returns_healthy_for_terminal_status(self) -> None:
+        """Terminal entries classify as healthy without activity timestamps."""
+        dao: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1",
+            session_id="s1",
+            status="completed",
+        )
+
+        assert dao.liveness(now_seconds=100.0, heartbeat_seconds=15.0, inactivity_seconds=7200.0) == "healthy"
+
+    def test_liveness_returns_healthy_when_heartbeat_fresh(self) -> None:
+        """A running entry with a fresh heartbeat classifies as healthy."""
+        dao: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1",
+            session_id="s1",
+            status="running",
+            last_heartbeat_at=60.0,
+        )
+
+        assert dao.liveness(now_seconds=100.0, heartbeat_seconds=15.0, inactivity_seconds=7200.0) == "healthy"
+
+    def test_liveness_returns_degraded_when_only_stdout_fresh(self) -> None:
+        """A stale heartbeat and recent stdout classify as degraded."""
+        dao: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1",
+            session_id="s1",
+            status="running",
+            last_heartbeat_at=50.0,
+            last_stdout_at=99.0,
+        )
+
+        assert (
+            dao.liveness(now_seconds=100.0, heartbeat_seconds=15.0, inactivity_seconds=7200.0) == "degraded"
+        )
+
+    def test_liveness_returns_silent_when_nothing_fresh(self) -> None:
+        """Stale heartbeat and stdout classify as silent."""
+        dao: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1",
+            session_id="s1",
+            status="running",
+            last_heartbeat_at=50.0,
+            last_stdout_at=1.0,
+        )
+
+        assert dao.liveness(now_seconds=100.0, heartbeat_seconds=15.0, inactivity_seconds=10.0) == "silent"
+
+    def test_liveness_returns_degraded_when_no_heartbeat_seen(self) -> None:
+        """Recent stdout without a heartbeat still classifies as degraded."""
+        dao: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1",
+            session_id="s1",
+            status="running",
+            last_stdout_at=99.0,
+        )
+
+        assert (
+            dao.liveness(now_seconds=100.0, heartbeat_seconds=15.0, inactivity_seconds=7200.0) == "degraded"
+        )
+
+
+class TestFleetReporting:
+    """Compact fleet projections and terminal cleanup summaries."""
+
+    def test_project_fleet_entries_counts_running(self) -> None:
+        """The note projection keeps compact fields and counts running entries."""
+        entries: list[SubAgentStatusDAO] = [
+            SubAgentStatusDAO(task_id="t1", session_id="s1", status="running", heartbeat_phase="streaming"),
+            SubAgentStatusDAO(task_id="t2", session_id="s2", status="completed"),
+        ]
+
+        projected, live_count = project_fleet_entries(entries=entries)
+
+        assert projected == [
+            {"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"},
+            {"task_id": "t2", "status": "completed", "heartbeat_phase": ""},
+        ]
+        assert live_count == 1
+
+    @pytest.mark.parametrize(
+        ("reason", "label"),
+        [
+            ("completed", "completed"),
+            ("failed", "failed"),
+            ("operator_abort", "aborted (operator)"),
+            ("orchestrator_died", "died with orchestrator"),
+            ("reaped_orphan", "reaped orphan"),
+        ],
+    )
+    def test_build_cleanup_summary_labels_reason(self, reason: str, label: str) -> None:
+        """Each terminal reason maps to its operator-facing cleanup label."""
+        entries: list[SubAgentStatusDAO] = [
+            SubAgentStatusDAO(
+                task_id="t1",
+                session_id="s1",
+                status="completed",
+                terminal_reason=reason,  # type: ignore[arg-type]
+            )
+        ]
+
+        summary: str = build_cleanup_summary(entries=entries, live_count=0)
+
+        assert summary == f"fleet: 1 {label} · 0 live"
+
+    def test_build_cleanup_summary_handles_empty_fleet(self) -> None:
+        """An empty terminal snapshot still gives the operator a zero-live line."""
+        assert build_cleanup_summary(entries=[], live_count=0) == "fleet: 0 live"
 
 
 class TestSubAgentResultDAO:

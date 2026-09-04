@@ -7,8 +7,10 @@ from pydantic import ValidationError
 
 from src.tui.workflows.dao import (
     DetachedWorkflowUiEffectDAO,
+    ParsedFleetUpdateDAO,
     ParsedLaunchResultDAO,
     ParsedWorkflowLifecycleMessageDAO,
+    parse_fleet_update_message,
     parse_launch_workflow_result,
     parse_workflow_lifecycle_message,
     workflow_lifecycle_target_for_kind,
@@ -108,6 +110,35 @@ class TestParseWorkflowLifecycleMessage:
 
         assert parsed is not None
         assert parsed.orchestrator_session_id == ""
+
+
+class TestParseFleetUpdateMessage:
+    """Fleet-update inbox payload validation."""
+
+    def test_parse_fleet_update_message_round_trip(self) -> None:
+        """A valid compact fleet payload preserves identity, entries, and live count."""
+        parsed: ParsedFleetUpdateDAO | None = parse_fleet_update_message(
+            kind="workflow_fleet_update",
+            payload={
+                "workflow_id": "wf-1",
+                "entries": [{"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}],
+                "live_count": 1,
+            },
+        )
+
+        assert parsed == ParsedFleetUpdateDAO(
+            workflow_id="wf-1",
+            entries=[{"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}],
+            live_count=1,
+        )
+
+    def test_parse_fleet_update_message_returns_none_for_wrong_kind(self) -> None:
+        """Non-fleet inbox kinds cannot update the fleet cache."""
+        assert parse_fleet_update_message(kind="workflow_started", payload={"workflow_id": "wf-1"}) is None
+
+    def test_parse_fleet_update_message_returns_none_for_invalid_payload(self) -> None:
+        """Fleet notes without a workflow id are ignored safely."""
+        assert parse_fleet_update_message(kind="workflow_fleet_update", payload={"live_count": 1}) is None
 
 
 class TestParseLaunchWorkflowResult:

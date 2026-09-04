@@ -157,6 +157,19 @@ class TestWorkflowInboxVocabulary:
         )
         assert message.kind == kind
 
+    def test_inbox_message_accepts_fleet_update_kind(self) -> None:
+        """Fleet progress snapshots are accepted as context-note inbox messages."""
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            session_id="session-1",
+            schedule_id="workflow:wf-3f2a",
+            run_id="run-1",
+            kind="workflow_fleet_update",
+            delivery_mode="context_note",
+            text="fleet: 1 live",
+        )
+
+        assert message.kind == "workflow_fleet_update"
+
     def test_context_note_delivery_mode_validates(self) -> None:
         """``context_note`` is an accepted ``InboxDeliveryMode`` literal."""
         message: SessionInboxMessageDAO = SessionInboxMessageDAO(

@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Headless workflow supervision (spec 71).** Detached workflows now use
+  durable orchestrator, fleet, abort-request, and child-status evidence rather
+  than a stale-heartbeat kill window. Child stdout inactivity is the only
+  cancellation authority; advisory heartbeat liveness is surfaced as healthy,
+  degraded, or silent and cleanup reaps every child.
+
+### Added
+
+- **`/workflows resume <workflow-id>`.** Relaunches stalled or failed detached
+  workflows against their original orchestrator session history, appending the
+  existing captures and returning the durable handle to `launching` until its
+  next fresh self-report confirms `running`.
+
+### Removed
+
+- The retired stale-heartbeat multiplier configuration; operators no longer
+  tune a second child-cancellation clock.
+
+
 ## [0.15.5] — 2026-08-31
 
 **Provider stream-disconnection recovery.**

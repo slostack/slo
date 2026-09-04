@@ -21,10 +21,12 @@ __all__ = [
     "HandleAdvanceOutcomeDAO",
     "LiveWorkflowLabelDAO",
     "LaunchResultOutcome",
+    "ParsedFleetUpdateDAO",
     "ParsedLaunchResultDAO",
     "ParsedWorkflowLifecycleMessageDAO",
     "WorkflowLifecycleTarget",
     "workflow_lifecycle_target_for_kind",
+    "parse_fleet_update_message",
     "parse_workflow_lifecycle_message",
     "parse_launch_workflow_result",
 ]
@@ -85,6 +87,16 @@ class ParsedWorkflowLifecycleMessageDAO(BaseModel):
     target: WorkflowLifecycleTarget = Field(
         description="Lifecycle side-effect target: ``started`` or ``terminal``.",
     )
+
+
+class ParsedFleetUpdateDAO(BaseModel):
+    """Validated compact fleet snapshot from one workflow inbox note."""
+
+    model_config = ConfigDict(frozen=True)
+
+    workflow_id: str = Field(description="Workflow the fleet belongs to.")
+    entries: list[dict[str, object]] = Field(default_factory=list, description="Compact child fleet entries.")
+    live_count: int = Field(default=0, description="Children recorded as running at note time.")
 
 
 class ParsedLaunchResultDAO(BaseModel):
@@ -221,6 +233,41 @@ def parse_workflow_lifecycle_message(
         target_state=target_state,
         target=_WORKFLOW_KIND_TO_TARGET[kind],
     )
+
+
+def parse_fleet_update_message(
+    *,
+    kind: str,
+    payload: Optional[dict[str, object]],
+) -> Optional[ParsedFleetUpdateDAO]:
+    """Parse one fleet-update note, or return ``None`` for invalid inbox data.
+
+    WHAT: Validates the independent compact snapshot carried by a fleet note.
+    WHO: Called by DetachedWorkflowAppService before lifecycle processing.
+    WHEN: For every claimed inbox message on the TUI receive path.
+
+    Args:
+        kind (str): Raw inbox message kind.
+        payload (Optional[dict[str, object]]): Raw opaque inbox payload.
+
+    Returns:
+        Optional[ParsedFleetUpdateDAO]: Validated fleet update, or None.
+    """
+    if kind != "workflow_fleet_update":
+        return None
+    raw_payload: dict[str, object] = payload or {}
+    workflow_id: str = str(raw_payload.get("workflow_id", ""))
+    if not _is_path_safe_workflow_id(workflow_id=workflow_id):
+        return None
+    entries: object = raw_payload.get("entries", [])
+    if not isinstance(entries, list):
+        return None
+    if not all(isinstance(entry, dict) for entry in entries):
+        return None
+    live_count: object = raw_payload.get("live_count", 0)
+    if not isinstance(live_count, int):
+        return None
+    return ParsedFleetUpdateDAO(workflow_id=workflow_id, entries=entries, live_count=live_count)
 
 
 def parse_launch_workflow_result(*, result_text: str) -> Optional[ParsedLaunchResultDAO]:

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from io import StringIO
 from typing import Any
 from unittest.mock import MagicMock, call, patch
@@ -164,3 +166,47 @@ class TestEmitLifecycleEvent:
             emit_lifecycle_event(kind="headless_warning", message="test")
         assert len(written) == 1
         assert written[0].endswith("\n")
+
+    def test_concurrent_emit_produces_whole_json_lines(self) -> None:
+        """Concurrent lifecycle writers leave stderr as parseable JSONL records."""
+        class _InterleavingStderr:
+            """Deliberately yields during writes so unlocked writers corrupt lines."""
+
+            def __init__(self) -> None:
+                """Start with an empty stderr buffer."""
+                self.buffer: list[str] = []
+
+            def write(self, text: str) -> None:
+                """Append one character at a time, yielding between characters."""
+                for character in text:
+                    self.buffer.append(character)
+                    time.sleep(0.0001)
+
+            def flush(self) -> None:
+                """Provide the stderr flush protocol without changing the buffer."""
+
+            def value(self) -> str:
+                """Return all concurrently written stderr text."""
+                return "".join(self.buffer)
+
+        stderr: _InterleavingStderr = _InterleavingStderr()
+        thread_count: int = 20
+        barrier: threading.Barrier = threading.Barrier(thread_count)
+
+        def emit_from_thread() -> None:
+            """Emit one status event after all test writers are ready."""
+            barrier.wait()
+            emit_lifecycle_event(kind="headless_status", session_id="session-1")
+
+        with patch("src.cli.headless_events.sys.stderr", stderr):
+            threads: list[threading.Thread] = [
+                threading.Thread(target=emit_from_thread) for _ in range(thread_count)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        lines: list[str] = stderr.value().splitlines()
+        assert len(lines) == thread_count
+        assert all(json.loads(line)["kind"] == "headless_status" for line in lines)

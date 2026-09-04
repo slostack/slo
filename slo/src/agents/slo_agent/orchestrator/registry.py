@@ -1,61 +1,58 @@
 """ProcessRegistry — observable lifecycle tracking for sub-agent processes.
 
-One registry is owned by each ``SubAgentPool``. The pool and the processes it
-spawns write lifecycle transitions; observers (TUI slash handler, orchestrator
-progress lines, tests) read via ``snapshot()`` or ``get()``.
+The registry is the in-memory write authority. A bound FleetStore mirrors its
+lifecycle transitions to durable fleet evidence.
 
-Sub-spec 01-sub-agents 01.c.
+Sub-spec 71.a.2.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from src.agents.slo_agent.orchestrator.dao import (
     SubAgentStatus,
     SubAgentStatusDAO,
     SubAgentTaskDAO,
+    TerminalReason,
+    TerminatedBy,
+    terminal_reason_for_status,
 )
+
+if TYPE_CHECKING:
+    from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 
 __all__ = ["ProcessRegistry"]
 
 
 class ProcessRegistry:
-    """In-memory observable lifecycle store for all sub-agent processes.
+    """In-memory lifecycle authority for one pool, optionally mirrored to fleet.json."""
 
-    Keyed by ``session_id`` (the child process's stable UUID). Every sub-agent
-    lifecycle transition is written here by the pool; every observer reads via
-    ``snapshot()`` or ``get()``. All operations are synchronous and O(1).
+    def __init__(self, *, fleet_store: Optional["FleetStore"] = None) -> None:
+        """Initialize an empty registry with an optional durable projection.
 
-    One registry instance is created per ``SubAgentPool`` (i.e., per orchestrator
-    session). It resets when the session ends — there is no on-disk persistence
-    in v1.
-    """
-
-    def __init__(self) -> None:
-        """Initialise an empty registry."""
-        self._store: dict[str, SubAgentStatusDAO] = {}
-
-    # ── Write API (called by SubAgentPool and SubAgentProcess) ──────────────
-
-    def register(
-        self,
-        *,
-        task_id: str,
-        session_id: str,
-        task: SubAgentTaskDAO,
-    ) -> None:
-        """Record a new sub-agent in ``pending`` state.
-
-        Called by ``SubAgentPool._run_one`` immediately before emitting the
-        ``sub_agent_spawned`` stream event and acquiring the concurrency
-        semaphore.
+        WHAT: Creates the pool-owned lifecycle authority and retains its mirror.
+        WHO: Called by SubAgentPool once per orchestrator session.
+        WHEN: Before the pool accepts its first child task.
 
         Args:
-            task_id (str): Caller-assigned task identifier (from the task DAO).
-            session_id (str): Pre-assigned child session UUID.
-            task (SubAgentTaskDAO): Full task definition; ``prompt_preview``
-                is derived from ``task.prompt[:120]``.
+            fleet_store (Optional[FleetStore]): Durable projection target; None keeps
+                direct callers in legacy in-memory-only mode.
+        """
+        self._store: dict[str, SubAgentStatusDAO] = {}
+        self._fleet_store: Optional[FleetStore] = fleet_store
+
+    def register(self, *, task_id: str, session_id: str, task: SubAgentTaskDAO) -> None:
+        """Register a pending child and persist its fleet transition.
+
+        WHAT: Builds the initial fleet entry from the task identity and preview.
+        WHO: Called by SubAgentPool before it emits a spawned event.
+        WHEN: Once for every accepted child task.
+
+        Args:
+            task_id (str): Caller-assigned child task identifier.
+            session_id (str): Pool-assigned child session identifier.
+            task (SubAgentTaskDAO): Child task that supplies the prompt preview.
         """
         self._store[session_id] = SubAgentStatusDAO(
             task_id=task_id,
@@ -63,36 +60,78 @@ class ProcessRegistry:
             status="pending",
             prompt_preview=task.prompt[:120],
         )
+        self._persist()
 
-    def mark_running(self, *, session_id: str) -> None:
-        """Transition a sub-agent from ``pending`` to ``running``.
+    def mark_running(self, *, session_id: str, pid: int = 0, started_at: float = 0.0) -> None:
+        """Record a spawned child process identity and persist its running transition.
 
-        Called by ``SubAgentPool._run_one`` after acquiring the concurrency
-        semaphore and just before ``SubAgentProcess.run()`` is awaited.
-        A no-op when ``session_id`` is not registered.
+        WHAT: Moves a registered entry to running with its pid and spawn time.
+        WHO: Called by SubAgentProcess immediately after child subprocess creation.
+        WHEN: Once after a successful spawn; legacy direct callers retain zero defaults.
 
         Args:
-            session_id (str): The child session to transition.
+            session_id (str): Registered child session identifier.
+            pid (int): Spawned process id. Defaults to 0 for legacy direct callers.
+            started_at (float): Wall-clock spawn time. Defaults to 0.0 for legacy callers.
         """
         entry: Optional[SubAgentStatusDAO] = self._store.get(session_id)
-        if entry is not None:
-            self._store[session_id] = entry.model_copy(update={"status": "running"})
+        if entry is None:
+            return
+        self._store[session_id] = entry.model_copy(
+            update={"status": "running", "pid": pid, "started_at": started_at}
+        )
+        self._persist()
+
+    def record_heartbeat(self, *, session_id: str, phase: str, at_seconds: float) -> None:
+        """Record accepted heartbeat telemetry without a high-frequency durable write.
+
+        WHAT: Updates the latest heartbeat time and phase in memory.
+        WHO: Called by SubAgentProcess after it accepts same-session stderr telemetry.
+        WHEN: On each recognized headless_status event.
+
+        Args:
+            session_id (str): Registered child session identifier.
+            phase (str): Latest heartbeat phase label.
+            at_seconds (float): Monotonic telemetry receipt time.
+        """
+        entry: Optional[SubAgentStatusDAO] = self._store.get(session_id)
+        if entry is None:
+            return
+        self._store[session_id] = entry.model_copy(
+            update={"last_heartbeat_at": at_seconds, "heartbeat_phase": phase}
+        )
+
+    def record_stdout(self, *, session_id: str, at_seconds: float) -> None:
+        """Record stdout receipt telemetry without a high-frequency durable write.
+
+        WHAT: Updates the latest stdout time in memory.
+        WHO: Called by SubAgentProcess before it parses a stdout line.
+        WHEN: Once for every non-empty child stdout line.
+
+        Args:
+            session_id (str): Registered child session identifier.
+            at_seconds (float): Monotonic stdout receipt time.
+        """
+        entry: Optional[SubAgentStatusDAO] = self._store.get(session_id)
+        if entry is None:
+            return
+        self._store[session_id] = entry.model_copy(update={"last_stdout_at": at_seconds})
 
     def update_last_text(self, *, session_id: str, text: str) -> None:
-        """Update the latest visible text fragment for a running sub-agent.
+        """Update the latest visible child text without a high-frequency durable write.
 
-        Called by ``SubAgentProcess._handle_line`` on each ``text_delta`` event
-        so the registry reflects what the child is actively producing. Used by
-        the TUI's fleet status display and orchestrator progress lines.
-        A no-op when ``session_id`` is not registered.
+        WHAT: Retains the most recent text_delta in the in-memory fleet entry.
+        WHO: Called by SubAgentProcess while relaying parsed child stdout.
+        WHEN: On each visible text delta.
 
         Args:
-            session_id (str): The child session to update.
-            text (str): The latest visible text fragment from the child.
+            session_id (str): Registered child session identifier.
+            text (str): Latest visible child text fragment.
         """
         entry: Optional[SubAgentStatusDAO] = self._store.get(session_id)
-        if entry is not None:
-            self._store[session_id] = entry.model_copy(update={"last_text": text})
+        if entry is None:
+            return
+        self._store[session_id] = entry.model_copy(update={"last_text": text})
 
     def mark_terminal(
         self,
@@ -100,67 +139,85 @@ class ProcessRegistry:
         session_id: str,
         status: SubAgentStatus,
         answer: str,
+        exit_code: int = -1,
+        terminal_reason: Optional[TerminalReason] = None,
+        terminated_by: Optional[TerminatedBy] = None,
     ) -> None:
-        """Transition a sub-agent to its terminal state.
+        """Record terminal child evidence and persist the fleet transition.
 
-        Called by ``SubAgentPool._run_one`` after ``SubAgentProcess.run()``
-        returns and the ``SubAgentResultDAO`` is ready.
-        A no-op when ``session_id`` is not registered.
+        WHAT: Stores terminal status, answer, exit code, and cleanup ownership.
+        WHO: Called by SubAgentPool after the process wrapper returns a result.
+        WHEN: Once for every child that reaches a terminal state.
 
         Args:
-            session_id (str): The child session to transition.
-            status (SubAgentStatus): Terminal status: ``completed``,
-                ``failed``, or ``aborted``.
-            answer (str): The child's final answer or error message.
+            session_id (str): Registered child session identifier.
+            status (SubAgentStatus): Completed, failed, or aborted terminal status.
+            answer (str): Final answer or redacted failure message.
+            exit_code (int): Child process exit code. Defaults to -1 for legacy callers.
+            terminal_reason (Optional[TerminalReason]): Ending reason; inferred when absent.
+            terminated_by (Optional[TerminatedBy]): Reaper identity; None for legacy callers.
         """
         entry: Optional[SubAgentStatusDAO] = self._store.get(session_id)
-        if entry is not None:
-            self._store[session_id] = entry.model_copy(
-                update={"status": status, "last_text": answer}
-            )
+        if entry is None:
+            return
+        if entry.status in {"completed", "failed", "aborted"}:
+            return
+        resolved_reason: TerminalReason = terminal_reason or terminal_reason_for_status(status=status)  # type: ignore[assignment]
+        self._store[session_id] = entry.model_copy(
+            update={
+                "status": status,
+                "last_text": answer,
+                "exit_code": exit_code,
+                "terminal_reason": resolved_reason,
+                "terminated_by": terminated_by,
+            }
+        )
+        self._persist()
 
-    # ── Read API (called by TUI, orchestrator, tests) ───────────────────────
+    def _persist(self) -> None:
+        """Mirror the current registry snapshot when a fleet store is bound.
+
+        WHAT: Sends one complete ordered snapshot to the optional durable projection.
+        WHO: Called by lifecycle transition methods after their memory update.
+        WHEN: Never for high-frequency stdout, heartbeat, or text updates.
+        """
+        if self._fleet_store is None:
+            return
+        self._fleet_store.persist(entries=self.snapshot())
 
     def snapshot(self) -> list[SubAgentStatusDAO]:
-        """Return a point-in-time snapshot of all registered sub-agents.
+        """Return registered fleet entries in registration order.
 
-        The returned list is ordered by insertion order (Python 3.7+ dict
-        guarantees). Each element is a copy; mutations to the returned list
-        do not affect the store.
+        WHAT: Provides a point-in-time projection of the in-memory registry.
+        WHO: Called by fleet persistence and observer surfaces.
+        WHEN: After lifecycle updates and while readers render fleet state.
 
         Returns:
-            list[SubAgentStatusDAO]: One entry per registered sub-agent,
-                ordered by registration time.
+            list[SubAgentStatusDAO]: Current entries in registration order.
         """
         return list(self._store.values())
 
     def get(self, *, session_id: str) -> Optional[SubAgentStatusDAO]:
-        """Return the status snapshot for one sub-agent by ``session_id``.
+        """Return one fleet entry when the session is registered.
 
-        Returns ``None`` when the session id is not registered.
+        WHAT: Looks up a child entry without mutating the registry.
+        WHO: Called by tests and observer surfaces.
+        WHEN: While resolving one child status.
 
         Args:
-            session_id (str): The child session to look up.
+            session_id (str): Child session identifier to look up.
 
         Returns:
-            Optional[SubAgentStatusDAO]: The snapshot, or ``None``.
+            Optional[SubAgentStatusDAO]: Matching entry, or None when unknown.
         """
         return self._store.get(session_id)
 
     @property
     def count(self) -> int:
-        """Return the total number of registered sub-agents across all statuses.
-
-        Returns:
-            int: Total registered count.
-        """
+        """Return the total number of registered fleet entries."""
         return len(self._store)
 
     @property
     def running_count(self) -> int:
-        """Return the number of sub-agents currently in ``running`` state.
-
-        Returns:
-            int: Count of sub-agents whose status is ``running``.
-        """
+        """Return the number of entries currently marked running."""
         return sum(1 for entry in self._store.values() if entry.status == "running")

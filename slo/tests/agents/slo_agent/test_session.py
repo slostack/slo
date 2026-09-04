@@ -1073,8 +1073,8 @@ class TestSloAgentSessionAttachSubAgentPool:
                 spawn_tool=mock_tool,
             )
 
-    async def test_abort_calls_pool_cancel_all_when_pool_attached(self, tmp_path: Path) -> None:
-        """``abort()`` calls ``pool.cancel_all()`` when a pool is attached."""
+    async def test_abort_calls_pool_abort_and_drain_when_pool_attached(self, tmp_path: Path) -> None:
+        """``abort()`` schedules ``pool.abort_and_drain()`` when a pool is attached."""
         import asyncio
         from unittest.mock import MagicMock
         from langchain_core.tools import BaseTool
@@ -1087,6 +1087,7 @@ class TestSloAgentSessionAttachSubAgentPool:
             )
         )
         pool = _build_pool_mock()
+        pool.abort_and_drain = AsyncMock()
         mock_tool: MagicMock = MagicMock(spec=BaseTool)
         mock_tool.name = "spawn_sub_agents"
         session.attach_sub_agent_pool(pool=pool, spawn_tool=mock_tool)
@@ -1094,7 +1095,7 @@ class TestSloAgentSessionAttachSubAgentPool:
         session.abort()
         await asyncio.sleep(0)
 
-        pool.cancel_all.assert_called_once()
+        pool.abort_and_drain.assert_awaited_once()
 
     def test_abort_without_pool_does_not_raise(self, tmp_path: Path) -> None:
         """``abort()`` on a session without a pool does not raise."""

@@ -10,11 +10,8 @@ from typing import Any, Optional
 import pytest
 
 import config.cfg as cfg_module
-from src.agents.slo_agent.orchestrator.launch_tool import (
-    LaunchWorkflowTool,
-    _allowlisted_env,
-    _build_argv,
-)
+from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool, _build_argv
+from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env, open_capture_file_append
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -187,7 +184,7 @@ class TestAllowlistedEnv:
         monkeypatch.setenv("SLO_DEFAULT_MODEL_NAME", "claude-sonnet-4-6")
         monkeypatch.setenv("PATH", "/usr/bin")
 
-        env: dict[str, str] = _allowlisted_env(workflow_id="wf-3f2a")
+        env: dict[str, str] = build_headless_child_env(workflow_id="wf-3f2a")
 
         assert env["SLO_HOME"] == "/tmp/slo-home"
         assert env["SLO_DEFAULT_MODEL_NAME"] == "claude-sonnet-4-6"
@@ -211,7 +208,7 @@ class TestAllowlistedEnv:
         """Secret-marked ``SLO_*`` names never reach the child env."""
         monkeypatch.setenv(secret_name, "super-secret")
 
-        env: dict[str, str] = _allowlisted_env(workflow_id="wf-3f2a")
+        env: dict[str, str] = build_headless_child_env(workflow_id="wf-3f2a")
 
         assert secret_name not in env
 
@@ -220,14 +217,14 @@ class TestAllowlistedEnv:
         monkeypatch.setenv("AWS_PROFILE", "prod")
         monkeypatch.setenv("MY_RANDOM_VAR", "x")
 
-        env: dict[str, str] = _allowlisted_env(workflow_id="wf-3f2a")
+        env: dict[str, str] = build_headless_child_env(workflow_id="wf-3f2a")
 
         assert "AWS_PROFILE" not in env
         assert "MY_RANDOM_VAR" not in env
 
     def test_env_injects_workflow_id(self) -> None:
         """``SLO_WORKFLOW_ID`` is always set for the notifier (57.a.3)."""
-        env: dict[str, str] = _allowlisted_env(workflow_id="wf-3f2a")
+        env: dict[str, str] = build_headless_child_env(workflow_id="wf-3f2a")
 
         assert env["SLO_WORKFLOW_ID"] == "wf-3f2a"
 
@@ -249,6 +246,27 @@ class TestLaunchWorkflowHappyPath:
         assert handle.state == "launching"
         assert handle.brief == "run the workflow"
         assert handle.cwd == "/repo"
+
+    async def test_launch_warns_when_owner_session_has_no_history(self, tmp_path: Path) -> None:
+        """A successful launch discloses when owner monitoring cannot be backed."""
+        spawn: _FakeSpawn = _FakeSpawn()
+        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn)
+
+        result: str = await launch_tool.ainvoke({"brief": "run the workflow"})
+
+        assert "warning" in json.loads(result)
+        assert "history" in json.loads(result)["warning"]
+
+    async def test_launch_omits_warning_with_history_backing(self, tmp_path: Path) -> None:
+        """A history-backed owner receives a normal handle response without warning."""
+        history_root: Path = tmp_path / "history"
+        (history_root / _OWNER_SESSION_ID).mkdir(parents=True)
+        spawn: _FakeSpawn = _FakeSpawn()
+        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn)
+
+        result: str = await launch_tool.ainvoke({"brief": "run the workflow"})
+
+        assert "warning" not in json.loads(result)
 
     async def test_spawn_uses_start_new_session_true(self, tmp_path: Path) -> None:
         """The child is detached into its own process group."""
@@ -310,9 +328,7 @@ class TestLaunchWorkflowHappyPath:
                     owner_session_id=_OWNER_SESSION_ID,
                 )
                 observed_states.extend(
-                    handle.state
-                    for handle in handles
-                    if handle.orchestrator_session_id == session_id
+                    handle.state for handle in handles if handle.orchestrator_session_id == session_id
                 )
                 return await super().__call__(*argv, **kwargs)
 
@@ -521,7 +537,7 @@ class TestLaunchNeverRaisesIntoGraph:
             raise OSError("read-only history root")
 
         monkeypatch.setattr(
-            "src.agents.slo_agent.orchestrator.launch_tool._open_capture_file",
+            "src.agents.slo_agent.orchestrator.launch_tool.open_capture_file_append",
             _unwritable,
         )
         spawn: _FakeSpawn = _FakeSpawn()
@@ -536,9 +552,7 @@ class TestLaunchNeverRaisesIntoGraph:
         handles = await store.list(owner_session_id=_OWNER_SESSION_ID)
         assert [handle.state for handle in handles] == ["failed"]
 
-    async def test_pid_patch_conflict_returns_error_json_not_raise(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_pid_patch_conflict_returns_error_json_not_raise(self, tmp_path: Path) -> None:
         """A handle state flipped mid-spawn yields error JSON, not a raise.
 
         Simulates a reconcile pass reaping the handle while the spawn await is
@@ -590,7 +604,6 @@ class TestLaunchNeverRaisesIntoGraph:
 
         assert "workflow launch failed" in parsed["error"]
 
-
     async def test_stdout_capture_closed_when_stderr_open_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -598,8 +611,8 @@ class TestLaunchNeverRaisesIntoGraph:
         opened: list[Any] = []
         real_open = __import__(
             "src.agents.slo_agent.orchestrator.launch_tool",
-            fromlist=["_open_capture_file"],
-        )._open_capture_file
+            fromlist=["open_capture_file_append"],
+        ).open_capture_file_append
 
         def _stderr_fails(*, history_root: Path, session_id: str, name: str) -> Any:
             if name == "stderr.log":
@@ -609,7 +622,7 @@ class TestLaunchNeverRaisesIntoGraph:
             return handle
 
         monkeypatch.setattr(
-            "src.agents.slo_agent.orchestrator.launch_tool._open_capture_file",
+            "src.agents.slo_agent.orchestrator.launch_tool.open_capture_file_append",
             _stderr_fails,
         )
         spawn: _FakeSpawn = _FakeSpawn()

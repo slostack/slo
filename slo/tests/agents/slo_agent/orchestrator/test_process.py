@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.agents.slo_agent.orchestrator.dao import SubAgentTaskDAO
+from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
 from src.agents.slo_agent.orchestrator.process import (
     PER_TASK_OUTPUT_CAP,
     SubAgentProcess,
 )
+from src.agents.slo_agent.orchestrator.reaper import ReapOutcome
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,9 +79,7 @@ def _make_stream_reader(
         AsyncMock: Reader whose ``readline`` side-effect yields one line per event
             and then an empty bytes sentinel.
     """
-    lines: list[bytes] = [
-        event.model_dump_json().encode() + b"\n" for event in events
-    ] + [b""]
+    lines: list[bytes] = [event.model_dump_json().encode() + b"\n" for event in events] + [b""]
     reader: AsyncMock = AsyncMock()
     reader.readline = AsyncMock(side_effect=lines)
     return reader
@@ -143,9 +144,7 @@ class TestSubAgentProcessArgvBuilding:
     def test_argv_includes_resume_when_set(self) -> None:
         """``--resume`` is appended when the task carries a session reference."""
         process, _ = _make_process()
-        process._task = SubAgentTaskDAO(
-            task_id="t1", prompt="x", resume_session_reference="ref-abc"
-        )
+        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", resume_session_reference="ref-abc")
 
         argv: list[str] = process._build_argv()
 
@@ -159,47 +158,39 @@ class TestSubAgentProcessArgvBuilding:
 
         assert "--resume" not in argv
 
-    def test_argv_includes_session_id_when_set(self) -> None:
-        """``--session-id`` is appended when the task carries an explicit session id."""
-        process, _ = _make_process()
-        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", session_id="child-sess-01")
+    def test_build_argv_always_forwards_pool_session_id(self) -> None:
+        """Fresh tasks use the pool-assigned wrapper session id in argv."""
+        process, _ = _make_process(session_id="pool-session-id")
 
         argv: list[str] = process._build_argv()
+        session_id_index: int = argv.index("--session-id")
 
-        assert "--session-id" in argv
-        assert "child-sess-01" in argv
+        assert argv[session_id_index + 1] == "pool-session-id"
 
-    def test_argv_omits_session_id_when_absent(self) -> None:
-        """``--session-id`` is not present when ``session_id`` is ``None``."""
-        process, _ = _make_process()
-        argv: list[str] = process._build_argv()
-
-        assert "--session-id" not in argv
-
-    def test_argv_includes_enable_history_when_true(self) -> None:
-        """``--enable-history`` is appended when ``enable_history=True``."""
-        process, _ = _make_process()
-        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", enable_history=True)
-
-        argv: list[str] = process._build_argv()
-
-        assert "--enable-history" in argv
-
-    def test_argv_omits_enable_history_when_false(self) -> None:
-        """``--enable-history`` is absent when ``enable_history=False``."""
+    def test_build_argv_always_enables_history(self) -> None:
+        """Tasks that opt out of history still receive the history flag."""
         process, _ = _make_process()
         process._task = SubAgentTaskDAO(task_id="t1", prompt="x", enable_history=False)
 
-        argv: list[str] = process._build_argv()
+        assert "--enable-history" in process._build_argv()
 
-        assert "--enable-history" not in argv
+    def test_build_argv_with_explicit_session_id_is_byte_identical(self) -> None:
+        """An explicit task id agrees with the pool id and preserves argv output."""
+        process, _ = _make_process(session_id="child-sess-01")
+        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", session_id="child-sess-01")
 
-    def test_argv_omits_enable_history_when_none(self) -> None:
-        """``--enable-history`` is absent when ``enable_history=None``."""
-        process, _ = _make_process()
-        argv: list[str] = process._build_argv()
-
-        assert "--enable-history" not in argv
+        assert process._build_argv() == [
+            sys.executable,
+            "-m",
+            "src.cli",
+            "run",
+            "--json",
+            "-p",
+            "x",
+            "--session-id",
+            "child-sess-01",
+            "--enable-history",
+        ]
 
     def test_argv_includes_system_prompt_b64_when_task_has_system_prompt(self) -> None:
         """``--system-prompt-b64`` is appended with the base64-encoded system prompt."""
@@ -232,8 +223,8 @@ class TestSubAgentProcessArgvBuilding:
 class TestSubAgentProcessInactivityTimeout:
     """A child that goes silent past the inactivity bound is declared hung."""
 
-    async def test_pump_stdout_times_out_and_tears_down_a_silent_child(self) -> None:
-        """A reader that never yields a line raises a ``TimeoutError`` and cancels the child."""
+    async def test_pump_stdout_timeout_cancels_with_inactivity_message(self) -> None:
+        """A silent child is cancelled after the full inactivity budget."""
         import asyncio
 
         process, _ = _make_process()
@@ -256,6 +247,17 @@ class TestSubAgentProcessInactivityTimeout:
                 await process._pump_stdout(stream=reader)
 
         mock_cancel.assert_awaited_once()
+
+    def test_timeout_failure_result_prefers_bounded_stderr_tail(self) -> None:
+        """Timeout failures retain the child stderr diagnostic for the orchestrator."""
+        process, _ = _make_process()
+        process._stderr_tail.append("provider diagnostic")
+
+        result = process._failed_result_from_exception(error=TimeoutError("no output"))
+
+        assert result.status == "failed"
+        assert "provider diagnostic" in result.answer
+        assert "TimeoutError" not in result.answer
 
 
 class TestSubAgentProcessHandleLine:
@@ -292,9 +294,7 @@ class TestSubAgentProcessHandleLine:
             kind="text_delta",
             delta="x",
         )
-        await process._handle_line(
-            raw=delta_event.model_dump_json().encode() + b"\n"
-        )
+        await process._handle_line(raw=delta_event.model_dump_json().encode() + b"\n")
 
         assert len(collected) == 0
 
@@ -307,9 +307,7 @@ class TestSubAgentProcessHandleLine:
             kind="run_completed",
             content="done",
         )
-        await process._handle_line(
-            raw=terminal_event.model_dump_json().encode() + b"\n"
-        )
+        await process._handle_line(raw=terminal_event.model_dump_json().encode() + b"\n")
 
         assert len(collected) == 1
         assert collected[0].kind == "run_completed"
@@ -336,9 +334,7 @@ class TestSubAgentProcessHandleLine:
             content="final answer",
         )
 
-        await process._handle_line(
-            raw=terminal_event.model_dump_json().encode() + b"\n"
-        )
+        await process._handle_line(raw=terminal_event.model_dump_json().encode() + b"\n")
 
         assert process._answer == "final answer"
 
@@ -376,9 +372,7 @@ class TestSubAgentProcessTerminalResult:
     def test_failed_child_with_no_answer_surfaces_stderr_tail(self) -> None:
         """A silent non-zero exit surfaces the captured stderr tail as the answer."""
         process, _ = _make_process()
-        process._stderr_tail.append(
-            "ValueError: Unsupported reasoning model 'claude-sonnet-4-5'."
-        )
+        process._stderr_tail.append("ValueError: Unsupported reasoning model 'claude-sonnet-4-5'.")
 
         result = process._terminal_result(exit_code=1)
 
@@ -427,6 +421,84 @@ class TestSubAgentProcessTerminalResult:
         assert len(result.answer) <= len(label) + STDERR_TAIL_MAX_CHARS
 
 
+class TestSubAgentProcessDurableFleetEvidence:
+    """Process wrapper durable fleet and child-status behavior."""
+
+    async def test_run_marks_running_with_spawned_pid(self) -> None:
+        """A successful child spawn records its actual pid in the registry."""
+        process, _ = _make_process()
+        fake_process: MagicMock = MagicMock()
+        fake_process.pid = 4321
+        fake_process.stdout.readline = AsyncMock(return_value=b"")
+        fake_process.stderr.readline = AsyncMock(return_value=b"")
+        fake_process.wait = AsyncMock(return_value=0)
+
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_process)):
+            await process.run()
+
+        entry = process._registry.get(session_id="s1")
+        assert entry is not None
+        assert entry.pid == 4321
+        assert entry.started_at is not None
+
+    def test_terminal_result_writes_child_status_file(self, tmp_path: Path) -> None:
+        """Every terminal child result uses the canonical status-file path."""
+        slo_home: Path = tmp_path / "slo_home"
+        status_path: Path = (
+            slo_home / "sessions" / "history" / "parent-1" / "children" / "child-1" / "status.json"
+        )
+        process, _ = _make_process(
+            parent_session_id="parent-1",
+            session_id="child-1",
+            slo_home=slo_home,
+        )
+
+        with patch(
+            target="src.agents.slo_agent.orchestrator.process.OrchestrationLayout.child_status_path",
+            return_value=status_path,
+        ) as child_status_path:
+            result: SubAgentResultDAO = process._terminal_result(exit_code=0)
+
+        child_status_path.assert_called_once_with(
+            history_root=slo_home / "sessions" / "history",
+            parent_session_id="parent-1",
+            child_session_id="child-1",
+        )
+        assert SubAgentResultDAO.model_validate_json(status_path.read_text(encoding="utf-8")) == result
+
+    def test_child_status_write_failure_does_not_raise(self, tmp_path: Path) -> None:
+        """A best-effort child status failure leaves the terminal result available."""
+        process, _ = _make_process(
+            parent_session_id="parent-1",
+            session_id="child-1",
+            slo_home=tmp_path / "slo_home",
+        )
+
+        with patch(
+            target="src.agents.slo_agent.orchestrator.process.AtomicFileWriter.write_json",
+            side_effect=OSError("disk full"),
+        ):
+            result: SubAgentResultDAO = process._terminal_result(exit_code=1)
+
+        assert result.status == "failed"
+
+    def test_failed_result_from_exception_writes_child_status_file(self, tmp_path: Path) -> None:
+        """A post-spawn wrapper failure leaves durable terminal child evidence."""
+        slo_home: Path = tmp_path / "slo_home"
+        process, _ = _make_process(
+            parent_session_id="parent-1",
+            session_id="child-1",
+            slo_home=slo_home,
+        )
+
+        result: SubAgentResultDAO = process._failed_result_from_exception(error=RuntimeError("stream failed"))
+
+        status_path: Path = (
+            slo_home / "sessions" / "history" / "parent-1" / "children" / "child-1" / "status.json"
+        )
+        assert SubAgentResultDAO.model_validate_json(status_path.read_text(encoding="utf-8")) == result
+
+
 class TestSubAgentProcessRunFailureIsolation:
     """``run()`` never raises — failures become ``failed`` results."""
 
@@ -465,13 +537,7 @@ class TestWriteSpawnContext:
         process._write_spawn_context()
 
         spawn_path: Path = (
-            slo_home
-            / "sessions"
-            / "history"
-            / "parent-1"
-            / "children"
-            / "child-1"
-            / "spawn_context.json"
+            slo_home / "sessions" / "history" / "parent-1" / "children" / "child-1" / "spawn_context.json"
         )
         assert spawn_path.exists()
         ctx = SpawnContextDAO.model_validate_json(spawn_path.read_bytes())
@@ -493,13 +559,7 @@ class TestWriteSpawnContext:
 
         process._write_spawn_context()
         spawn_path: Path = (
-            slo_home
-            / "sessions"
-            / "history"
-            / "parent-2"
-            / "children"
-            / "child-2"
-            / "spawn_context.json"
+            slo_home / "sessions" / "history" / "parent-2" / "children" / "child-2" / "spawn_context.json"
         )
         first_bytes: bytes = spawn_path.read_bytes()
 
@@ -561,17 +621,113 @@ class TestSubAgentProcessPumpStdout:
 class TestSubAgentProcessCancel:
     """``cancel()`` sends SIGTERM and escalates to SIGKILL after grace period."""
 
-    async def test_cancel_calls_terminate_on_running_process(self) -> None:
-        """``cancel()`` calls ``terminate()`` when the child is running."""
+    async def test_cancel_delegates_to_reaper_and_waits_for_running_process(self) -> None:
+        """A running child delegates termination to FleetReaper and reaps its handle."""
         process, _ = _make_process()
         mock_proc: MagicMock = MagicMock()
+        mock_proc.pid = 123
         mock_proc.returncode = None
         mock_proc.wait = AsyncMock(return_value=0)
         process._proc = mock_proc
 
-        await process.cancel()
+        with (
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.child_identity_outcome",
+                return_value="matching",
+            ),
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.reap",
+                new=AsyncMock(return_value="graceful"),
+            ) as reap,
+        ):
+            outcome = await process.cancel()
 
-        mock_proc.terminate.assert_called_once()
+        reap.assert_awaited_once_with(pid=123)
+        mock_proc.wait.assert_awaited_once()
+        assert outcome == "graceful"
+
+    async def test_cancel_refuses_recycled_pid_before_reaping(self) -> None:
+        """A wrapper cancellation never signals a recycled child process id."""
+        process, _ = _make_process(session_id="child-1")
+        mock_proc: MagicMock = MagicMock()
+        mock_proc.pid = 123
+        mock_proc.returncode = None
+        mock_proc.wait = AsyncMock()
+        process._proc = mock_proc
+
+        with (
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.child_identity_outcome",
+                return_value="recycled_pid",
+            ),
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.reap",
+                new=AsyncMock(),
+            ) as reap,
+        ):
+            outcome = await process.cancel()
+
+        assert outcome == "recycled_pid"
+        reap.assert_not_awaited()
+        mock_proc.wait.assert_not_awaited()
+
+    async def test_cancel_waits_for_inflight_spawn_before_reaping(self) -> None:
+        """Cancellation joins child creation before it makes abort accounting terminal.
+
+        WHAT: Holds spawn readiness until the process handle has been registered.
+        WHO: The cleanup-guarantee spawn-race regression suite.
+        WHEN: Cancellation and child creation synchronization changes.
+        """
+        process, _ = _make_process(session_id="child-1")
+        process._spawn_in_progress = True
+        mock_proc: MagicMock = MagicMock()
+        mock_proc.pid = 123
+        mock_proc.returncode = None
+        mock_proc.wait = AsyncMock(return_value=0)
+
+        with (
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.child_identity_outcome",
+                return_value="matching",
+            ),
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.reap",
+                new=AsyncMock(return_value="graceful"),
+            ) as reap,
+        ):
+            cancellation: asyncio.Task[Optional[ReapOutcome]] = asyncio.create_task(process.cancel())
+            await asyncio.sleep(0)
+            assert cancellation.done() is False
+            process._proc = mock_proc
+            process._spawn_ready.set()
+            outcome: Optional[ReapOutcome] = await cancellation
+
+        assert outcome == "graceful"
+        reap.assert_awaited_once_with(pid=123)
+
+    async def test_cancel_returns_unresolved_without_waiting_for_live_process(self) -> None:
+        """An unconfirmed reaper result remains visible to the pool drain gate."""
+        process, _ = _make_process(session_id="child-1")
+        mock_proc: MagicMock = MagicMock()
+        mock_proc.pid = 123
+        mock_proc.returncode = None
+        mock_proc.wait = AsyncMock()
+        process._proc = mock_proc
+
+        with (
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.child_identity_outcome",
+                return_value="matching",
+            ),
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.reap",
+                new=AsyncMock(return_value="unresolved"),
+            ),
+        ):
+            outcome = await process.cancel()
+
+        assert outcome == "unresolved"
+        mock_proc.wait.assert_not_awaited()
 
     async def test_cancel_is_noop_when_no_process(self) -> None:
         """``cancel()`` does nothing and does not raise when ``_proc`` is ``None``."""
@@ -586,9 +742,10 @@ class TestSubAgentProcessCancel:
         mock_proc.returncode = 0
         process._proc = mock_proc
 
-        await process.cancel()
+        with patch("src.agents.slo_agent.orchestrator.process.FleetReaper.reap") as reap:
+            await process.cancel()
 
-        mock_proc.terminate.assert_not_called()
+        reap.assert_not_called()
 
 
 class TestSubAgentProcessStreamLimit:
@@ -712,9 +869,7 @@ class TestSubAgentProcessPumpStderr:
         """Non-empty stderr lines are retained in the tail buffer for failure diagnostics."""
         process, _ = _make_process()
         reader: AsyncMock = AsyncMock()
-        reader.readline = AsyncMock(
-            side_effect=[b"first diagnostic\n", b"\n", b"RateLimitError: 429\n", b""]
-        )
+        reader.readline = AsyncMock(side_effect=[b"first diagnostic\n", b"\n", b"RateLimitError: 429\n", b""])
 
         with patch("src.agents.slo_agent.orchestrator.process.log_info"):
             await process._pump_stderr(stream=reader)
@@ -737,13 +892,11 @@ class TestSubAgentProcessPumpStderr:
         assert len(process._stderr_tail) == STDERR_TAIL_MAX_LINES
         assert process._stderr_tail[-1] == f"line {overflow - 1}"
 
-    async def test_writes_lines_to_capture_file_when_configured(
-        self, tmp_path: pytest.MonkeyPatch
-    ) -> None:
+    async def test_writes_lines_to_capture_file_when_configured(self, tmp_path: pytest.MonkeyPatch) -> None:
         """Stderr lines are written to ``stderr.jsonl`` in the capture directory."""
         from pathlib import Path
 
-        slo_home: Path = tmp_path / "slo_home"  # type: ignore[assignment]
+        slo_home: Path = tmp_path / "slo_home"
         process, _ = _make_process(
             session_id="child-sess",
             parent_session_id="parent-sess",
@@ -790,9 +943,7 @@ class TestSubAgentProcessCaptureFiles:
 
         capture_dir = process._capture_dir()
 
-        assert capture_dir == (
-            slo_home / "sessions" / "history" / "parent-xyz" / "children" / "child-abc"
-        )
+        assert capture_dir == (slo_home / "sessions" / "history" / "parent-xyz" / "children" / "child-abc")
 
     def test_open_capture_file_creates_directory_and_file(self, tmp_path) -> None:
         """``_open_capture_file`` creates the directory tree and returns a writable handle."""
@@ -823,17 +974,70 @@ class TestSubAgentProcessCaptureFiles:
         assert process._open_capture_file(name="stdout.jsonl") is None
 
 
+class TestSubAgentProcessSpawnEnvironment:
+    """Pool child processes receive the shared allowlisted environment."""
+
+    async def test_sub_agent_spawn_uses_allowlisted_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Sub-agent process creation excludes parent secrets and forwards SLO knobs."""
+        process, _ = _make_process()
+        fake_process: MagicMock = MagicMock()
+        fake_process.stdout = MagicMock()
+        fake_process.stderr = MagicMock()
+        fake_process.wait = AsyncMock(return_value=0)
+        create_process: AsyncMock = AsyncMock(return_value=fake_process)
+        monkeypatch.setenv("SLO_TEST_TIMEOUT", "12")
+        monkeypatch.setenv("SLO_TEST_API_KEY", "secret")
+
+        with (
+            patch(
+                "src.agents.slo_agent.orchestrator.process.asyncio.create_subprocess_exec",
+                create_process,
+            ),
+            patch.object(process, "_pump_stdout", new=AsyncMock()),
+            patch.object(process, "_pump_stderr", new=AsyncMock()),
+        ):
+            await process.run()
+
+        child_env: dict[str, str] = create_process.await_args.kwargs["env"]
+        assert child_env["SLO_TEST_TIMEOUT"] == "12"
+        assert "SLO_TEST_API_KEY" not in child_env
+
+    async def test_run_injects_parent_identity_into_child_env(self, tmp_path: Path) -> None:
+        """Subprocess spawn receives its parent pid and canonical capture directory."""
+        slo_home: Path = tmp_path / "slo_home"
+        process, _ = _make_process(
+            parent_session_id="parent-session",
+            session_id="child-session",
+            slo_home=slo_home,
+        )
+        fake_process: MagicMock = MagicMock()
+        fake_process.stdout = MagicMock()
+        fake_process.stderr = MagicMock()
+        fake_process.wait = AsyncMock(return_value=0)
+        create_process: AsyncMock = AsyncMock(return_value=fake_process)
+
+        with (
+            patch("src.agents.slo_agent.orchestrator.process.asyncio.create_subprocess_exec", create_process),
+            patch.object(process, "_pump_stdout", new=AsyncMock()),
+            patch.object(process, "_pump_stderr", new=AsyncMock()),
+        ):
+            await process.run()
+
+        child_env: dict[str, str] = create_process.await_args.kwargs["env"]
+        assert child_env["SLO_PARENT_PID"] == str(os.getpid())
+        assert child_env["SLO_CAPTURE_DIR"].endswith("parent-session/children/child-session")
+
+
 class TestSubAgentProcessEnvConfigurableTimeouts:
     """``TERMINATE_GRACE_SECONDS`` and ``CHILD_INACTIVITY_TIMEOUT_SECONDS`` read from env."""
 
-    def test_terminate_grace_seconds_uses_primary_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_terminate_grace_seconds_uses_primary_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``SLO_SUBAGENT_TERMINATE_GRACE_SECONDS`` overrides the default."""
         monkeypatch.setenv("SLO_SUBAGENT_TERMINATE_GRACE_SECONDS", "15.0")
 
         import importlib
         import src.agents.slo_agent.orchestrator.process as proc_mod
+
         importlib.reload(proc_mod)
 
         assert proc_mod.TERMINATE_GRACE_SECONDS == 15.0
@@ -850,36 +1054,35 @@ class TestSubAgentProcessEnvConfigurableTimeouts:
 
         import importlib
         import src.agents.slo_agent.orchestrator.process as proc_mod
+
         importlib.reload(proc_mod)
 
         assert proc_mod.CHILD_INACTIVITY_TIMEOUT_SECONDS == 7200.0
 
         importlib.reload(proc_mod)
 
-    def test_child_inactivity_timeout_reads_primary_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_child_inactivity_timeout_reads_primary_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`` overrides the default."""
         monkeypatch.setenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS", "600.0")
         monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT", raising=False)
 
         import importlib
         import src.agents.slo_agent.orchestrator.process as proc_mod
+
         importlib.reload(proc_mod)
 
         assert proc_mod.CHILD_INACTIVITY_TIMEOUT_SECONDS == 600.0
 
         importlib.reload(proc_mod)
 
-    def test_child_inactivity_timeout_reads_alias_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_child_inactivity_timeout_reads_alias_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``SLO_SUBAGENT_INACTIVITY_TIMEOUT`` (legacy alias) is honoured when primary is absent."""
         monkeypatch.delenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS", raising=False)
         monkeypatch.setenv("SLO_SUBAGENT_INACTIVITY_TIMEOUT", "900.0")
 
         import importlib
         import src.agents.slo_agent.orchestrator.process as proc_mod
+
         importlib.reload(proc_mod)
 
         assert proc_mod.CHILD_INACTIVITY_TIMEOUT_SECONDS == 900.0
@@ -905,55 +1108,88 @@ class TestSubAgentProcessRunConcurrentPumping:
             "SubAgentProcess.run() must use asyncio.gather to pump stdout and "
             "stderr concurrently and prevent pipe deadlock"
         )
-        assert "_pump_stderr" in src, (
-            "SubAgentProcess.run() must call _pump_stderr for concurrent stderr draining"
-        )
+        assert (
+            "_pump_stderr" in src
+        ), "SubAgentProcess.run() must call _pump_stderr for concurrent stderr draining"
+
 
 class TestSubAgentProcessHeartbeatSupervision:
-    """Heartbeat state selects the child supervisor deadline and stale cleanup."""
+    """Heartbeats are advisory telemetry, not child cancellation deadlines."""
 
-    def test_recognized_same_session_heartbeat_selects_remaining_stale_budget(self) -> None:
-        """A valid heartbeat changes stdout supervision from the two-hour outer guard."""
+    def test_record_heartbeat_stamps_advisory_timestamp(self) -> None:
+        """A valid same-session heartbeat records telemetry for later fleet reporting.
+
+        WHAT: Confirms heartbeat recognition records its timestamp without selecting
+            a supervision deadline.
+        WHO: The advisory-heartbeat regression suite.
+        WHEN: Whenever child heartbeat handling changes.
+        """
         from src.cli.headless_events import HeadlessLifecycleEventDAO
 
         process, _ = _make_process(session_id="child-1")
-        heartbeat: bytes = HeadlessLifecycleEventDAO(
-            kind="headless_status",
-            session_id="child-1",
-            message="heartbeat",
-        ).model_dump_json().encode()
+        heartbeat: bytes = (
+            HeadlessLifecycleEventDAO(
+                kind="headless_status",
+                session_id="child-1",
+                message="heartbeat",
+            )
+            .model_dump_json()
+            .encode()
+        )
+
         with patch("asyncio.get_running_loop") as loop:
             loop.return_value.time.return_value = 10.0
-            assert process._record_headless_heartbeat(raw=heartbeat)
-            loop.return_value.time.return_value = 20.0
-            assert process._next_child_liveness_timeout_seconds() < 7200.0
 
-    async def test_stale_heartbeat_cancels_and_uses_redacted_failure_envelope(self) -> None:
-        """A stale recognized heartbeat invokes cleanup and stores only controlled metadata."""
+            assert process._record_headless_heartbeat(raw=heartbeat)
+
+        assert process._last_heartbeat_at == 10.0
+
+    async def test_pump_stdout_does_not_cancel_on_stale_heartbeat(self) -> None:
+        """A stale advisory heartbeat does not cancel a child that reaches EOF.
+
+        WHAT: Drains an EOF stream after a stale heartbeat and proves no cancellation
+            path runs.
+        WHO: The advisory-heartbeat regression suite.
+        WHEN: Whenever child supervision timeout behavior changes.
+        """
         process, _ = _make_process()
-        process._last_liveness_at = 1.0
-        process._heartbeat_seconds = 1.0
+        process._last_heartbeat_at = 1.0
+        reader: AsyncMock = AsyncMock()
+        reader.readline = AsyncMock(return_value=b"")
+
         with patch.object(process, "cancel", new=AsyncMock()) as cancel:
-            await process._cancel_stale_child_if_needed(now_seconds=5.0)
-        cancel.assert_awaited_once()
-        assert process._failure_envelope["failure_code"] == "headless_heartbeat_stale"
+            await process._pump_stdout(stream=reader)
+
+        cancel.assert_not_awaited()
 
 
 class TestSubAgentProcessCancellationRace:
     """Cancellation reaps after SIGKILL and terminal results remain cached."""
 
-    async def test_cancel_escalates_and_reaps_when_sigterm_is_ignored(self) -> None:
-        """SIGTERM timeout sends SIGKILL once and awaits the settled child process."""
+    async def test_cancel_reports_killed_outcome_and_reaps_process_handle(self) -> None:
+        """A hard-reap result from FleetReaper is returned after the handle is awaited."""
         process, _ = _make_process()
         proc: MagicMock = MagicMock()
+        proc.pid = 123
         proc.returncode = None
-        proc.wait = AsyncMock(side_effect=[asyncio.TimeoutError(), 0])
+        proc.wait = AsyncMock(return_value=-9)
         process._proc = proc
-        with patch("src.agents.slo_agent.orchestrator.process.TERMINATE_GRACE_SECONDS", 0.01):
-            await process.cancel()
-        proc.terminate.assert_called_once()
-        proc.kill.assert_called_once()
-        assert proc.wait.await_count == 2
+
+        with (
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.child_identity_outcome",
+                return_value="matching",
+            ),
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.reap",
+                new=AsyncMock(return_value="killed"),
+            ) as reap,
+        ):
+            outcome = await process.cancel()
+
+        reap.assert_awaited_once_with(pid=123)
+        proc.wait.assert_awaited_once()
+        assert outcome == "killed"
 
     def test_terminal_result_is_cached_when_two_paths_finalize(self) -> None:
         """Concurrent cleanup paths receive the identical already-built terminal result."""

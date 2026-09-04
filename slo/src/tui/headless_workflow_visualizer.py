@@ -32,6 +32,8 @@ panes.
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Optional
 
@@ -44,10 +46,14 @@ from textual.containers import Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import Footer, Header, ListView, ListItem, Label, RichLog
 
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.agents.slo_agent.orchestrator.dao import build_cleanup_summary
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.workflow_visualizer_loader import (
     ChildSessionSummaryDAO,
     HeadlessWorkflowVisualizerConfigDAO,
+    OrchestratorNodeDAO,
     WorkflowDataDAO,
     WorkflowVisualizerLoader,
 )
@@ -100,6 +106,47 @@ _FORMAT_LABEL: dict[TreeExportFormat, str] = {
     TreeExportFormat.MARKDOWN: "markdown",
     TreeExportFormat.HTML: "html (preview)",
 }
+
+
+class _LiveToolBuffers:
+    """Accumulate one live tool invocation until its result arrives."""
+
+    def __init__(self, *, tool_name: str) -> None:
+        """Create an empty buffer for one streamed tool call.
+
+        Args:
+            tool_name (str): Name reported by the tool-call start event.
+        """
+        self.tool_name: str = tool_name
+        self.arguments_chunks: list[str] = []
+
+    def append_arguments(self, *, delta: str) -> None:
+        """Record one incremental tool-arguments fragment.
+
+        Args:
+            delta (str): JSON/text fragment from a tool-call delta event.
+        """
+        self.arguments_chunks.append(delta)
+
+    def build_call_entry(self) -> TranscriptEntryDAO:
+        """Build the visible tool-call entry from buffered arguments.
+
+        Returns:
+            TranscriptEntryDAO: Tool-call entry matching capture projection.
+        """
+        raw_arguments: str = "".join(self.arguments_chunks)
+        try:
+            parsed_arguments: object = json.loads(raw_arguments)
+        except (json.JSONDecodeError, ValueError):
+            parsed_arguments = {"raw": raw_arguments}
+        tool_input: dict[str, object] = (
+            parsed_arguments if isinstance(parsed_arguments, dict) else {"raw": raw_arguments}
+        )
+        return TranscriptEntryDAO(
+            kind="tool",
+            tool_name=self.tool_name,
+            tool_input=tool_input,
+        )
 
 
 class HeadlessWorkflowVisualizer(App[None]):
@@ -249,6 +296,10 @@ class HeadlessWorkflowVisualizer(App[None]):
         self._detail_view: Literal["transcript", "invocation"] = "transcript"
         self._child_panel_width: int = _CHILD_PANEL_WIDTH_DEFAULT
         self._diag_height: int = _DIAG_HEIGHT_DEFAULT
+        self._live_entries: dict[str, list[TranscriptEntryDAO]] = {}
+        self._live_open_assistant: set[str] = set()
+        self._live_open_thinking: set[str] = set()
+        self._live_tools: dict[str, dict[str, _LiveToolBuffers]] = {}
 
     def compose(self) -> ComposeResult:
         """Lay out the three-pane interface with orchestrator context panel.
@@ -350,7 +401,22 @@ class HeadlessWorkflowVisualizer(App[None]):
             f"[green]✓ {counts['completed']}[/green]",
             f"[red]✗ {counts['failed'] + counts['aborted']}[/red]",
         ]
+        cleanup: Optional[str] = self._cleanup_summary()
+        if cleanup is not None:
+            parts.append(cleanup)
         summary.update("   ".join(parts))
+
+    def _cleanup_summary(self) -> Optional[str]:
+        """Return recorded fleet cleanup text for the summary bar when available."""
+        if self._workflow_data is None or self._workflow_data.fleet_snapshot is None:
+            return None
+        entries = self._workflow_data.fleet_snapshot.entries
+        live_count: int = sum(1 for entry in entries if entry.status == "running")
+        summary: str = build_cleanup_summary(entries=entries, live_count=live_count)
+        all_terminal: bool = all(entry.status in {"completed", "failed", "aborted"} for entry in entries)
+        if self._workflow_data.is_complete and all_terminal:
+            return summary + " · all sub-processes reaped ✓"
+        return summary
 
     def _status_counts(self) -> dict[str, int]:
         """Tally the current children by status.
@@ -376,7 +442,14 @@ class HeadlessWorkflowVisualizer(App[None]):
         """Repopulate the left-pane child session list from current data."""
         list_view: ListView = self.query_one("#child-list", ListView)
         await list_view.clear()
-        if not self._workflow_data or not self._workflow_data.children:
+        if not self._workflow_data:
+            await list_view.append(ListItem(Label("[dim]No sub-agents found[/dim]")))
+            return
+        if self._workflow_data.orchestrator is not None:
+            await list_view.append(
+                ListItem(Label(self._orchestrator_label(node=self._workflow_data.orchestrator)))
+            )
+        if not self._workflow_data.children and self._workflow_data.orchestrator is None:
             await list_view.append(ListItem(Label("[dim]No sub-agents found[/dim]")))
             return
         for child in self._workflow_data.children:
@@ -387,8 +460,12 @@ class HeadlessWorkflowVisualizer(App[None]):
         """Reload the right-pane based on the active detail view mode."""
         detail_log: RichLog = self.query_one("#detail-log", RichLog)
         detail_log.clear()
-        if not self._workflow_data or not self._workflow_data.children:
+        if not self._workflow_data:
             detail_log.write("[dim]Select a sub-agent to inspect its transcript.[/dim]")
+            return
+        orchestrator: Optional[OrchestratorNodeDAO] = self._current_orchestrator()
+        if orchestrator is not None:
+            self._render_live_entries(detail_log=detail_log, session_id=orchestrator.session_id)
             return
         child: Optional[ChildSessionSummaryDAO] = self._current_child()
         if child is None:
@@ -400,6 +477,9 @@ class HeadlessWorkflowVisualizer(App[None]):
                 child_session_id=child.session_id,
             )
             self._render_invocation(detail_log=detail_log, spawn=spawn)
+            return
+        if child.status == "running":
+            self._render_live_entries(detail_log=detail_log, session_id=child.session_id)
             return
         entries = await self._loader.load_child_transcript_entries(
             parent_session_id=self._workflow_data.parent_session_id,
@@ -420,22 +500,28 @@ class HeadlessWorkflowVisualizer(App[None]):
                 )
 
     def _rebuild_diagnostics_pane(self) -> None:
-        """Reload the diagnostics pane from the current child's stderr capture."""
+        """Reload diagnostics for the selected child or orchestrator node."""
         diag_log: RichLog = self.query_one("#diagnostics-log", RichLog)
         diag_log.clear()
-        if not self._workflow_data or not self._workflow_data.children:
-            diag_log.write("No sub-agents.")
+        if self._workflow_data is None:
+            diag_log.write("No workflow loaded.")
             return
+        orchestrator: Optional[OrchestratorNodeDAO] = self._current_orchestrator()
         child: Optional[ChildSessionSummaryDAO] = self._current_child()
-        if child is None:
-            diag_log.write("No sub-agent selected.")
+        session_id: Optional[str] = (
+            orchestrator.session_id
+            if orchestrator is not None
+            else child.session_id if child is not None else None
+        )
+        if session_id is None:
+            diag_log.write("No node selected.")
             return
-        lines: list[str] = self._loader.load_child_stderr_lines(
+        lines: list[str] = self._loader.load_node_stderr_lines(
             parent_session_id=self._workflow_data.parent_session_id,
-            child_session_id=child.session_id,
+            session_id=session_id,
         )
         if not lines:
-            diag_log.write(f"No stderr capture for {child.session_id[:8]}.")
+            diag_log.write(f"No stderr capture for {session_id[:8]}.")
             return
         for line in lines:
             diag_log.write(line)
@@ -446,7 +532,7 @@ class HeadlessWorkflowVisualizer(App[None]):
         Args:
             event (ListView.Selected): Selection event from the child list.
         """
-        if self._workflow_data is None or not self._workflow_data.children:
+        if self._workflow_data is None:
             return
         self._selected_child_index = event.list_view.index or 0
         self.call_after_refresh(self._rebuild_detail_pane)
@@ -558,11 +644,17 @@ class HeadlessWorkflowVisualizer(App[None]):
         """
         if not self._workflow_data or not self._workflow_data.children:
             return None
-        idx: int = min(
-            self._selected_child_index,
-            len(self._workflow_data.children) - 1,
-        )
+        offset: int = 1 if self._workflow_data.orchestrator is not None else 0
+        if self._selected_child_index < offset:
+            return None
+        idx: int = min(self._selected_child_index - offset, len(self._workflow_data.children) - 1)
         return self._workflow_data.children[idx]
+
+    def _current_orchestrator(self) -> Optional[OrchestratorNodeDAO]:
+        """Return the orchestrator node when its first list row is selected."""
+        if self._workflow_data is None or self._selected_child_index != 0:
+            return None
+        return self._workflow_data.orchestrator
 
     def _workflow_data_is_terminal(self) -> bool:
         """Return ``True`` when the loaded workflow has reached a terminal state.
@@ -625,6 +717,100 @@ class HeadlessWorkflowVisualizer(App[None]):
             sys_preview += "…"
         detail_log.write(Text(sys_preview, style="dim italic"))
 
+    def _render_live_entries(self, *, detail_log: RichLog, session_id: str) -> None:
+        """Read and render the selected live node's newly captured stdout entries."""
+        self._append_live_stdout_events(session_id=session_id)
+        entries: list[TranscriptEntryDAO] = self._live_entries.get(session_id, [])
+        if not entries:
+            detail_log.write(f"[dim]No transcript entries for {session_id}.[/dim]")
+            return
+        for entry in entries:
+            self._write_entry_rich(detail_log=detail_log, entry=entry)
+
+    def _append_live_stdout_events(self, *, session_id: str) -> None:
+        """Coalesce new text deltas from the loader's incremental stdout tail."""
+        lines: list[bytes] = self._loader.read_child_stdout_tail(session_id=session_id)
+        for line in lines:
+            try:
+                event: AgentStreamEventDAO = AgentStreamEventDAO.model_validate_json(line)
+            except ValueError:
+                continue
+            self._append_live_event(session_id=session_id, event=event)
+
+    def _append_live_event(self, *, session_id: str, event: AgentStreamEventDAO) -> None:
+        """Apply one captured stream event to a live node transcript.
+
+        Args:
+            session_id (str): Session that owns the captured event.
+            event (AgentStreamEventDAO): Parsed stdout stream event.
+        """
+        if event.kind == "thinking_delta" and event.delta:
+            self._append_live_thinking_delta(session_id=session_id, delta=event.delta)
+            return
+        if event.kind == "thinking_end":
+            self._live_open_thinking.discard(session_id)
+            return
+        if event.kind == "text_delta" and event.delta:
+            self._append_live_text_delta(session_id=session_id, delta=event.delta)
+            return
+        if event.kind == "tool_call_start" and event.block_id and event.tool_name:
+            self._live_tools.setdefault(session_id, {})[event.block_id] = _LiveToolBuffers(
+                tool_name=event.tool_name,
+            )
+            return
+        if event.kind == "tool_call_delta" and event.block_id and event.tool_arguments_delta:
+            buffers: Optional[_LiveToolBuffers] = self._live_tools.get(session_id, {}).get(event.block_id)
+            if buffers is not None:
+                buffers.append_arguments(delta=event.tool_arguments_delta)
+            return
+        if event.kind == "tool_call_end" and event.block_id:
+            buffers = self._live_tools.get(session_id, {}).get(event.block_id)
+            if buffers is not None:
+                self._live_entries.setdefault(session_id, []).append(buffers.build_call_entry())
+            return
+        if event.kind == "tool_result" and event.tool_call_id:
+            buffers = self._live_tools.get(session_id, {}).pop(event.tool_call_id, None)
+            if buffers is not None:
+                self._live_entries.setdefault(session_id, []).append(
+                    TranscriptEntryDAO(kind="tool", tool_name=buffers.tool_name, output=event.content)
+                )
+            return
+        if event.kind in ("text_end", "run_completed", "run_failed", "run_aborted"):
+            self._live_open_assistant.discard(session_id)
+            self._live_open_thinking.discard(session_id)
+
+    def _append_live_thinking_delta(self, *, session_id: str, delta: str) -> None:
+        """Append one thinking delta to the open live thinking entry.
+
+        Args:
+            session_id (str): Session that owns the visible thinking block.
+            delta (str): New thinking text.
+        """
+        entries: list[TranscriptEntryDAO] = self._live_entries.setdefault(session_id, [])
+        if session_id not in self._live_open_thinking:
+            entries.append(TranscriptEntryDAO(kind="thinking", content=delta))
+            self._live_open_thinking.add(session_id)
+            return
+        current: TranscriptEntryDAO = entries[-1]
+        entries[-1] = current.model_copy(update={"content": (current.content or "") + delta})
+
+    def _append_live_text_delta(self, *, session_id: str, delta: str) -> None:
+        """Append one text delta to the open assistant entry for a live node."""
+        entries: list[TranscriptEntryDAO] = self._live_entries.setdefault(session_id, [])
+        if session_id not in self._live_open_assistant:
+            entries.append(TranscriptEntryDAO(kind="assistant", answer=delta))
+            self._live_open_assistant.add(session_id)
+            return
+        current: TranscriptEntryDAO = entries[-1]
+        entries[-1] = current.model_copy(update={"answer": (current.answer or "") + delta})
+
+    @staticmethod
+    def _orchestrator_label(*, node: OrchestratorNodeDAO) -> Text:
+        """Format the first list row for the visualizer's orchestrator node."""
+        icon: str = _STATUS_ICON.get(node.state, "?")
+        style: str = _STATUS_STYLE.get(node.state, "")
+        return Text(f"{icon} orchestrator · {node.state} · {node.phase}", style=style)
+
     @staticmethod
     def _child_label(*, child: ChildSessionSummaryDAO) -> Text:
         """Format the list-item label for one child session with prompt preview.
@@ -639,15 +825,38 @@ class HeadlessWorkflowVisualizer(App[None]):
             Text: Rich ``Text`` object for the list item, including prompt preview
                 when available.
         """
-        icon: str = _STATUS_ICON.get(child.status, "?")
+        is_reaped: bool = child.terminal_reason == "reaped_orphan"
+        icon: str = "⊘ reaped" if is_reaped else _STATUS_ICON.get(child.status, "?")
         short_id: str = child.session_id[:8]
         task_suffix: str = f" ({child.task_id[:8]})" if child.task_id else ""
-        style: str = _STATUS_STYLE.get(child.status, "")
-        label: Text = Text(f"{icon} {short_id}{task_suffix}", style=style)
+        style: str = _STATUS_STYLE.get("aborted" if is_reaped else child.status, "")
+        label: Text = Text(f"{icon} {short_id}{task_suffix} · {child.status}", style=style)
+        if child.liveness_state:
+            activity_age: str = HeadlessWorkflowVisualizer._activity_age(last_stdout_at=child.last_stdout_at)
+            phase: str = child.heartbeat_phase or "awaiting heartbeat"
+            label.append(f" · {child.liveness_state} · {phase} · out {activity_age}", style="dim")
+        terminal_parts: list[str] = [
+            part
+            for part in (
+                f"exit {child.exit_code}" if child.exit_code is not None else None,
+                child.terminal_reason,
+                child.terminated_by,
+            )
+            if part is not None
+        ]
+        if terminal_parts:
+            label.append(f" · {' · '.join(terminal_parts)}", style="dim")
         if child.prompt_preview:
             label.append(" │ ", style="dim")
             label.append(child.prompt_preview, style="italic")
         return label
+
+    @staticmethod
+    def _activity_age(*, last_stdout_at: Optional[float]) -> str:
+        """Format a monotonic stdout timestamp as a short operator-facing age."""
+        if last_stdout_at is None:
+            return "unknown"
+        return f"{max(0, int(time.monotonic() - last_stdout_at))}s ago"
 
     @staticmethod
     def _write_entry_rich(*, detail_log: RichLog, entry: TranscriptEntryDAO) -> None:

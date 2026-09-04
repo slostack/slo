@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,7 @@ from src.agents.slo_agent.history.dao import (
 from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
 )
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.stream_recovery.dao import (
     ProviderStreamFailure,
@@ -23,9 +25,11 @@ from src.agents.providers.stream_recovery.dao import (
     StreamRecoveryDecisionDAO,
 )
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
 
 
@@ -225,3 +229,127 @@ class TestTUIHydration:
             # ... and replay mounts the same components the live path mounts.
             assert len(app.query(UserMessageBlock)) >= 1
             assert len(app.query(AssistantStreamBlock)) >= 1
+
+
+class TestReplayThinkingParity:
+    """Replay mounts a sealed thinking block immediately before its answer block (72.a.2)."""
+
+    @staticmethod
+    def _reasoning_entries(*, count: int) -> list[TranscriptEntryDAO]:
+        """Build ordered replay entries with distinctive reasoning and answers.
+
+        Args:
+            count (int): Number of entries to build.
+
+        Returns:
+            list[TranscriptEntryDAO]: Chronological assistant entries.
+        """
+        return [
+            TranscriptEntryDAO(
+                kind="assistant",
+                reasoning=f"reasoning-{index}",
+                answer=f"answer-{index}",
+            )
+            for index in range(count)
+        ]
+
+    @staticmethod
+    def _build_history_app(*, entries: list[TranscriptEntryDAO]) -> SloTUI:
+        """Build a TUI whose replay path returns ``entries``.
+
+        Args:
+            entries (list[TranscriptEntryDAO]): Ordered replay entries.
+
+        Returns:
+            SloTUI: App under test.
+        """
+        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-history-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = False
+        session.history_root = None
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=entries)
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(
+            return_value=SessionUsageSnapshotDAO(
+                active_model_name="claude-sonnet-4-6",
+                active_reasoning_level="high",
+            )
+        )
+        session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
+        return SloTUI(session=session)
+
+    @staticmethod
+    def _thinking_answer_children(
+        *, app: SloTUI
+    ) -> list[tuple[AssistantStreamThinkingBlock, AssistantStreamBlock]]:
+        """Pair each thinking block with the answer block that follows it in the DOM.
+
+        Args:
+            app (SloTUI): App under inspection.
+
+        Returns:
+            list[tuple[AssistantStreamThinkingBlock, AssistantStreamBlock]]:
+                DOM-ordered ``(thinking, answer)`` pairs.
+        """
+        assert app._transcript_content is not None
+        children = list(app._transcript_content.children)
+        pairs: list[tuple[AssistantStreamThinkingBlock, AssistantStreamBlock]] = []
+        for index, child in enumerate(children[:-1]):
+            next_child = children[index + 1]
+            if isinstance(child, AssistantStreamThinkingBlock) and isinstance(
+                next_child, AssistantStreamBlock
+            ):
+                pairs.append((child, next_child))
+        return pairs
+
+    @pytest.mark.asyncio
+    async def test_hydration_mounts_a_sealed_thinking_block_immediately_before_the_answer(
+        self,
+    ) -> None:
+        """Persisted reasoning replays as a sealed thinking child ahead of its answer."""
+        entries: list[TranscriptEntryDAO] = self._reasoning_entries(count=1)
+        app: SloTUI = self._build_history_app(entries=entries)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            thinking_blocks: list[AssistantStreamThinkingBlock] = list(
+                app.query(selector=AssistantStreamThinkingBlock)
+            )
+            answer_blocks: list[AssistantStreamBlock] = list(app.query(selector=AssistantStreamBlock))
+            assert len(thinking_blocks) == 1
+            assert len(answer_blocks) == 1
+            assert thinking_blocks[0].thinking_text == "reasoning-0"
+            assert thinking_blocks[0].finalized is True
+            assert answer_blocks[0].answer_text == "answer-0"
+            assert self._thinking_answer_children(app=app) == [(thinking_blocks[0], answer_blocks[0])]
+
+    @pytest.mark.asyncio
+    async def test_load_older_prepends_reasoning_and_answer_as_adjacent_children(self) -> None:
+        """A prepended batch keeps every thinking block adjacent to its answer block."""
+        entries: list[TranscriptEntryDAO] = self._reasoning_entries(count=8)
+        with (
+            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 4),
+            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 2),
+        ):
+            app: SloTUI = self._build_history_app(entries=entries)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._load_older_entries()
+                await pilot.pause()
+
+                pairs = self._thinking_answer_children(app=app)
+                assert [thinking.thinking_text for thinking, _answer in pairs] == [
+                    f"reasoning-{index}" for index in range(2, 8)
+                ]
+                assert [answer.answer_text for _thinking, answer in pairs] == [
+                    f"answer-{index}" for index in range(2, 8)
+                ]
+                for thinking, _answer in pairs:
+                    assert thinking.finalized is True

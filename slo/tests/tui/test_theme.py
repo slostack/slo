@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 import pytest
+from textual.theme import Theme
 
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+
+_CANONICAL_PI_TOKENS: tuple[str, ...] = (
+    "user-msg-bg",
+    "tool-pending-bg",
+    "tool-success-bg",
+    "tool-error-bg",
+    "thinking-text",
+    "md-heading",
+    "border-muted",
+)
+"""The seven canonical Pi-derived semantic role tokens (spec 72.a.5)."""
 
 
 class TestSloDefaultThemeTokens:
@@ -99,6 +111,87 @@ class TestSloDarkThemeTokens:
 
     def test_luminosity_spread_is_tight(self) -> None:
         assert SLO_DARK_THEME.luminosity_spread <= 0.10
+
+
+class TestScreenSelectionTokens:
+    """Both themes own readable text-selection colours (spec 72 follow-up §7 polish).
+
+    Textual's ColorSystem defaults an undefined ``screen-selection-background``
+    to ``primary.with_alpha(0.5)`` with a ``transparent`` foreground — the
+    washed-green highlight that made selected answer/thinking text illegible.
+    The tokens below pin explicit, readable colours instead, mirroring the
+    ``button-color-foreground`` readability precedent.
+    """
+
+    _EXPECTED: dict[str, tuple[str, str]] = {
+        "slo-default": ("#7aa2f7", "#1a1b26"),
+        "slo-dark": ("#00ff7f", "#080808"),
+    }
+
+    @pytest.mark.parametrize(
+        "theme",
+        [SLO_DEFAULT_THEME, SLO_DARK_THEME],
+        ids=["slo-default", "slo-dark"],
+    )
+    def test_theme_defines_readable_selection_tokens(self, theme: Theme) -> None:
+        """Each theme pins its selection background and foreground to readable values."""
+        expected_background, expected_foreground = self._EXPECTED[theme.name]
+
+        assert theme.variables.get("screen-selection-background") == expected_background
+        assert theme.variables.get("screen-selection-foreground") == expected_foreground
+
+    @pytest.mark.parametrize(
+        "theme",
+        [SLO_DEFAULT_THEME, SLO_DARK_THEME],
+        ids=["slo-default", "slo-dark"],
+    )
+    def test_selection_foreground_differs_from_background(self, theme: Theme) -> None:
+        """Selected text must stay readable: foreground never equals background."""
+        background: str | None = theme.variables.get("screen-selection-background")
+        foreground: str | None = theme.variables.get("screen-selection-foreground")
+
+        assert background is not None
+        assert foreground is not None
+        assert foreground != background
+
+
+class TestCanonicalPiSemanticTokens:
+    """Both themes own the same seven Pi-derived semantic variables (spec 72.a.5)."""
+
+    @pytest.mark.parametrize(
+        "theme",
+        [SLO_DEFAULT_THEME, SLO_DARK_THEME],
+        ids=["slo-default", "slo-dark"],
+    )
+    @pytest.mark.parametrize("token", _CANONICAL_PI_TOKENS)
+    def test_theme_defines_canonical_token_with_non_empty_hex_value(
+        self,
+        theme: Theme,
+        token: str,
+    ) -> None:
+        """Every canonical token exists and carries a non-empty hex colour value."""
+        value: str | None = theme.variables.get(token)
+
+        assert value is not None, f"{theme.name} is missing the {token!r} variable"
+        assert value.startswith("#"), f"{theme.name} {token!r} must be a hex colour"
+        assert len(value) > 1, f"{theme.name} {token!r} must be non-empty"
+
+    @pytest.mark.parametrize(
+        "theme",
+        [SLO_DEFAULT_THEME, SLO_DARK_THEME],
+        ids=["slo-default", "slo-dark"],
+    )
+    def test_theme_variables_cover_exactly_the_button_and_canonical_tokens(
+        self,
+        theme: Theme,
+    ) -> None:
+        """The variable registry is the button foreground, the selection pair, and the seven tokens."""
+        assert set(theme.variables.keys()) == {
+            "button-color-foreground",
+            "screen-selection-background",
+            "screen-selection-foreground",
+            *_CANONICAL_PI_TOKENS,
+        }
 
 
 class TestSloTUIThemeRegistration:

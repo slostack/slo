@@ -8,19 +8,27 @@ from rich.padding import Padding
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 
+from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.widgets.user_message_block import UserMessageBlock
 
 
 class _Harness(App):
-    """Minimal app mirroring the real transcript layout for render tests."""
+    """Minimal app mirroring the real transcript layout for render tests.
+
+    Registers both Slo themes so widget CSS that references the canonical
+    ``$user-msg-bg`` semantic token resolves during compositing.
+    """
 
     def __init__(self, *, text: str) -> None:
-        """Store the user text to mount.
+        """Store the user text to mount and activate the Slo default theme.
 
         Args:
             text (str): The user prompt text.
         """
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.register_theme(SLO_DARK_THEME)
+        self.theme = SLO_DARK_THEME.name
         self._text: str = text
 
     def compose(self) -> ComposeResult:
@@ -62,17 +70,23 @@ class TestUserMessageBlock:
         assert UserMessageBlock._renderable(text="   ") == ""
 
     def test_renderable_is_present_for_real_text(self) -> None:
-        """Non-blank text yields a non-empty renderable."""
+        """Non-blank text yields a vertical-only padded renderable (spec 72.a.3)."""
         renderable = UserMessageBlock._renderable(text="hi")
-        assert renderable != ""
+        assert isinstance(renderable, Padding)
         assert renderable.top == 1
-        assert renderable.right == 1
+        assert renderable.right == 0
         assert renderable.bottom == 1
-        assert renderable.left == 1
+        assert renderable.left == 0
 
-    def test_user_block_exposes_shared_message_surface_styling(self) -> None:
-        """The widget CSS declares a panel-like message surface."""
-        assert "background: $panel;" in UserMessageBlock.DEFAULT_CSS
+    def test_widget_css_uses_transcript_output_pad(self) -> None:
+        """The widget declares the uniform ``TRANSCRIPT_OUTPUT_PAD`` convention."""
+        block_rule: str = UserMessageBlock.DEFAULT_CSS.split("UserMessageBlock {")[1].split("}")[0]
+        assert "padding: 0 1;" in block_rule
+
+    def test_user_block_uses_canonical_user_band_fill(self) -> None:
+        """The widget paints the quiet ``user-msg-bg`` band, not a panel card (spec 72.a.5)."""
+        assert "background: $user-msg-bg;" in UserMessageBlock.DEFAULT_CSS
+        assert "background: $panel;" not in UserMessageBlock.DEFAULT_CSS
 
 
 class TestUserMessageBlockExpansion:

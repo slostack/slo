@@ -49,6 +49,57 @@ class UsageStatusBar(Static):
             f" · {cls._limits_text(snapshot=snapshot)}"
         )
 
+    @staticmethod
+    def _format_token_count(*, count: int) -> str:
+        """Format a non-negative token count using Pi's compact footer convention.
+
+        WHAT: Selects the Pi-compatible decimal, ``k``, or ``M`` display form.
+        WHO: Usage, cache, and token-limit render helpers call it.
+        WHEN: A usage snapshot is rendered for the status bar.
+
+        Args:
+            count (int): Token quantity to render.
+
+        Returns:
+            str: Compact token quantity with Pi-compatible half-up rounding.
+        """
+        if count < 1_000:
+            return str(count)
+        if count < 10_000:
+            return UsageStatusBar._format_one_decimal_token_count(
+                count=count,
+                unit=1_000,
+                suffix="k",
+            )
+        if count < 1_000_000:
+            return f"{(count + 500) // 1_000}k"
+        if count < 10_000_000:
+            return UsageStatusBar._format_one_decimal_token_count(
+                count=count,
+                unit=1_000_000,
+                suffix="M",
+            )
+        return f"{(count + 500_000) // 1_000_000}M"
+
+    @staticmethod
+    def _format_one_decimal_token_count(*, count: int, unit: int, suffix: str) -> str:
+        """Format one token magnitude with one decimal place and half-up rounding.
+
+        WHAT: Converts an integer token count into an exact one-decimal compact unit.
+        WHO: ``_format_token_count`` calls it for the decimal ``k`` and ``M`` bands.
+        WHEN: The selected Pi display band retains one decimal place.
+
+        Args:
+            count (int): Token quantity to render.
+            unit (int): Whole-unit token divisor.
+            suffix (str): Compact-unit suffix.
+
+        Returns:
+            str: Half-up rounded compact token quantity.
+        """
+        scaled_tenths: int = (count + unit // 20) // (unit // 10)
+        return f"{scaled_tenths // 10}.{scaled_tenths % 10}{suffix}"
+
     @classmethod
     def _usage_text(cls, *, snapshot: SessionUsageSnapshotDAO) -> str:
         """Return the usage portion of the status line.
@@ -61,10 +112,11 @@ class UsageStatusBar(Static):
         """
         if not snapshot.usage_available:
             return "usage unavailable"
-        base: str = (
-            f"turn {snapshot.latest_turn.total_tokens or '?'} tok"
-            f" · session {snapshot.session_totals.total_tokens or '?'} tok"
-        )
+        turn_total: int | None = snapshot.latest_turn.total_tokens
+        session_total: int | None = snapshot.session_totals.total_tokens
+        turn_text: str = cls._format_token_count(count=turn_total) if turn_total else "?"
+        session_text: str = cls._format_token_count(count=session_total) if session_total else "?"
+        base: str = f"turn {turn_text} tok · session {session_text} tok"
         cache_parts: list[str] = cls._cache_text_parts(totals=snapshot.session_totals)
         if not cache_parts:
             return base
@@ -83,9 +135,13 @@ class UsageStatusBar(Static):
         """
         parts: list[str] = []
         if totals.cache_creation_input_tokens is not None:
-            parts.append(f"cache write {totals.cache_creation_input_tokens}")
+            parts.append(
+                f"cache write {UsageStatusBar._format_token_count(count=totals.cache_creation_input_tokens)}"
+            )
         if totals.cache_read_input_tokens is not None:
-            parts.append(f"cache read {totals.cache_read_input_tokens}")
+            parts.append(
+                f"cache read {UsageStatusBar._format_token_count(count=totals.cache_read_input_tokens)}"
+            )
         return parts
 
     @classmethod
@@ -99,7 +155,7 @@ class UsageStatusBar(Static):
             str: Limits text segment.
         """
         limit_bits: list[str] = []
-        cls._append_limit_if_known(
+        cls._append_token_limit_if_known(
             limit_bits=limit_bits,
             value=snapshot.output_cap_tokens,
             label="out",
@@ -109,12 +165,12 @@ class UsageStatusBar(Static):
             value=snapshot.provider_effort,
             label="effort",
         )
-        cls._append_limit_if_known(
+        cls._append_token_limit_if_known(
             limit_bits=limit_bits,
             value=snapshot.provider_budget_tokens,
             label="budget",
         )
-        cls._append_limit_if_known(
+        cls._append_token_limit_if_known(
             limit_bits=limit_bits,
             value=snapshot.tokens_per_minute_limit,
             label="tpm",
@@ -149,6 +205,22 @@ class UsageStatusBar(Static):
         if not context_window_snapshot.estimate_available:
             return
         limit_bits.append(f"{context_window_snapshot.consumed_percent:.1f}% context used")
+
+    @classmethod
+    def _append_token_limit_if_known(cls, *, limit_bits: list[str], value: int | None, label: str) -> None:
+        """Append one compact-formatted token limit label when a value is known.
+
+        Called by ``_limits_text`` for token-quantity limits only (``out``,
+        ``budget``, ``tpm``); request counts and durations keep their raw units.
+
+        Args:
+            limit_bits (list[str]): Mutable list of rendered limit strings.
+            value (int | None): Token quantity to compact and append.
+            label (str): Display label.
+        """
+        if value is None:
+            return
+        limit_bits.append(f"{label} {cls._format_token_count(count=value)}")
 
     @staticmethod
     def _append_limit_if_known(*, limit_bits: list[str], value: int | None, label: str) -> None:

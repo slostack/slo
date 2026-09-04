@@ -3533,6 +3533,10 @@ class TestCopyVisibleTextResolutionChain:
 class TestTranscriptWindow:
     """Transcript window keeps mounted children bounded (spec 59, Phase 2)."""
 
+    def test_transcript_window_size_is_500(self) -> None:
+        """The production transcript retention limit stays at the requested 500 blocks."""
+        assert TRANSCRIPT_WINDOW_SIZE == 500
+
     def _build_app(self) -> SloTUI:
         """Build a ``SloTUI`` for transcript-window tests.
 
@@ -4124,12 +4128,12 @@ class TestProtectedTail:
     # -- 61.a.4: parametrised threshold reproduction --
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stuck_live", [29, 60, 79, 80, 90])
+    @pytest.mark.parametrize("stuck_live", [29, 60, 79, 80, 90, 500, 510])
     async def test_run_window_enforcement_pass_preserves_the_user_message_at_every_diagnosed_live_block_count(
         self,
         stuck_live: int,
     ) -> None:
-        """The user's new message survives at every stuck-live count the investigation measured."""
+        """The user's new message survives at every measured, including 500-block, live count."""
         assert TRANSCRIPT_PROTECTED_TAIL_SIZE == 10
         app: SloTUI = self._build_app()
         async with app.run_test() as pilot:

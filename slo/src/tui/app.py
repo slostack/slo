@@ -76,14 +76,13 @@ _SESSION_LEASE_TTL_SECONDS: float = 30.0
 _SESSION_LEASE_HEARTBEAT_SECONDS: float = 10.0
 _SESSION_INBOX_POLL_SECONDS: float = 1.0
 
-TRANSCRIPT_WINDOW_SIZE: int = 80
+TRANSCRIPT_WINDOW_SIZE: int = 500
 """Maximum children kept mounted in #transcript-content.
 
-Chosen as an initial value: ~80 blocks is roughly ~400 mounted widgets
-(~5 widgets/block), comfortably below the ~1,000-widget point where a full
-reflow exceeds the ~16 ms frame budget. Tune against the reflow-slope
-measurement in the manual smoke step (7.6) if needed; a follow-up may make
-it adaptive to viewport height."""
+A 500-block window retains substantially more recent transcript context before
+history-backed recovery is needed. Tune against the reflow-slope measurement in
+the manual smoke step (7.6) if needed; a follow-up may make it adaptive to
+viewport height."""
 
 TRANSCRIPT_PROTECTED_TAIL_SIZE: int = 10
 """Newest transcript children the window enforcer may never evict, structurally.
@@ -111,7 +110,7 @@ progress.
 
 10 is chosen to comfortably exceed the mounted-widget count of a small
 tool-calling turn while remaining a small fraction of TRANSCRIPT_WINDOW_SIZE
-(80), so it does not meaningfully weaken the windowing budget in the common
+(500), so it does not meaningfully weaken the windowing budget in the common
 case where liveness bookkeeping (D1/D2, spec 61) is working correctly."""
 
 LOAD_OLDER_BATCH_SIZE: int = 30

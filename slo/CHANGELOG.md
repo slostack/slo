@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.16.2] — 2026-09-04
+
+**Expanded TUI transcript retention.**
+
+### Changed
+
+- Increased `TRANSCRIPT_WINDOW_SIZE` from 80 to 500, retaining up to 500 mounted
+  transcript children before history-backed eviction begins.
+
+### Verification
+
+- Added a regression assertion that pins the production transcript window at 500.
+
+
 
 ## [0.16.1] — 2026-09-04
 

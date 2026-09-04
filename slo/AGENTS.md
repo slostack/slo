@@ -68,6 +68,7 @@ slo/
 │   │   │   └── faux.py                      # FauxChatModel — queue-based deterministic mock
 │   │   ├── slo_agent/
 │   │   │   ├── agent.py               # SloAgent — multi-turn invoke loop
+│   │   │   ├── watchdog_timer.py      # WatchDogTimer — provider deadlines + local-tool suspension
 │   │   │   ├── graph/
 │   │   │   │   ├── dao.py             # SloAgentBuildResult, SloAgentStateDAO
 │   │   │   │   └── service.py         # build_slo_agent, LangGraph nodes, adapt_chatgpt_backend_request
@@ -781,8 +782,8 @@ rate-limit error and returns a `RateLimitRetryPlanDAO` with a `wait_seconds` val
 
 **Provider stream recovery and transport-progress policy (spec 70):** `StreamRecoveryService` supplies a
 redacted `RETRY_FRESH_CONNECTION` / `DO_NOT_REPLAY` decision from exception family plus the agent-owned
-commit boundary. The optional `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` (90),
-`SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` (120), and `SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS` (1.0)
+commit boundary. The optional `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` (300),
+`SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` (300), and `SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS` (1.0)
 form the configurable fast transport policy beneath the unchanged outer watchdogs. `stream_reconnecting`
 is diagnostic-only history and is excluded from replay context.
 

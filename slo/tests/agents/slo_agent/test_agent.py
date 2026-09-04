@@ -641,9 +641,7 @@ def _two_member_dao() -> ModelPoolDAO:
     return ModelPoolDAO(
         entries=[
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1),
         ]
     )
 
@@ -656,9 +654,7 @@ def _pool_with_anthropic_active() -> ModelPool:
     """
     dao = ModelPoolDAO(
         entries=[
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=0
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=0),
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=1),
         ]
     )
@@ -792,9 +788,7 @@ class TestIterationScopedRetry:
     async def test_retries_iteration_with_no_visible_output(self) -> None:
         """A failure before any visible output retries the same iteration and recovers."""
         agent = SloAgent(llm=_RaiseThenAnswerModel(error=_IterStatusError(status_code=429)), tools=[])
-        events = [
-            e async for e in agent.invoke(query="go", iteration_retry_policy=_retry_then_stop())
-        ]
+        events = [e async for e in agent.invoke(query="go", iteration_retry_policy=_retry_then_stop())]
         assert sum(1 for e in events if e.kind == "run_retrying") == 1
         assert sum(1 for e in events if e.kind == "run_completed") == 1
         assert events[-1].content == "done"
@@ -806,9 +800,7 @@ class TestIterationScopedRetry:
         agent = SloAgent(llm=_AlwaysRaiseModel(error=error), tools=[])
         events: list = []
         with pytest.raises(AllModelsExhaustedError):
-            async for e in agent.invoke(
-                query="go", iteration_retry_policy=_retry_then_stop(max_attempts=2)
-            ):
+            async for e in agent.invoke(query="go", iteration_retry_policy=_retry_then_stop(max_attempts=2)):
                 events.append(e)
         assert sum(1 for e in events if e.kind == "run_retrying") == 1
         failed = [e for e in events if e.kind == "run_failed"][-1]
@@ -1030,9 +1022,7 @@ class TestHandlePreRunAbort:
     async def test_yields_run_aborted_event_at_iteration_zero(self) -> None:
         """Always yields a single run_aborted event at iteration=0."""
         agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
-        events = [
-            e async for e in agent._handle_pre_run_abort(runtime_handler=None)
-        ]
+        events = [e async for e in agent._handle_pre_run_abort(runtime_handler=None)]
         assert len(events) == 1
         assert events[0].kind == "run_aborted"
         assert events[0].iteration == 0
@@ -1617,6 +1607,7 @@ class TestExecuteRun:
         assert any(e.kind == "run_aborted" for e in events)
         assert not any(e.kind == "run_completed" for e in events)
 
+
 class TestProviderStreamProgressDeadlines:
     """Provider stream read deadlines preserve typed pre-commit failure semantics."""
 
@@ -1646,12 +1637,14 @@ class TestProviderStreamProgressDeadlines:
                 pass
 
     @pytest.mark.asyncio
-    async def test_does_not_apply_idle_timeout_while_a_tool_update_is_in_flight(self) -> None:
-        """A tool update disables the provider-read deadline until the graph yields again.
+    async def test_does_not_apply_idle_timeout_after_tool_call_closes_while_local_work_is_in_flight(
+        self,
+    ) -> None:
+        """A completed tool-call chunk does not re-arm timing before its result arrives.
 
-        This guards the orchestrator failure where a long local tool execution was
-        misclassified as a silent provider stream. ``_stream_graph_turn`` calls
-        this policy after it receives an updates-mode item that starts tool work.
+        This pins the provider-stream regression: the old per-chunk flag was reset
+        by the final empty assistant chunk, so a long local tool execution was
+        misclassified as a silent provider stream.
         """
         from langchain_core.messages import HumanMessage
 
@@ -1661,13 +1654,15 @@ class TestProviderStreamProgressDeadlines:
                     "messages",
                     AIMessageChunk(
                         content="",
-                        tool_call_chunks=[
-                            {"name": "slow_tool", "args": "{}", "id": "call-1", "index": 0}
-                        ],
+                        tool_call_chunks=[{"name": "slow_tool", "args": "{}", "id": "call-1", "index": 0}],
                     ),
                 )
+                yield ("messages", AIMessageChunk(content=""))
                 await asyncio.sleep(0.03)
-                yield ("updates", {"agent": {"messages": [AIMessage(content="done")]}})
+                yield (
+                    "updates",
+                    {"tools": {"messages": [ToolMessage(content="tool complete", tool_call_id="call-1")]}},
+                )
 
         agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
         agent._graph = _ToolThenSlowCompletionGraph()  # type: ignore[assignment]
@@ -1686,6 +1681,7 @@ class TestProviderStreamProgressDeadlines:
         ]
 
         assert any(event.kind == "tool_call_start" for event in events)
+        assert any(event.kind == "tool_result" for event in events)
 
     @pytest.mark.asyncio
     async def test_raises_idle_timeout_after_provider_progress(self) -> None:

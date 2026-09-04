@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Optional, Sequence
 
 from langchain_core.messages import (
     AIMessage,
@@ -46,6 +46,7 @@ from src.agents.slo_agent.assistant_chunk_normalizer import (
 from src.agents.slo_agent.graph import SloAgentBuildResult, SloAgentStateDAO, build_slo_agent
 from src.agents.slo_agent.graph_stream_parser import parse_graph_stream_item
 from src.agents.slo_agent.message_text import assistant_message_text
+from src.agents.slo_agent.watchdog_timer import WatchDogTimer
 from src.agents.slo_agent.rate_limit.service import int_or_none, IterationRetryPolicy
 from src.agents.providers.stream_recovery.dao import ProviderStreamFailure
 from src.agents.providers.stream_recovery.service import (
@@ -653,24 +654,21 @@ class SloAgent:
             else provider_stream_first_progress_timeout_seconds()
         )
         idle_timeout: float = (
-            idle_timeout_seconds if idle_timeout_seconds is not None else provider_stream_idle_timeout_seconds()
+            idle_timeout_seconds
+            if idle_timeout_seconds is not None
+            else provider_stream_idle_timeout_seconds()
         )
         turn_state: SloAgentStateDAO = SloAgentStateDAO(messages=list(accumulated_messages))
         graph_stream = self._graph.astream(turn_state, stream_mode=["messages", "updates"])
-        first_progress_pending: bool = True
-        provider_read_pending: bool = True
+        watchdog_timer: WatchDogTimer = WatchDogTimer.build(
+            first_progress_timeout_seconds=first_progress_timeout,
+            idle_timeout_seconds=idle_timeout,
+        )
         try:
             while True:
-                raw_item = await self._read_next_graph_stream_item(
-                    graph_stream=graph_stream,
-                    first_progress_pending=first_progress_pending,
-                    first_progress_timeout_seconds=first_progress_timeout,
-                    idle_timeout_seconds=idle_timeout,
-                    provider_read_pending=provider_read_pending,
-                )
+                raw_item: object | None = await watchdog_timer.invoke(graph_stream=graph_stream)
                 if raw_item is None:
                     return
-                first_progress_pending = False
                 if self._abort_event.is_set():
                     await self._emit_trace_event(
                         runtime_handler=runtime_handler,
@@ -691,21 +689,22 @@ class SloAgent:
                         normalizer=normalizer,
                         runtime_handler=runtime_handler,
                     )
-                    provider_read_pending = not self._starts_local_tool_work(events=stream_events)
+                    watchdog_timer.observe_message_events(events=stream_events)
                     for event in stream_events:
                         yield event
                     continue
                 if parsed.update_chunk is None:
                     continue
-                provider_read_pending = True
-                for event in await self._process_updates_mode_chunk(
+                update_events: list[AgentStreamEventDAO] = await self._process_updates_mode_chunk(
                     chunk=parsed.update_chunk,
                     accumulated_messages=accumulated_messages,
                     turn=turn,
                     iteration=iteration,
                     normalizer=normalizer,
                     runtime_handler=runtime_handler,
-                ):
+                )
+                watchdog_timer.observe_update_events(events=update_events)
+                for event in update_events:
                     yield event
         finally:
             await self._close_graph_stream(graph_stream=graph_stream)
@@ -716,65 +715,6 @@ class SloAgent:
         if not isinstance(graph_stream, AsyncGenerator):
             return
         await graph_stream.aclose()
-
-    async def _read_next_graph_stream_item(
-        self,
-        *,
-        graph_stream: AsyncIterator[object],
-        first_progress_pending: bool,
-        first_progress_timeout_seconds: float,
-        idle_timeout_seconds: float,
-        provider_read_pending: bool,
-    ) -> object | None:
-        """Read one graph item under the provider transport-progress deadline.
-
-        WHAT: Applies the first-progress deadline before the initial graph item and
-            the idle deadline thereafter, translating only deadline expiry into a
-            typed provider-stream failure.
-        WHO: Called by ``_stream_graph_turn`` at the LangGraph/provider read boundary.
-        WHEN: Once for every pending ``anext`` while one ReAct iteration is live.
-        """
-        if not provider_read_pending:
-            return await self._read_graph_item_without_provider_deadline(graph_stream=graph_stream)
-        timeout: float = first_progress_timeout_seconds if first_progress_pending else idle_timeout_seconds
-        try:
-            return await asyncio.wait_for(anext(graph_stream), timeout=timeout)
-        except StopAsyncIteration:
-            return None
-        except asyncio.TimeoutError as exc:
-            from src.agents.providers.stream_recovery.dao import (  # noqa: PLC0415
-                ProviderStreamProgressTimeout,
-            )
-
-            phase: Literal["first_progress", "idle"] = "first_progress" if first_progress_pending else "idle"
-            raise ProviderStreamProgressTimeout(phase=phase) from exc
-
-    @staticmethod
-    async def _read_graph_item_without_provider_deadline(
-        *,
-        graph_stream: AsyncIterator[object],
-    ) -> object | None:
-        """Read a graph item while LangGraph waits for a local tool result.
-
-        A ``tool_call_start`` has already crossed the commit boundary. LangGraph
-        can legitimately pause the combined graph iterator while it executes that
-        local tool, so ``_stream_graph_turn`` calls this helper instead of applying
-        a provider-byte idle timeout during that interval.
-        """
-        try:
-            return await anext(graph_stream)
-        except StopAsyncIteration:
-            return None
-
-    @staticmethod
-    def _starts_local_tool_work(*, events: list[AgentStreamEventDAO]) -> bool:
-        """Return whether a provider chunk starts local tool execution.
-
-        ``_stream_graph_turn`` calls this after normalizing a messages-mode chunk
-        so its next graph read does not mistake LangGraph's local tool wait for a
-        provider transport stall.
-        """
-        return any(event.kind == "tool_call_start" for event in events)
 
     async def _finalize_iteration(
         self,
@@ -835,10 +775,9 @@ class SloAgent:
         """
         has_pending_steering: bool = not self._steering_queue.empty()
         hook_turn: TurnAccumulatorDAO = self._turn_to_hook_accumulator(turn=self._active_turn)
-        would_stop: bool = (
-            await self._evaluate_stop_hook(turn=hook_turn, messages=accumulated_messages)
-            or not self._last_turn_has_tool_calls(messages=accumulated_messages)
-        )
+        would_stop: bool = await self._evaluate_stop_hook(
+            turn=hook_turn, messages=accumulated_messages
+        ) or not self._last_turn_has_tool_calls(messages=accumulated_messages)
         return not would_stop or has_pending_steering
 
     async def _execute_iteration_with_retry(
@@ -1646,9 +1585,7 @@ class SloAgent:
         """
         events: list[AgentStreamEventDAO] = []
         for message in messages:
-            content: str = (
-                message.content if isinstance(message.content, str) else str(message.content)
-            )
+            content: str = message.content if isinstance(message.content, str) else str(message.content)
             events.append(
                 AgentStreamEventDAO(
                     kind="steering_applied",

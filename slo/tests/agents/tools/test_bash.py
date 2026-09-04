@@ -94,9 +94,9 @@ async def test_format_result_runs_through_blocking_gateway(
 class TestDefaultBashTimeoutSeconds:
     """Branch coverage for the no-timeout default-ceiling resolver."""
 
-    def test_unset_returns_600(self, monkeypatch) -> None:
+    def test_unset_returns_1800(self, monkeypatch) -> None:
         monkeypatch.delenv("SLO_BASH_DEFAULT_TIMEOUT_SECONDS", raising=False)
-        assert _default_bash_timeout_seconds() == 600.0
+        assert _default_bash_timeout_seconds() == 1800.0
 
     def test_disabled_with_zero_returns_none(self, monkeypatch) -> None:
         monkeypatch.setenv("SLO_BASH_DEFAULT_TIMEOUT_SECONDS", "0")
@@ -106,9 +106,9 @@ class TestDefaultBashTimeoutSeconds:
         monkeypatch.setenv("SLO_BASH_DEFAULT_TIMEOUT_SECONDS", "-5")
         assert _default_bash_timeout_seconds() is None
 
-    def test_invalid_falls_back_to_600(self, monkeypatch) -> None:
+    def test_invalid_falls_back_to_1800(self, monkeypatch) -> None:
         monkeypatch.setenv("SLO_BASH_DEFAULT_TIMEOUT_SECONDS", "oops")
-        assert _default_bash_timeout_seconds() == 600.0
+        assert _default_bash_timeout_seconds() == 1800.0
 
     def test_valid_positive_is_used(self, monkeypatch) -> None:
         monkeypatch.setenv("SLO_BASH_DEFAULT_TIMEOUT_SECONDS", "120")
@@ -143,7 +143,7 @@ class TestResolveEffectiveTimeout:
 
     def test_falls_back_to_default(self, monkeypatch) -> None:
         monkeypatch.delenv("SLO_BASH_DEFAULT_TIMEOUT_SECONDS", raising=False)
-        assert BashTool._resolve_effective_timeout(timeout=None) == 600.0
+        assert BashTool._resolve_effective_timeout(timeout=None) == 1800.0
 
     def test_caller_zero_is_not_none(self) -> None:
         # A caller passing 0 means "0s timeout", not "use the ceiling".

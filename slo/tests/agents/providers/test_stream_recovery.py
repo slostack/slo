@@ -132,8 +132,8 @@ class TestStreamRecoveryService:
         monkeypatch.setenv("SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS", "invalid")
         monkeypatch.setenv("SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS", "-1")
 
-        assert provider_stream_first_progress_timeout_seconds() == 90.0
-        assert provider_stream_idle_timeout_seconds() == 120.0
+        assert provider_stream_first_progress_timeout_seconds() == 300.0
+        assert provider_stream_idle_timeout_seconds() == 300.0
         assert provider_stream_reconnect_delay_seconds() == 1.0
 
     def test_continuation_attempt_limit_uses_valid_environment_override(

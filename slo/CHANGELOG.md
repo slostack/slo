@@ -3,6 +3,48 @@
 ## [Unreleased]
 
 
+## [0.16.1] — 2026-09-04
+
+**Reliable provider-progress timing around local tool execution.**
+
+### Added
+
+- **`WatchDogTimer`** — a per-stream provider-progress watchdog that owns the
+  first-progress/idle deadline state and tracks local tool calls through their
+  completed results.
+
+### Fixed
+
+- **Slow local tools no longer look like stalled provider streams.** A tool-call
+  stream can emit an empty assistant closure chunk before LangGraph returns the
+  tool result. Previously that chunk could re-arm the provider idle timer while
+  local work was still in flight, causing an erroneous provider timeout and
+  recovery attempt. Provider timing now remains suspended until every observed
+  `tool_result` balances its `tool_call_start`.
+
+### Changed
+
+- The default provider first-progress and idle deadlines are both now **300
+  seconds** (previously 90 and 120 seconds), reducing false stall detection for
+  valid slow-to-start or sparse streams. Operators can override either value
+  with `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` and
+  `SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS`.
+- The default `bash` tool timeout is now **1,800 seconds (30 minutes)**
+  (previously 600 seconds). `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` continues to
+  override that fallback; an explicit tool-call timeout still takes precedence,
+  and `0` disables the default ceiling.
+- Headless, orchestration, README, and knowledge-base documentation now
+  distinguish provider-read deadlines from independently bounded local tool
+  execution.
+
+### Verification
+
+- Full non-E2E suite: **3,615 passed, 6 deselected**.
+- Added watchdog unit coverage for first-progress and idle failures, stream
+  completion, non-timeout propagation, and multiple in-flight tools, plus the
+  graph-level delayed-tool-result regression.
+
+
 ## [0.16.0] — 2026-09-04
 
 **Resilient detached workflows and evolved TUI experience.**

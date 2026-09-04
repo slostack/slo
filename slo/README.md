@@ -1036,7 +1036,34 @@ shapes (`("messages", (chunk, meta))`, `("updates", dict)`, optionally
 namespaced), and the parser normalizes all of them into one
 `ParsedGraphStreamItemDAO` so the loop never inspects raw tuples.
 
-### 4.7 Normalizing Chunks into Stream Events
+### 4.7 Provider-Progress Watchdog and Local Tools
+
+Each streamed graph turn has a provider-progress watchdog. It permits **300
+seconds** for the first provider-stream item and **300 seconds** between later
+provider-progress items. These limits detect a provider stream that never
+starts or stalls; they are not a general deadline for an entire agent run.
+Operators may override them before starting Slo with:
+
+- `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` — first provider-progress
+  deadline (default: `300`).
+- `SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` — gap allowed between later
+  provider-progress items (default: `300`).
+
+A tool call changes what the combined LangGraph stream is waiting on. Once Slo
+observes a local `tool_call_start`, it suspends provider-progress timing while
+local tools run. Timing resumes only after **all** observed local tool results
+arrive. Consequently, a slow `bash`, file, PDF, or other local tool execution
+is not misclassified as a stalled provider stream, including when a tool-call
+message closes before its result is available.
+
+The `bash` tool has a separate per-command ceiling of **1800 seconds** by
+default. Set `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` to a positive number to choose
+a different default, or to `0` to disable that default ceiling. An explicit
+tool-call timeout still takes precedence. For the complete headless and
+orchestrator timeout reference, including reconnect, heartbeat, and child
+inactivity settings, see [`docs/SLO_HEADLESS_README.md`](docs/SLO_HEADLESS_README.md).
+
+### 4.7.1 Normalizing Chunks into Stream Events
 
 The two channels from §4.6 are reconciled by two per-turn helpers.
 

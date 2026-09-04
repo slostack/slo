@@ -18,8 +18,8 @@ __all__ = [
     "provider_stream_continuation_max_attempts",
 ]
 
-_FIRST_PROGRESS_TIMEOUT_SECONDS: float = 90.0
-_IDLE_TIMEOUT_SECONDS: float = 120.0
+_FIRST_PROGRESS_TIMEOUT_SECONDS: float = 300.0
+_IDLE_TIMEOUT_SECONDS: float = 300.0
 _RECONNECT_DELAY_SECONDS: float = 1.0
 _CONTINUATION_MAX_ATTEMPTS: int = 5
 _STREAM_DISCONNECTION_TYPES: tuple[type[BaseException], ...] = (

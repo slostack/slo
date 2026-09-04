@@ -97,14 +97,14 @@ When a run starts, the session id is resolved in this order (first non-`None` wi
 | `SLO_SESSION_ID` | — | Explicit session id, used when `--session-id` and `--resume` are both absent. |
 | `SLO_HOME` | `~/.slo` | Root of all Slo data: history, preferences, logs, captures. |
 | `SLO_MODEL_POOL` | — | JSON array of model pool entries. See [Model pool configuration](#model-pool-configuration). |
-| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `600` | Default bash tool timeout. Set to `0` to disable. |
+| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1800` | Default bash tool timeout. Set to `0` to disable. |
 | `SLO_BASH_TEARDOWN_GRACE_SECONDS` | `5` | Grace period to reap a killed process group. |
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `4` | Maximum number of child sub-agent processes running simultaneously in a pool. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | Maximum tasks accepted per single `spawn_sub_agents` call. |
 | `SLO_VISUALIZER_REFRESH_SECONDS` | `1.0` | Default polling cadence for `slo visualize`. Overridden by `--refresh-seconds`. |
 | `SLO_OAUTH_TIMEOUT_SECONDS` | `60` | OAuth callback server timeout (interactive auth only). |
-| `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` | `90` | Maximum wait for first provider-stream progress before one reconnect may be considered. |
-| `SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` | `120` | Maximum gap between provider-stream progress events. |
+| `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` | `300` | Maximum wait for first provider-stream progress before one reconnect may be considered. |
+| `SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` | `300` | Maximum gap between provider-stream progress events. |
 | `SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS` | `1.0` | Base jittered delay for the single fresh-connection stream reconnect. |
 | `SLO_PROVIDER_STREAM_CONTINUATION_MAX_ATTEMPTS` | `5` | Total TUI/headless submission attempts after a committed stream interruption. |
 | `SLO_HEADLESS_HEARTBEAT_SECONDS` | `15` | Stderr-only `headless_status` cadence while a headless run is active. |
@@ -1353,7 +1353,7 @@ A clean, complete list of every environment variable Slo reads in headless and o
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `600` | Bash tool timeout in seconds. `0` disables. |
+| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1800` | Bash tool timeout in seconds. `0` disables. |
 | `SLO_BASH_TEARDOWN_GRACE_SECONDS` | `5` | Grace period to reap a killed process group. |
 
 ### Orchestrator and pool

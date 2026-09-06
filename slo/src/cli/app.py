@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-import click
 import typer
 import typer.core
 
@@ -29,17 +28,25 @@ class _SloGroup(typer.core.TyperGroup):
     subcommand, the group skips its own positional parsing and hands the
     subcommand straight through to Click's dispatch. Otherwise the
     default behaviour kicks in and the token is parsed as the workdir.
+
+    ``ctx`` is annotated ``typer.Context`` rather than ``click.Context``
+    on purpose. Typer >= 0.20 vendors Click as ``typer._click`` and no
+    longer depends on the ``click`` distribution, so ``import click``
+    resolves only by accident on machines where a dev-group package
+    (``black``) drags it in. A ``pipx install`` gets no ``click`` at all
+    and the CLI died on import. ``typer.Context`` is the vendored class
+    Typer actually passes here, and it exists on every supported Typer.
     """
 
     def parse_args(
         self,
-        ctx: click.Context,
+        ctx: typer.Context,
         args: list[str],
     ) -> list[str]:
         """Disambiguate workdir-vs-subcommand on the first positional.
 
         Args:
-            ctx (click.Context): The active Click context.
+            ctx (typer.Context): The active Click context.
             args (list[str]): The raw argument list.
 
         Returns:

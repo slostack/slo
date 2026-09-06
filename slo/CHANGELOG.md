@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [0.16.3] — 2026-09-06
+
+**Fixed a broken install: `slo` crashed on startup on every clean machine.**
+
+### Fixed
+
+- **`ModuleNotFoundError: No module named 'click'` on a fresh `pipx install`.**
+  `src/cli/app.py` imported `click` directly while never declaring it as a
+  dependency — it arrived transitively via `typer`. Typer 0.20 vendored Click as
+  `typer._click` and dropped the `click` distribution, so a clean install got no
+  `click` at all and every `slo` invocation died on import. The import is gone;
+  the group context is now annotated `typer.Context`, which is the class Typer
+  actually passes. Declaring `click` would have been wrong — it installs a
+  *different* Click than the one Typer uses.
+  Dev machines were unaffected because the dev-group `black` pulls `click` in.
+
+### Changed
+
+- **Declared five dependencies that were only reaching the wheel transitively** —
+  `pyyaml`, `rich`, `anthropic`, `openai`, and `httpcore` are all imported
+  directly by shipped code.
+- **Narrowed `typer` to `>=0.26,<0.28`.** `pipx` resolves from `[project]
+  dependencies`, never from `poetry.lock`, so the previous `>=0.12,<1.0` range
+  shipped users a Typer the suite had never exercised — that gap is what let the
+  vendored-Click change through.
+
+### Verification
+
+- Added `tests/cli/test_declared_dependencies.py`: an AST walk over `src/` and
+  `config/` asserting every third-party import is declared, plus a guard that no
+  shipped module imports `click`. It runs in the default suite — the existing
+  installer smoke test carries the `e2e` marker that CI's `-m 'not e2e'`
+  deselects, which is why this reached a release.
+- Confirmed end to end with a clean `pipx install` in a `debian:12` container
+  (Python 3.11, Typer 0.27.2, no `click` present): `slo --version`, `slo --help`,
+  `slo schedule list`, and `slo run --help` all succeed, and importing every
+  module under `src` reports nothing missing.
+
 ## [0.16.2] — 2026-09-04
 
 **Expanded TUI transcript retention.**

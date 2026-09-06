@@ -47,10 +47,17 @@ install:  ## Install slo locally via install.sh
 # Reads CF credentials from environments/development.env.
 # Automatically pins the latest release tag as the default SLO_VERSION.
 # Re-run after any change to install.sh or after a new release to push the update.
+#
+# SLO_SOURCE_PATH is repo-root-relative, not relative to this Makefile. The
+# Python project lives in the repo's `slo/` subdirectory, so the committed
+# installer is at `slo/install.sh`. deploy-install-worker.sh defaults the path
+# to a bare `install.sh`, which 404s against the raw GitLab URL and aborts the
+# publish — pin it here so the target works without a manual override.
 publish-installer:  ## Push install.sh to Cloudflare Worker (pins latest tag)
 	set -a && . ./environments/development.env && set +a && \
 	CF_ZONE_NAME="get-slo.sh" \
 	SLO_HOSTNAME="get-slo.sh" \
+	SLO_SOURCE_PATH="$${SLO_SOURCE_PATH:-slo/install.sh}" \
 	PUBLISH_SLO_REF="$$(t=$$(git tag --sort=-version:refname | head -1); echo "$${t:-main}")" \
 	bash deploy-install-worker.sh
 

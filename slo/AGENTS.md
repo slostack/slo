@@ -452,6 +452,11 @@ slow test suites".
   normalizer's stable `block_id`; it is sealed by its content-bearing repair end or the
   terminal-run sweep (a contentless `thinking_end` leaves the segment open and live).
 - `AssistantStreamBlock` — one answer-only assistant iteration; reasoning never renders here.
+  Its answer body is a segmented surface: prose renders as selectable `AnswerMarkdownPart`
+  leaves, and each closed mermaid fence mounts a settled `MermaidChartBlock` (spec 77),
+  which draws `graph`/`flowchart` sources as box-drawing diagrams via
+  `MermaidGraphParser` → `MermaidGraphLayout` → `MermaidGraphRenderer`, and falls back to
+  a one-line reason above the lexer-highlighted source when a source cannot be drawn.
 - `ToolExecutionBlock` — one tool call + result pair; updates as the tool executes.
 
 Non-conversational notices (system messages, slash-command echoes) remain flat `Static`
@@ -499,11 +504,22 @@ enter the user queue.
 control on any transcript block. Copy runs through `SloTUI` only — the focus chord
 (`ctrl+shift+c` / `meta+c` → `action_copy_visible_text` → the focused block's
 `get_copyable_text()`) and mouse drag selection (`on_text_selected`) both funnel into
-`copy_to_clipboard` (pyperclip → OSC 52). The flattened answer surface
-(`AssistantAnswerBody`, owned by `AssistantStreamBlock` as its `._answer_body`) serves
-its raw answer text through Textual's documented `Widget.get_selection` seam, so a
-drag over the markdown answer lands the answer itself — never a card-control label —
-on the shared funnel. All four message widgets
+`copy_to_clipboard` (pyperclip → OSC 52). The answer surface
+(`AssistantAnswerBody`, owned by `AssistantStreamBlock` as its `._answer_body`) is a
+container since spec 77, so the `Widget.get_selection` seam lives on its leaf children,
+not on the body: each `AnswerMarkdownPart` serves its own raw prose segment and each
+chart card's `MermaidChartSurface` serves its verbatim mermaid source through Textual's
+documented seam (both extend `SelectableRawTextLeaf`). A drawable card *shows* a diagram
+but *serves* the source: what a reader sees and what a drag copies are deliberately
+different, because the source is what is useful on a clipboard. An undrawable card
+shows the source itself, under a one-line reason. The seam has to sit on a leaf —
+Textual's `SelectState._walk_selected_widgets` skips any widget that has children, so an
+override on the body itself would never be called. The chart card's own label regions (its
+header rule and caption) are `MermaidChartChrome`, a `LiteralTextStatic` with Textual's
+`ALLOW_SELECT = False`, so the selection walk skips them; without that the caption is a
+childless leaf holding a plain string and the base `Widget.get_selection` copies it. A drag
+over the answer therefore lands the answer itself, mermaid source included — never a
+card-control label — on the shared funnel. All four message widgets
 (`UserMessageBlock`, `AssistantStreamThinkingBlock`, `AssistantStreamBlock`,
 `ToolExecutionBlock`) follow the uniform `TRANSCRIPT_OUTPUT_PAD` convention: CSS
 `padding: 0 1`, with Rich `Padding` horizontal zero / vertical one on user, thinking,
@@ -516,17 +532,19 @@ compositor cropping, and `Driver.write` is unsynchronized with compositor output
 
 **Selection highlight on the AI surfaces (spec 72 follow-up):** Textual 8.2.8's
 `RichVisual.render_strips` silently drops the render-time selection option, and
-Rich-rendered strips carry no offset meta, so a drag over `AssistantAnswerBody`
-or `AssistantThinkingBody` (the thinking block's body, which now mirrors the
-answer body's `get_selection` seam) falls back to a whole-widget `SELECT_ALL`
-entry in `Screen.selections` and never painted the highlight at all. Both bodies
-override `render()` to wrap their padded-markdown content in
-`SelectableRichVisual` (`src/tui/widgets/selectable_rich_visual.py`), which
+Rich-rendered strips carry no offset meta, so a drag over an AI text surface
+(`AnswerMarkdownPart`, `AssistantThinkingBody`, or a chart card's
+`MermaidChartSurface`) falls back to a whole-widget `SELECT_ALL` entry in
+`Screen.selections` and never painted the highlight at all. All three extend
+one base, `SelectableRawTextLeaf` (`src/tui/widgets/selectable_rich_visual.py`,
+which hosts both that shared raw-text leaf base and the visual it wraps — spec
+77), whose `render()` wraps the padded content in `SelectableRichVisual`, which
 re-applies `options.selection` to the rendered strips in content coordinates —
 the highlight is baked into the widget's own strips and therefore tracks the
 selected text exactly across transcript scrolls (no stale screen-space paint).
-The approved UX: a drag over either AI surface highlights the whole body — the
-same span that copy extracts — and the selection is never cleared to hide paint.
+The approved UX: a drag over an AI surface highlights the whole of every leaf it
+covers — the same span that copy extracts — and the selection is never cleared
+to hide paint.
 `tests/tui/test_selection_scroll_highlight.py` pins this at compositor level.
 Both themes pin explicit `screen-selection-background` /
 `screen-selection-foreground` variables (bright accent band + dark text, the

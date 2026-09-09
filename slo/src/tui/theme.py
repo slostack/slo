@@ -2,8 +2,8 @@
 
 Mirrors the design tokens used in the project homepage (finalized.html).
 
-Both themes also define the seven canonical Pi-derived semantic role tokens
-(spec 72.a.5) in ``Theme.variables`` — the single role registry consumed by
+Both themes also define the canonical Pi-derived semantic role tokens
+(spec 72.a.5, extended by spec 77) in ``Theme.variables`` — the single role registry consumed by
 widget CSS through ``$<token>`` references:
 
   user-msg-bg       user-only background band
@@ -13,6 +13,7 @@ widget CSS through ``$<token>`` references:
   thinking-text     muted foreground for reasoning segments
   md-heading        warm foreground for assistant markdown headings
   border-muted      low-emphasis turn rule / quiet boundary
+  mermaid-chart-bg  lifted band behind a mermaid chart card (spec 77)
 
 Both themes also pin ``screen-selection-background`` /
 ``screen-selection-foreground`` (bright accent band + dark text) so selected
@@ -79,6 +80,7 @@ SLO_DEFAULT_THEME: Theme = Theme(
         "thinking-text": "#9aa5ce",
         "md-heading": "#e0af68",
         "border-muted": "#565f89",
+        "mermaid-chart-bg": "#232741",
     },
 )
 
@@ -111,5 +113,6 @@ SLO_DARK_THEME: Theme = Theme(
         "thinking-text": "#8b8b8b",
         "md-heading": "#f0c674",
         "border-muted": "#505050",
+        "mermaid-chart-bg": "#141414",
     },
 )

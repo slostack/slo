@@ -1,4 +1,5 @@
 """``search_jira_using_jql`` tool — search Jira issues with JQL (25.a.3)."""
+
 from __future__ import annotations
 
 SEARCH_JIRA_USING_JQL_PROMPT_SNIPPET: str = (

@@ -412,6 +412,7 @@ class TestSystemPromptBuilderOrchestratorDefault:
     def test_orchestrator_default_prompt_replaces_standard_role_line(self) -> None:
         """The orchestrator body replaces the standard solo-agent role sentence."""
         from src.agents.slo_agent.orchestrator.spawn_tool import DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
         result: str = SystemPromptBuilder.invoke(
             custom_prompt=DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
         )
@@ -421,6 +422,7 @@ class TestSystemPromptBuilderOrchestratorDefault:
     def test_orchestrator_default_prompt_retains_cwd_grounding(self) -> None:
         """CWD grounding block is still appended when using the orchestrator prompt."""
         from src.agents.slo_agent.orchestrator.spawn_tool import DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
         result: str = SystemPromptBuilder.invoke(
             custom_prompt=DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
             cwd="/tmp/project",
@@ -430,6 +432,7 @@ class TestSystemPromptBuilderOrchestratorDefault:
     def test_orchestrator_default_prompt_retains_date_grounding(self) -> None:
         """Date grounding line is still present when using the orchestrator prompt."""
         from src.agents.slo_agent.orchestrator.spawn_tool import DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+
         result: str = SystemPromptBuilder.invoke(
             custom_prompt=DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
         )

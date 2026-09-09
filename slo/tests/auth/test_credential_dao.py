@@ -1,4 +1,5 @@
 """Tests for ``CredentialDAO`` and ``AuthenticationFileDAO`` (02.b.1)."""
+
 from datetime import datetime, timedelta, timezone
 
 from src.auth.credential_dao import (

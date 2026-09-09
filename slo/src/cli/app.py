@@ -1,4 +1,5 @@
 """Typer CLI for slo — default subcommand opens the TUI (sub-spec 02.a.4)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,10 +8,10 @@ from typing import Optional
 import typer
 import typer.core
 
+from src.cli.plugin import plugin_app
 from src.cli.schedule.app import schedule_app
 from src.cli.typer_dispatch import TyperDispatch
 from src.cli.version import resolve_version
-
 
 __all__ = ["app", "main"]
 
@@ -57,10 +58,7 @@ class _SloGroup(typer.core.TyperGroup):
             (i for i, token in enumerate(args) if not token.startswith("-")),
             None,
         )
-        if (
-            first_positional_index is not None
-            and args[first_positional_index] in self.commands
-        ):
+        if first_positional_index is not None and args[first_positional_index] in self.commands:
             head: list[str] = args[:first_positional_index]
             tail: list[str] = args[first_positional_index:]
             super().parse_args(ctx, head)
@@ -83,6 +81,7 @@ app: typer.Typer = typer.Typer(
     cls=_SloGroup,
 )
 app.add_typer(schedule_app, name="schedule")
+app.add_typer(plugin_app, name="plugin")
 
 
 @app.callback(invoke_without_command=True)
@@ -105,6 +104,11 @@ def _default(
             "its SLO.md / AGENTS.md / CLAUDE.md files to the system prompt."
         ),
     ),
+    plugin: list[Path] = typer.Option(
+        [],
+        "--plugin",
+        help="Trusted explicit plugin file; repeat to preserve load order.",
+    ),
     version: bool = typer.Option(
         False,
         "--version",
@@ -118,11 +122,14 @@ def _default(
         raise typer.Exit(code=0)
     if ctx.invoked_subcommand is not None:
         return
-    TyperDispatch.tui(
-        workdir=workdir,
-        workspace_file=workspace,
-        resume_session_reference=resume,
-    )
+    tui_kwargs: dict[str, object] = {
+        "workdir": workdir,
+        "workspace_file": workspace,
+        "resume_session_reference": resume,
+    }
+    if plugin:
+        tui_kwargs["plugin_paths"] = plugin
+    TyperDispatch.tui(**tui_kwargs)  # type: ignore[arg-type]
 
 
 @app.command(name="run")
@@ -208,24 +215,32 @@ def _run(
             "orchestrators launched from a TUI session."
         ),
     ),
+    plugin: list[Path] = typer.Option(
+        [],
+        "--plugin",
+        help="Trusted explicit plugin file; repeat to preserve load order.",
+    ),
 ) -> None:
     """Run one agent loop with no UI, stream JSONL to stdout, then exit."""
-    exit_code: int = TyperDispatch.run_headless(
-        prompt=prompt,
-        as_json=as_json,
-        model=model,
-        reasoning=reasoning,
-        cwd=cwd,
-        enable_history=enable_history,
-        resume=resume,
-        workspace=workspace,
-        explicit_session_id=session_id,
-        system_prompt_file=system_prompt_file,
-        append_system_prompt_file=append_system_prompt_file,
-        orchestrator_mode=orchestrator_mode,
-        system_prompt_b64=system_prompt_b64,
-        notify_session_id=notify_session,
-    )
+    headless_kwargs: dict[str, object] = {
+        "prompt": prompt,
+        "as_json": as_json,
+        "model": model,
+        "reasoning": reasoning,
+        "cwd": cwd,
+        "enable_history": enable_history,
+        "resume": resume,
+        "workspace": workspace,
+        "explicit_session_id": session_id,
+        "system_prompt_file": system_prompt_file,
+        "append_system_prompt_file": append_system_prompt_file,
+        "orchestrator_mode": orchestrator_mode,
+        "system_prompt_b64": system_prompt_b64,
+        "notify_session_id": notify_session,
+    }
+    if plugin:
+        headless_kwargs["plugin_paths"] = plugin
+    exit_code: int = TyperDispatch.run_headless(**headless_kwargs)  # type: ignore[arg-type]
     raise typer.Exit(code=exit_code)
 
 

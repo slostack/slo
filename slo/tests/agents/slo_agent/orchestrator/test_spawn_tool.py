@@ -15,7 +15,6 @@ from src.agents.slo_agent.orchestrator.dao import (
 from src.agents.slo_agent.orchestrator.pool import MAX_PARALLEL_TASKS
 from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool, SpawnSubAgentsSchemaDAO
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -77,9 +76,7 @@ class TestSpawnSubAgentsToolDispatch:
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "parallel", "tasks_json": tasks_json}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
 
         assert parsed["mode"] == "parallel"
@@ -90,9 +87,7 @@ class TestSpawnSubAgentsToolDispatch:
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks_json": "not-json"}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": "not-json"})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -108,9 +103,7 @@ class TestSpawnSubAgentsToolDispatch:
             [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
         )
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "parallel", "tasks_json": tasks_json}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -123,9 +116,7 @@ class TestSpawnSubAgentsToolDispatch:
         # Missing required "prompt" field
         tasks_json: str = json.dumps([{"task_id": "t1"}])
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks_json": tasks_json}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -138,9 +129,7 @@ class TestSpawnSubAgentsToolDispatch:
             [{"task_id": "synthesize", "prompt": "Do it.", "model": "claude-sonnet-4-5"}]
         )
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks_json": tasks_json}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -153,9 +142,7 @@ class TestSpawnSubAgentsToolDispatch:
         """A supported ``model`` clears validation and reaches ``dispatch``."""
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps(
-            [{"task_id": "t1", "prompt": "Do it.", "model": "claude-sonnet-4-6"}]
-        )
+        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it.", "model": "claude-sonnet-4-6"}])
 
         await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
 
@@ -194,13 +181,9 @@ class TestSpawnSubAgentsToolDispatch:
         """The wrong key ``reasoning`` (not ``reasoning_level``) is rejected without dispatch."""
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps(
-            [{"task_id": "t1", "prompt": "Do it.", "reasoning": "medium"}]
-        )
+        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it.", "reasoning": "medium"}])
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks_json": tasks_json}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -245,9 +228,7 @@ class TestExtraToolsInjectionInSessionConfig:
 
         assert config.extra_tools is None
 
-    def test_session_with_extra_tools_uses_extended_bundle(
-        self, tmp_path
-    ) -> None:
+    def test_session_with_extra_tools_uses_extended_bundle(self, tmp_path) -> None:
         """A session built with ``extra_tools`` passes merged tools to ``SloAgent``."""
         from unittest.mock import patch
 
@@ -281,9 +262,7 @@ class TestExtraToolsInjectionInSessionConfig:
         tool_names: list[str] = [t.name for t in captured_tools]
         assert "my_custom_tool" in tool_names
 
-    def test_session_without_extra_tools_passes_none_to_agent(
-        self, tmp_path
-    ) -> None:
+    def test_session_without_extra_tools_passes_none_to_agent(self, tmp_path) -> None:
         """A session without ``extra_tools`` passes ``tools=None`` to ``SloAgent``."""
         from unittest.mock import patch
 
@@ -356,11 +335,13 @@ class TestSpawnSubAgentsSchemaDAO:
     def test_schema_dao_is_exported(self) -> None:
         """``SpawnSubAgentsSchemaDAO`` is importable from ``spawn_tool``."""
         from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsSchemaDAO
+
         assert SpawnSubAgentsSchemaDAO is not None
 
     def test_schema_dao_validates_valid_input(self) -> None:
         """``SpawnSubAgentsSchemaDAO`` accepts a valid mode and tasks_json."""
         from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsSchemaDAO
+
         dao = SpawnSubAgentsSchemaDAO(mode="parallel", tasks_json='[{"task_id":"t1","prompt":"x"}]')
         assert dao.mode == "parallel"
         assert "task_id" in dao.tasks_json
@@ -371,6 +352,7 @@ class TestSpawnSubAgentsSchemaDAO:
             SpawnSubAgentsSchemaDAO,
             SpawnSubAgentsTool,
         )
+
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         assert tool_obj.args_schema is SpawnSubAgentsSchemaDAO
@@ -386,16 +368,12 @@ class TestSpawnSubAgentsToolInvocationPaths:
 
     async def test_ainvoke_with_dict_input(self) -> None:
         """``tool.ainvoke(dict)`` — the standard executor path — succeeds."""
-        result: OrchestratorResultDAO = OrchestratorResultDAO(
-            mode="parallel", all_completed=True
-        )
+        result: OrchestratorResultDAO = OrchestratorResultDAO(mode="parallel", all_completed=True)
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "parallel", "tasks_json": tasks_json}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
 
         assert parsed["mode"] == "parallel"
@@ -408,9 +386,7 @@ class TestSpawnSubAgentsToolInvocationPaths:
         and ``type`` keys. LangChain's ``BaseTool.ainvoke`` unwraps it via
         ``_prep_run_args``.
         """
-        result: OrchestratorResultDAO = OrchestratorResultDAO(
-            mode="single", all_completed=True
-        )
+        result: OrchestratorResultDAO = OrchestratorResultDAO(mode="single", all_completed=True)
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
@@ -437,9 +413,7 @@ class TestSpawnSubAgentsToolInvocationPaths:
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Step 1."}])
 
-        raw: str = await tool_obj.arun(
-            tool_input={"mode": "chain", "tasks_json": tasks_json}
-        )
+        raw: str = await tool_obj.arun(tool_input={"mode": "chain", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
 
         assert parsed["mode"] == "chain"
@@ -450,14 +424,14 @@ class TestSpawnSubAgentsToolInvocationPaths:
         result: OrchestratorResultDAO = OrchestratorResultDAO(mode="parallel")
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([
-            {"task_id": "t1", "prompt": "Analyse imports."},
-            {"task_id": "t2", "prompt": "Run tests."},
-        ])
-
-        await tool_obj.ainvoke(
-            input={"mode": "parallel", "tasks_json": tasks_json}
+        tasks_json: str = json.dumps(
+            [
+                {"task_id": "t1", "prompt": "Analyse imports."},
+                {"task_id": "t2", "prompt": "Run tests."},
+            ]
         )
+
+        await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": tasks_json})
 
         pool.dispatch.assert_called_once()
         call_kwargs: dict = pool.dispatch.call_args.kwargs
@@ -471,9 +445,7 @@ class TestSpawnSubAgentsToolInvocationPaths:
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks_json": "not valid json"}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": "not valid json"})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -485,13 +457,11 @@ class TestSpawnSubAgentsToolInvocationPaths:
 
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="parallel"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        oversized: str = json.dumps([
-            {"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)
-        ])
-
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "parallel", "tasks_json": oversized}
+        oversized: str = json.dumps(
+            [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
         )
+
+        raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": oversized})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -504,9 +474,7 @@ class TestSpawnSubAgentsToolInvocationPaths:
         # Missing required "prompt" field
         bad_tasks: str = json.dumps([{"task_id": "t1"}])
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks_json": bad_tasks}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": bad_tasks})
         parsed: dict = json.loads(raw)
 
         assert "error" in parsed
@@ -522,9 +490,7 @@ class TestSpawnSubAgentsNativeTasks:
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        await tool_obj.ainvoke(
-            input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "Do it."}]}
-        )
+        await tool_obj.ainvoke(input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "Do it."}]})
 
         pool.dispatch.assert_awaited_once()
         dispatched = pool.dispatch.await_args.kwargs["tasks"]
@@ -551,12 +517,8 @@ class TestSpawnSubAgentsNativeTasks:
         pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.spawn_tool.log_warning"
-        ) as mock_warn:
-            await tool_obj.ainvoke(
-                input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x"}]}
-            )
+        with patch("src.agents.slo_agent.orchestrator.spawn_tool.log_warning") as mock_warn:
+            await tool_obj.ainvoke(input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x"}]})
 
         mock_warn.assert_not_called()
 
@@ -588,9 +550,7 @@ class TestSpawnSubAgentsTolerantTasksJson:
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         corrupt: str = '[{"task_id": "t1", "prompt": "x"}]  trailing'
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.spawn_tool.log_warning"
-        ) as mock_warn:
+        with patch("src.agents.slo_agent.orchestrator.spawn_tool.log_warning") as mock_warn:
             await tool_obj.ainvoke(input={"mode": "single", "tasks_json": corrupt})
 
         mock_warn.assert_called_once()
@@ -650,9 +610,7 @@ class TestSpawnSubAgentsResolutionErrors:
             [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
         )
 
-        raw: str = await tool_obj.ainvoke(
-            input={"mode": "parallel", "tasks_json": oversized_json}
-        )
+        raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": oversized_json})
 
         assert "Too many tasks" in json.loads(raw)["error"]
         pool.dispatch.assert_not_awaited()

@@ -1,4 +1,5 @@
 """Tests for ``SessionConfigDAO`` (sub-spec 02.a.1)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,9 +11,7 @@ from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 class TestSessionConfigDAOResolvedStopHook:
     """``SessionConfigDAO.resolved_stop_hook`` decision branches."""
 
-    def test_session_config_resolved_stop_hook_returns_supplied_hook(
-        self, tmp_path: Path
-    ) -> None:
+    def test_session_config_resolved_stop_hook_returns_supplied_hook(self, tmp_path: Path) -> None:
         """Custom hook supplied → ``resolved_stop_hook()`` returns it."""
 
         async def custom_hook(
@@ -27,9 +26,7 @@ class TestSessionConfigDAOResolvedStopHook:
 
         assert config.resolved_stop_hook() is custom_hook
 
-    def test_session_config_resolved_stop_hook_falls_back_to_default(
-        self, tmp_path: Path
-    ) -> None:
+    def test_session_config_resolved_stop_hook_falls_back_to_default(self, tmp_path: Path) -> None:
         """No hook supplied → fallback is ``Hook.should_stop_after_turn_hook``."""
         config: SessionConfigDAO = SessionConfigDAO(workdir=tmp_path)
 

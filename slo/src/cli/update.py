@@ -110,7 +110,6 @@ class Updater:
         return spec
 
     @classmethod
-
     @classmethod
     def _pipx_install(cls, *, spec: str) -> None:
         """Run ``pipx install --force`` for ``spec``, working around a broken uv shim.

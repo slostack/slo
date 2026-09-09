@@ -357,7 +357,13 @@ class SessionHistoryProjector:
         retained tail.
         """
         payload = event.payload
-        if event.kind in ("run_retrying", "route_switched", "stream_reconnecting", "run_recovering"):
+        if event.kind in (
+            "run_retrying",
+            "route_switched",
+            "stream_reconnecting",
+            "run_recovering",
+            "tool_output_update",
+        ):
             return None
         if event.kind == "user_message":
             return HumanMessage(content=payload.content or "")

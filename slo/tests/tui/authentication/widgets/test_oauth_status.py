@@ -1,4 +1,5 @@
 """Tests for ``OAuthStatusWidget`` (02.b.5)."""
+
 from __future__ import annotations
 
 import pytest
@@ -22,15 +23,11 @@ class _Harness(App):
         """Yield a single ``OAuthStatusWidget`` keyed to OpenAI."""
         yield OAuthStatusWidget(provider=ProviderName.OPENAI)
 
-    def on_oauth_status_widget_back_requested(
-        self, event: OAuthStatusWidget.BackRequested
-    ) -> None:
+    def on_oauth_status_widget_back_requested(self, event: OAuthStatusWidget.BackRequested) -> None:
         """Record that Back was requested."""
         self.back_requested = True
 
-    def on_oauth_status_widget_cancelled(
-        self, event: OAuthStatusWidget.Cancelled
-    ) -> None:
+    def on_oauth_status_widget_cancelled(self, event: OAuthStatusWidget.Cancelled) -> None:
         """Record that Cancel was clicked."""
         self.cancelled = True
 
@@ -48,9 +45,7 @@ class TestOAuthStatusWidget:
             widget.set_auth_url(url="https://example.com/auth?x=1")
             await pilot.pause()
 
-            url_label: str = str(
-                pilot.app.query_one("#oauth-url", Static).content
-            )
+            url_label: str = str(pilot.app.query_one("#oauth-url", Static).content)
 
         assert "https://example.com/auth?x=1" in url_label
 
@@ -64,12 +59,8 @@ class TestOAuthStatusWidget:
             widget.set_error(message="Sign-in timed out.")
             await pilot.pause()
 
-            error_label: str = str(
-                pilot.app.query_one("#oauth-error", Static).content
-            )
-            status_label: str = str(
-                pilot.app.query_one("#oauth-status", Static).content
-            )
+            error_label: str = str(pilot.app.query_one("#oauth-error", Static).content)
+            status_label: str = str(pilot.app.query_one("#oauth-status", Static).content)
 
         assert "timed out" in error_label.lower()
         assert "failed" in status_label.lower()

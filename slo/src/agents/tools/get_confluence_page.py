@@ -1,4 +1,5 @@
 """``get_confluence_page`` tool — fetch one Confluence page by id (25.a.2)."""
+
 from __future__ import annotations
 
 GET_CONFLUENCE_PAGE_PROMPT_SNIPPET: str = (

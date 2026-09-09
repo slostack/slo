@@ -1,4 +1,5 @@
 """``search_confluence_using_cql`` tool — search Confluence with CQL (25.a.2)."""
+
 from __future__ import annotations
 
 SEARCH_CONFLUENCE_USING_CQL_PROMPT_SNIPPET: str = (

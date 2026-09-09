@@ -174,6 +174,6 @@ class AgentTabStrip(Horizontal):
         """
         button_id: str = event.button.id or ""
         if button_id.startswith("agent-tab-"):
-            suffix: str = button_id[len("agent-tab-"):]
+            suffix: str = button_id[len("agent-tab-") :]
             if suffix.isdigit():
                 self.post_message(self.TabSelected(index=int(suffix)))

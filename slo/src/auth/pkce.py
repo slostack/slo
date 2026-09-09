@@ -1,10 +1,10 @@
 """PKCE and state generation for OAuth flows (02.b.3)."""
+
 from __future__ import annotations
 
 import base64
 import hashlib
 import secrets
-
 
 __all__ = [
     "code_challenge_s256",

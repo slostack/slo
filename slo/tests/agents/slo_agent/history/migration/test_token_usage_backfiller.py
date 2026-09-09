@@ -23,7 +23,6 @@ from src.agents.slo_agent.history.migration.token_usage_backfiller import (
     TokenUsageBackfiller,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -57,9 +56,7 @@ def _write_session(
         workdir=Path("/tmp"),
         updated_at=updated_at or datetime.now(timezone.utc),
     )
-    (session_dir / "session.json").write_text(
-        metadata.model_dump_json(), encoding="utf-8"
-    )
+    (session_dir / "session.json").write_text(metadata.model_dump_json(), encoding="utf-8")
 
 
 def _make_event(
@@ -155,10 +152,7 @@ def test_backfill_session_mixed_events(tmp_path: Path) -> None:
 def test_backfill_session_atomic_rewrite_preserves_event_count(tmp_path: Path) -> None:
     """After backfill the line count in events.jsonl is unchanged."""
     session_id = "s-count"
-    events = [
-        _make_event(session_id=session_id, content=f"msg {i}", sequence=i)
-        for i in range(1, 6)
-    ]
+    events = [_make_event(session_id=session_id, content=f"msg {i}", sequence=i) for i in range(1, 6)]
     _write_session(root=tmp_path, session_id=session_id, events=events)
 
     backfiller = TokenUsageBackfiller(root=tmp_path)
@@ -182,21 +176,21 @@ def test_backfill_session_skips_malformed_json_lines(tmp_path: Path) -> None:
     session_dir = tmp_path / session_id
     session_dir.mkdir()
     events_path = session_dir / "events.jsonl"
-    valid_line = json.dumps({
-        "session_id": session_id,
-        "kind": "user_message",
-        "event_id": "evt-x",
-        "sequence": 1,
-        "iteration": 0,
-        "recorded_at": "2026-06-01T00:00:00+00:00",
-        "schema_version": 1,
-        "payload": {"content": "hi", "token_usage": None, "metadata": {}},
-    })
+    valid_line = json.dumps(
+        {
+            "session_id": session_id,
+            "kind": "user_message",
+            "event_id": "evt-x",
+            "sequence": 1,
+            "iteration": 0,
+            "recorded_at": "2026-06-01T00:00:00+00:00",
+            "schema_version": 1,
+            "payload": {"content": "hi", "token_usage": None, "metadata": {}},
+        }
+    )
     events_path.write_text(f"NOT_JSON\n{valid_line}\n", encoding="utf-8")
     metadata = SessionHistoryMetadataDAO(session_id=session_id, workdir=Path("/tmp"))
-    (session_dir / "session.json").write_text(
-        metadata.model_dump_json(), encoding="utf-8"
-    )
+    (session_dir / "session.json").write_text(metadata.model_dump_json(), encoding="utf-8")
 
     backfiller = TokenUsageBackfiller(root=tmp_path)
     count = backfiller.backfill_session(session_id=session_id)

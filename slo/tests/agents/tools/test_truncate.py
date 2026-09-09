@@ -1,4 +1,5 @@
 """Tests for ``src.agents.tools._truncate`` (sub-spec 01.c §5.1)."""
+
 from src.agents.tools._truncate import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
@@ -37,8 +38,8 @@ def test_truncate_head_drops_at_byte_limit() -> None:
     text = "".join(f"line{i:03d}\n" for i in range(20))
     result = Truncator.head(text=text, max_lines=100, max_bytes=50)
     assert result.truncated is True
-    assert "line000" in result.text       # earliest line survives
-    assert "line019" not in result.text   # latest line was dropped
+    assert "line000" in result.text  # earliest line survives
+    assert "line019" not in result.text  # latest line was dropped
 
 
 def test_truncate_tail_keeps_last_lines() -> None:

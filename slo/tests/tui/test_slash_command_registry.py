@@ -52,6 +52,7 @@ class TestSlashCommandRegistry:
             "new",
             "compact",
             "diff",
+            "plugins",
             "rename",
             "preferences",
         ]

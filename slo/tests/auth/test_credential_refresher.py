@@ -1,4 +1,5 @@
 """Tests for ``refresh_if_stale`` (feature 07 §4.2)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -116,21 +117,18 @@ class TestRefreshIfStaleEarlyReturns:
 class TestRefreshIfStaleRefreshes:
     """Branches where ``refresh_if_stale`` actually calls the provider."""
 
-    async def test_refreshes_and_persists_when_within_buffer(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_refreshes_and_persists_when_within_buffer(self, tmp_path: Path) -> None:
         """``expires_at`` < buffer → provider.refresh called once, store.persist invoked."""
         store: CredentialStore = _build_store(tmp_path=tmp_path)
         stale: CredentialDAO = _fresh_oauth_cred(ttl_seconds=10)
         refreshed: CredentialDAO = _refreshed_oauth_cred()
 
-        with patch(
-            "src.auth.credential_refresher.OpenAICodexOAuthProvider"
-        ) as provider_cls:
+        with patch("src.auth.credential_refresher.OpenAICodexOAuthProvider") as provider_cls:
             provider_cls.return_value.refresh = AsyncMock(return_value=refreshed)
 
             result: CredentialDAO = await refresh_if_stale(
-                cred=stale, store=store,
+                cred=stale,
+                store=store,
             )
 
         assert result is refreshed
@@ -140,9 +138,7 @@ class TestRefreshIfStaleRefreshes:
         persisted: AuthenticationFileDAO = store.load()
         assert persisted.providers[ProviderName.OPENAI].access_token == "refreshed-access"
 
-    async def test_refresh_already_done_by_concurrent_caller_is_skipped(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_refresh_already_done_by_concurrent_caller_is_skipped(self, tmp_path: Path) -> None:
         """If the store already has a fresh credential, we do not refresh again."""
         store: CredentialStore = _build_store(tmp_path=tmp_path)
         # Seed the store with an already-fresh credential. The caller
@@ -152,15 +148,14 @@ class TestRefreshIfStaleRefreshes:
         store.persist(cred=already_fresh)
         stale_in_memory: CredentialDAO = _fresh_oauth_cred(ttl_seconds=10)
 
-        with patch(
-            "src.auth.credential_refresher.OpenAICodexOAuthProvider"
-        ) as provider_cls:
+        with patch("src.auth.credential_refresher.OpenAICodexOAuthProvider") as provider_cls:
             provider_cls.return_value.refresh = AsyncMock(
                 return_value=_refreshed_oauth_cred(),
             )
 
             result: CredentialDAO = await refresh_if_stale(
-                cred=stale_in_memory, store=store,
+                cred=stale_in_memory,
+                store=store,
             )
 
         provider_cls.return_value.refresh.assert_not_awaited()
@@ -170,9 +165,7 @@ class TestRefreshIfStaleRefreshes:
 class TestRefreshIfStaleAnthropic:
     """Anthropic-specific refresh coverage."""
 
-    async def test_refreshes_and_persists_anthropic_within_buffer(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_refreshes_and_persists_anthropic_within_buffer(self, tmp_path: Path) -> None:
         """Within-buffer Anthropic OAuth credentials refresh and persist."""
         store: CredentialStore = _build_store(tmp_path=tmp_path)
         stale: CredentialDAO = _fresh_oauth_cred(
@@ -183,9 +176,7 @@ class TestRefreshIfStaleAnthropic:
             provider=ProviderName.ANTHROPIC,
         )
 
-        with patch(
-            "src.auth.credential_refresher.AnthropicOAuthProvider"
-        ) as provider_cls:
+        with patch("src.auth.credential_refresher.AnthropicOAuthProvider") as provider_cls:
             provider_cls.return_value.refresh = AsyncMock(return_value=refreshed)
 
             result: CredentialDAO = await refresh_if_stale(cred=stale, store=store)
@@ -197,9 +188,7 @@ class TestRefreshIfStaleAnthropic:
         persisted: AuthenticationFileDAO = store.load()
         assert persisted.providers[ProviderName.ANTHROPIC].access_token == "refreshed-access"
 
-    async def test_anthropic_without_refresh_token_short_circuits(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_anthropic_without_refresh_token_short_circuits(self, tmp_path: Path) -> None:
         """Legacy Anthropic fallback credentials without refresh metadata no-op."""
         store: CredentialStore = _build_store(tmp_path=tmp_path)
         cred: CredentialDAO = _fresh_oauth_cred(
@@ -211,9 +200,7 @@ class TestRefreshIfStaleAnthropic:
 
         assert result is cred
 
-    async def test_concurrent_anthropic_refreshes_share_one_provider_call(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_concurrent_anthropic_refreshes_share_one_provider_call(self, tmp_path: Path) -> None:
         """Concurrent Anthropic refreshes coalesce under the shared lock."""
         store: CredentialStore = _build_store(tmp_path=tmp_path)
         stale: CredentialDAO = _fresh_oauth_cred(
@@ -232,11 +219,12 @@ class TestRefreshIfStaleAnthropic:
             await asyncio.sleep(0)
             return refreshed
 
-        with patch(
-            "src.auth.credential_refresher.AnthropicOAuthProvider"
-        ) as provider_cls, patch(
-            "src.auth.credential_refresher._REFRESH_LOCK",
-            new=asyncio.Lock(),
+        with (
+            patch("src.auth.credential_refresher.AnthropicOAuthProvider") as provider_cls,
+            patch(
+                "src.auth.credential_refresher._REFRESH_LOCK",
+                new=asyncio.Lock(),
+            ),
         ):
             provider_cls.return_value.refresh = _slow_refresh
 
@@ -253,9 +241,7 @@ class TestRefreshIfStaleAnthropic:
 class TestRefreshIfStaleConcurrency:
     """Concurrent refresh requests coalesce into one provider call."""
 
-    async def test_concurrent_callers_share_one_refresh(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_concurrent_callers_share_one_refresh(self, tmp_path: Path) -> None:
         """Five concurrent stale callers → exactly one ``provider.refresh`` invocation."""
         store: CredentialStore = _build_store(tmp_path=tmp_path)
         stale: CredentialDAO = _fresh_oauth_cred(ttl_seconds=10)
@@ -270,19 +256,17 @@ class TestRefreshIfStaleConcurrency:
             await asyncio.sleep(0)
             return refreshed
 
-        with patch(
-            "src.auth.credential_refresher.OpenAICodexOAuthProvider"
-        ) as provider_cls, patch(
-            "src.auth.credential_refresher._REFRESH_LOCK",
-            new=asyncio.Lock(),
+        with (
+            patch("src.auth.credential_refresher.OpenAICodexOAuthProvider") as provider_cls,
+            patch(
+                "src.auth.credential_refresher._REFRESH_LOCK",
+                new=asyncio.Lock(),
+            ),
         ):
             provider_cls.return_value.refresh = _slow_refresh
 
             results: list[CredentialDAO] = await asyncio.gather(
-                *[
-                    refresh_if_stale(cred=stale, store=store)
-                    for _ in range(5)
-                ]
+                *[refresh_if_stale(cred=stale, store=store) for _ in range(5)]
             )
 
         assert call_count == 1
@@ -341,12 +325,8 @@ class TestCredentialFileLock:
                 new=_fake_body,
             ):
                 await asyncio.gather(
-                    _file_locked_refresh(
-                        cred=AsyncMock(), store=AsyncMock(), provider_cls=AsyncMock()
-                    ),
-                    _file_locked_refresh(
-                        cred=AsyncMock(), store=AsyncMock(), provider_cls=AsyncMock()
-                    ),
+                    _file_locked_refresh(cred=AsyncMock(), store=AsyncMock(), provider_cls=AsyncMock()),
+                    _file_locked_refresh(cred=AsyncMock(), store=AsyncMock(), provider_cls=AsyncMock()),
                 )
 
         # Serialised: enter, exit, enter, exit (never enter, enter, exit, exit)
@@ -366,9 +346,7 @@ class TestCredentialFileLock:
                 side_effect=RuntimeError("refresh exploded"),
             ):
                 with pytest.raises(RuntimeError, match="refresh exploded"):
-                    await _file_locked_refresh(
-                        cred=AsyncMock(), store=AsyncMock(), provider_cls=AsyncMock()
-                    )
+                    await _file_locked_refresh(cred=AsyncMock(), store=AsyncMock(), provider_cls=AsyncMock())
 
         # A subsequent call must succeed — proving the lock was released.
         with _patch("src.auth.credential_refresher._CREDENTIALS_LOCK_FILE", lock_path):

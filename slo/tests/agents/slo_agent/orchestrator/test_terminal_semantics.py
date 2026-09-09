@@ -51,7 +51,12 @@ def test_headless_lifecycle_for_terminal_kind(kind: str, expected: str) -> None:
 
 @pytest.mark.parametrize(
     ("kind", "expected"),
-    [("run_completed", "completed"), ("run_aborted", "aborted"), ("run_failed", "failed"), ("unknown", "failed")],
+    [
+        ("run_completed", "completed"),
+        ("run_aborted", "aborted"),
+        ("run_failed", "failed"),
+        ("unknown", "failed"),
+    ],
 )
 def test_run_state_for_terminal_kind(kind: str, expected: str) -> None:
     """Terminal event kinds project to the durable run state with a failed default."""

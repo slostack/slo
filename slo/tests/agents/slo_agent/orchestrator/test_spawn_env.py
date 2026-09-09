@@ -34,6 +34,15 @@ def test_child_env_includes_nonsecret_slo_vars(monkeypatch: pytest.MonkeyPatch) 
     assert child_env["SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS"] == "7200"
 
 
+def test_child_env_forwards_plugin_disable_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Feature 75 plugin kill switch reaches headless children explicitly."""
+    monkeypatch.setenv("SLO_PLUGINS_DISABLED", "1")
+
+    child_env: dict[str, str] = build_headless_child_env()
+
+    assert child_env["SLO_PLUGINS_DISABLED"] == "1"
+
+
 def test_child_env_drops_secret_marked_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     """Secret-marked SLO variables do not cross a spawn boundary."""
     monkeypatch.setenv("SLO_OPENAI_API_KEY", "secret")
@@ -73,7 +82,9 @@ def test_child_env_drops_empty_extra() -> None:
 
 def test_open_capture_file_append_creates_session_capture(tmp_path: Path) -> None:
     """Capture opener creates a session directory and appends binary content."""
-    with open_capture_file_append(history_root=tmp_path, session_id="session", name="stdout.jsonl") as capture:
+    with open_capture_file_append(
+        history_root=tmp_path, session_id="session", name="stdout.jsonl"
+    ) as capture:
         capture.write(b"one\n")
 
     assert (tmp_path / "session" / "stdout.jsonl").read_bytes() == b"one\n"

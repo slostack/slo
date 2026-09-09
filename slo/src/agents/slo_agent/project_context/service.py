@@ -11,6 +11,7 @@ in a monorepo layout (above the innermost repo root) are also searched.
 A separate global tier loads ``~/.slo/`` first so user-level instructions
 are prepended before any project-tier files.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

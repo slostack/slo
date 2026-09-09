@@ -8,6 +8,7 @@ Resolution is consulted by ``TyperDispatch._build_session_config`` before
 ``cfg("DEFAULT_MODEL_NAME")`` so saved preferences take precedence over
 environment defaults on every new session boot.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

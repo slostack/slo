@@ -14,7 +14,6 @@ from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.recovery.dao import RecoveryClass, RecoveryDecisionDAO
 from src.agents.slo_agent.recovery.service import IterationRecoveryPolicy
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -109,9 +108,7 @@ def _make_fail_once_faux(
             if raise_on_first[0]:
                 raise_on_first[0] = False
                 raise RuntimeError("transient failure")
-            async for chunk in base._astream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            ):
+            async for chunk in base._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
                 yield chunk
 
     return _FailOnceFaux(responses=responses)
@@ -165,9 +162,7 @@ def _make_fail_n_times_faux(*, fail_count: int, responses: list) -> FauxChatMode
             call_count[0] += 1
             if call_count[0] <= fail_count:
                 raise RuntimeError(f"failure #{call_count[0]}")
-            async for chunk in base._astream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            ):
+            async for chunk in base._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
                 yield chunk
 
     return _FailNFaux(responses=responses)
@@ -226,10 +221,7 @@ class TestRecoverableErrorRecovery:
         # observation as the last message.
         assert len(seen_messages) == 2
         recovery_context = seen_messages[1]
-        assert any(
-            isinstance(m, HumanMessage) and "RuntimeError" in str(m.content)
-            for m in recovery_context
-        )
+        assert any(isinstance(m, HumanMessage) and "RuntimeError" in str(m.content) for m in recovery_context)
 
     async def test_recovery_succeeded_emitted_exactly_once_after_recovery(
         self,

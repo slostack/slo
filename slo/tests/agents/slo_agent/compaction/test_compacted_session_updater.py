@@ -17,10 +17,10 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventPayloadDAO,
 )
 
-
 # ---------------------------------------------------------------------------
 # Minimal CompactionResult stand-in (avoids importing the LLM-dependent compacter)
 # ---------------------------------------------------------------------------
+
 
 class _CompactionResult:
     """Minimal stand-in for CompactionResult used in tests."""
@@ -44,6 +44,7 @@ class _CompactionResult:
 # ---------------------------------------------------------------------------
 # Minimal async mock store
 # ---------------------------------------------------------------------------
+
 
 class _InMemoryStore:
     """Minimal async mock store accumulating events in a list.
@@ -74,6 +75,7 @@ class _InMemoryStore:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_result(
     *,
     summary_text: str = "Summary of the compacted history.",
@@ -95,6 +97,7 @@ def _make_result(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_update_appends_exactly_one_event() -> None:

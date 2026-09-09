@@ -14,7 +14,9 @@ image reference. See ``docs/RESEARCH.md`` for the tool architecture.
 
 from __future__ import annotations
 
-READ_PROMPT_SNIPPET: str = "read the contents of a UTF-8 text file at a given path, or attach an image; PDFs should use read_pdf"
+READ_PROMPT_SNIPPET: str = (
+    "read the contents of a UTF-8 text file at a given path, or attach an image; PDFs should use read_pdf"
+)
 
 from pathlib import Path
 from typing import Optional

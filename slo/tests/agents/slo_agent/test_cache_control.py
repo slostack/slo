@@ -20,7 +20,6 @@ from src.agents.slo_agent.graph import SloAgentBuildResult, build_slo_agent
 from src.agents.slo_agent.sessions.usage import TokenUsageTotalsDAO
 from src.agents.providers.faux import FauxChatModel
 
-
 # ---------------------------------------------------------------------------
 # LLMBuildResult flag
 # ---------------------------------------------------------------------------

@@ -83,9 +83,15 @@ class MigrationResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     session_id: str = Field(description="The session that was migrated.")
-    events_migrated: int = Field(description="Total number of event lines written to the output events.jsonl.")
-    tool_links_resolved: int = Field(description="Number of tool_result events whose parent_entry_id was resolved to an explicit tool_call event via tool_call_id matching.")
-    unresolved_tool_results: int = Field(description="Number of tool_result events that fell back to linear chaining because their tool_call_id was not found in the open-calls map.")
+    events_migrated: int = Field(
+        description="Total number of event lines written to the output events.jsonl."
+    )
+    tool_links_resolved: int = Field(
+        description="Number of tool_result events whose parent_entry_id was resolved to an explicit tool_call event via tool_call_id matching."
+    )
+    unresolved_tool_results: int = Field(
+        description="Number of tool_result events that fell back to linear chaining because their tool_call_id was not found in the open-calls map."
+    )
 
 
 class TreeMigrator:
@@ -125,13 +131,9 @@ class TreeMigrator:
                 Defaults to the same path as ``flat_root`` when ``None``,
                 which causes the migrator to overwrite the existing JSONL in-place.
         """
-        resolved_flat: Path = (
-            (flat_root or _default_history_root()).expanduser().resolve()
-        )
+        resolved_flat: Path = (flat_root or _default_history_root()).expanduser().resolve()
         self._flat_root: Path = resolved_flat
-        self._tree_root: Path = (
-            (tree_root or flat_root or _default_history_root()).expanduser().resolve()
-        )
+        self._tree_root: Path = (tree_root or flat_root or _default_history_root()).expanduser().resolve()
 
     # ------------------------------------------------------------------
     # Public surface
@@ -161,8 +163,7 @@ class TreeMigrator:
         source_events_path: Path = self._flat_root / session_id / "events.jsonl"
         if not source_events_path.exists():
             raise FileNotFoundError(
-                f"Source events.jsonl not found for session {session_id!r} "
-                f"at {source_events_path}"
+                f"Source events.jsonl not found for session {session_id!r} " f"at {source_events_path}"
             )
 
         sorted_events: list[SessionHistoryEventDAO] = self._load_events_sorted(
@@ -179,8 +180,8 @@ class TreeMigrator:
                 output_dir=output_dir,
             )
 
-        enriched_lines, tool_links_resolved, unresolved_tool_results = (
-            self._enrich_events(events=sorted_events)
+        enriched_lines, tool_links_resolved, unresolved_tool_results = self._enrich_events(
+            events=sorted_events
         )
 
         output_events_path: Path = output_dir / "events.jsonl"
@@ -246,9 +247,7 @@ class TreeMigrator:
                 continue
 
             try:
-                event: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate(
-                    raw_dict
-                )
+                event: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate(raw_dict)
             except Exception:
                 _logger.warning(
                     "TreeMigrator: skipping line %d of session %r — DAO validation failed",

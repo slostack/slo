@@ -1,4 +1,5 @@
 """Tests for the ``echo`` tool (sub-spec 01.e §5.4)."""
+
 import pytest
 
 from src.agents.tools.echo import echo_tool

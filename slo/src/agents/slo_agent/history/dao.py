@@ -34,12 +34,13 @@ HistoryEventKind = Literal[
     "assistant_message",
     "assistant_delta",
     "tool_call",
+    "tool_output_update",
     "tool_result",
-    "run_retrying",        # a wait-and-retry decision (preflight / pool / rate limit) — 37.a.6
-    "route_switched",      # a ModelPool route switch (audit) — 37.a.6
-    "stream_reconnecting", # provider stream reconnect audit — spec 70
+    "run_retrying",  # a wait-and-retry decision (preflight / pool / rate limit) — 37.a.6
+    "route_switched",  # a ModelPool route switch (audit) — 37.a.6
+    "stream_reconnecting",  # provider stream reconnect audit — spec 70
     # LLM-driven recovery (feature 50):
-    "run_recovering",        # audit: a recovery decision (excluded from model context)
+    "run_recovering",  # audit: a recovery decision (excluded from model context)
     "recovery_observation",  # the synthetic observation message (included on replay)
     "run_completed",
     "run_aborted",
@@ -47,10 +48,10 @@ HistoryEventKind = Literal[
     "slash_command",
     # Orchestrator / sub-agent lifecycle (sub-spec 01-sub-agents 01.f):
     "orchestrator_started",  # a spawn_sub_agents batch began
-    "sub_agent_spawned",     # one child session was created
-    "sub_agent_completed",   # one child reached a terminal state
+    "sub_agent_spawned",  # one child session was created
+    "sub_agent_completed",  # one child reached a terminal state
     # Compaction (sub-spec 01.a.1):
-    "compaction_summary",    # LLM-generated summary of the compacted history portion
+    "compaction_summary",  # LLM-generated summary of the compacted history portion
     # Detached workflow feedback (spec 57.a.4) — included in model context on replay.
     # Persisted as a synthetic completed turn: one event, a fresh turn_id, terminal
     # by construction (no run envelope). Payload: content = the note text;

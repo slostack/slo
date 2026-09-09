@@ -1,11 +1,11 @@
 """``OAuthFlowFactory`` — produces ready-to-start ``OAuthFlow`` instances (02.b.4)."""
+
 from __future__ import annotations
 
 from src.auth.credential_dao import ProviderName
 from src.auth.oauth_flow import OAuthFlow
 from src.auth.oauth_provider import OAuthProvider
 from src.auth.providers import AnthropicOAuthProvider, OpenAICodexOAuthProvider
-
 
 __all__ = ["OAuthFlowFactory"]
 

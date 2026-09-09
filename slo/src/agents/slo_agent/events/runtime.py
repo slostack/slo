@@ -34,6 +34,7 @@ TraceEventKind = Literal[
     "assistant_message",
     "assistant_delta",
     "tool_call",
+    "tool_output_update",
     "tool_result",
     "run_completed",
     "run_aborted",

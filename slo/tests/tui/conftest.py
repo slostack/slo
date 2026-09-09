@@ -5,6 +5,7 @@ so the auto-modal added in ``SloTUI.on_mount`` doesn't intercept the
 test's assertions. Tests that specifically exercise the modal path
 re-monkeypatch the resolver to return ``None``.
 """
+
 from __future__ import annotations
 
 import pytest

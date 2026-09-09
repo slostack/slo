@@ -1,4 +1,5 @@
 """Tests for ``ProviderSelectWidget`` (02.b.5)."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -23,15 +24,11 @@ class _Harness(App):
         """Yield the single ``ProviderSelectWidget`` under test."""
         yield ProviderSelectWidget()
 
-    def on_provider_select_widget_chosen(
-        self, event: ProviderSelectWidget.Chosen
-    ) -> None:
+    def on_provider_select_widget_chosen(self, event: ProviderSelectWidget.Chosen) -> None:
         """Record the chosen provider for assertion."""
         self.received_provider = event.provider
 
-    def on_provider_select_widget_cancelled(
-        self, event: ProviderSelectWidget.Cancelled
-    ) -> None:
+    def on_provider_select_widget_cancelled(self, event: ProviderSelectWidget.Cancelled) -> None:
         """Record that Cancel was clicked."""
         self.cancelled = True
 

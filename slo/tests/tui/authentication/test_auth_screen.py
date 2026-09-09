@@ -1,4 +1,5 @@
 """Tests for ``AuthenticationScreen`` (02.b.5)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -126,9 +127,7 @@ class TestAuthenticationScreenOAuthFailure:
     """OAuth failure renders inline error and keeps the modal open."""
 
     @pytest.mark.asyncio
-    async def test_oauth_timeout_renders_error_and_does_not_dismiss(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_oauth_timeout_renders_error_and_does_not_dismiss(self, tmp_path: Path) -> None:
         """``OAuthTimeoutError`` → OAuthStatusWidget shows error; modal stays."""
         store: CredentialStore = _build_store(tmp_path)
 
@@ -150,6 +149,7 @@ class TestAuthenticationScreenOAuthFailure:
             await pilot.pause()
             status: OAuthStatusWidget = pilot.app.screen.query_one(OAuthStatusWidget)
             from textual.widgets import Static
+
             error_label: str = str(status.query_one("#oauth-error", Static).content)
             assert "timed out" in error_label.lower()
 
@@ -160,9 +160,7 @@ class TestAuthenticationScreenOAuthPortCollision:
     """Fixed-port bind collisions render an inline actionable message."""
 
     @pytest.mark.asyncio
-    async def test_oauth_callback_port_in_use_renders_error(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_oauth_callback_port_in_use_renders_error(self, tmp_path: Path) -> None:
         """``OAuthCallbackPortInUseError`` → actionable inline auth-screen copy."""
         store: CredentialStore = _build_store(tmp_path)
 
@@ -183,6 +181,7 @@ class TestAuthenticationScreenOAuthPortCollision:
             await pilot.pause()
             status: OAuthStatusWidget = pilot.app.screen.query_one(OAuthStatusWidget)
             from textual.widgets import Static
+
             error_label: str = str(status.query_one("#oauth-error", Static).content)
             assert "could not bind the local callback port" in error_label.lower()
 
@@ -209,9 +208,7 @@ class TestAuthenticationScreenBackNavigation:
     """Back from method → provider re-renders ProviderSelectWidget."""
 
     @pytest.mark.asyncio
-    async def test_back_from_method_returns_to_provider(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_back_from_method_returns_to_provider(self, tmp_path: Path) -> None:
         """Provider → method → Back → provider."""
         store: CredentialStore = _build_store(tmp_path)
         harness: _Harness = _Harness(store=store, oauth_factory=_faux_factory)
@@ -268,9 +265,7 @@ class TestAuthenticationScreenOAuthSuccessPath:
     """OAuth success persists the credential and dismisses with the DAO."""
 
     @pytest.mark.asyncio
-    async def test_oauth_success_path_persists_and_dismisses_with_credential(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_oauth_success_path_persists_and_dismisses_with_credential(self, tmp_path: Path) -> None:
         """Inject a faux flow returning a known DAO → dismiss callback receives it."""
         store: CredentialStore = _build_store(tmp_path)
         expected_credential: CredentialDAO = CredentialDAO(
@@ -305,19 +300,14 @@ class TestAuthenticationScreenOAuthSuccessPath:
         assert harness.dismissed_with.access_token == "oauth-success-token"
         envelope = store.load()
         assert ProviderName.ANTHROPIC in envelope.providers
-        assert (
-            envelope.providers[ProviderName.ANTHROPIC].access_token
-            == "oauth-success-token"
-        )
+        assert envelope.providers[ProviderName.ANTHROPIC].access_token == "oauth-success-token"
 
 
 class TestAuthenticationScreenKimiForCodingPath:
     """Kimi For Coding skips MethodSelectWidget and goes directly to ApiKeyInputWidget."""
 
     @pytest.mark.asyncio
-    async def test_kimi_for_coding_skips_method_select_and_shows_api_key(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_kimi_for_coding_skips_method_select_and_shows_api_key(self, tmp_path: Path) -> None:
         """Selecting Kimi For Coding → Continue → ApiKeyInputWidget appears immediately."""
         from textual.widgets import RadioButton, RadioSet
 
@@ -338,9 +328,7 @@ class TestAuthenticationScreenKimiForCodingPath:
             assert method_widgets == []
 
     @pytest.mark.asyncio
-    async def test_kimi_for_coding_api_key_path_persists_and_dismisses(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_kimi_for_coding_api_key_path_persists_and_dismisses(self, tmp_path: Path) -> None:
         """Kimi For Coding → api_key → save → close → dismiss with persisted KIMI_FOR_CODING cred."""
         from textual.widgets import RadioButton, RadioSet
 
@@ -369,9 +357,7 @@ class TestAuthenticationScreenKimiForCodingPath:
         assert envelope.providers[ProviderName.KIMI_FOR_CODING].access_token == "sk-kimi-test"
 
     @pytest.mark.asyncio
-    async def test_kimi_for_coding_back_from_api_key_returns_to_provider_select(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_kimi_for_coding_back_from_api_key_returns_to_provider_select(self, tmp_path: Path) -> None:
         """Kimi For Coding → api_key → Back → ProviderSelectWidget (not MethodSelectWidget)."""
         from textual.widgets import RadioButton, RadioSet
 

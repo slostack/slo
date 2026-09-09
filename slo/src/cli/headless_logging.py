@@ -60,9 +60,7 @@ def headless_logging(*, slo_home: Path) -> Iterator[Optional[Path]]:
         file_handler=file_handler,
     )
     root_logger.handlers = added_handlers
-    log_path: Optional[Path] = (
-        Path(file_handler.baseFilename) if file_handler is not None else None
-    )
+    log_path: Optional[Path] = Path(file_handler.baseFilename) if file_handler is not None else None
     try:
         yield log_path
     finally:

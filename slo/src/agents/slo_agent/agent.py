@@ -44,6 +44,7 @@ from src.agents.slo_agent.assistant_chunk_normalizer import (
     AssistantChunkNormalizer,
 )
 from src.agents.slo_agent.graph import SloAgentBuildResult, SloAgentStateDAO, build_slo_agent
+from src.agents.tools.tool_output import ToolOutputUpdateDAO
 from src.agents.slo_agent.graph_stream_parser import parse_graph_stream_item
 from src.agents.slo_agent.message_text import assistant_message_text
 from src.agents.slo_agent.watchdog_timer import WatchDogTimer
@@ -65,6 +66,7 @@ from src.agents.slo_agent.sessions.usage import TokenUsageTotalsDAO
 
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPoolDAO
+    from src.agents.slo_agent.plugins.dispatcher import PluginDispatcher
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.turn_stream_accumulator import TurnStreamAccumulator
 from src.agents.slo_agent.project_context.dao import ContextFileEntryDAO
@@ -117,6 +119,7 @@ class SloAgent:
         append_system_prompt: Optional[str] = None,
         custom_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        plugin_dispatcher: Optional["PluginDispatcher"] = None,
     ) -> None:
         """Build the agent.
 
@@ -161,8 +164,11 @@ class SloAgent:
                 Responses lane (feature 07) can attribute prompt-cache
                 hits per session. Ignored when ``llm`` is supplied
                 directly.
+            plugin_dispatcher (Optional[PluginDispatcher]): Session-owned typed
+                plugin interceptor bridge, or ``None`` for legacy behavior.
         """
         self._llm: Optional[LLM] = llm
+        self._plugin_dispatcher: Optional["PluginDispatcher"] = plugin_dispatcher
         _build_result: SloAgentBuildResult = build_slo_agent(
             model_name=model_name,
             model_pool_dao=model_pool_dao,
@@ -170,8 +176,13 @@ class SloAgent:
             llm=llm,
             reasoning_level=reasoning_level,
             session_id=session_id,
+            plugin_dispatcher=plugin_dispatcher,
         )
         self._graph: CompiledStateGraph = _build_result.graph
+        self._tools: list[BaseTool] = list(_build_result.tools)
+        self._output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] = (
+            _build_result.output_update_queue or asyncio.Queue()
+        )
         # Retain the built (tool-bound) LLM — a single model or a ModelPool — so
         # routed-model introspection (``SloAgentSession._resolve_active_model_name``)
         # works on the lazy build path, not only when an LLM is injected.
@@ -212,6 +223,16 @@ class SloAgent:
         self._recovery_budget: int = 2
         """Maximum LLM-driven recoveries per submitted prompt. Default 2."""
         log_info(msg="SloAgent built")
+
+    @property
+    def tools(self) -> list[BaseTool]:
+        """Return the active tool bundle for session-owned introspection.
+
+        WHAT: Exposes the tools bound into this agent's compiled graph.
+        WHO: ``SloAgentSession`` and runtime context callers read this list.
+        WHEN: Plugin and introspection seams need the visible tool inventory.
+        """
+        return list(self._tools)
 
     @property
     def llm(self) -> Optional[LLM]:
@@ -680,6 +701,12 @@ class SloAgent:
                         content="<aborted>",
                     )
                     return
+                async for output_event in self._drain_tool_output_updates(iteration=iteration):
+                    await self._emit_stream_trace_event(
+                        runtime_handler=runtime_handler,
+                        stream_event=output_event,
+                    )
+                    yield output_event
                 parsed = parse_graph_stream_item(raw_item=raw_item)
                 if parsed.mode == "messages":
                     if not isinstance(parsed.message_chunk, AIMessageChunk):
@@ -707,7 +734,40 @@ class SloAgent:
                 for event in update_events:
                     yield event
         finally:
+            async for output_event in self._drain_tool_output_updates(iteration=iteration):
+                await self._emit_stream_trace_event(
+                    runtime_handler=runtime_handler,
+                    stream_event=output_event,
+                )
+                yield output_event
             await self._close_graph_stream(graph_stream=graph_stream)
+
+    async def _drain_tool_output_updates(
+        self,
+        *,
+        iteration: int,
+    ) -> AsyncGenerator[AgentStreamEventDAO, None]:
+        """Adapt queued executor snapshots to the one normalized event stream.
+
+        Args:
+            iteration (int): Current outer ReAct iteration for emitted events.
+
+        Yields:
+            AgentStreamEventDAO: Display-only partial output events keyed by call id.
+        """
+        while not self._output_update_queue.empty():
+            snapshot: ToolOutputUpdateDAO = self._output_update_queue.get_nowait()
+            yield AgentStreamEventDAO(
+                kind="tool_output_update",
+                iteration=iteration,
+                tool_call_id=snapshot.tool_call_id,
+                tool_name=snapshot.tool_name,
+                content=snapshot.content_snapshot,
+                metadata={
+                    "truncated": snapshot.truncated,
+                    "full_output_path": snapshot.full_output_path,
+                },
+            )
 
     @staticmethod
     async def _close_graph_stream(*, graph_stream: AsyncIterator[object]) -> None:
@@ -897,6 +957,10 @@ class SloAgent:
         pending_recovery: bool = False
         while True:
             self._current_iteration = iteration
+            await self._inject_before_agent_turn_messages(
+                accumulated_messages=accumulated_messages,
+                iteration=iteration,
+            )
             try:
                 async for event in self._execute_iteration_with_retry(
                     accumulated_messages=accumulated_messages,
@@ -953,6 +1017,37 @@ class SloAgent:
                 runtime_handler=runtime_handler,
             ):
                 yield event
+
+    async def _inject_before_agent_turn_messages(
+        self,
+        *,
+        accumulated_messages: list[BaseMessage],
+        iteration: int,
+    ) -> None:
+        """Append plugin context contributions before one outer ReAct iteration.
+
+        WHAT: Invokes the session-owned dispatcher exactly once for each outer
+            ReAct iteration and appends its ordered context additions to the
+            request history.
+        WHO: ``_react_loop`` calls this immediately before each iteration's
+            graph invocation.
+        WHEN: After the true outer iteration number is assigned and before any
+            retry attempts for that iteration.
+
+        Args:
+            accumulated_messages (list[BaseMessage]): Mutable request history.
+            iteration (int): Actual upcoming outer ReAct iteration number.
+        """
+        plugin_dispatcher: "PluginDispatcher | None" = self._plugin_dispatcher
+        if plugin_dispatcher is None:
+            return
+        # A no-handler dispatcher must be indistinguishable from legacy mode:
+        # it must not rebuild the graph and discard the caller's immutable
+        # per-agent tool bindings (notably orchestrator tools).
+        if not plugin_dispatcher.has_before_agent_turn_handlers():
+            return
+        decision = await plugin_dispatcher.run_before_agent_turn(iteration=iteration)
+        accumulated_messages.extend(decision.inject_messages)
 
     def _decide_iteration_recovery(
         self,
@@ -1513,6 +1608,20 @@ class SloAgent:
             stream_event (AgentStreamEventDAO): Normalized visible stream event.
         """
         if runtime_handler is None:
+            return
+        if stream_event.kind == "tool_output_update":
+            await runtime_handler(
+                AgentRuntimeEventDAO(
+                    kind="tool_output_update",
+                    iteration=stream_event.iteration,
+                    payload=AgentRuntimePayloadDAO(
+                        content=stream_event.content,
+                        tool_name=stream_event.tool_name,
+                        tool_call_id=stream_event.tool_call_id,
+                        metadata=stream_event.metadata,
+                    ),
+                )
+            )
             return
         if stream_event.kind not in {
             "thinking_start",

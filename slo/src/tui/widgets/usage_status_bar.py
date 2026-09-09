@@ -24,13 +24,32 @@ class UsageStatusBar(Static):
     }
     """
 
-    def update_snapshot(self, *, snapshot: SessionUsageSnapshotDAO) -> None:
-        """Render the provided runtime snapshot.
+    def update_snapshot(
+        self,
+        *,
+        snapshot: SessionUsageSnapshotDAO,
+        plugin_statuses: dict[str, str] | None = None,
+    ) -> None:
+        """Render the provided runtime snapshot and current plugin statuses.
 
         Args:
             snapshot (SessionUsageSnapshotDAO): Session-owned usage snapshot.
+            plugin_statuses (dict[str, str] | None): Dispatcher-owned live status
+                map. ``None`` preserves ordinary usage rendering.
         """
-        self.update(self._render_snapshot(snapshot=snapshot))
+        usage_text: str = self._render_snapshot(snapshot=snapshot)
+        plugin_text: str = self.render_plugin_segment(status_map=plugin_statuses or {})
+        self.update(f"{usage_text} · {plugin_text}" if plugin_text else usage_text)
+
+    @staticmethod
+    def render_plugin_segment(*, status_map: dict[str, str]) -> str:
+        """Render the live plugin-status portion of the usage bar.
+
+        WHAT: Formats the dispatcher-owned plugin status map in stable key order.
+        WHO: The TUI footer calls it whenever plugin status changes.
+        WHEN: Loaded plugins seed or update a visible status segment.
+        """
+        return " · ".join(status_map[key] for key in sorted(status_map) if status_map[key])
 
     @classmethod
     def _render_snapshot(cls, *, snapshot: SessionUsageSnapshotDAO) -> str:

@@ -1,4 +1,5 @@
 """Tests for the ``write`` tool (sub-spec 01.d §5.2)."""
+
 import pytest
 
 from src.agents.tools.write import write_tool

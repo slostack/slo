@@ -1,8 +1,8 @@
 """State enum for ``AuthenticationScreen`` (02.b.5)."""
+
 from __future__ import annotations
 
 from enum import Enum
-
 
 __all__ = ["ScreenState"]
 

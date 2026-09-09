@@ -1,4 +1,5 @@
 """ContextFileEntryDAO — one discovered project instruction file with source tier annotation."""
+
 from __future__ import annotations
 
 from typing import Literal, Optional

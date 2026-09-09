@@ -1,4 +1,5 @@
 """Tests for ConnectorCredentialStore (25.a.1)."""
+
 import json
 import stat
 from pathlib import Path
@@ -65,16 +66,12 @@ class TestConnectorCredentialStorePaths:
 class TestConnectorCredentialStoreLoad:
     """``load`` — file-absent, valid, and corrupt paths."""
 
-    def test_returns_none_when_file_absent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_none_when_file_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         result = ConnectorCredentialStore.load(provider=ConnectorProviderName.ATLASSIAN)
         assert result is None
 
-    def test_returns_dao_when_file_present(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_dao_when_file_present(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         cred = _atlassian_cred()
         ConnectorCredentialStore.upsert(credential=cred)
@@ -100,9 +97,7 @@ class TestConnectorCredentialStoreLoad:
 class TestConnectorCredentialStoreUpsert:
     """``upsert`` — write semantics, permissions, isolation."""
 
-    def test_creates_dir_with_mode_700(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_creates_dir_with_mode_700(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         ConnectorCredentialStore.upsert(credential=_atlassian_cred())
 
@@ -111,9 +106,7 @@ class TestConnectorCredentialStoreUpsert:
         ).parent
         assert stat.S_IMODE(parent.stat().st_mode) == 0o700
 
-    def test_creates_file_with_mode_600(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_creates_file_with_mode_600(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         ConnectorCredentialStore.upsert(credential=_atlassian_cred())
 
@@ -122,9 +115,7 @@ class TestConnectorCredentialStoreUpsert:
         )
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
-    def test_replaces_existing_credential(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_replaces_existing_credential(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         ConnectorCredentialStore.upsert(credential=_atlassian_cred(token="old"))
         ConnectorCredentialStore.upsert(credential=_atlassian_cred(token="new"))

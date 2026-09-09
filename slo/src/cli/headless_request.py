@@ -164,13 +164,9 @@ def _reject_path_components(*, value: str) -> None:
         ValueError: If the value contains ``/``, ``\\``, or ``..``.
     """
     if "/" in value or "\\" in value:
-        raise ValueError(
-            f"session_id must not contain path separators ('/' or '\\\\'): {value!r}"
-        )
+        raise ValueError(f"session_id must not contain path separators ('/' or '\\\\'): {value!r}")
     if ".." in value:
-        raise ValueError(
-            f"session_id must not contain traversal component ('..'): {value!r}"
-        )
+        raise ValueError(f"session_id must not contain traversal component ('..'): {value!r}")
 
 
 def _normalise_to_slug_or_uuid(*, value: str) -> str:
@@ -190,9 +186,7 @@ def _normalise_to_slug_or_uuid(*, value: str) -> str:
         return normalised_uuid
     if _SESSION_ID_SLUG_RE.fullmatch(value):
         return value
-    raise ValueError(
-        f"session_id must be a UUID4 or match [A-Za-z0-9._-]+, got {value!r}"
-    )
+    raise ValueError(f"session_id must be a UUID4 or match [A-Za-z0-9._-]+, got {value!r}")
 
 
 def _try_parse_uuid(*, value: str) -> Optional[str]:

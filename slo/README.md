@@ -22,6 +22,21 @@
 > and `~/.slo/user_workflows/` and are automatically merged with the 116
 > vendored skills at session start.
 >
+> **Plugin extensions (Feature 75):** Slo supports trusted Python plugins with
+> managed GitHub/GitLab installation (`slo plugin install <url> --yes`, `list`,
+> `uninstall`, and `upgrade`), immutable source/pin provenance, atomic rollback,
+> fail-closed project trust, explicit `--plugin <path>` development loading, and
+> `/plugins [trust|reload]` health visibility. Plugins can observe the normalized
+> stream, add validated tools/commands/renderers, publish live footer status, and
+> use isolated interception points. Core Bash output snapshots travel on the normal
+> event stream and never enter model context; the bundled
+> `plugins/bash_live_output/` plugin is a consumer-only raw-output renderer.
+>
+> In a development checkout, dog-food the bundled renderer explicitly with:
+> `slo --plugin plugins/bash_live_output/plugin.py`. Operator installs use the
+> managed lifecycle; the packaged bundled payload records
+> `https://github.com/slo/slo` plus `package:<version>` provenance.
+>
 > v0.8.0 added a **third AI provider: Kimi For Coding (KFC)** — an
 > OpenAI-compatible API from Moonshot AI with a `ModelPool` fallback router and
 > automatic credit-exhaustion handling (see

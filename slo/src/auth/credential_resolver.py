@@ -1,4 +1,5 @@
 """Credential resolver — the single seam for credential lookups (02.b.2)."""
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,6 @@ from src.auth.credential_dao import (
     ProviderName,
 )
 from src.auth.credential_store import CredentialStore
-
 
 __all__ = ["CredentialResolver"]
 
@@ -127,9 +127,7 @@ class CredentialResolver:
         return cred
 
     @classmethod
-    def _from_legacy_claude(
-        cls, *, provider: ProviderName
-    ) -> Optional[CredentialDAO]:
+    def _from_legacy_claude(cls, *, provider: ProviderName) -> Optional[CredentialDAO]:
         """Return an Anthropic credential from ``~/.claude/.credentials.json``.
 
         Args:
@@ -210,15 +208,9 @@ class CredentialResolver:
             str: A one-liner that names ``/auth`` and the env-var fallback.
         """
         if provider is ProviderName.ANTHROPIC:
-            return (
-                "No Anthropic credentials found. Run /auth in the TUI or "
-                "set SLO_ANTHROPIC_API_KEY."
-            )
+            return "No Anthropic credentials found. Run /auth in the TUI or " "set SLO_ANTHROPIC_API_KEY."
         if provider is ProviderName.OPENAI:
-            return (
-                "No OpenAI credentials found. Run /auth in the TUI or "
-                "set SLO_OPENAI_API_KEY."
-            )
+            return "No OpenAI credentials found. Run /auth in the TUI or " "set SLO_OPENAI_API_KEY."
         if provider is ProviderName.KIMI_FOR_CODING:
             return (
                 "No Kimi For Coding credentials found. Set SLO_KIMI_FOR_CODING_API_KEY "

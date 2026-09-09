@@ -66,9 +66,7 @@ class HeadlessLifecycleEventDAO(BaseModel):
     session_id: Optional[str] = None
     message: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
-    timestamp_utc: str = Field(
-        default_factory=lambda: datetime.now(tz=timezone.utc).isoformat()
-    )
+    timestamp_utc: str = Field(default_factory=lambda: datetime.now(tz=timezone.utc).isoformat())
 
 
 def emit_lifecycle_event(

@@ -23,7 +23,6 @@ from src.cli.headless_events import (
     emit_lifecycle_event,
 )
 
-
 # ---------------------------------------------------------------------------
 # HeadlessLifecycleEventDAO
 # ---------------------------------------------------------------------------
@@ -31,9 +30,7 @@ from src.cli.headless_events import (
 
 class TestHeadlessLifecycleEventDAO:
     def test_constructs_with_required_kind_only(self) -> None:
-        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(
-            kind="headless_session_started"
-        )
+        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(kind="headless_session_started")
         assert event.kind == "headless_session_started"
         assert event.session_id is None
         assert event.message is None
@@ -41,9 +38,7 @@ class TestHeadlessLifecycleEventDAO:
         assert event.timestamp_utc  # non-empty string
 
     def test_payload_defaults_to_empty_dict(self) -> None:
-        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(
-            kind="headless_status"
-        )
+        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(kind="headless_status")
         assert event.payload == {}
 
     def test_accepts_all_known_kinds(self) -> None:
@@ -63,9 +58,7 @@ class TestHeadlessLifecycleEventDAO:
             assert event.kind == kind
 
     def test_timestamp_is_iso_format(self) -> None:
-        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(
-            kind="headless_status"
-        )
+        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(kind="headless_status")
         # ISO 8601 timestamps contain a 'T' and a timezone offset or 'Z'
         assert "T" in event.timestamp_utc
         assert "+" in event.timestamp_utc or "Z" in event.timestamp_utc
@@ -85,9 +78,7 @@ class TestHeadlessLifecycleEventDAO:
         assert parsed["payload"]["exit_code"] == 0
 
     def test_is_frozen(self) -> None:
-        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(
-            kind="headless_warning"
-        )
+        event: HeadlessLifecycleEventDAO = HeadlessLifecycleEventDAO(kind="headless_warning")
         with pytest.raises(Exception):
             event.kind = "headless_status"  # type: ignore[misc]
 
@@ -123,9 +114,7 @@ class TestEmitLifecycleEvent:
         parsed: dict[str, Any] = json.loads(captured.err.strip())
         assert parsed["payload"]["error"] == "timeout"
 
-    def test_payload_defaults_to_empty_dict_in_output(
-        self, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_payload_defaults_to_empty_dict_in_output(self, capsys: pytest.CaptureFixture) -> None:
         emit_lifecycle_event(kind="headless_status")
         captured = capsys.readouterr()
         parsed: dict[str, Any] = json.loads(captured.err.strip())
@@ -169,6 +158,7 @@ class TestEmitLifecycleEvent:
 
     def test_concurrent_emit_produces_whole_json_lines(self) -> None:
         """Concurrent lifecycle writers leave stderr as parseable JSONL records."""
+
         class _InterleavingStderr:
             """Deliberately yields during writes so unlocked writers corrupt lines."""
 

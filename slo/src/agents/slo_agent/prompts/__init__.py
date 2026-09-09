@@ -423,9 +423,7 @@ class SystemPromptBuilder:
                     )
                 )
                 continue
-            lines.append(
-                WORKSPACE_FOLDER_LINE_PATH_ONLY.format(path=str(folder.path))
-            )
+            lines.append(WORKSPACE_FOLDER_LINE_PATH_ONLY.format(path=str(folder.path)))
         return "\n".join(lines)
 
     @classmethod

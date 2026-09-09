@@ -4,6 +4,7 @@ Demonstrates a real LangChain tool with a no-arg schema. Useful for
 agents that need to write timestamps into logs / DB records or reason
 about freshness.
 """
+
 from __future__ import annotations
 
 NOW_PROMPT_SNIPPET: str = "return the current UTC timestamp"
@@ -12,7 +13,6 @@ from datetime import datetime, timezone
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict
-
 
 __all__ = [
     "NowSchemaDAO",

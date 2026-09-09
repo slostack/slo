@@ -1,4 +1,5 @@
 """Tests for the search_confluence_using_cql tool (25.a.2)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -43,14 +44,13 @@ class TestSearchConfluenceUsingCqlToolInvoke:
 
     async def test_delegates_to_client(self) -> None:
         expected = [_make_summary(page_id="42", title="RFC-1")]
-        with patch(
-            "src.agents.tools.search_confluence_using_cql.ConfluenceAPIClient"
-        ) as MockClient:
+        with patch("src.agents.tools.search_confluence_using_cql.ConfluenceAPIClient") as MockClient:
             instance = MockClient.return_value
             instance.search_pages = AsyncMock(return_value=expected)
 
             result = await SearchConfluenceUsingCqlTool.invoke(
-                cql="type=page", limit=5,
+                cql="type=page",
+                limit=5,
             )
 
         MockClient.assert_called_once()
@@ -58,9 +58,7 @@ class TestSearchConfluenceUsingCqlToolInvoke:
         assert result == expected
 
     async def test_returns_empty_list_from_client(self) -> None:
-        with patch(
-            "src.agents.tools.search_confluence_using_cql.ConfluenceAPIClient"
-        ) as MockClient:
+        with patch("src.agents.tools.search_confluence_using_cql.ConfluenceAPIClient") as MockClient:
             instance = MockClient.return_value
             instance.search_pages = AsyncMock(return_value=[])
 

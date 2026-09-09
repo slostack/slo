@@ -1,4 +1,5 @@
 """Tests for ``resolve_version`` (sub-spec 02.a.4)."""
+
 from __future__ import annotations
 
 from importlib import metadata
@@ -183,9 +184,7 @@ class TestParseViaRegex:
 
     def test_returns_none_when_file_is_missing(self, tmp_path: Path) -> None:
         """Returns ``None`` when the path does not point to an existing file."""
-        result: str | None = _parse_via_regex(
-            pyproject_path=tmp_path / "nonexistent.toml"
-        )
+        result: str | None = _parse_via_regex(pyproject_path=tmp_path / "nonexistent.toml")
         assert result is None
 
     def test_returns_none_when_version_field_absent(self, tmp_path: Path) -> None:
@@ -225,9 +224,7 @@ class TestParseViaTomlLib:
         result: str | None = _parse_via_tomllib(pyproject_path=pyproject)
         assert result == "5.6.7"
 
-    def test_returns_none_when_name_does_not_match_via_tomllib(
-        self, tmp_path: Path
-    ) -> None:
+    def test_returns_none_when_name_does_not_match_via_tomllib(self, tmp_path: Path) -> None:
         """Returns ``None`` when the project name is not ``"slo"``."""
         import src.cli.version as version_module
 
@@ -281,7 +278,13 @@ class TestVersionFromPyproject:
             # Make __file__ resolve to a fake path inside the nested directory
             mock_file_path = MagicMock()
             mock_file_path.parent = nested
-            mock_file_path.parents = [nested, nested.parent, nested.parent.parent, tmp_path / "project", tmp_path]
+            mock_file_path.parents = [
+                nested,
+                nested.parent,
+                nested.parent.parent,
+                tmp_path / "project",
+                tmp_path,
+            ]
             MockPath.return_value = mock_file_path
 
             # We need _version_from_pyproject to use our patched Path, but the

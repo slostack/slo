@@ -1,4 +1,5 @@
 """``AuthenticationScreen`` — the modal that drives the auth flow (02.b.5)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +33,6 @@ from src.tui.authentication.widgets.method_select import MethodSelectWidget
 from src.tui.authentication.widgets.oauth_status import OAuthStatusWidget
 from src.tui.authentication.widgets.provider_select import ProviderSelectWidget
 from src.tui.authentication.widgets.success_widget import SuccessWidget
-
 
 __all__ = ["AuthenticationScreen", "OAuthFactory"]
 
@@ -117,9 +117,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
 
     # ---- Provider-select handlers ----
 
-    async def on_provider_select_widget_chosen(
-        self, event: ProviderSelectWidget.Chosen
-    ) -> None:
+    async def on_provider_select_widget_chosen(self, event: ProviderSelectWidget.Chosen) -> None:
         """Move to method step, or directly to API-key for API-key-only providers.
 
         Kimi For Coding only supports API-key authentication, so the
@@ -136,17 +134,13 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         await self._swap_step(widget=MethodSelectWidget(provider=event.provider))
         self._state = ScreenState.METHOD
 
-    async def on_provider_select_widget_cancelled(
-        self, event: ProviderSelectWidget.Cancelled
-    ) -> None:
+    async def on_provider_select_widget_cancelled(self, event: ProviderSelectWidget.Cancelled) -> None:
         """Treat Cancel button identical to Esc."""
         await self.action_cancel()
 
     # ---- Method-select handlers ----
 
-    async def on_method_select_widget_chosen(
-        self, event: MethodSelectWidget.Chosen
-    ) -> None:
+    async def on_method_select_widget_chosen(self, event: MethodSelectWidget.Chosen) -> None:
         """Branch into OAuth or paste-API-key.
 
         Args:
@@ -159,41 +153,31 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         await self._swap_step(widget=ApiKeyInputWidget(provider=self._chosen_provider))
         self._state = ScreenState.API_KEY
 
-    async def on_method_select_widget_back_requested(
-        self, event: MethodSelectWidget.BackRequested
-    ) -> None:
+    async def on_method_select_widget_back_requested(self, event: MethodSelectWidget.BackRequested) -> None:
         """Go back to provider selection."""
         await self._swap_step(widget=ProviderSelectWidget())
         self._state = ScreenState.PROVIDER
 
-    async def on_method_select_widget_cancelled(
-        self, event: MethodSelectWidget.Cancelled
-    ) -> None:
+    async def on_method_select_widget_cancelled(self, event: MethodSelectWidget.Cancelled) -> None:
         """Cancel from method step."""
         await self.action_cancel()
 
     # ---- OAuth-status handlers ----
 
-    async def on_oauth_status_widget_back_requested(
-        self, event: OAuthStatusWidget.BackRequested
-    ) -> None:
+    async def on_oauth_status_widget_back_requested(self, event: OAuthStatusWidget.BackRequested) -> None:
         """Cancel the in-flight OAuth task and re-show method-select."""
         await self._cancel_oauth_if_running()
         assert self._chosen_provider is not None
         await self._swap_step(widget=MethodSelectWidget(provider=self._chosen_provider))
         self._state = ScreenState.METHOD
 
-    async def on_oauth_status_widget_cancelled(
-        self, event: OAuthStatusWidget.Cancelled
-    ) -> None:
+    async def on_oauth_status_widget_cancelled(self, event: OAuthStatusWidget.Cancelled) -> None:
         """Cancel from OAuth step."""
         await self.action_cancel()
 
     # ---- API-key handlers ----
 
-    async def on_api_key_input_widget_submitted(
-        self, event: ApiKeyInputWidget.Submitted
-    ) -> None:
+    async def on_api_key_input_widget_submitted(self, event: ApiKeyInputWidget.Submitted) -> None:
         """Persist the pasted key and move to success.
 
         Args:
@@ -210,9 +194,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         await self._swap_step(widget=SuccessWidget(subject=None))
         self._state = ScreenState.SUCCESS
 
-    async def on_api_key_input_widget_back_requested(
-        self, event: ApiKeyInputWidget.BackRequested
-    ) -> None:
+    async def on_api_key_input_widget_back_requested(self, event: ApiKeyInputWidget.BackRequested) -> None:
         """Re-show method-select, or provider-select for API-key-only providers.
 
         Kimi For Coding has no method-selection step, so Back from the API-key
@@ -226,17 +208,13 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         await self._swap_step(widget=MethodSelectWidget(provider=self._chosen_provider))
         self._state = ScreenState.METHOD
 
-    async def on_api_key_input_widget_cancelled(
-        self, event: ApiKeyInputWidget.Cancelled
-    ) -> None:
+    async def on_api_key_input_widget_cancelled(self, event: ApiKeyInputWidget.Cancelled) -> None:
         """Cancel from API-key step."""
         await self.action_cancel()
 
     # ---- Success handler ----
 
-    async def on_success_widget_closed(
-        self, event: SuccessWidget.Closed
-    ) -> None:
+    async def on_success_widget_closed(self, event: SuccessWidget.Closed) -> None:
         """Final dismiss returns the persisted credential."""
         cred: Optional[CredentialDAO] = self._oauth_result() or self._last_persisted()
         self.dismiss(cred)
@@ -297,9 +275,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
             exc (BaseException): The exception the task raised.
         """
         status: OAuthStatusWidget = self.query_one(OAuthStatusWidget)
-        message_builder: Optional[Callable[[BaseException], str]] = (
-            self._ERROR_MESSAGES.get(type(exc))
-        )
+        message_builder: Optional[Callable[[BaseException], str]] = self._ERROR_MESSAGES.get(type(exc))
         if message_builder is not None:
             status.set_error(message=message_builder(exc))
             return

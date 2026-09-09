@@ -173,9 +173,7 @@ class TestRecoveryPolicyContextOverflow:
             "exceeds the context window of this model",
         ],
     )
-    def test_classify_returns_fatal_for_context_overflow_markers(
-        self, error_phrase: str
-    ) -> None:
+    def test_classify_returns_fatal_for_context_overflow_markers(self, error_phrase: str) -> None:
         """Every known overflow phrase must produce FATAL, not LLM_RECOVERABLE."""
         exc = RuntimeError(error_phrase)
         decision: RecoveryDecisionDAO = RecoveryPolicy.classify(exc=exc)

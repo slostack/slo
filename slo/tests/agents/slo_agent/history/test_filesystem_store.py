@@ -1,4 +1,5 @@
 """Tests for ``FilesystemSessionHistoryStore`` (sub-spec 05.a §8)."""
+
 from __future__ import annotations
 
 import json
@@ -60,9 +61,7 @@ def _build_event(
 class TestEnsureSession:
     """``ensure_session`` — directory + metadata bootstrap."""
 
-    async def test_ensure_session_creates_private_directory_structure(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_ensure_session_creates_private_directory_structure(self, tmp_path: Path) -> None:
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
 
@@ -85,13 +84,17 @@ class TestEnsureSession:
         session_id: str = str(uuid4())
 
         first: SessionHistoryMetadataDAO = await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
         await store.append_event(
             event=_build_event(session_id=session_id, turn_id="t1"),
         )
         second: SessionHistoryMetadataDAO = await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
 
         assert second.session_id == first.session_id
@@ -101,13 +104,13 @@ class TestEnsureSession:
 class TestAppendEvent:
     """``append_event`` — JSONL semantics."""
 
-    async def test_append_event_writes_one_valid_jsonl_line(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_event_writes_one_valid_jsonl_line(self, tmp_path: Path) -> None:
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
         await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
 
         await store.append_event(
@@ -123,13 +126,13 @@ class TestAppendEvent:
         assert parsed["payload"]["content"] == "hi"
         assert parsed["sequence"] == 1
 
-    async def test_append_event_increments_latest_sequence(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_event_increments_latest_sequence(self, tmp_path: Path) -> None:
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
         await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
 
         for _ in range(3):
@@ -142,14 +145,14 @@ class TestAppendEvent:
         )
         assert meta.latest_sequence == 3
 
-    async def test_append_event_preserves_full_tool_output(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_event_preserves_full_tool_output(self, tmp_path: Path) -> None:
         """Full-fidelity property: nothing in the store truncates tool output."""
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
         await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
         large_output: str = "x" * 10_000
 
@@ -205,14 +208,14 @@ class TestAppendEvent:
 class TestReadMetadata:
     """``read_metadata`` — round-trip."""
 
-    async def test_read_metadata_round_trips_written_values(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_read_metadata_round_trips_written_values(self, tmp_path: Path) -> None:
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
 
         await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name="gpt-test",
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name="gpt-test",
         )
         meta: SessionHistoryMetadataDAO = await store.read_metadata(
             session_id=session_id,
@@ -230,12 +233,16 @@ class TestLoadEvents:
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
         await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
         for content in ["a", "b", "c"]:
             await store.append_event(
                 event=_build_event(
-                    session_id=session_id, turn_id="t", content=content,
+                    session_id=session_id,
+                    turn_id="t",
+                    content=content,
                 ),
             )
 
@@ -246,9 +253,7 @@ class TestLoadEvents:
         assert [e.payload.content for e in events] == ["a", "b", "c"]
         assert [e.sequence for e in events] == [1, 2, 3]
 
-    async def test_load_events_returns_empty_for_unknown_session(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_load_events_returns_empty_for_unknown_session(self, tmp_path: Path) -> None:
         store = _build_store(tmp_path=tmp_path)
 
         events: list[SessionHistoryEventDAO] = await store.load_events(
@@ -261,17 +266,18 @@ class TestLoadEvents:
 class TestRebuildTranscript:
     """``rebuild_transcript`` — derived markdown is not canonical."""
 
-    async def test_rebuild_transcript_is_derived_from_canonical_events(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_rebuild_transcript_is_derived_from_canonical_events(self, tmp_path: Path) -> None:
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
         await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
 
         path: Path = await store.rebuild_transcript(
-            session_id=session_id, markdown="# hi\n",
+            session_id=session_id,
+            markdown="# hi\n",
         )
 
         assert path.read_text(encoding="utf-8") == "# hi\n"
@@ -357,13 +363,13 @@ class TestSessionNaming:
 class TestMetadataAtomicity:
     """``write_metadata`` — atomic temp+rename across repeated updates."""
 
-    async def test_metadata_write_is_atomic_on_repeated_updates(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_metadata_write_is_atomic_on_repeated_updates(self, tmp_path: Path) -> None:
         store = _build_store(tmp_path=tmp_path)
         session_id: str = str(uuid4())
         await store.ensure_session(
-            session_id=session_id, workdir=tmp_path, model_name=None,
+            session_id=session_id,
+            workdir=tmp_path,
+            model_name=None,
         )
 
         # Hammer the file with a sequence of writes; final read should

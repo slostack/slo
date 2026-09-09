@@ -21,7 +21,6 @@ from src.agents.slo_agent.history.migration.tree_migrator import (
     TreeMigrator,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -83,9 +82,7 @@ def _write_flat_session(
             fh.write(event.model_dump_json())
             fh.write("\n")
     metadata = SessionHistoryMetadataDAO(session_id=session_id, workdir=Path("/tmp"))
-    (session_dir / "session.json").write_text(
-        metadata.model_dump_json(), encoding="utf-8"
-    )
+    (session_dir / "session.json").write_text(metadata.model_dump_json(), encoding="utf-8")
 
 
 def _load_migrated_events(root: Path, session_id: str) -> list[dict]:
@@ -141,10 +138,7 @@ def test_migrate_session_root_event_has_none_parent(tmp_path: Path) -> None:
 def test_migrate_session_entry_id_matches_event_id(tmp_path: Path) -> None:
     """entry_id in payload.metadata equals event_id on every migrated event."""
     sid = "s-eid"
-    events = [
-        _make_event(session_id=sid, sequence=i, content=f"msg {i}")
-        for i in range(1, 4)
-    ]
+    events = [_make_event(session_id=sid, sequence=i, content=f"msg {i}") for i in range(1, 4)]
     _write_flat_session(root=tmp_path, session_id=sid, events=events)
 
     migrator = TreeMigrator(flat_root=tmp_path, tree_root=tmp_path)
@@ -184,11 +178,17 @@ def test_migrate_session_tool_result_points_to_tool_call(tmp_path: Path) -> None
     sid = "s-toollink"
     tc_id = "call-001"
     tc_event = _make_event(
-        session_id=sid, sequence=2, kind="tool_call", tool_call_id=tc_id,
+        session_id=sid,
+        sequence=2,
+        kind="tool_call",
+        tool_call_id=tc_id,
         tool_calls=[{"id": tc_id, "name": "bash", "args": {}}],
     )
     tr_event = _make_event(
-        session_id=sid, sequence=3, kind="tool_result", tool_call_id=tc_id,
+        session_id=sid,
+        sequence=3,
+        kind="tool_result",
+        tool_call_id=tc_id,
     )
     events = [
         _make_event(session_id=sid, sequence=1, kind="session_started"),
@@ -238,7 +238,10 @@ def test_migrate_session_parallel_tool_calls_resolve_independently(tmp_path: Pat
     tr2 = _make_event(session_id=sid, sequence=5, kind="tool_result", tool_call_id=tc_id_2)
     events = [
         _make_event(session_id=sid, sequence=1, kind="session_started"),
-        tc1, tc2, tr1, tr2,
+        tc1,
+        tc2,
+        tr1,
+        tr2,
     ]
     _write_flat_session(root=tmp_path, session_id=sid, events=events)
 
@@ -267,7 +270,10 @@ def test_migrate_session_tool_call_links_to_preceding_assistant_message(
         _make_event(session_id=sid, sequence=1, kind="user_message", turn_id=turn_id),
         _make_event(session_id=sid, sequence=2, kind="assistant_message", turn_id=turn_id),
         _make_event(
-            session_id=sid, sequence=3, kind="tool_call", turn_id=turn_id,
+            session_id=sid,
+            sequence=3,
+            kind="tool_call",
+            turn_id=turn_id,
             tool_calls=[{"id": "tc-x", "name": "bash", "args": {}}],
         ),
     ]

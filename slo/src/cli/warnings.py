@@ -1,4 +1,5 @@
 """Targeted third-party warning policy for Slo CLI startup."""
+
 from __future__ import annotations
 
 import warnings

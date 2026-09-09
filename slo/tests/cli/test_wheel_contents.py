@@ -1,4 +1,4 @@
-"""The built wheel must carry ``skills/`` (packaging regression guard).
+"""The built wheel must carry ``skills/`` and ``plugins/`` (packaging regression guard).
 
 ``skills/`` is not a Python package, so nothing about the normal ``packages``
 declaration pulls it into the artifact — it ships only because
@@ -6,6 +6,13 @@ declaration pulls it into the artifact — it ships only because
 non-editable ``pipx install`` produced an agent that started with
 ``vendored_count=0``: every workflow and convention skill silently missing,
 which reads as the model choosing badly rather than as a broken install.
+
+``plugins/`` has the same failure mode: the bundled bash_live_output payload
+is resolved by ``PluginInstallerService`` as ``Path(__file__).parents[4] /
+"plugins" / "bash_live_output"`` — ``<site-packages>/plugins/...`` in a pipx
+install — so a wheel without it makes
+``slo plugin install-bundled-bash-live-output`` fail with
+"plugin source has no readable slo-plugin.json".
 
 The build is slow, so this is opt-in like the install smoke test.
 """
@@ -29,6 +36,11 @@ _REQUIRED_ENTRIES: tuple[str, ...] = (
     "skills/design-and-analysis/workflows/specification-development.md",
     "skills/design-and-analysis/workflows/code-test-review.md",
     "skills/coding/declarative-method-structure/SKILL.md",
+)
+
+_REQUIRED_PLUGIN_ENTRIES: tuple[str, ...] = (
+    "plugins/bash_live_output/slo-plugin.json",
+    "plugins/bash_live_output/plugin.py",
 )
 
 
@@ -112,3 +124,20 @@ class TestWheelShipsSkills:
 
         missing: list[str] = [entry for entry in _REQUIRED_ENTRIES if entry not in names]
         assert missing == [], f"wheel is missing required skill files: {missing}"
+
+
+@pytest.mark.skipif(
+    os.environ.get("SLO_PACKAGING_E2E") != "1",
+    reason="opt-in only: set SLO_PACKAGING_E2E=1 (runs a full poetry build)",
+)
+class TestWheelShipsBundledPlugins:
+    """``[tool.poetry] include`` must place plugins/ inside the wheel."""
+
+    def test_wheel_contains_the_bundled_bash_live_output_payload(self, tmp_path: Path) -> None:
+        """The bundled manifest + entry point ship so managed bundled install works."""
+        wheel: Path = _build_wheel(output_dir=tmp_path)
+        with zipfile.ZipFile(wheel) as archive:
+            names: set[str] = set(archive.namelist())
+
+        missing: list[str] = [entry for entry in _REQUIRED_PLUGIN_ENTRIES if entry not in names]
+        assert missing == [], f"wheel is missing bundled plugin files: {missing}"

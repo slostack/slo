@@ -251,27 +251,19 @@ def _recovery_notes(
     if len(values) > 1:
         notes.append(f"merged {len(values)} back-to-back JSON values")
     if ignored_char_count > 0:
-        notes.append(
-            f"ignored {ignored_char_count} trailing characters after a complete value"
-        )
+        notes.append(f"ignored {ignored_char_count} trailing characters after a complete value")
     notes.extend(dedup_notes)
     return notes
 
 
 def _empty_input_error() -> str:
     """Return the error for input that is empty after normalisation."""
-    return (
-        "Invalid tasks_json: empty after stripping; expected a JSON array of "
-        "task objects."
-    )
+    return "Invalid tasks_json: empty after stripping; expected a JSON array of " "task objects."
 
 
 def _undecodable_error() -> str:
     """Return the error for input with no decodable leading JSON value."""
-    return (
-        "Invalid tasks_json: no JSON value could be decoded; expected a JSON "
-        "array of task objects."
-    )
+    return "Invalid tasks_json: no JSON value could be decoded; expected a JSON " "array of task objects."
 
 
 def _no_task_objects_error() -> str:

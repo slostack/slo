@@ -1,4 +1,5 @@
 """Unit tests for ``VscodeWorkspaceLoader`` (feature 24.a.1)."""
+
 from __future__ import annotations
 
 import json
@@ -167,14 +168,7 @@ class TestJsoncTolerance:
         folder.mkdir()
         workspace_file: Path = tmp_path / "x.code-workspace"
         workspace_file.write_text(
-            (
-                "{\n"
-                "  // comment\n"
-                "  \"folders\": [\n"
-                "    { \"path\": \"f\" }\n"
-                "  ]\n"
-                "}"
-            ),
+            ("{\n" "  // comment\n" '  "folders": [\n' '    { "path": "f" }\n' "  ]\n" "}"),
             encoding="utf-8",
         )
 
@@ -188,12 +182,7 @@ class TestJsoncTolerance:
         folder.mkdir()
         workspace_file: Path = tmp_path / "x.code-workspace"
         workspace_file.write_text(
-            (
-                "{\n"
-                "  /* block comment */\n"
-                "  \"folders\": [{ \"path\": \"f\" }]\n"
-                "}"
-            ),
+            ("{\n" "  /* block comment */\n" '  "folders": [{ "path": "f" }]\n' "}"),
             encoding="utf-8",
         )
 
@@ -209,14 +198,7 @@ class TestJsoncTolerance:
         folder_b.mkdir()
         workspace_file: Path = tmp_path / "x.code-workspace"
         workspace_file.write_text(
-            (
-                "{\n"
-                "  \"folders\": [\n"
-                "    { \"path\": \"a\", },\n"
-                "    { \"path\": \"b\", },\n"
-                "  ],\n"
-                "}"
-            ),
+            ("{\n" '  "folders": [\n' '    { "path": "a", },\n' '    { "path": "b", },\n' "  ],\n" "}"),
             encoding="utf-8",
         )
 

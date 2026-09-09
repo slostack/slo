@@ -1,4 +1,5 @@
 """Tests for ``OAuthFlowFactory`` (02.b.4)."""
+
 import pytest
 
 from src.auth.credential_dao import ProviderName

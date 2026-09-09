@@ -35,7 +35,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional, TYPE_CHECKING
+from typing import Any, Callable, Literal, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from langchain_core.messages import BaseMessage
@@ -96,6 +96,7 @@ from src.agents.slo_agent.events.runtime import (
     AgentRuntimeEventDAO,
     AgentRuntimeHandler,
 )
+from src.agents.slo_agent.runtime import SloRuntimeContext
 from src.agents.slo_agent.sessions.dao import (
     AgentEventSubscriber,
     ManualCompactionResultDAO,
@@ -125,6 +126,11 @@ if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPoolDAO
     from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
     from src.agents.slo_agent.orchestrator.pool import SubAgentPool
+
+from src.agents.slo_agent.plugins.dao import PluginHealthDAO, PluginRegistrationDAO
+from src.agents.slo_agent.plugins.dispatcher import PluginDispatcher
+from src.agents.slo_agent.plugins.registry import PluginRegistry
+from src.agents.slo_agent.plugins.trust import PluginTrustStore
 
 __all__ = ["SloAgentSession"]
 
@@ -389,6 +395,8 @@ class SloAgentSession:
         history_store: Optional[SessionHistoryStoreProtocol] = None,
         history_projector: Optional[SessionHistoryProjector] = None,
         enable_history: Optional[bool] = None,
+        plugin_paths: Optional[list[Path]] = None,
+        plugin_loader_kwargs: Optional[dict[str, Path]] = None,
     ) -> None:
         """Compose a session around a config (lazy) or a pre-built agent.
 
@@ -420,10 +428,16 @@ class SloAgentSession:
                 "SloAgentSession requires either a SessionConfigDAO (for lazy "
                 "agent construction) or a pre-built SloAgent."
             )
-        self._workdir: Path = workdir
+        self._workdir: Path = workdir.resolve()
         self._session_id: str = session_id
         self._config: Optional[SessionConfigDAO] = config
         self._agent: Optional[SloAgent] = agent
+        configured_plugin_paths: list[Path] = list(config.plugin_paths) if config is not None else []
+        self._plugin_paths: list[Path] = list(plugin_paths or configured_plugin_paths)
+        self._plugin_loader_kwargs: dict[str, Path] = dict(plugin_loader_kwargs or {})
+        self._plugin_registry: Optional["PluginRegistry"] = None
+        self._plugin_dispatcher: Optional["PluginDispatcher"] = None
+        self._plugin_trust_store: Optional["PluginTrustStore"] = None
         self._subscribers: list[AgentEventSubscriber] = []
         self._is_running: bool = False
         self._lock: asyncio.Lock = asyncio.Lock()
@@ -449,6 +463,7 @@ class SloAgentSession:
             )
         self._history_projector: SessionHistoryProjector = history_projector or SessionHistoryProjector()
         self._history_session_ensured: bool = False
+        self._load_plugins()
         # Marks that the effective context window may have shrunk or has not yet
         # been validated for the active model — set on every model switch and
         # initialized True so the first turn after build/resume runs one
@@ -479,7 +494,8 @@ class SloAgentSession:
         # message ids whose workflow_update event is already persisted. Seeded
         # lazily from the event log on the first record call.
         self._workflow_message_ids_seen: Optional[set[str]] = None
-        log_info(msg=f"SloAgentSession built session_id={session_id[:8]} workdir={workdir}")
+        self.runtime_context: "SloRuntimeContext" = self._build_runtime_context()
+        log_info(msg=f"SloAgentSession built session_id={session_id[:8]} workdir={self._workdir}")
 
     @classmethod
     def build(cls, *, config: SessionConfigDAO) -> "SloAgentSession":
@@ -530,8 +546,12 @@ class SloAgentSession:
         if self._config is None:
             raise RuntimeError("SloAgentSession has no config to build a SloAgent from.")
         resolved_workspace_file: Optional[Path] = self._resolve_workspace_file_for_agent()
-        extra: list = list(self._config.extra_tools or [])
-        all_tools = create_extended_tools() + extra if extra else None
+        extra_tools: list[BaseTool] = list(self._config.extra_tools or [])
+        plugin_tools: list[BaseTool] = self._plugin_registry.all_tools() if self._plugin_registry else []
+        extension_tools: list[BaseTool] = extra_tools + plugin_tools
+        all_tools: list[BaseTool] | None = (
+            create_extended_tools() + extension_tools if extension_tools else None
+        )
         return SloAgent(
             model_name=self.active_model_name,
             model_pool_dao=self._config.model_pool_dao,
@@ -543,7 +563,226 @@ class SloAgentSession:
             session_id=self._session_id,
             tools=all_tools,
             append_system_prompt=self._config.append_system_prompt,
+            plugin_dispatcher=self._plugin_dispatcher,
         )
+
+    def _load_plugins(self) -> None:
+        """Load registered plugins and merge their safe contributions.
+
+        WHAT: Builds the loader, registry, and dispatcher once for this session.
+        WHO: The session constructor calls it before the first agent prompt.
+        WHEN: During session construction and after an explicit plugin reload.
+        """
+        from src.agents.slo_agent.plugins.loader import PluginLoader
+
+        trust_store = PluginTrustStore(store_path=self._plugin_loader_kwargs.get("trust_store_path"))
+        managed_root: Path = self._plugin_loader_kwargs.get(
+            "managed_root", Path.home() / ".slo" / "plugins" / "plugins"
+        )
+        status_map: dict[str, str] = {}
+        result = PluginLoader.load(
+            managed_root=managed_root,
+            project_dir=self._workdir,
+            trust_store=trust_store,
+            cli_paths=self._plugin_paths,
+            status_setter=lambda key, text: self._set_plugin_status(
+                status_map=status_map,
+                key=key,
+                text=text,
+            ),
+        )
+        builtin_tools: frozenset[str] = frozenset(tool.name for tool in create_extended_tools())
+        registry = PluginRegistry(registrations=result.registrations, builtin_tool_names=builtin_tools)
+        registry.merge_all()
+        dispatcher = PluginDispatcher(registry=registry)
+        for key, text in status_map.items():
+            dispatcher.set_status(key=key, text=text)
+        for registration in registry.registrations():
+            for handler in registration.before_tool_call_handlers:
+                dispatcher.register_before_tool_call_handler(owner=registration.plugin_id, handler=handler)
+            for handler in registration.after_tool_result_handlers:
+                dispatcher.register_after_tool_result_handler(owner=registration.plugin_id, handler=handler)
+            for handler in registration.before_agent_turn_handlers:
+                dispatcher.register_before_agent_turn_handler(owner=registration.plugin_id, handler=handler)
+        self._plugin_trust_store = trust_store
+        self._plugin_registry = registry
+        self._plugin_dispatcher = dispatcher
+        from src.tui.event_renderer import EventRenderer
+
+        EventRenderer.set_renderer_overrides(renderers=registry.all_renderers())
+        self._register_plugin_slash_commands(registry=registry)
+
+    def _register_plugin_slash_commands(self, *, registry: "PluginRegistry") -> None:
+        """Register accepted plugin commands through the one TUI metadata owner.
+
+        Args:
+            registry (PluginRegistry): Merged plugin contributions in load order.
+        """
+        from src.tui.slash_command_registry import SlashCommandSpecDAO
+        from src.tui.slash_router import SlashRouter
+
+        for command_name in list(registry.all_commands()):
+            try:
+                SlashRouter.registry().register(
+                    command=SlashCommandSpecDAO(
+                        name=command_name,
+                        description="plugin command",
+                        argument_mode="free_text",
+                        usage=f"/{command_name} [arguments]",
+                        display_order=500,
+                    )
+                )
+            except ValueError as exc:
+                registration = self._plugin_registration_owning_command(
+                    registry=registry,
+                    command_name=command_name,
+                )
+                if registration is not None:
+                    registration.commands.pop(command_name, None)
+                    registry.remove_command(name=command_name)
+                    registration.health.load_error = (
+                        str(exc)
+                        if registration.health.load_error is None
+                        else f"{registration.health.load_error}; {exc}"
+                    )
+
+    @staticmethod
+    def _plugin_registration_owning_command(
+        *,
+        registry: "PluginRegistry",
+        command_name: str,
+    ) -> PluginRegistrationDAO | None:
+        """Find the registration that declared one command token.
+
+        Args:
+            registry (PluginRegistry): Loaded plugin registrations.
+            command_name (str): Canonical plugin command token.
+
+        Returns:
+            PluginRegistrationDAO | None: Registration that declared the command, when present.
+        """
+        for registration in registry.registrations():
+            if command_name in registration.commands:
+                return registration
+        return None
+
+    def plugin_command_handler(self, *, command_name: str) -> Callable[..., Any] | None:
+        """Return one accepted plugin command handler for the TUI router.
+
+        Args:
+            command_name (str): Canonical slash token resolved by the registry.
+
+        Returns:
+            Callable[..., Any] | None: Plugin callback when accepted, otherwise ``None``.
+        """
+        if self._plugin_registry is None:
+            return None
+        return self._plugin_registry.all_commands().get(command_name)
+
+    @staticmethod
+    def _set_plugin_status(*, status_map: dict[str, str], key: str, text: str) -> None:
+        """Update the load-time status seed without coupling PluginAPI to the TUI.
+
+        Args:
+            status_map (dict[str, str]): Session-owned temporary load-time map.
+            key (str): Plugin-derived status key.
+            text (str): Status text, or empty text to clear it.
+        """
+        if text:
+            status_map[key] = text
+            return
+        status_map.pop(key, None)
+
+    def plugin_status_map(self) -> dict[str, str]:
+        """Return the current dispatcher-owned plugin footer statuses.
+
+        Returns:
+            dict[str, str]: Plugin status entries keyed by stable derived key.
+        """
+        if self._plugin_dispatcher is None:
+            return {}
+        return self._plugin_dispatcher.status_map()
+
+    def _build_runtime_context(self) -> SloRuntimeContext:
+        """Build the session-owned, live runtime context.
+
+        WHAT: Binds read-only accessors to current session state.
+        WHO: Plugins and introspection tools receive this public context seam.
+        WHEN: The session constructs its extension and introspection surfaces.
+        """
+        history_root: Path = self._history_root_for_runtime_context()
+        return SloRuntimeContext(
+            session_id=self._session_id,
+            workdir=self._workdir,
+            history_root=history_root,
+            live_fleet=lambda: [],
+            usage_snapshot=self.usage_snapshot,
+            loaded_skills=lambda: [],
+            tool_names=self._runtime_tool_names,
+        )
+
+    def _history_root_for_runtime_context(self) -> Path:
+        """Resolve an injected history store's root without relaxing its contract.
+
+        WHAT: Uses a concrete ``Path`` root when an injected store exposes one;
+        otherwise falls back to the session workdir for read-only runtime context.
+        WHO: ``_build_runtime_context`` calls it during session construction.
+        WHEN: Tests or alternate integrations provide protocol-compatible stores.
+
+        Returns:
+            Path: Resolved history root or the session workdir fallback.
+        """
+        if self._history_store is None:
+            return self._workdir
+        candidate: object = getattr(self._history_store, "root", self._workdir)
+        if isinstance(candidate, Path):
+            return candidate.resolve()
+        return self._workdir
+
+    def _runtime_tool_names(self) -> list[str]:
+        """Return the visible tool names in the active agent bundle.
+
+        WHAT: Projects the live tool bundle to its public names.
+        WHO: Runtime context and plugin integration checks call it.
+        WHEN: A consumer needs a current read-only tool inventory.
+        """
+        built_tools: list[BaseTool] = (
+            self._agent.tools if self._agent is not None else create_extended_tools()
+        )
+        plugin_tools: list[BaseTool] = self._plugin_registry.all_tools() if self._plugin_registry else []
+        return [tool.name for tool in built_tools + plugin_tools]
+
+    def plugin_health_reports(self) -> list[PluginHealthDAO]:
+        """Return health records for every discovered plugin.
+
+        WHAT: Exposes the registry's operator-visible plugin health view.
+        WHO: The `/plugins` command and integration tests call it.
+        WHEN: After session construction or a plugin reload.
+        """
+        if self._plugin_registry is None:
+            return []
+        return self._plugin_registry.health_reports()
+
+    async def reload_plugins(self) -> None:
+        """Reload plugins from their configured discovery tiers.
+
+        WHAT: Replaces registrations after an operator requests `/plugins reload`.
+        WHO: The slash-command router calls it.
+        WHEN: After plugin source files or trust decisions change.
+        """
+        self._load_plugins()
+
+    async def trust_project_plugins(self) -> None:
+        """Trust this session's project then refresh its plugin registrations.
+
+        WHAT: Records project trust before loading local plugin source.
+        WHO: The `/plugins trust` command calls it.
+        WHEN: An operator explicitly authorizes the current workdir.
+        """
+        if self._plugin_trust_store is None:
+            return
+        self._plugin_trust_store.trust(project_dir=self._workdir)
+        self._load_plugins()
 
     def _resolve_workspace_file_for_agent(self) -> Optional[Path]:
         """Return the workspace file to use for the lazy-built agent.
@@ -2842,6 +3081,7 @@ class SloAgentSession:
         iteration_retry_policy: IterationRetryPolicy = self._build_iteration_retry_policy(policy=policy)
         iteration_recovery_policy: IterationRecoveryPolicy = self._build_iteration_recovery_policy()
         stream_timeout_seconds: float = _stream_inactivity_timeout_seconds()
+        self.agent._plugin_dispatcher = self._plugin_dispatcher
         stream = self.agent.invoke(
             query=text,
             history=history if not message_history else None,
@@ -3700,6 +3940,8 @@ class SloAgentSession:
 
     async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
         """Forward ``event`` to every registered subscriber (failure-isolated)."""
+        if self._plugin_dispatcher is not None:
+            await self._plugin_dispatcher.emit(event)
         for subscriber in list(self._subscribers):
             try:
                 await subscriber(event)

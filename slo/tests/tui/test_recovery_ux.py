@@ -13,7 +13,6 @@ import pytest
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.transcript_projector import TranscriptProjector
 
-
 # ── minimal fake host ─────────────────────────────────────────────────────────
 
 
@@ -234,6 +233,8 @@ class TestReplayRecoveryObservationNotRendered:
         src = inspect.getsource(ReplayEntryProjector)
         # The handler table must not route recovery_observation to a visible block
         # (it is intentionally ignored — model context only, not visible transcript)
-        assert "recovery_observation" not in src or "recovery_observation" not in src.split(
-            "_handlers"
-        )[1] if "_handlers" in src else True
+        assert (
+            "recovery_observation" not in src or "recovery_observation" not in src.split("_handlers")[1]
+            if "_handlers" in src
+            else True
+        )

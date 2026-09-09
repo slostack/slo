@@ -32,10 +32,10 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventPayloadDAO,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_event(
     *,
@@ -77,6 +77,7 @@ def _mock_llm(*, summary: str = "The summary.") -> MagicMock:
 # _find_cut_point: normal cases
 # ---------------------------------------------------------------------------
 
+
 class TestFindCutPointNormal:
     def test_simple_cut_at_expected_index(self) -> None:
         """Cut is found when accumulation reaches KEEP_RECENT_TOKENS."""
@@ -86,7 +87,7 @@ class TestFindCutPointNormal:
         # (>= KEEP_RECENT_TOKENS).  candidate_cut = 3 - 1 = 2 → retain idx3,4.
         half: int = KEEP_RECENT_TOKENS // 2
         events = [
-            _make_event(kind="user_message", token_usage=half),      # idx 0
+            _make_event(kind="user_message", token_usage=half),  # idx 0
             _make_event(kind="assistant_message", token_usage=half),  # idx 1
             _make_event(kind="assistant_message", token_usage=half),  # idx 2  ← cut
             _make_event(kind="assistant_message", token_usage=half),  # idx 3  ← retained
@@ -99,9 +100,9 @@ class TestFindCutPointNormal:
         """Events with token_usage=None contribute 0 to the accumulator."""
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="user_message", token_usage=None),       # idx 0
-            _make_event(kind="assistant_message", token_usage=None),   # idx 1  ← cut
-            _make_event(kind="assistant_message", token_usage=big),    # idx 2  ← retained
+            _make_event(kind="user_message", token_usage=None),  # idx 0
+            _make_event(kind="assistant_message", token_usage=None),  # idx 1  ← cut
+            _make_event(kind="assistant_message", token_usage=big),  # idx 2  ← retained
         ]
         # Walking newest: idx2 contributes big > threshold after first event.
         # candidate_cut = 2 - 1 = 1; kind "assistant_message" is safe; not first user_message.
@@ -112,6 +113,7 @@ class TestFindCutPointNormal:
 # ---------------------------------------------------------------------------
 # _find_cut_point: Rule 1 — tool_call / tool_result pair protection
 # ---------------------------------------------------------------------------
+
 
 class TestFindCutPointCleanCut:
     """The cut must never split a tool span (parallel batch or spawn group).
@@ -131,14 +133,14 @@ class TestFindCutPointCleanCut:
         """
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="user_message", token_usage=10),                       # 0
-            _make_event(kind="assistant_message", token_usage=10),                   # 1
-            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),         # 2
-            _make_event(kind="tool_call", token_usage=10, tool_call_id="B"),         # 3
-            _make_event(kind="assistant_delta", token_usage=10),                     # 4  ← naive cut
-            _make_event(kind="tool_result", token_usage=big, tool_call_id="A"),      # 5
-            _make_event(kind="tool_result", token_usage=10, tool_call_id="B"),       # 6
-            _make_event(kind="assistant_message", token_usage=10),                   # 7
+            _make_event(kind="user_message", token_usage=10),  # 0
+            _make_event(kind="assistant_message", token_usage=10),  # 1
+            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),  # 2
+            _make_event(kind="tool_call", token_usage=10, tool_call_id="B"),  # 3
+            _make_event(kind="assistant_delta", token_usage=10),  # 4  ← naive cut
+            _make_event(kind="tool_result", token_usage=big, tool_call_id="A"),  # 5
+            _make_event(kind="tool_result", token_usage=10, tool_call_id="B"),  # 6
+            _make_event(kind="assistant_message", token_usage=10),  # 7
         ]
         cut = Compacter._find_cut_point(events=events)
         assert cut == 1  # retreated above tool_call A (idx 2)
@@ -154,15 +156,15 @@ class TestFindCutPointCleanCut:
         """
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="user_message", token_usage=10),                        # 0
-            _make_event(kind="assistant_message", token_usage=10),                    # 1
-            _make_event(kind="tool_call", token_usage=10, tool_call_id="SPAWN"),      # 2
-            _make_event(kind="sub_agent_spawned", token_usage=0),                     # 3
-            _make_event(kind="sub_agent_spawned", token_usage=0),                     # 4
-            _make_event(kind="sub_agent_completed", token_usage=0),                   # 5
-            _make_event(kind="sub_agent_completed", token_usage=0),                   # 6
-            _make_event(kind="tool_result", token_usage=big, tool_call_id="SPAWN"),   # 7
-            _make_event(kind="assistant_message", token_usage=10),                    # 8
+            _make_event(kind="user_message", token_usage=10),  # 0
+            _make_event(kind="assistant_message", token_usage=10),  # 1
+            _make_event(kind="tool_call", token_usage=10, tool_call_id="SPAWN"),  # 2
+            _make_event(kind="sub_agent_spawned", token_usage=0),  # 3
+            _make_event(kind="sub_agent_spawned", token_usage=0),  # 4
+            _make_event(kind="sub_agent_completed", token_usage=0),  # 5
+            _make_event(kind="sub_agent_completed", token_usage=0),  # 6
+            _make_event(kind="tool_result", token_usage=big, tool_call_id="SPAWN"),  # 7
+            _make_event(kind="assistant_message", token_usage=10),  # 8
         ]
         cut = Compacter._find_cut_point(events=events)
         assert cut == 1  # retreated above the spawn tool_call (idx 2)
@@ -172,10 +174,10 @@ class TestFindCutPointCleanCut:
         """A group entirely on the compacted side is already clean (no retreat)."""
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="user_message", token_usage=10),                        # 0
-            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),         # 1
-            _make_event(kind="tool_result", token_usage=10, tool_call_id="A"),       # 2
-            _make_event(kind="assistant_message", token_usage=big),                  # 3  ← retained
+            _make_event(kind="user_message", token_usage=10),  # 0
+            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),  # 1
+            _make_event(kind="tool_result", token_usage=10, tool_call_id="A"),  # 2
+            _make_event(kind="assistant_message", token_usage=big),  # 3  ← retained
         ]
         # candidate = 3 - 1 = 2 (the tool_result); span A = (1, 2), 1 <= 2 < 2 is
         # False, so the cut is already clean — the whole group is compacted.
@@ -189,11 +191,11 @@ class TestIsCleanCut:
 
     def _events_with_span(self) -> list[SessionHistoryEventDAO]:
         return [
-            _make_event(kind="user_message", token_usage=10),                    # 0
-            _make_event(kind="assistant_message", token_usage=10),                # 1
-            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),     # 2
-            _make_event(kind="assistant_delta", token_usage=10),                  # 3
-            _make_event(kind="tool_result", token_usage=10, tool_call_id="A"),   # 4
+            _make_event(kind="user_message", token_usage=10),  # 0
+            _make_event(kind="assistant_message", token_usage=10),  # 1
+            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),  # 2
+            _make_event(kind="assistant_delta", token_usage=10),  # 3
+            _make_event(kind="tool_result", token_usage=10, tool_call_id="A"),  # 4
         ]
 
     def test_clean_when_group_fully_retained(self) -> None:
@@ -215,7 +217,7 @@ class TestIsCleanCut:
         """A span covering the whole compactable prefix has no clean cut."""
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),     # 0
+            _make_event(kind="tool_call", token_usage=10, tool_call_id="A"),  # 0
             _make_event(kind="tool_result", token_usage=big, tool_call_id="A"),  # 1
         ]
         with pytest.raises(ValueError, match="clean cut"):
@@ -226,14 +228,15 @@ class TestIsCleanCut:
 # _find_cut_point: Rule 2 — first user_message protection
 # ---------------------------------------------------------------------------
 
+
 class TestFindCutPointFirstUserMessageProtection:
     def test_cut_advances_past_first_user_message(self) -> None:
         """If natural cut lands on the first user_message, advance to idx+1."""
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="session_started", token_usage=5),        # idx 0
-            _make_event(kind="user_message", token_usage=5),           # idx 1  ← first user msg
-            _make_event(kind="assistant_message", token_usage=big),    # idx 2  ← retained
+            _make_event(kind="session_started", token_usage=5),  # idx 0
+            _make_event(kind="user_message", token_usage=5),  # idx 1  ← first user msg
+            _make_event(kind="assistant_message", token_usage=big),  # idx 2  ← retained
         ]
         # Walking: idx2 → big > threshold; candidate_cut = 2 - 1 = 1.
         # events[1].kind == "user_message" AND it is the first user_message
@@ -245,9 +248,9 @@ class TestFindCutPointFirstUserMessageProtection:
         """candidate_cut == first_user_idx forces advance to first_user_idx+1."""
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="user_message", token_usage=5),           # idx 0  ← first user msg
-            _make_event(kind="assistant_message", token_usage=5),      # idx 1
-            _make_event(kind="assistant_message", token_usage=big),    # idx 2  ← retained
+            _make_event(kind="user_message", token_usage=5),  # idx 0  ← first user msg
+            _make_event(kind="assistant_message", token_usage=5),  # idx 1
+            _make_event(kind="assistant_message", token_usage=big),  # idx 2  ← retained
         ]
         # candidate_cut = 2 - 1 = 1; first_user_idx = 0; 1 > 0 so rule 2 does NOT trigger.
         cut = Compacter._find_cut_point(events=events)
@@ -257,8 +260,8 @@ class TestFindCutPointFirstUserMessageProtection:
         """Advancing past first_user_message keeps a valid cut when room remains."""
         big: int = KEEP_RECENT_TOKENS + 1
         events = [
-            _make_event(kind="user_message", token_usage=big),         # idx 0  ← only event
-            _make_event(kind="session_started", token_usage=big),      # idx 1 — retained
+            _make_event(kind="user_message", token_usage=big),  # idx 0  ← only event
+            _make_event(kind="session_started", token_usage=big),  # idx 1 — retained
         ]
         # candidate_cut = 1 - 1 = 0; events[0].kind == "user_message" == first_user_message
         # → first_user_idx = 0; candidate_cut = 0 <= 0 → advance to 0+1 = 1.
@@ -270,6 +273,7 @@ class TestFindCutPointFirstUserMessageProtection:
 # ---------------------------------------------------------------------------
 # _find_cut_point: error paths
 # ---------------------------------------------------------------------------
+
 
 class TestFindCutPointErrors:
     def test_raises_on_list_too_short(self) -> None:
@@ -304,6 +308,7 @@ class TestFindCutPointErrors:
 # ---------------------------------------------------------------------------
 # _build_compaction_input
 # ---------------------------------------------------------------------------
+
 
 class TestBuildCompactionInput:
     def test_user_and_assistant_messages_rendered(self) -> None:
@@ -369,6 +374,7 @@ class TestBuildCompactionInput:
 # ---------------------------------------------------------------------------
 # compact(): full happy-path
 # ---------------------------------------------------------------------------
+
 
 class TestCompactHappyPath:
     @pytest.mark.asyncio
@@ -439,10 +445,8 @@ class TestCompactHappyPath:
         """compact() never splits a tool_call/tool_result span (retreats above it)."""
         big: int = KEEP_RECENT_TOKENS + 1
         e0 = _make_event(kind="user_message", token_usage=10, content="do it")
-        e1 = _make_event(kind="assistant_message", token_usage=10, content="ok")   # ← cut here
-        e2 = _make_event(
-            kind="tool_call", token_usage=5, tool_name="bash", tool_input={}, tool_call_id="A"
-        )
+        e1 = _make_event(kind="assistant_message", token_usage=10, content="ok")  # ← cut here
+        e2 = _make_event(kind="tool_call", token_usage=5, tool_name="bash", tool_input={}, tool_call_id="A")
         e3 = _make_event(
             kind="tool_result", token_usage=big, tool_name="bash", tool_output="done", tool_call_id="A"
         )
@@ -459,6 +463,7 @@ class TestCompactHappyPath:
 # ---------------------------------------------------------------------------
 # compact(): LLM response content formats
 # ---------------------------------------------------------------------------
+
 
 class TestCompactLLMContentFormats:
     @pytest.mark.asyncio
@@ -485,6 +490,7 @@ class TestCompactLLMContentFormats:
 # _cap_compacted_events
 # ---------------------------------------------------------------------------
 
+
 class TestCapCompactedEvents:
     """_cap_compacted_events splits the compacted slice when it exceeds the budget."""
 
@@ -498,18 +504,14 @@ class TestCapCompactedEvents:
     def test_returns_all_events_when_under_budget(self) -> None:
         """No split when total token_usage fits within max_token_units."""
         events = self._make_events_with_usage([100, 200, 300])
-        head, overflow = Compacter._cap_compacted_events(
-            events=events, max_token_units=1000
-        )
+        head, overflow = Compacter._cap_compacted_events(events=events, max_token_units=1000)
         assert len(head) == 3
         assert overflow == []
 
     def test_returns_all_events_when_exactly_at_budget(self) -> None:
         """Total equal to budget → no split (> not >=)."""
         events = self._make_events_with_usage([500, 500])
-        head, overflow = Compacter._cap_compacted_events(
-            events=events, max_token_units=1000
-        )
+        head, overflow = Compacter._cap_compacted_events(events=events, max_token_units=1000)
         assert len(head) == 2
         assert overflow == []
 
@@ -518,9 +520,7 @@ class TestCapCompactedEvents:
         events = self._make_events_with_usage([300, 400, 500])
         # After e0: 300 <= 600 → ok
         # After e1: 700 > 600 AND idx=1 > 0 → split here
-        head, overflow = Compacter._cap_compacted_events(
-            events=events, max_token_units=600
-        )
+        head, overflow = Compacter._cap_compacted_events(events=events, max_token_units=600)
         assert len(head) == 1
         assert len(overflow) == 2
         assert head[0].payload.token_usage == 300
@@ -529,9 +529,7 @@ class TestCapCompactedEvents:
     def test_always_keeps_at_least_one_event_in_head(self) -> None:
         """Even when the first event exceeds the budget, it stays in head."""
         events = self._make_events_with_usage([9999, 100])
-        head, overflow = Compacter._cap_compacted_events(
-            events=events, max_token_units=10
-        )
+        head, overflow = Compacter._cap_compacted_events(events=events, max_token_units=10)
         assert len(head) == 1
         assert len(overflow) == 1
         assert head[0].payload.token_usage == 9999
@@ -544,9 +542,7 @@ class TestCapCompactedEvents:
             _make_event(kind="assistant_message", token_usage=500),
         ]
         # 0 + 0 + 500 = 500 <= 600 → no split
-        head, overflow = Compacter._cap_compacted_events(
-            events=events, max_token_units=600
-        )
+        head, overflow = Compacter._cap_compacted_events(events=events, max_token_units=600)
         assert len(head) == 3
         assert overflow == []
 
@@ -554,15 +550,14 @@ class TestCapCompactedEvents:
         """head + overflow reconstructs the original list in the same order."""
         usages = [100, 200, 300, 400, 500]
         events = self._make_events_with_usage(usages)
-        head, overflow = Compacter._cap_compacted_events(
-            events=events, max_token_units=350
-        )
+        head, overflow = Compacter._cap_compacted_events(events=events, max_token_units=350)
         assert [e.payload.token_usage for e in head + overflow] == usages
 
 
 # ---------------------------------------------------------------------------
 # compact(): cap integration
 # ---------------------------------------------------------------------------
+
 
 class TestCompactWithCap:
     """compact() applies _cap_compacted_events; overflow moves to retained."""
@@ -639,6 +634,7 @@ class TestCompactWithCap:
 # _max_compaction_input_token_units
 # ---------------------------------------------------------------------------
 
+
 class TestMaxCompactionInputTokenUnits:
     def test_applies_safety_divisor_and_reserved_headroom(self) -> None:
         """Budget = (context_window - RESERVED_TOKEN_LIMIT) // DIVISOR."""
@@ -653,7 +649,5 @@ class TestMaxCompactionInputTokenUnits:
 
     def test_zero_available_clamps_to_one(self) -> None:
         """When context_window <= RESERVED_TOKEN_LIMIT, budget is clamped to 1."""
-        result = _max_compaction_input_token_units(
-            context_window=RESERVED_TOKEN_LIMIT - 1
-        )
+        result = _max_compaction_input_token_units(context_window=RESERVED_TOKEN_LIMIT - 1)
         assert result == 1

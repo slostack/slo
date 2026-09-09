@@ -67,7 +67,6 @@ def _make_completed_turn(
     ]
 
 
-
 @pytest.mark.asyncio
 async def test_compaction_summary_emits_human_message() -> None:
     """compaction_summary → HumanMessage starting with '[Previous conversation summary]'."""
@@ -80,12 +79,10 @@ async def test_compaction_summary_emits_human_message() -> None:
     summary_msgs = [
         m
         for m in messages
-        if isinstance(m, HumanMessage)
-        and m.content.startswith("[Previous conversation summary]")
+        if isinstance(m, HumanMessage) and m.content.startswith("[Previous conversation summary]")
     ]
     assert len(summary_msgs) == 1
     assert "The session so far:" in summary_msgs[0].content
-
 
 
 @pytest.mark.asyncio
@@ -101,7 +98,6 @@ async def test_pre_cut_events_excluded() -> None:
     assert not any("old message" in c for c in contents)
 
 
-
 @pytest.mark.asyncio
 async def test_tail_events_included() -> None:
     """Events after compaction_summary.sequence are projected normally."""
@@ -115,7 +111,6 @@ async def test_tail_events_included() -> None:
     assert any("new message" in c for c in contents)
 
 
-
 @pytest.mark.asyncio
 async def test_no_compaction_projects_all() -> None:
     """Without a compaction_summary event, all completed-turn events are projected."""
@@ -127,7 +122,6 @@ async def test_no_compaction_projects_all() -> None:
     contents = [m.content for m in messages]
     assert any("first" in c for c in contents)
     assert any("second" in c for c in contents)
-
 
 
 @pytest.mark.asyncio
@@ -146,22 +140,13 @@ async def test_multiple_compactions_uses_last() -> None:
     assert not any("oldest" in c for c in contents)
     assert not any("middle" in c for c in contents)
     # first summary is also pre-cut (sequence 5 < 10)
-    first_summaries = [
-        m
-        for m in messages
-        if isinstance(m, HumanMessage) and "first summary" in m.content
-    ]
+    first_summaries = [m for m in messages if isinstance(m, HumanMessage) and "first summary" in m.content]
     assert len(first_summaries) == 0
     # second summary is at cut boundary → emitted
-    second_summaries = [
-        m
-        for m in messages
-        if isinstance(m, HumanMessage) and "second summary" in m.content
-    ]
+    second_summaries = [m for m in messages if isinstance(m, HumanMessage) and "second summary" in m.content]
     assert len(second_summaries) == 1
     # newest is in retained tail
     assert any("newest" in c for c in contents)
-
 
 
 @pytest.mark.asyncio
@@ -199,7 +184,6 @@ async def test_heal_dangling_still_runs_on_compacted_tail() -> None:
     assert any(m.tool_call_id == tool_call_id for m in tool_messages)
 
 
-
 @pytest.mark.asyncio
 async def test_find_last_compaction_sequence_no_compaction() -> None:
     """Returns None when no compaction_summary is present."""
@@ -208,7 +192,6 @@ async def test_find_last_compaction_sequence_no_compaction() -> None:
     ]
     result = SessionHistoryProjector._find_last_compaction_sequence(events=events)
     assert result is None
-
 
 
 @pytest.mark.asyncio
@@ -220,7 +203,6 @@ async def test_find_last_compaction_sequence_single() -> None:
     ]
     result = SessionHistoryProjector._find_last_compaction_sequence(events=events)
     assert result == 5
-
 
 
 @pytest.mark.asyncio
@@ -260,7 +242,6 @@ async def test_append_only_summary_preserves_retained_tail() -> None:
     assert messages[0].content.startswith("[Previous conversation summary]")
     assert any("KEEP this message" in c for c in contents)
     assert not any("OLD message" in c for c in contents)
-
 
 
 @pytest.mark.asyncio
@@ -316,15 +297,10 @@ async def test_orphaned_retained_tool_result_is_dropped_by_projector() -> None:
     messages = await SessionHistoryProjector.build_message_history(events=events)
 
     # The orphaned tool_result (its tool_call was compacted) is dropped.
-    assert not any(
-        isinstance(m, ToolMessage) and m.tool_call_id == "X" for m in messages
-    )
-    contents = " ".join(
-        m.content if isinstance(m.content, str) else str(m.content) for m in messages
-    )
+    assert not any(isinstance(m, ToolMessage) and m.tool_call_id == "X" for m in messages)
+    contents = " ".join(m.content if isinstance(m.content, str) else str(m.content) for m in messages)
     assert "fresh reply" in contents
     assert "stale tool output" not in contents
-
 
 
 @pytest.mark.asyncio
@@ -346,9 +322,7 @@ async def test_empty_assistant_message_event_is_not_replayed() -> None:
             tool_name="bash",
             tool_calls=[{"name": "bash", "args": {}, "id": "X", "type": "tool_call"}],
         ),
-        _make_event(
-            kind="tool_result", sequence=4, turn_id="t1", tool_call_id="X", tool_output="done"
-        ),
+        _make_event(kind="tool_result", sequence=4, turn_id="t1", tool_call_id="X", tool_output="done"),
         _make_event(kind="assistant_message", sequence=5, turn_id="t1", content=""),  # empty
         _make_event(kind="run_completed", sequence=6, turn_id="t1"),
         _make_event(kind="run_started", sequence=7, turn_id="t2"),
@@ -360,15 +334,13 @@ async def test_empty_assistant_message_event_is_not_replayed() -> None:
 
     # No empty assistant message survives.
     assert not any(
-        isinstance(m, AIMessage) and not m.tool_calls and not (m.content or "").strip()
-        for m in messages
+        isinstance(m, AIMessage) and not m.tool_calls and not (m.content or "").strip() for m in messages
     )
     contents = [m.content for m in messages if isinstance(m.content, str)]
     assert any("hi" in c for c in contents)
     assert any("Are you done?" in c for c in contents)
     # The tool pair is intact.
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "X" for m in messages)
-
 
 
 @pytest.mark.asyncio
@@ -381,9 +353,7 @@ async def test_summary_content_is_preserved_verbatim() -> None:
     ]
     messages = await SessionHistoryProjector.build_message_history(events=events)
     summary_msgs = [
-        m
-        for m in messages
-        if isinstance(m, HumanMessage) and "[Previous conversation summary]" in m.content
+        m for m in messages if isinstance(m, HumanMessage) and "[Previous conversation summary]" in m.content
     ]
     assert len(summary_msgs) == 1
     assert summary_text in summary_msgs[0].content

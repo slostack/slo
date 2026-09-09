@@ -18,6 +18,7 @@ def test_is_alive_returns_true_for_live_pid(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_is_alive_returns_false_for_missing_pid(monkeypatch: pytest.MonkeyPatch) -> None:
     """Only ProcessLookupError is proof that a process is dead."""
+
     def raise_missing(pid: int, signal: int) -> None:
         """Raise the missing-process error."""
         raise ProcessLookupError()
@@ -29,6 +30,7 @@ def test_is_alive_returns_false_for_missing_pid(monkeypatch: pytest.MonkeyPatch)
 
 def test_is_alive_returns_true_for_eperm(monkeypatch: pytest.MonkeyPatch) -> None:
     """Permission errors prove another user's process still exists."""
+
     def raise_permission(pid: int, signal: int) -> None:
         """Raise the permission error."""
         raise PermissionError()
@@ -40,6 +42,7 @@ def test_is_alive_returns_true_for_eperm(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_is_alive_returns_true_for_other_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unknown OS errors receive the conservative live verdict."""
+
     def raise_oserror(pid: int, signal: int) -> None:
         """Raise an unrelated operating-system error."""
         raise OSError("unexpected")

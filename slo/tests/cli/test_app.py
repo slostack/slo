@@ -1,4 +1,5 @@
 """Tests for the Typer ``app`` surface (sub-spec 02.a.4)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +9,6 @@ from typer.testing import CliRunner
 
 from src.cli.app import app
 from src.cli.version import resolve_version
-
 
 runner: CliRunner = CliRunner()
 
@@ -29,9 +29,7 @@ class TestAppSurface:
 
         assert result.exit_code == 0
         assert "update" in result.stdout
-        assert (
-            "WORKDIR" in result.stdout.upper() or "workdir" in result.stdout
-        )
+        assert "WORKDIR" in result.stdout.upper() or "workdir" in result.stdout
         assert "session reference" in result.stdout.lower()
 
     def test_bare_form_invokes_tui_with_cwd(self) -> None:
@@ -42,16 +40,16 @@ class TestAppSurface:
         assert result.exit_code == 0
         mock_tui.assert_called_once_with(workdir=None, workspace_file=None, resume_session_reference=None)
 
-    def test_bare_form_with_dir_invokes_tui_with_resolved_path(
-        self, tmp_path: Path
-    ) -> None:
+    def test_bare_form_with_dir_invokes_tui_with_resolved_path(self, tmp_path: Path) -> None:
         """``slo <dir>`` reaches the dispatcher with the raw ``Path``."""
         with patch("src.cli.app.TyperDispatch.tui") as mock_tui:
             result = runner.invoke(app, [str(tmp_path)])
 
         assert result.exit_code == 0
         mock_tui.assert_called_once_with(
-            workdir=Path(str(tmp_path)), workspace_file=None, resume_session_reference=None,
+            workdir=Path(str(tmp_path)),
+            workspace_file=None,
+            resume_session_reference=None,
         )
 
     def test_resume_flag_threads_session_id_into_dispatch(self) -> None:
@@ -69,7 +67,9 @@ class TestAppSurface:
             result = runner.invoke(app, ["--resume", "release prep"])
 
         assert result.exit_code == 0
-        mock_tui.assert_called_once_with(workdir=None, workspace_file=None, resume_session_reference="release prep")
+        mock_tui.assert_called_once_with(
+            workdir=None, workspace_file=None, resume_session_reference="release prep"
+        )
 
     def test_workspace_flag_threads_path_into_dispatch(self, tmp_path: Path) -> None:
         """``slo --workspace <file>`` reaches the dispatcher with the raw Path."""

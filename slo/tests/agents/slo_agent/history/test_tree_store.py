@@ -1,4 +1,5 @@
 """Tests for ``TreeBasedFilesystemSessionHistoryStore`` (sub-spec 01.a.4)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,7 +15,6 @@ from src.agents.slo_agent.history.dao import (
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
 from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -158,9 +158,7 @@ class TestTreeMetadata:
         )
         assert tr.payload.metadata["parent_entry_id"] == tc.event_id
 
-    async def test_event_after_tool_result_points_to_tool_result(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_event_after_tool_result_points_to_tool_result(self, tmp_path: Path) -> None:
         store, session_id = await _ensured_store(tmp_path=tmp_path)
         tool_call_id = "call-xyz"
         await store.append_event(
@@ -174,9 +172,7 @@ class TestTreeMetadata:
         )
         assert next_event.payload.metadata["parent_entry_id"] == tr.event_id
 
-    async def test_parallel_tool_calls_resolve_independently(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_parallel_tool_calls_resolve_independently(self, tmp_path: Path) -> None:
         store, session_id = await _ensured_store(tmp_path=tmp_path)
         tc1 = await store.append_event(
             event=_make_tool_call_event(session_id=session_id, tool_call_id="tc-1")
@@ -193,9 +189,7 @@ class TestTreeMetadata:
         assert tr1.payload.metadata["parent_entry_id"] == tc1.event_id
         assert tr2.payload.metadata["parent_entry_id"] == tc2.event_id
 
-    async def test_append_compaction_summary_threads_parent(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_compaction_summary_threads_parent(self, tmp_path: Path) -> None:
         store, session_id = await _ensured_store(tmp_path=tmp_path)
         msg = await store.append_event(
             event=_make_event(session_id=session_id, kind="user_message", content="hi")
@@ -222,9 +216,7 @@ class TestBackwardCompatibility:
     async def test_events_readable_by_flat_store(self, tmp_path: Path) -> None:
         store, session_id = await _ensured_store(tmp_path=tmp_path)
         for i in range(3):
-            await store.append_event(
-                event=_make_event(session_id=session_id, content=f"msg-{i}")
-            )
+            await store.append_event(event=_make_event(session_id=session_id, content=f"msg-{i}"))
 
         flat = FilesystemSessionHistoryStore(root=tmp_path)
         events = await flat.load_events(session_id=session_id)
@@ -239,9 +231,7 @@ class TestBackwardCompatibility:
 class TestSeedLastEntryId:
     """``seed_last_entry_id`` enables correct continuation after resume."""
 
-    async def test_seed_last_entry_id_enables_continuation(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_seed_last_entry_id_enables_continuation(self, tmp_path: Path) -> None:
         store, session_id = await _ensured_store(tmp_path=tmp_path)
         await store.append_event(event=_make_event(session_id=session_id, content="first"))
         events = await store.load_events(session_id=session_id)

@@ -176,6 +176,7 @@ class TestSkillsLoaderFallbacks:
 # Helpers shared by load_merged tests
 # ---------------------------------------------------------------------------
 
+
 def _write_skill(
     directory: Path,
     slug: str,
@@ -313,9 +314,7 @@ class TestSkillsLoaderLoadMerged:
         assert len(result) == 1
         assert "user_workflows" in result[0].file_path
 
-    def test_populated_vendored_tree_does_not_short_circuit_user_dirs(
-        self, tmp_path: Path
-    ) -> None:
+    def test_populated_vendored_tree_does_not_short_circuit_user_dirs(self, tmp_path: Path) -> None:
         """Finding vendored skills must not stop the user trees from loading.
 
         Regression guard: the three trees are additive, never first-match-wins.
@@ -338,9 +337,7 @@ class TestSkillsLoaderLoadMerged:
         names: set[str] = {entry.name for entry in result}
         assert names == {"vendored-one", "vendored-two", "user-one", "workflow-one"}
 
-    def test_user_dirs_still_load_when_vendored_tree_is_missing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_user_dirs_still_load_when_vendored_tree_is_missing(self, tmp_path: Path) -> None:
         """The inverse: an absent vendored tree must not suppress user skills."""
         user_dir: Path = tmp_path / "user_skills"
         workflows_dir: Path = tmp_path / "user_workflows"
@@ -377,10 +374,7 @@ class TestSkillsLoaderLoadMerged:
                 user_workflows_dir=str(tmp_path / "absent_workflows"),
             )
 
-        assert any(
-            "no vendored skills found" in record.getMessage()
-            for record in caplog.records
-        )
+        assert any("no vendored skills found" in record.getMessage() for record in caplog.records)
 
     def test_logs_no_error_when_vendored_tree_is_populated(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -398,10 +392,7 @@ class TestSkillsLoaderLoadMerged:
                 user_workflows_dir=str(tmp_path / "absent_workflows"),
             )
 
-        assert not any(
-            "no vendored skills found" in record.getMessage()
-            for record in caplog.records
-        )
+        assert not any("no vendored skills found" in record.getMessage() for record in caplog.records)
 
     def test_logs_override_event(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """An override log event is emitted when a user skill displaces a vendored one."""
@@ -424,10 +415,7 @@ class TestSkillsLoaderLoadMerged:
                 user_workflows_dir=str(tmp_path / "absent"),
             )
 
-        assert any(
-            "user skill overrides vendored skill" in record.message
-            for record in caplog.records
-        )
+        assert any("user skill overrides vendored skill" in record.message for record in caplog.records)
 
     def test_both_sources_override_different_vendored_entries(self, tmp_path: Path) -> None:
         """User skills and user workflows can each override different vendored entries."""

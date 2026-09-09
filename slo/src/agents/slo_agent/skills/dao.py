@@ -1,4 +1,5 @@
 """SkillEntryDAO — parsed metadata for one skill sourced from SKILL.md frontmatter."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict

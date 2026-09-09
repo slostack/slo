@@ -10,13 +10,13 @@ and falls back to ``json5.loads`` only when the strict parser rejects the
 file. If both parsers fail, the strict parser's error is surfaced because it
 carries the most actionable line/column information.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
-
 
 __all__ = [
     "WorkspaceFileParseError",

@@ -1,4 +1,5 @@
 """Provider-selection widget (02.b.5)."""
+
 from __future__ import annotations
 
 from textual.app import ComposeResult
@@ -7,7 +8,6 @@ from textual.message import Message
 from textual.widgets import Button, RadioButton, RadioSet, Static
 
 from src.auth.credential_dao import ProviderName
-
 
 __all__ = ["ProviderSelectWidget"]
 

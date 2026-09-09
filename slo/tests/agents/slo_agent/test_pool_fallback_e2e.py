@@ -13,6 +13,7 @@ acceptance criteria across the composed (not per-file) behaviour:
 
 Audit kinds are diagnostic-only and must never project into model context.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,7 +40,6 @@ from src.agents.slo_agent.history.projector import SessionHistoryProjector
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.credential_dao import ProviderName
-
 
 # ---------------------------------------------------------------------------
 # Test chat models
@@ -74,7 +74,9 @@ class _StreamingModel(BaseChatModel):
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content="".join(self._chunks)))])
 
-    async def _astream(self, messages, stop=None, run_manager=None, **kwargs) -> AsyncIterator[ChatGenerationChunk]:
+    async def _astream(
+        self, messages, stop=None, run_manager=None, **kwargs
+    ) -> AsyncIterator[ChatGenerationChunk]:
         for text in self._chunks:
             yield ChatGenerationChunk(message=AIMessageChunk(content=text))
 
@@ -102,7 +104,9 @@ class _RaiseStreamModel(BaseChatModel):
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         raise self._error
 
-    async def _astream(self, messages, stop=None, run_manager=None, **kwargs) -> AsyncIterator[ChatGenerationChunk]:
+    async def _astream(
+        self, messages, stop=None, run_manager=None, **kwargs
+    ) -> AsyncIterator[ChatGenerationChunk]:
         self._calls += 1
         raise self._error
         yield  # pragma: no cover — marks this coroutine an async generator
@@ -138,7 +142,9 @@ class _RaiseThenStreamModel(BaseChatModel):
             raise self._error
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self._content))])
 
-    async def _astream(self, messages, stop=None, run_manager=None, **kwargs) -> AsyncIterator[ChatGenerationChunk]:
+    async def _astream(
+        self, messages, stop=None, run_manager=None, **kwargs
+    ) -> AsyncIterator[ChatGenerationChunk]:
         self._calls += 1
         if self._calls == 1:
             raise self._error
@@ -158,9 +164,7 @@ def _pool(*, primary: BaseChatModel, secondary: BaseChatModel) -> ModelPool:
     dao = ModelPoolDAO(
         entries=[
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1),
         ]
     )
     return ModelPool(
@@ -290,9 +294,7 @@ class TestPoolFallbackEndToEnd:
         """The status-less OpenAI overload message cools and switches the primary lane."""
         pool: ModelPool = _pool(
             primary=_RaiseStreamModel(
-                error=RuntimeError(
-                    "APIError: Our servers are currently overloaded. Please try again later."
-                )
+                error=RuntimeError("APIError: Our servers are currently overloaded. Please try again later.")
             ),
             secondary=_StreamingModel(chunks=["recovered"]),
         )
@@ -414,9 +416,7 @@ class TestPoolObservabilityPersistence:
     async def test_openai_overload_retries_without_recovery_observation(self, tmp_path: Path) -> None:
         """The status-less OpenAI overload error retries mechanically before recovery."""
         model: _RaiseThenStreamModel = _RaiseThenStreamModel(
-            error=RuntimeError(
-                "APIError: Our servers are currently overloaded. Please try again later."
-            ),
+            error=RuntimeError("APIError: Our servers are currently overloaded. Please try again later."),
             content="done",
         )
         session: SloAgentSession = _single_model_session(model=model, tmp_path=tmp_path)
@@ -436,9 +436,7 @@ class TestPoolObservabilityPersistence:
     async def test_openai_overload_stops_after_configured_retry_budget(self, tmp_path: Path) -> None:
         """The configured two retries yield three provider attempts, then one terminal failure."""
         model: _RaiseStreamModel = _RaiseStreamModel(
-            error=RuntimeError(
-                "APIError: Our servers are currently overloaded. Please try again later."
-            )
+            error=RuntimeError("APIError: Our servers are currently overloaded. Please try again later.")
         )
         session: SloAgentSession = _single_model_session(model=model, tmp_path=tmp_path)
         events: list = []
@@ -451,9 +449,7 @@ class TestPoolObservabilityPersistence:
         stored: list[SessionHistoryEventDAO] = await _store(session).load_events(
             session_id=session.session_id
         )
-        retry_events: list[AgentStreamEventDAO] = [
-            event for event in events if event.kind == "run_retrying"
-        ]
+        retry_events: list[AgentStreamEventDAO] = [event for event in events if event.kind == "run_retrying"]
 
         assert model._calls == 3
         assert len(retry_events) == 2

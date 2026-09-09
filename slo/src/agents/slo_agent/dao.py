@@ -6,12 +6,12 @@ them stable.
 All DAOs are Pydantic ``BaseModel`` instances with the ``DAO`` suffix.
 No ``TypedDict``, no ``@dataclass``.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 __all__ = [
     "StreamRequestDAO",

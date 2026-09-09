@@ -1,4 +1,5 @@
 """Tests for ``src.agents.tools._gitignore`` (sub-spec 01.c §5.2)."""
+
 import pytest
 
 from src.agents.tools._gitignore import GitignoreFilter

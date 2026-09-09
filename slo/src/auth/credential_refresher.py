@@ -16,6 +16,7 @@ a child waits for another child to finish refreshing.
 
 Sub-spec 01-sub-agents 01.g adds the cross-process file lock.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,7 +32,6 @@ from src.auth.credential_store import CredentialStore
 from src.auth.oauth_provider import OAuthProvider
 from src.auth.providers.anthropic_provider import AnthropicOAuthProvider
 from src.auth.providers.openai_codex_provider import OpenAICodexOAuthProvider
-
 
 __all__ = ["refresh_if_stale"]
 
@@ -198,9 +198,7 @@ async def _refresh_body(
         refresh_token=latest.refresh_token,
     )
     store.persist(cred=refreshed)
-    log_info(
-        msg=f"refresh_if_stale provider={cred.provider.value} refreshed=true"
-    )
+    log_info(msg=f"refresh_if_stale provider={cred.provider.value} refreshed=true")
     return refreshed
 
 

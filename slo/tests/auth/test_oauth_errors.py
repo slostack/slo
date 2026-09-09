@@ -1,4 +1,5 @@
 """Tests for OAuth exception types (02.b.3)."""
+
 from src.auth.oauth_errors import (
     OAuthStateError,
     OAuthTimeoutError,

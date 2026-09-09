@@ -28,28 +28,29 @@ StreamEventKind = Literal[
     "tool_call_start",
     "tool_call_delta",
     "tool_call_end",
+    "tool_output_update",
     "tool_result",
-    "steering_applied",     # a queued /steer message was drained into model context
+    "steering_applied",  # a queued /steer message was drained into model context
     "run_retrying",
     "stream_reconnecting",  # pre-commit provider stream reconnect audit (spec 70)
     # Compaction lifecycle — emitted by the session during overflow recovery:
-    "compaction_started",   # session began a forced compaction pass
-    "compaction_completed", # forced compaction succeeded
-    "compaction_failed",    # forced compaction failed; original error will surface
+    "compaction_started",  # session began a forced compaction pass
+    "compaction_completed",  # forced compaction succeeded
+    "compaction_failed",  # forced compaction failed; original error will surface
     "compaction_retrying",  # compaction succeeded; retry of original prompt starting
     # LLM-driven recovery lifecycle (feature 50) — runtime-only, never terminal:
-    "recovery_started",     # loop began recovering from a recoverable failure
-    "recovery_succeeded",   # a recovery iteration produced a completed turn
-    "recovery_exhausted",   # recovery budget spent / declined; run_failed follows
+    "recovery_started",  # loop began recovering from a recoverable failure
+    "recovery_succeeded",  # a recovery iteration produced a completed turn
+    "recovery_exhausted",  # recovery budget spent / declined; run_failed follows
     "run_completed",
     "run_aborted",
     "run_failed",
     # Sub-agent lifecycle (sub-spec 01-sub-agents 01.f):
-    "sub_agent_spawned",    # pool created a child agent process
+    "sub_agent_spawned",  # pool created a child agent process
     "sub_agent_completed",  # child process finished successfully (exit 0)
-    "sub_agent_failed",     # child process failed or crashed (non-zero, non-abort)
-    "sub_agent_aborted",    # child process was cancelled by the orchestrator (exit 2)
-    "sub_agent_reaped",     # child required SIGKILL during an ordered cleanup
+    "sub_agent_failed",  # child process failed or crashed (non-zero, non-abort)
+    "sub_agent_aborted",  # child process was cancelled by the orchestrator (exit 2)
+    "sub_agent_reaped",  # child required SIGKILL during an ordered cleanup
 ]
 """Canonical streamed event kinds surfaced by Slo's interactive runtime."""
 

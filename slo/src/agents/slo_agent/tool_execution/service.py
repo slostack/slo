@@ -1,4 +1,5 @@
 """Tool batch execution planner — canonical location (renamed from planner.py)."""
+
 from __future__ import annotations
 
 from src.agents.slo_agent.tool_execution.dao import (
@@ -7,13 +8,10 @@ from src.agents.slo_agent.tool_execution.dao import (
     ToolExecutionPlanDAO,
 )
 
-
 __all__ = ["plan_tool_batch"]
 
 
-_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
-    {"read", "find", "grep", "ls", "read_pdf", "now"}
-)
+_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset({"read", "find", "grep", "ls", "read_pdf", "now"})
 
 
 def _classify_tool_name(*, tool_name: str) -> ToolConcurrencyClass:

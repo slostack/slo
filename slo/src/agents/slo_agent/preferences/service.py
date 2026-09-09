@@ -1,4 +1,5 @@
 """UserPreferencesStore service — atomic reader/writer for user preferences."""
+
 from __future__ import annotations
 
 import json
@@ -92,17 +93,11 @@ class UserPreferencesStore:
         current: UserPreferencesDAO = cls.load()
         updated: UserPreferencesDAO = UserPreferencesDAO(
             schema_version=current.schema_version,
-            default_model_name=(
-                model_name if model_name is not None else current.default_model_name
-            ),
+            default_model_name=(model_name if model_name is not None else current.default_model_name),
             default_reasoning_level=(
-                reasoning_level
-                if reasoning_level is not None
-                else current.default_reasoning_level
+                reasoning_level if reasoning_level is not None else current.default_reasoning_level
             ),
-            default_model_pool=(
-                model_pool if model_pool is not None else current.default_model_pool
-            ),
+            default_model_pool=(model_pool if model_pool is not None else current.default_model_pool),
         )
         cls._write(payload=updated)
         return updated

@@ -113,9 +113,7 @@ def build_orchestrator_session(
     _patchers: list = []
 
     # 1. Enable DETACHED_WORKFLOWS so bootstrap attaches launch/status tools.
-    _patchers.append(
-        patch.object(cfg_module, "DETACHED_WORKFLOWS", True)
-    )
+    _patchers.append(patch.object(cfg_module, "DETACHED_WORKFLOWS", True))
 
     # 2. Redirect default_history_root → history_root so handle files land in
     #    tmp_path, never in ~/.slo.  The function is a lazy import inside
@@ -151,9 +149,7 @@ def build_orchestrator_session(
 
     _injected_build._history_root = history_root  # type: ignore[attr-defined]
 
-    _patchers.append(
-        patch.object(LaunchWorkflowTool, "build", side_effect=_injected_build)
-    )
+    _patchers.append(patch.object(LaunchWorkflowTool, "build", side_effect=_injected_build))
 
     # 4. Patch SubAgentProcess.run if a stub was supplied (Scenario 1).
     if pool_process_stub is not None:
@@ -335,9 +331,7 @@ def monkeypatched_env(**env_vars: str):
     Yields:
         None: Control returns to the caller inside the patched environment.
     """
-    originals: dict[str, Optional[str]] = {
-        key: os.environ.get(key) for key in env_vars
-    }
+    originals: dict[str, Optional[str]] = {key: os.environ.get(key) for key in env_vars}
     for key, value in env_vars.items():
         os.environ[key] = value
     try:
@@ -366,21 +360,25 @@ async def test_sync_dynamic_workflow_executes_in_session(tmp_path: Path) -> None
     capture file, or detached process is ever created.
     """
     spawn_calls: list[tuple] = []
-    session: SloAgentSession = build_orchestrator_session(   # promoted with headless=False
+    session: SloAgentSession = build_orchestrator_session(  # promoted with headless=False
         history_root=tmp_path,
         responses=[
             FauxChatModel.assistant_message(
                 content="",
-                tool_calls=[FauxChatModel.tool_call_dict(
-                    name="spawn_sub_agents",
-                    args={"mode": "single",
-                          "tasks_json": '[{"task_id": "phase-1", "prompt": "explain HEAD"}]'},
-                )],
+                tool_calls=[
+                    FauxChatModel.tool_call_dict(
+                        name="spawn_sub_agents",
+                        args={
+                            "mode": "single",
+                            "tasks_json": '[{"task_id": "phase-1", "prompt": "explain HEAD"}]',
+                        },
+                    )
+                ],
             ),
             FauxChatModel.assistant_message(content="WORKFLOW COMPLETE. Phase summary: done."),
         ],
-        pool_process_stub=_completed_child(answer="phase-1 done"),   # no real subprocess
-        launch_spawn=lambda *a, **kw: spawn_calls.append((a, kw)),   # would record any detach
+        pool_process_stub=_completed_child(answer="phase-1 done"),  # no real subprocess
+        launch_spawn=lambda *a, **kw: spawn_calls.append((a, kw)),  # would record any detach
     )
 
     answer: str = await _final_answer(
@@ -388,9 +386,9 @@ async def test_sync_dynamic_workflow_executes_in_session(tmp_path: Path) -> None
         text="Use dynamic workflows to run the explain-how-it-works flow on this repo.",
     )
 
-    assert "WORKFLOW COMPLETE" in answer                              # synthesis in the same turn
-    assert spawn_calls == []                                          # launch_workflow never fired
-    assert list(tmp_path.glob("*/workflows/wf-*.json")) == []         # no detached handle anywhere
+    assert "WORKFLOW COMPLETE" in answer  # synthesis in the same turn
+    assert spawn_calls == []  # launch_workflow never fired
+    assert list(tmp_path.glob("*/workflows/wf-*.json")) == []  # no detached handle anywhere
     tool_names: list[str] = [t.name for t in session.orchestration_tools]
     assert tool_names == ["spawn_sub_agents", "launch_workflow", "workflow_status"]
 
@@ -414,15 +412,19 @@ async def test_headless_dynamic_workflow_detaches_without_blocking(tmp_path: Pat
         responses=[
             FauxChatModel.assistant_message(
                 content="",
-                tool_calls=[FauxChatModel.tool_call_dict(
-                    name="launch_workflow",
-                    args={"brief": "Run explain-how-it-works on /repo; write EXPLAINED.md",
-                          "cwd": "/repo"},
-                )],
+                tool_calls=[
+                    FauxChatModel.tool_call_dict(
+                        name="launch_workflow",
+                        args={
+                            "brief": "Run explain-how-it-works on /repo; write EXPLAINED.md",
+                            "cwd": "/repo",
+                        },
+                    )
+                ],
             ),
             FauxChatModel.assistant_message(content="Headless orchestrator launched."),
         ],
-        launch_spawn=_recording_spawn(into=recorded, pid=4242),      # never creates a process
+        launch_spawn=_recording_spawn(into=recorded, pid=4242),  # never creates a process
     )
 
     answer: str = await _final_answer(
@@ -430,13 +432,13 @@ async def test_headless_dynamic_workflow_detaches_without_blocking(tmp_path: Pat
         text="Use headless dynamic workflows to document the last commit.",
     )
 
-    assert "Headless orchestrator launched" in answer                # turn ended immediately
+    assert "Headless orchestrator launched" in answer  # turn ended immediately
     handles: list[Path] = list(tmp_path.glob("*/workflows/wf-*.json"))
-    assert len(handles) == 1                                         # exactly one detachment
+    assert len(handles) == 1  # exactly one detachment
     handle: dict = json.loads(handles[0].read_text())
     assert handle["pid"] == 4242
     argv: list[str] = recorded["argv"]
-    assert "--orchestrator" in argv and "--notify-session" in argv   # inbox completion path wired
+    assert "--orchestrator" in argv and "--notify-session" in argv  # inbox completion path wired
     assert recorded["env"]["SLO_WORKFLOW_ID"] == handle["workflow_id"]
 
     # The detached child is structurally recursion-free: promote a session the
@@ -466,11 +468,12 @@ async def test_sync_dynamic_workflow_dispatches_native_tasks(tmp_path: Path) -> 
         responses=[
             FauxChatModel.assistant_message(
                 content="",
-                tool_calls=[FauxChatModel.tool_call_dict(
-                    name="spawn_sub_agents",
-                    args={"mode": "single",
-                          "tasks": [{"task_id": "phase-1", "prompt": "explain HEAD"}]},
-                )],
+                tool_calls=[
+                    FauxChatModel.tool_call_dict(
+                        name="spawn_sub_agents",
+                        args={"mode": "single", "tasks": [{"task_id": "phase-1", "prompt": "explain HEAD"}]},
+                    )
+                ],
             ),
             FauxChatModel.assistant_message(content="WORKFLOW COMPLETE."),
         ],
@@ -479,7 +482,8 @@ async def test_sync_dynamic_workflow_dispatches_native_tasks(tmp_path: Path) -> 
     )
 
     answer: str = await _final_answer(
-        session=session, text="Use dynamic workflows to run explain-how-it-works.",
+        session=session,
+        text="Use dynamic workflows to run explain-how-it-works.",
     )
 
     assert "WORKFLOW COMPLETE" in answer
@@ -493,11 +497,15 @@ async def test_sync_dynamic_workflow_recovers_corrupt_tasks_json(tmp_path: Path)
         responses=[
             FauxChatModel.assistant_message(
                 content="",
-                tool_calls=[FauxChatModel.tool_call_dict(
-                    name="spawn_sub_agents",
-                    args={"mode": "single",
-                          "tasks_json": '[{"task_id": "phase-1", "prompt": "x"}]  // note'},
-                )],
+                tool_calls=[
+                    FauxChatModel.tool_call_dict(
+                        name="spawn_sub_agents",
+                        args={
+                            "mode": "single",
+                            "tasks_json": '[{"task_id": "phase-1", "prompt": "x"}]  // note',
+                        },
+                    )
+                ],
             ),
             FauxChatModel.assistant_message(content="WORKFLOW COMPLETE."),
         ],
@@ -506,7 +514,8 @@ async def test_sync_dynamic_workflow_recovers_corrupt_tasks_json(tmp_path: Path)
     )
 
     answer: str = await _final_answer(
-        session=session, text="Use dynamic workflows to run the flow.",
+        session=session,
+        text="Use dynamic workflows to run the flow.",
     )
 
     assert "WORKFLOW COMPLETE" in answer  # recovered instead of failing phase 1

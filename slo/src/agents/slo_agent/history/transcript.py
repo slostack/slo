@@ -226,9 +226,7 @@ class _ReplayEntryBuilder:
             event (SessionHistoryEventDAO): One ``workflow_update`` event.
         """
         self._flush_assistant()
-        self._entries.append(
-            TranscriptEntryDAO(kind="note", content=f"⊛ {event.payload.content or ''}")
-        )
+        self._entries.append(TranscriptEntryDAO(kind="note", content=f"⊛ {event.payload.content or ''}"))
 
     def _absorb_run_aborted(self, *, event: SessionHistoryEventDAO) -> None:
         """Mark the active turn aborted and close it."""

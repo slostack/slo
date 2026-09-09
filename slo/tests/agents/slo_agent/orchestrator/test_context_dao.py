@@ -12,7 +12,6 @@ from src.agents.slo_agent.orchestrator.context_dao import (
     dump_json_bytes,
 )
 
-
 # ---------------------------------------------------------------------------
 # OrchestratorContextDAO
 # ---------------------------------------------------------------------------
@@ -143,17 +142,13 @@ class TestSpawnContextDAO:
 class TestDumpJsonBytes:
     def test_returns_bytes(self) -> None:
         """dump_json_bytes returns a bytes object."""
-        dao = OrchestratorContextDAO.build(
-            system_prompt="s", user_prompt="u", model=None
-        )
+        dao = OrchestratorContextDAO.build(system_prompt="s", user_prompt="u", model=None)
         result = dump_json_bytes(model=dao)
         assert isinstance(result, bytes)
 
     def test_parseable_json(self) -> None:
         """Output parses as valid JSON."""
-        dao = OrchestratorContextDAO.build(
-            system_prompt="s", user_prompt="u", model="m"
-        )
+        dao = OrchestratorContextDAO.build(system_prompt="s", user_prompt="u", model="m")
         parsed = json.loads(dump_json_bytes(model=dao))
         assert parsed["system_prompt"] == "s"
         assert parsed["user_prompt"] == "u"
@@ -161,9 +156,7 @@ class TestDumpJsonBytes:
 
     def test_excludes_none_fields(self) -> None:
         """dump_json_bytes omits None-valued optional fields."""
-        dao = OrchestratorContextDAO.build(
-            system_prompt="s", user_prompt="u", model=None
-        )
+        dao = OrchestratorContextDAO.build(system_prompt="s", user_prompt="u", model=None)
         parsed = json.loads(dump_json_bytes(model=dao))
         assert "model" not in parsed
 

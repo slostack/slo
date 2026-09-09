@@ -90,9 +90,7 @@ class TestConfigureAppFileLogging:
         """Remove any RotatingFileHandlers added to the root logger by the test."""
         root_logger: logging.Logger = logging.getLogger()
         app_handlers: list[logging.Handler] = [
-            handler
-            for handler in root_logger.handlers
-            if isinstance(handler, RotatingFileHandler)
+            handler for handler in root_logger.handlers if isinstance(handler, RotatingFileHandler)
         ]
         for handler in app_handlers:
             root_logger.removeHandler(handler)
@@ -127,8 +125,7 @@ class TestConfigureAppFileLogging:
         console_handlers_after: list[logging.Handler] = [
             handler
             for handler in root_logger.handlers
-            if isinstance(handler, logging.StreamHandler)
-            and not isinstance(handler, logging.FileHandler)
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
         ]
         file_handlers_after: list[logging.Handler] = [
             handler for handler in root_logger.handlers if isinstance(handler, RotatingFileHandler)
@@ -178,17 +175,16 @@ class TestConfigureAppFileLogging:
             file_handlers: list[logging.Handler] = [
                 handler for handler in root_logger.handlers if isinstance(handler, RotatingFileHandler)
             ]
-            filenames: list[str] = [
-                getattr(handler, "baseFilename", "") for handler in file_handlers
-            ]
+            filenames: list[str] = [getattr(handler, "baseFilename", "") for handler in file_handlers]
             assert any("app.log" in name for name in filenames)
 
     def test_app_log_formatter_is_text_in_dev_environment(self) -> None:
         """``_build_app_log_formatter`` returns a plain ``Formatter`` in dev/test."""
         from config.logger import _build_app_log_formatter
 
-        with patch("config.logger.is_dev", return_value=True), patch(
-            "config.logger.is_test", return_value=False
+        with (
+            patch("config.logger.is_dev", return_value=True),
+            patch("config.logger.is_test", return_value=False),
         ):
             formatter: logging.Formatter = _build_app_log_formatter()
 
@@ -200,8 +196,9 @@ class TestConfigureAppFileLogging:
 
         from config.logger import _build_app_log_formatter
 
-        with patch("config.logger.is_dev", return_value=False), patch(
-            "config.logger.is_test", return_value=False
+        with (
+            patch("config.logger.is_dev", return_value=False),
+            patch("config.logger.is_test", return_value=False),
         ):
             formatter: logging.Formatter = _build_app_log_formatter()
 

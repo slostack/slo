@@ -2,6 +2,7 @@
 
 Catches broken imports introduced by sibling sub-specs in flight.
 """
+
 import importlib
 import pkgutil
 
@@ -12,10 +13,7 @@ def _walk_imports(package_name: str) -> list[str]:
     package = importlib.import_module(package_name)
     if not hasattr(package, "__path__"):
         return []
-    return [
-        m.name
-        for m in pkgutil.walk_packages(package.__path__, prefix=f"{package_name}.")
-    ]
+    return [m.name for m in pkgutil.walk_packages(package.__path__, prefix=f"{package_name}.")]
 
 
 _MODULES_TO_IMPORT: list[str] = [
@@ -34,7 +32,9 @@ class TestAuthFirstLaunchSmoke:
 
     @pytest.mark.asyncio
     async def test_clean_machine_authenticates_via_api_key(
-        self, monkeypatch, tmp_path,
+        self,
+        monkeypatch,
+        tmp_path,
     ) -> None:
         """Modal opens on mount, API-key paste persists, store carries the row."""
         from pathlib import Path
@@ -76,10 +76,7 @@ class TestAuthFirstLaunchSmoke:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert any(
-                screen.__class__.__name__ == "AuthenticationScreen"
-                for screen in app.screen_stack
-            )
+            assert any(screen.__class__.__name__ == "AuthenticationScreen" for screen in app.screen_stack)
             await pilot.click("#provider-continue")
             await pilot.pause()
             await pilot.click("#method-api-key")

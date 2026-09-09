@@ -21,7 +21,6 @@ from src.cli.headless_request import (
     validate_session_id,
 )
 
-
 # ---------------------------------------------------------------------------
 # validate_session_id
 # ---------------------------------------------------------------------------
@@ -100,9 +99,7 @@ class TestResolveSessionId:
         )
         assert result == explicit_id
 
-    def test_env_fallback_when_both_absent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_fallback_when_both_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         env_id: str = str(uuid4())
         monkeypatch.setenv("SLO_SESSION_ID", env_id)
         result: Optional[str] = resolve_session_id(
@@ -111,9 +108,7 @@ class TestResolveSessionId:
         )
         assert result == env_id.lower()
 
-    def test_returns_none_when_all_absent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_none_when_all_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_SESSION_ID", raising=False)
         result: Optional[str] = resolve_session_id(
             resume_session_id=None,
@@ -121,9 +116,7 @@ class TestResolveSessionId:
         )
         assert result is None
 
-    def test_env_absent_and_both_none_returns_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_absent_and_both_none_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_SESSION_ID", "  ")
         result: Optional[str] = resolve_session_id(
             resume_session_id=None,
@@ -131,9 +124,7 @@ class TestResolveSessionId:
         )
         assert result is None
 
-    def test_raises_for_invalid_env_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_raises_for_invalid_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_SESSION_ID", "bad/value")
         with pytest.raises(ValueError, match="path separators"):
             resolve_session_id(

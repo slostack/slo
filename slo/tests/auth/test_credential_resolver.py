@@ -1,4 +1,5 @@
 """Tests for ``CredentialResolver`` (02.b.2)."""
+
 import importlib
 import json
 from datetime import datetime, timedelta, timezone
@@ -48,9 +49,7 @@ def _patch_store_path(*, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Pat
 class TestResolveEnvPath:
     """Env var always wins."""
 
-    def test_returns_env_credential_when_set(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_returns_env_credential_when_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Env var for the provider produces an API-key DAO."""
         _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
         monkeypatch.setenv("SLO_OPENAI_API_KEY", "sk-from-env")
@@ -65,11 +64,13 @@ class TestResolveEnvPath:
     def test_env_wins_over_store(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Env value beats a stored row."""
         store_path: Path = _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
-        CredentialStore(path=store_path).persist(cred=CredentialDAO(
-            provider=ProviderName.OPENAI,
-            auth_type=AuthType.API_KEY,
-            access_token="sk-from-store",
-        ))
+        CredentialStore(path=store_path).persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENAI,
+                auth_type=AuthType.API_KEY,
+                access_token="sk-from-store",
+            )
+        )
         monkeypatch.setenv("SLO_OPENAI_API_KEY", "sk-from-env")
         _reload_cfg()
 
@@ -89,30 +90,32 @@ class TestResolveStorePath:
         store_path: Path = _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
         monkeypatch.delenv("SLO_OPENAI_API_KEY", raising=False)
         _reload_cfg()
-        CredentialStore(path=store_path).persist(cred=CredentialDAO(
-            provider=ProviderName.OPENAI,
-            auth_type=AuthType.API_KEY,
-            access_token="sk-from-store",
-        ))
+        CredentialStore(path=store_path).persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENAI,
+                auth_type=AuthType.API_KEY,
+                access_token="sk-from-store",
+            )
+        )
 
         cred = CredentialResolver.resolve(provider=ProviderName.OPENAI)
 
         assert cred is not None
         assert cred.access_token == "sk-from-store"
 
-    def test_skips_expired_store_row(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_skips_expired_store_row(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Expired OAuth row falls through to next source."""
         store_path: Path = _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
         monkeypatch.delenv("SLO_OPENAI_API_KEY", raising=False)
         _reload_cfg()
-        CredentialStore(path=store_path).persist(cred=CredentialDAO(
-            provider=ProviderName.OPENAI,
-            auth_type=AuthType.OAUTH,
-            access_token="expired",
-            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
-        ))
+        CredentialStore(path=store_path).persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENAI,
+                auth_type=AuthType.OAUTH,
+                access_token="expired",
+                expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            )
+        )
 
         cred = CredentialResolver.resolve(provider=ProviderName.OPENAI)
 
@@ -132,11 +135,17 @@ class TestResolveLegacyClaudePath:
         _reload_cfg()
 
         legacy_path: Path = tmp_path / "credentials.json"
-        legacy_path.write_text(json.dumps({
-            "claudeAiOauth": {"accessToken": "sk-ant-legacy"},
-        }))
+        legacy_path.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {"accessToken": "sk-ant-legacy"},
+                }
+            )
+        )
         monkeypatch.setattr(
-            CredentialResolver, "_CLAUDE_CREDENTIALS_PATH", legacy_path,
+            CredentialResolver,
+            "_CLAUDE_CREDENTIALS_PATH",
+            legacy_path,
         )
 
         cred = CredentialResolver.resolve(provider=ProviderName.ANTHROPIC)
@@ -145,29 +154,31 @@ class TestResolveLegacyClaudePath:
         assert cred.access_token == "sk-ant-legacy"
         assert cred.auth_type is AuthType.OAUTH
 
-    def test_legacy_ignored_for_openai(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_legacy_ignored_for_openai(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Even with a populated legacy file, OpenAI never reads it."""
         _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
         monkeypatch.delenv("SLO_OPENAI_API_KEY", raising=False)
         _reload_cfg()
 
         legacy_path: Path = tmp_path / "credentials.json"
-        legacy_path.write_text(json.dumps({
-            "claudeAiOauth": {"accessToken": "sk-ant-legacy"},
-        }))
+        legacy_path.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {"accessToken": "sk-ant-legacy"},
+                }
+            )
+        )
         monkeypatch.setattr(
-            CredentialResolver, "_CLAUDE_CREDENTIALS_PATH", legacy_path,
+            CredentialResolver,
+            "_CLAUDE_CREDENTIALS_PATH",
+            legacy_path,
         )
 
         cred = CredentialResolver.resolve(provider=ProviderName.OPENAI)
 
         assert cred is None
 
-    def test_legacy_swallowed_when_malformed(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_legacy_swallowed_when_malformed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Garbage legacy file does not raise."""
         _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
         monkeypatch.delenv("SLO_ANTHROPIC_API_KEY", raising=False)
@@ -176,7 +187,9 @@ class TestResolveLegacyClaudePath:
         legacy_path: Path = tmp_path / "credentials.json"
         legacy_path.write_text("{ bad json")
         monkeypatch.setattr(
-            CredentialResolver, "_CLAUDE_CREDENTIALS_PATH", legacy_path,
+            CredentialResolver,
+            "_CLAUDE_CREDENTIALS_PATH",
+            legacy_path,
         )
 
         cred = CredentialResolver.resolve(provider=ProviderName.ANTHROPIC)

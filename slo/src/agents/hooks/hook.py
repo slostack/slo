@@ -14,6 +14,7 @@ indirections rather than direct ports — pi's equivalents are named
 All data types in this module are Pydantic ``BaseModel`` DAOs — no
 ``TypedDict``, no ``@dataclass``.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -21,7 +22,6 @@ from typing import Awaitable, Callable, Optional, Union
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, Field
-
 
 __all__ = [
     "Hook",

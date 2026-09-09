@@ -4,6 +4,7 @@ Each connector provider gets its own file under ``~/.slo/connectors/``.
 No provider's credentials touch another provider's file.  All writes are
 atomic (temp-file + rename) to guard against mid-write crashes.
 """
+
 from __future__ import annotations
 
 import json

@@ -103,6 +103,8 @@ class SessionConfigDAO(BaseModel):
     """Operator-visible notice when the requested model was invalid and a
     fallback model was selected. Rendered once by the TUI on startup.
     """
+    plugin_paths: list[Path] = Field(default_factory=list)
+    """Explicit trusted plugin paths supplied in repeatable CLI argument order."""
 
     @model_validator(mode="after")
     def _align_model_name_with_pool_primary(self) -> "SessionConfigDAO":

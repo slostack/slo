@@ -1,4 +1,5 @@
 """Typed exceptions for the Jira integration client (25.a.3)."""
+
 from __future__ import annotations
 
 __all__ = ["JiraAPIError"]

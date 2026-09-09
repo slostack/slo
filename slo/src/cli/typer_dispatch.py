@@ -41,6 +41,7 @@ from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPrefere
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+from src.agents.slo_agent.plugins.installer import PluginInstallerService
 from src.cli.headless import HeadlessRunner
 from src.cli.headless_logging import headless_logging
 from src.cli.headless_request import resolve_session_id, validate_session_id
@@ -64,6 +65,7 @@ class TyperDispatch:
         workdir: Optional[Path],
         workspace_file: Optional[Path] = None,
         resume_session_reference: Optional[str] = None,
+        plugin_paths: Optional[list[Path]] = None,
     ) -> None:
         """Open the Textual TUI scoped to ``workdir`` (or the cwd).
 
@@ -93,6 +95,7 @@ class TyperDispatch:
                 workdir=resolved_workdir,
                 workspace_file=resolved_workspace_file,
                 resume_session_id=resolved_session_id,
+                plugin_paths=plugin_paths,
             )
             session: SloAgentSession = SloAgentSession.build(config=config)
             SloTUI(session=session).run(mouse=True)
@@ -115,6 +118,7 @@ class TyperDispatch:
         orchestrator_mode: bool = False,
         system_prompt_b64: Optional[str] = None,
         notify_session_id: Optional[str] = None,
+        plugin_paths: Optional[list[Path]] = None,
     ) -> int:
         """Run one agent loop headlessly, stream JSONL to stdout, return exit code.
 
@@ -185,6 +189,7 @@ class TyperDispatch:
             workdir=resolved_workdir,
             workspace_file=resolved_workspace_file,
             resume_session_id=canonical_session_id,
+            plugin_paths=plugin_paths,
         )
         config = cls._apply_model_override(config=config, model=model)
         config = cls._apply_reasoning_override(config=config, reasoning=reasoning)
@@ -258,6 +263,73 @@ class TyperDispatch:
             HeadlessWorkflowVisualizer(config=config).run(mouse=True)
 
     @classmethod
+    def plugin(
+        cls,
+        *,
+        action: str,
+        source_url: Optional[str] = None,
+        plugin_id: Optional[str] = None,
+        confirmed: bool = False,
+    ) -> str:
+        """Run one managed plugin lifecycle action at the CLI async boundary.
+
+        WHAT: Delegates parse-surface plugin verbs to the installer service.
+        WHO: ``src.cli.plugin`` calls this gateway for every ``slo plugin`` command.
+        WHEN: An operator installs, lists, removes, or upgrades a plugin.
+        """
+        return asyncio.run(
+            cls._plugin_action(
+                action=action,
+                source_url=source_url,
+                plugin_id=plugin_id,
+                confirmed=confirmed,
+            )
+        )
+
+    @classmethod
+    async def _plugin_action(
+        cls,
+        *,
+        action: str,
+        source_url: Optional[str],
+        plugin_id: Optional[str],
+        confirmed: bool,
+    ) -> str:
+        """Delegate one plugin action to its single managed-state owner.
+
+        WHAT: Selects exactly one installer operation from the CLI verb.
+        WHO: ``plugin`` owns the synchronous Typer-to-async transition above.
+        WHEN: Once for each user-issued plugin lifecycle command.
+        """
+        if action == "install":
+            if source_url is None:
+                raise ValueError("plugin install requires a source URL")
+            record = await PluginInstallerService.install(source_url=source_url, confirmed=confirmed)
+            return f"installed {record.plugin_id} {record.pinned_revision} {record.source_url}"
+        if action == "install_bundled_bash_live_output":
+            record = await PluginInstallerService.install_bundled_bash_live_output()
+            return f"installed bundled {record.plugin_id} {record.pinned_revision}"
+        if action == "list":
+            records = await PluginInstallerService.list_installed()
+            return (
+                "\n".join(
+                    f"{record.plugin_id} {record.pinned_revision} {record.source_url}" for record in records
+                )
+                or "no managed plugins installed"
+            )
+        if action == "uninstall":
+            if plugin_id is None:
+                raise ValueError("plugin uninstall requires a plugin id")
+            await PluginInstallerService.uninstall(plugin_id=plugin_id)
+            return f"uninstalled {plugin_id}"
+        if action == "upgrade":
+            if plugin_id is None:
+                raise ValueError("plugin upgrade requires a plugin id")
+            record = await PluginInstallerService.upgrade(plugin_id=plugin_id)
+            return f"upgraded {record.plugin_id} {record.pinned_revision}"
+        raise ValueError(f"unknown plugin action: {action}")
+
+    @classmethod
     def update(cls, *, development: bool, ref: Optional[str] = None) -> None:
         """Reinstall slo via pipx from the repo (delegates to :class:`Updater`).
 
@@ -329,6 +401,7 @@ class TyperDispatch:
         workdir: Path,
         workspace_file: Optional[Path] = None,
         resume_session_id: Optional[str] = None,
+        plugin_paths: Optional[list[Path]] = None,
     ) -> SessionConfigDAO:
         """Assemble session config from preferences, then env, then cfg defaults.
 
@@ -361,11 +434,7 @@ class TyperDispatch:
 
         from config.ai_model_config import resolve_model_name_with_fallback
 
-        model_name: str = (
-            prefs.default_model_name
-            or cfg("DEFAULT_MODEL_NAME")
-            or "gpt-5.4"
-        )
+        model_name: str = prefs.default_model_name or cfg("DEFAULT_MODEL_NAME") or "gpt-5.4"
         resolved_model_name: str
         fallback_notice: Optional[str]
         resolved_model_name, fallback_notice = resolve_model_name_with_fallback(
@@ -381,6 +450,7 @@ class TyperDispatch:
             reasoning_level=prefs.default_reasoning_level,
             session_id=resume_session_id,
             fallback_notice=fallback_notice,
+            plugin_paths=list(plugin_paths or []),
         )
 
     @classmethod
@@ -487,9 +557,7 @@ class TyperDispatch:
                     message=f"File not found: {append_system_prompt_file}",
                     param_hint="--append-system-prompt-file",
                 )
-            updates["append_system_prompt"] = append_system_prompt_file.read_text(
-                encoding="utf-8"
-            )
+            updates["append_system_prompt"] = append_system_prompt_file.read_text(encoding="utf-8")
         if not updates:
             return config
         return config.model_copy(update=updates)

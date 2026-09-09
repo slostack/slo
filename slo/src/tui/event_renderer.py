@@ -462,6 +462,21 @@ class EventRenderer:
         "edit": _summarize_edit,
         "find": _summarize_find,
     }
+    _RENDERER_OVERRIDES: dict[str, Callable[[str], str]] = {}
+
+    @classmethod
+    def set_renderer_overrides(cls, *, renderers: dict[str, Callable[[str], str]]) -> None:
+        """Replace the registered per-tool renderer overrides.
+
+        WHAT: Installs a session-owned renderer map before built-in summaries.
+        WHO: ``SloAgentSession`` calls this after plugin registrations change.
+        WHEN: Plugins load, reload, or are disabled for the active session.
+
+        Args:
+            renderers (dict[str, Callable[[str], str]]): Renderer functions keyed
+                by their canonical visible tool name.
+        """
+        cls._RENDERER_OVERRIDES = dict(renderers)
 
     @classmethod
     def render(cls, *, event: ProgressEventDAO, log: RichLogLike) -> None:
@@ -547,10 +562,11 @@ class EventRenderer:
         Returns:
             str: A one-line summary suitable for the continuation glyph.
         """
-        summariser: Callable[[str], str] = cls._SUMMARIZERS.get(
-            name or "",
-            _summarize_default,
-        )
+        tool_name: str = name or ""
+        override: Callable[[str], str] | None = cls._RENDERER_OVERRIDES.get(tool_name)
+        if override is not None:
+            return override(output)
+        summariser: Callable[[str], str] = cls._SUMMARIZERS.get(tool_name, _summarize_default)
         return summariser(output)
 
     @classmethod

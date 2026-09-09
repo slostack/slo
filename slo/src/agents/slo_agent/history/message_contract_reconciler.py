@@ -37,9 +37,7 @@ class MessageContractReconciler:
        assistant message that is empty).
     """
 
-    _INTERRUPTED_TOOL_RESULT: str = (
-        "[interrupted: this tool call did not complete before the session ended]"
-    )
+    _INTERRUPTED_TOOL_RESULT: str = "[interrupted: this tool call did not complete before the session ended]"
 
     @classmethod
     def reconcile(cls, *, messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -166,11 +164,7 @@ class MessageContractReconciler:
         Returns:
             list[BaseMessage]: History with no empty ``AIMessage``.
         """
-        return [
-            message
-            for message in messages
-            if not cls._is_empty_assistant_message(message=message)
-        ]
+        return [message for message in messages if not cls._is_empty_assistant_message(message=message)]
 
     @classmethod
     def _collect_declared_ids(

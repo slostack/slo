@@ -4,6 +4,7 @@ Both ``ChatAnthropic`` and ``ChatOpenAI`` accept the same content-block shape â€
 list of dictionaries with a ``type`` key. Images are detected with Pillow magic-byte
 sniffing, resized before base64 encoding, and paired with a compact history reference.
 """
+
 from __future__ import annotations
 
 import base64
@@ -12,7 +13,6 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 from PIL import Image, UnidentifiedImageError
-
 
 __all__ = [
     "IMAGE_MAX_EDGE",
@@ -227,8 +227,7 @@ class ImageContent:
         """
         if len(encoded) > MAX_ENCODED_BYTES:
             raise ValueError(
-                "Image JPEG fallback exceeds MAX_ENCODED_BYTES "
-                f"({len(encoded)} > {MAX_ENCODED_BYTES})"
+                "Image JPEG fallback exceeds MAX_ENCODED_BYTES " f"({len(encoded)} > {MAX_ENCODED_BYTES})"
             )
 
     @classmethod

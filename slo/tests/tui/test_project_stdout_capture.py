@@ -13,7 +13,6 @@ import pytest
 
 from src.tui.workflow_visualizer_loader import _project_stdout_capture
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -89,9 +88,7 @@ class TestAssistantTextProjection:
         """Non-JSON lines are silently ignored; valid lines still project."""
         capture = tmp_path / "stdout.jsonl"
         capture.write_text(
-            "not-json\n"
-            + json.dumps({"kind": "text_delta", "delta": "ok", "iteration": 0})
-            + "\n",
+            "not-json\n" + json.dumps({"kind": "text_delta", "delta": "ok", "iteration": 0}) + "\n",
             encoding="utf-8",
         )
         entries = _project_stdout_capture(path=capture)

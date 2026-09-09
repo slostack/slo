@@ -9,6 +9,7 @@ which reads as the model choosing badly rather than as a broken install.
 
 The build is slow, so this is opt-in like the install smoke test.
 """
+
 from __future__ import annotations
 
 import os
@@ -18,7 +19,6 @@ import zipfile
 from pathlib import Path
 
 import pytest
-
 
 pytestmark = pytest.mark.e2e
 
@@ -88,9 +88,7 @@ class TestWheelShipsSkills:
             pytest.skip("not a git checkout; cannot enumerate committed skill files")
         wheel: Path = _build_wheel(output_dir=tmp_path)
         with zipfile.ZipFile(wheel) as archive:
-            shipped: set[str] = {
-                name for name in archive.namelist() if name.startswith("skills/")
-            }
+            shipped: set[str] = {name for name in archive.namelist() if name.startswith("skills/")}
 
         committed = subprocess.run(
             ["git", "ls-files", "skills"],
@@ -99,14 +97,11 @@ class TestWheelShipsSkills:
             text=True,
         )
         assert committed.returncode == 0, committed.stderr
-        expected: set[str] = {
-            line for line in committed.stdout.splitlines() if line.strip()
-        }
+        expected: set[str] = {line for line in committed.stdout.splitlines() if line.strip()}
 
         assert expected, "no committed files under skills/ — check the checkout"
         assert expected - shipped == set(), (
-            "committed skill files missing from the wheel: "
-            f"{sorted(expected - shipped)}"
+            "committed skill files missing from the wheel: " f"{sorted(expected - shipped)}"
         )
 
     def test_wheel_contains_the_workflow_entry_points(self, tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ Covers the four decision points mandated by the test plan:
 3. ``create_pool`` assembles a ``ModelPool`` from a ``ModelPoolDAO``
 4. Missing ``SLO_KIMI_FOR_CODING_API_KEY`` → ``ValueError`` with actionable message
 """
+
 from __future__ import annotations
 
 import importlib
@@ -53,9 +54,7 @@ def _neutralise_credential_sources(
 class TestLLMFactoryKimiForCodingDispatch:
     """``LLMFactory.create`` Kimi For Coding dispatch (spec 32.a.1)."""
 
-    def test_kimi_prefix_dispatches_to_chat_openai_at_kimi_url(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_kimi_prefix_dispatches_to_chat_openai_at_kimi_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``kimi-for-coding`` → ``ChatOpenAI`` pointing at api.kimi.com; caching=False."""
         monkeypatch.setenv("SLO_KIMI_FOR_CODING_API_KEY", "sk-kimi-test")
         _reload_cfg()
@@ -82,9 +81,7 @@ class TestLLMFactoryKimiForCodingDispatch:
         assert "api.kimi.com" in kwargs.get("base_url", "")
         assert result.supports_explicit_caching is False
 
-    def test_create_pool_assembles_model_pool_from_dao(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_create_pool_assembles_model_pool_from_dao(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``create_pool`` returns a ``ModelPool`` with ``active_model_name``."""
         from langchain_core.messages import AIMessage
 

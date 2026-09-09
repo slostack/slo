@@ -75,9 +75,7 @@ class TestEstimateRequestTokensHistoryAware:
         b = estimate_request_tokens(
             prompt_text="hello", message_history=[], output_cap_tokens=8192, reasoning_budget_tokens=None
         )
-        c = estimate_request_tokens(
-            prompt_text="hello", output_cap_tokens=8192, reasoning_budget_tokens=None
-        )
+        c = estimate_request_tokens(prompt_text="hello", output_cap_tokens=8192, reasoning_budget_tokens=None)
         assert a == b == c
 
     def test_counts_tool_message_outputs(self) -> None:

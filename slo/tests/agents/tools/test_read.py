@@ -1,4 +1,5 @@
 """Tests for the ``read`` tool (sub-spec 01.d §5.1)."""
+
 from pathlib import Path
 
 import pytest

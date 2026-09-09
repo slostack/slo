@@ -34,6 +34,7 @@ from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.authentication import AuthenticationScreen
+from src.tui.mermaid_chart_source_screen import MermaidChartSourceScreen
 from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
 from src.tui.slash_suggestion_engine import (
@@ -47,6 +48,7 @@ from src.tui.tree_export_format import TreeExportFormat
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
+from src.tui.widgets.mermaid_chart_block import MermaidChartBlock
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
@@ -1654,6 +1656,32 @@ class SloTUI(App):
             if set_expanded is not None:
                 set_expanded(expanded=expanded)
 
+    async def on_mermaid_chart_block_full_screen_requested(
+        self,
+        message: MermaidChartBlock.FullScreenRequested,
+    ) -> None:
+        """Open the full-screen mermaid source view for the requesting block.
+
+        WHAT: Pushes ``MermaidChartSourceScreen`` with plain, non-waiting
+        ``push_screen`` — the ``GitDiffScreen`` push precedent in
+        ``_open_git_diff``. ``ModalScreen`` supplies the modality, so the
+        transcript is frozen while the user reads the source and the screen
+        dismisses itself on ``Esc``. ``push_screen_wait`` is not usable here:
+        in Textual 8.2.8 it is valid only from a worker, and this handler runs
+        in Textual's message-processing task, so it would raise
+        ``NoActiveWorker``. No dismiss result is read, so awaiting would add
+        nothing.
+        WHO: Textual's message pump routes ``MermaidChartBlock.FullScreenRequested``
+        here — this app handler is the message's only subscriber, and the block
+        never pushes a screen itself so screen routing stays on the app.
+        WHEN: Right after the operator presses ``ctrl+f`` on a focused chart block.
+
+        Args:
+            message (MermaidChartBlock.FullScreenRequested): Carries the
+                verbatim mermaid source and its directive line.
+        """
+        self.push_screen(MermaidChartSourceScreen(source=message.source, directive=message.directive))
+
     def on_transcript_scroll_reached_top(self, event: "TranscriptScroll.ReachedTop") -> None:
         """Start a load-older pass when the transcript reaches the top.
 
@@ -2899,7 +2927,8 @@ class SloTUI(App):
         actually lands. The scroll is deferred to ``call_after_refresh``, so
         between scheduling and landing the viewport is transiently *not* at the
         bottom. An ``AssistantStreamBlock`` coalescing flush that interleaves in
-        that window calls ``_check_app_at_bottom`` → ``_transcript_is_at_bottom``,
+        that window calls the module-scope ``_transcript_is_at_bottom`` helper
+        in ``assistant_stream_block`` → this app's ``_transcript_is_at_bottom``,
         reads that transient state as ``False``, and posts
         ``Rendered(was_following=False)`` — so
         ``on_assistant_stream_block_rendered`` skips its re-pin. The queued

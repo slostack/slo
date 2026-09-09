@@ -5,6 +5,7 @@ Token responses are bearer tokens of the same shape that
 ``CredentialResolver._read_legacy_claude_oauth`` understands from
 ``~/.claude/.credentials.json``.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,7 +18,6 @@ from config.cfg import cfg as _cfg
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.oauth_errors import OAuthTokenError
 from src.auth.oauth_provider import CallbackBind, OAuthProvider
-
 
 __all__ = ["AnthropicOAuthProvider"]
 
@@ -141,7 +141,7 @@ class AnthropicOAuthProvider(OAuthProvider):
             async with http.post(url=self.token_endpoint, json=body) as resp:
                 text: str = await resp.text()
                 if resp.status >= 400:
-                    raise OAuthTokenError(status=resp.status, body=text)
+                    raise OAuthTokenError(status=resp.status)
                 payload: dict[str, Any] = cast(dict[str, Any], json.loads(text))
         return self.parse_token_response(payload=payload)
 
@@ -167,7 +167,7 @@ class AnthropicOAuthProvider(OAuthProvider):
             async with http.post(url=self.token_endpoint, json=body) as resp:
                 text: str = await resp.text()
                 if resp.status >= 400:
-                    raise OAuthTokenError(status=resp.status, body=text)
+                    raise OAuthTokenError(status=resp.status)
                 payload: dict[str, Any] = cast(dict[str, Any], json.loads(text))
         return self.parse_token_response(payload=payload)
 

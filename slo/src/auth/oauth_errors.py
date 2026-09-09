@@ -6,8 +6,14 @@ inline error text.
 
 from __future__ import annotations
 
+from src.auth.credential_dao import ProviderName
+
 __all__ = [
     "OAuthCallbackPortInUseError",
+    "OAuthDeviceAuthorizationDeniedError",
+    "OAuthDeviceAuthorizationExpiredError",
+    "OAuthDeviceAuthorizationProtocolError",
+    "OAuthDeviceAuthorizationUnsupportedError",
     "OAuthStateError",
     "OAuthTimeoutError",
     "OAuthTokenError",
@@ -15,41 +21,111 @@ __all__ = [
 
 
 class OAuthTimeoutError(RuntimeError):
-    """Raised when the user did not complete sign-in before the timeout."""
+    """Raised when a sign-in deadline elapses before completion.
 
-    def __init__(self) -> None:
-        """Carry a user-facing message."""
-        super().__init__("OAuth sign-in timed out before the callback arrived.")
+    ``kind`` distinguishes the short loopback-callback deadline from the
+    whole browser/manual attempt deadline so the UI can render the correct
+    copy; it is the only difference between the two deadline outcomes.
+    """
+
+    def __init__(self, *, kind: str = "callback") -> None:
+        """Create the safe message for one sign-in deadline kind.
+
+        WHO: OAuth browser and manual flows raise this at their deadlines.
+        WHEN: A callback or whole sign-in attempt ends before a credential exists.
+
+        Args:
+            kind (str, optional): ``"callback"`` or ``"attempt"`` deadline meaning.
+                Defaults to ``"callback"``.
+        """
+        self.kind: str = kind
+        if kind == "attempt":
+            super().__init__("Sign-in was not completed in time.")
+        else:
+            super().__init__("OAuth sign-in timed out before the callback arrived.")
+
+
+class OAuthDeviceAuthorizationUnsupportedError(RuntimeError):
+    """The selected provider does not implement device authorization."""
+
+    def __init__(self, *, provider: ProviderName) -> None:
+        """Create a safe unsupported-method error.
+
+        WHO: OAuth providers raise this when device authorization is absent.
+        WHEN: A caller selects device authorization for a browser-only provider.
+        """
+        super().__init__(
+            f"{provider.value} does not support device authorization. Use browser authorization."
+        )
+        self.provider: ProviderName = provider
+
+
+class OAuthDeviceAuthorizationExpiredError(RuntimeError):
+    """The device authorization attempt reached its deadline."""
+
+    def __init__(self, *, provider: ProviderName, after_slow_down: bool = False) -> None:
+        """Create a safe expiry error for one device attempt.
+
+        WHO: DeviceAuthorizationFlow raises this after its bounded polling deadline.
+        WHEN: The provider has not completed device authorization before expiry.
+        """
+        message: str = f"{provider.value} device sign-in expired. Start a new attempt."
+        if after_slow_down:
+            message = (
+                f"{provider.value} device sign-in expired after slow-down responses. "
+                "This is often caused by clock drift in WSL or VM environments — "
+                "sync or restart the VM clock, then start a new attempt."
+            )
+        super().__init__(message)
+        self.provider: ProviderName = provider
+        self.after_slow_down: bool = after_slow_down
+
+
+class OAuthDeviceAuthorizationDeniedError(RuntimeError):
+    """The provider denied the device sign-in request."""
+
+    def __init__(self, *, provider: ProviderName) -> None:
+        """Create a safe provider-denial error.
+
+        WHO: A device-authorization provider raises this after user denial.
+        WHEN: Its terminal poll response rejects the current sign-in request.
+        """
+        super().__init__(f"{provider.value} denied the device sign-in request.")
+        self.provider: ProviderName = provider
+
+
+class OAuthDeviceAuthorizationProtocolError(RuntimeError):
+    """The provider returned an uninterpretable device response."""
+
+    def __init__(self, *, provider: ProviderName) -> None:
+        """Create a safe malformed-device-response error.
+
+        WHO: Device providers and the generic flow raise this for invalid payloads.
+        WHEN: A response cannot be safely interpreted as a supported device outcome.
+        """
+        super().__init__(f"{provider.value} returned an unexpected device authorization response.")
+        self.provider: ProviderName = provider
 
 
 class OAuthStateError(RuntimeError):
-    """Raised when the callback's ``state`` query param does not match."""
+    """Raised when a supplied OAuth state does not match the active attempt."""
 
-    def __init__(self, *, expected: str, got: str) -> None:
-        """Carry both sides of the mismatch for debugging.
-
-        Args:
-            expected (str): The state value we sent.
-            got (str): The state value we received.
-        """
-        super().__init__(f"OAuth state mismatch (expected={expected!r}, got={got!r}).")
-        self.expected: str = expected
-        self.got: str = got
+    def __init__(self) -> None:
+        """Create a fixed mismatch message without retaining either secret value."""
+        super().__init__("OAuth state mismatch.")
 
 
 class OAuthTokenError(RuntimeError):
-    """Raised when the token endpoint returns a non-2xx response."""
+    """Raised when the token endpoint returns a non-2xx response.
 
-    def __init__(self, *, status: int, body: str) -> None:
-        """Carry status and truncated body for debugging.
+    The response body is deliberately dropped: provider error bodies can echo
+    request secrets, and no log, UI, snapshot, or string conversion may carry them.
+    """
 
-        Args:
-            status (int): HTTP status code.
-            body (str): First 1024 chars of the response body.
-        """
-        super().__init__(f"OAuth token exchange failed (HTTP {status}): {body[:1024]}")
+    def __init__(self, *, status: int) -> None:
+        """Record only the HTTP status for a rejected token request."""
+        super().__init__(f"OAuth token exchange failed (HTTP {status}).")
         self.status: int = status
-        self.body: str = body
 
 
 class OAuthCallbackPortInUseError(RuntimeError):

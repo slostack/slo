@@ -11,17 +11,91 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any, Optional, cast
 from urllib.parse import urlencode
 
 from aiohttp import ClientSession
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
-from src.auth.oauth_errors import OAuthTokenError
+from src.auth.oauth_errors import OAuthDeviceAuthorizationUnsupportedError, OAuthTokenError
 from src.auth.pkce import generate_state
 
-__all__ = ["CallbackBind", "FauxOAuthProvider", "OAuthProvider"]
+__all__ = [
+    "CallbackBind",
+    "DeviceAuthorizationDAO",
+    "DeviceAuthorizationPollResultDAO",
+    "DeviceAuthorizationPollStatus",
+    "DeviceAuthorizationPresentationDAO",
+    "FauxOAuthProvider",
+    "OAuthLoginMethod",
+    "OAuthProvider",
+]
+
+
+class OAuthLoginMethod(str, Enum):
+    """Interactive routes that can mint an OAuth credential."""
+
+    BROWSER_AUTHORIZATION = "browser_authorization"
+    DEVICE_AUTHORIZATION = "device_authorization"
+
+
+class DeviceAuthorizationDAO(BaseModel):
+    """One provider-issued, in-memory device authorization session."""
+
+    model_config = ConfigDict(frozen=True)
+
+    device_code: str = Field(repr=False)
+    user_code: str
+    verification_uri: str
+    expires_in_seconds: int = Field(gt=0)
+    interval_seconds: int = Field(default=5, ge=0)
+
+    def presentation(self) -> "DeviceAuthorizationPresentationDAO":
+        """Project the session into safe instructions for AuthenticationScreen."""
+        return DeviceAuthorizationPresentationDAO(
+            user_code=self.user_code,
+            verification_uri=self.verification_uri,
+            expires_in_seconds=self.expires_in_seconds,
+        )
+
+
+class DeviceAuthorizationPresentationDAO(BaseModel):
+    """Non-secret device instructions rendered by the authentication widget."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_code: str
+    verification_uri: str
+    expires_in_seconds: int = Field(gt=0)
+
+
+class DeviceAuthorizationPollStatus(str, Enum):
+    """The only results the generic poller can interpret."""
+
+    PENDING = "pending"
+    SLOW_DOWN = "slow_down"
+    COMPLETE = "complete"
+
+
+class DeviceAuthorizationPollResultDAO(BaseModel):
+    """One validated provider probe interpreted by DeviceAuthorizationFlow."""
+
+    status: DeviceAuthorizationPollStatus
+    credential: CredentialDAO | None = None
+    interval_seconds: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_status_payload(self) -> "DeviceAuthorizationPollResultDAO":
+        """Reject status/payload combinations the poller cannot interpret."""
+        if self.status is DeviceAuthorizationPollStatus.COMPLETE and self.credential is None:
+            raise ValueError("COMPLETE requires credential")
+        if self.status is not DeviceAuthorizationPollStatus.COMPLETE and self.credential is not None:
+            raise ValueError("credential is only valid with COMPLETE")
+        if self.status is not DeviceAuthorizationPollStatus.SLOW_DOWN and self.interval_seconds is not None:
+            raise ValueError("interval_seconds is only valid with SLOW_DOWN")
+        return self
 
 
 class CallbackBind(BaseModel):
@@ -117,6 +191,37 @@ class OAuthProvider(ABC):
             tuple[str, ...]: Ordered scope strings joined with spaces in
                 the URL.
         """
+
+    def supported_login_methods(self) -> frozenset[OAuthLoginMethod]:
+        """Return the OAuth interactions this provider has implemented.
+
+        WHO: OAuthFlowFactory calls this before it constructs a flow.
+        WHEN: Once per authentication attempt; the base preserves browser OAuth.
+        """
+        return frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION})
+
+    async def start_device_authorization(self) -> DeviceAuthorizationDAO:
+        """Request a provider device session when this provider supports it.
+
+        WHO: DeviceAuthorizationFlow invokes this once before presentation.
+        WHEN: Never called for browser authorization.
+
+        Raises:
+            OAuthDeviceAuthorizationUnsupportedError: If the provider did not opt in.
+        """
+        raise OAuthDeviceAuthorizationUnsupportedError(provider=self.provider_name)
+
+    async def poll_device_authorization(
+        self,
+        *,
+        device_authorization: DeviceAuthorizationDAO,
+    ) -> DeviceAuthorizationPollResultDAO:
+        """Perform one provider-specific device-token probe.
+
+        WHO: DeviceAuthorizationFlow calls this after each scheduled wait.
+        WHEN: Until it receives COMPLETE or raises a terminal typed error.
+        """
+        raise OAuthDeviceAuthorizationUnsupportedError(provider=self.provider_name)
 
     @property
     def callback_bind(self) -> Optional[CallbackBind]:
@@ -242,20 +347,32 @@ class OAuthProvider(ABC):
             OAuthTokenError: When the token endpoint returns a non-2xx
                 response.
         """
-        body: dict[str, str] = {
-            "grant_type": "authorization_code",
-            "code": code,
-            "code_verifier": verifier,
-            "redirect_uri": redirect_uri,
-            "client_id": self.client_id,
-        }
+        body: dict[str, str] = self._exchange_code_body(
+            code=code,
+            verifier=verifier,
+            redirect_uri=redirect_uri,
+        )
         async with ClientSession() as http:
             async with http.post(url=self.token_endpoint, data=body) as resp:
                 text: str = await resp.text()
                 if resp.status >= 400:
-                    raise OAuthTokenError(status=resp.status, body=text)
+                    raise OAuthTokenError(status=resp.status)
                 payload: dict[str, Any] = cast(dict[str, Any], json.loads(text))
         return self.parse_token_response(payload=payload)
+
+    def _exchange_code_body(self, *, code: str, verifier: str, redirect_uri: str) -> dict[str, str]:
+        """Build the exact standard authorization-code token form body.
+
+        WHO: exchange_code calls this once per successful browser or device completion.
+        WHEN: Immediately before its single token endpoint POST.
+        """
+        return {
+            "grant_type": "authorization_code",
+            "client_id": self.client_id,
+            "code": code,
+            "code_verifier": verifier,
+            "redirect_uri": redirect_uri,
+        }
 
     async def refresh(self, *, refresh_token: str) -> CredentialDAO:
         """Exchange a refresh token for a fresh credential (feature 07 §3.1).
@@ -290,7 +407,7 @@ class OAuthProvider(ABC):
             async with http.post(url=self.token_endpoint, data=body) as resp:
                 text: str = await resp.text()
                 if resp.status >= 400:
-                    raise OAuthTokenError(status=resp.status, body=text)
+                    raise OAuthTokenError(status=resp.status)
                 # ``Any`` is required because provider token payloads
                 # are untyped JSON.
                 payload: dict[str, Any] = cast(dict[str, Any], json.loads(text))

@@ -1,394 +1,358 @@
-"""Tests for ``AuthenticationScreen`` (02.b.5)."""
+"""Tests for ``AuthenticationScreen`` capability and OAuth task ownership."""
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
-from unittest.mock import AsyncMock, MagicMock
+from typing import Optional
 
 import pytest
 from textual.app import App
-from textual.widgets import Input
+from textual.widgets import Input, RadioButton, RadioSet, Static
 
-from src.auth.credential_dao import (
-    AuthType,
-    CredentialDAO,
-    ProviderName,
-)
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_store import CredentialStore
-from src.auth.oauth_errors import OAuthCallbackPortInUseError, OAuthTimeoutError
-from src.auth.oauth_flow import OAuthFlow
-from src.auth.oauth_provider import FauxOAuthProvider
+from src.auth.oauth_errors import OAuthTimeoutError, OAuthTokenError
+from src.auth.oauth_flow import AuthorizationPresentationDAO
+from src.auth.oauth_provider import DeviceAuthorizationPresentationDAO, OAuthLoginMethod
+from src.auth.provider_factory import OAuthAuthenticationFlow
 from src.tui.authentication import AuthenticationScreen
 from src.tui.authentication.widgets.api_key_input import ApiKeyInputWidget
 from src.tui.authentication.widgets.method_select import MethodSelectWidget
 from src.tui.authentication.widgets.oauth_status import OAuthStatusWidget
 from src.tui.authentication.widgets.provider_select import ProviderSelectWidget
-from src.tui.authentication.widgets.success_widget import SuccessWidget
 
 
 def _build_store(tmp_path: Path) -> CredentialStore:
-    """Return a tmp-rooted store for the test.
-
-    Args:
-        tmp_path (Path): pytest tmp_path fixture.
-
-    Returns:
-        CredentialStore: Store rooted at ``<tmp_path>/global/authentication.json``.
-    """
+    """Return a temporary credential store for one test."""
     return CredentialStore(path=tmp_path / "global" / "authentication.json")
 
 
-class _Harness(App):
-    """Mount ``AuthenticationScreen`` and capture the dismissal value."""
+class _FauxFlow:
+    """One injected flow whose result is scriptable without network access."""
+
+    def __init__(self, *, invoke: Callable[[], Awaitable[CredentialDAO]]) -> None:
+        """Store the one scripted interaction gateway."""
+        self._invoke: Callable[[], Awaitable[CredentialDAO]] = invoke
+
+    async def invoke(self) -> CredentialDAO:
+        """Run the scripted credential outcome."""
+        return await self._invoke()
+
+
+class _FauxOAuthFactory:
+    """Record factory calls and provide declared capabilities to the modal."""
 
     def __init__(
         self,
         *,
-        store: CredentialStore,
-        oauth_factory: Callable[..., OAuthFlow],
+        login_methods: frozenset[OAuthLoginMethod],
+        build_flow: Callable[
+            [
+                ProviderName,
+                OAuthLoginMethod,
+                Callable[[AuthorizationPresentationDAO], None],
+                Callable[[DeviceAuthorizationPresentationDAO], None],
+                Callable[[], Awaitable[str]] | None,
+                Callable[[], None],
+            ],
+            OAuthAuthenticationFlow,
+        ],
     ) -> None:
-        """Wire the harness with injected dependencies.
+        """Store capability and flow scripts for the test journey."""
+        self._login_methods: frozenset[OAuthLoginMethod] = login_methods
+        self._build_flow = build_flow
+        self.supported_calls: list[ProviderName] = []
+        self.calls: list[dict[str, object]] = []
 
-        Args:
-            store (CredentialStore): Store passed through to the modal.
-            oauth_factory (Callable[..., OAuthFlow]): Factory for OAuth
-                flows; production calls it with ``provider=...`` keyword.
-        """
+    def supported_login_methods(self, *, provider: ProviderName) -> frozenset[OAuthLoginMethod]:
+        """Return the configured capability set and record the single read."""
+        self.supported_calls.append(provider)
+        return self._login_methods
+
+    def __call__(
+        self,
+        *,
+        provider: ProviderName,
+        login_method: OAuthLoginMethod,
+        present_browser_authorization: Callable[[AuthorizationPresentationDAO], None],
+        present_device_authorization: Callable[[DeviceAuthorizationPresentationDAO], None],
+        authorization_response_receiver: Callable[[], Awaitable[str]] | None,
+        present_callback_unavailable: Callable[[], None] = lambda: None,
+    ) -> OAuthAuthenticationFlow:
+        """Record exact five-argument wiring and build the scripted flow."""
+        self.calls.append(
+            {
+                "provider": provider,
+                "login_method": login_method,
+                "present_browser_authorization": present_browser_authorization,
+                "present_device_authorization": present_device_authorization,
+                "authorization_response_receiver": authorization_response_receiver,
+                "present_callback_unavailable": present_callback_unavailable,
+            }
+        )
+        return self._build_flow(
+            provider=provider,
+            login_method=login_method,
+            browser_present=present_browser_authorization,
+            device_present=present_device_authorization,
+            receiver=authorization_response_receiver,
+            callback_unavailable=present_callback_unavailable,
+        )
+
+
+class _Harness(App):
+    """Push the authentication modal and record its dismissal result."""
+
+    def __init__(self, *, store: CredentialStore, oauth_factory: _FauxOAuthFactory) -> None:
+        """Save injected collaborators for the mounted modal."""
         super().__init__()
         self._store: CredentialStore = store
-        self._oauth_factory: Callable[..., OAuthFlow] = oauth_factory
+        self._oauth_factory: _FauxOAuthFactory = oauth_factory
         self.dismissed_with: Optional[CredentialDAO] = None
         self.completed: asyncio.Event = asyncio.Event()
 
     def on_mount(self) -> None:
-        """Push ``AuthenticationScreen`` and register the dismiss callback."""
+        """Push the modal after the application is ready."""
         self.push_screen(
             AuthenticationScreen(store=self._store, oauth_factory=self._oauth_factory),
             callback=self._on_dismiss,
         )
 
     def _on_dismiss(self, value: Optional[CredentialDAO]) -> None:
-        """Record the dismissal value and unblock the awaiting test.
-
-        Args:
-            value (Optional[CredentialDAO]): Whatever the modal dismissed with.
-        """
+        """Record the modal result for test assertions."""
         self.dismissed_with = value
         self.completed.set()
 
 
-def _faux_factory(*, provider: ProviderName) -> OAuthFlow:
-    """Build a no-op ``OAuthFlow`` for tests that never run OAuth.
-
-    Args:
-        provider (ProviderName): Ignored; included for shape parity.
-
-    Returns:
-        OAuthFlow: Wired around ``FauxOAuthProvider``.
-    """
-    return OAuthFlow(provider=FauxOAuthProvider(provider=provider))
-
-
-class TestAuthenticationScreenApiKeyPath:
-    """End-to-end API-key flow persists and dismisses with the credential."""
-
-    @pytest.mark.asyncio
-    async def test_api_key_path_persists_and_dismisses(self, tmp_path: Path) -> None:
-        """Provider → method → api_key → save → close → dismiss(cred)."""
-        store: CredentialStore = _build_store(tmp_path)
-        harness: _Harness = _Harness(store=store, oauth_factory=_faux_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-            await pilot.click("#method-api-key")
-            await pilot.pause()
-            await pilot.click("#method-continue")
-            await pilot.pause()
-            pilot.app.screen.query_one(
-                ApiKeyInputWidget,
-            ).query_one("#api-key-input", Input).value = "sk-test"
-            await pilot.click("#api-key-save")
-            await pilot.pause()
-            await pilot.click("#success-close")
-            await harness.completed.wait()
-
-        assert harness.dismissed_with is not None
-        envelope = store.load()
-        assert ProviderName.ANTHROPIC in envelope.providers
-        assert envelope.providers[ProviderName.ANTHROPIC].access_token == "sk-test"
+def _credential(*, provider: ProviderName) -> CredentialDAO:
+    """Create a completed, non-secret test credential."""
+    return CredentialDAO(
+        provider=provider,
+        auth_type=AuthType.OAUTH,
+        access_token="test-access-token",
+        refresh_token="test-refresh-token",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        subject="test@example.invalid",
+    )
 
 
-class TestAuthenticationScreenOAuthFailure:
-    """OAuth failure renders inline error and keeps the modal open."""
+async def _never_complete() -> CredentialDAO:
+    """Block until cancelled, representing an in-flight OAuth attempt."""
+    await asyncio.Event().wait()
+    raise AssertionError("unreachable")
+
+
+class TestAuthenticationScreen:
+    """Screen owns capabilities, exactly one flow task, response queue, and persistence."""
 
     @pytest.mark.asyncio
-    async def test_oauth_timeout_renders_error_and_does_not_dismiss(
+    async def test_browser_selection_wires_the_verbatim_five_factory_arguments_and_submits_once(
         self, tmp_path: Path
     ) -> None:
-        """``OAuthTimeoutError`` → OAuthStatusWidget shows error; modal stays."""
+        """Browser selection builds one queue-backed flow and rejects a second response."""
+        received_responses: list[str] = []
+
+        def _build_flow(
+            provider: ProviderName,
+            login_method: OAuthLoginMethod,
+            browser_present: Callable[[AuthorizationPresentationDAO], None],
+            device_present: Callable[[DeviceAuthorizationPresentationDAO], None],
+            receiver: Callable[[], Awaitable[str]] | None,
+            callback_unavailable: Callable[[], None],
+        ) -> OAuthAuthenticationFlow:
+            """Present dummy browser instructions then await one opaque response."""
+            assert receiver is not None
+            receiver_for_flow: Callable[[], Awaitable[str]] = receiver
+
+            async def _invoke() -> CredentialDAO:
+                """Complete after the receiver yields one response."""
+                browser_present(
+                    AuthorizationPresentationDAO(
+                        authorize_url="https://example.invalid/dummy-browser",
+                        redirect_uri="http://localhost:1455/auth/callback",
+                        instructions="unused",
+                    )
+                )
+                received_responses.append(await receiver_for_flow())
+                return _credential(provider=provider)
+
+            return _FauxFlow(invoke=_invoke)
+
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION}),
+            build_flow=_build_flow,
+        )
         store: CredentialStore = _build_store(tmp_path)
-
-        def _factory(*, provider: ProviderName) -> OAuthFlow:
-            """Return an OAuth flow that fails with ``OAuthTimeoutError``."""
-            flow = MagicMock(spec=OAuthFlow)
-            flow.start = AsyncMock(side_effect=OAuthTimeoutError())
-            return flow
-
-        harness: _Harness = _Harness(store=store, oauth_factory=_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-            await pilot.click("#method-continue")  # OAuth is default
-            await pilot.pause()
-            await asyncio.sleep(0.05)
-            await pilot.pause()
-            status: OAuthStatusWidget = pilot.app.screen.query_one(OAuthStatusWidget)
-            from textual.widgets import Static
-            error_label: str = str(status.query_one("#oauth-error", Static).content)
-            assert "timed out" in error_label.lower()
-
-        assert harness.dismissed_with is None
-
-
-class TestAuthenticationScreenOAuthPortCollision:
-    """Fixed-port bind collisions render an inline actionable message."""
-
-    @pytest.mark.asyncio
-    async def test_oauth_callback_port_in_use_renders_error(
-        self, tmp_path: Path
-    ) -> None:
-        """``OAuthCallbackPortInUseError`` → actionable inline auth-screen copy."""
-        store: CredentialStore = _build_store(tmp_path)
-
-        def _factory(*, provider: ProviderName) -> OAuthFlow:
-            flow = MagicMock(spec=OAuthFlow)
-            flow.start = AsyncMock(side_effect=OAuthCallbackPortInUseError(port=53692))
-            return flow
-
-        harness: _Harness = _Harness(store=store, oauth_factory=_factory)
-
+        harness: _Harness = _Harness(store=store, oauth_factory=factory)
         async with harness.run_test() as pilot:
             await pilot.pause()
             await pilot.click("#provider-continue")
             await pilot.pause()
             await pilot.click("#method-continue")
             await pilot.pause()
-            await asyncio.sleep(0.05)
-            await pilot.pause()
             status: OAuthStatusWidget = pilot.app.screen.query_one(OAuthStatusWidget)
-            from textual.widgets import Static
-            error_label: str = str(status.query_one("#oauth-error", Static).content)
-            assert "could not bind the local callback port" in error_label.lower()
+            response_input: Input = status.query_one("#oauth-response-input", Input)
+            response_input.value = "first-opaque-response"
+            status._submit_authorization_response()
+            response_input.value = "second-opaque-response"
+            status._submit_authorization_response()
+            await pilot.pause()
+            await pilot.pause()
 
+            assert len(factory.calls) == 1
+            call: dict[str, object] = factory.calls[0]
+            assert call["provider"] is ProviderName.ANTHROPIC
+            assert call["login_method"] is OAuthLoginMethod.BROWSER_AUTHORIZATION
+            assert callable(call["present_browser_authorization"])
+            assert callable(call["present_device_authorization"])
+            assert callable(call["authorization_response_receiver"])
+            assert callable(call["present_callback_unavailable"])
 
-class TestAuthenticationScreenCancel:
-    """Esc dismisses with ``None`` and cleans up the OAuth task."""
+        assert received_responses in ([], ["first-opaque-response"])
+        assert store.load().providers.get(ProviderName.ANTHROPIC) is None or (
+            store.load().providers[ProviderName.ANTHROPIC].auth_type is AuthType.OAUTH
+        )
 
     @pytest.mark.asyncio
-    async def test_escape_dismisses_with_none(self, tmp_path: Path) -> None:
-        """Pressing Esc from provider step → dismiss(None)."""
-        store: CredentialStore = _build_store(tmp_path)
-        harness: _Harness = _Harness(store=store, oauth_factory=_faux_factory)
-
+    async def test_method_capabilities_are_resolved_once_and_reused_on_back(self, tmp_path: Path) -> None:
+        """Forward selection and Back use the cached set without a second factory read."""
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset(
+                {OAuthLoginMethod.BROWSER_AUTHORIZATION, OAuthLoginMethod.DEVICE_AUTHORIZATION}
+            ),
+            build_flow=lambda provider, login_method, browser_present, device_present, receiver, callback_unavailable: _FauxFlow(
+                invoke=_never_complete
+            ),
+        )
+        harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
         async with harness.run_test() as pilot:
             await pilot.pause()
+            await pilot.click("#provider-continue")
+            await pilot.pause()
+            selector: MethodSelectWidget = pilot.app.screen.query_one(MethodSelectWidget)
+            assert len(list(selector.query(RadioButton))) == 3
+            await pilot.click("#method-continue")
+            await pilot.pause()
+            pilot.app.screen.query_one(OAuthStatusWidget).post_message(OAuthStatusWidget.BackRequested())
+            await pilot.pause()
+            assert pilot.app.screen.query_one(MethodSelectWidget) is not None
+
+        assert factory.supported_calls == [ProviderName.ANTHROPIC]
+
+    @pytest.mark.asyncio
+    async def test_device_flow_persists_only_completed_credential(self, tmp_path: Path) -> None:
+        """Device selection presents safe instructions and persists exactly the returned DAO."""
+
+        def _build_flow(
+            provider: ProviderName,
+            login_method: OAuthLoginMethod,
+            browser_present: Callable[[AuthorizationPresentationDAO], None],
+            device_present: Callable[[DeviceAuthorizationPresentationDAO], None],
+            receiver: Callable[[], Awaitable[str]] | None,
+            callback_unavailable: Callable[[], None],
+        ) -> OAuthAuthenticationFlow:
+            """Build a completed device flow with no browser receiver."""
+            assert login_method is OAuthLoginMethod.DEVICE_AUTHORIZATION
+            assert receiver is None
+
+            async def _invoke() -> CredentialDAO:
+                """Publish safe device copy before returning its credential."""
+                device_present(
+                    DeviceAuthorizationPresentationDAO(
+                        verification_uri="https://example.invalid/device",
+                        user_code="DUMMY-ONLY",
+                        expires_in_seconds=900,
+                    )
+                )
+                return _credential(provider=provider)
+
+            return _FauxFlow(invoke=_invoke)
+
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset(
+                {OAuthLoginMethod.BROWSER_AUTHORIZATION, OAuthLoginMethod.DEVICE_AUTHORIZATION}
+            ),
+            build_flow=_build_flow,
+        )
+        store: CredentialStore = _build_store(tmp_path)
+        harness: _Harness = _Harness(store=store, oauth_factory=factory)
+        async with harness.run_test() as pilot:
+            await pilot.pause()
+            radio_set: RadioSet = pilot.app.screen.query_one("#provider-radio", RadioSet)
+            await pilot.click(list(radio_set.query(RadioButton))[1])
+            await pilot.click("#provider-continue")
+            await pilot.pause()
+            await pilot.click("#method-device_authorization")
+            await pilot.click("#method-continue")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert store.load().providers[ProviderName.OPENAI].auth_type is AuthType.OAUTH
+        assert len(factory.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_back_cancel_and_escape_discard_browser_queue_without_persisting(
+        self, tmp_path: Path
+    ) -> None:
+        """All cancellation routes await task cancellation and clear queue ownership."""
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION}),
+            build_flow=lambda provider, login_method, browser_present, device_present, receiver, callback_unavailable: _FauxFlow(
+                invoke=_never_complete
+            ),
+        )
+        store: CredentialStore = _build_store(tmp_path)
+        harness: _Harness = _Harness(store=store, oauth_factory=factory)
+        async with harness.run_test() as pilot:
+            await pilot.pause()
+            await pilot.click("#provider-continue")
+            await pilot.pause()
+            await pilot.click("#method-continue")
+            await pilot.pause()
+            screen: AuthenticationScreen = pilot.app.screen
+            assert screen._authorization_response_queue is not None
+            await screen.on_oauth_status_widget_back_requested(OAuthStatusWidget.BackRequested())
+            await pilot.pause()
+            assert screen._authorization_response_queue is None
             await pilot.press("escape")
             await harness.completed.wait()
 
-        assert harness.dismissed_with is None
         assert store.load().providers == {}
 
-
-class TestAuthenticationScreenBackNavigation:
-    """Back from method → provider re-renders ProviderSelectWidget."""
-
     @pytest.mark.asyncio
-    async def test_back_from_method_returns_to_provider(
-        self, tmp_path: Path
-    ) -> None:
-        """Provider → method → Back → provider."""
-        store: CredentialStore = _build_store(tmp_path)
-        harness: _Harness = _Harness(store=store, oauth_factory=_faux_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-            await pilot.click("#method-back")
-            await pilot.pause()
-
-            assert pilot.app.screen.query_one(ProviderSelectWidget) is not None
-
-
-class TestAuthenticationScreenOAuthCancelPath:
-    """Back during in-flight OAuth cancels without persisting or mounting Success."""
-
-    @pytest.mark.asyncio
-    async def test_oauth_cancelled_path_does_nothing(self, tmp_path: Path) -> None:
-        """Start OAuth, click Back → no SuccessWidget mounted, no row persisted."""
-        store: CredentialStore = _build_store(tmp_path)
-
-        async def _never_returns() -> CredentialDAO:
-            """Stand in for an OAuth flow that never completes."""
-            await asyncio.Event().wait()
-            raise AssertionError("unreachable")  # pragma: no cover
-
-        def _factory(*, provider: ProviderName) -> OAuthFlow:
-            """Return an OAuth flow whose ``start`` hangs forever."""
-            flow = MagicMock(spec=OAuthFlow)
-            flow.start = AsyncMock(side_effect=_never_returns)
-            return flow
-
-        harness: _Harness = _Harness(store=store, oauth_factory=_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-            await pilot.click("#method-continue")  # OAuth is default
-            await pilot.pause()
-            await pilot.click("#oauth-back")
-            await pilot.pause()
-
-            success_widgets: list[SuccessWidget] = list(
-                pilot.app.screen.query(SuccessWidget),
+    async def test_timeout_and_static_token_copy_are_safe_and_distinguishable(self, tmp_path: Path) -> None:
+        """Callback/attempt timeout and token failures have static body-free user copy."""
+        outcomes: list[BaseException] = [
+            OAuthTimeoutError(kind="callback"),
+            OAuthTimeoutError(kind="attempt"),
+            OAuthTokenError(status=500),
+        ]
+        messages: list[str] = []
+        for outcome in outcomes:
+            factory: _FauxOAuthFactory = _FauxOAuthFactory(
+                login_methods=frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION}),
+                build_flow=lambda provider, login_method, browser_present, device_present, receiver, callback_unavailable, result=outcome: _FauxFlow(
+                    invoke=lambda: _raise(result)
+                ),
             )
-            assert success_widgets == []
+            harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
+            async with harness.run_test() as pilot:
+                await pilot.pause()
+                await pilot.click("#provider-continue")
+                await pilot.pause()
+                await pilot.click("#method-continue")
+                await pilot.pause()
+                await pilot.pause()
+                messages.append(str(pilot.app.screen.query_one("#oauth-error", Static).content))
 
-        assert store.load().providers == {}
-
-
-class TestAuthenticationScreenOAuthSuccessPath:
-    """OAuth success persists the credential and dismisses with the DAO."""
-
-    @pytest.mark.asyncio
-    async def test_oauth_success_path_persists_and_dismisses_with_credential(
-        self, tmp_path: Path
-    ) -> None:
-        """Inject a faux flow returning a known DAO → dismiss callback receives it."""
-        store: CredentialStore = _build_store(tmp_path)
-        expected_credential: CredentialDAO = CredentialDAO(
-            provider=ProviderName.ANTHROPIC,
-            auth_type=AuthType.OAUTH,
-            access_token="oauth-success-token",
-            refresh_token="oauth-refresh",
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=3600),
-            subject="user@example.com",
-        )
-
-        def _factory(*, provider: ProviderName) -> OAuthFlow:
-            """Return an OAuth flow whose ``start`` resolves to ``expected_credential``."""
-            flow = MagicMock(spec=OAuthFlow)
-            flow.start = AsyncMock(return_value=expected_credential)
-            return flow
-
-        harness: _Harness = _Harness(store=store, oauth_factory=_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-            await pilot.click("#method-continue")  # OAuth is default
-            await pilot.pause()
-            await asyncio.sleep(0.05)
-            await pilot.pause()
-            await pilot.click("#success-close")
-            await harness.completed.wait()
-
-        assert harness.dismissed_with is not None
-        assert harness.dismissed_with.access_token == "oauth-success-token"
-        envelope = store.load()
-        assert ProviderName.ANTHROPIC in envelope.providers
-        assert (
-            envelope.providers[ProviderName.ANTHROPIC].access_token
-            == "oauth-success-token"
-        )
+        assert messages[0] != messages[1]
+        assert messages[2] == "Sign-in failed. Use Back to retry."
+        assert "500" not in messages[2]
 
 
-class TestAuthenticationScreenKimiForCodingPath:
-    """Kimi For Coding skips MethodSelectWidget and goes directly to ApiKeyInputWidget."""
-
-    @pytest.mark.asyncio
-    async def test_kimi_for_coding_skips_method_select_and_shows_api_key(
-        self, tmp_path: Path
-    ) -> None:
-        """Selecting Kimi For Coding → Continue → ApiKeyInputWidget appears immediately."""
-        from textual.widgets import RadioButton, RadioSet
-
-        store: CredentialStore = _build_store(tmp_path)
-        harness: _Harness = _Harness(store=store, oauth_factory=_faux_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            radio_set = pilot.app.screen.query_one("#provider-radio", RadioSet)
-            buttons = list(radio_set.query(RadioButton))
-            await pilot.click(buttons[2])  # Kimi For Coding is the third radio (index 2)
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-
-            assert pilot.app.screen.query_one(ApiKeyInputWidget) is not None
-            method_widgets = list(pilot.app.screen.query(MethodSelectWidget))
-            assert method_widgets == []
-
-    @pytest.mark.asyncio
-    async def test_kimi_for_coding_api_key_path_persists_and_dismisses(
-        self, tmp_path: Path
-    ) -> None:
-        """Kimi For Coding → api_key → save → close → dismiss with persisted KIMI_FOR_CODING cred."""
-        from textual.widgets import RadioButton, RadioSet
-
-        store: CredentialStore = _build_store(tmp_path)
-        harness: _Harness = _Harness(store=store, oauth_factory=_faux_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            radio_set = pilot.app.screen.query_one("#provider-radio", RadioSet)
-            buttons = list(radio_set.query(RadioButton))
-            await pilot.click(buttons[2])
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-            pilot.app.screen.query_one(
-                ApiKeyInputWidget,
-            ).query_one("#api-key-input", Input).value = "sk-kimi-test"
-            await pilot.click("#api-key-save")
-            await pilot.pause()
-            await pilot.click("#success-close")
-            await harness.completed.wait()
-
-        assert harness.dismissed_with is not None
-        envelope = store.load()
-        assert ProviderName.KIMI_FOR_CODING in envelope.providers
-        assert envelope.providers[ProviderName.KIMI_FOR_CODING].access_token == "sk-kimi-test"
-
-    @pytest.mark.asyncio
-    async def test_kimi_for_coding_back_from_api_key_returns_to_provider_select(
-        self, tmp_path: Path
-    ) -> None:
-        """Kimi For Coding → api_key → Back → ProviderSelectWidget (not MethodSelectWidget)."""
-        from textual.widgets import RadioButton, RadioSet
-
-        store: CredentialStore = _build_store(tmp_path)
-        harness: _Harness = _Harness(store=store, oauth_factory=_faux_factory)
-
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            radio_set = pilot.app.screen.query_one("#provider-radio", RadioSet)
-            buttons = list(radio_set.query(RadioButton))
-            await pilot.click(buttons[2])
-            await pilot.pause()
-            await pilot.click("#provider-continue")
-            await pilot.pause()
-            await pilot.click("#api-key-back")
-            await pilot.pause()
-
-            assert pilot.app.screen.query_one(ProviderSelectWidget) is not None
-            method_widgets = list(pilot.app.screen.query(MethodSelectWidget))
-            assert method_widgets == []
+async def _raise(exc: BaseException) -> CredentialDAO:
+    """Raise one scripted safe failure from an injected faux flow."""
+    raise exc

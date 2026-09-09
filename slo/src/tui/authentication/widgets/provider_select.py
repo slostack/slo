@@ -1,13 +1,13 @@
 """Provider-selection widget (02.b.5)."""
+
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, RadioButton, RadioSet, Static
 
 from src.auth.credential_dao import ProviderName
-
 
 __all__ = ["ProviderSelectWidget"]
 
@@ -37,8 +37,9 @@ class ProviderSelectWidget(Vertical):
             yield RadioButton(label="Anthropic (Claude / Claude Code)", value=True)
             yield RadioButton(label="OpenAI (ChatGPT)")
             yield RadioButton(label="Kimi For Coding")
-        yield Button(label="Continue", id="provider-continue", variant="primary")
-        yield Button(label="Cancel", id="provider-cancel", variant="default")
+        with Horizontal(classes="auth-actions"):
+            yield Button(label="Continue", id="provider-continue", variant="primary")
+            yield Button(label="Cancel", id="provider-cancel", variant="default")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Translate button clicks into ``Chosen`` / ``Cancelled``.

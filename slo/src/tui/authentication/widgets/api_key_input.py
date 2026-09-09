@@ -1,13 +1,13 @@
 """Paste-an-API-key widget (02.b.5)."""
+
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Input, Static
 
 from src.auth.credential_dao import ProviderName
-
 
 __all__ = ["ApiKeyInputWidget"]
 
@@ -50,9 +50,10 @@ class ApiKeyInputWidget(Vertical):
         )
         yield Input(password=True, placeholder="sk-...", id="api-key-input")
         yield Static("", id="api-key-error", classes="auth-error")
-        yield Button(label="Save", id="api-key-save", variant="primary")
-        yield Button(label="Back", id="api-key-back")
-        yield Button(label="Cancel", id="api-key-cancel")
+        with Horizontal(classes="auth-actions"):
+            yield Button(label="Back", id="api-key-back")
+            yield Button(label="Save", id="api-key-save", variant="primary")
+            yield Button(label="Cancel", id="api-key-cancel")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Route Save / Back / Cancel.

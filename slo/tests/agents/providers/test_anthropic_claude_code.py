@@ -166,9 +166,7 @@ class TestClaudeCodePayloadShaping:
         assistant_blocks: list[dict[str, Any]] = [
             m["content"] for m in payload["messages"] if m.get("role") == "assistant"
         ][0]
-        thinking_block: dict[str, Any] = next(
-            b for b in assistant_blocks if b.get("type") == "thinking"
-        )
+        thinking_block: dict[str, Any] = next(b for b in assistant_blocks if b.get("type") == "thinking")
         assert "thinking" in thinking_block
         assert thinking_block["thinking"] == ""
         assert thinking_block["signature"] == "sig-abc"
@@ -202,9 +200,7 @@ class TestClaudeCodePayloadShaping:
         assistant_blocks: list[dict[str, Any]] = [
             m["content"] for m in payload["messages"] if m.get("role") == "assistant"
         ][0]
-        thinking_block: dict[str, Any] = next(
-            b for b in assistant_blocks if b.get("type") == "thinking"
-        )
+        thinking_block: dict[str, Any] = next(b for b in assistant_blocks if b.get("type") == "thinking")
         assert thinking_block["thinking"] == "Let me read the file first."
 
 

@@ -4,6 +4,7 @@ Scans a skills directory tree for ``SKILL.md`` files, parses their YAML
 frontmatter, and returns ``SkillEntryDAO`` objects that the system-prompt
 builder can render as a structured ``<available_skills>`` XML block.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -468,5 +468,6 @@ class TestOAuthFlowReadsProviderBind:
 
         assert len(recorded_urls) == 1
         import urllib.parse as up
+
         query: dict[str, str] = dict(up.parse_qsl(up.urlsplit(recorded_urls[0]).query))
         assert query["state"] == mock_exchange.await_args.kwargs["verifier"]

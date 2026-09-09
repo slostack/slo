@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 from config.logger import log_warning
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.tools.tool_output import ToolOutputUpdateDAO
 from src.tui.event_renderer import format_tool_call_headline, format_tool_result_line
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
@@ -225,6 +226,10 @@ class TranscriptProjector:
             self._record_tool_call(block=final_tool_block)
             return
 
+        if event.kind == "tool_output_update":
+            await self._project_tool_output_update(event=event)
+            return
+
         if event.kind == "tool_result":
             await self._project_tool_result(event=event)
             return
@@ -291,6 +296,29 @@ class TranscriptProjector:
                 classes="assistant-aborted",
             )
             return
+
+    async def _project_tool_output_update(self, *, event: AgentStreamEventDAO) -> None:
+        """Patch the live tool block with one display-only output snapshot.
+
+        WHAT: Routes a partial snapshot to the same block used by its terminal result.
+        WHO: The normalized event projector calls it for ``tool_output_update``.
+        WHEN: A streaming tool publishes accumulated output before it settles.
+        """
+        tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
+        block: ToolExecutionBlock = await self._ensure_tool_block(
+            tool_call_id=tool_call_id,
+            tool_name=event.tool_name or "tool",
+        )
+        metadata: dict[str, Any] = event.metadata or {}
+        block.update_partial(
+            snapshot=ToolOutputUpdateDAO(
+                tool_call_id=tool_call_id,
+                tool_name=event.tool_name or block.tool_name,
+                content_snapshot=event.content or "",
+                truncated=bool(metadata.get("truncated", False)),
+                full_output_path=metadata.get("full_output_path"),
+            )
+        )
 
     async def project_user_turn(self, *, text: str, before: Optional[int] = None) -> None:
         """Mount one live user turn and record its logical line.

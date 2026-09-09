@@ -12,6 +12,7 @@ credentials the operator deliberately entered.  Set
 ``SLO_CONNECTOR_PREFER_ENV=1`` to restore env-first order for CI/CD pipelines
 that set credentials explicitly.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -250,9 +251,7 @@ class ConnectorCredentialResolver:
             Optional[ConnectorCredentialDAO]: Credentials when any PAT var is
                 set, otherwise ``None``.
         """
-        token: Optional[str] = (
-            _cfg("GITHUB_TOKEN") or _cfg("GH_TOKEN") or _cfg("SLO_GITHUB_TOKEN")
-        )
+        token: Optional[str] = _cfg("GITHUB_TOKEN") or _cfg("GH_TOKEN") or _cfg("SLO_GITHUB_TOKEN")
         if not token:
             return None
         base_url: str = (_cfg("SLO_GITHUB_API_BASE_URL") or "https://api.github.com").rstrip("/")
@@ -275,9 +274,7 @@ class ConnectorCredentialResolver:
             Optional[ConnectorCredentialDAO]: Credentials when any PAT var is
                 set, otherwise ``None``.
         """
-        token: Optional[str] = (
-            _cfg("GITLAB_TOKEN") or _cfg("GLAB_TOKEN") or _cfg("SLO_GITLAB_TOKEN")
-        )
+        token: Optional[str] = _cfg("GITLAB_TOKEN") or _cfg("GLAB_TOKEN") or _cfg("SLO_GITLAB_TOKEN")
         if not token:
             return None
         base_url: str = (_cfg("SLO_GITLAB_API_BASE_URL") or "https://gitlab.com/api/v4").rstrip("/")

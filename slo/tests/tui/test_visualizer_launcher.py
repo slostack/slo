@@ -290,9 +290,7 @@ class TestSuiteNeverSpawnsRealTerminals:
         """The autouse fixture replaced ``_default_spawn`` with the test stub."""
         assert getattr(VisualizerLauncher._default_spawn, "__test_stub__", False) is True
 
-    def test_unpatched_launch_spawns_no_real_process(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unpatched_launch_spawns_no_real_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The worst case — auto-visualize on, no injected spawner — stays inert.
 
         This is the exact path an unpatched TUI test takes when it streams a
@@ -305,9 +303,7 @@ class TestSuiteNeverSpawnsRealTerminals:
         monkeypatch.setenv("SLO_AUTO_VISUALIZE", "1")
 
         def _forbidden(*args: object, **kwargs: object) -> None:
-            raise AssertionError(
-                "a test tried to open a real terminal window via subprocess.Popen"
-            )
+            raise AssertionError("a test tried to open a real terminal window via subprocess.Popen")
 
         monkeypatch.setattr(subprocess, "Popen", _forbidden)
 

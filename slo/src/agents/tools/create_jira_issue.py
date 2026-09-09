@@ -1,4 +1,5 @@
 """``create_jira_issue`` tool — create one Jira issue or sub-task (25.a.3)."""
+
 from __future__ import annotations
 
 CREATE_JIRA_ISSUE_PROMPT_SNIPPET: str = (

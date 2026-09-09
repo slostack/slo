@@ -1,4 +1,5 @@
 """Tests for ``CredentialStore`` (02.b.1)."""
+
 import json
 import stat
 from pathlib import Path
@@ -45,9 +46,7 @@ def _build_anthropic_credential() -> CredentialDAO:
 class TestCredentialStoreLoad:
     """``CredentialStore.load`` — file-absent and parse paths."""
 
-    def test_load_returns_empty_envelope_when_file_absent(
-        self, tmp_path: Path
-    ) -> None:
+    def test_load_returns_empty_envelope_when_file_absent(self, tmp_path: Path) -> None:
         """Missing file → empty envelope, no error."""
         store: CredentialStore = CredentialStore(
             path=tmp_path / "global" / "authentication.json",
@@ -57,9 +56,7 @@ class TestCredentialStoreLoad:
 
         assert envelope == AuthenticationFileDAO()
 
-    def test_load_returns_parsed_envelope_when_file_present(
-        self, tmp_path: Path
-    ) -> None:
+    def test_load_returns_parsed_envelope_when_file_present(self, tmp_path: Path) -> None:
         """Valid file → envelope parsed via the DAO."""
         path: Path = tmp_path / "global" / "authentication.json"
         store: CredentialStore = CredentialStore(path=path)
@@ -80,9 +77,7 @@ class TestCredentialStoreLoad:
         with pytest.raises(CredentialStoreCorruptError):
             store.load()
 
-    def test_load_raises_corrupt_error_on_schema_violation(
-        self, tmp_path: Path
-    ) -> None:
+    def test_load_raises_corrupt_error_on_schema_violation(self, tmp_path: Path) -> None:
         """Wrong shape → ``CredentialStoreCorruptError``."""
         path: Path = tmp_path / "global" / "authentication.json"
         path.parent.mkdir(parents=True)
@@ -121,11 +116,13 @@ class TestCredentialStorePersist:
         path: Path = tmp_path / "global" / "authentication.json"
         store: CredentialStore = CredentialStore(path=path)
         store.persist(cred=_build_openai_credential())
-        store.persist(cred=CredentialDAO(
-            provider=ProviderName.OPENAI,
-            auth_type=AuthType.API_KEY,
-            access_token="sk-replacement",
-        ))
+        store.persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENAI,
+                auth_type=AuthType.API_KEY,
+                access_token="sk-replacement",
+            )
+        )
 
         envelope: AuthenticationFileDAO = store.load()
 
@@ -144,9 +141,7 @@ class TestCredentialStorePersist:
         assert ProviderName.OPENAI in envelope.providers
         assert ProviderName.ANTHROPIC in envelope.providers
 
-    def test_persist_corrects_directory_mode_on_subsequent_write(
-        self, tmp_path: Path
-    ) -> None:
+    def test_persist_corrects_directory_mode_on_subsequent_write(self, tmp_path: Path) -> None:
         """Re-chmod runs every write so hand-edited modes are corrected."""
         path: Path = tmp_path / "global" / "authentication.json"
         store: CredentialStore = CredentialStore(path=path)

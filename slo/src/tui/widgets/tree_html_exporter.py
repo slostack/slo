@@ -174,7 +174,7 @@ body {{
         # Render the current node
         lines.append(
             f'{prefix}<span style="color: {color.color}; '
-            f'font-weight: {color.weight}; '
+            f"font-weight: {color.weight}; "
             f'font-style: {color.style}">{label}</span>'
         )
 
@@ -202,12 +202,7 @@ body {{
     @staticmethod
     def _escape_html(*, text: str) -> str:
         """Escape HTML special characters in text."""
-        return (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-        )
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
     # ------------------------------------------------------------------
     # File I/O

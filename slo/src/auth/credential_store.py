@@ -1,4 +1,5 @@
 """Atomic read/write of ``~/.slo/global/authentication.json`` (02.b.1)."""
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,6 @@ from src.auth.credential_dao import (
     CredentialDAO,
     ProviderName,
 )
-
 
 __all__ = ["CredentialStore", "CredentialStoreCorruptError"]
 

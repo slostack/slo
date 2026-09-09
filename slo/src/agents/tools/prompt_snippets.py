@@ -1,4 +1,5 @@
 """Prompt-facing one-line descriptions for built-in and connector tools (25.a.6)."""
+
 from __future__ import annotations
 
 from src.agents.tools.bash import BASH_PROMPT_SNIPPET

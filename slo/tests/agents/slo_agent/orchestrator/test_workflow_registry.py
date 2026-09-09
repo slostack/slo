@@ -751,9 +751,7 @@ class TestReconcile:
 
         assert reconciled[0].state == "failed"
 
-    async def test_reconcile_spares_young_zero_pid_launching_handle(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_reconcile_spares_young_zero_pid_launching_handle(self, tmp_path: Path) -> None:
         """A pid-0 launching handle inside the spawn grace window is untouched.
 
         The launch tool writes the handle before the spawn and patches the pid
@@ -1004,17 +1002,18 @@ class TestWorkflowIdPathSafety:
     """Workflow ids from external input must never escape the workflows dir."""
 
     @pytest.mark.parametrize("unsafe_id", ["../evil", "a/b", "a\\b", "", "wf-..x"])
-    async def test_read_rejects_path_meta_workflow_id(
-        self, tmp_path: Path, unsafe_id: str
-    ) -> None:
+    async def test_read_rejects_path_meta_workflow_id(self, tmp_path: Path, unsafe_id: str) -> None:
         """An unsafe id reads back as an unknown workflow."""
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
         await _seed_handle(store=store, handle=_build_handle())
 
-        assert await store.read(
-            owner_session_id=_OWNER_SESSION_ID,
-            workflow_id=unsafe_id,
-        ) is None
+        assert (
+            await store.read(
+                owner_session_id=_OWNER_SESSION_ID,
+                workflow_id=unsafe_id,
+            )
+            is None
+        )
 
     async def test_update_state_rejects_path_meta_workflow_id(self, tmp_path: Path) -> None:
         """An unsafe id behaves exactly like a missing handle."""

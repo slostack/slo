@@ -760,6 +760,7 @@ class SloTUI(App):
             return
         self._usage_status_bar.update_snapshot(
             snapshot=self._session.usage_snapshot(),
+            plugin_statuses=self._session.plugin_status_map(),
         )
 
     async def on_unmount(self) -> None:

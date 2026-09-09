@@ -1,4 +1,5 @@
 """Tests for ``MethodSelectWidget`` (02.b.5)."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -24,21 +25,15 @@ class _Harness(App):
         """Yield a ``MethodSelectWidget`` keyed to Anthropic."""
         yield MethodSelectWidget(provider=ProviderName.ANTHROPIC)
 
-    def on_method_select_widget_chosen(
-        self, event: MethodSelectWidget.Chosen
-    ) -> None:
+    def on_method_select_widget_chosen(self, event: MethodSelectWidget.Chosen) -> None:
         """Record the chosen ``AuthType`` for assertion."""
         self.received_method = event.method
 
-    def on_method_select_widget_back_requested(
-        self, event: MethodSelectWidget.BackRequested
-    ) -> None:
+    def on_method_select_widget_back_requested(self, event: MethodSelectWidget.BackRequested) -> None:
         """Record that Back was requested."""
         self.back_requested = True
 
-    def on_method_select_widget_cancelled(
-        self, event: MethodSelectWidget.Cancelled
-    ) -> None:
+    def on_method_select_widget_cancelled(self, event: MethodSelectWidget.Cancelled) -> None:
         """Record that Cancel was clicked."""
         self.cancelled = True
 

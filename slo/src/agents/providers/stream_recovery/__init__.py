@@ -1,4 +1,5 @@
 """Public provider stream recovery vocabulary and classification helpers."""
+
 from src.agents.providers.stream_recovery.dao import (
     ProviderStreamFailure,
     ProviderStreamProgressTimeout,

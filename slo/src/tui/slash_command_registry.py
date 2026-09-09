@@ -66,6 +66,17 @@ class SlashCommandRegistry:
         for command in commands:
             self._register(command=command)
 
+    def register(self, *, command: SlashCommandSpecDAO) -> None:
+        """Register one extension command through the canonical collision owner.
+
+        Args:
+            command (SlashCommandSpecDAO): Built-in or plugin command metadata.
+
+        Raises:
+            ValueError: When a built-in, plugin, or alias token is already bound.
+        """
+        self._register(command=command)
+
     def _register(self, *, command: SlashCommandSpecDAO) -> None:
         """Add one command and its aliases to the registry.
 
@@ -255,6 +266,12 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         usage="/rename <session name>",
         argument_hint="session name",
         display_order=100,
+    ),
+    SlashCommandSpecDAO(
+        name="plugins",
+        description="list plugins; trust or reload plugin registrations",
+        argument_mode="enumerated",
+        display_order=98,
     ),
     SlashCommandSpecDAO(
         name="preferences",

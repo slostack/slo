@@ -1,4 +1,5 @@
 """Tests for the ``ls`` tool (sub-spec 01.e §5.3)."""
+
 from pathlib import Path
 
 import pytest

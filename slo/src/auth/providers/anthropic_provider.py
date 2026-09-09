@@ -5,6 +5,7 @@ Token responses are bearer tokens of the same shape that
 ``CredentialResolver._read_legacy_claude_oauth`` understands from
 ``~/.claude/.credentials.json``.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,7 +18,6 @@ from config.cfg import cfg as _cfg
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.oauth_errors import OAuthTokenError
 from src.auth.oauth_provider import CallbackBind, OAuthProvider
-
 
 __all__ = ["AnthropicOAuthProvider"]
 

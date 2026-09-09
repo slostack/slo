@@ -4,6 +4,7 @@ These tests assemble a real ModelPool from FauxChatModel instances and
 exercise the full credit-exhaustion fallback path without touching any
 provider API.
 """
+
 from __future__ import annotations
 
 import time
@@ -19,7 +20,6 @@ from src.agents.providers.credit_exhaustion_policy import (
 from src.agents.providers.model_pool import ModelPool, ModelPoolDAO, ModelPoolEntryDAO
 from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import ProviderName
-
 
 # ---------------------------------------------------------------------------
 # Helpers

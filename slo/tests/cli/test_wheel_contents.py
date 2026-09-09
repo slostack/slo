@@ -1,4 +1,4 @@
-"""The built wheel must carry ``skills/`` (packaging regression guard).
+"""The built wheel must carry ``skills/`` and ``plugins/`` (packaging regression guard).
 
 ``skills/`` is not a Python package, so nothing about the normal ``packages``
 declaration pulls it into the artifact — it ships only because
@@ -7,8 +7,16 @@ non-editable ``pipx install`` produced an agent that started with
 ``vendored_count=0``: every workflow and convention skill silently missing,
 which reads as the model choosing badly rather than as a broken install.
 
+``plugins/`` has the same failure mode: the bundled bash_live_output payload
+is resolved by ``PluginInstallerService`` as ``Path(__file__).parents[4] /
+"plugins" / "bash_live_output"`` — ``<site-packages>/plugins/...`` in a pipx
+install — so a wheel without it makes
+``slo plugin install-bundled-bash-live-output`` fail with
+"plugin source has no readable slo-plugin.json".
+
 The build is slow, so this is opt-in like the install smoke test.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,7 +27,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.e2e
 
 _REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
@@ -29,6 +36,11 @@ _REQUIRED_ENTRIES: tuple[str, ...] = (
     "skills/design-and-analysis/workflows/specification-development.md",
     "skills/design-and-analysis/workflows/code-test-review.md",
     "skills/coding/declarative-method-structure/SKILL.md",
+)
+
+_REQUIRED_PLUGIN_ENTRIES: tuple[str, ...] = (
+    "plugins/bash_live_output/slo-plugin.json",
+    "plugins/bash_live_output/plugin.py",
 )
 
 
@@ -88,9 +100,7 @@ class TestWheelShipsSkills:
             pytest.skip("not a git checkout; cannot enumerate committed skill files")
         wheel: Path = _build_wheel(output_dir=tmp_path)
         with zipfile.ZipFile(wheel) as archive:
-            shipped: set[str] = {
-                name for name in archive.namelist() if name.startswith("skills/")
-            }
+            shipped: set[str] = {name for name in archive.namelist() if name.startswith("skills/")}
 
         committed = subprocess.run(
             ["git", "ls-files", "skills"],
@@ -99,14 +109,11 @@ class TestWheelShipsSkills:
             text=True,
         )
         assert committed.returncode == 0, committed.stderr
-        expected: set[str] = {
-            line for line in committed.stdout.splitlines() if line.strip()
-        }
+        expected: set[str] = {line for line in committed.stdout.splitlines() if line.strip()}
 
         assert expected, "no committed files under skills/ — check the checkout"
         assert expected - shipped == set(), (
-            "committed skill files missing from the wheel: "
-            f"{sorted(expected - shipped)}"
+            "committed skill files missing from the wheel: " f"{sorted(expected - shipped)}"
         )
 
     def test_wheel_contains_the_workflow_entry_points(self, tmp_path: Path) -> None:
@@ -117,3 +124,20 @@ class TestWheelShipsSkills:
 
         missing: list[str] = [entry for entry in _REQUIRED_ENTRIES if entry not in names]
         assert missing == [], f"wheel is missing required skill files: {missing}"
+
+
+@pytest.mark.skipif(
+    os.environ.get("SLO_PACKAGING_E2E") != "1",
+    reason="opt-in only: set SLO_PACKAGING_E2E=1 (runs a full poetry build)",
+)
+class TestWheelShipsBundledPlugins:
+    """``[tool.poetry] include`` must place plugins/ inside the wheel."""
+
+    def test_wheel_contains_the_bundled_bash_live_output_payload(self, tmp_path: Path) -> None:
+        """The bundled manifest + entry point ship so managed bundled install works."""
+        wheel: Path = _build_wheel(output_dir=tmp_path)
+        with zipfile.ZipFile(wheel) as archive:
+            names: set[str] = set(archive.namelist())
+
+        missing: list[str] = [entry for entry in _REQUIRED_PLUGIN_ENTRIES if entry not in names]
+        assert missing == [], f"wheel is missing bundled plugin files: {missing}"

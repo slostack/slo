@@ -1,4 +1,5 @@
 """Tests for the ``now`` tool (sub-spec 01.e §5.5)."""
+
 import asyncio
 import re
 from datetime import datetime

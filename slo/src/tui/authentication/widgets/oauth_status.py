@@ -1,4 +1,5 @@
 """OAuth in-flight status widget (02.b.5)."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -9,7 +10,6 @@ from textual.message import Message
 from textual.widgets import Button, Static
 
 from src.auth.credential_dao import ProviderName
-
 
 __all__ = ["OAuthStatusWidget"]
 

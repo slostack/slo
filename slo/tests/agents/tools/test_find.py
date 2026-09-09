@@ -1,4 +1,5 @@
 """Tests for the ``find`` tool (sub-spec 01.e §5.2)."""
+
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,7 @@ async def test_find_matches_glob(repo: Path) -> None:
     result = await find_tool.ainvoke({"pattern": "**/*.py", "path": str(repo)})
     assert "src/a.py" in result
     assert "src/b.py" in result
-    assert "dist/out.py" not in result   # gitignored
+    assert "dist/out.py" not in result  # gitignored
 
 
 @pytest.mark.asyncio

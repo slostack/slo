@@ -1,4 +1,5 @@
 """Priority-ordered, cooldown-aware, switchable LLM router (28.a.3 / 37.a.2)."""
+
 from __future__ import annotations
 
 import time
@@ -163,9 +164,7 @@ class ModelPool(BaseChatModel):
         """
         super().__init__()
         self._pool_dao: ModelPoolDAO = pool_dao
-        self._entries: List[ModelPoolEntryDAO] = sorted(
-            pool_dao.entries, key=lambda e: e.priority
-        )
+        self._entries: List[ModelPoolEntryDAO] = sorted(pool_dao.entries, key=lambda e: e.priority)
         self._models: dict[str, BaseChatModel] = models
         self._cooldowns: dict[str, float] = cooldowns or {}
         self._request_adapter: RequestAdapter = request_adapter or _identity_request_adapter
@@ -398,9 +397,7 @@ class ModelPool(BaseChatModel):
             cool_until: float = self._cooldowns.get(entry.model_name, 0.0)
             if cool_until <= now:
                 return entry.model_name, self._models[entry.model_name], entry
-        raise AllModelsExhaustedError(
-            cooled_models=[e.model_name for e in self._entries]
-        )
+        raise AllModelsExhaustedError(cooled_models=[e.model_name for e in self._entries])
 
     def _unwrap_member(
         self,
@@ -451,9 +448,7 @@ class ModelPool(BaseChatModel):
         Returns:
             bool: ``True`` when the pool should select the next member and replay.
         """
-        kind: ProviderErrorKind = ProviderErrorClassifier.classify(
-            error=exc, provider=entry.provider
-        )
+        kind: ProviderErrorKind = ProviderErrorClassifier.classify(error=exc, provider=entry.provider)
         if not should_switch(kind=kind):
             return False
         self._cool_entry(entry=entry, kind=kind)
@@ -478,9 +473,7 @@ class ModelPool(BaseChatModel):
             ProviderErrorKind.STREAM_DISCONNECTED,
         )
         seconds: int = (
-            entry.rate_limit_cooldown_seconds
-            if kind in short_cooldown_kinds
-            else entry.cooldown_seconds
+            entry.rate_limit_cooldown_seconds if kind in short_cooldown_kinds else entry.cooldown_seconds
         )
         self._cooldowns[entry.model_name] = time.monotonic() + seconds
 

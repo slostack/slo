@@ -1,4 +1,5 @@
 """Tests for search_jira_using_jql, get_jira_issue, create_jira_issue tools (25.a.3)."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -98,9 +99,7 @@ class TestCreateJiraIssueToolMetadata:
         assert "summary" in fields
 
     def test_schema_optional_fields_have_none_defaults(self) -> None:
-        schema = CreateJiraIssueSchemaDAO(
-            project_key="SLO", issue_type_name="Story", summary="Test"
-        )
+        schema = CreateJiraIssueSchemaDAO(project_key="SLO", issue_type_name="Story", summary="Test")
         assert schema.description is None
         assert schema.parent_issue_key is None
 

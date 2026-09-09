@@ -18,6 +18,7 @@ plain AST walk — no build, no network — so it runs in the default suite
 rather than behind the ``e2e`` marker that kept the installer smoke test
 from catching this.
 """
+
 from __future__ import annotations
 
 import ast
@@ -25,7 +26,6 @@ import re
 import sys
 import tomllib
 from pathlib import Path
-
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 
@@ -55,9 +55,7 @@ def _declared_distributions() -> set[str]:
         set[str]: Declared runtime distributions, lowercased with ``_``
             and ``.`` normalized to ``-`` per PEP 503.
     """
-    pyproject: dict = tomllib.loads(
-        (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    )
+    pyproject: dict = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     requirements: list[str] = pyproject["project"]["dependencies"]
     return {_normalize(_requirement_name(requirement)) for requirement in requirements}
 
@@ -149,15 +147,11 @@ class TestDeclaredDependencies:
 
         undeclared: dict[str, Path] = {}
         for package_name in _SHIPPED_PACKAGE_DIRS:
-            imported: dict[str, Path] = _imported_roots(
-                package_dir=_REPO_ROOT / package_name
-            )
+            imported: dict[str, Path] = _imported_roots(package_dir=_REPO_ROOT / package_name)
             for root, source_file in imported.items():
                 if not _is_third_party(root=root):
                     continue
-                distribution: str = _normalize(
-                    _IMPORT_TO_DISTRIBUTION.get(root, root)
-                )
+                distribution: str = _normalize(_IMPORT_TO_DISTRIBUTION.get(root, root))
                 if distribution not in declared:
                     undeclared[root] = source_file
 
@@ -180,9 +174,7 @@ class TestDeclaredDependencies:
         importers: list[Path] = [
             source_file
             for package_name in _SHIPPED_PACKAGE_DIRS
-            for root, source_file in _imported_roots(
-                package_dir=_REPO_ROOT / package_name
-            ).items()
+            for root, source_file in _imported_roots(package_dir=_REPO_ROOT / package_name).items()
             if root == "click"
         ]
 

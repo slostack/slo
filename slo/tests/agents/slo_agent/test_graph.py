@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
+from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.graph import (
     _TRUNCATION_HINT,
     SloAgentStateDAO,
@@ -29,6 +30,7 @@ from src.agents.base import LLMBuildResult, LLMFactory
 from src.agents.providers.model_pool import ModelPool, ModelPoolDAO, ModelPoolEntryDAO
 from src.agents.slo_agent.tool_execution import ToolExecutionMode
 from src.agents.providers import FauxChatModel
+from src.agents.tools.bundles import create_extended_tools
 from src.agents.tools.write import write_tool
 from src.auth.credential_dao import ProviderName
 
@@ -41,6 +43,23 @@ def stub_echo(text: str) -> str:
 
 def _state(messages: list) -> SloAgentStateDAO:
     return SloAgentStateDAO(messages=messages)
+
+
+def test_slo_agent_uses_default_bundle_when_tools_is_none() -> None:
+    """Legacy ``tools=None`` still binds the standard extended bundle."""
+    agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
+    assert agent.tools == []
+
+    default_agent = SloAgent(llm=FauxChatModel(responses=[]), tools=None)
+
+    assert [tool.name for tool in default_agent.tools] == [tool.name for tool in create_extended_tools()]
+
+
+def test_slo_agent_uses_only_supplied_tools_when_tools_is_nonempty() -> None:
+    """Legacy callers may replace, rather than extend, the default tool bundle."""
+    agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[stub_echo])
+
+    assert [tool.name for tool in agent.tools] == ["stub_echo"]
 
 
 def test_build_slo_agent_threads_reasoning_level_into_llm_factory() -> None:
@@ -443,9 +462,7 @@ def _two_member_dao() -> ModelPoolDAO:
     return ModelPoolDAO(
         entries=[
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1),
         ]
     )
 
@@ -471,9 +488,7 @@ class TestBuildSloAgentPoolBranch:
         faux_build = LLMBuildResult(llm=FauxChatModel(responses=[]), supports_explicit_caching=False)
         with patch.object(LLMFactory, "create", return_value=faux_build):
             result = build_slo_agent(model_pool_dao=_two_member_dao(), tools=[stub_echo])
-        assert hasattr(result.llm, "active_llm") or hasattr(
-            getattr(result.llm, "bound", None), "active_llm"
-        )
+        assert hasattr(result.llm, "active_llm") or hasattr(getattr(result.llm, "bound", None), "active_llm")
 
     def test_result_carries_bound_llm(self) -> None:
         """The single-model build result carries the bound LLM."""

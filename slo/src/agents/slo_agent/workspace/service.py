@@ -1,4 +1,5 @@
 """VscodeWorkspaceLoader service — loads resolved folders from a VSCode workspace file."""
+
 from __future__ import annotations
 
 import json
@@ -8,7 +9,6 @@ import json5
 
 from config.logger import log_info
 from src.agents.slo_agent.workspace.dao import WorkspaceFileParseError, WorkspaceFolderDAO
-
 
 __all__ = ["VscodeWorkspaceLoader"]
 

@@ -1,4 +1,5 @@
 """Tests for feature-69 image result tracing into durable history."""
+
 from __future__ import annotations
 
 import base64
@@ -17,7 +18,6 @@ from src.agents.slo_agent.tool_execution.dao import ToolCallEnvelopeDAO, ToolCon
 from src.agents.slo_agent.tool_execution.executors import SequentialToolExecutor
 from src.agents.tools._image_content import IMAGE_MAX_EDGE, MAX_ENCODED_BYTES
 from src.agents.tools.read import read_tool
-
 
 _IMAGE_REFERENCE: str = "[image attached: large.jpg, 1568x1045, ref /abs/path/large.jpg]"
 

@@ -13,6 +13,8 @@ from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 
 __all__ = ["build_headless_child_env", "open_capture_file_append"]
 
+# Includes the explicit Feature 75 kill switch ``SLO_PLUGINS_DISABLED`` so
+# headless children deterministically inherit the parent's plugin policy.
 _ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("SLO_",)
 _ENV_ALLOWLIST_EXACT: tuple[str, ...] = ("PATH", "HOME", "LANG", "TERM", "PYENV_ROOT", "PYENV_VERSION")
 _ENV_SECRET_MARKERS: tuple[str, ...] = ("KEY", "TOKEN", "SECRET", "PASSWORD")
@@ -74,9 +76,24 @@ def _allowlisted_parent_env() -> dict[str, str]:
         if name in _ENV_ALLOWLIST_EXACT:
             child_env[name] = value
             continue
-        if name.startswith(_ENV_ALLOWLIST_PREFIXES) and not _is_secret_env_name(name=name):
+        if _is_forwarded_slo_setting(name=name):
             child_env[name] = value
     return child_env
+
+
+def _is_forwarded_slo_setting(*, name: str) -> bool:
+    """Return whether a Slo setting is safe to inherit into a child process.
+
+    Args:
+        name (str): Parent environment variable name.
+
+    Returns:
+        bool: True for non-secret ``SLO_*`` settings, including the explicit
+        ``SLO_PLUGINS_DISABLED`` policy switch.
+    """
+    if name == "SLO_PLUGINS_DISABLED":
+        return True
+    return name.startswith(_ENV_ALLOWLIST_PREFIXES) and not _is_secret_env_name(name=name)
 
 
 def _add_workflow_id(*, child_env: dict[str, str], workflow_id: Optional[str]) -> None:

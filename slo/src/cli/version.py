@@ -1,4 +1,5 @@
 """Resolve the ``slo`` package version (sub-spec 02.a.4)."""
+
 from __future__ import annotations
 
 import re
@@ -70,9 +71,7 @@ def _version_from_pyproject() -> Optional[str]:
     for directory in [search_root, *search_root.parents]:
         candidate: Path = directory / "pyproject.toml"
         if candidate.is_file():
-            version: Optional[str] = _parse_version_from_pyproject(
-                pyproject_path=candidate
-            )
+            version: Optional[str] = _parse_version_from_pyproject(pyproject_path=candidate)
             if version is not None:
                 return version
     return None

@@ -3,11 +3,11 @@
 Mirrors pi's truncation behaviour at pi/packages/agent/src/harness/utils/truncate.ts
 and the per-tool defaults documented in pi/packages/coding-agent/src/core/tools/.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
-
 
 __all__ = [
     "DEFAULT_LIMIT_FIND",

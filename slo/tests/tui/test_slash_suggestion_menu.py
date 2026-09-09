@@ -83,8 +83,7 @@ class TestSlashSuggestionMenu:
     def test_render_lines_includes_all_visible_rows(self) -> None:
         """The menu renders every suggestion row instead of truncating after eight."""
         rows: list[SlashSuggestionRowDAO] = [
-            SlashSuggestionRowDAO(insert_text=f"/cmd{i}", label=f"/cmd{i}")
-            for i in range(11)
+            SlashSuggestionRowDAO(insert_text=f"/cmd{i}", label=f"/cmd{i}") for i in range(11)
         ]
         state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(
             visible=True,

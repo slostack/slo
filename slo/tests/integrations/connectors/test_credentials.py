@@ -1,4 +1,5 @@
 """Tests for ConnectorCredentialResolver (25.a.1)."""
+
 from pathlib import Path
 from typing import Optional
 
@@ -35,9 +36,7 @@ def _clear_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestConnectorCredentialResolverEnv:
     """Env-variable resolution takes precedence over the store."""
 
-    def test_atlassian_resolves_from_env(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_atlassian_resolves_from_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         monkeypatch.setenv("SLO_ATLASSIAN_SITE_URL", "https://acme.atlassian.net")
@@ -68,9 +67,7 @@ class TestConnectorCredentialResolverEnv:
 
         assert cred is None
 
-    def test_github_uses_github_token_first(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_github_uses_github_token_first(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         monkeypatch.setenv("GITHUB_TOKEN", "gh-a")
@@ -82,9 +79,7 @@ class TestConnectorCredentialResolverEnv:
         assert cred is not None
         assert cred.token == "gh-a"
 
-    def test_github_falls_back_to_gh_token(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_github_falls_back_to_gh_token(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         monkeypatch.setenv("GH_TOKEN", "gh-b")
@@ -95,9 +90,7 @@ class TestConnectorCredentialResolverEnv:
         assert cred is not None
         assert cred.token == "gh-b"
 
-    def test_gitlab_uses_gitlab_token_first(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_gitlab_uses_gitlab_token_first(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         monkeypatch.setenv("GITLAB_TOKEN", "gl-a")
@@ -109,9 +102,7 @@ class TestConnectorCredentialResolverEnv:
         assert cred is not None
         assert cred.token == "gl-a"
 
-    def test_github_base_url_override_applied(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_github_base_url_override_applied(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         monkeypatch.setenv("GITHUB_TOKEN", "tok")
@@ -147,9 +138,7 @@ class TestConnectorCredentialResolverStore:
         assert cred is not None
         assert cred.token == "stored-tok"
 
-    def test_env_overrides_store(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_env_overrides_store(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
 
@@ -211,36 +200,36 @@ class TestConnectorCredentialResolverRequire:
 class TestConnectorCredentialResolverIsConfigured:
     """``is_configured`` reflects ``resolve() is not None``."""
 
-    def test_returns_false_when_no_credentials(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_returns_false_when_no_credentials(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
 
-        assert ConnectorCredentialResolver.is_configured(
-            provider=ConnectorProviderName.ATLASSIAN,
-        ) is False
+        assert (
+            ConnectorCredentialResolver.is_configured(
+                provider=ConnectorProviderName.ATLASSIAN,
+            )
+            is False
+        )
 
-    def test_returns_true_when_env_present(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_returns_true_when_env_present(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
         monkeypatch.setenv("SLO_ATLASSIAN_SITE_URL", "https://x.atlassian.net")
         monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "x@x.com")
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "x-tok")
 
-        assert ConnectorCredentialResolver.is_configured(
-            provider=ConnectorProviderName.ATLASSIAN,
-        ) is True
+        assert (
+            ConnectorCredentialResolver.is_configured(
+                provider=ConnectorProviderName.ATLASSIAN,
+            )
+            is True
+        )
 
 
 class TestConnectorCredentialResolverPrecedence:
     """Store-first precedence and SLO_CONNECTOR_PREFER_ENV=1 escape hatch."""
 
-    def test_store_beats_env_by_default(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_store_beats_env_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Default: store value wins over env vars."""
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
@@ -265,9 +254,7 @@ class TestConnectorCredentialResolverPrecedence:
         assert cred is not None
         assert cred.token == "store-tok"
 
-    def test_env_used_when_store_empty(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_env_used_when_store_empty(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """When store is empty, env is used as fallback."""
         _clear_env_vars(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))

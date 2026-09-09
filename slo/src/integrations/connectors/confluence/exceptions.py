@@ -1,4 +1,5 @@
 """Typed exceptions for the Confluence integration client (25.a.2)."""
+
 from __future__ import annotations
 
 __all__ = ["ConfluenceAPIError"]

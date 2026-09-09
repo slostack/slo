@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "entry_point": "plugin.py",
+  "payload": ["plugin.py"],
+  "tool_suffixes": [],
+  "command_suffixes": []
+}

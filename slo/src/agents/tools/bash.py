@@ -14,8 +14,11 @@ import asyncio
 import os
 import signal
 import tempfile
-from typing import Optional
+import time
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Optional, cast
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +26,7 @@ from config.cfg import cfg
 from config.logger import log_error, log_info
 from src.agents.tools._blocking import run_blocking_tool_call
 from src.agents.tools._truncate import Truncator
+from src.agents.tools.tool_output import ToolOutputUpdateDAO
 
 __all__ = [
     "BashSchemaDAO",
@@ -43,6 +47,7 @@ the run-forever behaviour.
 """
 
 _DEFAULT_BASH_TEARDOWN_GRACE_SECONDS: float = 5.0
+_BASH_UPDATE_THROTTLE_SECONDS: float = 0.1
 """Hard ceiling on the post-kill reap.
 
 Even after a process-group SIGKILL, an exotic descendant could resist reaping;
@@ -113,11 +118,65 @@ class BashSchemaDAO(BaseModel):
     )
 
 
+class _OutputSnapshotter:
+    """Accumulate Bash output and derive truncation-aware partial snapshots."""
+
+    def __init__(self, *, tool_call_id: str) -> None:
+        """Create one per-invocation accumulator.
+
+        Args:
+            tool_call_id (str): Stable executor call identity.
+        """
+        self._tool_call_id: str = tool_call_id
+        self._chunks: list[bytes] = []
+
+    def append(self, *, chunk: bytes) -> None:
+        """Append one merged stdout/stderr output chunk.
+
+        Args:
+            chunk (bytes): Raw output bytes.
+        """
+        self._chunks.append(chunk)
+
+    def raw_bytes(self) -> bytes:
+        """Return complete merged output in arrival order.
+
+        Returns:
+            bytes: Accumulated raw output.
+        """
+        return b"".join(self._chunks)
+
+    def snapshot(self, *, process: asyncio.subprocess.Process) -> ToolOutputUpdateDAO:
+        """Build one accumulated tail-truncated display snapshot.
+
+        Args:
+            process (asyncio.subprocess.Process): Process supplying current exit state.
+
+        Returns:
+            ToolOutputUpdateDAO: Stateless display snapshot.
+        """
+        raw: str = self.raw_bytes().decode("utf-8", errors="replace")
+        exit_code: int = process.returncode if process.returncode is not None else 0
+        tail = Truncator.tail(text=f"exit_code: {exit_code}\n{raw}")
+        return ToolOutputUpdateDAO(
+            tool_call_id=self._tool_call_id,
+            tool_name="bash",
+            content_snapshot=tail.text,
+            truncated=tail.truncated,
+        )
+
+
 class BashTool:
     """Cwd-bound shell tool with process-group termination, timeout, and output spill."""
 
     @classmethod
-    async def invoke(cls, command: str, timeout: Optional[float] = None) -> str:
+    async def invoke(
+        cls,
+        command: str,
+        timeout: Optional[float] = None,
+        on_update: Callable[..., Awaitable[None]] | None = None,
+        tool_call_id: str = "",
+    ) -> str:
         """Run ``command`` under ``/bin/bash -c`` in its own process group.
 
         Captures stdout and stderr interleaved. On timeout, the entire process
@@ -144,20 +203,35 @@ class BashTool:
             except OSError as exc:
                 return f"Error: failed to spawn shell: {exc}"
 
+            snapshotter: _OutputSnapshotter = _OutputSnapshotter(tool_call_id=tool_call_id)
             try:
-                stdout_bytes: bytes = await cls._communicate_with_timeout(
+                await cls._read_output_incrementally(
                     process=process,
                     timeout=effective_timeout,
+                    snapshotter=snapshotter,
+                    on_update=on_update,
                 )
             except asyncio.TimeoutError:
                 await cls._terminate_process_group(process=process)
+                await cls._emit_snapshot(
+                    process=process,
+                    snapshotter=snapshotter,
+                    on_update=on_update,
+                )
                 return f"Error: command exceeded {effective_timeout}s timeout"
 
-            return await run_blocking_tool_call(
+            result: str = await run_blocking_tool_call(
                 func=cls._format_result,
                 process=process,
-                stdout_bytes=stdout_bytes,
+                stdout_bytes=snapshotter.raw_bytes(),
             )
+            if on_update is not None:
+                cls._schedule_snapshot(
+                    process=process,
+                    snapshotter=snapshotter,
+                    on_update=on_update,
+                )
+            return result
         except Exception as exc:  # noqa: BLE001 — surface to model, never raise into the graph
             log_error(msg=f"BashTool failed for command: {command[:80]!r}", e=exc, stack_trace=False)
             return f"Error: bash failed: {exc}"
@@ -206,6 +280,106 @@ class BashTool:
             executable="/bin/bash",
             start_new_session=True,
         )
+
+    @classmethod
+    async def _read_output_incrementally(
+        cls,
+        *,
+        process: asyncio.subprocess.Process,
+        timeout: Optional[float],
+        snapshotter: _OutputSnapshotter,
+        on_update: Callable[..., Awaitable[None]] | None,
+    ) -> None:
+        """Read merged process output incrementally under the existing timeout.
+
+        Args:
+            process (asyncio.subprocess.Process): Running Bash process.
+            timeout (Optional[float]): Effective timeout ceiling.
+            snapshotter (_OutputSnapshotter): Per-call output accumulator.
+            on_update (Callable[..., Awaitable[None]] | None): Optional display sink.
+        """
+        reader = cls._read_stdout_chunks(
+            process=process,
+            snapshotter=snapshotter,
+            on_update=on_update,
+        )
+        if timeout is None:
+            await reader
+            return
+        await asyncio.wait_for(reader, timeout=timeout)
+
+    @classmethod
+    async def _read_stdout_chunks(
+        cls,
+        *,
+        process: asyncio.subprocess.Process,
+        snapshotter: _OutputSnapshotter,
+        on_update: Callable[..., Awaitable[None]] | None,
+    ) -> None:
+        """Drain chunks and emit at most one accumulated snapshot per 100ms.
+
+        Args:
+            process (asyncio.subprocess.Process): Running Bash process.
+            snapshotter (_OutputSnapshotter): Per-call output accumulator.
+            on_update (Callable[..., Awaitable[None]] | None): Optional display sink.
+        """
+        if process.stdout is None:
+            await process.wait()
+            return
+        next_emit_at: float = 0.0
+        while chunk := await process.stdout.read(4096):
+            snapshotter.append(chunk=chunk)
+            now: float = time.monotonic()
+            if on_update is not None and now >= next_emit_at:
+                cls._schedule_snapshot(
+                    process=process,
+                    snapshotter=snapshotter,
+                    on_update=on_update,
+                )
+                next_emit_at = now + _BASH_UPDATE_THROTTLE_SECONDS
+        await process.wait()
+
+    @classmethod
+    def _schedule_snapshot(
+        cls,
+        *,
+        process: asyncio.subprocess.Process,
+        snapshotter: _OutputSnapshotter,
+        on_update: Callable[..., Awaitable[None]],
+    ) -> None:
+        """Schedule one partial snapshot without back-pressuring process reads.
+
+        Args:
+            process (asyncio.subprocess.Process): Process supplying output state.
+            snapshotter (_OutputSnapshotter): Accumulated output source.
+            on_update (Callable[..., Awaitable[None]]): Display sink.
+        """
+        asyncio.create_task(
+            cls._emit_snapshot(
+                process=process,
+                snapshotter=snapshotter,
+                on_update=on_update,
+            )
+        )
+
+    @classmethod
+    async def _emit_snapshot(
+        cls,
+        *,
+        process: asyncio.subprocess.Process,
+        snapshotter: _OutputSnapshotter,
+        on_update: Callable[..., Awaitable[None]] | None,
+    ) -> None:
+        """Deliver one snapshot only when a consumer exists.
+
+        Args:
+            process (asyncio.subprocess.Process): Process supplying output state.
+            snapshotter (_OutputSnapshotter): Accumulated output source.
+            on_update (Callable[..., Awaitable[None]] | None): Optional display sink.
+        """
+        if on_update is None:
+            return
+        await on_update(snapshot=snapshotter.snapshot(process=process))
 
     @classmethod
     async def _communicate_with_timeout(
@@ -323,7 +497,11 @@ class BashTool:
 
 
 @tool(name_or_callable="bash", args_schema=BashSchemaDAO)
-async def bash_tool(command: str, timeout: Optional[float] = None) -> str:
+async def bash_tool(
+    command: str,
+    timeout: Optional[float] = None,
+    config: RunnableConfig = None,  # type: ignore[assignment]
+) -> str:
     """Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 64KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
 
     Args:
@@ -336,7 +514,37 @@ async def bash_tool(command: str, timeout: Optional[float] = None) -> str:
             error message on spawn / timeout failure.
     """
     log_info(msg=f"Using Bash Tool with command: {command[:80]!r}")
-    return await BashTool.invoke(command=command, timeout=timeout)
+    callback: Callable[..., Awaitable[None]] | None = _output_update_callback_from_config(config=config)
+    return await BashTool.invoke(command=command, timeout=timeout, on_update=callback)
+
+
+def _output_update_callback_from_config(
+    *,
+    config: RunnableConfig | None,
+) -> Callable[..., Awaitable[None]] | None:
+    """Resolve the executor callback from LangChain's mapping-shaped config.
+
+    WHAT: Reads the invocation-local callback from the ``configurable`` transport
+        without mutating a shared tool instance.
+    WHO: The ``bash_tool`` LangChain bridge calls it for executor-driven runs.
+    WHEN: Immediately before delegating to ``BashTool.invoke``.
+
+    Args:
+        config (RunnableConfig | None): LangChain invocation configuration.
+
+    Returns:
+        Callable[..., Awaitable[None]] | None: The typed update sink when the
+        executor supplied one, otherwise ``None`` for legacy direct invocation.
+    """
+    if config is None:
+        return None
+    configurable: object = config.get("configurable")
+    if not isinstance(configurable, Mapping):
+        return None
+    callback: object = configurable.get("slo_tool_output_update_callback")
+    if not callable(callback):
+        return None
+    return cast(Callable[..., Awaitable[None]], callback)
 
 
 if __name__ == "__main__":

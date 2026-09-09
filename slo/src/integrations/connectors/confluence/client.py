@@ -7,6 +7,7 @@ error mapping, but delegates credential lookup to the shared resolver so
 the TUI session can intercept ``ConnectorCredentialsRequiredError`` and
 open the first-run capture screen.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -153,14 +154,8 @@ class ConfluenceAPIClient:
             ConfluencePageSummaryDAO: Normalized summary.
         """
         metadata: dict[str, Any] = row.get("metadata", {})
-        last_modified: Optional[str] = (
-            row.get("lastModified")
-            or metadata.get("lastModified")
-        )
-        url: Optional[str] = (
-            row.get("url")
-            or (row.get("_links", {}) or {}).get("webui")
-        )
+        last_modified: Optional[str] = row.get("lastModified") or metadata.get("lastModified")
+        url: Optional[str] = row.get("url") or (row.get("_links", {}) or {}).get("webui")
         content: dict[str, Any] = row.get("content", {}) or {}
         return ConfluencePageSummaryDAO(
             page_id=str(content.get("id") or row.get("id") or ""),

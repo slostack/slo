@@ -89,9 +89,7 @@ class TestSlashTreeHandler:
             session=session,
         )
 
-        session.history_store.load_events.assert_awaited_once_with(
-            session_id="test-session-id"
-        )
+        session.history_store.load_events.assert_awaited_once_with(session_id="test-session-id")
 
     @pytest.mark.asyncio
     async def test_tree_command_in_registry(self) -> None:

@@ -1,4 +1,5 @@
 """Tests for ConfluenceAPIClient (25.a.2)."""
+
 from __future__ import annotations
 
 import json
@@ -33,9 +34,7 @@ def _atlassian_cred(base_url: str) -> ConnectorCredentialDAO:
 class TestConfluenceAPIClientInit:
     """Constructor raises when credentials are missing."""
 
-    def test_raises_when_no_credentials(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_raises_when_no_credentials(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         for var in (
             "SLO_ATLASSIAN_SITE_URL",
             "SLO_ATLASSIAN_EMAIL",
@@ -63,18 +62,21 @@ class TestConfluenceAPIClientSearchPages:
             "/wiki/rest/api/search",
             method="GET",
             query_string="cql=type%3Dpage&limit=5",
-        ).respond_with_json({
-            "results": [
-                {
-                    "content": {"id": "111", "title": "Test Page", "type": "page"},
-                    "url": "https://example.atlassian.net/wiki/spaces/TEST/pages/111",
-                }
-            ]
-        })
+        ).respond_with_json(
+            {
+                "results": [
+                    {
+                        "content": {"id": "111", "title": "Test Page", "type": "page"},
+                        "url": "https://example.atlassian.net/wiki/spaces/TEST/pages/111",
+                    }
+                ]
+            }
+        )
 
         client = ConfluenceAPIClient()
 
         import asyncio
+
         results = asyncio.run(client.search_pages(cql="type=page", limit=5))
 
         assert len(results) == 1
@@ -98,6 +100,7 @@ class TestConfluenceAPIClientSearchPages:
         client = ConfluenceAPIClient()
 
         import asyncio
+
         results = asyncio.run(client.search_pages(cql="type=page"))
 
         assert results == []
@@ -118,6 +121,7 @@ class TestConfluenceAPIClientSearchPages:
         client = ConfluenceAPIClient()
 
         import asyncio
+
         with pytest.raises(ConfluenceAPIError) as exc_info:
             asyncio.run(client.search_pages(cql="type=page"))
 
@@ -138,18 +142,19 @@ class TestConfluenceAPIClientGetPage:
         httpserver.expect_request(
             "/wiki/api/v2/pages/12345",
             method="GET",
-        ).respond_with_json({
-            "id": "12345",
-            "title": "My RFC",
-            "_links": {"webui": "/wiki/spaces/ENG/pages/12345"},
-            "body": {
-                "storage": {"value": "<p>Hello</p>", "representation": "storage"}
-            },
-        })
+        ).respond_with_json(
+            {
+                "id": "12345",
+                "title": "My RFC",
+                "_links": {"webui": "/wiki/spaces/ENG/pages/12345"},
+                "body": {"storage": {"value": "<p>Hello</p>", "representation": "storage"}},
+            }
+        )
 
         client = ConfluenceAPIClient()
 
         import asyncio
+
         page = asyncio.run(client.get_page(page_id="12345"))
 
         assert isinstance(page, ConfluencePageDAO)
@@ -169,15 +174,18 @@ class TestConfluenceAPIClientGetPage:
         httpserver.expect_request(
             "/wiki/api/v2/pages/99",
             method="GET",
-        ).respond_with_json({
-            "id": "99",
-            "title": "Rendered",
-            "body": {"view": {"value": "<b>text</b>"}},
-        })
+        ).respond_with_json(
+            {
+                "id": "99",
+                "title": "Rendered",
+                "body": {"view": {"value": "<b>text</b>"}},
+            }
+        )
 
         client = ConfluenceAPIClient()
 
         import asyncio
+
         page = asyncio.run(client.get_page(page_id="99", body_format="view"))
 
         assert page.body_format == "view"
@@ -199,6 +207,7 @@ class TestConfluenceAPIClientGetPage:
         client = ConfluenceAPIClient()
 
         import asyncio
+
         with pytest.raises(ConfluenceAPIError) as exc_info:
             asyncio.run(client.get_page(page_id="missing"))
 

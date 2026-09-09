@@ -1,4 +1,5 @@
 """Tests for ``ApiKeyInputWidget`` (02.b.5)."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -25,21 +26,15 @@ class _Harness(App):
         """Yield the single ``ApiKeyInputWidget`` under test."""
         yield ApiKeyInputWidget(provider=ProviderName.OPENAI)
 
-    def on_api_key_input_widget_submitted(
-        self, event: ApiKeyInputWidget.Submitted
-    ) -> None:
+    def on_api_key_input_widget_submitted(self, event: ApiKeyInputWidget.Submitted) -> None:
         """Record the submitted key for assertion."""
         self.received_key = event.api_key
 
-    def on_api_key_input_widget_back_requested(
-        self, event: ApiKeyInputWidget.BackRequested
-    ) -> None:
+    def on_api_key_input_widget_back_requested(self, event: ApiKeyInputWidget.BackRequested) -> None:
         """Record that Back was requested."""
         self.back_requested = True
 
-    def on_api_key_input_widget_cancelled(
-        self, event: ApiKeyInputWidget.Cancelled
-    ) -> None:
+    def on_api_key_input_widget_cancelled(self, event: ApiKeyInputWidget.Cancelled) -> None:
         """Record that Cancel was clicked."""
         self.cancelled = True
 
@@ -68,9 +63,7 @@ class TestApiKeyInputWidget:
             await pilot.click("#api-key-save")
             await pilot.pause()
 
-            error_label: str = str(
-                pilot.app.query_one("#api-key-error", Static).content
-            )
+            error_label: str = str(pilot.app.query_one("#api-key-error", Static).content)
 
         assert "required" in error_label.lower()
         assert app.received_key is None

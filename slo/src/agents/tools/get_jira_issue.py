@@ -1,4 +1,5 @@
 """``get_jira_issue`` tool — fetch one Jira issue by key (25.a.3)."""
+
 from __future__ import annotations
 
 GET_JIRA_ISSUE_PROMPT_SNIPPET: str = (

@@ -1,4 +1,5 @@
 """Interactive debugging helpers shared across CLI entry points."""
+
 from __future__ import annotations
 
 import sys

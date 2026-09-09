@@ -188,14 +188,9 @@ class TestHealDanglingToolCalls:
         )
 
         tool_use_ids: set[str] = {
-            call["id"]
-            for m in messages
-            if isinstance(m, AIMessage)
-            for call in (m.tool_calls or [])
+            call["id"] for m in messages if isinstance(m, AIMessage) for call in (m.tool_calls or [])
         }
-        answered_ids: set[str] = {
-            m.tool_call_id for m in messages if isinstance(m, ToolMessage)
-        }
+        answered_ids: set[str] = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
         assert tool_use_ids
         assert tool_use_ids <= answered_ids
 

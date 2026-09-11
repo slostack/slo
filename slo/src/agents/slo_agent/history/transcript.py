@@ -201,7 +201,7 @@ class _ReplayEntryBuilder:
         entry: TranscriptEntryDAO = TranscriptEntryDAO(
             kind="tool",
             iteration=event.iteration,
-            tool_name=event.payload.tool_name or "tool",
+            tool_name=event.payload.tool_name,
             tool_input=event.payload.tool_input or {},
         )
         self._entries.append(entry)
@@ -346,11 +346,11 @@ class ReplayEntryProjector:
         if event.kind == "steering_message":
             return f"## Steering\n\n{payload.content or ''}"
         if event.kind == "tool_call":
-            tool_name: str = payload.tool_name or "tool"
+            tool_name: str = payload.tool_name or "unnamed"
             args_text: str = cls._format_args(tool_input=payload.tool_input or {})
             return f"### Tool call · `{tool_name}`\n\n```\n{tool_name}({args_text})\n```"
         if event.kind == "tool_result":
-            tool_name = payload.tool_name or "tool"
+            tool_name = payload.tool_name or "unnamed"
             body: str = payload.tool_output or ""
             return f"### Tool result · `{tool_name}`\n\n```\n{body}\n```"
         if event.kind == "assistant_message":

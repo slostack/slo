@@ -1963,7 +1963,9 @@ class SloTUI(App):
             return event.delta or None
         if event.kind == "tool_call_end":
             # Show what tool the agent just dispatched and its primary argument.
-            tool_name: str = event.tool_name or "tool"
+            if not event.tool_name:
+                return None
+            tool_name: str = event.tool_name
             if not event.tool_input:
                 return tool_name
             first_val: object = next(iter(event.tool_input.values()), None)
@@ -1972,7 +1974,7 @@ class SloTUI(App):
             preview: str = str(first_val)[:50].replace("\n", " ")
             return f"{tool_name}: {preview}"
         if event.kind == "tool_result":
-            return f"✓ {event.tool_name or 'tool'}"
+            return f"✓ {event.tool_name}" if event.tool_name else "✓ tool result"
         return None
 
     def _maybe_launch_visualizer(self) -> None:
@@ -2392,14 +2394,15 @@ class SloTUI(App):
         self,
         *,
         tool_call_id: str,
-        tool_name: str,
+        tool_name: Optional[str],
         before: Optional[int] = None,
     ) -> ToolExecutionBlock:
         """Mount a fresh tool execution block above the prompt input.
 
         Args:
             tool_call_id (str): Stable tool call id.
-            tool_name (str): Tool name.
+            tool_name (Optional[str]): Tool name when known; ``None`` before
+                the streamed name resolves.
             before (Optional[int]): Child index to insert before. ``None``
                 appends at the end.
 

@@ -73,14 +73,15 @@ class ToolExecutionBlock(Vertical):
         self,
         *,
         tool_call_id: str,
-        tool_name: str,
+        tool_name: Optional[str],
         force_expanded: Optional[bool] = None,
     ) -> None:
         """Seed a live tool block.
 
         Args:
             tool_call_id (str): Stable tool call id.
-            tool_name (str): Initial tool name.
+            tool_name (Optional[str]): Tool name when known; ``None`` before
+                the streamed name resolves (headline stays blank until then).
             force_expanded (Optional[bool]): Initial expansion state from the
                 global expand-all toggle. ``None`` (default) and ``False`` both
                 start collapsed; ``True`` starts expanded so details appear as
@@ -88,7 +89,7 @@ class ToolExecutionBlock(Vertical):
         """
         super().__init__()
         self._tool_call_id: str = tool_call_id
-        self._tool_name: str = tool_name
+        self._tool_name: Optional[str] = tool_name
         self._tool_input: dict[str, Any] = {}
         self._result_output: Optional[str] = None
         self._partial_output: Optional[str] = None
@@ -124,11 +125,11 @@ class ToolExecutionBlock(Vertical):
         return self._tool_call_id
 
     @property
-    def tool_name(self) -> str:
-        """Return the current tool name.
+    def tool_name(self) -> Optional[str]:
+        """Return the current tool name, when known.
 
         Returns:
-            str: Tool name.
+            Optional[str]: Tool name, or ``None`` before it resolves.
         """
         return self._tool_name
 

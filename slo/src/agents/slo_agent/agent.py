@@ -1568,7 +1568,7 @@ class SloAgent:
                 AgentStreamEventDAO(
                     kind="tool_result",
                     iteration=iteration,
-                    tool_name=message.name or "tool",
+                    tool_name=message.name or None,
                     tool_call_id=message.tool_call_id or None,
                     content=(message.content if isinstance(message.content, str) else str(message.content)),
                 )

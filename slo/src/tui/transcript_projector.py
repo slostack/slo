@@ -68,7 +68,7 @@ class TranscriptMountHost(Protocol):
         self,
         *,
         tool_call_id: str,
-        tool_name: str,
+        tool_name: Optional[str],
         before: Optional[int] = None,
     ) -> ToolExecutionBlock:
         """Mount and return a fresh tool execution block."""
@@ -196,10 +196,21 @@ class TranscriptProjector:
         if event.kind == "tool_call_delta":
             if not event.tool_arguments_delta and not event.tool_input:
                 return  # empty announcement delta — do not mount a blank block
+            if not event.tool_name and event.tool_input is None:
+                # Name-unknown streamed fragment: buffer the raw arguments and
+                # defer mounting until the name resolves (or the call ends), so
+                # the generic ``tool(command=...)`` headline never appears.
+                buffered_tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
+                if event.tool_arguments_delta:
+                    self._tool_argument_buffers[buffered_tool_call_id] = (
+                        self._tool_argument_buffers.get(buffered_tool_call_id, "")
+                        + event.tool_arguments_delta
+                    )
+                return
             tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
             delta_tool_block: ToolExecutionBlock = await self._ensure_tool_block(
                 tool_call_id=tool_call_id,
-                tool_name=event.tool_name or "tool",
+                tool_name=event.tool_name,
             )
             if event.tool_arguments_delta:
                 self._tool_argument_buffers[tool_call_id] = (
@@ -215,10 +226,15 @@ class TranscriptProjector:
             return
 
         if event.kind == "tool_call_end":
+            if not event.tool_name and event.tool_call_id not in self._tool_blocks:
+                # Terminal event for a name-unknown call that never mounted a
+                # block: nothing visible to finalize — skip placeholder noise.
+                self._tool_argument_buffers.pop(event.tool_call_id or "", None)
+                return
             tool_call_id = event.tool_call_id or event.block_id or "tool-call"
             final_tool_block: ToolExecutionBlock = await self._ensure_tool_block(
                 tool_call_id=tool_call_id,
-                tool_name=event.tool_name or "tool",
+                tool_name=event.tool_name,
             )
             parsed_input = event.tool_input or self._best_effort_parse_tool_input(
                 raw_arguments=self._tool_argument_buffers.get(tool_call_id, ""),
@@ -311,7 +327,7 @@ class TranscriptProjector:
         tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
         block: ToolExecutionBlock = await self._ensure_tool_block(
             tool_call_id=tool_call_id,
-            tool_name=event.tool_name or "tool",
+            tool_name=event.tool_name,
         )
         metadata: dict[str, Any] = event.metadata or {}
         block.update_partial(
@@ -443,7 +459,7 @@ class TranscriptProjector:
         """
         block: ToolExecutionBlock = await self._host.mount_tool_execution_block(
             tool_call_id=self._replay_tool_call_id(entry=entry),
-            tool_name=entry.tool_name or "tool",
+            tool_name=entry.tool_name,
             before=before,
         )
         block.update_tool_call(tool_name=entry.tool_name, tool_input=entry.tool_input)
@@ -493,7 +509,7 @@ class TranscriptProjector:
         """
         self._host.record_transcript_line(
             content=ToolExecutionBlockCallFormatter.format(
-                tool_name=entry.tool_name or "tool",
+                tool_name=entry.tool_name,
                 tool_input=entry.tool_input,
             ),
             classes="tool-line",
@@ -525,7 +541,7 @@ class TranscriptProjector:
         Returns:
             str: A synthetic replay tool-call id.
         """
-        return f"replay:{entry.iteration}:{entry.tool_name or 'tool'}"
+        return f"replay:{entry.iteration}:{entry.tool_name or ''}"
 
     async def _ensure_thinking_block(
         self,
@@ -663,13 +679,13 @@ class TranscriptProjector:
         self,
         *,
         tool_call_id: str,
-        tool_name: str,
+        tool_name: Optional[str],
     ) -> ToolExecutionBlock:
         """Return the mounted tool block for ``tool_call_id``.
 
         Args:
             tool_call_id (str): Stable tool call id.
-            tool_name (str): Tool name.
+            tool_name (Optional[str]): Tool name when known.
 
         Returns:
             ToolExecutionBlock: Mounted or cached tool block.
@@ -839,11 +855,11 @@ class ToolExecutionBlockCallFormatter:
     """Small adapter so the projector can reuse tool headline formatting."""
 
     @staticmethod
-    def format(*, tool_name: str, tool_input: dict[str, Any]) -> str:
+    def format(*, tool_name: Optional[str], tool_input: dict[str, Any]) -> str:
         """Return the visible tool-call headline text.
 
         Args:
-            tool_name (str): Tool name.
+            tool_name (Optional[str]): Tool name when known.
             tool_input (dict[str, Any]): Parsed args.
 
         Returns:

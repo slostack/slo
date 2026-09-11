@@ -15,9 +15,8 @@ _CANONICAL_PI_TOKENS: tuple[str, ...] = (
     "thinking-text",
     "md-heading",
     "border-muted",
-    "mermaid-chart-bg",
 )
-"""The canonical Pi-derived semantic role tokens (spec 72.a.5, extended by spec 77)."""
+"""The seven canonical Pi-derived semantic role tokens (spec 72.a.5)."""
 
 
 class TestSloDefaultThemeTokens:

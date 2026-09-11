@@ -51,10 +51,6 @@ dependencies = [
 
     # Web / TUI
     "textual (>=8.2.7,<9.0.0)",
-    # Imported at module scope by src/tui/mermaid_lexer.py (the in-repo mermaid
-    # grammar). Rich pulls Pygments in today, but a transitive package is not a
-    # contract -- the same rule the Typer/click regression established above.
-    "pygments (>=2.13.0,<3.0.0)",
     "pyperclip (>=1.11.0,<2.0.0)",
     "rich (>=14.0.0,<16.0.0)",
     # Floor is 0.26 — the ``_SloGroup`` override targets the vendored-Click

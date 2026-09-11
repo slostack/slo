@@ -2,146 +2,41 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, cast
 
+from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.padding import Padding
 from textual.app import ComposeResult, RenderResult
 from textual.containers import Vertical
 from textual.message import Message
+from textual.selection import Selection
 from textual.timer import Timer
-from textual.widget import Widget
+from textual.visual import Visual, VisualType
 from textual.widgets import Static
-from textual.worker import Worker
 
-from src.tui.mermaid_fence_segmenter import AnswerSegmentDAO, MermaidFenceSegmenter
 from src.tui.widgets.literal_text_static import LiteralTextStatic
-from src.tui.widgets.mermaid_chart_block import MermaidChartBlock
-from src.tui.widgets.selectable_rich_visual import SelectableRawTextLeaf
+from src.tui.widgets.selectable_rich_visual import SelectableRichVisual
 
-__all__ = ["AnswerMarkdownPart", "AssistantStreamBlock"]
+__all__ = ["AssistantStreamBlock"]
 
 _STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
 """Coalescing cadence for streamed answer renders (~30 fps)."""
 
 
-def _escape_markdown_breakers(*, text: str) -> str:
-    """Escape angle-bracket fragments that break transcript readability.
-
-    WHAT: Rewrites literal ``<`` and ``>`` so Rich's markdown parser cannot
-    read them as markup. It is the single implementation of an escape that
-    previously existed as two identical private copies.
-    WHO: ``AnswerMarkdownPart.show_segment`` and
-    ``AssistantStreamThinkingBlock._stabilize_reasoning_markdown``.
-    WHEN: On prose text only — never on mermaid source, which this escape
-    would corrupt (``-->`` becomes ``--\\>``).
-
-    Args:
-        text (str): Raw assistant answer or reasoning text.
-
-    Returns:
-        str: Stabilized markdown text.
-    """
-    return text.replace("<", "\\<").replace(">", "\\>")
-
-
-def _transcript_is_at_bottom(*, widget: Widget) -> bool:
-    """Return True when the transcript viewport is effectively at the bottom.
-
-    WHAT: Reads the scroll state from the app by duck-typing, without
-    importing ``SloTUI`` (which would create a circular dependency). Returns
-    ``False`` when unmounted or when the app does not expose the hook — the
-    safe default, since it only suppresses a scroll-end.
-    WHO: ``AssistantStreamBlock._flush_dirty_regions``,
-    ``AssistantAnswerBody._drain_reconciliations``, and
-    ``AssistantStreamThinkingBlock._flush`` — the single implementation of a
-    reading that previously existed as two identical ``_check_app_at_bottom``
-    copies.
-    WHEN: Immediately before a render or DOM transaction that can grow
-    ``max_scroll_y``.
-
-    Args:
-        widget (Widget): Any mounted widget on the transcript.
-
-    Returns:
-        bool: True when the transcript viewport is within one line of the
-            scroll bottom.
-    """
-    if not widget.is_mounted:
-        return False
-    check = getattr(widget.app, "_transcript_is_at_bottom", None)
-    if check is None:
-        return False
-    return bool(check())
-
-
-class AnswerMarkdownPart(SelectableRawTextLeaf):
-    """One markdown segment of a segmented answer, selectable in its own right.
-
-    WHAT: Renders one text segment as the same padded ``Markdown`` the
-    unsegmented body used; the raw segment text and the drag highlight come
-    from the inherited ``SelectableRawTextLeaf`` seams (``get_selection``
-    plus the ``SelectableRichVisual`` render wrap).
-    WHO: ``AssistantAnswerBody._build_segment_child`` builds one per text
-    segment and updates it in place through ``show_segment``.
-    WHEN: Built at an answer render boundary; updated on every subsequent
-    flush whose tail text grew.
-
-    It extends the shared leaf rather than re-implementing the seam —
-    ``AssistantAnswerBody`` becomes a container the moment it mounts
-    children, and Textual's ``SelectState._walk_selected_widgets`` skips
-    containers, so a selection seam on the body would never be called.
-    """
-
-    def __init__(self, *, raw_text: str) -> None:
-        """Seed the part with one raw answer segment.
-
-        Args:
-            raw_text (str): Raw, unescaped text of this segment.
-        """
-        super().__init__(classes="assistant-answer-markdown-part")
-        self.show_segment(raw_text=raw_text)
-
-    @property
-    def raw_text(self) -> str:
-        """Return this part's raw segment text.
-
-        Returns:
-            str: The unescaped segment content currently rendered.
-        """
-        return self._raw_text
-
-    def show_segment(self, *, raw_text: str) -> None:
-        """Update this part in place from one raw answer segment.
-
-        WHAT: Re-renders the padded markdown without remounting the widget,
-        which is what keeps the streaming tail from being torn down ~30 times
-        a second.
-        WHO: ``AssistantAnswerBody.reconcile_segments`` calls it for a reused
-        text child.
-        WHEN: Whenever the segment at this index grew or changed.
-
-        Args:
-            raw_text (str): Raw, unescaped text of this segment.
-        """
-        self.set_source_text(text=raw_text)
-        self.update(
-            Padding(
-                renderable=Markdown(_escape_markdown_breakers(text=raw_text)),
-                pad=(1, 0, 1, 0),
-            )
-        )
-
-
 class AssistantAnswerBody(Static):
-    """Answer-only segmented surface composed of selectable leaves.
+    """Answer-only markdown surface whose raw text stays selectable.
 
-    WHAT: Splits the raw answer into text/mermaid segments and reconciles one
-    child per segment — an ``AnswerMarkdownPart`` for text, a
-    ``MermaidChartBlock`` for each closed mermaid fence. It is a container,
-    so it owns no selection seam of its own; each child owns its own.
-    WHO: ``AssistantStreamBlock`` owns one instance as ``_answer_body``.
-    WHEN: Re-composed at every answer render boundary.
+    WHAT: Renders the accumulated assistant answer as vertically padded
+    markdown through ``SelectableRichVisual`` (so the mouse-selection
+    highlight is baked into its strips and tracks the content across
+    scrolls) and serves the raw answer text to Textual's selection machinery
+    through the documented ``Widget.get_selection`` seam (the base
+    implementation cannot extract text from a Rich markdown visual).
+    WHO: ``AssistantStreamBlock`` owns one instance as ``_answer_body``;
+    ``Screen.get_selected_text`` queries it after a mouse selection.
+    WHEN: Updated at every answer render boundary; queried whenever the
+    screen extracts selected text.
     """
 
     def __init__(self, *, classes: Optional[str] = None) -> None:
@@ -151,201 +46,85 @@ class AssistantAnswerBody(Static):
             classes (Optional[str]): Space-separated CSS classes.
         """
         super().__init__(content="", classes=classes)
-        self._mounted_segments: list[AnswerSegmentDAO] = []
-        self._pending_children: list[Widget] = []
-        self._pending_segments: list[AnswerSegmentDAO] = []
-        self._reconcile_worker: Optional[Worker[None]] = None
+        self._answer_text: str = ""
 
     def show_answer(self, *, text: str) -> None:
-        """Re-compose the answer surface from segmented parts.
+        """Render the answer with vertical-only Rich padding.
 
-        WHAT: Segments the RAW answer (escaping corrupts mermaid edge
-        syntax), then schedules the serialized reconciliation. Hides the
-        surface when no answer text exists. Never mutates ``self.children``
-        itself. The raw answer itself is not stored here — each part owns its
-        own segment text, and ``AssistantStreamBlock`` owns the whole answer.
+        WHAT: Stores the raw answer for selection extraction, then updates
+        the padded-markdown renderable, or hides the surface when no answer
+        text exists.
         WHO: ``AssistantStreamBlock._render_answer`` calls it after accepted
         streamed or final text.
-        WHEN: Runs at an answer render boundary (at most 30 times a second by
-        the flush timer).
+        WHEN: Runs at an answer render boundary.
 
         Args:
             text (str): Raw assistant answer text.
         """
+        self._answer_text = text
         if not text:
-            self._mounted_segments = []
-            self._pending_children = []
+            self.update("")
             self.display = False
             return
         self.display = True
-        segments: list[AnswerSegmentDAO] = MermaidFenceSegmenter.segment(text=text)
-        if not self.is_mounted:
-            # Before mount there is no DOM to reconcile and no worker to run:
-            # stage the children for ``compose``. This covers direct
-            # unit-test construction and the replay path, where ``finalize``
-            # can land before the mount completes.
-            self._mounted_segments = segments
-            self._pending_children = [self._build_segment_child(segment=segment) for segment in segments]
-            return
-        self._schedule_reconciliation(segments=segments)
-
-    def compose(self) -> ComposeResult:
-        """Yield the children ``show_answer`` staged before mount.
-
-        WHO: Textual calls it during mount; the answer-body unit tests read
-        the same staged list to inspect the direct-construction path.
-        WHEN: Once per mount, after any pre-mount ``show_answer``.
-
-        Yields:
-            ComposeResult: The children staged by ``show_answer``.
-        """
-        yield from self._pending_children
+        self.update(
+            Padding(
+                renderable=Markdown(self._escape_markdown_breakers(text=text)),
+                pad=(1, 0, 1, 0),
+            )
+        )
 
     def render(self) -> RenderResult:
-        """Return the (always empty) own content of a container surface.
+        """Render the stored markdown through the selection-aware visual.
 
-        The body never calls ``update`` after the reshape — its visible
-        content is entirely its children — so this returns the empty string
-        it was constructed with. The selection-aware wrap moved to
-        ``AnswerMarkdownPart``.
-
+        WHAT: Wraps the padded-markdown content in ``SelectableRichVisual``
+        so the mouse-selection highlight is baked into this surface's strips
+        in content coordinates and tracks the text across parent scrolls;
+        plain string content (the empty state) falls through unchanged.
         WHO: Textual's ``Widget._render`` calls it on every repaint.
         WHEN: At every render pass while the body is mounted.
 
         Returns:
-            RenderResult: The stored string content.
+            RenderResult: The selection-aware visual wrapping the stored
+                renderable, or the raw string content when empty.
         """
-        return self.content
+        content: VisualType = self.content
+        if isinstance(content, (str, Visual)):
+            return content
+        return SelectableRichVisual(widget=self, renderable=cast(RenderableType, content))
 
-    def on_unmount(self) -> None:
-        """Cancel any in-flight reconciliation when the body leaves the DOM.
+    def get_selection(self, selection: Selection) -> Optional[tuple[str, str]]:
+        """Return the selected slice of the raw answer text.
 
-        The body owns its worker, so it also owns the cancel — honouring the
-        TUI rule that background tasks are tracked and cancelled explicitly.
-        ``AssistantStreamBlock.on_unmount`` is unchanged.
-        """
-        if self._reconcile_worker is None:
-            return
-        self._reconcile_worker.cancel()
-        self._reconcile_worker = None
-
-    def _schedule_reconciliation(self, *, segments: list[AnswerSegmentDAO]) -> None:
-        """Coalesce the latest segment list into one serialized reconciliation.
-
-        WHAT: Stores the newest requested segments (latest wins) and starts
-        the tracked worker only when none is running, so a burst of flush
-        ticks collapses into one in-flight DOM transaction plus at most one
-        follow-up — later requests can never interleave with an awaiting
-        removal/mount sequence.
-        WHO: ``show_answer`` calls it with fresh segments.
-        WHEN: At every answer render boundary while the body is mounted.
+        WHAT: Serves the raw (unescaped) answer text through Textual's
+        documented custom-widget selection seam so a mouse drag over the
+        flattened answer surface yields the answer itself.
+        WHO: ``Screen.get_selected_text`` calls it for every widget captured
+        by a mouse selection.
+        WHEN: After a drag selection starts, moves, or completes.
 
         Args:
-            segments (list[AnswerSegmentDAO]): Latest requested ordered parts.
-        """
-        self._pending_segments = segments
-        if self._reconcile_worker is not None and self._reconcile_worker.is_running:
-            return
-        self._reconcile_worker = self.run_worker(
-            self._drain_reconciliations(),
-            group="answer-surface-reconciliation",
-            exit_on_error=False,
-        )
-
-    async def _drain_reconciliations(self) -> None:
-        """Apply the latest coalesced segments, then report the settled DOM.
-
-        WHAT: Drains the latest-wins pending list until no newer request
-        arrived while the body awaited its removals and mounts. It reads the
-        scroll-follow state BEFORE each transaction and posts
-        ``AssistantStreamBlock.Rendered`` AFTER it, because the DOM now grows
-        asynchronously — ``_flush_dirty_regions``'s synchronous post happens
-        before the height change and would otherwise re-scroll against a
-        stale height, unpinning the transcript mid-stream.
-        WHO: The tracked worker started by ``_schedule_reconciliation``.
-        WHEN: After a changed answer flush; cancelled during teardown.
-        """
-        while True:
-            segments: list[AnswerSegmentDAO] = self._pending_segments
-            was_following: bool = _transcript_is_at_bottom(widget=self)
-            await self.reconcile_segments(segments=segments)
-            self.post_message(AssistantStreamBlock.Rendered(was_following=was_following))
-            if self._pending_segments is segments:
-                return
-
-    async def reconcile_segments(self, *, segments: list[AnswerSegmentDAO]) -> None:
-        """Reconcile mounted answer-part widgets to one requested segment list.
-
-        WHAT: Removes the divergent mounted suffix, mounts its replacement,
-        then updates every reused text child in place. Every stale removal is
-        awaited before the replacement mount is awaited, and
-        ``_mounted_segments`` is committed only after the awaited DOM state
-        corresponds to it — so a later reconciliation never slices
-        ``self.children`` against a stale snapshot.
-        WHO: ``_drain_reconciliations`` awaits it (exactly one in flight).
-        WHEN: After the 30-fps answer flush accepts changed raw text.
-
-        Args:
-            segments (list[AnswerSegmentDAO]): Ordered raw-answer parts to render.
-        """
-        reusable: int = self._reusable_prefix_length(segments=segments)
-        for child in list(self.children)[reusable:]:
-            await child.remove()
-        replacements: list[Widget] = [
-            self._build_segment_child(segment=segment) for segment in segments[reusable:]
-        ]
-        if replacements:
-            await self.mount(*replacements)
-        for index, segment in enumerate(segments[:reusable]):
-            child = self.children[index]
-            if isinstance(child, AnswerMarkdownPart) and child.raw_text != segment.content:
-                child.show_segment(raw_text=segment.content)
-        self._mounted_segments = list(segments)
-
-    def _reusable_prefix_length(self, *, segments: list[AnswerSegmentDAO]) -> int:
-        """Count leading segments whose mounted child can be reused.
-
-        A text segment is reusable at the same index regardless of content —
-        the part updates in place, which is what keeps the growing streaming
-        tail from being remounted 30 times a second. A mermaid segment is
-        reusable only when its source is byte-identical, so a mounted card
-        never re-runs ``Syntax`` highlighting or loses focus.
-
-        WHO: ``reconcile_segments`` calls it to size the surviving prefix.
-        WHEN: Once at the start of every reconciliation transaction.
-
-        Args:
-            segments (list[AnswerSegmentDAO]): The fresh ordered parts.
+            selection (Selection): The selected range in content coordinates.
 
         Returns:
-            int: Number of leading segments whose mounted child survives.
+            Optional[tuple[str, str]]: Extracted answer text and its line
+                ending, or ``None`` when no answer text exists.
         """
-        reusable: int = 0
-        for old, new in zip(self._mounted_segments, segments):
-            if old.kind != new.kind:
-                break
-            if new.kind == "mermaid" and old.content != new.content:
-                break
-            reusable += 1
-        return reusable
+        if not self._answer_text:
+            return None
+        return selection.extract(self._answer_text), "\n"
 
-    def _build_segment_child(self, *, segment: AnswerSegmentDAO) -> Widget:
-        """Build one child widget for one answer segment.
-
-        WHO: ``show_answer`` (pre-mount staging) and ``reconcile_segments``
-        (the mounted replacement suffix) both call it.
-        WHEN: Whenever a segment has no reusable mounted child.
+    @staticmethod
+    def _escape_markdown_breakers(*, text: str) -> str:
+        """Escape angle-bracket fragments that break transcript readability.
 
         Args:
-            segment (AnswerSegmentDAO): The part to render.
+            text (str): Raw assistant answer text.
 
         Returns:
-            Widget: An ``AnswerMarkdownPart`` for text parts, a
-                ``MermaidChartBlock`` for mermaid parts.
+            str: Stabilized markdown text.
         """
-        if segment.kind == "mermaid":
-            return MermaidChartBlock(source=segment.content)
-        return AnswerMarkdownPart(raw_text=segment.content)
+        return text.replace("<", "\\<").replace(">", "\\>")
 
 
 class AssistantStreamBlock(Vertical):
@@ -361,29 +140,20 @@ class AssistantStreamBlock(Vertical):
     """
 
     class Rendered(Message):
-        """Posted after an assistant-side surface grew, by any of three posters.
+        """Posted after either assistant-side widget flushes a changed buffer.
 
-        ``AssistantStreamBlock`` (answer updates) and
-        ``AssistantStreamThinkingBlock`` (reasoning updates) post it after
-        their coalescing timer applies a ``Static.update``.
-        ``AssistantAnswerBody._drain_reconciliations`` posts it a third time,
-        after its DOM transaction rather than after an ``update``: since spec
-        77 the answer surface grows by mounting children asynchronously, so
-        the timer's synchronous post lands BEFORE the height changes and
-        would re-scroll against a stale height. That re-post is the mechanism
-        acceptance criterion 6 depends on, and
-        ``test_reconciliation_posts_rendered_after_the_chart_is_mounted``
-        pins it.
-
-        The app handles the message to re-check scroll-follow: the posts land
+        Both ``AssistantStreamBlock`` (answer updates) and
+        ``AssistantStreamThinkingBlock`` (reasoning updates) post this shared
+        message after their coalescing timer applies a ``Static.update``. The
+        app handles it to re-check scroll-follow: because the timer fires
         *after* the per-mount ``_restore_follow_after_mutation`` has already
-        run, so ``max_scroll_y`` expands without a scroll-end call. This
-        message lets the app schedule a scroll restoration on the next
-        refresh.
+        run, the ``Static.update`` expands ``max_scroll_y`` without a
+        scroll-end call. This message lets the app schedule a scroll
+        restoration on the next refresh.
 
-        ``was_following`` carries the pre-flush (or pre-transaction) follow
-        state, so the app restores scroll-end only when the viewport was at
-        the bottom before the surface grew.
+        ``was_following`` carries the pre-flush follow state so the app can
+        restore scroll-end when the viewport was at the bottom before the
+        ``Static.update`` expanded ``max_scroll_y``.
         """
 
         def __init__(self, *, was_following: bool) -> None:
@@ -419,27 +189,26 @@ class AssistantStreamBlock(Vertical):
         color: $text;
         background: transparent;
         text-style: none;
-        height: auto;
     }
 
-    AssistantStreamBlock .assistant-answer-markdown-part Heading {
+    AssistantStreamBlock .assistant-answer-body Heading {
         color: $md-heading;
         text-style: bold;
     }
 
-    AssistantStreamBlock .assistant-answer-markdown-part BulletList {
+    AssistantStreamBlock .assistant-answer-body BulletList {
         color: $text;
     }
 
-    AssistantStreamBlock .assistant-answer-markdown-part OrderedList {
+    AssistantStreamBlock .assistant-answer-body OrderedList {
         color: $text;
     }
 
-    AssistantStreamBlock .assistant-answer-markdown-part BlockQuote {
+    AssistantStreamBlock .assistant-answer-body BlockQuote {
         color: $text;
     }
 
-    AssistantStreamBlock .assistant-answer-markdown-part CodeBlock {
+    AssistantStreamBlock .assistant-answer-body CodeBlock {
         color: $text;
         background: transparent;
     }
@@ -534,10 +303,29 @@ class AssistantStreamBlock(Vertical):
         """
         if not self._answer_dirty:
             return
-        was_following: bool = _transcript_is_at_bottom(widget=self)
+        was_following: bool = self._check_app_at_bottom()
         self._flush_answer()
         if self.is_mounted:
             self.post_message(AssistantStreamBlock.Rendered(was_following=was_following))
+
+    def _check_app_at_bottom(self) -> bool:
+        """Return True when the transcript viewport is effectively at the bottom.
+
+        Reads the scroll state from the app via duck-typing without importing
+        ``SloTUI`` (which would create a circular dependency). When unmounted
+        or when the app does not expose ``_transcript_is_at_bottom``, returns
+        ``False`` (safe default — no spurious scroll-end).
+
+        Returns:
+            bool: True when the transcript viewport is within one line of the
+                scroll bottom.
+        """
+        if not self.is_mounted:
+            return False
+        check = getattr(self.app, "_transcript_is_at_bottom", None)
+        if check is None:
+            return False
+        return bool(check())
 
     def _flush_answer(self) -> None:
         """Render the accumulated answer, skipping work when text is unchanged.

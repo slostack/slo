@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, cast
 
+from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.padding import Padding
-from textual.app import ComposeResult
+from textual.app import ComposeResult, RenderResult
 from textual.containers import Vertical
+from textual.selection import Selection
 from textual.timer import Timer
+from textual.visual import Visual, VisualType
+from textual.widgets import Static
 
-from src.tui.widgets.assistant_stream_block import (
-    AssistantStreamBlock,
-    _escape_markdown_breakers,
-    _transcript_is_at_bottom,
-)
-from src.tui.widgets.selectable_rich_visual import SelectableRawTextLeaf
+from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.selectable_rich_visual import SelectableRichVisual
 
 __all__ = ["AssistantStreamThinkingBlock"]
 
@@ -23,21 +23,83 @@ _STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
 """Coalescing cadence for streamed thinking renders (~30 fps)."""
 
 
-class AssistantThinkingBody(SelectableRawTextLeaf):
+class AssistantThinkingBody(Static):
     """Thinking-only markdown surface whose raw text stays selectable.
 
-    WHAT: Renders the segment's reasoning as vertically padded markdown and
-    serves that reasoning back to the selection machinery. Both behaviours are
-    inherited unchanged from ``SelectableRawTextLeaf`` — the shared leaf that
-    wraps its renderable in ``SelectableRichVisual`` (so the mouse-selection
-    highlight is baked into its strips and tracks the content across scrolls)
-    and implements the raw-text ``Widget.get_selection`` seam. This subclass
-    exists to name the thinking surface for CSS and for its owning block.
+    WHAT: Renders the segment's reasoning as vertically padded markdown
+    through ``SelectableRichVisual`` (so the mouse-selection highlight is
+    baked into its strips and tracks the content across scrolls) and serves
+    the raw reasoning text to Textual's selection machinery through the
+    documented ``Widget.get_selection`` seam (the base implementation cannot
+    extract text from a Rich markdown visual).
     WHO: ``AssistantStreamThinkingBlock`` owns one instance as ``_body``;
     ``Screen.get_selected_text`` queries it after a mouse selection.
     WHEN: Updated at every thinking render boundary; queried whenever the
     screen extracts selected text.
     """
+
+    def __init__(self, *, classes: Optional[str] = None) -> None:
+        """Initialise an empty thinking surface.
+
+        Args:
+            classes (Optional[str]): Space-separated CSS classes.
+        """
+        super().__init__(content="", classes=classes)
+        self._thinking_text: str = ""
+
+    def set_source_text(self, *, text: str) -> None:
+        """Store the raw reasoning text used for selection extraction.
+
+        WHAT: Records the unescaped reasoning buffer so ``get_selection``
+        can serve it verbatim; performs no rendering itself.
+        WHO: ``AssistantStreamThinkingBlock._render_thinking`` calls it
+        alongside the body ``update``.
+        WHEN: At every thinking render boundary.
+
+        Args:
+            text (str): Raw reasoning text backing the rendered markdown.
+        """
+        self._thinking_text = text
+
+    def get_selection(self, selection: Selection) -> Optional[tuple[str, str]]:
+        """Return the selected slice of the raw reasoning text.
+
+        WHAT: Serves the raw (unescaped) reasoning text through Textual's
+        documented custom-widget selection seam so a mouse drag over the
+        thinking surface yields the reasoning itself.
+        WHO: ``Screen.get_selected_text`` calls it for every widget captured
+        by a mouse selection.
+        WHEN: After a drag selection starts, moves, or completes.
+
+        Args:
+            selection (Selection): The selected range in content coordinates.
+
+        Returns:
+            Optional[tuple[str, str]]: Extracted reasoning text and its line
+                ending, or ``None`` when no reasoning text exists.
+        """
+        if not self._thinking_text:
+            return None
+        return selection.extract(self._thinking_text), "\n"
+
+    def render(self) -> RenderResult:
+        """Render the stored markdown through the selection-aware visual.
+
+        WHAT: Wraps the padded-markdown content in ``SelectableRichVisual``
+        so the mouse-selection highlight is baked into this surface's strips
+        in content coordinates and tracks the text across parent scrolls;
+        plain string content (the empty state) falls through unchanged.
+        WHO: Textual's ``Widget._render`` calls it on every repaint.
+        WHEN: At every render pass while the body is mounted.
+
+        Returns:
+            RenderResult: The selection-aware visual wrapping the stored
+                renderable, or the raw string content when empty.
+        """
+        content: VisualType = self.content
+        if isinstance(content, (str, Visual)):
+            return content
+        return SelectableRichVisual(widget=self, renderable=cast(RenderableType, content))
 
 
 class AssistantStreamThinkingBlock(Vertical):
@@ -282,11 +344,24 @@ class AssistantStreamThinkingBlock(Vertical):
         self._dirty = False
         if self._thinking_text == self._last_rendered:
             return
-        was_following: bool = _transcript_is_at_bottom(widget=self)
+        was_following: bool = self._check_app_at_bottom()
         self._last_rendered = self._thinking_text
         self._render_thinking()
         if self.is_mounted:
             self.post_message(AssistantStreamBlock.Rendered(was_following=was_following))
+
+    def _check_app_at_bottom(self) -> bool:
+        """Read the optional app follow snapshot without importing ``SloTUI``.
+
+        Returns:
+            bool: True when the mounted app reports transcript follow mode.
+        """
+        if not self.is_mounted:
+            return False
+        check = getattr(self.app, "_transcript_is_at_bottom", None)
+        if check is None:
+            return False
+        return bool(check())
 
     def _render_thinking(self) -> None:
         """Render stabilized reasoning and apply current expansion visibility.
@@ -314,6 +389,18 @@ class AssistantStreamThinkingBlock(Vertical):
         )
         self._body.display = self._expanded
 
+    @staticmethod
+    def _escape_markdown_breakers(*, text: str) -> str:
+        """Escape angle brackets that destabilize transcript markdown.
+
+        Args:
+            text (str): Raw reasoning text.
+
+        Returns:
+            str: Text with literal angle brackets escaped.
+        """
+        return text.replace("<", "\\<").replace(">", "\\>")
+
     @classmethod
     def _stabilize_reasoning_markdown(cls, *, text: str) -> str:
         """Normalize the extracted streamed-reasoning markdown glitches.
@@ -324,7 +411,7 @@ class AssistantStreamThinkingBlock(Vertical):
         Returns:
             str: Escaped and line-normalized markdown.
         """
-        escaped_text: str = _escape_markdown_breakers(text=text)
+        escaped_text: str = cls._escape_markdown_breakers(text=text)
         normalized_lines: list[str] = []
         for line in escaped_text.splitlines():
             normalized_lines.append(cls._normalize_reasoning_line(line=line))

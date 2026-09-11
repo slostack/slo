@@ -449,34 +449,6 @@ in a string as console markup, so every plain-text transcript surface is
 rendered through `LiteralTextStatic` (a `Static` with `markup=False`) to keep
 type hints (`list[str]`), timestamps, JSON, and regex spans literal.
 
-**Mermaid charts.** A ````` ```mermaid ````` fence in an assistant answer renders
-as a *chart card* instead of a plain code block: a titled rule naming the
-diagram's directive line (`graph TD`), the diagram itself **drawn** in
-box-drawing characters, and a caption with the source line count. `graph` and
-`flowchart` diagrams in the `TD`, `TB`, and `LR` directions are drawn — node
-shapes (`[]`, `()`, `{}`, `(())`) keep their distinct outlines, and edge labels
-(`-->|yes|`) are drawn beside their arrows. The layout is pure Python
-(`src/tui/mermaid_graph_parser.py`, `_layout.py`, `_renderer.py`); nothing is
-shelled out and no browser is involved. Anything Slo cannot draw — another
-diagram type, a graph with a loop, or one too large for the pane — shows a
-one-line reason instead of a wrong picture, and then falls back to the mermaid
-source with real syntax highlighting from an in-repo Pygments lexer
-(`src/tui/mermaid_lexer.py` — Pygments ships no mermaid grammar), so an
-undrawable diagram is never less useful than a plain code block. An undrawn
-fence longer than 150 lines shows its first 40 lines plus a caption saying how
-much is on screen.
-Prose above and below the fence keeps its place in stream order, so an answer
-that alternates explanation and diagrams still reads top to bottom as written,
-and a card only appears once its closing fence has streamed in. Focus a card
-with `Tab` and press **`Ctrl+F`** to open the full, untruncated mermaid
-source full-screen in a read-only, scrollable view; **`Escape`** returns to
-the transcript.
-Selection and copy work over the card exactly as over prose — dragging across it
-yields the verbatim mermaid **source**, not the drawn picture, because the
-source is what is useful on a clipboard. A fence that never closes, an empty
-fence, and a mermaid fence nested inside a longer outer fence all stay ordinary
-markdown — exactly what you saw before.
-
 ### 2.5 Slash Commands
 
 Type `/` at the start of a line and press Enter to invoke a slash

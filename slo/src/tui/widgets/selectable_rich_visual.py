@@ -9,36 +9,24 @@ drag over such a surface falls back to a whole-widget ``SELECT_ALL`` entry in
 a ``Visual`` decorator that re-applies the selection span to the rendered
 strips in content coordinates, so the highlight is baked into the widget's own
 strips and therefore tracks the content exactly across parent scrolls.
-
-The module also owns ``SelectableRawTextLeaf``, the single shared base for every
-transcript surface that serves raw text to the selection machinery. Raw-text
-storage, the ``SelectableRichVisual`` render wrap, and the raw-text
-``Widget.get_selection`` seam are one implementation here rather than one copy
-per surface: ``AnswerMarkdownPart``, ``AssistantThinkingBody``, and
-``MermaidSourceSurface`` all inherit it. The base lives beside the visual it
-wraps (and not in ``assistant_stream_block.py``) because ``mermaid_chart_block.py`` imports it
-while ``assistant_stream_block.py`` imports ``MermaidChartBlock`` — housing the
-base in the answer module would close an import cycle.
 """
 
 from __future__ import annotations
 
-from typing import Optional, cast
+from typing import Optional
 
 from rich.cells import cell_len
 from rich.console import RenderableType
 from rich.segment import Segment
 from rich.style import Style as RichStyle
-from textual.app import RenderResult
 from textual.css.styles import RulesMap
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.style import Style
-from textual.visual import RenderOptions, RichVisual, Visual, VisualType
+from textual.visual import RenderOptions, RichVisual, Visual
 from textual.widget import Widget
-from textual.widgets import Static
 
-__all__ = ["SelectableRawTextLeaf", "SelectableRichVisual"]
+__all__ = ["SelectableRichVisual"]
 
 
 class SelectableRichVisual(Visual):
@@ -51,9 +39,8 @@ class SelectableRichVisual(Visual):
     ``Content.render_strips`` does natively. The highlight lives inside the
     widget's strips, so a parent ``VerticalScroll`` moves it together with
     the selected text instead of leaving stale paint behind.
-    WHO: ``SelectableRawTextLeaf`` subclasses — ``AnswerMarkdownPart``,
-    ``AssistantThinkingBody``, and ``MermaidSourceSurface`` — wrap their Rich
-    renderables with it at every render boundary.
+    WHO: ``AssistantAnswerBody`` and ``AssistantThinkingBody`` wrap their
+    padded-markdown renderables with it at every render boundary.
     WHEN: Active whenever ``Visual.to_strips`` renders the owning widget
     while ``Screen.selections`` holds a selection for it.
     """
@@ -234,90 +221,3 @@ class SelectableRichVisual(Visual):
             for segment in strip
         ]
         return Strip(segments=segments, cell_length=strip.cell_length)
-
-
-class SelectableRawTextLeaf(Static):
-    """A childless transcript surface whose raw text stays selectable.
-
-    WHAT: Holds one raw-text buffer beside a Rich renderable. It renders that
-    renderable through ``SelectableRichVisual`` so a mouse drag paints the
-    highlight into this widget's own strips, and it serves the raw text back
-    through Textual's documented ``Widget.get_selection`` seam so the drag
-    copies the text rather than nothing (the base ``Widget.get_selection``
-    cannot extract text from a Rich renderable).
-    WHO: ``AnswerMarkdownPart`` (one prose segment of an answer),
-    ``AssistantThinkingBody`` (the thinking body), and ``MermaidSourceSurface``
-    (the chart card's source region) extend it; ``Screen.get_selected_text``
-    queries the seam after a mouse selection.
-    WHEN: Whenever such a surface renders or the screen extracts selected text.
-
-    The seam has to live on a leaf: Textual's
-    ``SelectState._walk_selected_widgets`` skips any widget that has children,
-    so a ``get_selection`` override on a container is never called.
-    """
-
-    def __init__(self, *, content: VisualType = "", classes: Optional[str] = None) -> None:
-        """Initialise the leaf with its renderable and an empty raw-text buffer.
-
-        Args:
-            content (VisualType): Initial renderable to display. Defaults to
-                the empty string.
-            classes (Optional[str]): Space-separated CSS classes.
-        """
-        super().__init__(content, classes=classes)
-        self._raw_text: str = ""
-
-    def set_source_text(self, *, text: str) -> None:
-        """Store the raw text used for selection extraction.
-
-        WHAT: Records the unescaped text buffer so ``get_selection`` can serve
-        it verbatim; performs no rendering itself.
-        WHO: The owning block calls it alongside its ``update`` — for example
-        ``AssistantStreamThinkingBlock._render_thinking``.
-        WHEN: At every render boundary that changes the displayed text.
-
-        Args:
-            text (str): Raw text backing the rendered renderable.
-        """
-        self._raw_text = text
-
-    def get_selection(self, selection: Selection) -> Optional[tuple[str, str]]:
-        """Return the selected slice of the raw text.
-
-        WHAT: Serves the raw (unescaped) text through Textual's documented
-        custom-widget selection seam so a mouse drag over this surface yields
-        the text itself.
-        WHO: ``Screen.get_selected_text`` calls it for every widget captured by
-        a mouse selection.
-        WHEN: After a drag selection starts, moves, or completes.
-
-        Args:
-            selection (Selection): The selected range in content coordinates.
-
-        Returns:
-            Optional[tuple[str, str]]: Extracted text and its line ending, or
-                ``None`` when this surface holds no raw text.
-        """
-        if not self._raw_text:
-            return None
-        return selection.extract(self._raw_text), "\n"
-
-    def render(self) -> RenderResult:
-        """Render the stored content through the selection-aware visual.
-
-        WHAT: Wraps a Rich renderable in ``SelectableRichVisual`` so the
-        mouse-selection highlight is baked into this surface's strips in
-        content coordinates and tracks the text across parent scrolls; plain
-        string content (the empty state) falls through unchanged.
-        WHO: Textual's ``Widget._render`` calls it on every repaint.
-        WHEN: At every render pass while the surface is mounted.
-
-        Returns:
-            RenderResult: The selection-aware visual wrapping the stored
-                renderable, or the raw content when it is already a string or
-                a ``Visual``.
-        """
-        content: VisualType = self.content
-        if isinstance(content, (str, Visual)):
-            return content
-        return SelectableRichVisual(widget=self, renderable=cast(RenderableType, content))

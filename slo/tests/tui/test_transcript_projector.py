@@ -667,6 +667,45 @@ class TestTranscriptProjector:
         assert host.lines == []
         assert host.recorded == []
 
+    @pytest.mark.asyncio
+    async def test_empty_tool_call_delta_does_not_mount_block(self) -> None:
+        """An announcement-only tool_call_delta must not mount a blank block.
+
+        The normalizer can emit a tool_call_delta carrying neither arguments
+        nor parsed input (the provider's tool-call announcement chunk). The
+        block must only appear once real tool data arrives, via a contentful
+        tool_call_delta or tool_call_end.
+        """
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="tool_call_delta",
+                tool_call_id="call_1",
+                tool_name="read",
+                tool_arguments_delta="",
+                iteration=0,
+            ),
+        )
+
+        assert host.tool_blocks == {}
+        assert host.lines == []
+        assert host.recorded == []
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="tool_call_end",
+                tool_call_id="call_1",
+                tool_name="read",
+                tool_input={"path": "README.md"},
+                iteration=0,
+            ),
+        )
+
+        assert list(host.tool_blocks) == ["call_1"]
+        assert host.tool_blocks["call_1"].tool_input == {"path": "README.md"}
+
     def test_reset_for_new_run_clears_run_scoped_state(self) -> None:
         """Reset clears run-scoped assistant, thinking, and tool state between prompts."""
         host = FakeHost()

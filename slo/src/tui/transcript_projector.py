@@ -178,7 +178,9 @@ class TranscriptProjector:
         if event.kind == "text_delta":
             if not (event.delta or ""):
                 return  # no content — do not mount an empty block
-            answer_block: AssistantStreamBlock = await self._ensure_assistant_block(iteration=event.iteration)
+            answer_block: AssistantStreamBlock = await self._ensure_assistant_block(
+                iteration=event.iteration,
+            )
             answer_block.append_text(delta=event.delta or "")
             return
 
@@ -192,6 +194,8 @@ class TranscriptProjector:
             return
 
         if event.kind == "tool_call_delta":
+            if not event.tool_arguments_delta and not event.tool_input:
+                return  # empty announcement delta — do not mount a blank block
             tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
             delta_tool_block: ToolExecutionBlock = await self._ensure_tool_block(
                 tool_call_id=tool_call_id,
@@ -587,7 +591,11 @@ class TranscriptProjector:
             block.seal()
         self._open_thinking_block_ids.clear()
 
-    async def _ensure_assistant_block(self, *, iteration: int) -> AssistantStreamBlock:
+    async def _ensure_assistant_block(
+        self,
+        *,
+        iteration: int,
+    ) -> AssistantStreamBlock:
         """Return the assistant block for ``iteration``, sealing the block(s) it replaces.
 
         Each outer-loop assistant iteration owns its own transcript block so

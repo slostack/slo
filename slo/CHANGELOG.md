@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+## [0.16.4] — 2026-09-11
+
+**Fixed a blank green tool block flashing into the transcript before a tool call streamed any arguments.**
+
+### Fixed
+
+- **Empty `tool_call_delta` events no longer mount a blank `ToolExecutionBlock`.**
+  The assistant-chunk normalizer can emit a `tool_call_delta` that carries
+  neither argument JSON nor parsed input — the provider's tool-call
+  announcement chunk. `TranscriptProjector` called `_ensure_tool_block`
+  unconditionally on every delta, so that announcement mounted a green
+  tool-execution block with an empty headline moments before the real
+  arguments arrived. The delta branch now mirrors the existing content
+  guards on `thinking_delta` / `text_delta` / `tool_call_start`: a delta
+  with no `tool_arguments_delta` and no `tool_input` is dropped, and the
+  block first appears when real tool data arrives (a contentful delta or
+  `tool_call_end`), fully formed. Non-streaming providers that send one
+  shot of pre-parsed `tool_input` still mount immediately.
+
+### Added
+
+- **Plugin extensions with streaming tool output (spec 75).** Plugins can
+  ship their own tools, widgets, and renderers; streaming-capable tools
+  publish in-progress output snapshots to the live tool block.
+- **Bundled plugins now ship inside the wheel** — a packaging fix so a
+  `pipx install` carries the plugin tree instead of an empty directory.
+
+### Removed
+
+- **Mermaid chart cards (spec 77) reverted.** The fence-rendering feature
+  landed on `main` and was backed out in the same window; `main` carries
+  neither the feature nor a behaviour change from it.
+
+### Fixed (release tooling)
+
+- **`publish-installer` points at `slo/install.sh`** — the monorepo layout
+  moved the installer into the `slo/` package directory and the publish
+  job still fetched the old root path.
+
+### Tests
+
+- Regression test: an announcement-only `tool_call_delta` mounts nothing,
+  writes nothing, and records nothing; the following `tool_call_end`
+  mounts exactly one block with the full parsed input.
+- Plugin renderer overrides no longer leak between tests.
+
 ## [0.16.3] — 2026-09-06
 
 **Fixed a broken install: `slo` crashed on startup on every clean machine.**

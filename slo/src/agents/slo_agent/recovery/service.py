@@ -11,6 +11,7 @@ from src.agents.providers.stream_recovery.dao import ProviderStreamFailure
 from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
     ProviderErrorClassifier,
+    ProviderErrorKind,
     should_switch,
 )
 from src.agents.slo_agent.recovery.dao import RecoveryClass, RecoveryDecisionDAO
@@ -28,26 +29,6 @@ IterationRecoveryPolicy = Callable[[BaseException, int], RecoveryDecisionDAO]
 Args at call time: ``(exc, recoveries_used)`` — the escaped exception and how many
 recoveries this submission has already spent. Parallel to ``IterationRetryPolicy``
 in ``rate_limit/service.py`` but decoupled from it.
-"""
-
-_CONTEXT_OVERFLOW_MARKERS: tuple[str, ...] = (
-    "prompt is too long",
-    "context_length_exceeded",
-    "maximum context length",
-    "too_many_tokens",
-    "prompt_too_long",
-    "input too long",
-    "your request exceeded model token limit",
-    # OpenAI / Codex responses-API error phrase (missing from the original set).
-    "your input exceeds",
-    "exceeds the context window",
-)
-"""Case-insensitive substrings that identify a provider context-window overflow.
-
-Kept at module level so both ``RecoveryPolicy._is_context_overflow`` and any
-future callers in this module share a single source of truth. The session
-service maintains a parallel copy in ``SloAgentSession._is_context_overflow_error``
-— both lists must be kept in sync.
 """
 
 
@@ -68,11 +49,10 @@ class RecoveryPolicy:
     ) -> RecoveryDecisionDAO:
         """Return the recovery decision for one escaped iteration exception.
 
-        Context overflow errors are classified FATAL here so the LLM recovery
-        loop never appends a recovery observation to an already-overflowed
-        context (which would increase token count and guarantee a second
-        failure). Recovery is instead handled by the session layer's forced
-        compaction path (``SloAgentSession._derive_next_attempt_plan``).
+        Provider context overflow and HTTP 413 request-body rejections are
+        classified FATAL here. The loop must neither append a recovery observation
+        nor replay either rejection; only the session may compact and retry an
+        uncommitted, confirmed context overflow.
 
         Args:
             exc (BaseException): The exception that ended the iteration.
@@ -91,12 +71,24 @@ class RecoveryPolicy:
                 recovery_class=RecoveryClass.FATAL,
                 reason=f"{type(exc).__name__} is never recoverable.",
             )
-        if cls._is_context_overflow(exc=exc):
+        terminal_rejection: ProviderErrorKind | None = cls._terminal_provider_rejection_kind(
+            exc=exc,
+            provider=provider,
+        )
+        if terminal_rejection is ProviderErrorKind.CONTEXT_OVERFLOW:
             return RecoveryDecisionDAO(
                 recovery_class=RecoveryClass.FATAL,
                 reason=(
-                    "Context window overflow cannot be fixed by the LLM; "
-                    "session-layer compaction handles recovery."
+                    "Context window overflow cannot be fixed by LLM recovery; "
+                    "the session layer may perform one compaction retry before it becomes terminal."
+                ),
+            )
+        if terminal_rejection is ProviderErrorKind.REQUEST_BODY_TOO_LARGE:
+            return RecoveryDecisionDAO(
+                recovery_class=RecoveryClass.FATAL,
+                reason=(
+                    "HTTP 413 request body too large is terminal and cannot be fixed "
+                    "by LLM recovery or session-layer compaction."
                 ),
             )
         if provider is not None and should_switch(
@@ -127,23 +119,33 @@ class RecoveryPolicy:
         )
 
     @classmethod
-    def _is_context_overflow(cls, *, exc: BaseException) -> bool:
-        """Return True when ``exc`` is a provider context-window overflow.
-
-        Uses the same marker set as ``SloAgentSession._is_context_overflow_error``
-        so that both the agent-level loop and the session-level recovery path
-        agree on what constitutes an overflow. Both lists must be kept in sync
-        when new providers are added.
+    def _terminal_provider_rejection_kind(
+        cls,
+        *,
+        exc: BaseException,
+        provider: Optional[ProviderName],
+    ) -> ProviderErrorKind | None:
+        """Return the terminal size-rejection kind, when the inspector confirms one.
 
         Args:
-            exc (BaseException): The escaped exception.
+            exc (BaseException): Escaped provider exception.
+            provider (Optional[ProviderName]): Active provider when known.
 
         Returns:
-            bool: True when the exception indicates the prompt exceeded the
-                model's context window.
+            ProviderErrorKind | None: Context overflow or request-body-too-large;
+                otherwise ``None``.
         """
-        exc_lower: str = str(exc).lower()
-        return any(marker in exc_lower for marker in _CONTEXT_OVERFLOW_MARKERS)
+        inspected_provider: ProviderName = provider or ProviderName.OPENAI
+        kind: ProviderErrorKind = ProviderErrorClassifier.inspect(
+            error=exc,
+            provider=inspected_provider,
+        ).kind
+        if kind in {
+            ProviderErrorKind.CONTEXT_OVERFLOW,
+            ProviderErrorKind.REQUEST_BODY_TOO_LARGE,
+        }:
+            return kind
+        return None
 
     @classmethod
     def _observation_hint(cls, *, exc: BaseException) -> Optional[str]:

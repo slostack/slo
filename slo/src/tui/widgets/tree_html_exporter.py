@@ -48,6 +48,8 @@ class TreeHtmlExporter:
         "run_aborted": _HtmlColorScheme(color="#dfdfdf", style="italic"),
         "run_failed": _HtmlColorScheme(color="#dfdfdf", style="italic"),
         "run_retrying": _HtmlColorScheme(color="#dfdfdf", style="italic"),
+        "preflight_bypassed": _HtmlColorScheme(color="#dfdfdf", style="italic"),
+        "provider_limit_observed": _HtmlColorScheme(color="#dfdfdf", style="italic"),
         "route_switched": _HtmlColorScheme(color="#dfdfdf", style="italic"),
         "slash_command": _HtmlColorScheme(color="#dfdfdf", style="italic"),
     }

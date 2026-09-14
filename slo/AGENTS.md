@@ -826,8 +826,12 @@ form the configurable fast transport policy beneath the unchanged outer watchdog
 is diagnostic-only history and is excluded from replay context.
 
 **Three-layer rate-limit defense (spec 37):**
-1. **Preflight (session)** — `estimate_request_tokens` is **history-aware** (counts replayed
-   `message_history`, including tool outputs), so a resumed session waits before it would 429.
+1. **Preflight (session)** — `PreflightDecisionDAO` owns one history-aware estimate per
+   provider attempt. RPM smoothing may wait, while a local TPM hint is advisory only: an
+   empty-window oversized request emits `preflight_bypassed` and still reaches the provider.
+   Degraded local preflight records no local attempt. The decision's exact estimate is reused
+   for any escaped-provider or pool failed-lane observation; it is never re-estimated or read
+   from a later deque entry.
 2. **In-call route switch (ModelPool)** — a switchable error on the active member switches to
    the next member inside one provider call (see Section 10).
 3. **Iteration-scoped retry (agent)** — `SloAgent.invoke(iteration_retry_policy=...)`
@@ -842,16 +846,17 @@ is diagnostic-only history and is excluded from replay context.
    `run_failed` naming the cooled members reaches the screen. With no injected policy, legacy no-retry behavior is preserved.
    The session injects the policy via `_build_iteration_retry_policy` and relays/persists the
    agent's `run_retrying` events. **Overflow backstop (spec 46.a.2):** when a provider explicitly
-   rejects a request for context overflow on the initial attempt, `_derive_next_attempt_plan`
-   (not `_finalize_failed_attempt`) performs a forced compaction pass, emits four compaction
+   rejects an initial request for confirmed context overflow before any committed visible output,
+   `_derive_next_attempt_plan` (not `_finalize_failed_attempt`) performs a forced compaction pass, emits four compaction
    lifecycle `AgentStreamEventDAO` kinds (`compaction_started`, `compaction_completed`,
    `compaction_failed`, `compaction_retrying`), persists a `run_retrying` audit event anchored
    to the failed turn, and returns a one-shot `overflow_retry` attempt plan. The retry plan
    sets `persist_user_message=False` (no duplicate history record), `excluded_turn_ids` to
    filter the failed turn from immediate replay context, and `preflight_compaction_mode="skip"`.
-   If compaction itself fails, `_derive_next_attempt_plan` returns `None` and the original
-   overflow error surfaces unchanged. A second overflow on the retry attempt is terminal (the
-   `attempt_kind == "overflow_retry"` budget guard prevents looping).
+   If compaction returns `False` or raises, `_derive_next_attempt_plan` returns `None` and the original
+   overflow error surfaces unchanged. Any committed output, a second overflow on the retry attempt,
+   and an HTTP 413 / `REQUEST_BODY_TOO_LARGE` rejection are terminal (no replay, pool switch,
+   iteration retry, LLM recovery, or forced compaction).
 
 `SessionUsageSnapshotDAO` accumulates `TokenUsageTotalsDAO` across turns and feeds
 `UsageStatusBar` so the user can see token spend and rate state without leaving the TUI.

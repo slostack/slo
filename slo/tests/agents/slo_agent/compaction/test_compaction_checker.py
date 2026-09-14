@@ -8,6 +8,14 @@ from src.agents.slo_agent.compaction.compaction_checker import (
     CompactionChecker,
     _get_context_window,
 )
+from src.agents.model_catalog.dao import (
+    ModelCatalogEntryDAO,
+    ModelCatalogSnapshotDAO,
+    ModelReasoningProfileDAO,
+    ModelRuntimeProfileDAO,
+)
+from src.agents.model_catalog.service import ModelCatalogService
+from src.auth.credential_dao import ProviderName
 from src.agents.slo_agent.compaction.constants import RESERVED_TOKEN_LIMIT
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
@@ -90,6 +98,41 @@ class TestGetContextWindow:
 
         assert window == 200_000
 
+    def test_alias_resolves_catalog_capacity(self) -> None:
+        """A compatibility alias resolves through the canonical catalog entry."""
+        assert _get_context_window(model_name="moonshot-k2") == 262_144
+
+    def test_discovered_entry_resolves_catalog_capacity(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An auto-discovered catalog entry controls automatic compaction capacity."""
+        profile = ModelRuntimeProfileDAO(
+            max_tokens=100,
+            context_window=123_456,
+            streaming=True,
+            requests_per_minute=1,
+            tokens_per_minute=1,
+            automatic_retry_attempts=0,
+            local_retry_wait_cap_seconds=1,
+        )
+        entry = ModelCatalogEntryDAO(
+            model_name="discovered-model",
+            display_name="Discovered",
+            provider=ProviderName.OPENAI,
+            support_tier="auto_discovered",
+            visible_in_picker=False,
+            runtime_profile=profile,
+            reasoning_profile=ModelReasoningProfileDAO(supported_levels=["off"], default_level="off"),
+        )
+        snapshot = ModelCatalogSnapshotDAO(
+            generated_at="2026-09-14T00:00:00+00:00",
+            entries={"discovered-model": entry},
+            aliases={},
+            templates=[],
+        )
+        monkeypatch.setattr(ModelCatalogService, "_snapshot", snapshot)
+
+        assert _get_context_window(model_name="discovered-model") == 123_456
+        ModelCatalogService.reset()
+
 
 # ---------------------------------------------------------------------------
 # should_compact — boundary arithmetic
@@ -99,10 +142,10 @@ class TestGetContextWindow:
 class TestShouldCompactThresholdArithmetic:
     """Boundary behaviour around the compaction threshold."""
 
-    async def test_returns_false_when_total_equals_threshold(self) -> None:
-        """Exactly at the threshold is not yet over it — no compaction."""
+    async def test_returns_true_when_total_equals_seventy_percent_threshold(self) -> None:
+        """Exactly seventy percent of routed capacity starts automatic compaction."""
         context_window: int = 100_000
-        threshold: int = context_window - RESERVED_TOKEN_LIMIT  # 83_616
+        threshold: int = 70_000
 
         result: bool = await CompactionChecker.should_compact(
             events=_events_totalling(tokens=threshold),
@@ -110,12 +153,12 @@ class TestShouldCompactThresholdArithmetic:
             context_window=context_window,
         )
 
-        assert result is False
+        assert result is True
 
-    async def test_returns_false_when_total_is_one_below_threshold(self) -> None:
-        """One token below the threshold does not trigger compaction."""
+    async def test_returns_false_when_total_is_one_below_seventy_percent_threshold(self) -> None:
+        """One token below seventy percent does not trigger compaction."""
         context_window: int = 100_000
-        threshold: int = context_window - RESERVED_TOKEN_LIMIT
+        threshold: int = 70_000
 
         result: bool = await CompactionChecker.should_compact(
             events=_events_totalling(tokens=threshold - 1),
@@ -180,13 +223,13 @@ class TestShouldCompactNoneTokenUsage:
     async def test_mixed_none_and_int_token_usage_sums_correctly(self) -> None:
         """``None`` events are skipped; integer events are summed correctly."""
         context_window: int = 50_000
-        threshold: int = context_window - RESERVED_TOKEN_LIMIT  # 33_616
+        threshold: int = int(context_window * 0.70)  # 35_000
 
         events: list[SessionHistoryEventDAO] = [
             _event(token_usage=None),
             _event(token_usage=20_000),
             _event(token_usage=None),
-            _event(token_usage=14_000),  # total: 34_000 > 33_616
+            _event(token_usage=16_000),  # total: 36_000 >= 35_000
         ]
 
         result: bool = await CompactionChecker.should_compact(
@@ -226,18 +269,18 @@ class TestShouldCompactContextWindowOverride:
     async def test_explicit_context_window_overrides_model_table(self) -> None:
         """A small override window causes compaction at a lower token count."""
         result: bool = await CompactionChecker.should_compact(
-            events=_events_totalling(tokens=10_000),
+            events=_events_totalling(tokens=14_000),
             model_name="claude-sonnet-4-6",
-            context_window=20_000,  # threshold = 3_616
+            context_window=20_000,  # threshold = 14_000
         )
 
         assert result is True
 
     @pytest.mark.asyncio
     async def test_explicit_context_window_uses_reserved_limit_correctly(self) -> None:
-        """Threshold is override minus ``RESERVED_TOKEN_LIMIT``, not a magic constant."""
+        """Threshold is seventy percent of the explicit routed capacity."""
         override: int = 32_768
-        threshold: int = override - RESERVED_TOKEN_LIMIT  # 16_384
+        threshold: int = int(override * 0.70)
 
         below: bool = await CompactionChecker.should_compact(
             events=_events_totalling(tokens=threshold),
@@ -250,7 +293,7 @@ class TestShouldCompactContextWindowOverride:
             context_window=override,
         )
 
-        assert below is False
+        assert below is True
         assert above is True
 
     @pytest.mark.asyncio
@@ -329,9 +372,9 @@ class TestShouldCompactMultiEventSum:
             SessionHistoryEventDAO(
                 session_id="s1",
                 kind="assistant_message",
-                payload=SessionHistoryEventPayloadDAO(token_usage=14_000),
+                payload=SessionHistoryEventPayloadDAO(token_usage=16_000),
             ),
-            # total: 34_000 > 33_616
+            # total: 36_000 >= 35_000
         ]
 
         result: bool = await CompactionChecker.should_compact(

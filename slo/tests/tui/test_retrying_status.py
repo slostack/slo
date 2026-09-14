@@ -129,3 +129,21 @@ class TestCompactionStatusRendering:
 
             spinners: list[ThinkingSpinner] = list(app.query(selector=ThinkingSpinner))
             assert len(spinners) == 1, "spinner must remain mounted during compaction"
+
+
+class TestPreflightBypassRendering:
+    """Fixed presentation for the local TPM bypass audit."""
+
+    @pytest.mark.asyncio
+    async def test_preflight_bypass_renders_exact_tool_result_line_without_spinner(self) -> None:
+        """The bypass is a terse audit line, not a retry or spinner state."""
+        app: SloTUI = SloTUI(session=_make_session())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._render_event(AgentStreamEventDAO(kind="preflight_bypassed"))
+            await pilot.pause()
+
+            rendered_lines = [str(line.render()) for line in app.query(selector=".tool-result")]
+            assert rendered_lines.count("(local token preflight bypassed; request sent to provider)") == 1
+            assert not list(app.query(selector=ThinkingSpinner))

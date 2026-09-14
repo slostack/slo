@@ -1456,22 +1456,29 @@ def _policy(*, max_attempts: int) -> ModelRateLimitPolicyDAO:
 
 
 class TestHistoryAwarePreflight:
-    def test_large_history_triggers_preflight_wait(self, tmp_path: Path) -> None:
-        """A large replayed history injects a preflight wait the prompt-only estimate would not."""
+    def test_large_history_does_not_turn_advisory_tpm_hint_into_wait(self, tmp_path: Path) -> None:
+        """History can enlarge the estimate, but a nonempty TPM window never gates the provider lane."""
         session = _single_model_session("gpt-5.4", workdir=tmp_path)
         policy = policy_for_model(model_name="gpt-5.4")
         assert policy.tokens_per_minute is not None
         now = time.monotonic()
-        # Leave ~9000 tokens of headroom: the prompt-only estimate (~8.2k) fits,
-        # the history-aware estimate (~10.2k) does not.
         session._recent_request_token_estimates.append((now, policy.tokens_per_minute - 9000))
         big_history = [_HumanMessage(content="x" * 4000), _AIMessage(content="y" * 4000)]
 
-        wait_without = session._preflight_wait_duration(text="hi", message_history=[], policy=policy)
-        wait_with = session._preflight_wait_duration(text="hi", message_history=big_history, policy=policy)
+        decision_without = session._build_preflight_decision(
+            text="hi",
+            message_history=[],
+            policy=policy,
+        )
+        decision_with = session._build_preflight_decision(
+            text="hi",
+            message_history=big_history,
+            policy=policy,
+        )
 
-        assert wait_without == 0
-        assert wait_with > 0
+        assert decision_with.estimated_tokens > decision_without.estimated_tokens
+        assert decision_without.wait_seconds == 0
+        assert decision_with.wait_seconds == 0
 
 
 class TestIterationRetryPolicy:

@@ -9,6 +9,7 @@ from typing import Any, Optional
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.agents.slo_agent.history.dao import (
+    HistoryEventKind,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
 )
@@ -17,7 +18,7 @@ from src.agents.slo_agent.history.projector import SessionHistoryProjector
 
 def _make_event(
     *,
-    kind: str,
+    kind: HistoryEventKind,
     sequence: int,
     turn_id: Optional[str] = None,
     content: Optional[str] = None,

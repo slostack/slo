@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.agents.slo_agent.history.dao import (
+    HistoryEventKind,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
     SessionHistoryMetadataDAO,
@@ -28,7 +29,7 @@ from src.agents.slo_agent.history.migration.tree_migrator import (
 
 def _make_event(
     session_id: str,
-    kind: str = "user_message",
+    kind: HistoryEventKind = "user_message",
     sequence: int = 1,
     content: str = "hello",
     tool_call_id: str | None = None,
@@ -39,7 +40,7 @@ def _make_event(
 
     Args:
         session_id (str): Session identifier.
-        kind (str): Event kind.
+        kind (HistoryEventKind): Event kind.
         sequence (int): Sequence number.
         content (str): Payload content.
         tool_call_id (str | None): Payload tool_call_id.

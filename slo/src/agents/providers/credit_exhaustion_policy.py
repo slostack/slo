@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from enum import auto, Enum
-from typing import Optional
+from math import ceil, isfinite
+from typing import Mapping, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.agents.providers.stream_recovery.service import StreamRecoveryService
 from src.auth.credential_dao import ProviderName
@@ -14,6 +17,8 @@ __all__ = [
     "CreditExhaustionPolicy",
     "ProviderErrorClassifier",
     "ProviderErrorKind",
+    "ProviderErrorSignalDAO",
+    "ProviderLimitObservationDAO",
     "should_switch",
 ]
 
@@ -34,6 +39,8 @@ class ProviderErrorKind(Enum):
     RATE_LIMITED = auto()
     TRANSIENT_PROVIDER_FAILURE = auto()
     STREAM_DISCONNECTED = auto()
+    CONTEXT_OVERFLOW = auto()
+    REQUEST_BODY_TOO_LARGE = auto()
     OTHER = auto()
 
 
@@ -87,6 +94,31 @@ def should_switch(*, kind: ProviderErrorKind) -> bool:
             TRANSIENT_PROVIDER_FAILURE; ``False`` for OTHER.
     """
     return kind in _SWITCHABLE_KINDS
+
+
+class ProviderErrorSignalDAO(BaseModel):
+    """Classify one provider rejection and retain only safe response facts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: ProviderErrorKind
+    status_code: int | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=1)
+    request_limit: int | None = Field(default=None, ge=1)
+    token_limit: int | None = Field(default=None, ge=1)
+
+
+class ProviderLimitObservationDAO(BaseModel):
+    """Persist one diagnostic provider limit signal without request content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: ProviderName
+    model_name: str
+    signal: ProviderErrorSignalDAO
+    estimated_request_tokens: int = Field(gt=0)
+    rolling_request_count: int = Field(ge=0)
+    rolling_token_estimate: int = Field(ge=0)
 
 
 class CreditExhaustedError(RuntimeError):
@@ -151,8 +183,58 @@ class ProviderErrorClassifier:
         Returns:
             ProviderErrorKind: The classified kind of the error.
         """
+        return cls.inspect(error=error, provider=provider).kind
+
+    @classmethod
+    def inspect(
+        cls,
+        *,
+        error: BaseException,
+        provider: ProviderName,
+    ) -> ProviderErrorSignalDAO:
+        """Inspect one provider exception and retain only safe response facts.
+
+        Args:
+            error (BaseException): Raw provider exception.
+            provider (ProviderName): Provider that raised the exception.
+
+        Returns:
+            ProviderErrorSignalDAO: Typed classification and parsed safe headers.
+        """
+        status_code: int | None = _extract_status_code(error=error)
+        headers: Mapping[str, str] = _extract_headers(error=error)
+        return ProviderErrorSignalDAO(
+            kind=cls._inspect_kind(error=error, provider=provider, status_code=status_code),
+            status_code=status_code,
+            retry_after_seconds=_positive_retry_after(headers=headers),
+            request_limit=_positive_header_value(headers=headers, key="x-ratelimit-limit-requests"),
+            token_limit=_positive_header_value(headers=headers, key="x-ratelimit-limit-tokens"),
+        )
+
+    @classmethod
+    def _inspect_kind(
+        cls,
+        *,
+        error: BaseException,
+        provider: ProviderName,
+        status_code: int | None,
+    ) -> ProviderErrorKind:
+        """Return the sole provider-error kind for a response.
+
+        Args:
+            error (BaseException): Raw provider error.
+            provider (ProviderName): Originating provider.
+            status_code (int | None): Parsed status code when available.
+
+        Returns:
+            ProviderErrorKind: Provider-authoritative rejection category.
+        """
         if StreamRecoveryService.is_stream_disconnection(exc=error):
             return ProviderErrorKind.STREAM_DISCONNECTED
+        if status_code == 413:
+            return ProviderErrorKind.REQUEST_BODY_TOO_LARGE
+        if cls._has_context_overflow_marker(error=error):
+            return ProviderErrorKind.CONTEXT_OVERFLOW
         if provider == ProviderName.KIMI_FOR_CODING:
             return cls._classify_kimi_for_coding(error=error)
         if provider == ProviderName.ANTHROPIC:
@@ -160,6 +242,23 @@ class ProviderErrorClassifier:
         if provider == ProviderName.OPENAI:
             return cls._classify_openai(error=error)
         return ProviderErrorKind.OTHER
+
+    @staticmethod
+    def _has_context_overflow_marker(*, error: BaseException) -> bool:
+        """Return whether provider text confirms a context-window overflow."""
+        markers: tuple[str, ...] = (
+            "prompt is too long",
+            "context_length_exceeded",
+            "maximum context length",
+            "too_many_tokens",
+            "prompt_too_long",
+            "input too long",
+            "your request exceeded model token limit",
+            "your input exceeds",
+            "exceeds the context window",
+        )
+        message: str = str(error).lower()
+        return any(marker in message for marker in markers)
 
     # ------------------------------------------------------------------
     # Per-provider classifiers
@@ -267,6 +366,41 @@ class ProviderErrorClassifier:
         if any(marker in message for marker in _RATE_LIMIT_TEXT_MARKERS):
             return ProviderErrorKind.RATE_LIMITED
         return ProviderErrorKind.OTHER
+
+
+def _extract_headers(*, error: BaseException) -> Mapping[str, str]:
+    """Return response headers before fallback exception headers."""
+    response: object | None = getattr(error, "response", None)
+    response_headers: object | None = getattr(response, "headers", None)
+    if isinstance(response_headers, Mapping):
+        return response_headers
+    headers: object | None = getattr(error, "headers", None)
+    return headers if isinstance(headers, Mapping) else {}
+
+
+def _positive_header_value(*, headers: Mapping[str, str], key: str) -> int | None:
+    """Parse one positive integer provider header, or return ``None``."""
+    value: object | None = next((value for name, value in headers.items() if name.lower() == key), None)
+    if not isinstance(value, str) or not value.isdecimal():
+        return None
+    parsed: int = int(value)
+    return parsed if parsed > 0 else None
+
+
+def _positive_retry_after(*, headers: Mapping[str, str]) -> int | None:
+    """Parse a positive decimal Retry-After value in seconds."""
+    value: object | None = next(
+        (value for name, value in headers.items() if name.lower() == "retry-after"), None
+    )
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed: float = float(value)
+        if not isfinite(parsed) or parsed <= 0:
+            return None
+        return max(1, ceil(parsed))
+    except (ValueError, OverflowError):
+        return None
 
 
 def _extract_status_code(*, error: BaseException) -> Optional[int]:

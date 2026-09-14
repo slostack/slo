@@ -74,6 +74,8 @@ class TreeMarkdownExporter:
             "run_aborted": "RunAborted",
             "run_failed": "RunFailed",
             "run_retrying": "RunRetrying",
+            "preflight_bypassed": "PreflightBypassed",
+            "provider_limit_observed": "ProviderLimitObserved",
             "route_switched": "RouteSwitched",
             "slash_command": "SlashCommand",
             "orchestrator_started": "OrchestratorStarted",

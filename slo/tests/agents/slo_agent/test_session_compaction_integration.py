@@ -24,13 +24,17 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from src.agents.slo_agent.history.dao import (
+    HistoryEventKind,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
     SessionHistoryMetadataDAO,
 )
 from src.agents.providers import FauxChatModel
+from src.auth.credential_dao import ProviderName
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
+from src.agents.providers.credit_exhaustion_policy import ProviderErrorClassifier, ProviderErrorKind
+from src.agents.slo_agent.sessions.dao import PreflightDecisionDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 
@@ -41,7 +45,7 @@ from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 
 def _make_event(
     *,
-    kind: str,
+    kind: HistoryEventKind,
     session_id: str = "sess-test",
     turn_id: Optional[str] = None,
     token_usage: Optional[int] = None,
@@ -127,54 +131,32 @@ def _build_session(
 
 
 # ---------------------------------------------------------------------------
-# Tests for _is_context_overflow_error
+# Tests for the canonical provider-error classifier
 # ---------------------------------------------------------------------------
 
 
-def test_is_context_overflow_error_anthropic_message() -> None:
-    """Exception containing 'prompt is too long' is classified as overflow."""
-    exc = RuntimeError("anthropic: prompt is too long for this model")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
-
-
-def test_is_context_overflow_error_context_length_exceeded() -> None:
-    """Exception containing 'context_length_exceeded' is classified as overflow."""
-    exc = ValueError("openai error: context_length_exceeded — reduce your input")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
-
-
-def test_is_context_overflow_error_maximum_context_length() -> None:
-    """Exception mentioning 'maximum context length' is classified as overflow."""
-    exc = Exception("maximum context length is 200000 tokens, got 201000")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
-
-
-def test_is_context_overflow_error_kimi_model_token_limit() -> None:
-    """Kimi's 'exceeded model token limit' message is classified as overflow."""
-    exc = RuntimeError(
-        "BadRequestError: Error code: 400 - {'error': {'message': 'Invalid request: "
-        "Your request exceeded model token limit: 262144 (requested: 269259)', "
-        "'type': 'invalid_request_error'}}"
+@pytest.mark.parametrize(
+    ("message", "expected_kind"),
+    [
+        ("anthropic: prompt is too long for this model", ProviderErrorKind.CONTEXT_OVERFLOW),
+        ("openai error: context_length_exceeded — reduce your input", ProviderErrorKind.CONTEXT_OVERFLOW),
+        ("maximum context length is 200000 tokens, got 201000", ProviderErrorKind.CONTEXT_OVERFLOW),
+        ("PROMPT IS TOO LONG — please shorten your input", ProviderErrorKind.CONTEXT_OVERFLOW),
+        ("429 rate limit reached", ProviderErrorKind.RATE_LIMITED),
+        ("bash: command not found: mycommand", ProviderErrorKind.OTHER),
+    ],
+)
+def test_provider_error_classifier_inspects_context_markers(
+    message: str,
+    expected_kind: ProviderErrorKind,
+) -> None:
+    """The canonical classifier replaces the removed session-private matcher."""
+    signal = ProviderErrorClassifier.inspect(
+        error=RuntimeError(message),
+        provider=ProviderName.OPENAI,
     )
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
 
-
-def test_is_context_overflow_error_rate_limit_not_overflow() -> None:
-    """A rate-limit error is NOT classified as a context overflow."""
-    exc = RuntimeError("rate_limit_error: too many requests per minute")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is False
-
-
-def test_is_context_overflow_error_tool_failure_not_overflow() -> None:
-    """A tool execution error is NOT classified as a context overflow."""
-    exc = ValueError("bash: command not found: mycommand")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is False
-
-
-def test_is_context_overflow_error_case_insensitive() -> None:
-    """The overflow check is case-insensitive."""
-    exc = RuntimeError("PROMPT IS TOO LONG — please shorten your input")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
+    assert signal.kind is expected_kind
 
 
 # ---------------------------------------------------------------------------
@@ -468,8 +450,10 @@ async def test_compaction_triggered_on_context_overflow_error() -> None:
         with pytest.raises(RuntimeError, match="prompt is too long"):
             async for _ in session.invoke(text="hello"):
                 pass
-        mock_compact.assert_awaited_once_with(turn_id=mock_compact.await_args.kwargs["turn_id"], force=True)
-        assert mock_compact.await_args.kwargs["force"] is True
+        mock_compact.assert_awaited_once()
+        await_args = mock_compact.await_args
+        assert await_args is not None
+        assert await_args.kwargs["force"] is True
 
 
 @pytest.mark.asyncio
@@ -917,28 +901,26 @@ async def test_preflight_swallows_compaction_error_and_clears_flag() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests for _is_context_overflow_error — OpenAI / Codex markers (Bug 2 fix)
+# Canonical provider-error classifier — OpenAI / Codex markers
 # ---------------------------------------------------------------------------
 
 
-def test_is_context_overflow_error_openai_your_input_exceeds() -> None:
-    """OpenAI / Codex phrase 'your input exceeds' is classified as overflow."""
-    exc = RuntimeError(
-        "Your input exceeds the context window of this model." " Please reduce your input and try again."
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Your input exceeds the context window of this model. Please reduce your input and try again.",
+        "BadRequestError(400): The request exceeds the context window of the model.",
+        "YOUR INPUT EXCEEDS THE CONTEXT WINDOW.",
+    ],
+)
+def test_provider_error_classifier_inspects_openai_context_markers(message: str) -> None:
+    """OpenAI/Codex context text belongs to the canonical classifier."""
+    signal = ProviderErrorClassifier.inspect(
+        error=RuntimeError(message),
+        provider=ProviderName.OPENAI,
     )
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
 
-
-def test_is_context_overflow_error_exceeds_the_context_window() -> None:
-    """Phrase 'exceeds the context window' alone is classified as overflow."""
-    exc = RuntimeError("BadRequestError(400): The request exceeds the context window of the model.")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
-
-
-def test_is_context_overflow_error_new_markers_case_insensitive() -> None:
-    """New overflow markers are matched case-insensitively."""
-    exc = RuntimeError("YOUR INPUT EXCEEDS THE CONTEXT WINDOW.")
-    assert SloAgentSession._is_context_overflow_error(exc=exc) is True
+    assert signal.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
 # ---------------------------------------------------------------------------
@@ -1057,3 +1039,158 @@ async def test_preflight_runs_on_first_turn_not_on_second() -> None:
         async for _ in session.invoke(text="second"):
             pass
         assert mock_compact.await_count == 3  # only the post-turn check added
+
+
+# ---------------------------------------------------------------------------
+# Spec 77.a.3 provider-size recovery state machine
+# ---------------------------------------------------------------------------
+
+
+def _decision(*, estimated_tokens: int = 123) -> PreflightDecisionDAO:
+    """Build a successful preflight decision for provider-observation tests."""
+    return PreflightDecisionDAO(estimated_tokens=estimated_tokens, now_seconds=1.0, wait_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_overflow_retries_once_when_compaction_commits() -> None:
+    """A first confirmed overflow gets exactly one retry after committed compaction."""
+    from src.agents.slo_agent.sessions.service import PromptAttemptPlanDAO, PromptAttemptResultDAO
+
+    session, _ = _build_session()
+    result = PromptAttemptResultDAO(
+        turn_id="turn-1",
+        terminal_kind="run_failed",
+        final_response="",
+        aborted=False,
+        error=RuntimeError("context_length_exceeded"),
+        overflow_recovery_eligible=True,
+    )
+    with patch.object(
+        session, "_run_compaction_if_needed", new_callable=AsyncMock, return_value=True
+    ) as compact:
+        plan = await session._derive_next_attempt_plan(
+            plan=PromptAttemptPlanDAO(attempt_kind="initial", text="hello"), result=result
+        )
+
+    assert plan is not None
+    assert plan.attempt_kind == "overflow_retry"
+    compact.assert_awaited_once_with(turn_id="turn-1", force=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compaction_result", [False, None])
+async def test_overflow_retains_original_error_when_compaction_does_not_commit(
+    compaction_result: object,
+) -> None:
+    """False/no-op compaction produces no overflow retry plan."""
+    from src.agents.slo_agent.sessions.service import PromptAttemptPlanDAO, PromptAttemptResultDAO
+
+    session, _ = _build_session()
+    error = RuntimeError("context_length_exceeded")
+    result = PromptAttemptResultDAO(
+        turn_id="turn-1",
+        terminal_kind="run_failed",
+        final_response="",
+        aborted=False,
+        error=error,
+        overflow_recovery_eligible=True,
+    )
+    with patch.object(
+        session, "_run_compaction_if_needed", new_callable=AsyncMock, return_value=compaction_result
+    ):
+        plan = await session._derive_next_attempt_plan(
+            plan=PromptAttemptPlanDAO(attempt_kind="initial", text="hello"), result=result
+        )
+
+    assert plan is None
+    with pytest.raises(RuntimeError, match="context_length_exceeded"):
+        session._raise_if_attempt_failed(result=result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("visible_event", ["text_delta", "thinking_delta", "tool_result"])
+async def test_visible_output_then_overflow_is_terminal_without_compaction(
+    visible_event: str,
+) -> None:
+    """Committed stream output makes a later overflow terminal in the real session lifecycle."""
+    session, _ = _build_session()
+    invocation_count = 0
+
+    async def _stream(**_kwargs):
+        nonlocal invocation_count
+        invocation_count += 1
+        yield AgentStreamEventDAO(kind=visible_event, delta="visible", content="visible")
+        raise RuntimeError("context_length_exceeded")
+
+    with (
+        patch.object(session, "_stream_prompt_with_retries", _stream),
+        patch.object(session, "_ensure_agent_ready", new_callable=AsyncMock),
+        patch.object(session, "_run_compaction_if_needed", new_callable=AsyncMock) as compact,
+    ):
+        with pytest.raises(RuntimeError, match="context_length_exceeded"):
+            _ = [event async for event in session.invoke(text="hello")]
+
+    assert invocation_count == 1
+    assert not any(call.kwargs.get("force") is True for call in compact.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_request_body_too_large_is_terminal_through_real_session_lifecycle() -> None:
+    """HTTP 413 does not trigger LLM recovery, compaction, retry, or a second provider call."""
+    from src.agents.slo_agent.recovery.service import RecoveryPolicy
+
+    session, _ = _build_session()
+    invocation_count = 0
+    error = RuntimeError("HTTP 413 request body too large")
+    error.status_code = 413  # type: ignore[attr-defined]
+
+    async def _stream(**_kwargs):
+        nonlocal invocation_count
+        invocation_count += 1
+        raise error
+        yield  # noqa: unreachable
+
+    with (
+        patch.object(session, "_stream_prompt_with_retries", _stream),
+        patch.object(session, "_ensure_agent_ready", new_callable=AsyncMock),
+        patch.object(session, "_run_compaction_if_needed", new_callable=AsyncMock) as compact,
+    ):
+        with pytest.raises(RuntimeError, match="413"):
+            _ = [event async for event in session.invoke(text="hello")]
+
+    decision = RecoveryPolicy.classify(exc=error, provider=ProviderName.OPENAI)
+    assert invocation_count == 1
+    assert decision.recovery_class.name == "FATAL"
+    assert not any(call.kwargs.get("force") is True for call in compact.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_pool_failed_lane_observation_persists_once_and_uses_decision_estimate() -> None:
+    """A drained pool record yields one redacted audit from its original decision."""
+    from src.agents.providers.credit_exhaustion_policy import ProviderErrorSignalDAO
+    from src.agents.providers.model_pool import RouteSwitchRecordDAO
+
+    session, store = _build_session()
+    decision = _decision(estimated_tokens=777)
+    session._preflight_decisions_by_turn["turn-pool"] = decision
+    record = RouteSwitchRecordDAO(
+        from_model_name="gpt-5.4",
+        to_model_name="gpt-5.6-terra",
+        kind="RATE_LIMITED",
+        error_text="rate limited",
+        provider=ProviderName.OPENAI,
+        signal=ProviderErrorSignalDAO(kind=ProviderErrorKind.RATE_LIMITED),
+    )
+    pool = MagicMock()
+    pool.drain_route_switch_log.side_effect = [[record], []]
+    session.agent._llm = pool
+
+    await session._drain_and_persist_route_switches(turn_id="turn-pool")
+    await session._drain_and_persist_route_switches(turn_id="turn-pool")
+
+    appended = [call.kwargs["event"] for call in store.append_event.call_args_list]
+    observations = [event for event in appended if event.kind == "provider_limit_observed"]
+    switches = [event for event in appended if event.kind == "route_switched"]
+    assert len(observations) == 1
+    assert len(switches) == 1
+    assert observations[0].payload.metadata["observation"]["estimated_request_tokens"] == 777

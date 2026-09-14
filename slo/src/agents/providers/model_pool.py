@@ -27,6 +27,7 @@ from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
     ProviderErrorClassifier,
     ProviderErrorKind,
+    ProviderErrorSignalDAO,
     should_switch,
 )
 from src.auth.credential_dao import ProviderName
@@ -84,6 +85,8 @@ class RouteSwitchRecordDAO(BaseModel):
     to_model_name: str
     kind: str
     error_text: str
+    provider: ProviderName
+    signal: ProviderErrorSignalDAO
 
 
 RequestAdapter = Callable[
@@ -448,11 +451,14 @@ class ModelPool(BaseChatModel):
         Returns:
             bool: ``True`` when the pool should select the next member and replay.
         """
-        kind: ProviderErrorKind = ProviderErrorClassifier.classify(error=exc, provider=entry.provider)
-        if not should_switch(kind=kind):
+        signal: ProviderErrorSignalDAO = ProviderErrorClassifier.inspect(
+            error=exc,
+            provider=entry.provider,
+        )
+        if not should_switch(kind=signal.kind):
             return False
-        self._cool_entry(entry=entry, kind=kind)
-        self._record_route_switch(from_entry=entry, kind=kind, error=exc)
+        self._cool_entry(entry=entry, kind=signal.kind)
+        self._record_route_switch(from_entry=entry, signal=signal, error=exc)
         return True
 
     def _cool_entry(self, *, entry: ModelPoolEntryDAO, kind: ProviderErrorKind) -> None:
@@ -481,7 +487,7 @@ class ModelPool(BaseChatModel):
         self,
         *,
         from_entry: ModelPoolEntryDAO,
-        kind: ProviderErrorKind,
+        signal: ProviderErrorSignalDAO,
         error: Exception,
     ) -> None:
         """Append one route-switch record to the in-memory audit log.
@@ -504,8 +510,10 @@ class ModelPool(BaseChatModel):
             RouteSwitchRecordDAO(
                 from_model_name=from_entry.model_name,
                 to_model_name=to_model_name,
-                kind=kind.name,
-                error_text=self._safe_route_switch_error_text(kind=kind, error=error),
+                kind=signal.kind.name,
+                error_text=self._safe_route_switch_error_text(kind=signal.kind, error=error),
+                provider=from_entry.provider,
+                signal=signal,
             )
         )
 

@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from src.agents.slo_agent.history.dao import (
+    HistoryEventKind,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
 )
@@ -23,7 +24,7 @@ from src.agents.slo_agent.compaction.token_estimator import TokenEstimator
 def _make_event(
     *,
     session_id: str = "sess-1",
-    kind: str = "user_message",
+    kind: HistoryEventKind = "user_message",
     sequence: int,
     token_usage: int = 100,
     content: str = "msg",
@@ -32,7 +33,7 @@ def _make_event(
 
     Args:
         session_id (str): Session owner.
-        kind (str): Event kind.
+        kind (HistoryEventKind): Event kind.
         sequence (int): Store-assigned sequence number.
         token_usage (int): Pre-stamped token weight.
         content (str): Payload content.

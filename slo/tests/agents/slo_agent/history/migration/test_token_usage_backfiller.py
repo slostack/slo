@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from src.agents.slo_agent.history.dao import (
+    HistoryEventKind,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
     SessionHistoryMetadataDAO,
@@ -61,7 +62,7 @@ def _write_session(
 
 def _make_event(
     session_id: str,
-    kind: str = "user_message",
+    kind: HistoryEventKind = "user_message",
     content: str = "hello",
     sequence: int = 1,
     token_usage: int | None = None,
@@ -70,7 +71,7 @@ def _make_event(
 
     Args:
         session_id (str): Session identifier.
-        kind (str): Event kind.
+        kind (HistoryEventKind): Event kind.
         content (str): Payload content field.
         sequence (int): Sequence number.
         token_usage (int | None): Existing token_usage value (None = needs backfill).

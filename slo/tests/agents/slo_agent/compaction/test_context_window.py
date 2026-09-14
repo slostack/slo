@@ -9,17 +9,21 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agents.slo_agent.compaction.constants import DEFAULT_CONTEXT_WINDOW
 from src.agents.slo_agent.compaction.context_window import ContextWindowSnapshotService
-from src.agents.slo_agent.history.dao import SessionHistoryEventDAO, SessionHistoryEventPayloadDAO
+from src.agents.slo_agent.history.dao import (
+    HistoryEventKind,
+    SessionHistoryEventDAO,
+    SessionHistoryEventPayloadDAO,
+)
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
 
 
 def _event(
-    *, kind: str, token_usage: int, turn_id: str | None = None, sequence: int = 0
+    *, kind: HistoryEventKind, token_usage: int, turn_id: str | None = None, sequence: int = 0
 ) -> SessionHistoryEventDAO:
     """Build one durable event with an explicit persisted token estimate.
 
     Args:
-        kind (str): Canonical history event kind.
+        kind (HistoryEventKind): Canonical history event kind.
         token_usage (int): Persisted event estimate.
         turn_id (str | None): Optional owning turn.
         sequence (int): Durable append sequence.

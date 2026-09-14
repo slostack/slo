@@ -264,6 +264,76 @@ class TestStreamDisconnectionClassification:
         assert kind is ProviderErrorKind.STREAM_DISCONNECTED
 
 
+class TestProviderErrorInspection:
+    """Typed, safe provider signal classification."""
+
+    @pytest.mark.parametrize(
+        ("header_value", "expected_seconds"),
+        [("0.1", 1), ("1.01", 2), ("7", 7)],
+    )
+    def test_inspect_uses_finite_positive_retry_after_from_response_headers(
+        self,
+        header_value: str,
+        expected_seconds: int,
+    ) -> None:
+        """Response headers take precedence and positive decimals safely ceil."""
+        error = RuntimeError("429 rate limit")
+        error.response = MagicMock(headers={"Retry-After": header_value})  # type: ignore[attr-defined]
+        error.headers = {"Retry-After": "999", "X-RateLimit-Limit-Requests": "0"}  # type: ignore[attr-defined]
+
+        signal = ProviderErrorClassifier.inspect(error=error, provider=ProviderName.OPENAI)
+
+        assert signal.retry_after_seconds == expected_seconds
+
+    @pytest.mark.parametrize(
+        "header_value",
+        [None, "", "0", "-1", "NaN", "inf", "-inf", "Tue, 15 Nov 1994 08:12:31 GMT"],
+    )
+    def test_inspect_rejects_nonfinite_or_nonpositive_retry_after(self, header_value: object) -> None:
+        """Invalid Retry-After values do not leak into a retry plan."""
+        error = RuntimeError("429 rate limit")
+        setattr(error, "headers", {"Retry-After": header_value})
+
+        signal = ProviderErrorClassifier.inspect(error=error, provider=ProviderName.OPENAI)
+
+        assert signal.retry_after_seconds is None
+
+    def test_inspect_keeps_only_safe_positive_rate_limit_headers(self) -> None:
+        """Only positive decimal request and token limits are retained in the signal."""
+        error = RuntimeError("429 rate limit")
+        error.headers = {
+            "X-RateLimit-Limit-Requests": "20",
+            "X-RateLimit-Limit-Tokens": "4000",
+            "Authorization": "secret",
+        }  # type: ignore[attr-defined]
+
+        signal = ProviderErrorClassifier.inspect(error=error, provider=ProviderName.OPENAI)
+
+        assert signal.request_limit == 20
+        assert signal.token_limit == 4000
+        assert "secret" not in signal.model_dump_json()
+
+    def test_inspect_classifies_context_overflow_without_switching(self) -> None:
+        """A confirmed context marker is a non-switchable provider signal."""
+        signal = ProviderErrorClassifier.inspect(
+            error=RuntimeError("context_length_exceeded"),
+            provider=ProviderName.OPENAI,
+        )
+
+        assert signal.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+        assert should_switch(kind=signal.kind) is False
+
+    def test_inspect_classifies_http_413_as_request_body_too_large(self) -> None:
+        """A definitive HTTP 413 is terminal and not an overflow retry trigger."""
+        signal = ProviderErrorClassifier.inspect(
+            error=_status_error(status_code=413),
+            provider=ProviderName.OPENAI,
+        )
+
+        assert signal.kind is ProviderErrorKind.REQUEST_BODY_TOO_LARGE
+        assert should_switch(kind=signal.kind) is False
+
+
 class TestShouldSwitch:
     def test_switches_on_credit_exhausted(self) -> None:
         """CREDIT_EXHAUSTED is switchable."""

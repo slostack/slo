@@ -212,9 +212,9 @@ class TestPoolAllExhausted:
             pool._generate(messages=_MESSAGES)
 
 
-class TestPoolNonCreditError:
-    def test_non_credit_error_propagates_immediately(self) -> None:
-        """A 503 error does not trigger fallback — it re-raises."""
+class TestPoolTransientProviderFailure:
+    def test_switches_to_fallback_when_primary_returns_http_503(self) -> None:
+        """A switchable transient 503 cools the primary model and uses the fallback."""
         primary: FauxChatModel = FauxChatModel(responses=[])
         primary._generate = lambda *a, **kw: (_ for _ in ()).throw(_NetworkError())
         secondary: FauxChatModel = _faux(responses=["never"])
@@ -237,9 +237,10 @@ class TestPoolNonCreditError:
             pool_dao=dao,
             models={"claude-primary": primary, "gpt-secondary": secondary},
         )
-        with pytest.raises(_NetworkError):
-            pool._generate(messages=_MESSAGES)
-        assert "claude-primary" not in pool._cooldowns
+        result = pool._generate(messages=_MESSAGES)
+
+        assert result.generations[0].message.content == "never"
+        assert pool._cooldowns.get("claude-primary", 0) > time.monotonic()
 
 
 class TestPoolBindToolsPreservesCooldowns:

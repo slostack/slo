@@ -37,6 +37,8 @@ HistoryEventKind = Literal[
     "tool_output_update",
     "tool_result",
     "run_retrying",  # a wait-and-retry decision (preflight / pool / rate limit) — 37.a.6
+    "preflight_bypassed",  # advisory local TPM audit — spec 77
+    "provider_limit_observed",  # provider-authoritative rejection audit — spec 77
     "route_switched",  # a ModelPool route switch (audit) — 37.a.6
     "stream_reconnecting",  # provider stream reconnect audit — spec 70
     # LLM-driven recovery (feature 50):

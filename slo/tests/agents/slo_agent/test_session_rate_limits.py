@@ -9,8 +9,9 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage
 
+from src.agents.providers.credit_exhaustion_policy import ProviderErrorKind
 from src.agents.slo_agent.agent import SloAgent
-from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+from src.agents.slo_agent.sessions.dao import PreflightDecisionDAO, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS, SloAgentSession
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
@@ -149,6 +150,85 @@ class TestSessionRateLimitResilience:
 
         assert plan.retryable is False
 
+    def test_build_preflight_decision_records_one_estimate(self) -> None:
+        """A successful preflight computes the request estimate once."""
+        session: SloAgentSession = _session()
+        policy = session._resolve_attempt_policy()
+
+        with patch.object(session, "_estimated_request_tokens", return_value=123) as estimate:
+            decision = session._build_preflight_decision(
+                text="hello",
+                message_history=[],
+                policy=policy,
+            )
+
+        assert estimate.call_count == 1
+        assert decision.estimated_tokens == 123
+        assert decision.bypass is None
+
+    @pytest.mark.asyncio
+    async def test_degraded_preflight_continues_without_local_attempt(self) -> None:
+        """A local preflight defect does not stop the provider lane."""
+        session: SloAgentSession = _session()
+        invoked: int = 0
+
+        async def _invoke(**_kwargs):
+            nonlocal invoked
+            invoked += 1
+            yield AgentStreamEventDAO(kind="run_completed", content="done")
+
+        session.agent.invoke = _invoke  # type: ignore[method-assign,assignment]
+        with patch.object(session, "_build_preflight_decision", side_effect=IndexError("local defect")):
+            events: list[AgentStreamEventDAO] = [event async for event in session.invoke(text="hello")]
+
+        assert [event.kind for event in events] == ["run_completed"]
+        assert invoked == 1
+        assert not session._recent_request_times
+        assert not session._recent_request_token_estimates
+
+    def test_build_preflight_decision_bypasses_empty_oversized_token_window(self) -> None:
+        """An impossible local TPM wait is a zero-wait diagnostic, not a veto."""
+        session: SloAgentSession = _session()
+        policy = session._resolve_attempt_policy().model_copy(update={"tokens_per_minute": 100})
+
+        with patch.object(session, "_estimated_request_tokens", return_value=101):
+            decision = session._build_preflight_decision(
+                text="hello",
+                message_history=[],
+                policy=policy,
+            )
+
+        assert decision.wait_seconds == 0
+        assert decision.bypass is not None
+        assert decision.bypass.reason == "empty_token_window_oversized_request"
+        assert decision.bypass.estimated_tokens == 101
+        assert decision.bypass.tokens_per_minute == 100
+
+    @pytest.mark.asyncio
+    async def test_preflight_bypass_emits_audit_before_provider_call(self) -> None:
+        """An oversized empty TPM window is audited and still sent to the provider."""
+        session: SloAgentSession = _session()
+        policy = session._resolve_attempt_policy().model_copy(update={"tokens_per_minute": 100})
+        invoked: int = 0
+
+        async def _invoke(**_kwargs):
+            nonlocal invoked
+            invoked += 1
+            yield AgentStreamEventDAO(kind="run_completed", content="done")
+
+        session.agent.invoke = _invoke  # type: ignore[method-assign,assignment]
+        with patch.object(session, "_resolve_attempt_policy", return_value=policy):
+            with patch.object(session, "_estimated_request_tokens", return_value=101):
+                events: list[AgentStreamEventDAO] = [event async for event in session.invoke(text="hello")]
+
+        assert [event.kind for event in events] == ["preflight_bypassed", "run_completed"]
+        assert events[0].metadata == {
+            "reason": "empty_token_window_oversized_request",
+            "estimated_tokens": 101,
+            "tokens_per_minute": 100,
+        }
+        assert invoked == 1
+
     @pytest.mark.asyncio
     async def test_preflight_local_rate_wait_yields_retrying_status(self) -> None:
         """A saturated local request window yields a waiting status before the attempt."""
@@ -186,3 +266,45 @@ def test_request_token_estimate_uses_realistic_output_not_ceiling() -> None:
     assert estimate == (len(text) // 4) + _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS
     # Guard against re-coupling to the raised hard ceiling.
     assert _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS < 64_000
+
+
+@pytest.mark.asyncio
+async def test_history_disabled_bypass_is_live_without_history_write() -> None:
+    """The bypass reaches live consumers while the disabled store remains untouched."""
+    session = _session()
+    session._enable_history = False
+    session._history_store = None
+    policy = session._resolve_attempt_policy().model_copy(update={"tokens_per_minute": 100})
+
+    async def _invoke(**_kwargs):
+        yield AgentStreamEventDAO(kind="run_completed", content="done")
+
+    session.agent.invoke = _invoke  # type: ignore[method-assign,assignment]
+    with (
+        patch.object(session, "_resolve_attempt_policy", return_value=policy),
+        patch.object(session, "_estimated_request_tokens", return_value=101),
+        patch.object(session, "_persist_preflight_bypassed_event", new_callable=AsyncMock) as persist_bypass,
+    ):
+        events = [event async for event in session.invoke(text="hello")]
+
+    assert [event.kind for event in events] == ["preflight_bypassed", "run_completed"]
+    persist_bypass.assert_not_awaited()
+
+
+def test_provider_observation_builder_uses_exact_decision_estimate() -> None:
+    """Provider observation never infers an estimate from a mutable deque."""
+    from src.agents.providers.credit_exhaustion_policy import ProviderErrorSignalDAO
+    from src.agents.providers.credit_exhaustion_policy import ProviderLimitObservationDAO
+
+    session = _single_model_session()
+    session._recent_request_token_estimates.append((1.0, 999))
+    decision = PreflightDecisionDAO(estimated_tokens=123, now_seconds=1.0, wait_seconds=0)
+
+    observation: ProviderLimitObservationDAO = session._build_provider_limit_observation(
+        provider=ProviderName.OPENAI,
+        model_name="gpt-5.6-terra",
+        signal=ProviderErrorSignalDAO(kind=ProviderErrorKind.RATE_LIMITED),
+        decision=decision,
+    )
+
+    assert observation.estimated_request_tokens == 123

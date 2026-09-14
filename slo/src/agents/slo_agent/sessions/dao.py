@@ -25,6 +25,8 @@ __all__ = [
     "ContextWindowSnapshotDAO",
     "ManualCompactionResultDAO",
     "ManualCompactionStatus",
+    "PreflightBypassNoticeDAO",
+    "PreflightDecisionDAO",
     "SessionConfigDAO",
 ]
 
@@ -44,6 +46,27 @@ class ManualCompactionResultDAO(BaseModel):
     status: ManualCompactionStatus
     context_window_snapshot: Optional[ContextWindowSnapshotDAO] = None
     detail: Optional[str] = None
+
+
+class PreflightBypassNoticeDAO(BaseModel):
+    """Describe a local token-window state that waiting cannot resolve."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reason: Literal["empty_token_window_oversized_request"]
+    estimated_tokens: int = Field(gt=0)
+    tokens_per_minute: int = Field(gt=0)
+
+
+class PreflightDecisionDAO(BaseModel):
+    """Carry one successful local preflight result to its single consumer."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    estimated_tokens: int = Field(gt=0)
+    now_seconds: float = Field(ge=0.0)
+    wait_seconds: int = Field(ge=0)
+    bypass: PreflightBypassNoticeDAO | None = None
 
 
 class SessionConfigDAO(BaseModel):

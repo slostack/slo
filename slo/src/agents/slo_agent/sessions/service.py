@@ -55,7 +55,10 @@ from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
     ProviderErrorClassifier,
     ProviderErrorKind,
+    ProviderErrorSignalDAO,
+    ProviderLimitObservationDAO,
 )
+from src.agents.providers.model_pool import RouteSwitchRecordDAO
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
@@ -100,6 +103,8 @@ from src.agents.slo_agent.runtime import SloRuntimeContext
 from src.agents.slo_agent.sessions.dao import (
     AgentEventSubscriber,
     ManualCompactionResultDAO,
+    PreflightBypassNoticeDAO,
+    PreflightDecisionDAO,
     SessionConfigDAO,
 )
 from src.agents.slo_agent.sessions.usage import (
@@ -327,9 +332,21 @@ class PromptAttemptTrackerDAO(BaseModel):
     overflow_recovery_eligible: bool = Field(
         default=False,
         description=(
-            "True when the terminal failure was a recognized provider context overflow. "
+            "True when the terminal failure was an initial recognized provider context overflow. "
             "Set in _finalize_failed_attempt; read by _derive_next_attempt_plan."
         ),
+    )
+    committed_visible_output: bool = Field(
+        default=False,
+        description="Whether this provider attempt crossed the agent output commit boundary.",
+    )
+    provider_signal: Optional[ProviderErrorSignalDAO] = Field(
+        default=None,
+        description="Typed inspection result for an escaped provider rejection.",
+    )
+    preflight_decision: Optional[PreflightDecisionDAO] = Field(
+        default=None,
+        description="Successful local preflight decision for this provider attempt.",
     )
     stream_failure: Optional[ProviderStreamFailure] = Field(
         default=None,
@@ -372,13 +389,23 @@ class PromptAttemptResultDAO(BaseModel):
     )
     overflow_recovery_eligible: bool = Field(
         default=False,
-        description=(
-            "True when the failure was a recognized provider context overflow " "on an initial attempt."
-        ),
+        description="True when the failure was a recognized provider context overflow.",
+    )
+    committed_visible_output: bool = Field(
+        default=False,
+        description="Whether this provider attempt crossed the agent output commit boundary.",
     )
     stream_failure: Optional[ProviderStreamFailure] = Field(
         default=None,
         description="Typed redacted provider stream failure from the agent attempt.",
+    )
+    provider_signal: Optional[ProviderErrorSignalDAO] = Field(
+        default=None,
+        description="Typed inspection result for an escaped provider rejection.",
+    )
+    preflight_decision: Optional[PreflightDecisionDAO] = Field(
+        default=None,
+        description="Successful local preflight decision for this provider attempt.",
     )
 
 
@@ -484,6 +511,7 @@ class SloAgentSession:
         self._usage_snapshot_commit_version: int = 0
         self._recent_request_times: deque[float] = deque()
         self._recent_request_token_estimates: deque[tuple[float, int]] = deque()
+        self._preflight_decisions_by_turn: dict[str, PreflightDecisionDAO] = {}
         self._cooldown_until: Optional[float] = None
         self._cooldown_seconds_remaining: Optional[int] = None
         self._startup_notice_shown_in_memory: bool = False
@@ -992,30 +1020,22 @@ class SloAgentSession:
         self,
         *,
         policy: ModelRateLimitPolicyDAO,
-        estimated_tokens: int,
         now_seconds: float,
     ) -> int:
-        """Return the local request-window wait before the next attempt.
+        """Return the advisory local RPM wait before the next attempt.
 
         Args:
             policy (ModelRateLimitPolicyDAO): Active model policy.
-            estimated_tokens (int): Estimated token pressure for the request.
             now_seconds (float): Current monotonic timestamp.
 
         Returns:
             int: Seconds to wait before attempting the provider call.
         """
         self._prune_rate_window(now_seconds=now_seconds)
-        request_wait_seconds: int = self._request_window_wait_seconds(
+        return self._request_window_wait_seconds(
             policy=policy,
             now_seconds=now_seconds,
         )
-        token_wait_seconds: int = self._token_window_wait_seconds(
-            policy=policy,
-            estimated_tokens=estimated_tokens,
-            now_seconds=now_seconds,
-        )
-        return max(request_wait_seconds, token_wait_seconds)
 
     def _request_window_wait_seconds(
         self,
@@ -1038,33 +1058,6 @@ class SloAgentSession:
             return 0
         oldest_request_seconds: float = self._recent_request_times[0]
         return max(1, round((oldest_request_seconds + 60.0) - now_seconds))
-
-    def _token_window_wait_seconds(
-        self,
-        *,
-        policy: ModelRateLimitPolicyDAO,
-        estimated_tokens: int,
-        now_seconds: float,
-    ) -> int:
-        """Return the local TPM wait for the next attempt.
-
-        Args:
-            policy (ModelRateLimitPolicyDAO): Active model policy.
-            estimated_tokens (int): Estimated request-window token pressure.
-            now_seconds (float): Current monotonic timestamp.
-
-        Returns:
-            int: Seconds to wait for token-window capacity.
-        """
-        if policy.tokens_per_minute is None:
-            return 0
-        current_window_tokens: int = sum(
-            tokens for _timestamp, tokens in self._recent_request_token_estimates
-        )
-        if current_window_tokens + estimated_tokens <= policy.tokens_per_minute:
-            return 0
-        oldest_token_seconds: float = self._recent_request_token_estimates[0][0]
-        return max(1, round((oldest_token_seconds + 60.0) - now_seconds))
 
     def _record_request_attempt(self, *, estimated_tokens: int, now_seconds: float) -> None:
         """Record one local request-window attempt.
@@ -2154,6 +2147,7 @@ class SloAgentSession:
                     message_history=prepared.message_history,
                     runtime_handler=prepared.runtime_handler,
                     policy=prepared.policy,
+                    tracker=tracker,
                 ):
                     self._record_attempt_stream_event(
                         tracker=tracker,
@@ -2161,6 +2155,11 @@ class SloAgentSession:
                     )
                     if event.kind == "run_retrying":
                         await self._persist_run_retrying_event(
+                            event=event,
+                            turn_id=prepared.turn_id,
+                        )
+                    elif event.kind == "preflight_bypassed" and self._enable_history:
+                        await self._persist_preflight_bypassed_event(
                             event=event,
                             turn_id=prepared.turn_id,
                         )
@@ -2193,6 +2192,7 @@ class SloAgentSession:
             await self._append_fallback_terminal_event_if_needed(
                 tracker=tracker,
             )
+            self._preflight_decisions_by_turn.pop(tracker.turn_id, None)
 
     def _assembled_system_prompt(self) -> str:
         """Compute the effective system prompt that will be passed to SloAgent.
@@ -2328,6 +2328,8 @@ class SloAgentSession:
         Returns:
             None: The tracker is mutated in place.
         """
+        if SloAgent._is_committed_output_event(event=event):
+            tracker.committed_visible_output = True
         if event.kind == "run_completed":
             tracker.final_response = event.content or ""
             tracker.aborted = False
@@ -2426,6 +2428,13 @@ class SloAgentSession:
             turn_id=turn_id,
         )
         await self._persist_routed_model_if_changed()
+        signal: ProviderErrorSignalDAO | None = self._inspect_provider_error(error=error)
+        if signal is not None and tracker.preflight_decision is not None:
+            await self._persist_provider_limit_observation(
+                turn_id=turn_id,
+                signal=signal,
+                decision=tracker.preflight_decision,
+            )
         await self._append_history_event(
             event=self._build_event(
                 kind="run_failed",
@@ -2441,7 +2450,12 @@ class SloAgentSession:
         tracker.aborted = False
         tracker.terminal_kind = "run_failed"
         tracker.terminal_event_appended = True
-        tracker.overflow_recovery_eligible = self._is_context_overflow_error(exc=error)
+        tracker.overflow_recovery_eligible = (
+            signal is not None
+            and signal.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+            and not tracker.committed_visible_output
+        )
+        tracker.provider_signal = signal
         tracker.stream_failure = error if isinstance(error, ProviderStreamFailure) else None
 
     async def _append_fallback_terminal_event_if_needed(
@@ -2577,7 +2591,10 @@ class SloAgentSession:
             aborted=tracker.aborted,
             error=tracker.error,
             overflow_recovery_eligible=tracker.overflow_recovery_eligible,
+            committed_visible_output=tracker.committed_visible_output,
             stream_failure=tracker.stream_failure,
+            provider_signal=tracker.provider_signal,
+            preflight_decision=tracker.preflight_decision,
         )
 
     async def _derive_next_attempt_plan(
@@ -2641,7 +2658,7 @@ class SloAgentSession:
             return None
         await self._emit_compaction_event(kind="compaction_started")
         try:
-            await self._run_compaction_if_needed(
+            compacted: bool = await self._run_compaction_if_needed(
                 turn_id=result.turn_id,
                 force=True,
             )
@@ -2651,6 +2668,9 @@ class SloAgentSession:
                 e=compaction_exc,
                 stack_trace=False,
             )
+            await self._emit_compaction_event(kind="compaction_failed")
+            return None
+        if not compacted:
             await self._emit_compaction_event(kind="compaction_failed")
             return None
         await self._emit_compaction_event(kind="compaction_completed")
@@ -2895,10 +2915,10 @@ class SloAgentSession:
         1. The attempt is the initial attempt — ``attempt_kind == "initial"``.
            This enforces the one-retry budget: an overflow-retry attempt that
            overflows again is terminal.
-        2. ``result.overflow_recovery_eligible`` is ``True``, which was set by
-           ``_finalize_failed_attempt`` when the error was a recognized context
-           overflow. Using the pre-computed flag avoids re-classifying the raw
-           exception here.
+        2. ``result.overflow_recovery_eligible`` is ``True`` and no committed
+           visible output crossed the attempt boundary. The flag is set by
+           ``_finalize_failed_attempt`` from the shared provider signal, so this
+           method never re-classifies the raw exception.
 
         Args:
             plan (PromptAttemptPlanDAO): The plan for the attempt that just failed.
@@ -2909,6 +2929,8 @@ class SloAgentSession:
             bool: True when recovery via compaction-and-retry should be attempted.
         """
         if plan.attempt_kind != "initial":
+            return False
+        if result.committed_visible_output:
             return False
         return result.overflow_recovery_eligible
 
@@ -3048,6 +3070,7 @@ class SloAgentSession:
         message_history: list[BaseMessage],
         runtime_handler: Optional[AgentRuntimeHandler],
         policy: ModelRateLimitPolicyDAO,
+        tracker: PromptAttemptTrackerDAO,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Run the prompt with local rate governance and bounded retries.
 
@@ -3057,6 +3080,8 @@ class SloAgentSession:
             message_history (list[BaseMessage]): Projected persisted history.
             runtime_handler (Optional[AgentRuntimeHandler]): Optional canonical trace handler.
             policy (ModelRateLimitPolicyDAO): Active model rate policy.
+            tracker (PromptAttemptTrackerDAO): Attempt tracker receiving the
+                successful preflight decision.
 
         Yields:
             AgentStreamEventDAO: Streamed prompt events plus retry-status events.
@@ -3075,6 +3100,7 @@ class SloAgentSession:
             policy=policy,
             attempt_number=1,
             max_attempts=max_attempts,
+            tracker=tracker,
         ):
             yield retry_event
 
@@ -3223,6 +3249,7 @@ class SloAgentSession:
         policy: ModelRateLimitPolicyDAO,
         attempt_number: int,
         max_attempts: int,
+        tracker: PromptAttemptTrackerDAO,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Yield any local rate-window waiting event before the provider call.
 
@@ -3235,68 +3262,165 @@ class SloAgentSession:
             policy (ModelRateLimitPolicyDAO): Active model rate policy.
             attempt_number (int): One-indexed attempt number.
             max_attempts (int): Total attempt budget.
+            tracker (PromptAttemptTrackerDAO): Attempt owner for a successful
+                decision that may later need provider-failure observation.
 
         Yields:
             AgentStreamEventDAO: Local waiting status event when needed.
         """
-        wait_seconds: int = self._preflight_wait_duration(
-            text=text,
-            message_history=message_history,
-            policy=policy,
-        )
-        if wait_seconds <= 0:
-            self._clear_retry_cooldown()
-            self._record_request_attempt(
-                estimated_tokens=self._estimated_request_tokens(text=text, message_history=message_history),
-                now_seconds=time.monotonic(),
+        try:
+            decision: PreflightDecisionDAO = self._build_preflight_decision(
+                text=text,
+                message_history=message_history,
+                policy=policy,
             )
+        except Exception as exc:
+            self._handle_degraded_preflight(exc=exc)
             return
-        self._set_retry_cooldown(wait_seconds=wait_seconds)
+        tracker.preflight_decision = decision
+        self._preflight_decisions_by_turn[tracker.turn_id] = decision
+        if decision.bypass is not None:
+            bypass_event: AgentStreamEventDAO = self._preflight_bypassed_event(
+                bypass=decision.bypass,
+            )
+            await self._dispatch_event(event=bypass_event)
+            yield bypass_event
+        if decision.wait_seconds <= 0:
+            self._clear_retry_cooldown()
+            self._record_preflight_attempt(decision=decision)
+            return
+        self._set_retry_cooldown(wait_seconds=decision.wait_seconds)
         retry_event: AgentStreamEventDAO = self._retrying_status_event(
             message=(
-                f"Waiting {wait_seconds}s for {self.active_model_name} local rate window "
+                f"Waiting {decision.wait_seconds}s for {self.active_model_name} local rate window "
                 f"(attempt {attempt_number}/{max_attempts})."
             ),
-            wait_seconds=wait_seconds,
+            wait_seconds=decision.wait_seconds,
             attempt_number=attempt_number,
         )
         await self._dispatch_event(event=retry_event)
         yield retry_event
-        await asyncio.sleep(wait_seconds)
+        await asyncio.sleep(decision.wait_seconds)
         self._clear_retry_cooldown()
+        self._record_preflight_attempt(decision=decision)
+
+    def _handle_degraded_preflight(self, *, exc: Exception) -> None:
+        """Clear advisory state after a local preflight construction failure.
+
+        Args:
+            exc (Exception): Local bookkeeping failure, never a provider failure.
+        """
+        self._clear_retry_cooldown()
+        log_warning(
+            msg="local_preflight_degraded",
+            error_type=type(exc).__name__,
+            model_name=self._resolve_active_model_name() or self.active_model_name,
+        )
+
+    def _record_preflight_attempt(self, *, decision: PreflightDecisionDAO) -> None:
+        """Record one successful decision using its original token estimate.
+
+        Args:
+            decision (PreflightDecisionDAO): Completed local preflight decision.
+        """
         self._record_request_attempt(
-            estimated_tokens=self._estimated_request_tokens(text=text, message_history=message_history),
+            estimated_tokens=decision.estimated_tokens,
             now_seconds=time.monotonic(),
         )
 
-    def _preflight_wait_duration(
+    def _build_preflight_decision(
         self,
         *,
         text: str,
         message_history: Sequence[BaseMessage],
         policy: ModelRateLimitPolicyDAO,
-    ) -> int:
-        """Return the local wait before the next provider attempt.
+    ) -> PreflightDecisionDAO:
+        """Build the local advisory result for one provider attempt.
 
         Args:
             text (str): User prompt text.
-            message_history (Sequence[BaseMessage]): Replayed history for this turn.
-            policy (ModelRateLimitPolicyDAO): Active model rate policy.
+            message_history (Sequence[BaseMessage]): Replayed context for this attempt.
+            policy (ModelRateLimitPolicyDAO): Active routed-model rate policy.
 
         Returns:
-            int: Local wait duration in seconds.
+            PreflightDecisionDAO: One immutable estimate, timestamp, and bounded wait.
         """
-        estimated_tokens: int = self._estimated_request_tokens(text=text, message_history=message_history)
+        estimated_tokens: int = self._estimated_request_tokens(
+            text=text,
+            message_history=message_history,
+        )
         now_seconds: float = time.monotonic()
         cooldown_wait_seconds: int = self._cooldown_wait_seconds()
         window_wait_seconds: int = self._preflight_wait_seconds(
             policy=policy,
-            estimated_tokens=estimated_tokens,
             now_seconds=now_seconds,
         )
-        return min(
-            max(cooldown_wait_seconds, window_wait_seconds),
-            policy.local_retry_wait_cap_seconds,
+        bypass: PreflightBypassNoticeDAO | None = self._preflight_bypass_notice(
+            policy=policy,
+            estimated_tokens=estimated_tokens,
+        )
+        return PreflightDecisionDAO(
+            estimated_tokens=estimated_tokens,
+            now_seconds=now_seconds,
+            wait_seconds=min(
+                max(cooldown_wait_seconds, window_wait_seconds),
+                policy.local_retry_wait_cap_seconds,
+            ),
+            bypass=bypass,
+        )
+
+    def _preflight_bypass_notice(
+        self,
+        *,
+        policy: ModelRateLimitPolicyDAO,
+        estimated_tokens: int,
+    ) -> PreflightBypassNoticeDAO | None:
+        """Return an audit notice when local TPM waiting cannot help.
+
+        Args:
+            policy (ModelRateLimitPolicyDAO): Active model rate policy.
+            estimated_tokens (int): One decision-owned request estimate.
+
+        Returns:
+            PreflightBypassNoticeDAO | None: Bypass fact for an empty oversized
+                token window, otherwise ``None``.
+        """
+        if policy.tokens_per_minute is None:
+            return None
+        if self._recent_request_token_estimates:
+            return None
+        if estimated_tokens <= policy.tokens_per_minute:
+            return None
+        return PreflightBypassNoticeDAO(
+            reason="empty_token_window_oversized_request",
+            estimated_tokens=estimated_tokens,
+            tokens_per_minute=policy.tokens_per_minute,
+        )
+
+    @staticmethod
+    def _preflight_bypassed_event(
+        *,
+        bypass: PreflightBypassNoticeDAO,
+    ) -> AgentStreamEventDAO:
+        """Build the fixed audit event for one local TPM bypass.
+
+        Args:
+            bypass (PreflightBypassNoticeDAO): Decision-owned bypass details.
+
+        Returns:
+            AgentStreamEventDAO: Audit event that leaves the provider lane open.
+        """
+        return AgentStreamEventDAO(
+            kind="preflight_bypassed",
+            content=(
+                "Local token preflight could not provide a useful wait; "
+                "sending the request to the provider."
+            ),
+            metadata={
+                "reason": bypass.reason,
+                "estimated_tokens": bypass.estimated_tokens,
+                "tokens_per_minute": bypass.tokens_per_minute,
+            },
         )
 
     @staticmethod
@@ -3407,6 +3531,30 @@ class SloAgentSession:
                     model_name=self._resolve_active_model_name(),
                     message=event.content,
                     metadata=dict(event.metadata or {}),
+                ),
+            ),
+        )
+
+    async def _persist_preflight_bypassed_event(
+        self,
+        *,
+        event: AgentStreamEventDAO,
+        turn_id: str,
+    ) -> None:
+        """Persist one decision-owned local TPM bypass audit event.
+
+        Args:
+            event (AgentStreamEventDAO): The bypass audit event.
+            turn_id (str): Active history turn receiving the audit.
+        """
+        await self._append_history_event(
+            event=self._build_event(
+                kind="preflight_bypassed",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    model_name=self._resolve_active_model_name(),
+                    message=event.content,
+                    metadata=dict(event.metadata),
                 ),
             ),
         )
@@ -3549,6 +3697,94 @@ class SloAgentSession:
                     ),
                 ),
             )
+            await self._persist_pool_provider_limit_observation(
+                turn_id=turn_id,
+                record=record,
+            )
+
+    async def _persist_pool_provider_limit_observation(
+        self,
+        *,
+        turn_id: str,
+        record: RouteSwitchRecordDAO,
+    ) -> None:
+        """Persist one pool-caught provider observation without reclassification.
+
+        Args:
+            turn_id (str): Owning attempt turn identifier.
+            record (RouteSwitchRecordDAO): Typed ModelPool route-switch audit record.
+        """
+        signal: ProviderErrorSignalDAO = record.signal
+        provider: ProviderName = record.provider
+        model_name: str = record.from_model_name
+        if signal.kind not in {
+            ProviderErrorKind.RATE_LIMITED,
+            ProviderErrorKind.CONTEXT_OVERFLOW,
+            ProviderErrorKind.REQUEST_BODY_TOO_LARGE,
+        }:
+            return
+        decision: PreflightDecisionDAO | None = self._active_preflight_decision_for_turn(
+            turn_id=turn_id,
+        )
+        if decision is None:
+            return
+        observation = self._build_provider_limit_observation(
+            provider=provider,
+            model_name=model_name,
+            signal=signal,
+            decision=decision,
+        )
+        await self._append_history_event(
+            event=self._build_event(
+                kind="provider_limit_observed",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    message="Provider rejected a request; recorded a redacted limit observation.",
+                    metadata={"observation": observation.model_dump(mode="json")},
+                ),
+            ),
+        )
+
+    def _active_preflight_decision_for_turn(self, *, turn_id: str) -> PreflightDecisionDAO | None:
+        """Return the exact decision retained by the currently executing turn.
+
+        Args:
+            turn_id (str): Turn whose provider lane was rejected.
+
+        Returns:
+            PreflightDecisionDAO | None: The decision for the active turn, or
+                ``None`` when the lane bypassed degraded local preflight.
+        """
+        return self._preflight_decisions_by_turn.get(turn_id)
+
+    def _build_provider_limit_observation(
+        self,
+        *,
+        provider: ProviderName,
+        model_name: str,
+        signal: ProviderErrorSignalDAO,
+        decision: PreflightDecisionDAO,
+    ) -> ProviderLimitObservationDAO:
+        """Build one observation from the exact decision that opened its lane.
+
+        Args:
+            provider (ProviderName): Provider that rejected the request.
+            model_name (str): Failed routed model name.
+            signal (ProviderErrorSignalDAO): Shared provider classification.
+            decision (PreflightDecisionDAO): Original successful preflight.
+
+        Returns:
+            ProviderLimitObservationDAO: Redacted rejection audit facts.
+        """
+        rolling_token_estimate: int = sum(tokens for _, tokens in self._recent_request_token_estimates)
+        return ProviderLimitObservationDAO(
+            provider=provider,
+            model_name=model_name,
+            signal=signal,
+            estimated_request_tokens=decision.estimated_tokens,
+            rolling_request_count=len(self._recent_request_times),
+            rolling_token_estimate=rolling_token_estimate,
+        )
 
     async def _persist_routed_model_if_changed(self) -> None:
         """Update ``session.json``'s model_name to the routed model when it changed.
@@ -3665,7 +3901,7 @@ class SloAgentSession:
         turn_id: str,
         force: bool = False,
         events: Optional[list[SessionHistoryEventDAO]] = None,
-    ) -> None:
+    ) -> bool:
         """Check context size and compact session history when needed.
 
         Loads all current session events from the store, asks ``CompactionChecker``
@@ -3696,9 +3932,9 @@ class SloAgentSession:
                 and compact immediately. Defaults to ``False``.
         """
         if not self._enable_history or self._history_store is None:
-            return
+            return False
         if self._agent is None or self._agent.llm is None:
-            return
+            return False
 
         compaction_events: list[SessionHistoryEventDAO]
         if events is not None:
@@ -3713,7 +3949,7 @@ class SloAgentSession:
                 model_name=model_name,
             )
             if not should_compact:
-                return
+                return False
 
         log_info(
             msg="compaction_triggered",
@@ -3741,50 +3977,63 @@ class SloAgentSession:
             tokens_before=result.tokens_before,
             tokens_after=result.tokens_after,
         )
+        return True
 
-    @staticmethod
-    def _is_context_overflow_error(*, exc: BaseException) -> bool:
-        """Return True when ``exc`` is a provider context-window overflow.
-
-        Checks typed exception classes where available (Anthropic SDK) and
-        falls back to a case-insensitive substring scan of the exception
-        message for other providers. The fallback ensures coverage for
-        providers whose SDK does not expose a typed context-window exception.
+    def _inspect_provider_error(self, *, error: BaseException) -> ProviderErrorSignalDAO | None:
+        """Inspect an escaped provider error once when its provider is known.
 
         Args:
-            exc (BaseException): The exception to inspect.
+            error (BaseException): Escaped provider exception.
 
         Returns:
-            bool: True when the exception represents a hard context-length
-                violation that compaction can address.
+            ProviderErrorSignalDAO | None: Typed signal, or ``None`` for a
+                local/non-provider error.
         """
-        _OVERFLOW_MARKERS: tuple[str, ...] = (
-            "prompt is too long",
-            "context_length_exceeded",
-            "maximum context length",
-            "too_many_tokens",
-            "prompt_too_long",
-            "input too long",
-            "your request exceeded model token limit",
-            # OpenAI / Codex responses-API error phrases — must be kept in sync
-            # with RecoveryPolicy._CONTEXT_OVERFLOW_MARKERS in recovery/service.py.
-            "your input exceeds",
-            "exceeds the context window",
-        )
-        exc_lower: str = str(exc).lower()
-        for marker in _OVERFLOW_MARKERS:
-            if marker in exc_lower:
-                return True
-        # Typed check for the Anthropic SDK — avoids a hard import at module
-        # level so session.py stays importable in environments without the SDK.
-        try:
-            import anthropic  # noqa: PLC0415
+        provider: ProviderName | None = self._resolve_active_provider()
+        if provider is None:
+            return None
+        return ProviderErrorClassifier.inspect(error=error, provider=provider)
 
-            if isinstance(exc, anthropic.BadRequestError):
-                return True
-        except ImportError:
-            pass
-        return False
+    async def _persist_provider_limit_observation(
+        self,
+        *,
+        turn_id: str,
+        signal: ProviderErrorSignalDAO,
+        decision: PreflightDecisionDAO,
+    ) -> None:
+        """Persist one redacted provider rejection audit for the active lane.
+
+        Args:
+            turn_id (str): Failed attempt turn identifier.
+            signal (ProviderErrorSignalDAO): Shared classifier output.
+            decision (PreflightDecisionDAO): Exact successful preflight result
+                that opened the rejected provider lane.
+        """
+        if signal.kind not in {
+            ProviderErrorKind.RATE_LIMITED,
+            ProviderErrorKind.CONTEXT_OVERFLOW,
+            ProviderErrorKind.REQUEST_BODY_TOO_LARGE,
+        }:
+            return
+        provider: ProviderName | None = self._resolve_active_provider()
+        if provider is None:
+            return
+        observation = self._build_provider_limit_observation(
+            provider=provider,
+            model_name=self._resolve_active_model_name(),
+            signal=signal,
+            decision=decision,
+        )
+        await self._append_history_event(
+            event=self._build_event(
+                kind="provider_limit_observed",
+                turn_id=turn_id,
+                payload=SessionHistoryEventPayloadDAO(
+                    message="Provider rejected a request; recorded a redacted limit observation.",
+                    metadata={"observation": observation.model_dump(mode="json")},
+                ),
+            ),
+        )
 
     async def _append_history_event(
         self,

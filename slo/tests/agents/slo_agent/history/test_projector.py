@@ -549,3 +549,22 @@ class TestWorkflowUpdateProjection:
 
         contents: list[str] = [m.content for m in messages if isinstance(m.content, str)]
         assert contents == ["[workflow update] phase 1 done"]
+
+
+@pytest.mark.asyncio
+async def test_excludes_provider_limit_observation_from_completed_turn_replay() -> None:
+    """Provider-limit audits remain durable but never become model context."""
+    events = [
+        _event(kind="user_message", payload=SessionHistoryEventPayloadDAO(content="keep this")),
+        _event(
+            kind="provider_limit_observed",
+            payload=SessionHistoryEventPayloadDAO(message="Provider rejected a request"),
+        ),
+        _event(kind="assistant_message", payload=SessionHistoryEventPayloadDAO(content="answer")),
+        _event(kind="run_completed"),
+    ]
+
+    messages = await SessionHistoryProjector.build_message_history(events=events)
+    contents = [message.content for message in messages if isinstance(message.content, str)]
+
+    assert contents == ["keep this", "answer"]

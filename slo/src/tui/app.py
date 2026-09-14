@@ -2699,6 +2699,9 @@ class SloTUI(App):
         if event.kind == "stream_reconnecting":
             self._render_stream_reconnecting_event(event=event)
             return
+        if event.kind == "preflight_bypassed":
+            self._render_preflight_bypassed_event()
+            return
         self._apply_compaction_spinner_update(event=event)
         self._apply_recovery_spinner_update(event=event)
         if self._spinner is not None and event.kind not in {
@@ -2730,6 +2733,15 @@ class SloTUI(App):
         follow_snapshot = self._capture_follow_snapshot()
         await self._projector.project(event=event)
         self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
+        self._session.refresh_usage_snapshot()
+        self._refresh_usage_status_bar()
+
+    def _render_preflight_bypassed_event(self) -> None:
+        """Render the fixed local TPM bypass note without diagnostic metadata."""
+        self._write_adapter_line(
+            content="(local token preflight bypassed; request sent to provider)",
+            classes="tool-result",
+        )
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
 

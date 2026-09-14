@@ -195,6 +195,18 @@ class TestRecoveryPolicyContextOverflow:
         assert decision.recovery_class == RecoveryClass.FATAL
         assert "compaction" in decision.reason.lower()
 
+    def test_classify_returns_terminal_without_compaction_for_request_body_too_large(self) -> None:
+        """HTTP 413 is fatal but must not advertise the overflow-compaction path."""
+        exc = RuntimeError("request body too large")
+        exc.status_code = 413  # type: ignore[attr-defined]
+
+        decision: RecoveryDecisionDAO = RecoveryPolicy.classify(exc=exc)
+
+        assert decision.recovery_class == RecoveryClass.FATAL
+        assert "413" in decision.reason
+        assert "compaction" in decision.reason.lower()
+        assert "cannot be fixed" in decision.reason.lower()
+
     def test_classify_context_overflow_takes_priority_over_provider_check(self) -> None:
         """Overflow is classified FATAL before the provider / MECHANICAL guard runs."""
         with patch(

@@ -359,6 +359,8 @@ class SessionHistoryProjector:
         payload = event.payload
         if event.kind in (
             "run_retrying",
+            "preflight_bypassed",
+            "provider_limit_observed",
             "route_switched",
             "stream_reconnecting",
             "run_recovering",

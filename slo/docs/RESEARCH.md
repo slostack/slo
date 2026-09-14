@@ -55,6 +55,28 @@ slo --plugin plugins/bash_live_output/plugin.py
 - **Browser opening:** `BrowserHost` (`src/auth/browser_host.py`) returns False on non-macOS/Windows hosts without `DISPLAY`, `WAYLAND_DISPLAY` or `BROWSER`, because CPython `webbrowser` then runs console browsers that `wait()` on the TUI terminal. `OAuthFlow` opens through `asyncio.to_thread` concurrently with the code race; `SloTUI.open_url` opens in a thread worker.
 - Tests assert **painted** compositor output through `tests/tui/authentication/_painted_output.py`. The device E2E (`tests/tui/authentication/test_authentication_device_e2e.py`) runs the real screen, factory, flow and provider against a local aiohttp server; its `@pytest.mark.e2e` live smoke hits the real usercode endpoint and cancels before approval (`pytest -m e2e <file>`).
 
+## Rate-limit preflight and provider signals (spec 77)
+
+- `SloAgentSession` creates one immutable `PreflightDecisionDAO` for each successful local
+  preflight. Its history-aware estimate is reused unchanged for local accounting and redacted
+  provider observations. A local preflight exception is advisory degradation: no local accounting
+  is recorded and the provider lane remains open.
+- Local TPM is never a gate. An empty token window whose estimate exceeds the configured hint
+  emits one durable/live `preflight_bypassed` audit and sends the request; the TUI prints the fixed
+  tool-result line without changing spinner state. `preflight_bypassed` and
+  `provider_limit_observed` are excluded from model replay.
+- `ProviderErrorClassifier.inspect()` is the sole provider/context recognition seam. It reads
+  response headers before exception headers and retains only finite positive decimal `Retry-After`
+  seconds (ceil to at least one) and positive decimal request/token limits; invalid or sensitive
+  headers are discarded. Each rejected lane produces at most one redacted `provider_limit_observed`
+  record. For a confirmed initial context overflow with no committed output, the session retries
+  once only after `compact_to_boundary()` commits; a no-op, failed, second, visible-output, or HTTP
+  413 / `REQUEST_BODY_TOO_LARGE` failure is terminal and never replays, switches pool lanes, invokes
+  LLM recovery, retries, or forces compaction.
+- `CompactionChecker` resolves canonical, alias, and discovered models through
+  `ModelCatalogService`, and triggers at `floor(context_window * 0.70)`; unknown models retain the
+  conservative default capacity.
+
 ## Verification owners
 
 - Plugin tests: `tests/agents/slo_agent/plugins/`.

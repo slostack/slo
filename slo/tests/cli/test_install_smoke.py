@@ -1,4 +1,5 @@
 """Opt-in Docker smoke tests for the Linux installer path."""
+
 from __future__ import annotations
 
 import os

@@ -148,10 +148,10 @@ class TestPromptPersistsLifecycleEvents:
         assert [event.payload.delta_kind for event in delta_events] == [
             "thinking_start",
             "thinking_delta",
-            "thinking_end",   # implicit close (no content) when text block opens
+            "thinking_end",  # implicit close (no content) when text block opens
             "text_start",
             "text_delta",
-            "thinking_end",   # repair event from finalize_open_blocks (with completed content)
+            "thinking_end",  # repair event from finalize_open_blocks (with completed content)
             "text_end",
         ]
         assert delta_events[1].payload.delta == "reasoning"
@@ -286,9 +286,7 @@ def _build_agent_for_history_tests(*, workdir: Path) -> "SloAgent":
         SloAgent: Lightweight agent suitable for unit-level history tests.
     """
     return SloAgent(
-        llm=FauxChatModel(
-            responses=[FauxChatModel.assistant_message(content="ok")]
-        ),
+        llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
         cwd=str(workdir),
         tools=[],
     )
@@ -297,9 +295,7 @@ def _build_agent_for_history_tests(*, workdir: Path) -> "SloAgent":
 class TestSubAgentHistoryPersistence:
     """Session persists sub-agent lifecycle events via internal subscriber (01.f)."""
 
-    async def test_sub_agent_spawned_event_writes_history(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_sub_agent_spawned_event_writes_history(self, tmp_path: Path) -> None:
         """A ``sub_agent_spawned`` stream event writes a ``sub_agent_spawned`` history record."""
         from unittest.mock import AsyncMock
 
@@ -330,9 +326,7 @@ class TestSubAgentHistoryPersistence:
         assert persisted.payload.metadata["sub_agent_id"] == "child-abc"
         assert persisted.payload.metadata["task_id"] == "t1"
 
-    async def test_sub_agent_completed_event_writes_history(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_sub_agent_completed_event_writes_history(self, tmp_path: Path) -> None:
         """A ``sub_agent_completed`` stream event writes a ``sub_agent_completed`` history record."""
         from unittest.mock import AsyncMock
 
@@ -362,9 +356,7 @@ class TestSubAgentHistoryPersistence:
         assert persisted.kind == "sub_agent_completed"
         assert persisted.payload.metadata["terminal_kind"] == "sub_agent_completed"
 
-    async def test_sub_agent_failed_event_writes_sub_agent_completed_history(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_sub_agent_failed_event_writes_sub_agent_completed_history(self, tmp_path: Path) -> None:
         """A ``sub_agent_failed`` stream event writes a ``sub_agent_completed`` record."""
         from unittest.mock import AsyncMock
 
@@ -394,9 +386,7 @@ class TestSubAgentHistoryPersistence:
         assert persisted.kind == "sub_agent_completed"
         assert persisted.payload.metadata["terminal_kind"] == "sub_agent_failed"
 
-    async def test_orchestrator_events_do_not_write_history(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_orchestrator_events_do_not_write_history(self, tmp_path: Path) -> None:
         """Normal orchestrator events (``sub_agent_id=None``) produce no history write."""
         from unittest.mock import AsyncMock
 
@@ -419,9 +409,7 @@ class TestSubAgentHistoryPersistence:
 
         store.append_event.assert_not_called()
 
-    async def test_internal_subscriber_is_registered_when_history_enabled(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_internal_subscriber_is_registered_when_history_enabled(self, tmp_path: Path) -> None:
         """The internal history subscriber is registered at construction when history=True."""
         from unittest.mock import AsyncMock
 
@@ -440,9 +428,7 @@ class TestSubAgentHistoryPersistence:
 
         assert session._on_stream_event_for_history in session._subscribers
 
-    async def test_internal_subscriber_is_not_registered_when_history_disabled(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_internal_subscriber_is_not_registered_when_history_disabled(self, tmp_path: Path) -> None:
         """The internal history subscriber is NOT registered when history=False."""
         session = SloAgentSession(
             workdir=tmp_path,

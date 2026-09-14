@@ -108,9 +108,7 @@ class TokenUsageBackfiller:
         """
         events_path: Path = self._events_path(session_id=session_id)
         if not events_path.exists():
-            raise FileNotFoundError(
-                f"events.jsonl not found for session {session_id!r} at {events_path}"
-            )
+            raise FileNotFoundError(f"events.jsonl not found for session {session_id!r} at {events_path}")
 
         raw_text: str = events_path.read_text(encoding="utf-8")
         # JSONL framing is literal LF-delimited. ``splitlines()`` would split
@@ -130,8 +128,7 @@ class TokenUsageBackfiller:
                 raw_dict: dict = json.loads(stripped)
             except json.JSONDecodeError:
                 _logger.warning(
-                    "TokenUsageBackfiller: skipping malformed JSON on line %d "
-                    "of session %r",
+                    "TokenUsageBackfiller: skipping malformed JSON on line %d " "of session %r",
                     line_number,
                     session_id,
                 )
@@ -145,13 +142,10 @@ class TokenUsageBackfiller:
                 continue
 
             try:
-                event: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate(
-                    raw_dict
-                )
+                event: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate(raw_dict)
             except Exception:
                 _logger.warning(
-                    "TokenUsageBackfiller: skipping line %d of session %r — "
-                    "DAO validation failed",
+                    "TokenUsageBackfiller: skipping line %d of session %r — " "DAO validation failed",
                     line_number,
                     session_id,
                     exc_info=True,
@@ -279,9 +273,7 @@ class TokenUsageBackfiller:
 
             try:
                 raw: dict = json.loads(metadata_path.read_text(encoding="utf-8"))
-                metadata: SessionHistoryMetadataDAO = (
-                    SessionHistoryMetadataDAO.model_validate(raw)
-                )
+                metadata: SessionHistoryMetadataDAO = SessionHistoryMetadataDAO.model_validate(raw)
                 records.append(metadata)
             except Exception:
                 _logger.warning(

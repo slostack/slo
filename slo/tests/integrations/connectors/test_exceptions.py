@@ -1,4 +1,5 @@
 """Tests for connector credential exceptions (25.a.1)."""
+
 from pathlib import Path
 
 from src.integrations.connectors.exceptions import (

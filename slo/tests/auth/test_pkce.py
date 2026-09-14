@@ -1,4 +1,5 @@
 """Tests for PKCE helpers (02.b.3)."""
+
 import base64
 import hashlib
 
@@ -29,9 +30,9 @@ class TestCodeChallengeS256:
     def test_matches_manual_sha256(self) -> None:
         """Hand-computed S256 matches the helper's output."""
         verifier: str = "fixed-test-verifier"
-        expected: str = base64.urlsafe_b64encode(
-            hashlib.sha256(verifier.encode()).digest()
-        ).rstrip(b"=").decode()
+        expected: str = (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        )
 
         assert code_challenge_s256(verifier=verifier) == expected
 

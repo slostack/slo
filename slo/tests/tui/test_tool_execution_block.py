@@ -20,8 +20,8 @@ class TestToolExecutionFormatting:
     """Visible formatting guarantees for tool headlines."""
 
     def test_preparing_state_returns_empty_headline(self) -> None:
-        """Unknown generic tool metadata returns empty string to suppress display."""
-        headline: str = format_tool_call_headline(name="tool", tool_input={})
+        """Name-unknown tool metadata returns empty string to suppress display."""
+        headline: str = format_tool_call_headline(name=None, tool_input={})
 
         assert headline == ""
 

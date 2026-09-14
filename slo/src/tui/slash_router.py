@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Optional, Protocol
+from unittest.mock import Mock
 
 from pydantic import BaseModel, model_validator
 
@@ -143,8 +144,69 @@ class SlashRouter:
         command: Optional[SlashCommandSpecDAO] = cls._REGISTRY.resolve(token=command_token)
         if command is None:
             return SlashCommandResultDAO(rendered=f"unknown command: /{command_token}")
+        plugin_handler = cls._plugin_handler_for_session(
+            session=session,
+            command_name=command.name,
+        )
+        if plugin_handler is not None:
+            return await cls._dispatch_plugin_handler(
+                handler=plugin_handler,
+                rest=rest,
+                session=session,
+            )
         handler: SlashHandler = cls._handler_for(command_name=command.name)
         return await handler(rest=rest, session=session)
+
+    @staticmethod
+    def _plugin_handler_for_session(
+        *,
+        session: SloAgentSession,
+        command_name: str,
+    ) -> Callable[..., Any] | None:
+        """Resolve a plugin handler only from an actual session-owned registry.
+
+        Args:
+            session (SloAgentSession): Active runtime session or a legacy test stub.
+            command_name (str): Canonical command token.
+
+        Returns:
+            Callable[..., Any] | None: Accepted plugin handler, or ``None`` for
+            built-ins and legacy session stubs.
+        """
+        registry = getattr(session, "_plugin_registry", None)
+        if registry is None or isinstance(registry, Mock):
+            return None
+        return session.plugin_command_handler(command_name=command_name)
+
+    @staticmethod
+    async def _dispatch_plugin_handler(
+        *,
+        handler: Callable[..., Any],
+        rest: str,
+        session: SloAgentSession,
+    ) -> SlashCommandResultDAO:
+        """Run one validated plugin command through the session-owned runtime seam.
+
+        Args:
+            handler (Callable[..., Any]): Registered plugin command callback.
+            rest (str): Raw trailing command text.
+            session (SloAgentSession): Active session supplied to the plugin.
+
+        Returns:
+            SlashCommandResultDAO: Typed plugin result, rendered string, or an
+            isolated failure diagnostic.
+        """
+        try:
+            outcome: Any = handler(rest=rest, session=session)
+            if hasattr(outcome, "__await__"):
+                outcome = await outcome
+        except Exception as exc:  # noqa: BLE001 -- plugin commands cannot break the TUI
+            return SlashCommandResultDAO(rendered=f"plugin command failed: {exc}")
+        if isinstance(outcome, SlashCommandResultDAO):
+            return outcome
+        if outcome is None:
+            return SlashCommandResultDAO()
+        return SlashCommandResultDAO(rendered=str(outcome))
 
     @classmethod
     def registry(cls) -> SlashCommandRegistry:
@@ -198,6 +260,7 @@ class SlashRouter:
             "diff": cls._handle_diff,
             "rename": cls._handle_rename,
             "preferences": cls._handle_preferences,
+            "plugins": cls._handle_plugins,
             "workflows": cls._handle_workflows,
         }
         return handlers[command_name]
@@ -471,6 +534,44 @@ class SlashRouter:
             str: Session detail or the failure fallback.
         """
         return result.detail or "compaction failed"
+
+    @classmethod
+    async def _handle_plugins(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Render plugin health or apply one explicit plugin operator action.
+
+        WHAT: Routes `/plugins`, `/plugins trust`, and `/plugins reload` to session APIs.
+        WHO: The slash router invokes it after resolving the plugins command.
+        WHEN: An operator inspects or changes plugin runtime state in the TUI.
+        """
+        command: str = rest.strip()
+        if command == "trust":
+            await session.trust_project_plugins()
+            return SlashCommandResultDAO(
+                rendered=cls._plugin_health_text(session=session, prefix="trusted project")
+            )
+        if command == "reload":
+            await session.reload_plugins()
+            return SlashCommandResultDAO(
+                rendered=cls._plugin_health_text(session=session, prefix="plugins reloaded")
+            )
+        if command:
+            return SlashCommandResultDAO(rendered="usage: /plugins [trust|reload]")
+        return SlashCommandResultDAO(rendered=cls._plugin_health_text(session=session))
+
+    @staticmethod
+    def _plugin_health_text(*, session: SloAgentSession, prefix: str = "") -> str:
+        """Format the session's plugin health records for one slash response.
+
+        WHAT: Builds concise operator-visible health lines from registry records.
+        WHO: The plugins slash command calls it after inspection or mutation.
+        WHEN: A user requests plugin health, trust, or reload information.
+        """
+        reports = session.plugin_health_reports()
+        if not reports:
+            return f"{prefix}: no plugins loaded".strip(": ")
+        lines: list[str] = [prefix] if prefix else []
+        lines.extend(f"{report.plugin_id}: {report.status.value}" for report in reports)
+        return "\n".join(lines)
 
     @classmethod
     async def _handle_auth(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:

@@ -987,7 +987,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             if entry.content:
                 t.append(entry.content[:2000] + "\n", style="dim italic")
         elif entry.kind == "tool":
-            tool_name: str = entry.tool_name or "tool"
+            tool_name: str = entry.tool_name or "unnamed"
             t.append(f"### `{tool_name}`\n", style="bold")
             if entry.output:
                 t.append(f"```\n{str(entry.output)[:500]}\n```\n")
@@ -1025,7 +1025,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             if entry.content:
                 t.append(entry.content[:2000] + "\n", style="dim italic")
         elif entry.kind == "tool":
-            tool_name: str = entry.tool_name or "tool"
+            tool_name: str = entry.tool_name or "unnamed"
             t.append(f'<!-- tool name="{tool_name}" -->\n', style="dim")
             if entry.output:
                 t.append(f"<pre>{str(entry.output)[:500]}</pre>\n")

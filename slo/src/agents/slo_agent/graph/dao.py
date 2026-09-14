@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import (
     Annotated,
     NamedTuple,
@@ -18,6 +19,8 @@ from langchain_core.tools import BaseTool
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.agents.tools.tool_output import ToolOutputUpdateDAO
 
 __all__ = [
     "SloAgentBuildResult",
@@ -47,6 +50,7 @@ class SloAgentBuildResult(NamedTuple):
     graph: CompiledStateGraph
     tools: Sequence[BaseTool]
     llm: BaseChatModel
+    output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] | None = None
     supports_explicit_caching: bool = False
 
 

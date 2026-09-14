@@ -14,7 +14,6 @@ from src.agents.slo_agent.tool_execution.executors import (
 )
 from src.agents.slo_agent.tool_execution.service import plan_tool_batch
 
-
 __all__ = [
     "ConcurrentToolExecutor",
     "SequentialToolExecutor",

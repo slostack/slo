@@ -12,13 +12,13 @@ Implementation notes:
   relative to the directory that contains the file, exactly as git does it.
   Deeper-nested patterns take precedence by being appended later.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
 import pathspec
-
 
 __all__ = ["GitignoreFilter"]
 

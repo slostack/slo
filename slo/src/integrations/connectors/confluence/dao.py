@@ -1,4 +1,5 @@
 """Pydantic DAOs for Confluence search and page-fetch results (25.a.2)."""
+
 from __future__ import annotations
 
 from typing import Optional

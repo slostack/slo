@@ -1,4 +1,5 @@
 """Tests for the CLI startup warning policy."""
+
 from __future__ import annotations
 
 import warnings

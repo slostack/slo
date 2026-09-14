@@ -1,4 +1,5 @@
 """Tests for UserPreferencesDAO and UserPreferencesStore (26.a.1)."""
+
 from __future__ import annotations
 
 import json
@@ -70,9 +71,7 @@ class TestUserPreferencesStoreLoad:
 class TestUserPreferencesStoreUpsert:
     """``UserPreferencesStore.upsert`` — write semantics and permissions."""
 
-    def test_creates_file_with_mode_600(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_creates_file_with_mode_600(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The preferences file is written with 0600 permissions."""
         path: Path = tmp_path / "global" / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
@@ -81,9 +80,7 @@ class TestUserPreferencesStoreUpsert:
 
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
-    def test_creates_parent_dir_with_mode_700(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_creates_parent_dir_with_mode_700(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The parent directory is created with 0700 permissions."""
         path: Path = tmp_path / "global" / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
@@ -92,9 +89,7 @@ class TestUserPreferencesStoreUpsert:
 
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
 
-    def test_updates_model_name_only(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_updates_model_name_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Updating model_name leaves reasoning_level unchanged."""
         path: Path = tmp_path / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
@@ -106,9 +101,7 @@ class TestUserPreferencesStoreUpsert:
         assert prefs.default_model_name == "new-model"
         assert prefs.default_reasoning_level == "medium"
 
-    def test_updates_reasoning_level_only(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_updates_reasoning_level_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Updating reasoning_level leaves model_name unchanged."""
         path: Path = tmp_path / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
@@ -120,9 +113,7 @@ class TestUserPreferencesStoreUpsert:
         assert prefs.default_model_name == "claude-sonnet-4-5"
         assert prefs.default_reasoning_level == "high"
 
-    def test_updates_both_fields(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_updates_both_fields(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Both fields can be updated in a single call."""
         path: Path = tmp_path / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
@@ -135,9 +126,7 @@ class TestUserPreferencesStoreUpsert:
         assert result.default_model_name == "claude-opus-4-5"
         assert result.default_reasoning_level == "xhigh"
 
-    def test_none_args_leave_fields_unchanged(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_none_args_leave_fields_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Passing None for both args is a no-op (returns current prefs)."""
         path: Path = tmp_path / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
@@ -165,9 +154,7 @@ class TestUserPreferencesStoreClear:
         assert result is True
         assert not path.exists()
 
-    def test_returns_false_when_file_absent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_false_when_file_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Clear on a missing file returns False without error."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "nonexistent.json"))
 
@@ -175,9 +162,7 @@ class TestUserPreferencesStoreClear:
 
         assert result is False
 
-    def test_load_returns_empty_after_clear(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_load_returns_empty_after_clear(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """After clear, load returns an empty DAO."""
         path: Path = tmp_path / "prefs.json"
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
@@ -212,9 +197,7 @@ class TestUserPreferencesStoreEnvOverride:
 class TestUserPreferencesModelPool:
     """``default_model_pool`` round-trips through upsert/load and is preserved."""
 
-    def test_upsert_sets_default_model_pool(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_upsert_sets_default_model_pool(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """upsert(model_pool=...) persists the pool preference."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
         UserPreferencesStore.upsert(model_pool="gpt-5.4,claude-sonnet-4-6")

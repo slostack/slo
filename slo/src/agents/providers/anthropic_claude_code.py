@@ -62,11 +62,7 @@ def _patch_thinking_blocks(*, messages: list[dict[str, Any]]) -> None:
         if not isinstance(content, list):
             continue
         for block in content:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "thinking"
-                and "thinking" not in block
-            ):
+            if isinstance(block, dict) and block.get("type") == "thinking" and "thinking" not in block:
                 block["thinking"] = ""
 
 

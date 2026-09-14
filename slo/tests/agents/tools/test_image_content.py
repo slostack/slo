@@ -1,4 +1,5 @@
 """Tests for image-content resize and reference generation."""
+
 from __future__ import annotations
 
 import base64

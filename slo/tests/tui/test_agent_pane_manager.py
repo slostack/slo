@@ -11,7 +11,6 @@ import pytest
 
 from src.tui.agent_pane_manager import AgentPaneDAO, AgentPaneManager
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 """Tests for JiraAPIClient (25.a.3)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,9 +25,7 @@ def _clear_atlassian_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestJiraAPIClientInit:
-    def test_raises_when_no_credentials(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_raises_when_no_credentials(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _clear_atlassian_env(monkeypatch)
         monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
 
@@ -59,9 +58,9 @@ class TestJiraAPIClientSearch:
         monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "u@e.com")
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
 
-        httpserver.expect_request(
-            "/rest/api/3/search", method="GET"
-        ).respond_with_json({"issues": [_make_issue_row()]})
+        httpserver.expect_request("/rest/api/3/search", method="GET").respond_with_json(
+            {"issues": [_make_issue_row()]}
+        )
 
         client = JiraAPIClient()
         results = asyncio.run(client.search_issues(jql="project=SLO", limit=5))
@@ -79,9 +78,7 @@ class TestJiraAPIClientSearch:
         monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "u@e.com")
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
 
-        httpserver.expect_request(
-            "/rest/api/3/search", method="GET"
-        ).respond_with_json({"issues": []})
+        httpserver.expect_request("/rest/api/3/search", method="GET").respond_with_json({"issues": []})
 
         client = JiraAPIClient()
         results = asyncio.run(client.search_issues(jql="project=NONE"))
@@ -96,9 +93,9 @@ class TestJiraAPIClientSearch:
         monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "u@e.com")
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
 
-        httpserver.expect_request(
-            "/rest/api/3/search", method="GET"
-        ).respond_with_data("Unauthorized", status=401)
+        httpserver.expect_request("/rest/api/3/search", method="GET").respond_with_data(
+            "Unauthorized", status=401
+        )
 
         client = JiraAPIClient()
         with pytest.raises(JiraAPIError) as exc_info:
@@ -116,9 +113,9 @@ class TestJiraAPIClientGetIssue:
         monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "u@e.com")
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
 
-        httpserver.expect_request(
-            "/rest/api/3/issue/SLO-42", method="GET"
-        ).respond_with_json(_make_issue_row(key="SLO-42", summary="New feature"))
+        httpserver.expect_request("/rest/api/3/issue/SLO-42", method="GET").respond_with_json(
+            _make_issue_row(key="SLO-42", summary="New feature")
+        )
 
         client = JiraAPIClient()
         issue = asyncio.run(client.get_issue(issue_key="SLO-42"))
@@ -137,9 +134,9 @@ class TestJiraAPIClientGetIssue:
         monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "u@e.com")
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
 
-        httpserver.expect_request(
-            "/rest/api/3/issue/MISSING-1", method="GET"
-        ).respond_with_data("Not Found", status=404)
+        httpserver.expect_request("/rest/api/3/issue/MISSING-1", method="GET").respond_with_data(
+            "Not Found", status=404
+        )
 
         client = JiraAPIClient()
         with pytest.raises(JiraAPIError) as exc_info:
@@ -157,24 +154,26 @@ class TestJiraAPIClientCreateIssue:
         monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "u@e.com")
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
 
-        httpserver.expect_request(
-            "/rest/api/3/issue", method="POST"
-        ).respond_with_json({"id": "2001", "key": "SLO-55"}, status=201)
+        httpserver.expect_request("/rest/api/3/issue", method="POST").respond_with_json(
+            {"id": "2001", "key": "SLO-55"}, status=201
+        )
 
-        httpserver.expect_request(
-            "/rest/api/3/issue/SLO-55", method="GET"
-        ).respond_with_json(_make_issue_row(key="SLO-55", summary="Brand new issue"))
+        httpserver.expect_request("/rest/api/3/issue/SLO-55", method="GET").respond_with_json(
+            _make_issue_row(key="SLO-55", summary="Brand new issue")
+        )
 
         from src.integrations.connectors.jira.dao import JiraIssueCreateRequestDAO
 
         client = JiraAPIClient()
-        issue = asyncio.run(client.create_issue(
-            request=JiraIssueCreateRequestDAO(
-                project_key="SLO",
-                issue_type_name="Story",
-                summary="Brand new issue",
+        issue = asyncio.run(
+            client.create_issue(
+                request=JiraIssueCreateRequestDAO(
+                    project_key="SLO",
+                    issue_type_name="Story",
+                    summary="Brand new issue",
+                )
             )
-        ))
+        )
 
         assert isinstance(issue, JiraIssueDAO)
         assert issue.issue_key == "SLO-55"
@@ -193,31 +192,32 @@ class TestJiraAPIClientCreateIssue:
         def _handler(request):  # type: ignore[no-untyped-def]
             received_bodies.append(request.json)
             from werkzeug.wrappers import Response
+
             return Response(
                 json.dumps({"id": "3001", "key": "SLO-66"}),
                 status=201,
                 content_type="application/json",
             )
 
-        httpserver.expect_request(
-            "/rest/api/3/issue", method="POST"
-        ).respond_with_handler(_handler)
+        httpserver.expect_request("/rest/api/3/issue", method="POST").respond_with_handler(_handler)
 
-        httpserver.expect_request(
-            "/rest/api/3/issue/SLO-66", method="GET"
-        ).respond_with_json(_make_issue_row(key="SLO-66", summary="With desc"))
+        httpserver.expect_request("/rest/api/3/issue/SLO-66", method="GET").respond_with_json(
+            _make_issue_row(key="SLO-66", summary="With desc")
+        )
 
         from src.integrations.connectors.jira.dao import JiraIssueCreateRequestDAO
 
         client = JiraAPIClient()
-        asyncio.run(client.create_issue(
-            request=JiraIssueCreateRequestDAO(
-                project_key="SLO",
-                issue_type_name="Story",
-                summary="With desc",
-                description="Some description text",
+        asyncio.run(
+            client.create_issue(
+                request=JiraIssueCreateRequestDAO(
+                    project_key="SLO",
+                    issue_type_name="Story",
+                    summary="With desc",
+                    description="Some description text",
+                )
             )
-        ))
+        )
 
         assert len(received_bodies) == 1
         body = received_bodies[0]
@@ -238,33 +238,32 @@ class TestJiraAPIClientCreateIssue:
         def _handler(request):  # type: ignore[no-untyped-def]
             received_bodies.append(request.json)
             from werkzeug.wrappers import Response
+
             return Response(
                 json.dumps({"id": "4001", "key": "SLO-77"}),
                 status=201,
                 content_type="application/json",
             )
 
-        httpserver.expect_request(
-            "/rest/api/3/issue", method="POST"
-        ).respond_with_handler(_handler)
+        httpserver.expect_request("/rest/api/3/issue", method="POST").respond_with_handler(_handler)
 
         sub_row = _make_issue_row(key="SLO-77", summary="Sub-task")
         sub_row["fields"]["parent"] = {"key": "SLO-1"}
-        httpserver.expect_request(
-            "/rest/api/3/issue/SLO-77", method="GET"
-        ).respond_with_json(sub_row)
+        httpserver.expect_request("/rest/api/3/issue/SLO-77", method="GET").respond_with_json(sub_row)
 
         from src.integrations.connectors.jira.dao import JiraIssueCreateRequestDAO
 
         client = JiraAPIClient()
-        issue = asyncio.run(client.create_issue(
-            request=JiraIssueCreateRequestDAO(
-                project_key="SLO",
-                issue_type_name="Sub-task",
-                summary="Sub-task",
-                parent_issue_key="SLO-1",
+        issue = asyncio.run(
+            client.create_issue(
+                request=JiraIssueCreateRequestDAO(
+                    project_key="SLO",
+                    issue_type_name="Sub-task",
+                    summary="Sub-task",
+                    parent_issue_key="SLO-1",
+                )
             )
-        ))
+        )
 
         body = received_bodies[0]
         assert body["fields"]["parent"]["key"] == "SLO-1"

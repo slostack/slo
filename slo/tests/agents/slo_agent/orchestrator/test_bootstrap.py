@@ -8,7 +8,6 @@ import pytest
 
 from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -53,12 +52,8 @@ class TestOrchestratorSessionBootstrapAttach:
         session: MagicMock = _make_session()
 
         with (
-            patch(
-                "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-            ) as MockPool,
-            patch(
-                "src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"
-            ) as MockTool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool") as MockTool,
             patch.object(
                 OrchestratorSessionBootstrap,
                 "_build_workflow_tools",
@@ -85,9 +80,7 @@ class TestOrchestratorSessionBootstrapAttach:
         )
 
         with (
-            patch(
-                "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-            ) as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
             patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"),
         ):
             OrchestratorSessionBootstrap.attach(session=session)
@@ -104,9 +97,7 @@ class TestOrchestratorSessionBootstrapAttach:
         agent_stub: MagicMock = MagicMock()
         session: MagicMock = _make_session(agent=agent_stub)
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-        ) as MockPool:
+        with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool:
             OrchestratorSessionBootstrap.attach(session=session)
 
         MockPool.assert_not_called()
@@ -117,9 +108,7 @@ class TestOrchestratorSessionBootstrapAttach:
         existing_pool: MagicMock = MagicMock()
         session: MagicMock = _make_session(sub_agent_pool=existing_pool)
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-        ) as MockPool:
+        with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool:
             OrchestratorSessionBootstrap.attach(session=session)
 
         MockPool.assert_not_called()
@@ -130,12 +119,8 @@ class TestOrchestratorSessionBootstrapAttach:
         session: MagicMock = _make_session()
 
         with (
-            patch(
-                "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-            ) as MockPool,
-            patch(
-                "src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"
-            ) as MockTool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool") as MockTool,
         ):
             mock_pool = MagicMock()
             MockPool.return_value = mock_pool
@@ -158,9 +143,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", True)
         session: MagicMock = _make_session()
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-        ):
+        with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
         spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
@@ -180,9 +163,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", False)
         session: MagicMock = _make_session()
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-        ):
+        with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
         spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
@@ -201,9 +182,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
             active_model_name="gpt-5.4",
         )
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.launch_tool.LaunchWorkflowTool.build"
-        ) as mock_build:
+        with patch("src.agents.slo_agent.orchestrator.launch_tool.LaunchWorkflowTool.build") as mock_build:
             mock_build.return_value = MagicMock(name="launch_workflow")
             OrchestratorSessionBootstrap._build_workflow_tools(session=session)
 
@@ -225,9 +204,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", True)
         session: MagicMock = _make_session()
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-        ):
+        with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session, headless=True)
 
         spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
@@ -248,9 +225,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         monkeypatch.setattr(cfg_module, "DETACHED_WORKFLOWS", True)
         session: MagicMock = _make_session()
 
-        with patch(
-            "src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"
-        ):
+        with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
         spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]

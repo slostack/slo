@@ -14,10 +14,10 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventPayloadDAO,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _event(*, token_usage: int | None = None) -> SessionHistoryEventDAO:
     """Build a minimal ``SessionHistoryEventDAO`` with the given token count."""
@@ -36,6 +36,7 @@ def _events_totalling(*, tokens: int) -> list[SessionHistoryEventDAO]:
 # ---------------------------------------------------------------------------
 # _get_context_window
 # ---------------------------------------------------------------------------
+
 
 class TestGetContextWindow:
     """Context-window lookup, sourced from the canonical MODEL_DEFAULTS registry."""
@@ -93,6 +94,7 @@ class TestGetContextWindow:
 # ---------------------------------------------------------------------------
 # should_compact — boundary arithmetic
 # ---------------------------------------------------------------------------
+
 
 class TestShouldCompactThresholdArithmetic:
     """Boundary behaviour around the compaction threshold."""
@@ -160,6 +162,7 @@ class TestShouldCompactThresholdArithmetic:
 # should_compact — None token_usage handling
 # ---------------------------------------------------------------------------
 
+
 class TestShouldCompactNoneTokenUsage:
     """Events with ``token_usage=None`` are treated as zero tokens."""
 
@@ -183,7 +186,7 @@ class TestShouldCompactNoneTokenUsage:
             _event(token_usage=None),
             _event(token_usage=20_000),
             _event(token_usage=None),
-            _event(token_usage=14_000),   # total: 34_000 > 33_616
+            _event(token_usage=14_000),  # total: 34_000 > 33_616
         ]
 
         result: bool = await CompactionChecker.should_compact(
@@ -214,6 +217,7 @@ class TestShouldCompactNoneTokenUsage:
 # ---------------------------------------------------------------------------
 # should_compact — context_window override
 # ---------------------------------------------------------------------------
+
 
 class TestShouldCompactContextWindowOverride:
     """Caller-supplied ``context_window`` takes precedence over the model table."""
@@ -265,6 +269,7 @@ class TestShouldCompactContextWindowOverride:
 # ---------------------------------------------------------------------------
 # should_compact — multi-event summation
 # ---------------------------------------------------------------------------
+
 
 class TestShouldCompactMultiEventSum:
     """Token counts are summed correctly across many events."""

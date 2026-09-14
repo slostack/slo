@@ -25,9 +25,7 @@ class TestParseTasksJsonHappyPaths:
 
     def test_wraps_a_single_object_into_a_one_item_list(self) -> None:
         """A lone task object becomes a one-element list."""
-        result: TasksJsonParseDAO = parse_tasks_json(
-            tasks_json='{"task_id": "only", "prompt": "do x"}'
-        )
+        result: TasksJsonParseDAO = parse_tasks_json(tasks_json='{"task_id": "only", "prompt": "do x"}')
 
         assert result.error is None
         assert result.task_dicts == [{"task_id": "only", "prompt": "do x"}]
@@ -66,9 +64,8 @@ class TestParseTasksJsonRecovery:
 
     def test_merges_two_concatenated_arrays(self) -> None:
         """Back-to-back arrays are merged so no intended task is lost."""
-        raw: str = (
-            json.dumps([{"task_id": "p1", "prompt": "x"}])
-            + json.dumps([{"task_id": "p2", "prompt": "y"}])
+        raw: str = json.dumps([{"task_id": "p1", "prompt": "x"}]) + json.dumps(
+            [{"task_id": "p2", "prompt": "y"}]
         )
 
         result: TasksJsonParseDAO = parse_tasks_json(tasks_json=raw)

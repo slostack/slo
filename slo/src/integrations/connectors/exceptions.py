@@ -1,4 +1,5 @@
 """Typed exceptions for the connector credential subsystem (25.a.1)."""
+
 from __future__ import annotations
 
 from pathlib import Path

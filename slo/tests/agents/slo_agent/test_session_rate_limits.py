@@ -76,9 +76,7 @@ class TestSessionRateLimitResilience:
         session.agent.invoke = _invoke  # type: ignore[method-assign,assignment]
 
         with patch("src.agents.slo_agent.sessions.service.asyncio.sleep", new=AsyncMock()):
-            events: list[AgentStreamEventDAO] = [
-                event async for event in session.invoke(text="hello")
-            ]
+            events: list[AgentStreamEventDAO] = [event async for event in session.invoke(text="hello")]
 
         assert [event.kind for event in events] == ["run_retrying", "run_completed"]
         assert events[1].content == "done"
@@ -165,9 +163,7 @@ class TestSessionRateLimitResilience:
 
         with patch("src.agents.slo_agent.sessions.service.time.monotonic", return_value=1.0):
             with patch("src.agents.slo_agent.sessions.service.asyncio.sleep", new=AsyncMock()):
-                events: list[AgentStreamEventDAO] = [
-                    event async for event in session.invoke(text="hello")
-                ]
+                events: list[AgentStreamEventDAO] = [event async for event in session.invoke(text="hello")]
 
         assert events[0].kind == "run_retrying"
         assert "local rate window" in (events[0].content or "")

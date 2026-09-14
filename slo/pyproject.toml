@@ -1,6 +1,6 @@
 [project]
 name = "slo"
-version = "0.16.3"
+version = "0.16.4"
 description = "Python ReAct agent harness, modelled on pi.dev"
 authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
 license = "GPL-2.0-only"
@@ -79,8 +79,17 @@ build-backend = "poetry.core.masonry.api"
   # it. The wheel places it at ``<site-packages>/skills``, which is exactly the
   # path ``cfg._resolve_skills_dir`` derives from ``config/cfg.py``'s location.
   # Without this the installed agent silently starts with vendored_count=0.
+  #
+  # plugins/ ships for the same reason: the bundled bash_live_output payload is
+  # resolved by PluginInstallerService as ``Path(__file__).parents[4] /
+  # "plugins" / "bash_live_output"``, which lands at
+  # ``<site-packages>/plugins/bash_live_output`` in a pipx install. Without
+  # this entry the wheel omits the payload and
+  # ``slo plugin install-bundled-bash-live-output`` fails with
+  # "plugin source has no readable slo-plugin.json".
   include = [
       { path = "skills/**/*", format = ["sdist", "wheel"] },
+      { path = "plugins/**/*", format = ["sdist", "wheel"] },
   ]
   
 [dependency-groups]

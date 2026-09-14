@@ -8,7 +8,6 @@ import pytest
 
 from src.tui.widgets.agent_tab_strip import AgentTabDAO, AgentTabStrip
 
-
 # ---------------------------------------------------------------------------
 # TestAgentTabDAO
 # ---------------------------------------------------------------------------

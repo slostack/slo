@@ -57,9 +57,9 @@ class TestProjectorRecoveryKinds:
         ]
         messages = await SessionHistoryProjector.build_message_history(events=events)
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        assert any(m.content == "obs text" for m in human_messages), (
-            f"Expected a HumanMessage with content='obs text'; got {messages}"
-        )
+        assert any(
+            m.content == "obs text" for m in human_messages
+        ), f"Expected a HumanMessage with content='obs text'; got {messages}"
 
     @pytest.mark.asyncio
     async def test_projector_recovery_observation_round_trips_with_assistant_response(
@@ -88,9 +88,9 @@ class TestProjectorRecoveryKinds:
         ]
         messages = await SessionHistoryProjector.build_message_history(events=events)
         assert messages, "Expected at least one message"
-        assert isinstance(messages[0], HumanMessage), (
-            f"First message should be HumanMessage; got {type(messages[0])}"
-        )
+        assert isinstance(
+            messages[0], HumanMessage
+        ), f"First message should be HumanMessage; got {type(messages[0])}"
 
     @pytest.mark.asyncio
     async def test_recovery_observation_excluded_when_turn_incomplete(self) -> None:
@@ -100,9 +100,7 @@ class TestProjectorRecoveryKinds:
             # No run_completed / run_aborted / run_failed — turn is incomplete.
         ]
         messages = await SessionHistoryProjector.build_message_history(events=events)
-        assert messages == [], (
-            f"Incomplete turn should produce no messages; got {messages}"
-        )
+        assert messages == [], f"Incomplete turn should produce no messages; got {messages}"
 
     @pytest.mark.asyncio
     async def test_recovery_observation_replayed_on_run_failed_terminated_turn(self) -> None:
@@ -117,9 +115,9 @@ class TestProjectorRecoveryKinds:
         ]
         messages = await SessionHistoryProjector.build_message_history(events=events)
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        assert any(m.content == "last obs before failure" for m in human_messages), (
-            f"Expected HumanMessage with obs content in {messages}"
-        )
+        assert any(
+            m.content == "last obs before failure" for m in human_messages
+        ), f"Expected HumanMessage with obs content in {messages}"
 
     def test_stream_event_kind_includes_recovery_kinds(self) -> None:
         """``StreamEventKind`` must include all three feature-50 recovery kinds."""
@@ -137,6 +135,4 @@ class TestProjectorRecoveryKinds:
 
         for kind in ("recovery_started", "recovery_succeeded", "recovery_exhausted"):
             event = AgentStreamEventDAO(kind=kind)  # type: ignore[arg-type]
-            assert event.is_terminal is False, (
-                f"is_terminal should be False for kind={kind!r}; got True"
-            )
+            assert event.is_terminal is False, f"is_terminal should be False for kind={kind!r}; got True"

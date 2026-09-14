@@ -29,9 +29,7 @@ def _make_stream_handler(stream=None) -> logging.StreamHandler:
 
 
 class TestHeadlessLogging:
-    def test_installs_file_handler_when_creation_succeeds(
-        self, tmp_path: Path
-    ) -> None:
+    def test_installs_file_handler_when_creation_succeeds(self, tmp_path: Path) -> None:
         slo_home: Path = tmp_path / "slo"
         root_logger: logging.Logger = logging.getLogger()
         original_handlers: list[logging.Handler] = list(root_logger.handlers)
@@ -47,9 +45,7 @@ class TestHeadlessLogging:
         finally:
             root_logger.handlers = original_handlers
 
-    def test_installs_null_handler_when_file_creation_fails(
-        self, tmp_path: Path
-    ) -> None:
+    def test_installs_null_handler_when_file_creation_fails(self, tmp_path: Path) -> None:
         root_logger: logging.Logger = logging.getLogger()
         original_handlers: list[logging.Handler] = list(root_logger.handlers)
         try:
@@ -57,17 +53,14 @@ class TestHeadlessLogging:
                 with headless_logging(slo_home=tmp_path / "slo") as log_path:
                     current_handlers: list[logging.Handler] = list(root_logger.handlers)
                     null_handlers: list[logging.Handler] = [
-                        h for h in current_handlers
-                        if isinstance(h, logging.NullHandler)
+                        h for h in current_handlers if isinstance(h, logging.NullHandler)
                     ]
                     assert len(null_handlers) >= 1
                     assert log_path is None
         finally:
             root_logger.handlers = original_handlers
 
-    def test_restores_original_handlers_after_normal_exit(
-        self, tmp_path: Path
-    ) -> None:
+    def test_restores_original_handlers_after_normal_exit(self, tmp_path: Path) -> None:
         root_logger: logging.Logger = logging.getLogger()
         sentinel: logging.StreamHandler = _make_stream_handler()
         original_handlers: list[logging.Handler] = list(root_logger.handlers)
@@ -80,9 +73,7 @@ class TestHeadlessLogging:
             root_logger.handlers = original_handlers
             sentinel.close()
 
-    def test_restores_original_handlers_after_exception_in_body(
-        self, tmp_path: Path
-    ) -> None:
+    def test_restores_original_handlers_after_exception_in_body(self, tmp_path: Path) -> None:
         root_logger: logging.Logger = logging.getLogger()
         sentinel: logging.StreamHandler = _make_stream_handler()
         original_handlers: list[logging.Handler] = list(root_logger.handlers)
@@ -96,9 +87,7 @@ class TestHeadlessLogging:
             root_logger.handlers = original_handlers
             sentinel.close()
 
-    def test_stdout_stream_handlers_removed_during_context(
-        self, tmp_path: Path
-    ) -> None:
+    def test_stdout_stream_handlers_removed_during_context(self, tmp_path: Path) -> None:
         stdout_handler: logging.StreamHandler = logging.StreamHandler(sys.stdout)
         root_logger: logging.Logger = logging.getLogger()
         original_handlers: list[logging.Handler] = list(root_logger.handlers)
@@ -107,7 +96,8 @@ class TestHeadlessLogging:
             with headless_logging(slo_home=tmp_path / "slo"):
                 handlers_inside: list[logging.Handler] = list(root_logger.handlers)
                 stdout_in_context: list[logging.Handler] = [
-                    h for h in handlers_inside
+                    h
+                    for h in handlers_inside
                     if isinstance(h, logging.StreamHandler)
                     and not isinstance(h, logging.FileHandler)
                     and getattr(h, "stream", None) is sys.stdout
@@ -117,9 +107,7 @@ class TestHeadlessLogging:
             root_logger.handlers = original_handlers
             stdout_handler.close()
 
-    def test_yields_none_when_file_handler_unavailable(
-        self, tmp_path: Path
-    ) -> None:
+    def test_yields_none_when_file_handler_unavailable(self, tmp_path: Path) -> None:
         root_logger: logging.Logger = logging.getLogger()
         original_handlers: list[logging.Handler] = list(root_logger.handlers)
         try:
@@ -129,9 +117,7 @@ class TestHeadlessLogging:
         finally:
             root_logger.handlers = original_handlers
 
-    def test_yields_app_log_path_when_file_handler_available(
-        self, tmp_path: Path
-    ) -> None:
+    def test_yields_app_log_path_when_file_handler_available(self, tmp_path: Path) -> None:
         slo_home: Path = tmp_path / "slo"
         root_logger: logging.Logger = logging.getLogger()
         original_handlers: list[logging.Handler] = list(root_logger.handlers)

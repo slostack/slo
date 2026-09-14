@@ -8,6 +8,7 @@ from typing import Any, Optional
 from textual.app import ComposeResult
 from textual.containers import Vertical
 
+from src.agents.tools.tool_output import ToolOutputUpdateDAO
 from src.tui.event_renderer import (
     format_tool_call_headline,
     format_tool_result_line,
@@ -72,14 +73,15 @@ class ToolExecutionBlock(Vertical):
         self,
         *,
         tool_call_id: str,
-        tool_name: str,
+        tool_name: Optional[str],
         force_expanded: Optional[bool] = None,
     ) -> None:
         """Seed a live tool block.
 
         Args:
             tool_call_id (str): Stable tool call id.
-            tool_name (str): Initial tool name.
+            tool_name (Optional[str]): Tool name when known; ``None`` before
+                the streamed name resolves (headline stays blank until then).
             force_expanded (Optional[bool]): Initial expansion state from the
                 global expand-all toggle. ``None`` (default) and ``False`` both
                 start collapsed; ``True`` starts expanded so details appear as
@@ -87,9 +89,10 @@ class ToolExecutionBlock(Vertical):
         """
         super().__init__()
         self._tool_call_id: str = tool_call_id
-        self._tool_name: str = tool_name
+        self._tool_name: Optional[str] = tool_name
         self._tool_input: dict[str, Any] = {}
         self._result_output: Optional[str] = None
+        self._partial_output: Optional[str] = None
         # A tool block is compact by default; expand only when the global
         # toggle explicitly forces it on.
         self._expanded: bool = force_expanded is True
@@ -122,11 +125,11 @@ class ToolExecutionBlock(Vertical):
         return self._tool_call_id
 
     @property
-    def tool_name(self) -> str:
-        """Return the current tool name.
+    def tool_name(self) -> Optional[str]:
+        """Return the current tool name, when known.
 
         Returns:
-            str: Tool name.
+            Optional[str]: Tool name, or ``None`` before it resolves.
         """
         return self._tool_name
 
@@ -224,6 +227,21 @@ class ToolExecutionBlock(Vertical):
             self._tool_input = dict(tool_input)
         self._refresh()
 
+    def update_partial(self, *, snapshot: ToolOutputUpdateDAO) -> None:
+        """Render one in-progress output snapshot without settling this call.
+
+        WHAT: Stores display-only partial content separately from terminal state.
+        WHO: ``TranscriptProjector`` calls it for tool-output update events.
+        WHEN: A streaming-capable tool is still running.
+        """
+        self._tool_name = snapshot.tool_name or self._tool_name
+        self._partial_output = snapshot.content_snapshot
+        self.add_class("-running")
+        self._result_line.update(
+            format_tool_result_line(name=self._tool_name, output=snapshot.content_snapshot)
+        )
+        self._refresh()
+
     def update_result(
         self,
         *,
@@ -244,7 +262,9 @@ class ToolExecutionBlock(Vertical):
         if tool_name:
             self._tool_name = tool_name
         self._result_output = output
+        self._partial_output = None
         self.remove_class("-error")
+        self.remove_class("-running")
         self.add_class("-done")
         self._result_line.update(
             format_tool_result_line(

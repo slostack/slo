@@ -1,4 +1,5 @@
 """Tests for the ``read_pdf`` tool (sub-spec 01.e PDF extension)."""
+
 from pathlib import Path
 
 import pytest

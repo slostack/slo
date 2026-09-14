@@ -138,9 +138,7 @@ class TestSubAgentEventFields:
             sub_agent_id="s-xyz",
             task_id="my-task",
         )
-        recovered: AgentStreamEventDAO = AgentStreamEventDAO.model_validate_json(
-            event.model_dump_json()
-        )
+        recovered: AgentStreamEventDAO = AgentStreamEventDAO.model_validate_json(event.model_dump_json())
 
         assert recovered.sub_agent_id == "s-xyz"
         assert recovered.task_id == "my-task"

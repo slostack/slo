@@ -63,7 +63,10 @@ class OrchestrationLayout:
         Returns:
             Path: Canonical JSON path for the workflow handle.
         """
-        return cls.workflows_dir(history_root=history_root, owner_session_id=owner_session_id) / f"{workflow_id}.json"
+        return (
+            cls.workflows_dir(history_root=history_root, owner_session_id=owner_session_id)
+            / f"{workflow_id}.json"
+        )
 
     @classmethod
     def orchestrator_status_path(cls, *, history_root: Path, orchestrator_session_id: str) -> Path:
@@ -80,7 +83,10 @@ class OrchestrationLayout:
         Returns:
             Path: Canonical orchestrator status JSON path.
         """
-        return cls.session_dir(history_root=history_root, session_id=orchestrator_session_id) / "orchestrator.json"
+        return (
+            cls.session_dir(history_root=history_root, session_id=orchestrator_session_id)
+            / "orchestrator.json"
+        )
 
     @classmethod
     def fleet_path(cls, *, history_root: Path, orchestrator_session_id: str) -> Path:
@@ -114,7 +120,10 @@ class OrchestrationLayout:
         Returns:
             Path: Canonical abort-request JSON path.
         """
-        return cls.session_dir(history_root=history_root, session_id=orchestrator_session_id) / "abort_request.json"
+        return (
+            cls.session_dir(history_root=history_root, session_id=orchestrator_session_id)
+            / "abort_request.json"
+        )
 
     @classmethod
     def capture_path(cls, *, history_root: Path, session_id: str, name: str) -> Path:
@@ -167,7 +176,11 @@ class OrchestrationLayout:
         Returns:
             Path: Canonical child capture directory below the history root.
         """
-        return cls.session_dir(history_root=history_root, session_id=parent_session_id) / "children" / child_session_id
+        return (
+            cls.session_dir(history_root=history_root, session_id=parent_session_id)
+            / "children"
+            / child_session_id
+        )
 
     @classmethod
     def child_status_path(cls, *, history_root: Path, parent_session_id: str, child_session_id: str) -> Path:
@@ -185,8 +198,11 @@ class OrchestrationLayout:
         Returns:
             Path: Canonical child terminal-status JSON path.
         """
-        return cls.child_capture_dir(
-            history_root=history_root,
-            parent_session_id=parent_session_id,
-            child_session_id=child_session_id,
-        ) / "status.json"
+        return (
+            cls.child_capture_dir(
+                history_root=history_root,
+                parent_session_id=parent_session_id,
+                child_session_id=child_session_id,
+            )
+            / "status.json"
+        )

@@ -1,4 +1,5 @@
 """Classify provider exceptions as credit-exhaustion, rate-limited, or other (28.a.2)."""
+
 from __future__ import annotations
 
 from enum import auto, Enum

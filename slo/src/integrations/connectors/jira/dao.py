@@ -1,4 +1,5 @@
 """Pydantic DAOs for Jira search, fetch, and create operations (25.a.3)."""
+
 from __future__ import annotations
 
 from typing import Optional

@@ -4,13 +4,13 @@ Hidden from the model when no description appears in the system prompt
 (matches pi behaviour); used by the faux-provider integration tests in
 01.k as a controllable side-effect.
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.logger import log_info
-
 
 __all__ = [
     "EchoSchemaDAO",

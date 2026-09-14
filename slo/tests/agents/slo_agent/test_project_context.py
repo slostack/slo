@@ -1,4 +1,5 @@
 """Walk-up discovery tests for ``ProjectContextDiscovery`` (sub-spec 01.g §5.2 / 18.04)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +10,6 @@ import pytest
 from src.agents.slo_agent.project_context.dao import ContextFileEntryDAO
 from src.agents.slo_agent.project_context.service import ProjectContextDiscovery
 from src.agents.slo_agent.workspace.dao import WorkspaceFolderDAO
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -1,4 +1,5 @@
 """Tests for ``src.agents.providers.credit_exhaustion_policy`` (spec 28.a.2)."""
+
 from __future__ import annotations
 
 import httpx
@@ -14,7 +15,6 @@ from src.agents.providers.credit_exhaustion_policy import (
     should_switch,
 )
 from src.auth.credential_dao import ProviderName
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,9 +95,7 @@ class TestAllModelsExhaustedError:
 
     def test_message_lists_cooled_models(self) -> None:
         """Error message contains the names of all cooled models."""
-        err: AllModelsExhaustedError = AllModelsExhaustedError(
-            cooled_models=["model-a", "model-b"]
-        )
+        err: AllModelsExhaustedError = AllModelsExhaustedError(cooled_models=["model-a", "model-b"])
         assert "model-a" in str(err)
         assert "model-b" in str(err)
 
@@ -141,34 +139,46 @@ class TestCreditExhaustionPolicyKimiForCoding:
 class TestCreditExhaustionPolicyAnthropic:
     def test_402_is_credit_exhausted(self) -> None:
         """HTTP 402 from Anthropic → CREDIT_EXHAUSTED."""
-        assert CreditExhaustionPolicy.classify(
-            error=_status_error(status_code=402),
-            provider=ProviderName.ANTHROPIC,
-        ) == ProviderErrorKind.CREDIT_EXHAUSTED
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=_status_error(status_code=402),
+                provider=ProviderName.ANTHROPIC,
+            )
+            == ProviderErrorKind.CREDIT_EXHAUSTED
+        )
 
     def test_credit_balance_body_is_credit_exhausted(self) -> None:
         """Error message mentioning credit balance → CREDIT_EXHAUSTED."""
         err: MagicMock = MagicMock()
         err.status_code = None
         err.__str__ = lambda s: "Your credit balance is too low to make this request"
-        assert CreditExhaustionPolicy.classify(
-            error=err,
-            provider=ProviderName.ANTHROPIC,
-        ) == ProviderErrorKind.CREDIT_EXHAUSTED
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=err,
+                provider=ProviderName.ANTHROPIC,
+            )
+            == ProviderErrorKind.CREDIT_EXHAUSTED
+        )
 
     def test_429_is_rate_limited(self) -> None:
         """HTTP 429 from Anthropic → RATE_LIMITED."""
-        assert CreditExhaustionPolicy.classify(
-            error=_status_error(status_code=429),
-            provider=ProviderName.ANTHROPIC,
-        ) == ProviderErrorKind.RATE_LIMITED
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=_status_error(status_code=429),
+                provider=ProviderName.ANTHROPIC,
+            )
+            == ProviderErrorKind.RATE_LIMITED
+        )
 
     def test_529_is_transient_provider_failure(self) -> None:
         """HTTP 529 (Anthropic overload) → TRANSIENT_PROVIDER_FAILURE (short cooldown)."""
-        assert CreditExhaustionPolicy.classify(
-            error=_status_error(status_code=529),
-            provider=ProviderName.ANTHROPIC,
-        ) == ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=_status_error(status_code=529),
+                provider=ProviderName.ANTHROPIC,
+            )
+            == ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -182,30 +192,39 @@ class TestCreditExhaustionPolicyOpenAI:
         err: MagicMock = MagicMock()
         err.code = "insufficient_quota"
         err.status_code = 429
-        assert CreditExhaustionPolicy.classify(
-            error=err,
-            provider=ProviderName.OPENAI,
-        ) == ProviderErrorKind.CREDIT_EXHAUSTED
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=err,
+                provider=ProviderName.OPENAI,
+            )
+            == ProviderErrorKind.CREDIT_EXHAUSTED
+        )
 
     def test_billing_hard_limit_code_is_credit_exhausted(self) -> None:
         """error.code == 'billing_hard_limit_reached' → CREDIT_EXHAUSTED."""
         err: MagicMock = MagicMock()
         err.code = "billing_hard_limit_reached"
         err.status_code = 429
-        assert CreditExhaustionPolicy.classify(
-            error=err,
-            provider=ProviderName.OPENAI,
-        ) == ProviderErrorKind.CREDIT_EXHAUSTED
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=err,
+                provider=ProviderName.OPENAI,
+            )
+            == ProviderErrorKind.CREDIT_EXHAUSTED
+        )
 
     def test_plain_429_without_quota_code_is_rate_limited(self) -> None:
         """HTTP 429 with generic rate_limit code → RATE_LIMITED (not credit exhausted)."""
         err: MagicMock = MagicMock()
         err.code = "rate_limit_exceeded"
         err.status_code = 429
-        assert CreditExhaustionPolicy.classify(
-            error=err,
-            provider=ProviderName.OPENAI,
-        ) == ProviderErrorKind.RATE_LIMITED
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=err,
+                provider=ProviderName.OPENAI,
+            )
+            == ProviderErrorKind.RATE_LIMITED
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -216,10 +235,13 @@ class TestCreditExhaustionPolicyOpenAI:
 class TestCreditExhaustionPolicyUnknownProvider:
     def test_unknown_provider_is_other(self) -> None:
         """An unrecognised provider value → OTHER."""
-        assert CreditExhaustionPolicy.classify(
-            error=RuntimeError("something"),
-            provider=MagicMock(),  # unrecognised ProviderName variant
-        ) == ProviderErrorKind.OTHER
+        assert (
+            CreditExhaustionPolicy.classify(
+                error=RuntimeError("something"),
+                provider=MagicMock(),  # unrecognised ProviderName variant
+            )
+            == ProviderErrorKind.OTHER
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +254,7 @@ class TestStreamDisconnectionClassification:
         "provider",
         (ProviderName.ANTHROPIC, ProviderName.OPENAI, ProviderName.KIMI_FOR_CODING),
     )
-    def test_classify_returns_stream_disconnected_for_every_provider(
-        self, provider: ProviderName
-    ) -> None:
+    def test_classify_returns_stream_disconnected_for_every_provider(self, provider: ProviderName) -> None:
         """Transport classification is identical for every provider label."""
         kind: ProviderErrorKind = ProviderErrorClassifier.classify(
             error=httpx.RemoteProtocolError("peer closed"),

@@ -3,6 +3,7 @@
 Reuses the same Atlassian credential resolved by ``ConnectorCredentialResolver``
 as the Confluence client — Jira and Confluence are the same Atlassian site.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -217,8 +218,8 @@ class JiraAPIClient:
             desc_text = desc
         elif isinstance(desc, dict):
             # Extract plain text from ADF paragraph if possible
-            for block in (desc.get("content") or []):
-                for inline in (block.get("content") or []):
+            for block in desc.get("content") or []:
+                for inline in block.get("content") or []:
                     text = inline.get("text")
                     if text:
                         desc_text = (desc_text or "") + text
@@ -253,9 +254,7 @@ class JiraAPIClient:
             "content": [
                 {
                     "type": "paragraph",
-                    "content": [
-                        {"type": "text", "text": text}
-                    ],
+                    "content": [{"type": "text", "text": text}],
                 }
             ],
         }

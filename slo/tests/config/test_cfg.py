@@ -1,4 +1,5 @@
 """Tests for ``config.cfg`` (sub-spec 01.n §5.4 — ``_resolve_skills_dir``, spec 29 — user dirs)."""
+
 from __future__ import annotations
 
 import importlib
@@ -13,9 +14,7 @@ from config.cfg import _resolve_skills_dir
 class TestResolveSkillsDir:
     """01.n §5.4: precedence — env > ~/.slo/skills > repo-local."""
 
-    def test_env_override_wins(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_env_override_wins(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         override = tmp_path / "explicit-skills"
         override.mkdir()
         monkeypatch.setenv("SLO_SKILLS_DIR", str(override))
@@ -96,9 +95,7 @@ class TestResolveSkillsDir:
         fake_install_root = tmp_path / "site-packages"
         (fake_install_root / "config").mkdir(parents=True)
         (fake_install_root / "skills").mkdir()
-        monkeypatch.setattr(
-            cfg_module, "__file__", str(fake_install_root / "config" / "cfg.py")
-        )
+        monkeypatch.setattr(cfg_module, "__file__", str(fake_install_root / "config" / "cfg.py"))
 
         result = _resolve_skills_dir()
         assert result == str(fake_install_root / "skills")
@@ -176,7 +173,9 @@ class TestDetachedWorkflowConfig:
 class TestUserSkillsDirConstants:
     """Spec 29: USER_SKILLS_DIR and USER_WORKFLOWS_DIR config constants."""
 
-    def test_user_skills_dir_defaults_to_slo_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_user_skills_dir_defaults_to_slo_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """USER_SKILLS_DIR ends with 'user_skills' under SLO_HOME by default."""
         monkeypatch.delenv("SLO_USER_SKILLS_DIR", raising=False)
         monkeypatch.setenv("SLO_HOME", str(tmp_path))
@@ -185,7 +184,9 @@ class TestUserSkillsDirConstants:
         importlib.reload(cfg_module)
         assert cfg_module.USER_SKILLS_DIR == str(tmp_path / "user_skills")
 
-    def test_user_workflows_dir_defaults_to_slo_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_user_workflows_dir_defaults_to_slo_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """USER_WORKFLOWS_DIR ends with 'user_workflows' under SLO_HOME by default."""
         monkeypatch.delenv("SLO_USER_WORKFLOWS_DIR", raising=False)
         monkeypatch.setenv("SLO_HOME", str(tmp_path))

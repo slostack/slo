@@ -1,4 +1,5 @@
 """Tests for ``AnthropicOAuthProvider`` (02.b.4)."""
+
 from datetime import datetime, timezone
 from unittest.mock import PropertyMock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -139,12 +140,14 @@ class TestAnthropicParseTokenResponse:
         """All optional fields populated → DAO with everything set."""
         provider: AnthropicOAuthProvider = AnthropicOAuthProvider()
 
-        cred = provider.parse_token_response(payload={
-            "access_token": "sk-ant-oat01-test",
-            "refresh_token": "sk-ant-ort01-test",
-            "expires_in": 3600,
-            "sub": "alice@example.com",
-        })
+        cred = provider.parse_token_response(
+            payload={
+                "access_token": "sk-ant-oat01-test",
+                "refresh_token": "sk-ant-ort01-test",
+                "expires_in": 3600,
+                "sub": "alice@example.com",
+            }
+        )
 
         assert cred.provider is ProviderName.ANTHROPIC
         assert cred.auth_type is AuthType.OAUTH
@@ -158,9 +161,11 @@ class TestAnthropicParseTokenResponse:
         """``access_token`` only → DAO with no refresh / expiry / subject."""
         provider: AnthropicOAuthProvider = AnthropicOAuthProvider()
 
-        cred = provider.parse_token_response(payload={
-            "access_token": "sk-ant-oat01-minimal",
-        })
+        cred = provider.parse_token_response(
+            payload={
+                "access_token": "sk-ant-oat01-minimal",
+            }
+        )
 
         assert cred.access_token == "sk-ant-oat01-minimal"
         assert cred.refresh_token is None

@@ -159,7 +159,6 @@ class TestTyperDispatchTui:
                     resume_session_reference="release prep",
                 )
 
-
     def test_tui_threads_resolved_workspace_file_into_session_config(self, tmp_path: Path) -> None:
         """A valid workspace file is resolved and stored on SessionConfigDAO."""
         fake_session: MagicMock = MagicMock(name="SloAgentSession")
@@ -238,6 +237,7 @@ class TestBuildSessionConfigPreferences:
         """A saved model preference is used instead of cfg default."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         UserPreferencesStore.upsert(model_name="claude-sonnet-4-5")
 
         config = TyperDispatch._build_session_config(workdir=tmp_path)
@@ -265,6 +265,7 @@ class TestBuildSessionConfigPreferences:
         """A saved reasoning level is passed into SessionConfigDAO."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         UserPreferencesStore.upsert(model_name="claude-sonnet-4-5", reasoning_level="high")
 
         config = TyperDispatch._build_session_config(workdir=tmp_path)
@@ -288,6 +289,7 @@ class TestBuildSessionConfigPreferences:
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
         monkeypatch.setenv("SLO_DEFAULT_MODEL_NAME", "gpt-5.4")
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         UserPreferencesStore.upsert(model_name="mistral-large")
 
         config = TyperDispatch._build_session_config(workdir=tmp_path)
@@ -303,6 +305,7 @@ class TestBuildSessionConfigPreferences:
         """A preference matching a provider prefix uses compatibility path."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
+
         UserPreferencesStore.upsert(model_name="claude-legacy-model")
 
         config = TyperDispatch._build_session_config(workdir=tmp_path)
@@ -337,6 +340,7 @@ class TestRunHeadlessReasoningOverride:
     ) -> "SessionConfigDAO":
         """Run ``run_headless`` with all heavy dependencies patched out."""
         from contextlib import nullcontext
+
         captured_config: list = []
 
         async def _fake_invoke(*, prompt: str) -> int:
@@ -485,17 +489,13 @@ class TestRunHeadlessSessionIdResolution:
 
         return captured[0]
 
-    def test_explicit_session_id_is_applied_to_config(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_explicit_session_id_is_applied_to_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_SESSION_ID", raising=False)
         slug: str = "my-explicit-run"
         config = self._run_headless_capture_config(explicit_session_id=slug)
         assert config.session_id == slug
 
-    def test_env_session_id_used_when_no_explicit(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_session_id_used_when_no_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from uuid import uuid4
 
         env_id: str = str(uuid4())
@@ -503,9 +503,7 @@ class TestRunHeadlessSessionIdResolution:
         config = self._run_headless_capture_config()
         assert config.session_id == env_id.lower()
 
-    def test_none_when_no_session_id_source(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_none_when_no_session_id_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_SESSION_ID", raising=False)
         config = self._run_headless_capture_config()
         assert config.session_id is None
@@ -534,17 +532,13 @@ class TestRunHeadlessSystemPromptOverrides:
 
         return captured[0]
 
-    def test_system_prompt_file_content_loaded_into_config(
-        self, tmp_path: Path
-    ) -> None:
+    def test_system_prompt_file_content_loaded_into_config(self, tmp_path: Path) -> None:
         prompt_file: Path = tmp_path / "system.txt"
         prompt_file.write_text("You are a helpful agent.", encoding="utf-8")
         config = self._capture_config(system_prompt_file=prompt_file)
         assert config.system_prompt == "You are a helpful agent."
 
-    def test_append_system_prompt_file_content_loaded_into_config(
-        self, tmp_path: Path
-    ) -> None:
+    def test_append_system_prompt_file_content_loaded_into_config(self, tmp_path: Path) -> None:
         append_file: Path = tmp_path / "append.txt"
         append_file.write_text("Extra instructions.", encoding="utf-8")
         config = self._capture_config(append_system_prompt_file=append_file)
@@ -555,18 +549,14 @@ class TestRunHeadlessSystemPromptOverrides:
         assert config.system_prompt is None
         assert config.append_system_prompt is None
 
-    def test_missing_system_prompt_file_raises_bad_parameter(
-        self, tmp_path: Path
-    ) -> None:
+    def test_missing_system_prompt_file_raises_bad_parameter(self, tmp_path: Path) -> None:
         """A non-existent --system-prompt-file raises typer.BadParameter."""
         missing: Path = tmp_path / "does_not_exist.txt"
         with pytest.raises(typer.BadParameter) as exc_info:
             self._capture_config(system_prompt_file=missing)
         assert exc_info.value.param_hint == "--system-prompt-file"
 
-    def test_missing_append_system_prompt_file_raises_bad_parameter(
-        self, tmp_path: Path
-    ) -> None:
+    def test_missing_append_system_prompt_file_raises_bad_parameter(self, tmp_path: Path) -> None:
         """A non-existent --append-system-prompt-file raises typer.BadParameter."""
         missing: Path = tmp_path / "also_missing.txt"
         with pytest.raises(typer.BadParameter) as exc_info:

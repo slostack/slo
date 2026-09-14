@@ -1,4 +1,5 @@
 """Tests for FilesystemSessionHistoryStore compaction extensions (sub-spec 01.a.3)."""
+
 from __future__ import annotations
 
 import math
@@ -13,7 +14,6 @@ from src.agents.slo_agent.history.dao import (
 )
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.compaction.token_estimator import TokenEstimator
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -203,16 +203,18 @@ async def test_existing_events_without_token_usage_parse_cleanly(
         workspace_file=None,
     )
     events_path = tmp_path / session_id / "events.jsonl"
-    legacy_line = json.dumps({
-        "schema_version": 1,
-        "event_id": "old-event-id",
-        "session_id": session_id,
-        "sequence": 1,
-        "kind": "user_message",
-        "iteration": 0,
-        "recorded_at": "2024-01-01T00:00:00+00:00",
-        "payload": {"content": "legacy message"},
-    })
+    legacy_line = json.dumps(
+        {
+            "schema_version": 1,
+            "event_id": "old-event-id",
+            "session_id": session_id,
+            "sequence": 1,
+            "kind": "user_message",
+            "iteration": 0,
+            "recorded_at": "2024-01-01T00:00:00+00:00",
+            "payload": {"content": "legacy message"},
+        }
+    )
     with events_path.open("a", encoding="utf-8") as f:
         f.write(legacy_line + "\n")
 
@@ -241,8 +243,7 @@ class TestTruncateToCompactionBoundary:
     ) -> None:
         """After truncation, load_events returns only the active events."""
         pre_events: list[SessionHistoryEventDAO] = [
-            await store.append_event(event=_make_event(sequence=0, content=f"e{i}"))
-            for i in range(5)
+            await store.append_event(event=_make_event(sequence=0, content=f"e{i}")) for i in range(5)
         ]
         first_kept: SessionHistoryEventDAO = pre_events[3]
         summary: SessionHistoryEventDAO = _make_summary_event(
@@ -273,8 +274,7 @@ class TestTruncateToCompactionBoundary:
     ) -> None:
         """After truncation the file contains retained_tail + summary only."""
         pre_events: list[SessionHistoryEventDAO] = [
-            await store.append_event(event=_make_event(sequence=0, content=f"e{i}"))
-            for i in range(6)
+            await store.append_event(event=_make_event(sequence=0, content=f"e{i}")) for i in range(6)
         ]
         first_kept: SessionHistoryEventDAO = pre_events[4]
         summary: SessionHistoryEventDAO = _make_summary_event(
@@ -299,8 +299,7 @@ class TestTruncateToCompactionBoundary:
     ) -> None:
         """truncate_to_compaction_boundary creates exactly one archive file."""
         pre_events: list[SessionHistoryEventDAO] = [
-            await store.append_event(event=_make_event(sequence=0, content=f"e{i}"))
-            for i in range(4)
+            await store.append_event(event=_make_event(sequence=0, content=f"e{i}")) for i in range(4)
         ]
         first_kept: SessionHistoryEventDAO = pre_events[2]
         summary: SessionHistoryEventDAO = _make_summary_event(
@@ -328,8 +327,7 @@ class TestTruncateToCompactionBoundary:
         import json
 
         pre_events: list[SessionHistoryEventDAO] = [
-            await store.append_event(event=_make_event(sequence=0, content=f"e{i}"))
-            for i in range(4)
+            await store.append_event(event=_make_event(sequence=0, content=f"e{i}")) for i in range(4)
         ]
         first_kept: SessionHistoryEventDAO = pre_events[2]
         summary: SessionHistoryEventDAO = _make_summary_event(
@@ -363,8 +361,7 @@ class TestTruncateToCompactionBoundary:
         import time
 
         pre_events: list[SessionHistoryEventDAO] = [
-            await store.append_event(event=_make_event(sequence=0, content=f"e{i}"))
-            for i in range(4)
+            await store.append_event(event=_make_event(sequence=0, content=f"e{i}")) for i in range(4)
         ]
         first_kept_1: SessionHistoryEventDAO = pre_events[2]
         summary_1: SessionHistoryEventDAO = _make_summary_event(
@@ -383,8 +380,7 @@ class TestTruncateToCompactionBoundary:
 
         # Simulate new events arriving after first truncation.
         new_events: list[SessionHistoryEventDAO] = [
-            await store.append_event(event=_make_event(sequence=0, content=f"new{i}"))
-            for i in range(3)
+            await store.append_event(event=_make_event(sequence=0, content=f"new{i}")) for i in range(3)
         ]
         all_active: list[SessionHistoryEventDAO] = await store.load_events(session_id="sess-1")
         first_kept_2: SessionHistoryEventDAO = new_events[1]

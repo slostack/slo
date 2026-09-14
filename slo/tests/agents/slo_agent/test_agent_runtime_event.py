@@ -90,10 +90,10 @@ async def test_react_streaming_emits_assistant_delta_trace_events_for_visible_th
     assert [event.payload.delta_kind for event in assistant_deltas] == [
         "thinking_start",
         "thinking_delta",
-        "thinking_end",   # implicit close (no content) when text block opens
+        "thinking_end",  # implicit close (no content) when text block opens
         "text_start",
         "text_delta",
-        "thinking_end",   # repair event from finalize_open_blocks (with completed content)
+        "thinking_end",  # repair event from finalize_open_blocks (with completed content)
         "text_end",
     ]
 

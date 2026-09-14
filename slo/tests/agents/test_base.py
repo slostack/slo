@@ -115,12 +115,15 @@ def test_create_llm_openai_gpt5_dispatch(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result.supports_explicit_caching is False
 
 
-@pytest.mark.parametrize("model_name", [
-    "gpt-5-codex",
-    "gpt-5.3-codex",
-    "gpt-5.2-codex",
-    "gpt-5.3-codex-spark",
-])
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "gpt-5-codex",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex-spark",
+    ],
+)
 def test_create_llm_openai_codex_dispatch(
     monkeypatch: pytest.MonkeyPatch,
     model_name: str,
@@ -607,7 +610,6 @@ class TestSessionIdThreading:
         assert mock_builder.call_args.kwargs["session_id"] == "gpt-5"
 
 
-
 class TestLLMFactoryCreatePool:
     """``LLMFactory.create_pool`` assembles a ``ModelPool`` from a ``ModelPoolDAO``."""
 
@@ -679,9 +681,7 @@ def _two_member_dao() -> "ModelPoolDAO":  # type: ignore[name-defined] # noqa: F
     return ModelPoolDAO(
         entries=[
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1),
         ]
     )
 
@@ -709,9 +709,7 @@ def _capturing_create(captured: list[dict]):
 class TestCreatePoolForwardsKnobs:
     """``create_pool`` forwards every build knob to every member (37.a.3)."""
 
-    def test_forwards_streaming_and_reasoning_to_every_member(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_forwards_streaming_and_reasoning_to_every_member(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """create_pool passes streaming/reasoning/session_id to each member build."""
         captured: list[dict] = []
         monkeypatch.setattr(LLMFactory, "create", _capturing_create(captured))
@@ -723,9 +721,7 @@ class TestCreatePoolForwardsKnobs:
         )
         assert len(captured) == 2
         assert all(
-            c["streaming"] is False
-            and c["reasoning_level"] == "high"
-            and c["session_id"] == "s1"
+            c["streaming"] is False and c["reasoning_level"] == "high" and c["session_id"] == "s1"
             for c in captured
         )
 
@@ -741,9 +737,7 @@ class TestCreatePoolForwardsKnobs:
 class TestBuildProductProtocol:
     """``LLMBuildProduct`` is satisfied by both the single-model result and the pool (37.a.3)."""
 
-    def test_model_pool_satisfies_llm_build_product(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_model_pool_satisfies_llm_build_product(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A constructed ModelPool structurally satisfies LLMBuildProduct."""
         from src.agents.base import LLMBuildProduct
 

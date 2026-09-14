@@ -6,6 +6,7 @@ brew / pyenv / pipx / git / network). Fake executables log their invocations to 
 call log the tests assert on. ``install.sh`` only runs ``main`` when executed
 directly, so sourcing it exposes every function for isolated testing.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -247,9 +248,9 @@ class TestEnsurePipx:
             "#!/bin/sh\n"
             'echo "apt-get $*" >> "$SLO_CALL_LOG"\n'
             'if [ "$1" = "install" ] && [ "$2" = "-y" ] && [ "$3" = "pipx" ]; then\n'
-            '  exit 1\n'
-            'fi\n'
-            'exit 0\n'
+            "  exit 1\n"
+            "fi\n"
+            "exit 0\n"
         )
         apt_get.chmod(0o755)
         fake_bin.run(snippet="slo_ensure_pipx")
@@ -412,7 +413,9 @@ class TestInstall:
             for c in fake_bin.calls
         )
 
-    def test_resolves_concrete_interpreter_when_pyenv_present(self, fake_bin: FakeBin, tmp_path: Path) -> None:
+    def test_resolves_concrete_interpreter_when_pyenv_present(
+        self, fake_bin: FakeBin, tmp_path: Path
+    ) -> None:
         # When pyenv yields a real pinned interpreter, pipx is pointed at the
         # absolute path, not the version-dependent `python3.11` shim.
         root = tmp_path / "pyenv"
@@ -462,7 +465,9 @@ class TestInstall:
         # pyproject.toml is via the #subdirectory fragment.
         fake_bin.add(name="pipx")
         fake_bin.run(snippet="slo_install")
-        assert any("git+https://gitlab.com/core-27/slo.git@main#subdirectory=slo" in c for c in fake_bin.calls)
+        assert any(
+            "git+https://gitlab.com/core-27/slo.git@main#subdirectory=slo" in c for c in fake_bin.calls
+        )
 
     def test_subdir_override_empty_installs_from_root(self, fake_bin: FakeBin) -> None:
         fake_bin.add(name="pipx")

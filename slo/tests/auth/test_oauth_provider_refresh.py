@@ -5,6 +5,7 @@ exchange; the tests run it against a local ``aiohttp.web`` stub so we
 exercise the wire path (form-encoded POST, JSON parse, error mapping)
 without leaving the box.
 """
+
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
@@ -15,7 +16,6 @@ from aiohttp import web
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.oauth_errors import OAuthTokenError
 from src.auth.oauth_provider import FauxOAuthProvider, OAuthProvider
-
 
 _TokenHandler = Callable[[web.Request], Awaitable[web.Response]]
 

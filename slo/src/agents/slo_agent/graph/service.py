@@ -6,9 +6,11 @@ Private helpers: all graph-building and node-factory functions.
 
 from __future__ import annotations
 
+import asyncio
 from typing import (
     TYPE_CHECKING,
     Any,
+    AsyncIterator,
     Awaitable,
     Callable,
     Optional,
@@ -27,7 +29,10 @@ from src.agents.base import LLM, LLMBuildProduct, LLMBuildResult, LLMFactory
 
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPoolDAO
+    from src.agents.slo_agent.plugins.dispatcher import PluginDispatcher
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.truncation import was_output_truncated
+from src.agents.tools.tool_output import ToolOutputUpdateDAO
 from src.agents.slo_agent.tool_execution import (
     ConcurrentToolExecutor,
     SequentialToolExecutor,
@@ -48,6 +53,7 @@ __all__ = [
     "_make_agent_node",
     "_make_tool_node",
     "_select_tool_executor",
+    "drain_tool_output_updates",
     "_split_system_messages",
     "_uses_chatgpt_backend_responses",
     "adapt_chatgpt_backend_request",
@@ -183,22 +189,56 @@ def _append_truncation_hint(*, message: ToolMessage) -> ToolMessage:
     )
 
 
+async def drain_tool_output_updates(
+    *,
+    output_update_queue: asyncio.Queue[ToolOutputUpdateDAO],
+    iteration: int,
+) -> AsyncIterator[AgentStreamEventDAO]:
+    """Drain queued snapshots into the canonical stream event vocabulary.
+
+    Args:
+        output_update_queue (asyncio.Queue[ToolOutputUpdateDAO]): Per-agent bridge queue.
+        iteration (int): Outer ReAct iteration stamped on events.
+
+    Yields:
+        AgentStreamEventDAO: Display-only snapshots routed by tool call id.
+    """
+    while not output_update_queue.empty():
+        snapshot: ToolOutputUpdateDAO = output_update_queue.get_nowait()
+        yield AgentStreamEventDAO(
+            kind="tool_output_update",
+            iteration=iteration,
+            tool_call_id=snapshot.tool_call_id,
+            tool_name=snapshot.tool_name,
+            content=snapshot.content_snapshot,
+            metadata={
+                "truncated": snapshot.truncated,
+                "full_output_path": snapshot.full_output_path,
+            },
+        )
+
+
 def _make_tool_node(
     *,
     tools: Sequence[BaseTool],
     execution_mode: ToolExecutionMode,
+    output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] | None = None,
+    plugin_dispatcher: "PluginDispatcher | None" = None,
 ) -> NodeFn:
     """Build the Slo tool node with managed execution policy.
 
     Args:
         tools (Sequence[BaseTool]): Registered tools for this agent.
         execution_mode (ToolExecutionMode): Batch execution policy.
+        output_update_queue (asyncio.Queue[ToolOutputUpdateDAO]): Per-agent
+            queue that the outer agent stream drains onto the event bus.
 
     Returns:
         NodeFn: Async LangGraph node executing the last assistant
             message's tool calls.
     """
     tools_by_name: dict[str, BaseTool] = {tool.name: tool for tool in tools}
+    queue: asyncio.Queue[ToolOutputUpdateDAO] = output_update_queue or asyncio.Queue()
 
     async def tool_node(state: SloAgentStateDAO) -> dict:
         last: BaseMessage = state.messages[-1]
@@ -206,10 +246,21 @@ def _make_tool_node(
             return {"messages": []}
 
         plan = plan_tool_batch(calls=list(last.tool_calls))  # type: ignore[arg-type]  # ToolCall is a TypedDict
+
+        async def sink(*, snapshot: ToolOutputUpdateDAO) -> None:
+            """Place a typed partial snapshot on the graph-to-agent bridge.
+
+            Args:
+                snapshot (ToolOutputUpdateDAO): Executor-stamped latest snapshot.
+            """
+            await queue.put(snapshot)
+
         executor = _select_tool_executor(
             execution_mode=execution_mode,
             tools_by_name=tools_by_name,
             run_concurrently=plan.run_concurrently,
+            output_update_sink=sink,
+            plugin_dispatcher=plugin_dispatcher,
         )
         tool_messages: list[ToolMessage] = await executor.execute(plan=plan)
 
@@ -286,6 +337,8 @@ def _select_tool_executor(
     execution_mode: ToolExecutionMode,
     tools_by_name: dict[str, BaseTool],
     run_concurrently: bool,
+    output_update_sink: Callable[..., Awaitable[None]] | None = None,
+    plugin_dispatcher: "PluginDispatcher | None" = None,
 ) -> SequentialToolExecutor | ConcurrentToolExecutor:
     """Select the concrete executor for one planned tool batch.
 
@@ -300,10 +353,22 @@ def _select_tool_executor(
             use for this batch.
     """
     if execution_mode is ToolExecutionMode.SEQUENTIAL:
-        return SequentialToolExecutor(tools_by_name=tools_by_name)
+        return SequentialToolExecutor(
+            tools_by_name=tools_by_name,
+            output_update_sink=output_update_sink,
+            plugin_dispatcher=plugin_dispatcher,
+        )
     if execution_mode is ToolExecutionMode.CONCURRENT_READS and run_concurrently:
-        return ConcurrentToolExecutor(tools_by_name=tools_by_name)
-    return SequentialToolExecutor(tools_by_name=tools_by_name)
+        return ConcurrentToolExecutor(
+            tools_by_name=tools_by_name,
+            output_update_sink=output_update_sink,
+            plugin_dispatcher=plugin_dispatcher,
+        )
+    return SequentialToolExecutor(
+        tools_by_name=tools_by_name,
+        output_update_sink=output_update_sink,
+        plugin_dispatcher=plugin_dispatcher,
+    )
 
 
 def build_slo_agent(
@@ -319,6 +384,7 @@ def build_slo_agent(
     reasoning_level: ReasoningLevel = "off",
     session_id: Optional[str] = None,
     tool_execution_mode: ToolExecutionMode = ToolExecutionMode.CONCURRENT_READS,
+    plugin_dispatcher: "PluginDispatcher | None" = None,
 ) -> SloAgentBuildResult:
     """Build a compiled Slo one-shot-turn graph (single model or pool).
 
@@ -390,14 +456,15 @@ def build_slo_agent(
         llm = build_product.llm
         explicit_caching = build_product.supports_explicit_caching
 
-    llm_with_tools: BaseChatModel = (
-        cast(BaseChatModel, llm.bind_tools(tools=list(tools))) if tools else llm
-    )
+    llm_with_tools: BaseChatModel = cast(BaseChatModel, llm.bind_tools(tools=list(tools))) if tools else llm
 
     agent_node: NodeFn = _make_agent_node(llm_with_tools=llm_with_tools)
+    output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] = asyncio.Queue()
     tool_node: NodeFn = _make_tool_node(
         tools=tools,
         execution_mode=tool_execution_mode,
+        output_update_queue=output_update_queue,
+        plugin_dispatcher=plugin_dispatcher,
     )
 
     # Linear, one-shot turn:
@@ -417,5 +484,6 @@ def build_slo_agent(
         graph=graph.compile(),
         tools=tools,
         llm=llm_with_tools,
+        output_update_queue=output_update_queue,
         supports_explicit_caching=explicit_caching,
     )

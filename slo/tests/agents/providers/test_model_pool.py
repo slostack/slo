@@ -1,4 +1,5 @@
 """Tests for ``src.agents.providers.model_pool`` (spec 28.a.3 / 37.a.2)."""
+
 from __future__ import annotations
 
 import time
@@ -161,9 +162,7 @@ class _StreamingChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content="".join(self._chunks)))]
-        )
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="".join(self._chunks)))])
 
     async def _agenerate(
         self,
@@ -172,9 +171,7 @@ class _StreamingChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content="".join(self._chunks)))]
-        )
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="".join(self._chunks)))])
 
     async def _astream(
         self,
@@ -213,9 +210,7 @@ def _switch_pool(
     dao: ModelPoolDAO = ModelPoolDAO(
         entries=[
             ModelPoolEntryDAO(model_name="gpt-5.4", provider=primary_provider, priority=0),
-            ModelPoolEntryDAO(
-                model_name="claude-sonnet-4-6", provider=secondary_provider, priority=1
-            ),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=secondary_provider, priority=1),
         ]
     )
     return ModelPool(
@@ -545,9 +540,7 @@ class TestModelPoolAstreamSwitching:
     async def test_does_not_switch_after_first_chunk(self) -> None:
         """A failure after the first chunk re-raises (no mid-stream switch)."""
         pool: ModelPool = _switch_pool(
-            primary=_StreamingChatModel(
-                chunks=["partial"], fail_after_first=_StatusError(status_code=429)
-            ),
+            primary=_StreamingChatModel(chunks=["partial"], fail_after_first=_StatusError(status_code=429)),
             secondary=_StreamingChatModel(chunks=["never"]),
         )
         seen: list[str] = []

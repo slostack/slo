@@ -1,11 +1,11 @@
 """DAOs for Slo tool-execution planning and scheduling."""
+
 from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
-
 
 __all__ = [
     "ToolCallEnvelopeDAO",

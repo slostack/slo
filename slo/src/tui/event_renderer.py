@@ -155,48 +155,6 @@ def _summarize_default(output: str) -> str:
     return f"{first_line[:_DEFAULT_SUMMARY_CHARS]}…"
 
 
-def _format_args(tool_input: dict[str, Any]) -> str:
-    """Render a tool-call args dict for the generic fallback headline.
-
-    Args:
-        tool_input (dict[str, Any]): The tool call's args dict.
-
-    Returns:
-        str: A comma-separated argument list.
-    """
-    parts: list[str] = [f"{key}={_format_arg_value(value=value)}" for key, value in tool_input.items()]
-    return ", ".join(parts)
-
-
-def _format_arg_value(value: Any) -> str:
-    """Render one tool-call arg value for headline display.
-
-    Args:
-        value (Any): The single arg value.
-
-    Returns:
-        str: A quoted+truncated string for ``str`` values; ``repr(value)``
-            for everything else.
-    """
-    if isinstance(value, str):
-        return _quote_and_truncate_string(value=value)
-    return repr(value)
-
-
-def _quote_and_truncate_string(*, value: str) -> str:
-    """Quote ``value`` and ellipsise when longer than the preview cap.
-
-    Args:
-        value (str): A raw string arg.
-
-    Returns:
-        str: A double-quoted, possibly-ellipsised representation.
-    """
-    if len(value) <= _ARG_STRING_PREVIEW_CHARS:
-        return f'"{value}"'
-    return f'"{value[:_ARG_STRING_PREVIEW_CHARS]}…"'
-
-
 def _truncate_inline_text(*, value: str) -> str:
     """Truncate inline headline text without adding quotes.
 
@@ -382,31 +340,22 @@ def _format_edit_call(*, tool_input: dict[str, Any]) -> str:
     return f"edit {_truncate_inline_text(value=path)}"
 
 
-def _format_default_call(*, name: str, tool_input: dict[str, Any]) -> str:
-    """Format the fallback generic tool call headline.
-
-    Args:
-        name (str): Tool name.
-        tool_input (dict[str, Any]): Tool args.
-
-    Returns:
-        str: Generic ``name(key=value)`` body.
-    """
-    return f"{name}({_format_args(tool_input=tool_input)})"
-
-
-def format_tool_call_headline(*, name: str, tool_input: dict[str, Any]) -> str:
+def format_tool_call_headline(*, name: Optional[str], tool_input: dict[str, Any]) -> str:
     """Format the visible headline for one tool call.
 
     Args:
-        name (str): Tool name.
+        name (Optional[str]): Tool name, or ``None`` when not yet known.
         tool_input (dict[str, Any]): Tool arguments.
 
     Returns:
         str: Claude-Code-style ``⏺`` headline line, or ``""`` when the
-        tool name and arguments are not yet known (preparing state).
+        tool name is not yet known (preparing state).
     """
-    if name == "tool" and not tool_input:
+    if not name:
+        # Name-unknown state (mid-stream, pre-name announcement, or replay of
+        # an unnamed call): render nothing rather than a generic
+        # ``tool(command=...)``-style fallback. The block re-renders with the
+        # real per-tool headline as soon as the name resolves.
         return ""
     formatter_map: dict[str, Callable[[dict[str, Any]], str]] = {
         "bash": lambda value: _format_bash_call(tool_input=value),
@@ -418,14 +367,11 @@ def format_tool_call_headline(*, name: str, tool_input: dict[str, Any]) -> str:
         "edit": lambda value: _format_edit_call(tool_input=value),
     }
     formatter: Callable[[dict[str, Any]], str] | None = formatter_map.get(name)
-    body: str = (
-        formatter(tool_input)
-        if formatter is not None
-        else _format_default_call(
-            name=name,
-            tool_input=tool_input,
-        )
-    )
+    if formatter is None:
+        # Unknown tools (never the ``"tool"`` placeholder, handled above):
+        # show the bare name rather than dumping raw args.
+        return f"{EventRenderer.HEADLINE_GLYPH} {name}"
+    body: str = formatter(tool_input)
     return f"{EventRenderer.HEADLINE_GLYPH} {body}"
 
 
@@ -462,6 +408,21 @@ class EventRenderer:
         "edit": _summarize_edit,
         "find": _summarize_find,
     }
+    _RENDERER_OVERRIDES: dict[str, Callable[[str], str]] = {}
+
+    @classmethod
+    def set_renderer_overrides(cls, *, renderers: dict[str, Callable[[str], str]]) -> None:
+        """Replace the registered per-tool renderer overrides.
+
+        WHAT: Installs a session-owned renderer map before built-in summaries.
+        WHO: ``SloAgentSession`` calls this after plugin registrations change.
+        WHEN: Plugins load, reload, or are disabled for the active session.
+
+        Args:
+            renderers (dict[str, Callable[[str], str]]): Renderer functions keyed
+                by their canonical visible tool name.
+        """
+        cls._RENDERER_OVERRIDES = dict(renderers)
 
     @classmethod
     def render(cls, *, event: ProgressEventDAO, log: RichLogLike) -> None:
@@ -501,9 +462,10 @@ class EventRenderer:
                 is guaranteed non-None by the dispatcher).
             log (RichLogLike): The transcript to write into.
         """
-        tool_name: str = event.tool_name or "tool"
+        if not event.tool_name:
+            return  # placeholder name — the headline suppresses unnamed calls
         tool_input: dict[str, Any] = event.tool_input or {}
-        headline: str = format_tool_call_headline(name=tool_name, tool_input=tool_input)
+        headline: str = format_tool_call_headline(name=event.tool_name, tool_input=tool_input)
         if not headline:
             return
         log.write(
@@ -547,10 +509,11 @@ class EventRenderer:
         Returns:
             str: A one-line summary suitable for the continuation glyph.
         """
-        summariser: Callable[[str], str] = cls._SUMMARIZERS.get(
-            name or "",
-            _summarize_default,
-        )
+        tool_name: str = name or ""
+        override: Callable[[str], str] | None = cls._RENDERER_OVERRIDES.get(tool_name)
+        if override is not None:
+            return override(output)
+        summariser: Callable[[str], str] = cls._SUMMARIZERS.get(tool_name, _summarize_default)
         return summariser(output)
 
     @classmethod

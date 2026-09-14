@@ -20,7 +20,6 @@ from config.timeout_resolver import (
     positive_int_env,
 )
 
-
 # ---------------------------------------------------------------------------
 # positive_float_env
 # ---------------------------------------------------------------------------
@@ -35,9 +34,7 @@ class TestPositiveFloatEnv:
         )
         assert result == pytest.approx(30.5)
 
-    def test_falls_back_to_alias_when_primary_absent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_falls_back_to_alias_when_primary_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_PRIMARY_TIMEOUT_SECONDS", raising=False)
         monkeypatch.setenv("SLO_ALIAS_TIMEOUT", "7.0")
         result: float = positive_float_env(
@@ -47,9 +44,7 @@ class TestPositiveFloatEnv:
         )
         assert result == pytest.approx(7.0)
 
-    def test_falls_back_to_alias_when_primary_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_falls_back_to_alias_when_primary_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_PRIMARY_TIMEOUT_SECONDS", "   ")
         monkeypatch.setenv("SLO_ALIAS_TIMEOUT", "8.0")
         result: float = positive_float_env(
@@ -59,9 +54,7 @@ class TestPositiveFloatEnv:
         )
         assert result == pytest.approx(8.0)
 
-    def test_returns_default_when_neither_variable_set(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_when_neither_variable_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_PRIMARY_TIMEOUT_SECONDS", raising=False)
         monkeypatch.delenv("SLO_ALIAS_TIMEOUT", raising=False)
         result: float = positive_float_env(
@@ -81,9 +74,7 @@ class TestPositiveFloatEnv:
         )
         assert result == pytest.approx(5.0)
 
-    def test_returns_default_for_non_numeric_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_for_non_numeric_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_PRIMARY_TIMEOUT_SECONDS", "not_a_number")
         result: float = positive_float_env(
             primary_name="SLO_PRIMARY_TIMEOUT_SECONDS",
@@ -91,9 +82,7 @@ class TestPositiveFloatEnv:
         )
         assert result == pytest.approx(10.0)
 
-    def test_returns_default_for_zero_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_for_zero_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_PRIMARY_TIMEOUT_SECONDS", "0")
         result: float = positive_float_env(
             primary_name="SLO_PRIMARY_TIMEOUT_SECONDS",
@@ -101,9 +90,7 @@ class TestPositiveFloatEnv:
         )
         assert result == pytest.approx(10.0)
 
-    def test_returns_default_for_negative_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_for_negative_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_PRIMARY_TIMEOUT_SECONDS", "-5.0")
         result: float = positive_float_env(
             primary_name="SLO_PRIMARY_TIMEOUT_SECONDS",
@@ -111,9 +98,7 @@ class TestPositiveFloatEnv:
         )
         assert result == pytest.approx(10.0)
 
-    def test_primary_takes_precedence_over_alias(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_primary_takes_precedence_over_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_PRIMARY_TIMEOUT_SECONDS", "20.0")
         monkeypatch.setenv("SLO_ALIAS_TIMEOUT", "99.0")
         result: float = positive_float_env(
@@ -130,18 +115,14 @@ class TestPositiveFloatEnv:
 
 
 class TestOptionalPositiveFloatEnv:
-    def test_returns_none_when_variable_absent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_none_when_variable_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_OPT_TIMEOUT", raising=False)
         result: float | None = optional_positive_float_env(
             primary_name="SLO_OPT_TIMEOUT",
         )
         assert result is None
 
-    def test_returns_none_when_variable_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_none_when_variable_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_OPT_TIMEOUT", "  ")
         result: float | None = optional_positive_float_env(
             primary_name="SLO_OPT_TIMEOUT",
@@ -210,9 +191,7 @@ class TestPositiveIntEnv:
         )
         assert result == 3
 
-    def test_returns_default_when_neither_set(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_when_neither_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_POOL_SIZE", raising=False)
         monkeypatch.delenv("SLO_POOL_SIZE_LEGACY", raising=False)
         result: int = positive_int_env(
@@ -222,9 +201,7 @@ class TestPositiveIntEnv:
         )
         assert result == 4
 
-    def test_returns_default_for_non_integer_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_for_non_integer_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_POOL_SIZE", "3.5")
         result: int = positive_int_env(
             primary_name="SLO_POOL_SIZE",
@@ -232,9 +209,7 @@ class TestPositiveIntEnv:
         )
         assert result == 4
 
-    def test_returns_default_for_zero_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_for_zero_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_POOL_SIZE", "0")
         result: int = positive_int_env(
             primary_name="SLO_POOL_SIZE",
@@ -242,9 +217,7 @@ class TestPositiveIntEnv:
         )
         assert result == 4
 
-    def test_returns_default_for_negative_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_default_for_negative_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_POOL_SIZE", "-1")
         result: int = positive_int_env(
             primary_name="SLO_POOL_SIZE",
@@ -252,9 +225,7 @@ class TestPositiveIntEnv:
         )
         assert result == 4
 
-    def test_primary_takes_precedence_over_alias(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_primary_takes_precedence_over_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLO_POOL_SIZE", "5")
         monkeypatch.setenv("SLO_POOL_SIZE_LEGACY", "99")
         result: int = positive_int_env(

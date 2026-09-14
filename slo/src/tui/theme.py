@@ -19,7 +19,7 @@ Both themes also pin ``screen-selection-background`` /
 transcript text stays readable — Textual's alpha-blended default hid the
 text on these palettes.
 
-slo-default (tokyo-night palette — the primary theme):
+slo-default (tokyo-night palette):
   background  #1a1b26  deep night canvas
   surface     #24283b  lifted surface
   panel       #1f2335  panel/card background
@@ -79,6 +79,15 @@ SLO_DEFAULT_THEME: Theme = Theme(
         "thinking-text": "#9aa5ce",
         "md-heading": "#e0af68",
         "border-muted": "#565f89",
+        # Authentication modal semantic roles (spec 78.a.3).
+        "auth-surface": "#1f2335",
+        "auth-border": "#565f89",
+        "auth-heading": "#c0caf5",
+        "auth-code": "#e0af68",
+        "auth-action-background": "#7aa2f7",
+        "auth-action-foreground": "#1a1b26",
+        "auth-selection-background": "#414868",
+        "auth-selection-foreground": "#c0caf5",
     },
 )
 
@@ -111,5 +120,14 @@ SLO_DARK_THEME: Theme = Theme(
         "thinking-text": "#8b8b8b",
         "md-heading": "#f0c674",
         "border-muted": "#505050",
+        # Authentication modal semantic roles (spec 78.a.3).
+        "auth-surface": "#151817",
+        "auth-border": "#3e5148",
+        "auth-heading": "#b8c7bd",
+        "auth-code": "#d0b57a",
+        "auth-action-background": "#b8c7bd",
+        "auth-action-foreground": "#151817",
+        "auth-selection-background": "#3e5148",
+        "auth-selection-foreground": "#d8d8d8",
     },
 )

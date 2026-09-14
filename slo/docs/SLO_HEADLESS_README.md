@@ -102,7 +102,9 @@ When a run starts, the session id is resolved in this order (first non-`None` wi
 | `SLO_SUBAGENT_MAX_CONCURRENCY` | `4` | Maximum number of child sub-agent processes running simultaneously in a pool. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | Maximum tasks accepted per single `spawn_sub_agents` call. |
 | `SLO_VISUALIZER_REFRESH_SECONDS` | `1.0` | Default polling cadence for `slo visualize`. Overridden by `--refresh-seconds`. |
-| `SLO_OAUTH_TIMEOUT_SECONDS` | `60` | OAuth callback server timeout (interactive auth only). |
+| `SLO_OAUTH_TIMEOUT_SECONDS` | `60` | OAuth callback server timeout (loopback callback deadline; the attempt deadline is SLO_OAUTH_MANUAL_TIMEOUT_SECONDS). |
+| `SLO_OAUTH_MANUAL_TIMEOUT_SECONDS` | `900` | Whole browser-authorization attempt deadline, including a pasted manual response. |
+| `SLO_OAUTH_DEVICE_TIMEOUT_SECONDS` | `900` | Slo-owned OpenAI device-authorization attempt deadline. |
 | `SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS` | `300` | Maximum wait for first provider-stream progress before one reconnect may be considered. |
 | `SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS` | `300` | Maximum gap between provider-stream progress events. |
 | `SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS` | `1.0` | Base jittered delay for the single fresh-connection stream reconnect. |
@@ -1382,7 +1384,9 @@ A clean, complete list of every environment variable Slo reads in headless and o
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SLO_OAUTH_TIMEOUT_SECONDS` | `60` | OAuth callback timeout (interactive auth only). |
+| `SLO_OAUTH_TIMEOUT_SECONDS` | `60` | OAuth callback timeout (loopback callback deadline; the attempt deadline is SLO_OAUTH_MANUAL_TIMEOUT_SECONDS). |
+| `SLO_OAUTH_MANUAL_TIMEOUT_SECONDS` | `900` | Whole browser-authorization attempt deadline, including a pasted manual response. |
+| `SLO_OAUTH_DEVICE_TIMEOUT_SECONDS` | `900` | Slo-owned OpenAI device-authorization attempt deadline. |
 
 ---
 

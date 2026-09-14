@@ -642,7 +642,14 @@ SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed H
 `LLMFactory.create` calls `CredentialResolver.require(provider=...)` once per build.
 The first-run / sign-in UI lives in `src/tui/authentication/`. `SloTUI.on_mount` pushes
 `AuthenticationScreen` when `CredentialResolver.resolve` returns `None` for the active
-model's provider. Users re-open the modal with `/auth`.
+model's provider. Users re-open the modal with `/auth`. Subscription OAuth declares interaction capability through
+`OAuthLoginMethod` (`BROWSER_AUTHORIZATION` / `DEVICE_AUTHORIZATION`):
+`DeviceAuthorizationFlow` owns generic device polling while `OAuthFlow` owns browser/manual
+handoff. `OAuthFlowFactory.for_provider` is the five-parameter factory seam
+(`provider`, `login_method`, browser/device presentation callbacks, and optional authorization-response
+receiver), and the modal injects faux flows through it in tests. The callback, browser/manual attempt,
+and device attempt deadlines are configured by `SLO_OAUTH_TIMEOUT_SECONDS`,
+`SLO_OAUTH_MANUAL_TIMEOUT_SECONDS`, and `SLO_OAUTH_DEVICE_TIMEOUT_SECONDS` respectively.
 
 ### Kimi For Coding
 

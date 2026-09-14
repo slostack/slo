@@ -9,7 +9,13 @@ import pytest
 from pydantic import ValidationError
 
 from src.auth.credential_dao import AuthType, ProviderName
-from src.auth.oauth_provider import CallbackBind, FauxOAuthProvider
+from src.auth.oauth_errors import OAuthDeviceAuthorizationUnsupportedError
+from src.auth.oauth_provider import (
+    CallbackBind,
+    DeviceAuthorizationDAO,
+    FauxOAuthProvider,
+    OAuthLoginMethod,
+)
 
 
 class TestAuthorizationUrl:
@@ -59,6 +65,31 @@ class _ExtrasProvider(FauxOAuthProvider):
             dict[str, str]: The dict supplied at construction time.
         """
         return self._extras
+
+
+class TestDeviceAuthorizationCapabilities:
+    """Base OAuth providers preserve browser-only behavior until they opt in."""
+
+    async def test_default_provider_rejects_device_authorization(self) -> None:
+        """Base device hooks reject instead of attempting a vendor request."""
+        provider: FauxOAuthProvider = FauxOAuthProvider(provider=ProviderName.ANTHROPIC)
+        device_authorization: DeviceAuthorizationDAO = DeviceAuthorizationDAO(
+            device_code="test-device-code",
+            user_code="ABCD-EFGH",
+            verification_uri="https://example.test/device",
+            expires_in_seconds=30,
+        )
+
+        with pytest.raises(OAuthDeviceAuthorizationUnsupportedError):
+            await provider.start_device_authorization()
+        with pytest.raises(OAuthDeviceAuthorizationUnsupportedError):
+            await provider.poll_device_authorization(device_authorization=device_authorization)
+
+    def test_supported_login_methods_preserves_browser_default(self) -> None:
+        """Providers that do not opt in retain browser authorization only."""
+        provider: FauxOAuthProvider = FauxOAuthProvider()
+
+        assert provider.supported_login_methods() == frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION})
 
 
 class TestDefaultHookValues:

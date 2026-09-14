@@ -1,71 +1,155 @@
-"""OAuth in-flight status widget (02.b.5)."""
+"""OAuth authorization instruction and status widget."""
 
 from __future__ import annotations
 
-from typing import Optional
-
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Button, Static
+from textual.widgets import Button, Input, Static
 
 from src.auth.credential_dao import ProviderName
+from src.auth.oauth_flow import AuthorizationPresentationDAO
+from src.auth.oauth_provider import DeviceAuthorizationPresentationDAO, OAuthLoginMethod
 
-__all__ = ["OAuthStatusWidget"]
+__all__ = ["AuthorizationResponseSubmitted", "OAuthStatusWidget"]
+
+
+class AuthorizationResponseSubmitted(Message):
+    """Carry one opaque pasted browser authorization response to the screen.
+
+    WHAT: Delivers user text without parsing or logging it.
+    WHO: OAuthStatusWidget posts it; AuthenticationScreen owns validation below.
+    WHEN: Only while a browser authorization flow is waiting.
+    """
+
+    def __init__(self, *, authorization_response: str) -> None:
+        """Store an opaque response only long enough for message delivery.
+
+        Args:
+            authorization_response (str): Untouched user-submitted browser response.
+        """
+        self.authorization_response: str = authorization_response
+        super().__init__()
 
 
 class OAuthStatusWidget(Vertical):
-    """Show the auth URL and wait for the OAuth task to finish."""
+    """Render typed browser/device instructions and emit user intent only."""
 
     class BackRequested(Message):
-        """Posted when the user clicks Back (after an error)."""
+        """Posted when the user clicks Back."""
 
     class Cancelled(Message):
         """Posted when the user clicks Cancel."""
 
-    def __init__(self, *, provider: ProviderName, auth_url: Optional[str] = None) -> None:
-        """Initial state: URL pending until the flow yields it.
+    def __init__(self, *, provider: ProviderName, login_method: OAuthLoginMethod) -> None:
+        """Initialize one selected authorization interaction.
 
         Args:
-            provider (ProviderName): For the title.
-            auth_url (Optional[str]): Pre-rendered URL. Set later via
-                ``set_auth_url`` if not known at construct time.
+            provider (ProviderName): Provider named in the title.
+            login_method (OAuthLoginMethod): Determines browser input availability.
         """
         super().__init__()
         self._provider: ProviderName = provider
-        self._initial_url: Optional[str] = auth_url
+        self._login_method: OAuthLoginMethod = login_method
 
     def compose(self) -> ComposeResult:
-        """Render the URL banner, status line, error region, controls."""
+        """Render neutral placeholders, error region, and persistent controls."""
         yield Static(
-            f"Sign in to {self._provider.value} in your browser…",
+            f"Sign in to {self._provider.value}",
             classes="auth-title",
         )
-        yield Static(self._initial_url or "(opening browser…)", id="oauth-url")
-        yield Static("Waiting for callback…", id="oauth-status")
+        yield Static("Preparing sign-in instructions…", id="oauth-instruction", classes="auth-instruction")
+        yield Static("", id="oauth-url", classes="auth-url", markup=False)
+        yield Static("", id="oauth-url-warning", classes="auth-instruction")
+        yield Static("", id="oauth-redirect-instruction", classes="auth-instruction")
+        yield Static("", id="oauth-redirect", classes="auth-redirect", markup=False)
+        yield Static("", id="oauth-response-instruction", classes="auth-instruction")
+        with Horizontal(id="oauth-response-row"):
+            yield Input(placeholder="Paste authorization response", id="oauth-response-input")
+            yield Button(
+                label="Submit response",
+                id="oauth-submit-response",
+                variant="primary",
+                disabled=self._login_method is OAuthLoginMethod.DEVICE_AUTHORIZATION,
+            )
+        yield Static("", id="oauth-status", classes="auth-instruction")
         yield Static("", id="oauth-error", classes="auth-error")
-        yield Button(label="Back", id="oauth-back")
-        yield Button(label="Cancel", id="oauth-cancel")
+        with Horizontal(classes="auth-actions"):
+            yield Button(label="Back", id="oauth-back")
+            yield Button(label="Cancel", id="oauth-cancel")
 
-    def set_auth_url(self, *, url: str) -> None:
-        """Update the URL banner after the flow renders the URL.
+    def on_mount(self) -> None:
+        """Configure browser response controls for the selected interaction."""
+        if self._login_method is OAuthLoginMethod.DEVICE_AUTHORIZATION:
+            self._set_browser_response_visibility(display=False)
+
+    def set_browser_presentation(self, presentation: AuthorizationPresentationDAO) -> None:
+        """Render browser URL, exact redirect URI, and opaque-response instructions.
 
         Args:
-            url (str): The fully assembled authorisation URL.
+            presentation (AuthorizationPresentationDAO): Typed browser instructions from OAuthFlow.
         """
-        self.query_one("#oauth-url", Static).update(url)
+        self.query_one("#oauth-instruction", Static).update("Open this URL in any browser")
+        self.query_one("#oauth-url", Static).update(presentation.authorize_url)
+        self.query_one("#oauth-url-warning", Static).update(
+            "This link signs in to your account — treat it like a password."
+        )
+        self.query_one("#oauth-redirect-instruction", Static).update("Slo expects this redirect URI")
+        self.query_one("#oauth-redirect", Static).update(presentation.redirect_uri)
+        self.query_one("#oauth-response-instruction", Static).update(
+            "After approval, paste what the provider gives you here — the code it displays, "
+            "or the full redirect URL"
+        )
+        self.query_one("#oauth-status", Static).update("Waiting for approval…")
+        self._set_browser_response_visibility(display=True)
+
+    def set_device_presentation(self, presentation: DeviceAuthorizationPresentationDAO) -> None:
+        """Render a device verification URL, selectable user code, and passive status.
+
+        Args:
+            presentation (DeviceAuthorizationPresentationDAO): Safe device instructions.
+        """
+        self.query_one("#oauth-instruction", Static).update("Open this verification URL in any browser")
+        url: Static = self.query_one("#oauth-url", Static)
+        url.update(presentation.verification_uri)
+        url.add_class("auth-url")
+        self.query_one("#oauth-url-warning", Static).update("")
+        self.query_one("#oauth-redirect-instruction", Static).update("Enter this code")
+        code: Static = self.query_one("#oauth-redirect", Static)
+        code.update(presentation.user_code)
+        code.remove_class("auth-redirect")
+        code.add_class("auth-device-code")
+        self.query_one("#oauth-response-instruction", Static).update(
+            f"Code expires in {presentation.expires_in_seconds} seconds."
+        )
+        self.query_one("#oauth-status", Static).update("Waiting for approval…")
+        self._set_browser_response_visibility(display=False)
+
+    def set_waiting_for_approval(self) -> None:
+        """Update passive device or browser progress copy without changing controls."""
+        self.query_one("#oauth-status", Static).update("Waiting for approval…")
+
+    def set_callback_unavailable(self) -> None:
+        """Downgrade a browser callback timeout while preserving manual input."""
+        self.query_one("#oauth-status", Static).update(
+            "Local browser did not respond. Paste your authorization response below."
+        )
+
+    def set_response_already_submitted(self) -> None:
+        """Tell the user a one-attempt response queue already contains a value."""
+        self.query_one("#oauth-status", Static).update("Response already submitted; waiting for provider")
 
     def set_error(self, *, message: str) -> None:
-        """Surface an OAuth failure inline so the user can hit Back.
+        """Surface a static OAuth failure inline so the user can hit Back.
 
         Args:
-            message (str): User-facing failure description.
+            message (str): User-facing safe failure description.
         """
         self.query_one("#oauth-error", Static).update(message)
         self.query_one("#oauth-status", Static).update("Sign-in failed.")
 
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Translate Back / Cancel into messages.
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Translate controls into typed messages or a response submission.
 
         Args:
             event (Button.Pressed): Textual button-press event.
@@ -75,3 +159,21 @@ class OAuthStatusWidget(Vertical):
             return
         if event.button.id == "oauth-cancel":
             self.post_message(self.Cancelled())
+            return
+        if event.button.id == "oauth-submit-response":
+            self._submit_authorization_response()
+
+    def _submit_authorization_response(self) -> None:
+        """Post then immediately clear one opaque pasted response."""
+        response_input: Input = self.query_one("#oauth-response-input", Input)
+        authorization_response: str = response_input.value
+        response_input.value = ""
+        self.post_message(AuthorizationResponseSubmitted(authorization_response=authorization_response))
+
+    def _set_browser_response_visibility(self, *, display: bool) -> None:
+        """Show or hide only controls irrelevant to device authorization."""
+        self.query_one("#oauth-response-instruction").display = display
+        self.query_one("#oauth-response-row").display = display
+        for widget_id in ("#oauth-response-input", "#oauth-submit-response"):
+            self.query_one(widget_id).display = display
+        self.query_one("#oauth-submit-response", Button).disabled = not display

@@ -1,162 +1,293 @@
-"""``OAuthFlow``: provider-agnostic PKCE orchestrator (02.b.3).
-
-Extended by 06.a (codex-oauth-redirect-uri-fix): ``_CallbackServer``
-accepts an optional ``CallbackBind`` from the provider; the ephemeral
-``127.0.0.1:0`` shape remains the default for providers that do not
-override ``OAuthProvider.callback_bind``.
-"""
+"""Provider-agnostic browser OAuth orchestration and manual-response parsing."""
 
 from __future__ import annotations
 
 import asyncio
 import errno
+import time
 import webbrowser
+from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Callable, Optional, cast
+from typing import Any, Awaitable, Callable, Optional, cast
+from urllib.parse import parse_qs, urlsplit
 
 from aiohttp import web
+from pydantic import BaseModel, ConfigDict
 
 from config.cfg import cfg
 from config.logger import log_info
 from src.auth.credential_dao import CredentialDAO
-from src.auth.oauth_errors import (
-    OAuthCallbackPortInUseError,
-    OAuthStateError,
-    OAuthTimeoutError,
-    OAuthTokenError,
-)
+from src.auth.oauth_errors import OAuthCallbackPortInUseError, OAuthStateError, OAuthTimeoutError
 from src.auth.oauth_provider import CallbackBind, OAuthProvider
-from src.auth.pkce import (
-    code_challenge_s256,
-    generate_code_verifier,
-    generate_state,
-)
+from src.auth.pkce import code_challenge_s256, generate_code_verifier
 
-__all__ = ["OAuthFlow"]
+__all__ = [
+    "AuthorizationCodeDAO",
+    "AuthorizationPresentationDAO",
+    "AuthorizationResponseParser",
+    "OAuthFlow",
+]
 
 _DEFAULT_HOST: str = "127.0.0.1"
 _DEFAULT_CALLBACK_PATH: str = "/callback"
 _DEFAULT_TIMEOUT_SECONDS: int = 60
+_DEFAULT_MANUAL_TIMEOUT_SECONDS: int = 900
+
+
+class AuthorizationPresentationDAO(BaseModel):
+    """Instructions published before Slo attempts to open a browser."""
+
+    model_config = ConfigDict(frozen=True)
+
+    authorize_url: str
+    redirect_uri: str
+    instructions: str
+
+
+@dataclass(frozen=True)
+class AuthorizationCodeDAO:
+    """One validated code held only until the token exchange completes."""
+
+    code: str
+
+
+class AuthorizationResponseParser:
+    """Parse one opaque browser response without retaining its raw value."""
+
+    @classmethod
+    def parse(cls, *, authorization_response: str, expected_state: str) -> AuthorizationCodeDAO:
+        """Validate one pasted redirect, code/state pair, query string, or bare code.
+
+        WHO: OAuthFlow calls this only for its UI-owned response receiver.
+        WHEN: A user has explicitly submitted one authorization response.
+
+        Raises:
+            OAuthStateError: A supplied state does not match this PKCE attempt.
+            ValueError: The response does not contain a usable authorization code.
+        """
+        response: str = authorization_response.strip()
+        code, supplied_state = cls._parse_response(response=response)
+        cls._validate_state(expected_state=expected_state, supplied_state=supplied_state)
+        return AuthorizationCodeDAO(code=code)
+
+    @classmethod
+    def _parse_response(cls, *, response: str) -> tuple[str, str | None]:
+        """Choose the documented response shape in its precedence order."""
+        if not response:
+            raise ValueError("Authorization response is invalid.")
+        if "://" in response:
+            return cls._parse_query(query=urlsplit(response).query)
+        if "#" in response and "=" not in response:
+            code, supplied_state = response.split("#", maxsplit=1)
+            return cls._validate_code(code=code), supplied_state or None
+        if response.startswith("code=") or "&code=" in response:
+            return cls._parse_query(query=response.lstrip("?"))
+        return cls._validate_code(code=response), None
+
+    @classmethod
+    def _parse_query(cls, *, query: str) -> tuple[str, str | None]:
+        """Extract a code and optional state from a URL or query string."""
+        values: dict[str, list[str]] = parse_qs(qs=query, keep_blank_values=True)
+        code_values: list[str] = values.get("code", [])
+        code: str = code_values[0] if code_values else ""
+        state_values: list[str] = values.get("state", [])
+        supplied_state: str | None = state_values[0] if state_values else None
+        return cls._validate_code(code=code), supplied_state
+
+    @classmethod
+    def _validate_code(cls, *, code: str) -> str:
+        """Reject an absent response code with fixed, non-secret copy."""
+        if code:
+            return code
+        raise ValueError("Authorization response is invalid.")
+
+    @classmethod
+    def _validate_state(cls, *, expected_state: str, supplied_state: str | None) -> None:
+        """Check state only when the user response actually carried one."""
+        if supplied_state is None or supplied_state == expected_state:
+            return
+        raise OAuthStateError()
 
 
 class OAuthFlow:
-    """Run one PKCE OAuth flow end-to-end against any ``OAuthProvider``.
-
-    Constructed by the modal (02.b.5) per attempt and discarded after
-    ``start`` returns or raises. Holds no long-lived state.
-    """
+    """Run one PKCE browser OAuth attempt against one provider."""
 
     def __init__(
         self,
         *,
         provider: OAuthProvider,
-        timeout_seconds: Optional[int] = None,
+        present_authorization: Callable[[AuthorizationPresentationDAO], None],
+        present_callback_unavailable: Callable[[], None] = lambda: None,
+        authorization_response_receiver: Callable[[], Awaitable[str]] | None = None,
+        timeout_seconds: int | None = None,
+        manual_timeout_seconds: int | None = None,
         webbrowser_open: Callable[[str], bool] = webbrowser.open,
     ) -> None:
-        """Inject the provider and optional overrides for tests.
+        """Store presentation, callback, and browser seams for one attempt.
+
+        WHAT: Captures one attempt's provider, presentation sinks, and response channels.
+        WHO: OAuthFlowFactory constructs this after browser authorization is selected.
+        WHEN: Once per authentication attempt; no values survive invocation.
 
         Args:
-            provider (OAuthProvider): Provider with endpoint specifics.
-            timeout_seconds (Optional[int]): Callback wait. Defaults to
-                ``cfg("SLO_OAUTH_TIMEOUT_SECONDS")``.
-            webbrowser_open (Callable[[str], bool]): Injected for tests
-                so URLs can be recorded without a real browser.
+            provider (OAuthProvider): Provider that owns authorization and token exchange.
+            present_authorization (Callable[[AuthorizationPresentationDAO], None]): Browser instruction sink.
+            present_callback_unavailable (Callable[[], None], optional): Callback-deadline status sink.
+                Defaults to a no-op.
+            authorization_response_receiver (Callable[[], Awaitable[str]] | None, optional):
+                Optional manual browser response receiver. Defaults to None.
+            timeout_seconds (int | None, optional): Local callback deadline. Defaults to None.
+            manual_timeout_seconds (int | None, optional): Whole-attempt manual deadline. Defaults to None.
+            webbrowser_open (Callable[[str], bool], optional): Best-effort browser opener. Defaults to webbrowser.open.
         """
         self._provider: OAuthProvider = provider
+        self._present_authorization: Callable[[AuthorizationPresentationDAO], None] = present_authorization
+        self._present_callback_unavailable: Callable[[], None] = present_callback_unavailable
+        self._response_receiver: Callable[[], Awaitable[str]] | None = authorization_response_receiver
         self._timeout: int = timeout_seconds or int(
             cfg(key="SLO_OAUTH_TIMEOUT_SECONDS") or _DEFAULT_TIMEOUT_SECONDS
         )
+        self._manual_timeout: int = manual_timeout_seconds or int(
+            cfg(key="SLO_OAUTH_MANUAL_TIMEOUT_SECONDS") or _DEFAULT_MANUAL_TIMEOUT_SECONDS
+        )
         self._open: Callable[[str], bool] = webbrowser_open
 
-    async def start(self) -> CredentialDAO:
-        """Run the PKCE flow and return a populated ``CredentialDAO``.
+    async def invoke(self) -> CredentialDAO:
+        """Present, attempt browser opening, receive a code, and exchange it.
 
-        Reads ``provider.callback_bind`` once and hands it to the
-        callback server. When the provider returns ``None`` the server
-        binds an ephemeral port (the 02.b.3 default); otherwise it binds
-        the fixed host/port/path the provider declares.
-
-        Returns:
-            CredentialDAO: ``auth_type=OAUTH`` populated by
-                ``provider.parse_token_response``.
-
-        Raises:
-            OAuthCallbackPortInUseError: Fixed-port bind hit EADDRINUSE.
-            OAuthTimeoutError: User did not complete sign-in in time.
-            OAuthStateError: Callback state mismatch.
-            OAuthTokenError: Token endpoint returned non-2xx.
+        WHO: AuthenticationScreen invokes the selected interaction.
+        WHEN: After it has created the optional one-attempt response queue.
         """
         verifier: str = generate_code_verifier()
         challenge: str = code_challenge_s256(verifier=verifier)
         state: str = self._provider.authorization_state(verifier=verifier)
-        bind: Optional[CallbackBind] = self._provider.callback_bind
-        async with _CallbackServer(timeout=self._timeout, bind=bind) as server:
-            auth_url: str = self._provider.authorization_url(
-                code_challenge=challenge,
+        bind: CallbackBind | None = self._provider.callback_bind
+        async with _CallbackServer(
+            timeout=self._timeout,
+            bind=bind,
+            provider_name=self._provider.provider_name.value,
+        ) as server:
+            presentation: AuthorizationPresentationDAO = self._build_presentation(
+                challenge=challenge,
                 state=state,
                 redirect_uri=server.redirect_uri,
             )
-            log_info(msg=f"OAuthFlow.start opening {self._provider.provider_name.value}")
-            self._open(auth_url)
-            code: str = await server.wait_for_code(expected_state=state)
+            self._present_authorization(presentation)
+            self._attempt_browser_open(authorize_url=presentation.authorize_url)
+            authorization_code: AuthorizationCodeDAO = await self._receive_authorization_code(
+                expected_state=state,
+                callback_server=server,
+                attempt_deadline_seconds=self._manual_timeout,
+            )
+            redirect_uri: str = server.redirect_uri
         return await self._provider.exchange_code(
-            code=code,
+            code=authorization_code.code,
             verifier=verifier,
             state=state,
-            redirect_uri=server.redirect_uri,
+            redirect_uri=redirect_uri,
         )
+
+    def _build_presentation(
+        self,
+        *,
+        challenge: str,
+        state: str,
+        redirect_uri: str,
+    ) -> AuthorizationPresentationDAO:
+        """Build the complete browser instruction before attempting local opening."""
+        return AuthorizationPresentationDAO(
+            authorize_url=self._provider.authorization_url(
+                code_challenge=challenge,
+                state=state,
+                redirect_uri=redirect_uri,
+            ),
+            redirect_uri=redirect_uri,
+            instructions="Open this URL in any browser, then paste the displayed code or final redirect.",
+        )
+
+    def _attempt_browser_open(self, *, authorize_url: str) -> None:
+        """Best-effort open the local browser without exposing an authorization URL."""
+        try:
+            self._open(authorize_url)
+        except Exception:
+            log_info(msg=f"OAuthFlow browser unavailable for {self._provider.provider_name.value}")
+
+    async def _receive_authorization_code(
+        self,
+        *,
+        expected_state: str,
+        callback_server: "_CallbackServer",
+        attempt_deadline_seconds: int,
+    ) -> AuthorizationCodeDAO:
+        """Race callback and optional pasted response until one validated code arrives."""
+        callback_task: asyncio.Task[str] = asyncio.create_task(
+            callback_server.wait_for_code(expected_state=expected_state)
+        )
+        tasks: set[asyncio.Task[str]] = {callback_task}
+        if self._response_receiver is not None:
+            tasks.add(asyncio.ensure_future(self._response_receiver()))
+        deadline: float = time.monotonic() + attempt_deadline_seconds
+        try:
+            while tasks:
+                remaining_seconds: float = deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    raise OAuthTimeoutError(kind="attempt")
+                done, _pending = await asyncio.wait(
+                    tasks,
+                    timeout=remaining_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    raise OAuthTimeoutError(kind="attempt")
+                for task in done:
+                    tasks.remove(task)
+                    try:
+                        value: str = task.result()
+                    except OAuthTimeoutError as error:
+                        if task is callback_task and self._response_receiver is not None:
+                            self._set_callback_unavailable()
+                            continue
+                        raise error
+                    if task is callback_task:
+                        return AuthorizationCodeDAO(code=value)
+                    return AuthorizationResponseParser.parse(
+                        authorization_response=value,
+                        expected_state=expected_state,
+                    )
+            raise OAuthTimeoutError(kind="attempt")
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _set_callback_unavailable(self) -> None:
+        """Publish the browser callback-deadline downgrade through its explicit UI sink.
+
+        WHAT: Tells the presentation layer that manual response input remains available.
+        WHO: _receive_authorization_code calls this after only the loopback deadline lapses.
+        WHEN: A browser attempt has an active manual receiver and no local callback response.
+        """
+        self._present_callback_unavailable()
 
 
 class _CallbackServer:
-    """One-shot localhost HTTP server for the OAuth redirect.
-
-    Constructed without a ``bind``, this binds an ephemeral port on
-    ``127.0.0.1`` at path ``/callback`` — the original 02.b.3 shape used
-    by Anthropic and Faux. Constructed with a ``CallbackBind``, it binds
-    the configured host/port/path and advertises the bind's pre-computed
-    ``redirect_uri`` string, which is allowed to differ from what the
-    socket itself reports (for example, ``localhost`` advertised while
-    the socket binds ``127.0.0.1`` — the Codex case in 06.a).
-    """
+    """One-shot localhost HTTP server for the OAuth redirect."""
 
     def __init__(
-        self,
-        *,
-        timeout: int,
-        bind: Optional[CallbackBind] = None,
+        self, *, timeout: int, bind: CallbackBind | None = None, provider_name: str = "oauth"
     ) -> None:
-        """Cache the timeout and optional bind; defer bind to ``__aenter__``.
-
-        Args:
-            timeout (int): Seconds before ``wait_for_code`` raises.
-            bind (CallbackBind, optional): Fixed-port bind config. When
-                ``None``, defaults to ephemeral ``127.0.0.1:/callback``.
-                Defaults to None.
-        """
+        """Cache listener configuration until asynchronous binding starts."""
         self._timeout: int = timeout
-        self._bind: Optional[CallbackBind] = bind
-        self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
-        self._port: Optional[int] = None
-        self._code_future: Optional[asyncio.Future[tuple[str, str]]] = None
+        self._bind: CallbackBind | None = bind
+        self._provider_name: str = provider_name
+        self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
+        self._port: int | None = None
+        self._code_future: asyncio.Future[tuple[str, str]] | None = None
 
     @property
     def redirect_uri(self) -> str:
-        """Return the redirect URI the running flow should advertise.
-
-        For a fixed-port bind, returns the bind's pre-computed URI —
-        which may use a different hostname than what the socket is
-        bound to. For an ephemeral bind, returns
-        ``http://127.0.0.1:<port>/callback`` once the socket is bound.
-
-        Returns:
-            str: The redirect URI to advertise.
-
-        Raises:
-            RuntimeError: ``redirect_uri`` read before ``__aenter__``
-                on the ephemeral path (the fixed-bind path can be read
-                pre-bind because the URI is pre-computed).
-        """
+        """Return the provider callback URI after the listener has bound."""
         if self._bind is not None:
             return self._bind.redirect_uri
         if self._port is None:
@@ -164,16 +295,7 @@ class _CallbackServer:
         return f"http://{_DEFAULT_HOST}:{self._port}{_DEFAULT_CALLBACK_PATH}"
 
     async def __aenter__(self) -> "_CallbackServer":
-        """Bind the configured (or default) host/port/path and serve one route.
-
-        Returns:
-            _CallbackServer: ``self``, after the socket is bound.
-
-        Raises:
-            OAuthCallbackPortInUseError: Fixed-port bind hit
-                ``EADDRINUSE``. Only raised when a ``CallbackBind`` is
-                supplied; ephemeral binds cannot collide.
-        """
+        """Bind the one callback route and record only a safe lifecycle log."""
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         self._code_future = loop.create_future()
         host: str = self._bind.host if self._bind is not None else _DEFAULT_HOST
@@ -186,27 +308,15 @@ class _CallbackServer:
         self._site = web.TCPSite(runner=self._runner, host=host, port=port)
         await self._start_site_or_translate_bind_error()
         self._port = self._read_bound_port()
-        log_info(msg=f"_CallbackServer bound {host}:{self._port}{path}")
+        log_info(msg=f"OAuthFlow callback server ready for {self._provider_name}")
         return self
 
     async def _start_site_or_translate_bind_error(self) -> None:
-        """Start the ``TCPSite`` and translate fixed-port ``EADDRINUSE``.
-
-        Cleans up the runner before re-raising so a failed bind never
-        leaks an active ``AppRunner``. ``EADDRINUSE`` is translated to
-        ``OAuthCallbackPortInUseError`` only when a fixed ``bind`` is in
-        play — ephemeral binds cannot fail this way.
-
-        Raises:
-            OAuthCallbackPortInUseError: Fixed-port bind hit
-                ``EADDRINUSE``.
-            OSError: Any other socket bind failure, after runner cleanup.
-        """
+        """Translate only fixed-port collisions while cleaning up failed binds."""
         assert self._site is not None
         assert self._runner is not None
         try:
             await self._site.start()
-            return
         except OSError as exc:
             await self._runner.cleanup()
             if self._bind is not None and exc.errno == errno.EADDRINUSE:
@@ -214,18 +324,9 @@ class _CallbackServer:
             raise
 
     def _read_bound_port(self) -> int:
-        """Inspect the running site for the OS-picked port.
-
-        Returns:
-            int: The TCP port the OS bound for ``127.0.0.1:0``.
-
-        Raises:
-            RuntimeError: If the site is not yet started.
-        """
+        """Read the OS-assigned ephemeral port from the active aiohttp server."""
         if self._site is None:
             raise RuntimeError("_CallbackServer._read_bound_port called before start.")
-        # ``_server`` and ``sockets`` are aiohttp private API; the cast +
-        # Any annotation keeps mypy quiet without lying about the type.
         server: Any = self._site._server  # type: ignore[attr-defined]
         sockets: list[Any] = cast(list[Any], getattr(server, "sockets", []) or [])
         if server is None or not sockets:
@@ -234,65 +335,33 @@ class _CallbackServer:
 
     async def __aexit__(
         self,
-        exc_type: Optional[type[BaseException]],
-        exc: Optional[BaseException],
-        tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
     ) -> None:
-        """Tear down the runner; cancel any in-flight handler.
-
-        Args:
-            exc_type (Optional[type[BaseException]]): Exception class, if any.
-            exc (Optional[BaseException]): Exception instance, if any.
-            tb (Optional[TracebackType]): Traceback, if any.
-        """
+        """Close the listener before any token exchange can begin."""
         if self._runner is not None:
             await self._runner.cleanup()
 
     async def wait_for_code(self, *, expected_state: str) -> str:
-        """Block until the callback arrives or the timeout fires.
-
-        Args:
-            expected_state (str): State we sent in the auth URL.
-
-        Returns:
-            str: The ``code`` query parameter from the redirect.
-
-        Raises:
-            OAuthTimeoutError: Timeout elapsed first.
-            OAuthStateError: Callback ``state`` did not match.
-        """
+        """Wait for a local callback and validate its mandatory state value."""
         if self._code_future is None:
             raise RuntimeError("_CallbackServer.wait_for_code called before bind.")
         try:
-            received: tuple[str, str] = await asyncio.wait_for(
-                self._code_future,
-                timeout=self._timeout,
-            )
+            code, state = await asyncio.wait_for(self._code_future, timeout=self._timeout)
         except asyncio.TimeoutError as exc:
             raise OAuthTimeoutError() from exc
-        code, state = received
         if state != expected_state:
-            raise OAuthStateError(expected=expected_state, got=state)
+            raise OAuthStateError()
         return code
 
     async def _handle_callback(self, request: web.Request) -> web.Response:
-        """Capture (code, state) and render the user-facing success page.
-
-        Args:
-            request (web.Request): The incoming redirect.
-
-        Returns:
-            web.Response: Plain HTML telling the user to close the tab.
-        """
+        """Capture callback fields in memory and send the browser success page."""
         code: str = request.query.get("code", "")
         state: str = request.query.get("state", "")
         if self._code_future is not None and not self._code_future.done():
             self._code_future.set_result((code, state))
         return web.Response(
-            text=(
-                "<html><body style='font-family:monospace;padding:2em'>"
-                "<h2>Signed in.</h2><p>You may close this tab.</p>"
-                "</body></html>"
-            ),
+            text="<html><body><h2>Signed in.</h2><p>You may close this tab.</p></body></html>",
             content_type="text/html",
         )

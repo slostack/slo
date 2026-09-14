@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Callable, Optional, Protocol
+from typing import Awaitable, Callable, Optional, cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -21,33 +21,27 @@ from src.auth.credential_dao import (
 from src.auth.credential_store import CredentialStore
 from src.auth.oauth_errors import (
     OAuthCallbackPortInUseError,
+    OAuthDeviceAuthorizationDeniedError,
+    OAuthDeviceAuthorizationExpiredError,
+    OAuthDeviceAuthorizationProtocolError,
+    OAuthDeviceAuthorizationUnsupportedError,
     OAuthStateError,
     OAuthTimeoutError,
     OAuthTokenError,
 )
-from src.auth.oauth_flow import OAuthFlow
-from src.auth.provider_factory import OAuthFlowFactory
+from src.auth.oauth_provider import OAuthLoginMethod
+from src.auth.provider_factory import OAuthAuthenticationFlow, OAuthFactory, OAuthFlowFactory
 from src.tui.authentication.auth_state import ScreenState
 from src.tui.authentication.widgets.api_key_input import ApiKeyInputWidget
 from src.tui.authentication.widgets.method_select import MethodSelectWidget
-from src.tui.authentication.widgets.oauth_status import OAuthStatusWidget
+from src.tui.authentication.widgets.oauth_status import (
+    AuthorizationResponseSubmitted,
+    OAuthStatusWidget,
+)
 from src.tui.authentication.widgets.provider_select import ProviderSelectWidget
 from src.tui.authentication.widgets.success_widget import SuccessWidget
 
 __all__ = ["AuthenticationScreen", "OAuthFactory"]
-
-
-class OAuthFactory(Protocol):
-    """Builds a fresh ``OAuthFlow`` for a given provider.
-
-    The Protocol shape forces keyword-only calls at the call site so
-    ``self._oauth_factory(provider=provider)`` is the only valid form,
-    matching the named-arguments convention.
-    """
-
-    def __call__(self, *, provider: ProviderName) -> OAuthFlow:
-        """Return a fresh ``OAuthFlow`` wired for ``provider``."""
-        ...
 
 
 class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
@@ -83,26 +77,14 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         """
         super().__init__()
         self._store: CredentialStore = store or CredentialStore()
-        self._oauth_factory: OAuthFactory = oauth_factory or self._default_oauth_factory
+        self._oauth_factory: OAuthFactory = oauth_factory or cast(OAuthFactory, OAuthFlowFactory)
         self._state: ScreenState = ScreenState.PROVIDER
         self._chosen_provider: Optional[ProviderName] = None
+        self._active_login_methods: frozenset[OAuthLoginMethod] = frozenset()
+        self._active_oauth_login_method: OAuthLoginMethod | None = None
+        self._authorization_response_queue: asyncio.Queue[str] | None = None
         self._oauth_task: Optional[asyncio.Task[CredentialDAO]] = None
         self._body: Optional[Vertical] = None
-
-    @staticmethod
-    def _default_oauth_factory(*, provider: ProviderName) -> OAuthFlow:
-        """Build a production ``OAuthFlow`` for ``provider``.
-
-        Used as the default for the ``oauth_factory`` constructor argument
-        so the type is explicit and callable without a lambda.
-
-        Args:
-            provider (ProviderName): The provider to wire the flow for.
-
-        Returns:
-            OAuthFlow: A fresh flow obtained from ``OAuthFlowFactory``.
-        """
-        return OAuthFlowFactory.for_provider(provider=provider)
 
     def compose(self) -> ComposeResult:
         """Mount the initial ``ProviderSelectWidget`` inside a body container."""
@@ -113,6 +95,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
     async def action_cancel(self) -> None:
         """Dismiss with ``None``; cancel the OAuth task if it is in flight."""
         await self._cancel_oauth_if_running()
+        self._discard_authorization_response_queue()
         self.dismiss(None)
 
     # ---- Provider-select handlers ----
@@ -131,7 +114,13 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
             await self._swap_step(widget=ApiKeyInputWidget(provider=event.provider))
             self._state = ScreenState.API_KEY
             return
-        await self._swap_step(widget=MethodSelectWidget(provider=event.provider))
+        self._active_login_methods = self._login_methods_for(provider=event.provider)
+        await self._swap_step(
+            widget=MethodSelectWidget(
+                provider=event.provider,
+                login_methods=self._active_login_methods,
+            )
+        )
         self._state = ScreenState.METHOD
 
     async def on_provider_select_widget_cancelled(self, event: ProviderSelectWidget.Cancelled) -> None:
@@ -147,11 +136,19 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
             event (MethodSelectWidget.Chosen): Carries ``method``.
         """
         assert self._chosen_provider is not None
-        if event.method is AuthType.OAUTH:
-            await self._begin_oauth(provider=self._chosen_provider)
+        if event.method is AuthType.API_KEY:
+            await self._swap_step(widget=ApiKeyInputWidget(provider=self._chosen_provider))
+            self._state = ScreenState.API_KEY
             return
-        await self._swap_step(widget=ApiKeyInputWidget(provider=self._chosen_provider))
-        self._state = ScreenState.API_KEY
+        assert isinstance(event.method, OAuthLoginMethod)
+        login_method: OAuthLoginMethod = event.method
+        self._active_oauth_login_method = login_method
+        asyncio.create_task(
+            self._begin_oauth(
+                provider=self._chosen_provider,
+                login_method=login_method,
+            )
+        )
 
     async def on_method_select_widget_back_requested(self, event: MethodSelectWidget.BackRequested) -> None:
         """Go back to provider selection."""
@@ -165,15 +162,27 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
     # ---- OAuth-status handlers ----
 
     async def on_oauth_status_widget_back_requested(self, event: OAuthStatusWidget.BackRequested) -> None:
-        """Cancel the in-flight OAuth task and re-show method-select."""
+        """Cancel the in-flight OAuth task and re-show cached method choices."""
         await self._cancel_oauth_if_running()
-        assert self._chosen_provider is not None
-        await self._swap_step(widget=MethodSelectWidget(provider=self._chosen_provider))
-        self._state = ScreenState.METHOD
+        self._discard_authorization_response_queue()
+        await self._show_method_select()
 
     async def on_oauth_status_widget_cancelled(self, event: OAuthStatusWidget.Cancelled) -> None:
         """Cancel from OAuth step."""
         await self.action_cancel()
+
+    async def on_authorization_response_submitted(self, event: AuthorizationResponseSubmitted) -> None:
+        """Put one opaque browser response into this attempt's queue.
+
+        Args:
+            event (AuthorizationResponseSubmitted): The unparsed, cleared-widget response.
+        """
+        if self._authorization_response_queue is None:
+            return
+        if not self._authorization_response_queue.empty():
+            self.query_one(OAuthStatusWidget).set_response_already_submitted()
+            return
+        self._authorization_response_queue.put_nowait(event.authorization_response)
 
     # ---- API-key handlers ----
 
@@ -205,8 +214,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
             await self._swap_step(widget=ProviderSelectWidget())
             self._state = ScreenState.PROVIDER
             return
-        await self._swap_step(widget=MethodSelectWidget(provider=self._chosen_provider))
-        self._state = ScreenState.METHOD
+        await self._show_method_select()
 
     async def on_api_key_input_widget_cancelled(self, event: ApiKeyInputWidget.Cancelled) -> None:
         """Cancel from API-key step."""
@@ -221,18 +229,60 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
 
     # ---- Internal helpers ----
 
-    async def _begin_oauth(self, *, provider: ProviderName) -> None:
-        """Swap to the status widget and spawn the OAuth task.
-
-        Args:
-            provider (ProviderName): The provider the user picked.
-        """
-        flow: OAuthFlow = self._oauth_factory(provider=provider)
-        status: OAuthStatusWidget = OAuthStatusWidget(provider=provider)
+    async def _begin_oauth(
+        self,
+        *,
+        provider: ProviderName,
+        login_method: OAuthLoginMethod,
+    ) -> None:
+        """Mount status UI and start one selected OAuth interaction."""
+        self._discard_authorization_response_queue()
+        status = OAuthStatusWidget(provider=provider, login_method=login_method)
         await self._swap_step(widget=status)
+        self._authorization_response_queue = (
+            asyncio.Queue() if login_method is OAuthLoginMethod.BROWSER_AUTHORIZATION else None
+        )
+        flow: OAuthAuthenticationFlow = self._oauth_factory(
+            provider=provider,
+            login_method=login_method,
+            present_browser_authorization=status.set_browser_presentation,
+            present_device_authorization=status.set_device_presentation,
+            authorization_response_receiver=self._authorization_response_receiver(),
+            present_callback_unavailable=status.set_callback_unavailable,
+        )
         self._state = ScreenState.OAUTH
-        self._oauth_task = asyncio.create_task(flow.start())
+        self._oauth_task = asyncio.create_task(flow.invoke())
         self._oauth_task.add_done_callback(self._on_oauth_done)
+
+    def _authorization_response_receiver(self) -> Callable[[], Awaitable[str]] | None:
+        """Return this browser attempt's receiver, or None for device authorization."""
+        if self._authorization_response_queue is None:
+            return None
+        return self._authorization_response_queue.get
+
+    def _login_methods_for(self, *, provider: ProviderName) -> frozenset[OAuthLoginMethod]:
+        """Resolve one provider's supported OAuth interactions, once.
+
+        The single capability read in the UI layer. Delegates to the provider's
+        ``supported_login_methods()`` through the factory's capability resolver;
+        the screen never infers capability from the provider name.
+        """
+        return self._oauth_factory.supported_login_methods(provider=provider)
+
+    async def _show_method_select(self) -> None:
+        """Re-render the cached capability list without re-reading the factory."""
+        assert self._chosen_provider is not None
+        await self._swap_step(
+            widget=MethodSelectWidget(
+                provider=self._chosen_provider,
+                login_methods=self._active_login_methods,
+            )
+        )
+        self._state = ScreenState.METHOD
+
+    def _discard_authorization_response_queue(self) -> None:
+        """Forget the current attempt's browser response channel."""
+        self._authorization_response_queue = None
 
     def _on_oauth_done(self, task: asyncio.Task[CredentialDAO]) -> None:
         """Done callback — persist on success, render error on failure.
@@ -241,31 +291,38 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
             task (asyncio.Task[CredentialDAO]): The completed OAuth task.
         """
         if task.cancelled():
+            self._discard_authorization_response_queue()
             return
         exc: Optional[BaseException] = task.exception()
         if exc is not None:
+            self._discard_authorization_response_queue()
             self._render_oauth_error(exc=exc)
             return
         cred: CredentialDAO = task.result()
+        self._discard_authorization_response_queue()
         self._store.persist(cred=cred)
         log_info(msg=f"AuthenticationScreen persisted oauth provider={cred.provider.value}")
         asyncio.create_task(self._swap_step(widget=SuccessWidget(subject=cred.subject)))
         self._state = ScreenState.SUCCESS
 
-    _ERROR_MESSAGES: dict[type[BaseException], Callable[[BaseException], str]] = {
-        OAuthTimeoutError: lambda exc: "Sign-in timed out. Use Back to retry.",
-        OAuthStateError: lambda exc: "Sign-in failed: state mismatch. Use Back to retry.",
+    _ERROR_MESSAGES: dict[type[BaseException], str] = {
+        OAuthStateError: "Sign-in failed: state mismatch. Use Back to retry.",
         OAuthCallbackPortInUseError: (
-            lambda exc: "Sign-in failed: Slo could not bind the local callback port. "
+            "Sign-in failed: Slo could not bind the local callback port. "
             "Another process may already be using it. Free the port and retry."
         ),
-        OAuthTokenError: lambda exc: f"Sign-in failed: {exc}",
+        OAuthDeviceAuthorizationUnsupportedError: (
+            "Device sign-in is not available for this provider. Use browser sign-in."
+        ),
+        OAuthDeviceAuthorizationExpiredError: "Device sign-in expired. Use Back to start a new attempt.",
+        OAuthDeviceAuthorizationDeniedError: "Device sign-in was denied. Use Back to retry.",
+        OAuthDeviceAuthorizationProtocolError: "Device sign-in failed. Use Back to retry.",
+        OAuthTokenError: "Sign-in failed. Use Back to retry.",
     }
-    """Lookup table replacing the OAuth-error isinstance chain.
+    """Lookup table mapping OAuth exception classes to fixed safe user-facing strings.
 
-    Each entry maps an exception class to a callable that produces the
-    user-facing message. Unknown exception types fall through to the
-    default branch in :meth:`_render_oauth_error`.
+    Unknown exception types fall through to the default branch in
+    :meth:`_render_oauth_error`.
     """
 
     def _render_oauth_error(self, *, exc: BaseException) -> None:
@@ -275,12 +332,24 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
             exc (BaseException): The exception the task raised.
         """
         status: OAuthStatusWidget = self.query_one(OAuthStatusWidget)
-        message_builder: Optional[Callable[[BaseException], str]] = self._ERROR_MESSAGES.get(type(exc))
-        if message_builder is not None:
-            status.set_error(message=message_builder(exc))
+        if isinstance(exc, OAuthTimeoutError):
+            status.set_error(message=self._timeout_message(exc=exc))
             return
-        log_error(msg="AuthenticationScreen: unexpected OAuth exception", e=exc)
-        status.set_error(message=f"Sign-in failed: {exc}")
+        message: str | None = self._ERROR_MESSAGES.get(type(exc))
+        if message is not None:
+            status.set_error(message=message)
+            return
+        log_error(
+            msg=f"AuthenticationScreen unexpected OAuth exception type={type(exc).__name__}", e=Exception()
+        )
+        status.set_error(message="Sign-in failed. Use Back to retry.")
+
+    @staticmethod
+    def _timeout_message(*, exc: OAuthTimeoutError) -> str:
+        """Map the two safe deadline kinds to distinguishable screen copy."""
+        if exc.kind == "attempt":
+            return "Sign-in was not completed in time. Use Back to start a new attempt."
+        return "Sign-in timed out. Use Back to retry."
 
     async def _cancel_oauth_if_running(self) -> None:
         """Cancel the OAuth task if alive; await its termination."""

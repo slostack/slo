@@ -15,7 +15,12 @@ from src.auth.oauth_errors import (
     OAuthTimeoutError,
     OAuthTokenError,
 )
-from src.auth.oauth_flow import OAuthFlow, _CallbackServer, _DEFAULT_TIMEOUT_SECONDS
+from src.auth.oauth_flow import (
+    AuthorizationPresentationDAO,
+    OAuthFlow,
+    _CallbackServer,
+    _DEFAULT_TIMEOUT_SECONDS,
+)
 from src.auth.oauth_provider import CallbackBind, FauxOAuthProvider
 
 
@@ -78,11 +83,11 @@ class TestCallbackServerWaitForCode:
                 await srv.wait_for_code(expected_state="right")
 
 
-class TestOAuthFlowStart:
+class TestOAuthFlowInvoke:
     """End-to-end orchestration with a Faux provider."""
 
     @pytest.mark.asyncio
-    async def test_start_opens_browser_with_provider_url(self) -> None:
+    async def test_invoke_opens_browser_with_provider_url(self) -> None:
         """``webbrowser_open`` receives the provider's authorization URL."""
         recorded_urls: list[str] = []
 
@@ -110,10 +115,11 @@ class TestOAuthFlowStart:
         ):
             flow: OAuthFlow = OAuthFlow(
                 provider=FauxOAuthProvider(),
+                present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
             )
-            cred = await flow.start()
+            cred = await flow.invoke()
 
         assert len(recorded_urls) == 1
         assert recorded_urls[0].startswith("https://faux.example.com/oauth/authorize?")
@@ -160,6 +166,121 @@ class TestOAuthFlowStart:
             await runner.cleanup()
 
 
+class TestOAuthFlowManualResponse:
+    """Browser presentation and manual receiver race behavior."""
+
+    async def test_invoke_presents_before_opener_and_exchanges_manual_code(self) -> None:
+        """Presentation exposes URL/redirect before opening and a bare code needs no state."""
+        events: list[str] = []
+        presentation: AuthorizationPresentationDAO | None = None
+        provider: FauxOAuthProvider = FauxOAuthProvider()
+
+        def present(value: AuthorizationPresentationDAO) -> None:
+            """Record presentation ordering without snapshotting secret URL values."""
+            nonlocal presentation
+            presentation = value
+            events.append("present")
+
+        def opener(url: str) -> bool:
+            """Assert presentation happened before the browser convenience call."""
+            assert presentation is not None
+            assert url == presentation.authorize_url
+            events.append("open")
+            return False
+
+        with patch.object(
+            provider,
+            "exchange_code",
+            new=AsyncMock(return_value=provider.parse_token_response(payload={})),
+        ) as exchange:
+            flow: OAuthFlow = OAuthFlow(
+                provider=provider,
+                present_authorization=present,
+                authorization_response_receiver=AsyncMock(return_value="manual-code"),
+                timeout_seconds=1,
+                manual_timeout_seconds=2,
+                webbrowser_open=opener,
+            )
+            credential = await flow.invoke()
+
+        assert events == ["present", "open"]
+        assert presentation is not None
+        assert presentation.redirect_uri == exchange.await_args.kwargs["redirect_uri"]
+        assert exchange.await_args.kwargs["code"] == "manual-code"
+        assert credential.auth_type is AuthType.OAUTH
+
+    async def test_invoke_absorbs_callback_timeout_until_manual_response_arrives(self) -> None:
+        """A short callback deadline cannot cancel a still-live manual receiver."""
+        provider: FauxOAuthProvider = FauxOAuthProvider()
+        receiver: asyncio.Queue[str] = asyncio.Queue()
+        unavailable_calls: list[bool] = []
+
+        def _present_authorization(_: AuthorizationPresentationDAO) -> None:
+            """Accept initial browser instructions without retaining their secret-bearing URL."""
+
+        def _present_callback_unavailable() -> None:
+            """Record the callback-deadline presentation downgrade."""
+            unavailable_calls.append(True)
+
+        async def submit_later() -> None:
+            """Wait beyond callback deadline before providing an opaque response."""
+            await asyncio.sleep(0.05)
+            await receiver.put("manual-code")
+
+        with patch.object(
+            provider,
+            "exchange_code",
+            new=AsyncMock(return_value=provider.parse_token_response(payload={})),
+        ):
+            task: asyncio.Task[None] = asyncio.create_task(submit_later())
+            flow: OAuthFlow = OAuthFlow(
+                provider=provider,
+                present_authorization=_present_authorization,
+                present_callback_unavailable=_present_callback_unavailable,
+                authorization_response_receiver=receiver.get,
+                timeout_seconds=0.01,
+                manual_timeout_seconds=1,
+                webbrowser_open=lambda url: False,
+            )
+            credential = await flow.invoke()
+            await task
+
+        assert credential.auth_type is AuthType.OAUTH
+        assert unavailable_calls == [True]
+
+    async def test_invoke_propagates_callback_timeout_without_manual_receiver(self) -> None:
+        """The original loopback-only path keeps callback timeout terminal."""
+        flow: OAuthFlow = OAuthFlow(
+            provider=FauxOAuthProvider(),
+            present_authorization=lambda presentation: None,
+            timeout_seconds=0.01,
+            manual_timeout_seconds=1,
+            webbrowser_open=lambda url: False,
+        )
+
+        with pytest.raises(OAuthTimeoutError) as error:
+            await flow.invoke()
+
+        assert error.value.kind == "callback"
+
+    async def test_invoke_raises_attempt_timeout_when_manual_receiver_never_responds(self) -> None:
+        """The long whole-attempt deadline has distinct attempt timeout semantics."""
+        receiver: asyncio.Queue[str] = asyncio.Queue()
+        flow: OAuthFlow = OAuthFlow(
+            provider=FauxOAuthProvider(),
+            present_authorization=lambda presentation: None,
+            authorization_response_receiver=receiver.get,
+            timeout_seconds=1,
+            manual_timeout_seconds=0.01,
+            webbrowser_open=lambda url: False,
+        )
+
+        with pytest.raises(OAuthTimeoutError) as error:
+            await flow.invoke()
+
+        assert error.value.kind == "attempt"
+
+
 class TestOAuthFlowInit:
     """``OAuthFlow.__init__`` resolves ``timeout_seconds`` across three branches."""
 
@@ -167,6 +288,7 @@ class TestOAuthFlowInit:
         """Explicit ``timeout_seconds=`` wins over both cfg and the default."""
         flow: OAuthFlow = OAuthFlow(
             provider=FauxOAuthProvider(),
+            present_authorization=lambda presentation: None,
             timeout_seconds=11,
             webbrowser_open=lambda url: True,
         )
@@ -182,6 +304,7 @@ class TestOAuthFlowInit:
 
         flow: OAuthFlow = OAuthFlow(
             provider=FauxOAuthProvider(),
+            present_authorization=lambda presentation: None,
             webbrowser_open=lambda url: True,
         )
 
@@ -196,6 +319,7 @@ class TestOAuthFlowInit:
 
         flow: OAuthFlow = OAuthFlow(
             provider=FauxOAuthProvider(),
+            present_authorization=lambda presentation: None,
             webbrowser_open=lambda url: True,
         )
 
@@ -343,7 +467,7 @@ class TestCallbackServerFixedBind:
 
 
 class TestOAuthFlowReadsProviderBind:
-    """``OAuthFlow.start`` threads ``provider.callback_bind`` into the server."""
+    """``OAuthFlow.invoke`` threads ``provider.callback_bind`` into the server."""
 
     @pytest.mark.asyncio
     async def test_authorize_url_carries_provider_redirect_uri(self, free_port: int) -> None:
@@ -380,21 +504,18 @@ class TestOAuthFlowReadsProviderBind:
         ):
             flow: OAuthFlow = OAuthFlow(
                 provider=_FixedBindFauxProvider(bind=bind),
+                present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
             )
-            cred = await flow.start()
-
-        assert len(recorded_urls) == 1
-        assert f"redirect_uri=http%3A%2F%2Flocalhost%3A{free_port}%2Fauth%2Fcallback" in recorded_urls[0]
-        assert cred.auth_type is AuthType.OAUTH
+            cred = await flow.invoke()
 
         assert len(recorded_urls) == 1
         assert f"redirect_uri=http%3A%2F%2Flocalhost%3A{free_port}%2Fauth%2Fcallback" in recorded_urls[0]
         assert cred.auth_type is AuthType.OAUTH
 
     @pytest.mark.asyncio
-    async def test_start_forwards_state_into_provider_exchange_code(self) -> None:
+    async def test_invoke_forwards_state_into_provider_exchange_code(self) -> None:
         """The flow passes the validated callback state into provider exchange."""
         provider: FauxOAuthProvider = FauxOAuthProvider()
         recorded_call: dict[str, str] = {}
@@ -424,10 +545,11 @@ class TestOAuthFlowReadsProviderBind:
         with patch.object(provider, "exchange_code", new=AsyncMock(side_effect=_exchange_code)):
             flow: OAuthFlow = OAuthFlow(
                 provider=provider,
+                present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
             )
-            await flow.start()
+            await flow.invoke()
 
         assert recorded_call["code"] == "auth-code"
         assert recorded_call["state"]
@@ -461,13 +583,66 @@ class TestOAuthFlowReadsProviderBind:
         ) as mock_exchange:
             flow: OAuthFlow = OAuthFlow(
                 provider=provider,
+                present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
             )
-            await flow.start()
+            await flow.invoke()
 
         assert len(recorded_urls) == 1
         import urllib.parse as up
 
         query: dict[str, str] = dict(up.parse_qsl(up.urlsplit(recorded_urls[0]).query))
         assert query["state"] == mock_exchange.await_args.kwargs["verifier"]
+
+    @pytest.mark.asyncio
+    async def test_anthropic_authorize_url_has_expected_safe_prefix_and_query_names(self) -> None:
+        """Anthropic authorization URL exposes only its safe shape in regression assertions."""
+        from src.auth.providers.anthropic_provider import AnthropicOAuthProvider
+
+        recorded_urls: list[str] = []
+
+        async def _hit_after(*, url: str) -> None:
+            """Submit a synthetic callback while retaining only the URL shape assertion input."""
+            import urllib.parse as up
+
+            recorded_urls.append(url)
+            query: dict[str, str] = dict(up.parse_qsl(up.urlsplit(url).query))
+            async with ClientSession() as http:
+                await http.get(url=f"{query['redirect_uri']}?code=dummy-code&state={query['state']}")
+
+        def _opener(url: str) -> bool:
+            """Schedule the local synthetic callback without logging authorization data."""
+            asyncio.create_task(_hit_after(url=url))
+            return True
+
+        provider: AnthropicOAuthProvider = AnthropicOAuthProvider()
+        with patch.object(
+            AnthropicOAuthProvider,
+            "exchange_code",
+            new_callable=AsyncMock,
+            return_value=provider.parse_token_response(payload={"access_token": "dummy-access-token"}),
+        ):
+            flow: OAuthFlow = OAuthFlow(
+                provider=provider,
+                present_authorization=lambda presentation: None,
+                timeout_seconds=3,
+                webbrowser_open=_opener,
+            )
+            await flow.invoke()
+
+        import urllib.parse as up
+
+        authorize_url: str = recorded_urls[0]
+        query_names: set[str] = {name for name, _value in up.parse_qsl(up.urlsplit(authorize_url).query)}
+        assert authorize_url.startswith("https://claude.ai/oauth/authorize?")
+        assert query_names == {
+            "code_challenge",
+            "state",
+            "redirect_uri",
+            "response_type",
+            "client_id",
+            "scope",
+            "code_challenge_method",
+            "code",
+        }

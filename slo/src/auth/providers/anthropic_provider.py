@@ -141,7 +141,7 @@ class AnthropicOAuthProvider(OAuthProvider):
             async with http.post(url=self.token_endpoint, json=body) as resp:
                 text: str = await resp.text()
                 if resp.status >= 400:
-                    raise OAuthTokenError(status=resp.status, body=text)
+                    raise OAuthTokenError(status=resp.status)
                 payload: dict[str, Any] = cast(dict[str, Any], json.loads(text))
         return self.parse_token_response(payload=payload)
 
@@ -167,7 +167,7 @@ class AnthropicOAuthProvider(OAuthProvider):
             async with http.post(url=self.token_endpoint, json=body) as resp:
                 text: str = await resp.text()
                 if resp.status >= 400:
-                    raise OAuthTokenError(status=resp.status, body=text)
+                    raise OAuthTokenError(status=resp.status)
                 payload: dict[str, Any] = cast(dict[str, Any], json.loads(text))
         return self.parse_token_response(payload=payload)
 

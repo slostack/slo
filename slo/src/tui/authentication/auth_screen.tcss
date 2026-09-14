@@ -1,33 +1,81 @@
-/* src/tui/authentication/auth_screen.tcss */
-
-AuthenticationScreen {
-    align: center middle;
-}
+$auth-surface: #151817;
+$auth-border: #3e5148;
+$auth-heading: #b8c7bd;
+$auth-code: #d0b57a;
+$auth-action-background: #b8c7bd;
+$auth-action-foreground: #151817;
+$auth-selection-background: #3e5148;
+$auth-selection-foreground: #d8d8d8;
 
 #auth-modal-body {
-    background: $surface;
-    border: round $accent;
+    background: $auth-surface;
+    border: round $auth-border;
     padding: 1 2;
-    width: 60;
+    width: 76;
     height: auto;
-    max-height: 24;
+    max-height: 36;
+    overflow-y: auto;
+    scrollbar-color: $auth-border;
+}
+AuthenticationScreen .screen--selection {
+    background: $auth-selection-background;
+    color: $auth-selection-foreground;
 }
 
-.auth-title {
-    text-style: bold;
-    color: $accent;
+.auth-title { color: $auth-heading; text-style: bold; margin-bottom: 1; }
+.auth-instruction, .auth-url, .auth-redirect {
+    color: $foreground;
+    width: 1fr;
     margin-bottom: 1;
 }
-
-.auth-error {
-    color: $error;
-    margin-top: 1;
+#auth-modal-body .auth-url,
+#auth-modal-body .auth-redirect {
+    overflow-x: hidden;
+    text-wrap: wrap;
+}
+.auth-device-code { color: $auth-code; text-style: bold; margin-bottom: 1; }
+.auth-error { color: $error; margin-top: 1; }
+#auth-modal-body Button.-primary {
+    background: $auth-action-background;
+    color: $auth-action-foreground;
+    text-style: bold;
+}
+#auth-modal-body Button.-primary:hover,
+#auth-modal-body Button.-primary:focus {
+    background: $auth-heading;
+    color: $auth-surface;
+    border: tall $auth-border;
 }
 
 RadioSet {
     margin-bottom: 1;
 }
 
-Button {
-    margin: 0 1 0 0;
+#auth-modal-body .auth-actions {
+    layout: horizontal;
+    height: auto;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+#auth-modal-body .auth-actions Button {
+    width: auto;
+    min-width: 12;
+    margin-left: 2;
+}
+
+#auth-modal-body #oauth-response-row {
+    layout: horizontal;
+    height: auto;
+    margin-bottom: 1;
+}
+
+#auth-modal-body #oauth-response-input {
+    width: 1fr;
+}
+
+#auth-modal-body #oauth-submit-response {
+    width: auto;
+    min-width: 20;
+    margin-left: 2;
 }

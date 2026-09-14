@@ -10,6 +10,7 @@ from textual.widgets import Button, Input, Static
 from src.auth.credential_dao import ProviderName
 from src.auth.oauth_flow import AuthorizationPresentationDAO
 from src.auth.oauth_provider import DeviceAuthorizationPresentationDAO, OAuthLoginMethod
+from src.tui.authentication.widgets.authorization_link import AuthorizationLink
 
 __all__ = ["AuthorizationResponseSubmitted", "OAuthStatusWidget"]
 
@@ -59,7 +60,7 @@ class OAuthStatusWidget(Vertical):
             classes="auth-title",
         )
         yield Static("Preparing sign-in instructions…", id="oauth-instruction", classes="auth-instruction")
-        yield Static("", id="oauth-url", classes="auth-url", markup=False)
+        yield AuthorizationLink("", url="", id="oauth-url", classes="auth-url")
         yield Static("", id="oauth-url-warning", classes="auth-instruction")
         yield Static("", id="oauth-redirect-instruction", classes="auth-instruction")
         yield Static("", id="oauth-redirect", classes="auth-redirect", markup=False)
@@ -90,7 +91,7 @@ class OAuthStatusWidget(Vertical):
             presentation (AuthorizationPresentationDAO): Typed browser instructions from OAuthFlow.
         """
         self.query_one("#oauth-instruction", Static).update("Open this URL in any browser")
-        self.query_one("#oauth-url", Static).update(presentation.authorize_url)
+        self.query_one("#oauth-url", AuthorizationLink).show(url=presentation.authorize_url)
         self.query_one("#oauth-url-warning", Static).update(
             "This link signs in to your account — treat it like a password."
         )
@@ -110,9 +111,7 @@ class OAuthStatusWidget(Vertical):
             presentation (DeviceAuthorizationPresentationDAO): Safe device instructions.
         """
         self.query_one("#oauth-instruction", Static).update("Open this verification URL in any browser")
-        url: Static = self.query_one("#oauth-url", Static)
-        url.update(presentation.verification_uri)
-        url.add_class("auth-url")
+        self.query_one("#oauth-url", AuthorizationLink).show(url=presentation.verification_uri)
         self.query_one("#oauth-url-warning", Static).update("")
         self.query_one("#oauth-redirect-instruction", Static).update("Enter this code")
         code: Static = self.query_one("#oauth-redirect", Static)
@@ -140,13 +139,19 @@ class OAuthStatusWidget(Vertical):
         self.query_one("#oauth-status", Static).update("Response already submitted; waiting for provider")
 
     def set_error(self, *, message: str) -> None:
-        """Surface a static OAuth failure inline so the user can hit Back.
+        """Surface a static OAuth failure inline and scroll it, with Back/Cancel, into view.
+
+        WHAT: The browser-authorization layout is taller than the modal body at 80×24, so the
+            error line and the recovery buttons would otherwise stay below the fold.
+        WHO: AuthenticationScreen._render_oauth_error calls this for flow and start failures.
+        WHEN: Once per failed attempt.
 
         Args:
             message (str): User-facing safe failure description.
         """
         self.query_one("#oauth-error", Static).update(message)
         self.query_one("#oauth-status", Static).update("Sign-in failed.")
+        self.query_one(".auth-actions", Horizontal).scroll_visible(animate=False)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Translate controls into typed messages or a response submission.

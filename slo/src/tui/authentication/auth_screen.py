@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable, Optional, cast
+from typing import Awaitable, Callable, Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -72,17 +72,19 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
             store (Optional[CredentialStore]): Persistence layer.
                 Defaults to a store rooted at ``cfg("SLO_AUTH_FILE")``.
             oauth_factory (Optional[OAuthFactory]): Maps a
-                ``ProviderName`` to a fresh ``OAuthFlow``. Defaults to
-                ``OAuthFlowFactory.for_provider``.
+                ``ProviderName`` and login method to a fresh flow. Defaults to
+                an ``OAuthFlowFactory()`` instance, whose ``__call__`` builds the
+                selected browser or device flow.
         """
         super().__init__()
         self._store: CredentialStore = store or CredentialStore()
-        self._oauth_factory: OAuthFactory = oauth_factory or cast(OAuthFactory, OAuthFlowFactory)
+        self._oauth_factory: OAuthFactory = oauth_factory or OAuthFlowFactory()
         self._state: ScreenState = ScreenState.PROVIDER
         self._chosen_provider: Optional[ProviderName] = None
         self._active_login_methods: frozenset[OAuthLoginMethod] = frozenset()
         self._active_oauth_login_method: OAuthLoginMethod | None = None
         self._authorization_response_queue: asyncio.Queue[str] | None = None
+        self._begin_oauth_task: Optional[asyncio.Task[None]] = None
         self._oauth_task: Optional[asyncio.Task[CredentialDAO]] = None
         self._body: Optional[Vertical] = None
 
@@ -143,12 +145,13 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         assert isinstance(event.method, OAuthLoginMethod)
         login_method: OAuthLoginMethod = event.method
         self._active_oauth_login_method = login_method
-        asyncio.create_task(
+        self._begin_oauth_task = asyncio.create_task(
             self._begin_oauth(
                 provider=self._chosen_provider,
                 login_method=login_method,
             )
         )
+        self._begin_oauth_task.add_done_callback(self._on_begin_oauth_done)
 
     async def on_method_select_widget_back_requested(self, event: MethodSelectWidget.BackRequested) -> None:
         """Go back to provider selection."""
@@ -283,6 +286,34 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
     def _discard_authorization_response_queue(self) -> None:
         """Forget the current attempt's browser response channel."""
         self._authorization_response_queue = None
+
+    def _on_begin_oauth_done(self, task: asyncio.Task[None]) -> None:
+        """Paint the safe sign-in error when an attempt failed before its flow started.
+
+        WHAT: Surfaces factory or mount failures that would otherwise be lost as
+            "Task exception was never retrieved" while the modal stays on its preparing text.
+            A failure before the status widget exists has nowhere to paint and is only logged.
+            The attempt's browser response channel is closed first, like ``_on_oauth_done``,
+            so a code pasted after the failure is not queued for a reader that never comes.
+        WHO: Done callback on the start task that ``on_method_select_widget_chosen`` creates.
+        WHEN: Once, as soon as ``_begin_oauth`` returns, raises, or is cancelled.
+
+        Args:
+            task (asyncio.Task[None]): The finished ``_begin_oauth`` task.
+        """
+        if task.cancelled():
+            return
+        exc: Optional[BaseException] = task.exception()
+        if exc is None:
+            return
+        self._discard_authorization_response_queue()
+        if not self.query(OAuthStatusWidget):
+            log_error(
+                msg=f"AuthenticationScreen could not start sign-in type={type(exc).__name__}",
+                stack_trace=False,
+            )
+            return
+        self._render_oauth_error(exc=exc)
 
     def _on_oauth_done(self, task: asyncio.Task[CredentialDAO]) -> None:
         """Done callback — persist on success, render error on failure.

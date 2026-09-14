@@ -47,9 +47,8 @@ class OAuthFactory(Protocol):
 class OAuthFlowFactory:
     """Map a provider and declared capability to a fresh OAuth flow."""
 
-    @classmethod
-    def for_provider(
-        cls,
+    def __call__(
+        self,
         *,
         provider: ProviderName,
         login_method: OAuthLoginMethod,
@@ -60,9 +59,10 @@ class OAuthFlowFactory:
     ) -> OAuthAuthenticationFlow:
         """Construct the selected provider interaction after validating capability.
 
-        WHAT: Resolves a provider capability into a fresh browser or device flow.
-        WHO: AuthenticationScreen calls this once for a selected method.
-        WHEN: Before browser setup or device network activity begins.
+        WHAT: Resolves a provider capability into a fresh browser or device flow. Being an
+            instance ``__call__`` lets ``OAuthFlowFactory()`` satisfy the ``OAuthFactory`` protocol.
+        WHO: AuthenticationScreen._begin_oauth calls its ``OAuthFlowFactory()`` instance.
+        WHEN: Once per selected attempt, before browser setup or device network activity.
 
         Args:
             provider (ProviderName): Provider selected by the operator.
@@ -75,9 +75,15 @@ class OAuthFlowFactory:
                 Browser response receiver, if applicable.
             present_callback_unavailable (Callable[[], None], optional): Browser callback-timeout
                 presentation sink. Defaults to a no-op.
+
+        Returns:
+            OAuthAuthenticationFlow: A fresh browser or device flow for this attempt.
+
+        Raises:
+            ValueError: The provider has no OAuth mapping or lacks the selected capability.
         """
-        concrete: OAuthProvider = cls._concrete_for(provider=provider)
-        cls._validate_login_method(provider=concrete, login_method=login_method)
+        concrete: OAuthProvider = self._concrete_for(provider=provider)
+        self._validate_login_method(provider=concrete, login_method=login_method)
         if login_method is OAuthLoginMethod.BROWSER_AUTHORIZATION:
             return OAuthFlow(
                 provider=concrete,

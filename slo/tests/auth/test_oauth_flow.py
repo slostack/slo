@@ -2,13 +2,16 @@
 
 import asyncio
 import socket
+import threading
+from collections.abc import Awaitable, Callable
 from typing import Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiohttp import ClientSession, web
 
-from src.auth.credential_dao import AuthType, ProviderName
+from src.auth.browser_host import BrowserHost
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.oauth_errors import (
     OAuthCallbackPortInUseError,
     OAuthStateError,
@@ -22,6 +25,11 @@ from src.auth.oauth_flow import (
     _DEFAULT_TIMEOUT_SECONDS,
 )
 from src.auth.oauth_provider import CallbackBind, FauxOAuthProvider
+
+_GRAPHICAL_HOST: BrowserHost = BrowserHost(environment={"DISPLAY": ":0"}, platform="linux")
+"""Injected host where the opener runs, independent of the machine running the tests."""
+_HEADLESS_HOST: BrowserHost = BrowserHost(environment={"TERM": "xterm-256color"}, platform="linux")
+"""Injected SSH/container-like host where webbrowser would fall back to console browsers."""
 
 
 class TestCallbackServerLifecycle:
@@ -103,8 +111,10 @@ class TestOAuthFlowInvoke:
                     url=f"{qs['redirect_uri']}?code=auth-code&state={qs['state']}",
                 )
 
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+
         def _opener(url: str) -> bool:
-            asyncio.create_task(_hit_after(url=url))
+            asyncio.run_coroutine_threadsafe(coro=_hit_after(url=url), loop=loop)
             return True
 
         with patch.object(
@@ -118,6 +128,7 @@ class TestOAuthFlowInvoke:
                 present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
+                browser_host=_GRAPHICAL_HOST,
             )
             cred = await flow.invoke()
 
@@ -166,6 +177,134 @@ class TestOAuthFlowInvoke:
             await runner.cleanup()
 
 
+class _NoNetworkFauxProvider(FauxOAuthProvider):
+    """Faux provider whose code exchange returns the deterministic credential without HTTP."""
+
+    async def exchange_code(
+        self, *, code: str, verifier: str, state: str, redirect_uri: str
+    ) -> CredentialDAO:
+        """Return the faux credential for any code.
+
+        WHO: OAuthFlow.invoke in TestOAuthFlowBrowserOpen.
+        WHEN: After the pasted manual code wins the callback race.
+
+        Args:
+            code (str): Ignored authorization code.
+            verifier (str): Ignored PKCE verifier.
+            state (str): Ignored state.
+            redirect_uri (str): Ignored redirect URI.
+
+        Returns:
+            CredentialDAO: The faux's deterministic credential.
+        """
+        return self.parse_token_response(payload={})
+
+
+async def _manual_code() -> str:
+    """Return a pasted authorization code immediately.
+
+    Returns:
+        str: A dummy manual authorization code.
+    """
+    return "manual-code"
+
+
+class TestOAuthFlowBrowserOpen:
+    """The browser convenience open is skipped on headless hosts and never delays the code race."""
+
+    @staticmethod
+    def _flow(
+        *,
+        host: BrowserHost,
+        opener: Callable[[str], bool],
+        receiver: Callable[[], Awaitable[str]],
+    ) -> OAuthFlow:
+        """Build one browser attempt that completes from a pasted code, whatever the opener does.
+
+        Args:
+            host (BrowserHost): Injected host deciding whether the opener may run.
+            opener (Callable[[str], bool]): Recording stand-in for ``webbrowser.open``.
+            receiver (Callable[[], Awaitable[str]]): Pasted-response receiver for the race.
+
+        Returns:
+            OAuthFlow: A flow wired to the no-network faux provider.
+        """
+        return OAuthFlow(
+            provider=_NoNetworkFauxProvider(),
+            present_authorization=lambda presentation: None,
+            authorization_response_receiver=receiver,
+            timeout_seconds=1,
+            manual_timeout_seconds=2,
+            webbrowser_open=opener,
+            browser_host=host,
+        )
+
+    @pytest.mark.asyncio
+    async def test_attempt_browser_open_when_host_is_headless_never_calls_opener(self) -> None:
+        """No DISPLAY, WAYLAND_DISPLAY or BROWSER on Linux: the painted URL is the only path."""
+        opened: list[str] = []
+
+        def _opener(url: str) -> bool:
+            """Record an open that must not happen."""
+            opened.append(url)
+            return True
+
+        await self._flow(host=_HEADLESS_HOST, opener=_opener, receiver=_manual_code).invoke()
+
+        assert opened == []
+
+    @pytest.mark.asyncio
+    async def test_attempt_browser_open_when_host_is_graphical_runs_opener_off_event_loop(self) -> None:
+        """The opener runs in a worker thread, not the event loop thread."""
+        loop_thread: threading.Thread = threading.current_thread()
+        opener_threads: list[threading.Thread] = []
+        opened: threading.Event = threading.Event()
+
+        def _opener(url: str) -> bool:
+            """Record which thread performed the open."""
+            opener_threads.append(threading.current_thread())
+            opened.set()
+            return True
+
+        async def _code_after_open() -> str:
+            """Paste the code only once the opener has run, so the race cannot skip it."""
+            await asyncio.to_thread(opened.wait, timeout=2)
+            return "manual-code"
+
+        await self._flow(host=_GRAPHICAL_HOST, opener=_opener, receiver=_code_after_open).invoke()
+
+        assert len(opener_threads) == 1
+        assert opener_threads[0] is not loop_thread
+
+    @pytest.mark.asyncio
+    async def test_invoke_when_opener_blocks_consumes_pasted_code_without_waiting(self) -> None:
+        """A launcher that blocks (console browser ``p.wait()``) does not hold back the pasted code."""
+        started: threading.Event = threading.Event()
+        release: threading.Event = threading.Event()
+
+        def _blocking_opener(url: str) -> bool:
+            """Block like a console browser until the test releases it."""
+            started.set()
+            release.wait(timeout=5)
+            return True
+
+        async def _code_after_open_started() -> str:
+            """Paste the code while the launcher is still blocked."""
+            await asyncio.to_thread(started.wait, timeout=2)
+            return "manual-code"
+
+        flow: OAuthFlow = self._flow(
+            host=_GRAPHICAL_HOST, opener=_blocking_opener, receiver=_code_after_open_started
+        )
+        try:
+            credential: CredentialDAO = await asyncio.wait_for(flow.invoke(), timeout=1)
+            assert not release.is_set()
+        finally:
+            release.set()
+
+        assert credential.auth_type is AuthType.OAUTH
+
+
 class TestOAuthFlowManualResponse:
     """Browser presentation and manual receiver race behavior."""
 
@@ -200,6 +339,7 @@ class TestOAuthFlowManualResponse:
                 timeout_seconds=1,
                 manual_timeout_seconds=2,
                 webbrowser_open=opener,
+                browser_host=_GRAPHICAL_HOST,
             )
             credential = await flow.invoke()
 
@@ -491,9 +631,11 @@ class TestOAuthFlowReadsProviderBind:
                     url=f"http://127.0.0.1:{free_port}/auth/callback" f"?code=auth-code&state={qs['state']}",
                 )
 
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+
         def _opener(url: str) -> bool:
             """Stand in for ``webbrowser.open``; fire the synthetic callback."""
-            asyncio.create_task(_hit_after(url=url))
+            asyncio.run_coroutine_threadsafe(coro=_hit_after(url=url), loop=loop)
             return True
 
         with patch.object(
@@ -507,6 +649,7 @@ class TestOAuthFlowReadsProviderBind:
                 present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
+                browser_host=_GRAPHICAL_HOST,
             )
             cred = await flow.invoke()
 
@@ -538,8 +681,10 @@ class TestOAuthFlowReadsProviderBind:
             async with ClientSession() as http:
                 await http.get(url=f"{qs['redirect_uri']}?code=auth-code&state={qs['state']}")
 
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+
         def _opener(url: str) -> bool:
-            asyncio.create_task(_hit_after(url=url))
+            asyncio.run_coroutine_threadsafe(coro=_hit_after(url=url), loop=loop)
             return True
 
         with patch.object(provider, "exchange_code", new=AsyncMock(side_effect=_exchange_code)):
@@ -548,6 +693,7 @@ class TestOAuthFlowReadsProviderBind:
                 present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
+                browser_host=_GRAPHICAL_HOST,
             )
             await flow.invoke()
 
@@ -570,8 +716,10 @@ class TestOAuthFlowReadsProviderBind:
             async with ClientSession() as http:
                 await http.get(url=f"{qs['redirect_uri']}?code=auth-code&state={qs['state']}")
 
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+
         def _opener(url: str) -> bool:
-            asyncio.create_task(_hit_after(url=url))
+            asyncio.run_coroutine_threadsafe(coro=_hit_after(url=url), loop=loop)
             return True
 
         provider: AnthropicOAuthProvider = AnthropicOAuthProvider()
@@ -586,6 +734,7 @@ class TestOAuthFlowReadsProviderBind:
                 present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
+                browser_host=_GRAPHICAL_HOST,
             )
             await flow.invoke()
 
@@ -611,9 +760,11 @@ class TestOAuthFlowReadsProviderBind:
             async with ClientSession() as http:
                 await http.get(url=f"{query['redirect_uri']}?code=dummy-code&state={query['state']}")
 
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+
         def _opener(url: str) -> bool:
             """Schedule the local synthetic callback without logging authorization data."""
-            asyncio.create_task(_hit_after(url=url))
+            asyncio.run_coroutine_threadsafe(coro=_hit_after(url=url), loop=loop)
             return True
 
         provider: AnthropicOAuthProvider = AnthropicOAuthProvider()
@@ -628,6 +779,7 @@ class TestOAuthFlowReadsProviderBind:
                 present_authorization=lambda presentation: None,
                 timeout_seconds=3,
                 webbrowser_open=_opener,
+                browser_host=_GRAPHICAL_HOST,
             )
             await flow.invoke()
 

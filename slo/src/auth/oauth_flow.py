@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from config.cfg import cfg
 from config.logger import log_info
+from src.auth.browser_host import BrowserHost
 from src.auth.credential_dao import CredentialDAO
 from src.auth.oauth_errors import OAuthCallbackPortInUseError, OAuthStateError, OAuthTimeoutError
 from src.auth.oauth_provider import CallbackBind, OAuthProvider
@@ -122,6 +123,7 @@ class OAuthFlow:
         timeout_seconds: int | None = None,
         manual_timeout_seconds: int | None = None,
         webbrowser_open: Callable[[str], bool] = webbrowser.open,
+        browser_host: BrowserHost | None = None,
     ) -> None:
         """Store presentation, callback, and browser seams for one attempt.
 
@@ -139,6 +141,8 @@ class OAuthFlow:
             timeout_seconds (int | None, optional): Local callback deadline. Defaults to None.
             manual_timeout_seconds (int | None, optional): Whole-attempt manual deadline. Defaults to None.
             webbrowser_open (Callable[[str], bool], optional): Best-effort browser opener. Defaults to webbrowser.open.
+            browser_host (BrowserHost | None, optional): Decides whether the opener may run.
+                Defaults to None, meaning ``BrowserHost.current()``.
         """
         self._provider: OAuthProvider = provider
         self._present_authorization: Callable[[AuthorizationPresentationDAO], None] = present_authorization
@@ -151,6 +155,7 @@ class OAuthFlow:
             cfg(key="SLO_OAUTH_MANUAL_TIMEOUT_SECONDS") or _DEFAULT_MANUAL_TIMEOUT_SECONDS
         )
         self._open: Callable[[str], bool] = webbrowser_open
+        self._browser_host: BrowserHost = browser_host or BrowserHost.current()
 
     async def invoke(self) -> CredentialDAO:
         """Present, attempt browser opening, receive a code, and exchange it.
@@ -173,12 +178,19 @@ class OAuthFlow:
                 redirect_uri=server.redirect_uri,
             )
             self._present_authorization(presentation)
-            self._attempt_browser_open(authorize_url=presentation.authorize_url)
-            authorization_code: AuthorizationCodeDAO = await self._receive_authorization_code(
-                expected_state=state,
-                callback_server=server,
-                attempt_deadline_seconds=self._manual_timeout,
+            # Open alongside the code race: a launcher that blocks must not hold back a pasted code.
+            browser_open: asyncio.Task[None] = asyncio.create_task(
+                self._attempt_browser_open(authorize_url=presentation.authorize_url)
             )
+            try:
+                authorization_code: AuthorizationCodeDAO = await self._receive_authorization_code(
+                    expected_state=state,
+                    callback_server=server,
+                    attempt_deadline_seconds=self._manual_timeout,
+                )
+            finally:
+                browser_open.cancel()
+                await asyncio.gather(browser_open, return_exceptions=True)
             redirect_uri: str = server.redirect_uri
         return await self._provider.exchange_code(
             code=authorization_code.code,
@@ -205,10 +217,23 @@ class OAuthFlow:
             instructions="Open this URL in any browser, then paste the displayed code or final redirect.",
         )
 
-    def _attempt_browser_open(self, *, authorize_url: str) -> None:
-        """Best-effort open the local browser without exposing an authorization URL."""
+    async def _attempt_browser_open(self, *, authorize_url: str) -> None:
+        """Best-effort open the local browser off the event loop, without exposing the URL.
+
+        WHAT: Skips opening on a headless host, where ``webbrowser`` would start a console
+            browser that waits for exit on the TUI terminal. Otherwise runs the opener in a
+            worker thread so a slow or blocking launcher cannot freeze the modal.
+        WHO: ``invoke`` runs this as a task alongside ``_receive_authorization_code``.
+        WHEN: Once per browser authorization attempt, right after the instructions are presented;
+            ``invoke`` cancels the wait when the code race ends (the launcher thread is not stopped).
+
+        Args:
+            authorize_url (str): Secret-bearing authorization URL; never logged.
+        """
+        if not self._browser_host.can_open_graphical_browser():
+            return
         try:
-            self._open(authorize_url)
+            await asyncio.to_thread(self._open, authorize_url)
         except Exception:
             log_info(msg=f"OAuthFlow browser unavailable for {self._provider.provider_name.value}")
 

@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 import pytest
 from textual.app import App
@@ -14,6 +14,7 @@ from textual.widgets import Input, RadioButton, RadioSet, Static
 
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_store import CredentialStore
+from src.auth.device_authorization import DeviceAuthorizationFlow
 from src.auth.oauth_errors import OAuthTimeoutError, OAuthTokenError
 from src.auth.oauth_flow import AuthorizationPresentationDAO
 from src.auth.oauth_provider import DeviceAuthorizationPresentationDAO, OAuthLoginMethod
@@ -23,6 +24,7 @@ from src.tui.authentication.widgets.api_key_input import ApiKeyInputWidget
 from src.tui.authentication.widgets.method_select import MethodSelectWidget
 from src.tui.authentication.widgets.oauth_status import OAuthStatusWidget
 from src.tui.authentication.widgets.provider_select import ProviderSelectWidget
+from tests.tui.authentication._painted_output import wait_until_painted
 
 
 def _build_store(tmp_path: Path) -> CredentialStore:
@@ -351,6 +353,137 @@ class TestAuthenticationScreen:
         assert messages[0] != messages[1]
         assert messages[2] == "Sign-in failed. Use Back to retry."
         assert "500" not in messages[2]
+
+    def test_default_oauth_factory_builds_selected_flow_without_injection(self, tmp_path: Path) -> None:
+        """The production default factory accepts the exact call ``_begin_oauth`` makes.
+
+        Regression: the default was the ``OAuthFlowFactory`` class, so this call raised
+        ``TypeError`` inside an unobserved task and the modal never painted instructions.
+        Constructing a device flow performs no network activity.
+        """
+        screen: AuthenticationScreen = AuthenticationScreen(store=_build_store(tmp_path))
+
+        flow: OAuthAuthenticationFlow = screen._oauth_factory(
+            provider=ProviderName.OPENAI,
+            login_method=OAuthLoginMethod.DEVICE_AUTHORIZATION,
+            present_browser_authorization=lambda presentation: None,
+            present_device_authorization=lambda presentation: None,
+            authorization_response_receiver=None,
+            present_callback_unavailable=lambda: None,
+        )
+
+        assert isinstance(flow, DeviceAuthorizationFlow)
+
+
+class TestBeginOAuthFailure:
+    """A failure before the flow starts paints the safe error instead of being lost."""
+
+    @pytest.mark.asyncio
+    async def test_method_selection_when_factory_raises_paints_safe_error(self, tmp_path: Path) -> None:
+        """A factory that raises (Defect 1b's shape) paints the generic sign-in error in the viewport."""
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION}),
+            build_flow=_raise_type_error,
+        )
+        harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
+        async with harness.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.click("#provider-continue")
+            await pilot.pause()
+            await pilot.click("#method-continue")
+            painted: str = await wait_until_painted(pilot=pilot, text=_GENERIC_SIGN_IN_ERROR)
+
+        assert "".join(_GENERIC_SIGN_IN_ERROR.split()) in painted
+
+    @pytest.mark.asyncio
+    async def test_method_selection_when_factory_raises_discards_response_channel(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed start closes the browser response channel, so a later paste is not silently queued."""
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION}),
+            build_flow=_raise_type_error,
+        )
+        harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
+        async with harness.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.click("#provider-continue")
+            await pilot.pause()
+            await pilot.click("#method-continue")
+            await wait_until_painted(pilot=pilot, text=_GENERIC_SIGN_IN_ERROR)
+            screen: AuthenticationScreen = pilot.app.screen
+
+            assert screen._authorization_response_queue is None
+
+    @pytest.mark.asyncio
+    async def test_begin_oauth_done_when_no_status_widget_leaves_step_unchanged(self, tmp_path: Path) -> None:
+        """A failure before the status widget mounts has nowhere to paint and must not raise."""
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION}),
+            build_flow=_raise_type_error,
+        )
+        harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
+        async with harness.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen: AuthenticationScreen = pilot.app.screen
+            failed: asyncio.Task[None] = asyncio.create_task(_fail_before_flow())
+            await asyncio.wait({failed})
+
+            screen._on_begin_oauth_done(failed)
+            await pilot.pause()
+
+            assert len(screen.query(ProviderSelectWidget)) == 1
+            assert len(screen.query(OAuthStatusWidget)) == 0
+
+    @pytest.mark.asyncio
+    async def test_begin_oauth_done_when_task_cancelled_returns_quietly(self, tmp_path: Path) -> None:
+        """A cancelled start task is not a failure and paints nothing."""
+        factory: _FauxOAuthFactory = _FauxOAuthFactory(
+            login_methods=frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION}),
+            build_flow=_raise_type_error,
+        )
+        harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
+        async with harness.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen: AuthenticationScreen = pilot.app.screen
+            cancelled: asyncio.Task[None] = asyncio.create_task(_never_start())
+            await pilot.pause()
+            cancelled.cancel()
+            await asyncio.wait({cancelled})
+
+            screen._on_begin_oauth_done(cancelled)
+            await pilot.pause()
+
+            assert len(screen.query(ProviderSelectWidget)) == 1
+
+
+_GENERIC_SIGN_IN_ERROR: str = "Sign-in failed. Use Back to retry."
+
+
+def _raise_type_error(**_: object) -> NoReturn:
+    """Fail flow construction the way the uncallable default factory did.
+
+    Args:
+        _ (object): The factory keywords, ignored.
+
+    Raises:
+        TypeError: Always.
+    """
+    raise TypeError("factory is not callable")
+
+
+async def _fail_before_flow() -> None:
+    """Fail like a mount error inside ``_begin_oauth`` before any status widget exists.
+
+    Raises:
+        RuntimeError: Always.
+    """
+    raise RuntimeError("mount failed")
+
+
+async def _never_start() -> None:
+    """Wait until cancelled, like a start task abandoned by the screen."""
+    await asyncio.Event().wait()
 
 
 async def _raise(exc: BaseException) -> CredentialDAO:

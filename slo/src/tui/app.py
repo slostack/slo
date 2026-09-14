@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Optional, cast
 
@@ -30,6 +31,7 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.reasoning_capabilities import resolve_reasoning_config
+from src.auth.browser_host import BrowserHost
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
@@ -414,6 +416,7 @@ class SloTUI(App):
         inbox_store: Optional[SessionInboxStore] = None,
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
         workflow_handle_store: Optional[WorkflowHandleStore] = None,
+        browser_host: Optional[BrowserHost] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -432,8 +435,12 @@ class SloTUI(App):
             workflow_handle_store (Optional[WorkflowHandleStore]): Optional
                 injected workflow handle store for tests. ``None`` uses the
                 session history root.
+            browser_host (Optional[BrowserHost]): Optional injected host that
+                decides whether link clicks may open a browser. ``None`` uses
+                ``BrowserHost.current()``.
         """
         super().__init__()
+        self._browser_host: BrowserHost = browser_host or BrowserHost.current()
         self.register_theme(SLO_DEFAULT_THEME)
         self.register_theme(SLO_DARK_THEME)
         self.theme = self.DEFAULT_THEME
@@ -526,6 +533,41 @@ class SloTUI(App):
             self._usage_status_bar = UsageStatusBar()
             yield self._usage_status_bar
         yield Footer()
+
+    def open_url(self, url: str, *, new_tab: bool = True) -> None:
+        """Open a URL in a graphical browser off the event loop, or do nothing on a headless host.
+
+        WHAT: Textual's driver opens links with a synchronous ``webbrowser.open``. On a Linux
+            host without a graphical session that starts a console browser which waits for
+            exit on the TUI terminal, so headless hosts rely on the painted OSC 8 link instead.
+            Elsewhere the open runs in a thread worker whose failure never exits the app.
+        WHO: ``AuthorizationLink.action_open_link`` and any other Textual link activation.
+        WHEN: Each time the user clicks, or presses Enter on, a link.
+
+        Args:
+            url (str): URL to open; never logged.
+            new_tab (bool, optional): Textual's new-tab flag. Defaults to True.
+        """
+        if not self._browser_host.can_open_graphical_browser():
+            return
+        self.run_worker(
+            work=partial(self._open_url_with_driver, url=url, new_tab=new_tab),
+            group="open-url",
+            exit_on_error=False,
+            thread=True,
+        )
+
+    def _open_url_with_driver(self, *, url: str, new_tab: bool) -> None:
+        """Ask Textual's driver to open the URL.
+
+        WHO: The thread worker started by ``open_url``.
+        WHEN: Once per link activation on a host that can open a graphical browser.
+
+        Args:
+            url (str): URL to open; never logged.
+            new_tab (bool): Textual's new-tab flag, passed through unchanged.
+        """
+        super().open_url(url, new_tab=new_tab)
 
     async def on_mount(self) -> None:
         """Hydrate from history, subscribe the renderer, maybe push auth.

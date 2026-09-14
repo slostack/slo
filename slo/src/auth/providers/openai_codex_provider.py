@@ -95,6 +95,25 @@ class OpenAICodexOAuthProvider(OAuthProvider):
         """Scopes Slo requests (``offline_access`` enables refresh tokens)."""
         return _SCOPES
 
+    @property
+    def device_authorization_start_endpoint(self) -> str:
+        """Return the endpoint that issues one device authorization user code.
+
+        WHO: start_device_authorization posts to it; tests subclass the provider to
+            point it at a local server instead of monkeypatching module constants.
+        WHEN: Once at the beginning of every OpenAI device sign-in attempt.
+        """
+        return _DEVICE_AUTHORIZATION_START_ENDPOINT
+
+    @property
+    def device_authorization_token_endpoint(self) -> str:
+        """Return the endpoint that long-polls one device authorization for completion.
+
+        WHO: poll_device_authorization posts to it; tests override it like the start endpoint.
+        WHEN: Immediately after instructions are presented and after each flow-owned wait.
+        """
+        return _DEVICE_AUTHORIZATION_TOKEN_ENDPOINT
+
     def supported_login_methods(self) -> frozenset[OAuthLoginMethod]:
         """Return the browser and device interactions verified for Codex."""
         return frozenset(
@@ -111,7 +130,7 @@ class OpenAICodexOAuthProvider(OAuthProvider):
         WHEN: At the beginning of a selected OpenAI device sign-in attempt.
         """
         status, payload = await self._post_device_json_with_status(
-            endpoint=_DEVICE_AUTHORIZATION_START_ENDPOINT,
+            endpoint=self.device_authorization_start_endpoint,
             payload={"client_id": self.client_id},
             timeout_seconds=_DEVICE_START_TIMEOUT_SECONDS,
         )
@@ -132,7 +151,7 @@ class OpenAICodexOAuthProvider(OAuthProvider):
         WHEN: Until the provider returns a credential or a typed terminal error.
         """
         status, payload = await self._post_device_json_with_status(
-            endpoint=_DEVICE_AUTHORIZATION_TOKEN_ENDPOINT,
+            endpoint=self.device_authorization_token_endpoint,
             payload={
                 "device_auth_id": device_authorization.device_code,
                 "user_code": device_authorization.user_code,
@@ -166,18 +185,61 @@ class OpenAICodexOAuthProvider(OAuthProvider):
         """Validate OpenAI's start payload and synthesize Slo's product deadline."""
         device_auth_id: Any = payload.get("device_auth_id")
         user_code: Any = payload.get("user_code")
-        interval: Any = payload.get("interval")
         if not isinstance(device_auth_id, str) or not isinstance(user_code, str):
-            raise OAuthDeviceAuthorizationProtocolError(provider=self.provider_name)
-        if not isinstance(interval, int) or interval < 0:
             raise OAuthDeviceAuthorizationProtocolError(provider=self.provider_name)
         return DeviceAuthorizationDAO(
             device_code=device_auth_id,
             user_code=user_code,
             verification_uri=_DEVICE_AUTHORIZATION_VERIFICATION_URI,
             expires_in_seconds=int(_cfg("SLO_OAUTH_DEVICE_TIMEOUT_SECONDS") or 900),
-            interval_seconds=interval,
+            interval_seconds=self._parse_interval_seconds(interval=payload.get("interval")),
         )
+
+    def _parse_interval_seconds(self, *, interval: Any) -> int:
+        """Return a usable non-negative poll interval or reject the start payload.
+
+        WHAT: Accepts the interval shapes OpenAI sends and fails the attempt safely otherwise.
+        WHO: _build_device_authorization calls this once per device start payload.
+        WHEN: After the start endpoint returned 2xx and before instructions are presented.
+
+        Args:
+            interval (Any): The raw JSON ``interval`` value; ``Any`` mirrors untyped vendor JSON.
+
+        Returns:
+            int: The poll interval in whole seconds.
+
+        Raises:
+            OAuthDeviceAuthorizationProtocolError: The interval is absent, unreadable, or negative.
+        """
+        interval_seconds: int | None = self._interval_as_int(interval=interval)
+        if interval_seconds is None or interval_seconds < 0:
+            raise OAuthDeviceAuthorizationProtocolError(provider=self.provider_name)
+        return interval_seconds
+
+    @staticmethod
+    def _interval_as_int(*, interval: Any) -> int | None:
+        """Read an integer or trimmed decimal-text interval; return None for any other JSON shape.
+
+        The live usercode endpoint sends ``"5"`` (text), Pi's fixtures do the same, and
+        older responses sent an integer. JSON booleans are rejected explicitly because
+        Python treats ``bool`` as an ``int`` subclass.
+
+        WHO: _parse_interval_seconds calls this as its only shape decision.
+        WHEN: Once per device start payload.
+
+        Args:
+            interval (Any): The raw JSON ``interval`` value.
+
+        Returns:
+            int | None: The integer value, or None when the shape is unusable.
+        """
+        if isinstance(interval, bool):
+            return None
+        if isinstance(interval, int):
+            return interval
+        if isinstance(interval, str) and interval.strip().isdecimal():
+            return int(interval.strip())
+        return None
 
     async def _classify_device_poll(
         self,

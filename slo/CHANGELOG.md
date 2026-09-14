@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [0.16.5] — 2026-09-14
+
+**Subscription sign-in now shows its instructions: the OpenAI device code and
+verification URL render, and every authorization URL is a clickable link.**
+
+### Fixed
+
+- **The authentication modal never showed any OAuth instructions.**
+  `AuthenticationScreen` defaulted its factory to the `OAuthFlowFactory`
+  *class*, not an instance. Calling it with keyword arguments raised
+  `TypeError` inside a fire-and-forget `asyncio` task, so every browser
+  and device attempt stayed on "Preparing sign-in instructions…" with
+  no URL, no code and no error. The factory now exposes `__call__`
+  (delegating to `for_provider`), the screen defaults to
+  `OAuthFlowFactory()`, and the start task has a done-callback that
+  paints a safe error and discards the response channel on failure.
+- **OpenAI device authorization rejected the live payload.** OpenAI's
+  `deviceauth/usercode` endpoint returns `interval` as text (`"5"`,
+  confirmed against the live endpoint on 2026-09-14). The provider
+  accepted only `int` and raised a protocol error before presenting the
+  verification URL and user code. It now accepts an int or trimmed
+  decimal text, and rejects bool, negative, float, non-decimal, null and
+  missing values. Device endpoints are provider properties, so tests
+  serve a live-shaped payload from a local HTTP server instead of
+  monkeypatching.
+- **Start failures are visible.** A failed device start paints its safe
+  error inside the modal at 80×24 instead of disappearing.
+- **Opening a browser can no longer freeze the TUI.** `webbrowser.open`
+  ran synchronously on the event loop; on a Linux host without a
+  graphical session it can start a console browser that takes over the
+  terminal. The new `BrowserHost` skips opening on headless hosts
+  (only `darwin`/`win32` or a set `DISPLAY`/`WAYLAND_DISPLAY`/`BROWSER`
+  count as graphical). Elsewhere the open runs concurrently off the loop,
+  so it never holds back a pasted authorization response.
+
+### Added
+
+- **Clickable authorization links.** A single `AuthorizationLink` widget
+  (a thin subclass of Textual's `Link`) renders the browser authorization
+  URL for every browser-capable provider (Anthropic, OpenAI) and the
+  device verification URL. The painted text carries an OSC 8 hyperlink,
+  so terminals can Cmd/Ctrl-click it even over SSH. Click or Enter calls
+  `SloTUI.open_url` on a best-effort basis. The URL still wraps at 80
+  columns, stays selectable and markup-safe, and is never logged. The
+  loopback redirect URI stays plain text.
+- **Painted-output regression tests.** The E2E tests drive the real
+  screen → factory → flow → provider stack and assert what the compositor
+  painted (text and link targets), not widget state. Against the pre-fix
+  commit they fail. An opt-in `@pytest.mark.e2e` live smoke paints real
+  OpenAI device instructions and cancels before approval.
+
 ## [0.16.4] — 2026-09-11
 
 **Fixed a blank green tool block flashing into the transcript before a tool call streamed any arguments.**

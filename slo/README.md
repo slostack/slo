@@ -356,13 +356,32 @@ states are enumerated in `src/tui/authentication/auth_state.py`:
 PROVIDER → METHOD → ( OAUTH | API_KEY ) → SUCCESS
 ```
 
-You pick a provider (Anthropic or OpenAI), then a method (browser OAuth
-or paste-an-API-key). If you pick OAuth, the modal renders the
-authorization URL, calls `webbrowser.open(url)`, and binds a one-shot
-HTTP server on `127.0.0.1:<ephemeral-port>` waiting for the redirect.
-You sign in on the provider's page; the redirect lands; the modal
-exchanges the code for a token and writes a `CredentialDAO` to
-`~/.slo/global/authentication.json` (mode `0600`).
+You pick a provider (Anthropic or OpenAI), then a method: browser
+authorization, device authorization (OpenAI), or paste-an-API-key.
+
+- **Browser authorization.** The modal paints the authorization URL and
+  the loopback redirect URI, then binds a one-shot local callback server.
+  It tries to open your browser only when a graphical session exists
+  (macOS, Windows, or `DISPLAY` / `WAYLAND_DISPLAY` / `BROWSER` set), and
+  never blocks the TUI while doing so. You sign in on the provider's page;
+  the redirect lands, or you paste the displayed code or the final
+  redirect URL into the modal (the paste fallback for SSH, containers, or
+  another machine).
+- **Device authorization.** The modal paints the verification URL
+  (`https://auth.openai.com/codex/device`) and a user code. Open the URL on
+  any device, enter the code, and the modal finishes on its own once you
+  approve.
+
+Authorization and verification URLs are clickable hyperlinks. Terminals
+that support OSC 8 open them with Cmd/Ctrl-click, and clicking (or Enter
+on the focused link) inside the modal asks the app to open a browser. The
+full URL always stays painted, wrapped and selectable, so you can copy it
+when neither works. The redirect URI is plain text because it is not a
+page to visit. Browser authorization URLs sign in to your account: treat
+them like a password.
+
+On success the modal exchanges the code for a token and writes a
+`CredentialDAO` to `~/.slo/global/authentication.json` (mode `0600`).
 
 If you pick paste-an-API-key, the modal shows a password-styled input,
 validates non-empty, and persists the row the same way.

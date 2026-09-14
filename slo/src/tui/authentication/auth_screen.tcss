@@ -13,9 +13,17 @@ $auth-selection-foreground: #d8d8d8;
     padding: 1 2;
     width: 76;
     height: auto;
-    max-height: 36;
+    /* Cap at the screen height so the body, not the screen, overflows. Otherwise a tall
+       step (browser authorization at 80x24) is cropped and scroll_visible has nothing to
+       scroll, hiding the error and the Back/Cancel buttons. */
+    max-height: 100%;
     overflow-y: auto;
     scrollbar-color: $auth-border;
+}
+/* OAuthStatusWidget is a Vertical (height 1fr, overflow hidden), which would crop its own
+   rows instead of letting #auth-modal-body scroll to the error and Back/Cancel. */
+#auth-modal-body OAuthStatusWidget {
+    height: auto;
 }
 AuthenticationScreen .screen--selection {
     background: $auth-selection-background;
@@ -32,6 +40,17 @@ AuthenticationScreen .screen--selection {
 #auth-modal-body .auth-redirect {
     overflow-x: hidden;
     text-wrap: wrap;
+}
+/* AuthorizationLink extends Textual's Link, whose defaults use $text-accent, an
+   $accent hover, and a reverse focus band. Keep the link on auth tokens instead. */
+#auth-modal-body AuthorizationLink.auth-url {
+    color: $foreground;
+    text-style: underline;
+}
+#auth-modal-body AuthorizationLink.auth-url:hover,
+#auth-modal-body AuthorizationLink.auth-url:focus {
+    color: $auth-heading;
+    text-style: bold underline;
 }
 .auth-device-code { color: $auth-code; text-style: bold; margin-bottom: 1; }
 .auth-error { color: $error; margin-top: 1; }

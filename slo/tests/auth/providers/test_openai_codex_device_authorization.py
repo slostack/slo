@@ -31,6 +31,104 @@ async def _start_server(handler: Any) -> tuple[str, web.AppRunner]:
     return f"http://127.0.0.1:{port}/device", runner
 
 
+def _live_shaped_start_payload(*, interval: Any) -> dict[str, Any]:
+    """Return OpenAI's observed device start body with one interval value under test.
+
+    WHAT: Mirrors the live 2026-09-14 usercode response field types (string interval
+        and expires_at) with dummy-only identifiers.
+    WHO: TestOpenAICodexDeviceStartIntervalParsing builds each payload through it.
+    WHEN: Once per parse case, before calling the provider's payload builder.
+
+    Args:
+        interval (Any): The JSON interval value under test; ``Any`` mirrors untyped vendor JSON.
+
+    Returns:
+        dict[str, Any]: A start payload with dummy device id and user code.
+    """
+    return {
+        "device_auth_id": "dummy-device-auth-id",
+        "user_code": "DUMMY-CODE",
+        "interval": interval,
+        "expires_at": "2026-09-14T12:15:00.000000+00:00",
+    }
+
+
+class TestOpenAICodexDeviceStartIntervalParsing:
+    """The start payload interval accepts OpenAI's live string shape and rejects unusable values."""
+
+    @pytest.mark.parametrize(
+        ("interval", "expected_seconds"),
+        [(5, 5), (0, 0), ("5", 5), (" 5 ", 5), ("0", 0)],
+        ids=["int", "int-zero", "decimal-text", "padded-decimal-text", "zero-text"],
+    )
+    def test_build_accepts_integer_or_trimmed_decimal_text_interval(
+        self, interval: Any, expected_seconds: int
+    ) -> None:
+        """An int or trimmed decimal-text interval becomes the integer poll cadence."""
+        session: DeviceAuthorizationDAO = OpenAICodexOAuthProvider()._build_device_authorization(
+            payload=_live_shaped_start_payload(interval=interval)
+        )
+
+        assert session.interval_seconds == expected_seconds
+        assert session.user_code == "DUMMY-CODE"
+
+    @pytest.mark.parametrize(
+        "interval",
+        [True, False, -1, "-1", "abc", "", "5.5", 5.5, None],
+        ids=[
+            "bool-true",
+            "bool-false",
+            "negative",
+            "negative-text",
+            "non-numeric",
+            "empty",
+            "float-text",
+            "float",
+            "null",
+        ],
+    )
+    def test_build_rejects_unusable_interval(self, interval: Any) -> None:
+        """Booleans, negatives, non-decimal text, floats, and null are protocol failures."""
+        with pytest.raises(OAuthDeviceAuthorizationProtocolError):
+            OpenAICodexOAuthProvider()._build_device_authorization(
+                payload=_live_shaped_start_payload(interval=interval)
+            )
+
+    async def test_start_accepts_live_shaped_string_interval(self) -> None:
+        """The exact live usercode response shape yields a device session through the endpoint seam."""
+
+        async def handler(request: web.Request) -> web.Response:
+            """Return OpenAI's observed 200 body with string interval and expires_at."""
+            return web.json_response(data=_live_shaped_start_payload(interval="5"))
+
+        endpoint, runner = await _start_server(handler=handler)
+
+        class _LocalStartProvider(OpenAICodexOAuthProvider):
+            """Provider whose device start endpoint is the local live-shaped server."""
+
+            @property
+            def device_authorization_start_endpoint(self) -> str:
+                """Return the local start endpoint."""
+                return endpoint
+
+        try:
+            session: DeviceAuthorizationDAO = await _LocalStartProvider().start_device_authorization()
+        finally:
+            await runner.cleanup()
+
+        assert session.interval_seconds == 5
+        assert session.user_code == "DUMMY-CODE"
+        assert session.verification_uri == "https://auth.openai.com/codex/device"
+
+    def test_build_rejects_missing_interval(self) -> None:
+        """A start payload without any interval is a protocol failure."""
+        payload: dict[str, Any] = _live_shaped_start_payload(interval=None)
+        del payload["interval"]
+
+        with pytest.raises(OAuthDeviceAuthorizationProtocolError):
+            OpenAICodexOAuthProvider()._build_device_authorization(payload=payload)
+
+
 class TestOpenAICodexDeviceAuthorization:
     """Provider-local request bodies and endpoint-status semantics."""
 

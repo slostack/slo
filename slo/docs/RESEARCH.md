@@ -47,6 +47,14 @@ slo --plugin plugins/bash_live_output/plugin.py
 - `/plugins`, `/plugins trust`, and `/plugins reload` are registered in `src/tui/slash_command_registry.py` and handled in `src/tui/slash_router.py`.
 - `src/tui/widgets/usage_status_bar.py` renders a plugin status segment from the dispatcher’s live status map when the app provides updates.
 
+## Authentication (spec 78, fix 78.b.1)
+
+- `src/tui/authentication/auth_screen.py` drives the modal. An `OAuthFlowFactory()` instance (`src/auth/provider_factory.py`, `__call__`) builds `OAuthFlow` (browser authorization) or `DeviceAuthorizationFlow` (device authorization). The factory must be an instance: the class object is not callable with the protocol keywords, and that failure was hidden inside a fire-and-forget task until `_on_begin_oauth_done` was added.
+- **OpenAI device start wire contract** (live `POST https://auth.openai.com/api/accounts/deviceauth/usercode`, checked 2026-09-14): HTTP 200 `{device_auth_id: str, user_code: str, interval: "5", expires_at: str}`. `interval` is **decimal text**, not a JSON number. `OpenAICodexOAuthProvider._interval_as_int` accepts an int or trimmed decimal text and rejects bool, negative, float, `"5.5"`, null and missing. `expires_at` is ignored; Slo keeps `SLO_OAUTH_DEVICE_TIMEOUT_SECONDS`. Fixtures must copy this live shape.
+- **Link rendering decision:** `AuthorizationLink` (`src/tui/authentication/widgets/authorization_link.py`) is a thin subclass of Textual 8.2.8 `textual.widgets.Link`, shared by browser and device presentations. `show(url=...)` paints `Content.styled(text=url, style=Style(link=url))`, so segments carry an OSC 8 target and `[`/`]` are never parsed as markup. `DEFAULT_CSS` sets `width: 1fr; text-wrap: wrap` because `Link` defaults to `width: auto` and clips long URLs. TCSS `link-*` properties do not apply to it (Textual applies them only to `@click` markup). The loopback redirect URI stays a plain `Static`.
+- **Browser opening:** `BrowserHost` (`src/auth/browser_host.py`) returns False on non-macOS/Windows hosts without `DISPLAY`, `WAYLAND_DISPLAY` or `BROWSER`, because CPython `webbrowser` then runs console browsers that `wait()` on the TUI terminal. `OAuthFlow` opens through `asyncio.to_thread` concurrently with the code race; `SloTUI.open_url` opens in a thread worker.
+- Tests assert **painted** compositor output through `tests/tui/authentication/_painted_output.py`. The device E2E (`tests/tui/authentication/test_authentication_device_e2e.py`) runs the real screen, factory, flow and provider against a local aiohttp server; its `@pytest.mark.e2e` live smoke hits the real usercode endpoint and cancels before approval (`pytest -m e2e <file>`).
+
 ## Verification owners
 
 - Plugin tests: `tests/agents/slo_agent/plugins/`.

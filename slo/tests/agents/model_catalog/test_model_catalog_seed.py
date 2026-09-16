@@ -50,13 +50,28 @@ class TestSeedCatalog:
         for model_name in ["gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]:
             assert "xhigh" in snapshot.entries[model_name].reasoning_profile.supported_levels
 
-    def test_kimi_models_are_off_only(self) -> None:
-        """Kimi family models do not expose configurable reasoning in seed."""
+    def test_kimi_k3_profile_has_only_verified_effort_levels(self) -> None:
+        """K3 declares its verified levels, default, and native effort map."""
         snapshot = SeedModelCatalog.load()
 
-        for model_name in ["kimi-k3", "kimi-for-coding-highspeed", "kimi-for-coding"]:
-            profile = snapshot.entries[model_name].reasoning_profile
-            assert profile.supported_levels == ["off"]
+        profile = snapshot.entries["kimi-k3"].reasoning_profile
+        assert profile.supported_levels == ["low", "high", "xhigh"]
+        assert profile.default_level == "xhigh"
+        assert profile.provider_effort_map == {
+            "low": "low",
+            "high": "high",
+            "xhigh": "max",
+        }
+
+    @pytest.mark.parametrize("model_name", ["kimi-for-coding", "kimi-for-coding-highspeed"])
+    def test_k2_models_remain_off_only(self, model_name: str) -> None:
+        """K2 coding models do not expose configurable reasoning in seed."""
+        snapshot = SeedModelCatalog.load()
+
+        profile = snapshot.entries[model_name].reasoning_profile
+        assert profile.supported_levels == ["off"]
+        assert profile.default_level == "off"
+        assert profile.provider_effort_map == {}
 
     def test_existing_models_preserved(self) -> None:
         """Pre-spec-55 curated models remain first-class."""

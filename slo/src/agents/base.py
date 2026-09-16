@@ -418,33 +418,108 @@ class LLMFactory:
         model_name: str,
         resolved: dict[str, Any],
     ) -> ChatOpenAI:
-        """Build a ChatOpenAI pointing at the Kimi For Coding (KFC) API.
+        """Build a Kimi chat-completions model with optional K3 provider effort.
 
-        Uses the OpenAI-compatible REST API at ``KIMI_FOR_CODING_API_URL``
-        (``https://api.kimi.com/coding/v1``). Sets ``max_retries=0`` so
-        credit-exhaustion errors surface immediately for ``ModelPool`` to
-        catch and route around, rather than being retried by the SDK.
-        Sets ``User-Agent: KimiCLI/1.5`` per Kimi's real-identity policy.
+        ``LLMFactory.create`` invokes this builder after the session selects a
+        canonical reasoning level. Enabled K3 resolved reasoning supplies a
+        top-level provider effort; disabled K2 resolved reasoning leaves the
+        legacy request shape unchanged. This builder never emits Kimi
+        ``thinking`` or OpenAI Responses-API fields.
 
         Args:
-            model_name (str): KFC model identifier (``kimi-for-coding``).
-            resolved (dict[str, Any]): Output of :meth:`_resolved_defaults`.
+            model_name (str): Kimi catalog model identifier.
+            resolved (dict[str, Any]): Factory defaults including the requested reasoning level.
 
         Returns:
-            ChatOpenAI: Configured chat model targeting the KFC API.
+            ChatOpenAI: Kimi chat-completions model with the permitted K3 request field.
         """
         cred: CredentialDAO = CredentialResolver.require(provider=ProviderName.KIMI_FOR_CODING)
-        return ChatOpenAI(  # type: ignore[call-arg]  # langchain stub omits max_tokens
-            base_url=KIMI_FOR_CODING_API_URL,
-            api_key=cred.access_token,  # type: ignore[arg-type]  # str accepted at runtime
-            model=model_name,
-            temperature=resolved["temperature"],
-            max_tokens=resolved["max_tokens"],
-            streaming=resolved["streaming"],
-            max_retries=0,
-            model_kwargs=resolved["model_kwargs"],
-            default_headers={"User-Agent": KIMI_FOR_CODING_USER_AGENT},
+        resolved_reasoning: ResolvedReasoningConfigDAO = cls._resolve_kimi_reasoning_config(
+            model_name=model_name,
+            requested_level=resolved["reasoning_level"],
         )
+        kimi_kwargs: dict[str, Any] = {
+            "base_url": KIMI_FOR_CODING_API_URL,
+            "api_key": cred.access_token,
+            "model": model_name,
+            "temperature": resolved["temperature"],
+            "max_tokens": resolved["max_tokens"],
+            "streaming": resolved["streaming"],
+            "max_retries": 0,
+            "model_kwargs": resolved["model_kwargs"],
+            "default_headers": {"User-Agent": KIMI_FOR_CODING_USER_AGENT},
+        }
+        cls._add_kimi_provider_effort(
+            kimi_kwargs=kimi_kwargs,
+            resolved_reasoning=resolved_reasoning,
+        )
+        return ChatOpenAI(**kimi_kwargs)  # type: ignore[call-arg]
+
+    @staticmethod
+    def _resolve_kimi_reasoning_config(
+        *,
+        model_name: str,
+        requested_level: ReasoningLevel,
+    ) -> ResolvedReasoningConfigDAO:
+        """Resolve catalog reasoning only for known Kimi models.
+
+        Prefix-dispatched legacy or discovered Kimi identifiers can lack a
+        catalog profile. Those identifiers retain the legacy disabled request
+        shape rather than failing provider dispatch.
+
+        Args:
+            model_name (str): Kimi model identifier.
+            requested_level (ReasoningLevel): Requested canonical reasoning level.
+
+        Returns:
+            ResolvedReasoningConfigDAO: Catalog result or a disabled legacy result.
+        """
+        try:
+            return resolve_reasoning_config(
+                model_name=model_name,
+                requested_level=requested_level,
+            )
+        except ValueError:
+            try:
+                entry = ModelCatalogService.entry_for_model(model_name=model_name)
+            except ValueError:
+                return ResolvedReasoningConfigDAO(
+                    enabled=False,
+                    requested_level=requested_level,
+                    active_level="off",
+                )
+            if entry.provider is ProviderName.KIMI_FOR_CODING:
+                raise
+            return ResolvedReasoningConfigDAO(
+                enabled=False,
+                requested_level=requested_level,
+                active_level="off",
+            )
+
+    @staticmethod
+    def _add_kimi_provider_effort(
+        *,
+        kimi_kwargs: dict[str, Any],
+        resolved_reasoning: ResolvedReasoningConfigDAO,
+    ) -> None:
+        """Add the permitted K3 effort field when resolved reasoning enables it.
+
+        The Kimi builder calls this after creating the base chat-completions
+        request. Disabled K2 reasoning preserves the legacy request; enabled
+        K3 reasoning writes only top-level ``reasoning_effort``.
+
+        Args:
+            kimi_kwargs (dict[str, Any]): Mutable ChatOpenAI constructor kwargs.
+            resolved_reasoning (ResolvedReasoningConfigDAO): Catalog-derived final reasoning selection.
+
+        Raises:
+            ValueError: If enabled resolved reasoning has no provider effort.
+        """
+        if not resolved_reasoning.enabled:
+            return
+        if resolved_reasoning.provider_effort is None:
+            raise ValueError("Enabled Kimi resolved reasoning requires a provider effort.")
+        kimi_kwargs["reasoning_effort"] = resolved_reasoning.provider_effort
 
     @classmethod
     def _provider_for(cls, *, model_name: str) -> ProviderName:

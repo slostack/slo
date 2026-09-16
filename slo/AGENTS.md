@@ -670,6 +670,14 @@ preferred names.
 - `max_retries=0` — `ModelPool` handles fallback; errors must surface immediately
 - `supports_explicit_caching=False` — Kimi For Coding does not support prompt caching
 
+`kimi-k3` supports the canonical reasoning levels `low`, `high`, and
+`xhigh`. It always reasons: `off` and `minimal` clamp to `low`, and
+`medium` clamps to `high`; `xhigh` maps to K3 API provider effort `max`.
+Only enabled K3 resolved reasoning adds the top-level `reasoning_effort`
+field. `kimi-for-coding` and `kimi-for-coding-highspeed` remain off-only.
+The Kimi builder never emits `thinking`, OpenAI `reasoning`,
+`use_responses_api`, or `output_version`.
+
 ### ModelPool (LLM Router)
 
 `ModelPool` (`src/agents/providers/model_pool.py`) is a drop-in `BaseChatModel` subclass

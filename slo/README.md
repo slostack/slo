@@ -1946,6 +1946,26 @@ Two special requirements are enforced automatically by the builder:
 - **`User-Agent: KimiCLI/1.5`** — required by the KFC endpoint. Sent
   as a default header on every request.
 
+#### K3 reasoning levels
+
+`kimi-k3` always reasons and supports Slo's canonical reasoning levels
+`low`, `high`, and `xhigh`. The builder maps those levels to K3's top-level
+provider `reasoning_effort` values `low`, `high`, and `max`, respectively.
+`max` is provider vocabulary, not an additional Slo reasoning level.
+
+Other canonical selections use nearest-notch clamping: `off` and `minimal`
+resolve to `low`, while `medium` resolves to `high`. The K2 coding pair
+(`kimi-for-coding` and `kimi-for-coding-highspeed`) remains off-only and does
+not send a reasoning field. Kimi requests never use `thinking` or OpenAI
+Responses-API fields.
+
+This command selects the canonical `low` level; Slo maps it to K3's native
+provider effort internally:
+
+```bash
+slo --model kimi-k3 --reasoning low
+```
+
 #### ModelPool and credit-exhaustion policy
 
 `LLMFactory.create_pool()` builds a **priority-ordered fallback router**

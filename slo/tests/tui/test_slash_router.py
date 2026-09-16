@@ -392,6 +392,52 @@ class TestSlashReasoningHandler:
         assert "supported: off, minimal, low, medium, high, xhigh" in (result.rendered or "")
 
     @pytest.mark.asyncio
+    async def test_reasoning_without_args_lists_k3_supported_levels(self) -> None:
+        """Bare K3 reasoning state lists its three canonical levels."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "kimi-k3"
+        session.active_reasoning_level = "xhigh"
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/reasoning",
+            session=session,
+        )
+
+        assert result.rendered == "model: kimi-k3\nreasoning: xhigh\nsupported: low, high, xhigh"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_off_clamps_to_low_for_k3(self) -> None:
+        """K3 reports the catalog-driven clamp from off to low."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "kimi-k3"
+        session.active_reasoning_level = "xhigh"
+        session.switch_reasoning_level = MagicMock(return_value="low")
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/reasoning off",
+            session=session,
+        )
+
+        session.switch_reasoning_level.assert_called_once_with(reasoning_level="off")
+        assert result.rendered == "reasoning changed xhigh -> low (requested off; clamped for kimi-k3)"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_on_selects_k3_profile_default(self) -> None:
+        """K3 on resolves to its catalog-defined xhigh default."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "kimi-k3"
+        session.active_reasoning_level = "low"
+        session.switch_reasoning_level = MagicMock(return_value="xhigh")
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/reasoning on",
+            session=session,
+        )
+
+        session.switch_reasoning_level.assert_called_once_with(reasoning_level="xhigh")
+        assert result.rendered == "reasoning changed low -> xhigh"
+
+    @pytest.mark.asyncio
     async def test_reasoning_off_switches_session_reasoning(self) -> None:
         """`/reasoning off` switches the session and requests a title refresh."""
         session: MagicMock = _build_session_stub()

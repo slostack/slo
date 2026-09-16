@@ -93,14 +93,39 @@ def _anthropic_adaptive_runtime_profile() -> ModelRuntimeProfileDAO:
 
 
 def _kimi_family_reasoning_profile() -> ModelReasoningProfileDAO:
-    """Return the Kimi family reasoning profile.
+    """Return the off-only reasoning profile for K2 and unverified Kimi models.
 
-    Kimi models reason internally and do not expose user-configurable
-    reasoning levels via the API, so Slo treats them as off-only.
+    K2 coding models do not expose a user-configurable reasoning field. The
+    conservative ``kimi-`` discovery template also uses this profile until a
+    model has an independently verified provider contract.
+
+    Returns:
+        ModelReasoningProfileDAO: Off-only reasoning configuration.
     """
     return ModelReasoningProfileDAO(
         supported_levels=["off"],
         default_level="off",
+    )
+
+
+def _kimi_k3_reasoning_profile() -> ModelReasoningProfileDAO:
+    """Return K3's verified provider-effort reasoning profile.
+
+    K3 always reasons and exposes top-level ``reasoning_effort`` instead of a
+    disable switch. Only the first-class ``kimi-k3`` catalog entry uses this
+    profile; K2 coding models retain the off-only family profile.
+
+    Returns:
+        ModelReasoningProfileDAO: K3 canonical levels and provider-effort map.
+    """
+    return ModelReasoningProfileDAO(
+        supported_levels=["low", "high", "xhigh"],
+        default_level="xhigh",
+        provider_effort_map={
+            "low": "low",
+            "high": "high",
+            "xhigh": "max",
+        },
     )
 
 
@@ -316,7 +341,7 @@ class SeedModelCatalog:
                 runtime_profile=_kimi_family_runtime_profile(
                     requests_per_minute=20,
                 ),
-                reasoning_profile=_kimi_family_reasoning_profile(),
+                reasoning_profile=_kimi_k3_reasoning_profile(),
             ),
             ModelCatalogEntryDAO(
                 model_name="kimi-for-coding-highspeed",

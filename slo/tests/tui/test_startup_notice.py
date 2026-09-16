@@ -113,6 +113,26 @@ class TestStartupNotice:
             assert all("/help" not in content for content, _classes in resumed_app._adapter.lines)
 
     @pytest.mark.asyncio
+    async def test_startup_notice_reports_k3_max_provider_effort(self, tmp_path: Path) -> None:
+        """A prebuilt K3 session reports its canonical default and native maximum effort."""
+        history_root: Path = tmp_path / "history"
+        session_id: str = str(uuid4())
+        session: SloAgentSession = _build_session_with_history(
+            workdir=tmp_path,
+            history_root=history_root,
+            session_id=session_id,
+        )
+        session._active_model_name = "kimi-k3"
+        session._active_reasoning_level = "xhigh"
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._adapter is not None
+            assert any("Reasoning: xhigh" in content for content, _classes in app._adapter.lines)
+            assert any("Provider detail: effort max" in content for content, _classes in app._adapter.lines)
+
+    @pytest.mark.asyncio
     async def test_startup_notice_renders_fallback_notice(self, tmp_path: Path) -> None:
         """A session with a fallback notice surfaces it in the startup line."""
         history_root: Path = tmp_path / "history"

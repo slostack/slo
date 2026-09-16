@@ -34,9 +34,9 @@ are intentionally not copied or modified here.
 
 Resolve the operator-local `specifications/` symlink, then read:
 
-- [`79-tui-v2/integration/overview.md`](../specifications/79-tui-v2/integration/overview.md)
-- [`79-tui-v2/integration/tasks.md`](../specifications/79-tui-v2/integration/tasks.md)
-- [`79-tui-v2/integration/79.b.2-characterize-slo-integration-baseline.md`](../specifications/79-tui-v2/integration/79.b.2-characterize-slo-integration-baseline.md)
+- [`79-tui-v2/integration/overview.md`](../../specifications/79-tui-v2/integration/overview.md)
+- [`79-tui-v2/integration/tasks.md`](../../specifications/79-tui-v2/integration/tasks.md)
+- [`79-tui-v2/integration/79.b.2-characterize-slo-integration-baseline.md`](../../specifications/79-tui-v2/integration/79.b.2-characterize-slo-integration-baseline.md)
 
 The relative links intentionally target the worktree's operator-local canonical
 specifications symlink; they do not create or copy canonical specification

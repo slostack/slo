@@ -215,7 +215,7 @@ For each in-scope repo, locate and summarise:
 
 Tools to use:
 
-- `skills/orientation/research/SKILL.md` at the root of the core service repo — the codebase index.
+- `RESEARCH.md` at the root of the core service repo — the codebase index.
 - `AGENTS.md` per repo — repo-level conventions and architecture pointers.
 - `skills/design-and-analysis/find-how-it-works/SKILL.md` for tracing a flow end-to-end.
 - GitHub CLI (`gh`) or local code reads — local is faster if the worktree is fresh.

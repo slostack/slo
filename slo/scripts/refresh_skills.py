@@ -55,8 +55,24 @@ WORKFLOW_SLUGS: set[str] = {
     "review-feature-code",
     "code-test-loop",
 }
+# Source prompts whose relative path is also ordinary prose. ``CLAUDE.md``,
+# ``AGENTS.md`` and ``docs/RESEARCH.md`` are the names of real instruction files
+# that skill bodies legitimately tell an agent to read. Rewriting a bare mention
+# of one into a ``skills/<group>/<slug>/SKILL.md`` path corrupts that
+# instruction, so only the unambiguous absolute / prefixed forms are rewritten
+# for these sources.
+PROSE_SOURCE_RELS: frozenset[str] = frozenset(
+    {
+        "CLAUDE.md",
+        "AGENTS.md",
+        "README.md",
+        "RESEARCH.md",
+        "docs/RESEARCH.md",
+    }
+)
+
 ORIENTATION_SLUGS: set[str] = {
-    "claude",
+    "agents",
     "readme",
     "research",
     "cli-readme",
@@ -89,7 +105,7 @@ ANALYSIS_SLUGS: set[str] = {
     "orchestrator",
     "readme",
     "research",
-    "claude",
+    "agents",
 }
 ARTIFACT_PATH_SKILLS: set[str] = {
     "implement-feature-request",
@@ -291,17 +307,22 @@ def _skill_repo_relpath(*, spec: SkillSpec) -> Path:
 def _extra_specs() -> dict[str, SkillSpec]:
     """Return manually-defined skills that do not already exist in ``skills/``."""
     return {
-        "claude": SkillSpec(
-            slug="claude",
+        "agents": SkillSpec(
+            slug="agents",
             source_rel="CLAUDE.md",
-            description="Root entry-point guidance for the prompt library.",
-            when_to_use="Read when you need the first-orientation rule that tells an agent which deeper prompt to open next.",
+            description=(
+                "Root entry-point guidance every coding agent follows when it enters a "
+                "repository — which instruction files to read, in what order, and where "
+                "the per-project RESEARCH.md and MEMORY.md live."
+            ),
+            when_to_use="Read first when you enter a repository, or when you need the orientation rule that tells an agent which deeper skill to open next.",
             group="orientation",
             examples=(
                 'The user asks: "What should the agent read first when it enters this repo?"',
-                "You are defining the repo-entry instructions and need the minimal CLAUDE.md contract.",
+                "You are defining the repo-entry instructions and need the minimal entry-point contract.",
+                "You are running as Codex, Kimi, or Slo rather than Claude and need the same orientation rules.",
             ),
-            title="CLAUDE.md Entry Point",
+            title="Agent Entry Point",
         ),
         "readme": SkillSpec(
             slug="readme",
@@ -2189,10 +2210,11 @@ def _replace_prompt_library_paths(
         replacements = {
             f"file://{absolute}",
             absolute,
-            source_rel,
             f"local_files/prompts/code_prompts/{source_rel}",
             f"prompts/rules/prompts/{source_rel}",
         }
+        if source_rel not in PROSE_SOURCE_RELS:
+            replacements.add(source_rel)
         if source_rel.startswith("analyze/"):
             replacements.add(f"local_files/prompts/{source_rel}")
         for candidate in replacements:

@@ -4,7 +4,7 @@ description: Self-review pass that runs after a feature specification is drafted
   feature-specifications. Always runs a DRY consolidation pass over the entities and
   data structures the spec introduces, and catches gaps, convention drift, redundant
   functionality that already exists in the code, oversized scope, weak examples,
-  spec-mode mismatches, and missing test coverage before the spec is handed to a developer
+  structure mismatches between the overview and its technical sub-specs, and missing test coverage before the spec is handed to a developer
   or published.
 when_to_use: Use as the mandatory post-hook for feature-specifications.
 group: design-and-analysis
@@ -17,7 +17,7 @@ source_prompt: analyze/feature-specifications-post-hook.md
 ## Skill summary
 
 - **Name:** `feature-specifications-post-hook`
-- **Description:** Self-review pass that runs after a feature specification is drafted with feature-specifications. Always runs a DRY consolidation pass over the entities and data structures the spec introduces, and catches gaps, convention drift, redundant functionality that already exists in the code, oversized scope, weak examples, spec-mode mismatches, and missing test coverage before the spec is handed to a developer or published.
+- **Description:** Self-review pass that runs after a feature specification is drafted with feature-specifications. Always runs a DRY consolidation pass over the entities and data structures the spec introduces, and catches gaps, convention drift, redundant functionality that already exists in the code, oversized scope, weak examples, structure mismatches between the overview and its technical sub-specs, and missing test coverage before the spec is handed to a developer or published.
 - **When to use:** Use as the mandatory post-hook for feature-specifications.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
@@ -25,7 +25,7 @@ source_prompt: analyze/feature-specifications-post-hook.md
 
 ## Examples
 
-- The user asks for an end-to-end workflow that fits: Self-review pass that runs after a feature specification is drafted with feature-specifications. Always runs a DRY consolidation pass over the entities and data structures the spec introduces, and catches gaps, convention drift, redundant functionality that already exists in the code, oversized scope, weak examples, spec-mode mismatches, and missing test coverage before the spec is handed to a developer or published.
+- The user asks for an end-to-end workflow that fits: Self-review pass that runs after a feature specification is drafted with feature-specifications. Always runs a DRY consolidation pass over the entities and data structures the spec introduces, and catches gaps, convention drift, redundant functionality that already exists in the code, oversized scope, weak examples, structure mismatches between the overview and its technical sub-specs, and missing test coverage before the spec is handed to a developer or published.
 - Use as the mandatory post-hook for feature-specifications.
 
 ## Slo defaults for request and specification artifacts
@@ -55,7 +55,7 @@ Use one folder per feature:
 
 ## Purpose
 
-A self-review pass that runs **after** a feature specification has been drafted using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to catch gaps, convention drift, **redundant functionality that already exists in the code**, oversized scope, weak examples, missing test coverage, and **spec-mode mismatches** before the spec is handed to a developer or published to the wiki.
+A self-review pass that runs **after** a feature specification has been drafted using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to catch gaps, convention drift, **redundant functionality that already exists in the code**, oversized scope, weak examples, missing test coverage, and **structural mismatches** — an overview missing its product framing, a technical sub-spec missing its engineering structure, or a feature that carries only one half when both were expected — before the spec is handed to a developer or published to the wiki.
 
 One of those passes is unconditional: the hook **always** runs the DRY consolidation pass in Step 2.5 over the entities and data structures the spec introduces, so the design never ships a second owner for a responsibility the system already has.
 
@@ -77,22 +77,22 @@ If the operator pastes a revised spec back, re-run the hook from Step 1.
 
 ---
 
-## Step 0 — Confirm the spec mode
+## Step 0 — Confirm which artefact(s) the draft covers
 
-Read the PRE-Hook Context Bundle and confirm which mode the document was supposed to use per [`feature-specifications.md`](../feature-specifications/SKILL.md):
+Read the PRE-Hook Context Bundle and confirm which part(s) of the single specification family this draft was meant to produce per [`feature-specifications.md`](../feature-specifications/SKILL.md). There is one specification shape — an **overview** plus one or more **technical sub-specs** — and both halves are expected unless the operator explicitly asked for only one:
 
-- **Mode A — Business / product feature spec**
-- **Mode B — Engineering implementation sub-spec**
+- **the overview** (`overview.md`) — product/business framing plus the brief technical overview;
+- **a technical sub-spec** (`NN.a.n`) — one standalone engineering slice.
 
-If the draft clearly uses the wrong mode, record:
+If the draft is missing a half that was in scope, or a document uses the wrong structure for what it is (an overview written as a narrow engineering slice, or a sub-spec written as a broad product doc), record:
 
 ```markdown
-**MODE GAP:** <expected mode> — <what mode the draft currently reads like>
+**STRUCTURE GAP:** <expected artefact> — <what the draft currently reads like>
 - Why this matters: <why the structure is misaligned>
-- Required correction: <how to restyle / restructure the document>
+- Required correction: <how to restructure or add the missing half>
 ```
 
-A mode mismatch is an automatic **REVISE**.
+A structure mismatch, or a missing half that was in scope, is an automatic **REVISE**.
 
 ---
 
@@ -108,7 +108,7 @@ The output of this step is the **verification report**. Every gap it surfaces be
 
 Per [`feature-specifications.md`](../feature-specifications/SKILL.md), every spec and every broken-down child spec must open with the human-readable narrative sections before low-level implementation detail.
 
-### Shared opening audit (both modes)
+### Shared opening audit (overview and every sub-spec)
 
 Confirm each of these is present and non-trivial:
 
@@ -123,9 +123,9 @@ Confirm each of these is present and non-trivial:
 | Prose intro before every code block in `## Code Reference` | Always | 1-3 sentences in plain English per code block. Silent code dumps are a gap. |
 | Full-detail class examples where central | When applicable | Central classes include class docstring, main public method, and core helpers. Helper-method docstrings explain what the method does, who invokes it, and when it runs. |
 
-### Mode A audit — Business / product feature spec
+### Overview audit — product framing
 
-If the draft is **Mode A**, also confirm:
+If the draft is the **overview**, also confirm:
 
 - the opening reads like an O'Reilly textbook chapter led by product or business framing,
 - the surrounding journey is explained when the feature is user-facing,
@@ -133,9 +133,9 @@ If the draft is **Mode A**, also confirm:
 - broad feature behavior is explained before technical implementation detail,
 - the document does not read like a narrow engineering child slice unless that was intended.
 
-### Mode B audit — Engineering implementation sub-spec
+### Technical sub-spec audit — engineering structure
 
-If the draft is **Mode B**, all of the following are mandatory unless the operator explicitly asked for a different structure:
+If the draft is a **technical sub-spec**, all of the following are mandatory unless the operator explicitly asked for a different structure:
 
 | Section | Required | What "present" means |
 |---|---|---|
@@ -152,7 +152,7 @@ If the draft is **Mode B**, all of the following are mandatory unless the operat
 | Standalone readability | Always | The implementer should not need to keep opening the parent spec to decode the slice. |
 | Drift correction | When applicable | If older spec text is stale, the new spec says so explicitly and corrects it. |
 
-For every missing, stub-only, or wrong-mode section, record:
+For every missing, stub-only, or wrong-structure section, record:
 
 ```markdown
 **NARRATIVE GAP:** <section> — <what is missing>
@@ -252,11 +252,11 @@ Split the spec if any of these are true:
 - the traceability matrix has more than ~15 distinct requirements,
 - different requirements have different stakeholders and can ship independently.
 
-### Mode-aware split guidance
+### Structure-aware split guidance
 
-- A **Business / product feature spec** may stay broad if it is acting as the parent overview that later breaks into child specs.
-- An **Engineering implementation sub-spec** should stay narrow. If it starts to read like a parent roadmap instead of one technical slice, split it.
-- When splitting a parent spec, the child technical slices should usually become **Mode B engineering implementation sub-specs**, not vague mini-business specs.
+- The **overview** may stay broad — it is the parent that later breaks into child sub-specs.
+- A **technical sub-spec** should stay narrow. If it starts to read like a parent roadmap instead of one technical slice, split it.
+- When splitting, the child technical slices should become **standalone technical sub-specs**, not vague mini-business docs.
 
 If a split is warranted:
 
@@ -272,7 +272,7 @@ If no split is needed, record **Granularity: OK — fits in a single spec**.
 
 A developer should be able to implement directly from the spec without follow-up questions. Walk the spec and verify that examples are present and convention-compliant.
 
-For every section that introduces code or schema, the spec must show sufficiently full examples for the chosen mode.
+For every section that introduces code or schema, the spec must show sufficiently full examples for the artefact being written.
 
 ### Shared example expectations
 
@@ -284,9 +284,9 @@ For every section that introduces code or schema, the spec must show sufficientl
 - docstrings on public and important helper methods,
 - prose before every code block.
 
-### Mode A emphasis
+### Overview emphasis
 
-For **Business / product feature specs**, examples should be broad enough to make the system change concrete:
+For the **overview**, examples should be broad enough to make the system change concrete:
 
 - domain models,
 - DAOs,
@@ -294,9 +294,9 @@ For **Business / product feature specs**, examples should be broad enough to mak
 - workflow or API examples,
 - test examples where they anchor acceptance criteria.
 
-### Mode B emphasis
+### Technical sub-spec emphasis
 
-For **Engineering implementation sub-specs**, examples should be implementation-brief quality:
+For a **technical sub-spec**, examples should be implementation-brief quality:
 
 - full corrected class listings for central classes,
 - explicit current-state corrections when earlier snippets are stale,
@@ -351,7 +351,7 @@ Aggregate the findings from Steps 0–5 into a single revision plan:
 
 | Metric | Value |
 |---|---|
-| Spec mode | <Mode A | Mode B> |
+| Artefact | <overview | technical sub-spec NN.a.n> |
 | JIRA requirements covered | X / Y (Z%) |
 | Architectural layers verified | X / Y |
 | Narrative gaps | N |
@@ -367,8 +367,8 @@ Rules:
 
 - Any non-zero **Narrative gap** count is automatic **REVISE**.
 - Any non-zero **Redundancy gap** count is automatic **REVISE**.
-- Any **mode mismatch** is automatic **REVISE**.
-- Any missing mandatory Mode B section is automatic **REVISE**.
+- Any **structure mismatch**, or a missing half that was in scope, is automatic **REVISE**.
+- Any missing mandatory technical-sub-spec section is automatic **REVISE**.
 - Any missing prose before code blocks is automatic **REVISE**.
 
 Then:

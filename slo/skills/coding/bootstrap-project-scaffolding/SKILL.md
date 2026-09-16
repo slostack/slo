@@ -37,9 +37,9 @@ Create this exact folder layout, substituting `<project>` with the actual projec
 ```
 <project>/
 ├── AGENTS.md
-├── skills/orientation/claude/SKILL.md
-├── skills/orientation/readme/SKILL.md
-├── skills/orientation/research/SKILL.md
+├── CLAUDE.md
+├── README.md
+├── RESEARCH.md
 ├── Makefile
 ├── alembic.ini
 ├── pyproject.toml
@@ -808,7 +808,7 @@ Add domain-specific dependencies (LangChain, DBOS, scrapy, etc.) only when neede
 
 ---
 
-## 13. skills/orientation/claude/SKILL.md
+## 13. CLAUDE.md
 
 ```markdown
 When asked to write, modify, or reason about code in this repository, read `AGENTS.md` first. Skip this for general questions about syntax, language semantics, or topics that don't require project context.

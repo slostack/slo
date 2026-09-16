@@ -55,7 +55,7 @@ Use one folder per feature:
 
 ## Purpose
 
-A context-gathering pass that runs **before** the agent drafts or revises a feature specification using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to load every piece of background knowledge the spec must respect — durable knowledge (KB), point-in-time memory (MEMORY.md), repo guardrails (skills/orientation/claude/SKILL.md / AGENTS.md / skills/orientation/research/SKILL.md), code conventions, and the current state of the affected surface area — so the resulting spec is consistent with the rest of the system instead of inventing patterns from scratch.
+A context-gathering pass that runs **before** the agent drafts or revises a feature specification using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to load every piece of background knowledge the spec must respect — durable knowledge (KB), point-in-time memory (MEMORY.md), repo guardrails (CLAUDE.md / AGENTS.md / RESEARCH.md), code conventions, and the current state of the affected surface area — so the resulting spec is consistent with the rest of the system instead of inventing patterns from scratch.
 
 Treat this hook as **non-optional**. Do not produce a feature specification until every step below has been completed and the synthesis at the end exists in the conversation.
 
@@ -78,23 +78,26 @@ If a JIRA / Confluence / GitLab issue is referenced, fetch it first — its cont
 
 Read these in order. They define how this codebase is allowed to be written, regardless of the feature being specified:
 
-1. `~/.claude/skills/orientation/claude/SKILL.md` — global ground rules (named arguments, type hints, declarative methods, env handling).
-2. `skills/orientation/claude/SKILL.md` — repo-scoped instructions.
+1. `~/.claude/CLAUDE.md` — global ground rules (named arguments, type hints, declarative methods, env handling).
+2. `CLAUDE.md` — repo-scoped instructions.
 3. `AGENTS.md` — agent operating instructions for this repo.
-4. `skills/orientation/research/SKILL.md` — index of services, workflows, queues, and test layout.
+4. `RESEARCH.md` — index of services, workflows, queues, and test layout.
 5. `<project-memory>/MEMORY.md` — point-in-time project memory.
 
 Note any guardrail that constrains the spec.
 
 ---
 
-## Step 2 — Choose the spec mode
+## Step 2 — Decide which artefact(s) this pass produces
 
-Before reading the implementation surface in detail, decide which mode the document belongs to per [`feature-specifications.md`](../feature-specifications/SKILL.md).
+Before reading the implementation surface in detail, decide which part(s) of the single specification family this pass is writing, per [`feature-specifications.md`](../feature-specifications/SKILL.md). There is **one** specification shape, not a choice between a "business" document and an "engineering" document. Every non-trivial feature needs **both** halves, and they live together as one family:
 
-### Mode A — Business / product feature spec
+- **the overview** (`overview.md`) — carries the product/business framing and ends with a brief technical overview;
+- **one or more technical sub-specs** (`01.a.1`, `01.a.2`, …) — each a standalone engineering chapter owning one implementation slice.
 
-Choose this when the document is primarily about:
+A tiny, single-slice feature may fold both halves into one document. A larger feature keeps the overview thin and pushes depth into numbered sub-specs. Either way, produce both halves unless the operator explicitly asks for just the overview or just a single sub-spec.
+
+### The overview half covers
 
 - product or business behavior,
 - user/admin journeys,
@@ -102,24 +105,23 @@ Choose this when the document is primarily about:
 - requirements traceability,
 - broad rollout framing.
 
-### Mode B — Engineering implementation sub-spec
-
-Choose this when the document is primarily about:
+### Each technical sub-spec half covers
 
 - one technical slice of a larger feature,
-- a parent-spec child step,
+- a parent-overview child step,
 - an architectural boundary or runtime seam,
 - a refactor, deletion, wiring change, CLI/TUI/runtime behavior change,
 - a low-ambiguity implementation chapter like `02.a.1` through `02.a.6`.
 
 ### What to record
 
-State the choice explicitly in the PRE-Hook Context Bundle:
+State in the PRE-Hook Context Bundle which artefact(s) this pass will produce:
 
-- `**Spec mode:** Business / product feature spec`
-- `**Spec mode:** Engineering implementation sub-spec`
+- `**Producing:** overview + technical sub-specs`
+- `**Producing:** overview only`
+- `**Producing:** technical sub-spec <NN.a.n> only`
 
-If the mode is unclear, ask the operator or state the inference and why.
+If the operator asked for only one half, state that inference and why. Otherwise assume both halves are in scope.
 
 ---
 
@@ -170,9 +172,9 @@ For every affected file, capture:
 - the convention it already follows that the spec must mirror,
 - whether it is current truth, adjacent context, or stale prior design text.
 
-### Extra requirement for Mode B
+### Extra requirement when producing a technical sub-spec
 
-If the spec mode is **Engineering implementation sub-spec**, build two additional inventories:
+When this pass produces a technical sub-spec, build two additional inventories:
 
 1. **Current-state truths** — the exact symbols, method names, runtime behaviors, file paths, and constraints that are true in code today.
 2. **Stale or drifting prior design text** — older specs, parent-spec snippets, comments, or docs that are now inaccurate or incomplete and that the new sub-spec must correct explicitly.
@@ -274,9 +276,9 @@ For the spec you are about to write, decide:
 - **Control flows** — which orchestrations need step-by-step walkthroughs.
 - **Code-sample depth** — which classes need full examples with class docstring, main public method, and core helpers.
 
-### Extra planning requirements for Mode A
+### Extra planning requirements for the overview
 
-If the spec mode is **Business / product feature spec**, also plan:
+When this pass produces the overview, also plan:
 
 - the business problem framing,
 - the requirements / scope / non-goals split,
@@ -284,9 +286,9 @@ If the spec mode is **Business / product feature spec**, also plan:
 - cross-repo or stakeholder boundaries,
 - whether a later breakdown into engineering child specs is likely.
 
-### Extra planning requirements for Mode B
+### Extra planning requirements for a technical sub-spec
 
-If the spec mode is **Engineering implementation sub-spec**, also plan:
+When this pass produces a technical sub-spec, also plan:
 
 - the metadata header fields available (`Status`, `Owner`, `Last updated`, `Parent spec`, `Branch`, `Repo`, `Approx. size`),
 - the `Why` section — why this slice exists independently,
@@ -312,7 +314,7 @@ Before drafting the spec, produce a short synthesis block in the conversation. T
 
 **Source ask:** <1-2 sentences from the operator / JIRA / Confluence>
 
-**Spec mode:** <Business / product feature spec | Engineering implementation sub-spec>
+**Producing:** <overview + technical sub-specs | overview only | technical sub-spec NN.a.n only>
 
 **Affected surface area:**
 - <file path>:<line range> — <role + convention to mirror>
@@ -354,9 +356,9 @@ Before drafting the spec, produce a short synthesis block in the conversation. T
 - *Code samples that must be full-detail:* <which classes / methods need low-ambiguity examples>
 ```
 
-### Additional required bundle content for Mode B
+### Additional required bundle content when producing a technical sub-spec
 
-When the spec mode is **Engineering implementation sub-spec**, extend the bundle with:
+When this pass produces a technical sub-spec, extend the bundle with:
 
 ```markdown
 **Current-state truths to record:**

@@ -199,7 +199,7 @@ The service reads its token via the existing Swarm-secret mount pattern (rule 11
 
 **Why:** per-env tokens limit blast radius — a stolen `local` token does not unlock `staging` or `production`. Storing the operator's copy on disk (not in `.zshrc`) keeps it out of shell history and out of process listings (`ps`). One file per env makes rotation a per-env operation, matching the per-env age-key model.
 
-**How to apply:** add the CLI token to the SOPS-encrypted secrets file at `deployment/secrets/<env>.plain.yaml` under a `cli.token` key. Wire it into [`deployment/scripts/_render_app_stack.py`](../../../deployment/scripts/_render_app_stack.py) as a `*_FILE` indirect (rule 13 in ``../deployment/conventions.md``). The operator-side write path is a new `cli-token-show` target (rule 16) that decrypts and prints to stdout for the operator to paste into their token file. Reference: ``deployment/skills/orientation/readme/SKILL.md` §1.7` — the full SOPS + age + Swarm pipeline.
+**How to apply:** add the CLI token to the SOPS-encrypted secrets file at `deployment/secrets/<env>.plain.yaml` under a `cli.token` key. Wire it into [`deployment/scripts/_render_app_stack.py`](../../../deployment/scripts/_render_app_stack.py) as a `*_FILE` indirect (rule 13 in ``../deployment/conventions.md``). The operator-side write path is a new `cli-token-show` target (rule 16) that decrypts and prints to stdout for the operator to paste into their token file. Reference: ``deployment/README.md` §1.7` — the full SOPS + age + Swarm pipeline.
 
 ### 16. Token rotation = new `_vN` suffix in the Swarm secret; operator re-fetches via `make cli-token-show ENV=<env>`
 

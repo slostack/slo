@@ -32,7 +32,7 @@ source_prompt: update-knowledge-base.md
 
 ## Purpose
 
-The Knowledge Base is the long-term institutional memory for the order-management platform. Unlike `LEARNINGS.md` (which captures reusable coding solutions) or `skills/orientation/research/SKILL.md` (which indexes the codebase), the KB captures **business context, architecture, design decisions, gotchas, and cross-repo knowledge** in an interlinked Obsidian vault.
+The Knowledge Base is the long-term institutional memory for the order-management platform. Unlike `LEARNINGS.md` (which captures reusable coding solutions) or `RESEARCH.md` (which indexes the codebase), the KB captures **business context, architecture, design decisions, gotchas, and cross-repo knowledge** in an interlinked Obsidian vault.
 
 Every conversation produces knowledge that is valuable beyond the current session. This prompt ensures that knowledge is captured before it decays.
 
@@ -117,7 +117,7 @@ After editing, check that any `[[wiki-links]]` you added point to existing pages
 
 - **Do not rewrite existing content** unless it is factually wrong or outdated
 - **Do not add ephemeral/temporary information** (e.g., "currently debugging X", "waiting for deploy")
-- **Do not duplicate** what is already in `AGENTS.md` or `skills/orientation/research/SKILL.md` — the KB captures business and architectural knowledge, not codebase indexes
+- **Do not duplicate** what is already in `AGENTS.md` or `RESEARCH.md` — the KB captures business and architectural knowledge, not codebase indexes
 - **Do not push code** — KB updates are local only
 - **Do not add code snippets** unless they illustrate a gotcha or design decision — the KB is not a code reference
 

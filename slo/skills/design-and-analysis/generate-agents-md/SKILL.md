@@ -40,7 +40,7 @@ Produce a complete `AGENTS.md` at the repository root that serves as the **prima
 
 Before writing anything, read the following files in order:
 
-1. `skills/orientation/readme/SKILL.md` — project purpose, setup instructions, how to run locally
+1. `README.md` — project purpose, setup instructions, how to run locally
 2. `pyproject.toml` (or `package.json`) — dependency list, project name, scripts
 3. `config/cfg.py` (or equivalent config entrypoint) — environment variable inventory
 4. All files under `skills/coding/` — coding standards and architectural patterns
@@ -149,7 +149,7 @@ The ``skills/design-and-analysis/`` directory contains guides for navigating and
 | `find-how-it-works/SKILL.md` | How to trace a feature from entry point through to database |
 | `feature-specifications/SKILL.md` | Style guide for writing technical feature specifications |
 | `generate-agents-md/SKILL.md` | How to generate or regenerate this AGENTS.md file |
-| `generate-research-md/SKILL.md` | How to generate or regenerate skills/orientation/research/SKILL.md |
+| `generate-research-md/SKILL.md` | How to generate or regenerate RESEARCH.md |
 ```
 
 ---
@@ -225,16 +225,16 @@ Useful types: `sequenceDiagram`, `stateDiagram-v2`, `graph LR`, `flowchart`.
 
 ---
 
-### 10. skills/orientation/research/SKILL.md Reference
+### 10. RESEARCH.md Reference
 
-Add a pointer to skills/orientation/research/SKILL.md:
+Add a pointer to RESEARCH.md:
 
 ```markdown
 ## Codebase Index
 
-See ``skills/orientation/research/SKILL.md`` for a complete index of every domain, router, service, worker, event handler, and integration in this repository.
-When building or modifying a feature, consult skills/orientation/research/SKILL.md first to find existing implementations before writing new code.
-To regenerate skills/orientation/research/SKILL.md, follow ``skills/design-and-analysis/generate-research-md/SKILL.md``.
+See ``RESEARCH.md`` for a complete index of every domain, router, service, worker, event handler, and integration in this repository.
+When building or modifying a feature, consult RESEARCH.md first to find existing implementations before writing new code.
+To regenerate RESEARCH.md, follow ``skills/design-and-analysis/generate-research-md/SKILL.md``.
 ```
 
 ---
@@ -260,4 +260,4 @@ Before saving, confirm:
 - [ ] The test run command is correct and matches the project's `Makefile` or README
 - [ ] All markdown links resolve to real files
 - [ ] The architecture section reflects the actual `src/` structure
-- [ ] skills/orientation/research/SKILL.md is referenced and the regeneration prompt is linked
+- [ ] RESEARCH.md is referenced and the regeneration prompt is linked

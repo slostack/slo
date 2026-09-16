@@ -77,7 +77,7 @@ they are present. Otherwise, derive the roots above under the active
 
 1. **Load context first.**
    - Read the relevant request artifact, story, or `request.md`.
-   - Read project guardrails (`skills/orientation/claude/SKILL.md`, `AGENTS.md`, `skills/orientation/research/SKILL.md`).
+   - Read project guardrails (`CLAUDE.md`, `AGENTS.md`, `RESEARCH.md`).
    - Read the Knowledge Base before inferring architecture or domain rules.
 2. **Produce or validate the implementation spec, then break it into tasks.**
    - Run the **Specification Development** workflow — load and follow

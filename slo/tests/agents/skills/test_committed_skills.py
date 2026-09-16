@@ -39,7 +39,7 @@ class TestCommittedSkills:
         assert "implement-feature-request" in names
         assert "generate-agents-md" in names
         assert "generate-research-md" in names
-        assert "claude" in names
+        assert "agents" in names
         assert "readme" in names
         assert "cli-readme" in names
         assert "tui-readme" in names

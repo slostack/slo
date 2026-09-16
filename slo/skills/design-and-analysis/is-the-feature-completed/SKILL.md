@@ -110,7 +110,7 @@ Search strategy:
 
 1. Look for sibling implementations in the same app or domain (e.g., if `ai_call_list` exists but `sms_list` doesn't, `ai_call_list` is the analogue)
 2. Look for features that share the same base class or pattern (e.g., subclasses of the same abstract service)
-3. Look for features mentioned alongside the missing one in the spec or skills/orientation/research/SKILL.md
+3. Look for features mentioned alongside the missing one in the spec or RESEARCH.md
 4. Read the adjacent feature's complete implementation across all layers
 
 ### 2.3 Read Existing Implementations

@@ -77,6 +77,16 @@ slo --plugin plugins/bash_live_output/plugin.py
   `ModelCatalogService`, and triggers at `floor(context_window * 0.70)`; unknown models retain the
   conservative default capacity.
 
+## Kimi K3 reasoning
+
+- The model catalog owns K3's canonical `low`, `high`, and `xhigh` reasoning
+  profile; `xhigh` resolves to K3 provider effort `max`. K3 always reasons, so
+  `off`/`minimal` clamp to `low` and `medium` clamps to `high`.
+- `LLMFactory._build_kimi_for_coding_chat_openai()` is the only Kimi native
+  request boundary. It sends top-level `reasoning_effort` only for enabled K3
+  resolved reasoning; K2 coding models remain off-only and never receive
+  `thinking` or OpenAI Responses fields.
+
 ## Verification owners
 
 - Plugin tests: `tests/agents/slo_agent/plugins/`.

@@ -282,7 +282,7 @@ slo run -p "Add a type hint to this function" --reasoning off --json
 slo run -p "Design the data model for a multi-tenant SaaS" --reasoning high --json
 ```
 
-Reasoning level is clamped to the model's supported range. If you pass `xhigh` to a model that only supports up to `medium`, it runs at `medium` and logs a warning.
+Reasoning level is clamped to the model's supported range. If you pass `xhigh` to a model that only supports up to `medium`, it runs at `medium` and logs a warning. `kimi-k3` is always-on reasoning: it supports `low`, `high`, and `xhigh`, mapping them to provider effort `low`, `high`, and `max`; `off` and `minimal` clamp to `low`, while `medium` clamps to `high`. The K2 coding models remain off-only.
 
 ### `--cwd`
 
@@ -866,7 +866,7 @@ slo run -p "Format this JSON" --reasoning off --json
 slo run -p "Design the caching strategy for this system" --reasoning xhigh --json
 ```
 
-Reasoning levels require a model that supports extended thinking. For models that do not, the level is silently treated as `off`.
+Reasoning profiles determine the active level per model. `kimi-k3` always reasons: `off` and `minimal` clamp to `low`, `medium` clamps to `high`, and canonical `xhigh` maps to provider effort `max`. `kimi-for-coding` and `kimi-for-coding-highspeed` remain off-only; they do not receive a provider reasoning field.
 
 ### Using the model pool
 

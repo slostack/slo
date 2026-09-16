@@ -201,8 +201,6 @@ def default_reasoning_level_for_model(*, model_name: str) -> ReasoningLevel:
     capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name)
     if not capability.reasoning_supported:
         return "off"
-    if "high" in capability.supported_levels:
-        return "high"
     return clamp_reasoning_level(
         model_name=model_name,
         requested_level=capability.default_level,

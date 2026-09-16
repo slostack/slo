@@ -177,6 +177,21 @@ class TestModelSuggestionEntries:
         assert entry.support_tier_label == "auto-discovered"
 
 
+class TestKimiK3SuggestionEntries:
+    """K3 reasoning projections in the model picker."""
+
+    def test_kimi_k3_suggestion_exposes_three_level_reasoning_profile(self) -> None:
+        """K3 lists its supported levels while K2 remains off-only."""
+        entries: list[ModelSuggestionEntryDAO] = model_suggestion_entries(
+            active_model_name="kimi-k3",
+        )
+        entries_by_name: dict[str, ModelSuggestionEntryDAO] = {entry.model_name: entry for entry in entries}
+
+        assert entries_by_name["kimi-k3"].reasoning_summary == "low, high, xhigh"
+        assert entries_by_name["kimi-k3"].is_active is True
+        assert entries_by_name["kimi-for-coding"].reasoning_summary == "off"
+
+
 class TestClaude48SuggestionEntries:
     """Spec-54 Claude models in the TUI picker projections."""
 

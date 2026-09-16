@@ -584,6 +584,20 @@ class TestSloAgentSessionActiveModelState:
 
         assert session.active_reasoning_level == "high"
 
+    def test_build_seeds_k3_profile_default_when_no_override_exists(self, tmp_path: Path) -> None:
+        """K3's lazy session state defaults to xhigh without constructing a provider model."""
+        config: SessionConfigDAO = SessionConfigDAO(
+            workdir=tmp_path,
+            model_name="kimi-k3",
+        )
+
+        with patch("src.agents.slo_agent.sessions.service.SloAgent") as mock_agent_cls:
+            session: SloAgentSession = SloAgentSession.build(config=config)
+
+        assert session.active_reasoning_level == "xhigh"
+        assert session._agent is None
+        mock_agent_cls.assert_not_called()
+
     def test_switch_model_updates_active_model_and_clears_lazy_agent(self, tmp_path: Path) -> None:
         """Switching models invalidates the cached lazy-built agent."""
         config: SessionConfigDAO = SessionConfigDAO(

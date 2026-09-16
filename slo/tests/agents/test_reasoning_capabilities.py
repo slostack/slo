@@ -9,6 +9,7 @@ from src.agents.reasoning_capabilities import (
     MODEL_REASONING_CAPABILITIES,
     REASONING_LEVELS,
     ModelReasoningCapabilityDAO,
+    ReasoningLevel,
     ResolvedReasoningConfigDAO,
     capability_for_model,
     clamp_reasoning_level,
@@ -47,7 +48,7 @@ class TestCapabilityLookup:
         self,
     ) -> None:
         """Non-reasoning models expose only the ``off`` level."""
-        supported_levels: list[str] = supported_reasoning_levels_for_model(
+        supported_levels: list[ReasoningLevel] = supported_reasoning_levels_for_model(
             model_name="gpt-4.1",
         )
 
@@ -59,6 +60,22 @@ class TestDefaultSeeding:
 
     def test_default_reasoning_level_returns_high_when_model_supports_it(self) -> None:
         """Reasoning-capable models seed to ``high`` by default."""
+        default_level: str = default_reasoning_level_for_model(
+            model_name="claude-sonnet-4-6",
+        )
+
+        assert default_level == "high"
+
+    def test_default_reasoning_level_returns_k3_profile_default(self) -> None:
+        """K3 seeds its catalog default rather than the generic high heuristic."""
+        default_level: str = default_reasoning_level_for_model(
+            model_name="kimi-k3",
+        )
+
+        assert default_level == "xhigh"
+
+    def test_default_reasoning_level_preserves_existing_high_profile_default(self) -> None:
+        """Existing high-default models retain their declared default."""
         default_level: str = default_reasoning_level_for_model(
             model_name="claude-sonnet-4-6",
         )
@@ -185,6 +202,45 @@ class TestResolvedConfig:
         assert resolved.provider_effort == "high"
         assert resolved.provider_budget_tokens is None
 
+    @pytest.mark.parametrize(
+        ("requested_level", "active_level", "provider_effort"),
+        [
+            ("off", "low", "low"),
+            ("minimal", "low", "low"),
+            ("low", "low", "low"),
+            ("medium", "high", "high"),
+            ("high", "high", "high"),
+            ("xhigh", "xhigh", "max"),
+        ],
+    )
+    def test_resolve_reasoning_config_maps_k3_requested_level_to_provider_effort(
+        self,
+        requested_level: str,
+        active_level: str,
+        provider_effort: str,
+    ) -> None:
+        """K3 clamps each canonical level to its verified provider effort."""
+        resolved: ResolvedReasoningConfigDAO = resolve_reasoning_config(
+            model_name="kimi-k3",
+            requested_level=requested_level,  # type: ignore[arg-type]
+        )
+
+        assert resolved.enabled is True
+        assert resolved.active_level == active_level
+        assert resolved.provider_effort == provider_effort
+
+    @pytest.mark.parametrize("model_name", ["kimi-for-coding", "kimi-for-coding-highspeed"])
+    def test_resolve_reasoning_config_keeps_k2_models_off_only(self, model_name: str) -> None:
+        """K2 profiles remain disabled and have no provider effort."""
+        resolved: ResolvedReasoningConfigDAO = resolve_reasoning_config(
+            model_name=model_name,
+            requested_level="high",
+        )
+
+        assert resolved.enabled is False
+        assert resolved.active_level == "off"
+        assert resolved.provider_effort is None
+
 
 class TestCodexCapabilityRecords:
     """Reasoning capability records for the OpenAI Codex model family."""
@@ -245,5 +301,5 @@ class TestCatalogInvariants:
         for model_name, capability in MODEL_REASONING_CAPABILITIES.items():
             indexes: list[int] = [ordered_index[level] for level in capability.supported_levels]
             assert indexes == sorted(indexes), model_name
-            if capability.reasoning_supported:
-                assert "off" in capability.supported_levels, model_name
+            if "off" in capability.supported_levels:
+                assert capability.supported_levels[0] == "off", model_name

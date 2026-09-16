@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-09-16
+
+**Kimi K3 reasoning is now correctly catalogued and wired: Slo maps its
+canonical reasoning levels to K3's native top-level ``reasoning_effort``
+field, verified against the live Kimi For Coding lane.**
+
+### Fixed
+
+- **K3 reasoning was not exposed to operators.** The model catalog now
+  carries a K3-only reasoning profile with canonical levels ``low``,
+  ``high`` and ``xhigh`` — ``xhigh`` is the K3 default and maps to Kimi's
+  native ``reasoning_effort=max``. K2 models remain reasoning-off only.
+- **Unknown-Kimi compatibility no longer swallows real errors.** The
+  conservative fallback for unknown ``kimi-*`` identifiers applies only
+  when the model is absent from the catalog; resolution failures for
+  known catalogued Kimi models propagate instead of being silently
+  absorbed.
+
+### Verified
+
+- **Live coding-lane feasibility gate (2026-09-16).** Three minimal,
+  body-discarding authenticated requests to
+  ``https://api.kimi.com/coding/v1/chat/completions`` with
+  ``reasoning_effort=low``, ``high`` and ``max`` all returned HTTP 200
+  for ``kimi-k3``, confirming the native field on Slo's subscription
+  lane. No credential, header, or response body was retained.
+
+
 ## [0.16.5] — 2026-09-14
 
 **Subscription sign-in now shows its instructions: the OpenAI device code and

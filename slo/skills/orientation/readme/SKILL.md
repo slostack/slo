@@ -1,284 +1,471 @@
 ---
 name: readme
-description: Overview of the code-prompt library, its families, and the documentation
-  triad.
-when_to_use: Read when you need to understand how the prompt library is organized
-  or which prompt family applies.
+description: Overview of the skill library, its families, the documentation triad,
+  and the per-project RESEARCH.md / MEMORY.md knowledge files.
+when_to_use: Read when you need to understand how the skill library is organized,
+  which skill family applies, or where a project's RESEARCH.md and MEMORY.md live.
 group: orientation
 kind: skill
 source_prompt: README.md
 ---
 
-# Prompt Library README
+# Skill Library README
 
 ## Skill summary
 
 - **Name:** `readme`
-- **Description:** Overview of the code-prompt library, its families, and the documentation triad.
-- **When to use:** Read when you need to understand how the prompt library is organized or which prompt family applies.
+- **Description:** Overview of the skill library, its families, the documentation triad, and the per-project RESEARCH.md / MEMORY.md knowledge files.
+- **When to use:** Read when you need to understand how the skill library is organized, which skill family applies, or where a project's RESEARCH.md and MEMORY.md live.
 - **Group:** `orientation`
 - **Kind:** `skill`
 - **Source prompt:** `README.md`
 
 ## Examples
 
-- The user asks: "How is the prompt library structured?"
+- The user asks: "How is the skill library structured?"
 - You need a high-level map before drilling into a specific convention file.
+- You need to know where to write durable project knowledge versus current state.
 
 ## Guidance
 
-Coding instruction templates that teach Claude how to build features in your codebase. These are designed to be included in your project's `skills/orientation/claude/SKILL.md` or `AGENTS.md` to establish consistent coding conventions.
+The skill library is a set of coding instruction files that teach any agent —
+Claude, Codex, Slo, Kimi, or another — how to build features in a codebase:
+folder structure, naming conventions, patterns for services, workers, routers,
+and tests. They are the institutional knowledge that makes an agent produce code
+that looks like your team wrote it.
 
-## What are code prompts?
-
-Code prompts are detailed instruction files that define **how** to write code in a specific codebase: folder structure, naming conventions, patterns for services/workers/routers/tests, and more. They're the "institutional knowledge" that makes Claude produce code that looks like your team wrote it.
-
-## Directory Structure
-
-```
-code-prompts/
-├── skills/orientation/readme/SKILL.md                              # This file
-├── skills/orientation/claude/SKILL.md                              # Root entry point — tells Claude to read AGENTS.md first
-├── AGENTS.md                              # Agent guidance — coding conventions table, architecture, testing patterns
-├── skills/orientation/research/SKILL.md                            # Example codebase index — a worked order-management platform index (domains, routers, services, workers, integrations)
-├── analyze/                               # Analysis & reporting prompts (not coding — understanding & documenting)
-│   ├── feature-specifications.md          # Style guide for writing technical specs
-│   ├── find-how-it-works.md               # How to trace a feature through the codebase
-│   ├── generate-agents-md.md              # Prompt to generate/regenerate AGENTS.md
-│   ├── generate-research-md.md            # Prompt to generate/regenerate skills/orientation/research/SKILL.md
-│   ├── daily-morning-standup-report.md    # Generate daily standup summaries from git/JIRA
-│   ├── daily-priorities.md                # Generate prioritized daily task lists
-│   ├── weekly-update-generator.md         # Generate weekly progress reports
-│   └── weekly-bottleneck-report-generator.md  # Identify blockers and bottlenecks
-├── skills/coding/application-structure/SKILL.md               # Start here — folder layout, config, middleware
-├── skills/coding/build-domain-features/SKILL.md               # Domain-driven design (dao.py, model.py, service.py)
-├── skills/coding/build-routers/SKILL.md                       # FastAPI router conventions, response wrappers
-├── skills/coding/build-application-services/SKILL.md          # Application service invoke() pattern
-├── skills/coding/build-clients/SKILL.md                       # External API client patterns
-├── skills/coding/build-event-handlers/SKILL.md                # Event handler routing and dispatch
-├── skills/coding/build-celery-workers/SKILL.md                # Celery worker conventions
-├── skills/coding/build-dbos-workflow-orchestration-pattern/SKILL.md  # DBOS durable workflows
-├── skills/coding/build-schedulers-tasks-with-dbos/SKILL.md    # DBOS task scheduling
-├── skills/coding/build-partitioned-events/SKILL.md            # Consistent hashing for event partitioning
-├── skills/coding/build-react-agent-with-langgraph/SKILL.md    # LangGraph ReAct agent patterns
-├── skills/coding/build-agent-tools/SKILL.md                   # LangChain @tool conventions
-├── skills/coding/bootstrap-project-scaffolding/SKILL.md       # Project scaffolding and initial setup
-├── skills/coding/generate-swagger-documentation/SKILL.md      # Generate OpenAPI/Swagger docs across services
-├── skills/coding/declarative-method-structure/SKILL.md        # Code style — flat code, early returns
-├── skills/design-and-analysis/derive-new-convention/SKILL.md              # Meta-prompt — derive conventions when no code-prompt exists
-├── skills/design-and-analysis/distill-learnings/SKILL.md                  # Distill reusable insights into workspace-level LEARNINGS.md
-├── skills/coding/method-docstrings/SKILL.md                   # Google-style docstrings
-├── skills/coding/named-arguments-and-type-hints/SKILL.md      # Named args + type hints policy
-├── skills/git-ops/branching-and-commit-conventions/SKILL.md    # Git workflow conventions
-├── skills/design-and-analysis/review-feature-code/SKILL.md                 # Structured code review process
-├── skills/coding/test-verification-policy/SKILL.md            # Test coverage requirements
-├── skills/coding/test-graphs-and-agents/SKILL.md              # Testing LangGraph agents
-├── skills/coding/setup-dependencies-and-tests/SKILL.md        # PostgreSQL, Docker, test fixtures
-├── skills/coding/setup-alembic/SKILL.md                       # Alembic migration setup
-├── skills/coding/switch-environments-and-run-tests/SKILL.md   # Environment switching + test execution
-├── skills/coding/python-path-and-import-resolution/SKILL.md   # PYTHONPATH convention
-└── skills/design-and-analysis/update-documentation-after-code-changes/SKILL.md  # Keep docs in sync with code
-```
-
-## Installation
-
-### Option 1: Copy individual files into your project
-
-The `docs` folder can be added to `.gitignore` and `.dockerignore`. 
-
-```bash
-# Copy specific prompts you need
-cp claude-md/skills/coding/build-domain-features/SKILL.md /path/to/your/project/docs/code-prompts/
-cp claude-md/skills/coding/build-routers/SKILL.md /path/to/your/project/docs/code-prompts/
-```
-
-### Option 2: Reference from skills/orientation/claude/SKILL.md
-
-Link your project's `skills/orientation/claude/SKILL.md` to find these files
-
-```markdown
-## Coding Conventions
-
-See the code prompts in `docs/code-prompts/` for detailed patterns:
-- `Application Structure` — **Start here**
-- `Build Domain Features`
-- `Build Routers`
-...
-```
-
-## Configuration
-
-These templates use `{{PLACEHOLDER}}` variables for project-specific values. After copying, search and replace:
-
-| Placeholder | Description | Example |
-|---|---|---|
-| `{{PROJECT_NAME}}` | Your project name | `MyApp` |
-| `{{project_module}}` | Python module name (lowercase) | `myapp` |
-| `{{MONOREPO_NAME}}` | Monorepo name (if applicable) | `orders-platform` |
-| `{{API_BASE_URL}}` | Your API base URL | `https://api.example.com` |
-| `{{DOMAIN}}` | Your domain name | `example.com` |
-| `{{PRODUCT_NAME}}` | Product identifier | `MyProduct` |
-
-Most files are already generic and require no placeholder replacement.
+Skills are read **on demand**. The agent reads [`INDEX.md`](../../INDEX.md) when
+a task starts, matches the task against a skill's `description` and
+`when_to_use`, then reads that skill's `SKILL.md` and follows it. Do not preload
+the whole library.
 
 ---
 
-## Root Documentation Files
+## Project knowledge files
 
-These three files form the **documentation triad** that gives Claude full context about your project. They are meant to be placed at your repository root and referenced from each other.
+Two files carry a project's accumulated knowledge. They are **agent-owned**:
+whichever agent is working creates them when missing and updates them as work
+produces new knowledge. This applies to Claude, Codex, Slo, Kimi, and any other
+agent.
 
-### skills/orientation/claude/SKILL.md — Entry Point
+### Where they live
 
-`skills/orientation/claude/SKILL.md` is the **first file Claude reads** when it enters your repository. It acts as a gatekeeper:
-
+```text
+${SLO_HOME:-~/.slo}/projects/<project_name>/RESEARCH.md
+${SLO_HOME:-~/.slo}/projects/<project_name>/MEMORY.md
 ```
+
+`SLO_HOME` roots all Slo data. **When `SLO_HOME` is not defined, treat it as
+`~/.slo`.** `<project_name>` is the project's directory name — the basename of
+the repository checkout.
+
+Older projects keep these at the repo root (`RESEARCH.md`, `docs/RESEARCH.md`) or,
+under Claude Code, as an auto-managed memory index at
+`<project-memory>/MEMORY.md`. Read those if they exist — but write new knowledge
+to the canonical paths above, so every agent family converges on one file.
+
+### RESEARCH.md — distilled project knowledge
+
+Every project must have one. If it is missing, create it before meaningful
+implementation work.
+
+**Purpose:** the curated, project-specific "why the system is the way it is." It
+holds:
+
+- domain concepts and ubiquitous language,
+- architectural decisions and constraints,
+- important workflows and integration contracts,
+- known failure modes and mistakes to avoid,
+- operational, deployment, performance, and security constraints,
+- decisions future agents must understand.
+
+**Key rule:** read it before planning or changing a feature; update it when work
+produces durable learning. It is **not** a raw activity log — it is distilled,
+stable knowledge.
+
+Generate or regenerate it with
+[`generate-research-md`](../../design-and-analysis/generate-research-md/SKILL.md).
+Keep it under 1000 lines — it is an index and a decision record, not
+documentation.
+
+### MEMORY.md — point-in-time project memory
+
+**Purpose:** the current, mutable state of the project — what is happening now
+and recent context — as opposed to `RESEARCH.md`'s durable, decision-level
+knowledge. The spec pre-hook loads it in Step 1 and labels it
+`<project-memory>/MEMORY.md — point-in-time project memory`.
+
+Every project must have one. If it is missing, create it when you first do
+meaningful work in the project, and keep it current as state changes.
+
+### The distinction
+
+| | `RESEARCH.md` | `MEMORY.md` |
+|---|---|---|
+| **Timescale** | Durable / long-lived | Point-in-time / current |
+| **Content** | Architecture, domain language, decisions, failure modes | Present state, recent context, working notes |
+| **Updated when** | Work yields lasting learning | State changes as work proceeds |
+| **Not for** | Activity logs | A permanent architectural record |
+
+Roughly: **`RESEARCH.md` = "what is permanently true and why"; `MEMORY.md` =
+"what is true right now."** Skills that draft specs — notably
+[`feature-specifications`](../../design-and-analysis/feature-specifications/SKILL.md)
+and its
+[pre-hook](../../design-and-analysis/feature-specifications-pre-hook/SKILL.md) —
+read **both**: the stable design context and the live state, before a spec is
+drafted.
+
+### Who reads and writes them
+
+| Agent | Entry file it loads first | Then reads |
+|---|---|---|
+| Claude Code | `CLAUDE.md` (+ `~/.claude/CLAUDE.md`) | `AGENTS.md` → `RESEARCH.md` → `MEMORY.md` |
+| Codex | `AGENTS.md` (+ `~/.codex/AGENTS.md`) | `RESEARCH.md` → `MEMORY.md` |
+| Slo | `SLO.md` (+ `~/.slo/SLO.md`) | `AGENTS.md` → `RESEARCH.md` → `MEMORY.md` |
+| Kimi | `AGENTS.md` | `RESEARCH.md` → `MEMORY.md` |
+| Any other agent | `AGENTS.md` | `RESEARCH.md` → `MEMORY.md` |
+
+The orientation rule itself lives in [`agents`](../agents/SKILL.md).
+
+---
+
+## The documentation triad
+
+Three files give an agent full context about a project. They reference each
+other.
+
+### Entry point — `CLAUDE.md` / `AGENTS.md` / `SLO.md`
+
+The **first file an agent reads** when it enters a repository. It acts as a
+gatekeeper:
+
+```text
 When asked to write, modify, or reason about code in this repository,
 read AGENTS.md first. Skip this for general questions.
 ```
 
 **How to use:**
-- Place at your repository root
-- Keep it short — it should only point to `AGENTS.md` and `skills/orientation/research/SKILL.md`
-- Add project-specific overrides here (e.g., JIRA spec storage paths, special conventions)
 
-### AGENTS.md — Agent Guidance
+- Place at the repository root.
+- Keep it short — it should only point to `AGENTS.md` and the project's
+  `RESEARCH.md`.
+- Add project-specific overrides here (spec storage paths, special conventions).
+- The canonical contract is in [`agents`](../agents/SKILL.md).
 
-`AGENTS.md` is the **operating manual** for AI agents working in your codebase. It contains:
+### `AGENTS.md` — agent guidance
 
-- **Coding conventions table** — links to every code prompt with a one-line purpose description
-- **External API references** — links to vendor API docs
-- **Architecture overview** — control flow, application structure
-- **Analysis guides** — how to trace features, write specs, generate docs
-- **Testing patterns** — fixtures, factories, mocking conventions
+The **operating manual** for agents working in the codebase:
 
-**How to use:**
-- Place at your repository root
-- Update the conventions table whenever you add/remove a code prompt
-- Reference it from `skills/orientation/claude/SKILL.md` as the primary reading target
-- Regenerate it using `skills/design-and-analysis/generate-agents-md/SKILL.md` after major project changes
+- **Coding conventions table** — links to every skill with a one-line purpose.
+- **External API references** — links to vendor API docs.
+- **Architecture overview** — control flow, application structure.
+- **Analysis guides** — how to trace features, write specs, generate docs.
+- **Testing patterns** — fixtures, factories, mocking conventions.
 
-### skills/orientation/research/SKILL.md — Codebase Index
+**How to use:** place at the repository root; update the conventions table when
+you add or remove a skill; regenerate with
+[`generate-agents-md`](../../design-and-analysis/generate-agents-md/SKILL.md)
+after major project changes.
 
-`skills/orientation/research/SKILL.md` is a **worked example** of the RESEARCH.md pattern — a complete map of a fictional order-management platform. Use it as a reference for what a real index should catalog so agents can locate anything without exhaustive file searching:
+### `RESEARCH.md` — codebase index and decision record
 
-- **Technology stack** — versions of all frameworks, databases, tools
-- **Wiki/spec links** — business context for every feature area (grouped by feature, one link per page)
-- **Services** — every monorepo member and its router prefix
-- **Domains** — every domain module with its DAO, model, service files
-- **Routers** — every HTTP endpoint controller
-- **Application services** — every orchestration service
-- **Workers** — every Celery/DBOS background task
-- **Events** — every event handler and stream
-- **Integrations** — every external API client
-- **Tests** — test directory structure and conventions
-- **Infrastructure** — Docker, environments, config files
+A complete map of the project so agents can locate anything without exhaustive
+file searching: technology stack, spec links, services, domains, routers,
+application services, workers, events, integrations, tests, infrastructure.
 
-**How to use:**
-- Place your project's own index at your repository root
-- Generate it using `skills/design-and-analysis/generate-research-md/SKILL.md`
-- Update it after adding new domains, routers, workers, or integrations (see `skills/design-and-analysis/update-documentation-after-code-changes/SKILL.md`)
-- Keep it under 1000 lines — it's an index, not documentation
+**How to use:** keep it at
+`${SLO_HOME:-~/.slo}/projects/<project_name>/RESEARCH.md`; generate it with
+[`generate-research-md`](../../design-and-analysis/generate-research-md/SKILL.md);
+update it after adding domains, routers, workers, or integrations — see
+[`update-documentation-after-code-changes`](../../design-and-analysis/update-documentation-after-code-changes/SKILL.md).
 
 ---
 
-## Code Prompt Reference
+## Library layout
 
-### Architecture & Structure
+```text
+skills/
+├── INDEX.md                    # Generated index — the agent's routing table
+├── orientation/                # Entry-point rules and this map
+├── design-and-analysis/        # Specs, reviews, debugging, workflows, orchestration
+│   └── workflows/              # Named multi-step workflows (not skills)
+├── coding/                     # Language, framework, and layer conventions
+├── git-ops/                    # Branching, commits, PRs, releases, worktrees
+├── cli/                        # Typer CLI conventions
+├── tui/                        # Textual TUI conventions
+├── integration-tests/          # Cross-service integration testing
+├── frontend-vue/               # Vue 3 / TypeScript conventions
+├── presentation/               # HTML and PDF output formats
+└── user-content/               # Authoring personal skills and workflows
+```
 
-| File | What it covers |
-|------|---------------|
-| [skills/coding/application-structure/SKILL.md](../../coding/application-structure/SKILL.md) | **Start here.** Full application folder structure, middleware, config, domains, services, workers |
-| [skills/coding/bootstrap-project-scaffolding/SKILL.md](../../coding/bootstrap-project-scaffolding/SKILL.md) | Project scaffolding, initial setup, and directory creation |
-| [skills/coding/build-routers/SKILL.md](../../coding/build-routers/SKILL.md) | FastAPI router patterns, base controller, response objects, testing controllers |
-| [skills/coding/build-domain-features/SKILL.md](../../coding/build-domain-features/SKILL.md) | Domain-driven design: model.py, dao.py, service.py, events |
-| [skills/coding/build-application-services/SKILL.md](../../coding/build-application-services/SKILL.md) | Application service `invoke()` pattern, step methods, orchestration |
+Personal overrides live at `~/.slo/user_skills/` and `~/.slo/user_workflows/`.
 
-### Workers & Events
+**Adding or editing a skill:** edit the `skills/<group>/<slug>/SKILL.md` file,
+then run `make build-skill-index` to regenerate `INDEX.md`. Never hand-edit
+`INDEX.md`.
 
-| File | What it covers |
-|------|---------------|
-| [skills/coding/build-celery-workers/SKILL.md](../../coding/build-celery-workers/SKILL.md) | Celery worker conventions, async bridging, retry config, context propagation |
-| [skills/coding/build-dbos-workflow-orchestration-pattern/SKILL.md](../../coding/build-dbos-workflow-orchestration-pattern/SKILL.md) | DBOS watcher pattern for multi-step durable workflows |
-| [skills/coding/build-schedulers-tasks-with-dbos/SKILL.md](../../coding/build-schedulers-tasks-with-dbos/SKILL.md) | DBOS task scheduling, cron workflows, enqueuing |
-| [skills/coding/build-event-handlers/SKILL.md](../../coding/build-event-handlers/SKILL.md) | Event handler architecture, base handler routing, filter patterns |
-| [skills/coding/build-partitioned-events/SKILL.md](../../coding/build-partitioned-events/SKILL.md) | Event partitioning with consistent hashing |
+---
 
-### External Integrations
+## Workflows — load the workflow file, not a similarly-named skill
 
-| File | What it covers |
-|------|---------------|
-| [skills/coding/build-clients/SKILL.md](../../coding/build-clients/SKILL.md) | HTTP client patterns (aiohttp/httpx), DAOs, error handling, testing |
+When the user says "workflow" or names one, load the file from
+`skills/design-and-analysis/workflows/` directly.
 
-### AI & Agents
+| Workflow | File |
+|---|---|
+| Code-Test-Review | [`workflows/code-test-review.md`](../../design-and-analysis/workflows/code-test-review.md) |
+| GitLab Code-Test-Review | [`workflows/gitlab-code-test-review.md`](../../design-and-analysis/workflows/gitlab-code-test-review.md) |
+| Specification Development | [`workflows/specification-development.md`](../../design-and-analysis/workflows/specification-development.md) |
+| Overview of the workflow system | [`workflows/SKILL.md`](../../design-and-analysis/workflows/SKILL.md) |
 
-| File | What it covers |
-|------|---------------|
-| [skills/coding/build-react-agent-with-langgraph/SKILL.md](../../coding/build-react-agent-with-langgraph/SKILL.md) | LangGraph ReAct agent patterns, state, nodes, routing, graph assembly |
-| [skills/coding/build-agent-tools/SKILL.md](../../coding/build-agent-tools/SKILL.md) | LangChain agent tool conventions, @tool decorator, async persistence |
-| [skills/coding/test-graphs-and-agents/SKILL.md](../../coding/test-graphs-and-agents/SKILL.md) | Testing LangGraph agents: nodes, routing, graph construction, mocking |
+[`code-test-loop`](../../coding/code-test-loop/SKILL.md) is **not** the
+Code-Test-Review workflow — it is Step 1 inside it. Loading it instead silently
+drops the review and completion-check steps.
 
-### Code Quality & Conventions
+---
 
-| File | What it covers |
-|------|---------------|
-| [skills/coding/declarative-method-structure/SKILL.md](../../coding/declarative-method-structure/SKILL.md) | Single decision per method, guard clauses, strategy patterns, no nested conditionals |
-| [skills/coding/method-docstrings/SKILL.md](../../coding/method-docstrings/SKILL.md) | Google-style docstrings for services, clients, workers, RPC methods |
-| [skills/coding/named-arguments-and-type-hints/SKILL.md](../../coding/named-arguments-and-type-hints/SKILL.md) | Named arguments for 2+ params, explicit type hints everywhere |
-| [skills/git-ops/branching-and-commit-conventions/SKILL.md](../../git-ops/branching-and-commit-conventions/SKILL.md) | Branch naming, commit message structure, git workflow |
+# Skill Reference
+
+## Orientation
+
+| Skill | What it covers |
+|---|---|
+| [`agents`](../agents/SKILL.md) | Root entry-point rule for every agent: which instruction files to read, in what order, and where `RESEARCH.md` / `MEMORY.md` live |
+| [`readme`](./SKILL.md) | This file — library map, documentation triad, project knowledge files |
+
+## Design and Analysis
+
+### Specifications
+
+| Skill | What it covers |
+|---|---|
+| [`feature-specifications`](../../design-and-analysis/feature-specifications/SKILL.md) | Style guide for writing technical feature specifications |
+| [`feature-specifications-pre-hook`](../../design-and-analysis/feature-specifications-pre-hook/SKILL.md) | Mandatory context-gathering pass before drafting a spec — KB, `MEMORY.md`, repo guardrails, conventions, affected surface |
+| [`feature-specifications-post-hook`](../../design-and-analysis/feature-specifications-post-hook/SKILL.md) | Mandatory self-review after drafting — DRY consolidation, convention drift, scope, examples, test coverage |
+| [`feature-specification-verification`](../../design-and-analysis/feature-specification-verification/SKILL.md) | Reviewing a draft spec for gaps, ambiguities, and redundant functionality |
+| [`gather-feature-context`](../../design-and-analysis/gather-feature-context/SKILL.md) | Pulls domain, business, current-state, and implementation context into a sign-off briefing |
+| [`breakdown-feature-spec-to-tasks`](../../design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md) | Decomposing an approved spec into dependency-ordered sub-tasks |
+| [`specification-development`](../../design-and-analysis/specification-development/SKILL.md) | Pipeline: brief → context → draft → verification → task breakdown |
+| [`implement-feature-request`](../../design-and-analysis/implement-feature-request/SKILL.md) | End-to-end: feature request → specs → code → tests → review → docs |
+
+### Understanding and debugging
+
+| Skill | What it covers |
+|---|---|
+| [`find-how-it-works`](../../design-and-analysis/find-how-it-works/SKILL.md) | Trace a feature end-to-end through an unfamiliar codebase |
+| [`explain-how-it-works`](../../design-and-analysis/explain-how-it-works/SKILL.md) | Guided-lesson style for explaining a feature, commit, or subsystem, with mandatory diagrams |
+| [`debug-by-isolation`](../../design-and-analysis/debug-by-isolation/SKILL.md) | Canonical five-phase debugging approach — isolate before solving |
+| [`describe-a-problem`](../../design-and-analysis/describe-a-problem/SKILL.md) | Granular format for describing any problem before a fix is proposed |
+| [`is-the-feature-completed`](../../design-and-analysis/is-the-feature-completed/SKILL.md) | Estimating implementation completeness against a spec |
+
+### Review
+
+| Skill | What it covers |
+|---|---|
+| [`review-feature-code`](../../design-and-analysis/review-feature-code/SKILL.md) | Reviewing a feature implementation against its spec |
+| [`code-test-review`](../../design-and-analysis/code-test-review/SKILL.md) | Pipeline: specification or task slice → tested code → review findings → completion assessment |
+| [`development-reviews`](../../design-and-analysis/development-reviews/SKILL.md) | Two-agent review handshake protocol |
+
+### Conventions and knowledge
+
+| Skill | What it covers |
+|---|---|
+| [`derive-new-convention`](../../design-and-analysis/derive-new-convention/SKILL.md) | Deriving a new repeatable convention when no existing skill covers the pattern |
+| [`ubiquitous-language`](../../design-and-analysis/ubiquitous-language/SKILL.md) | One concept, one canonical name across CLI, services, DAOs, APIs, frontend |
+| [`generate-agents-md`](../../design-and-analysis/generate-agents-md/SKILL.md) | Regenerate `AGENTS.md` from the current codebase |
+| [`generate-research-md`](../../design-and-analysis/generate-research-md/SKILL.md) | Regenerate the project `RESEARCH.md` codebase index |
+| [`update-documentation-after-code-changes`](../../design-and-analysis/update-documentation-after-code-changes/SKILL.md) | Keep `RESEARCH.md` and skills in sync after any non-trivial change |
+| [`update-knowledge-base`](../../design-and-analysis/update-knowledge-base/SKILL.md) | Session-end incremental update of the Obsidian KB |
+| [`distill-learnings`](../../design-and-analysis/distill-learnings/SKILL.md) | Capture non-obvious solutions and patterns to `LEARNINGS.md` |
+
+### Orchestration
+
+| Skill | What it covers |
+|---|---|
+| [`orchestrator`](../../design-and-analysis/orchestrator/SKILL.md) | Gateway that decides which skill or workflow to load next; routes dynamic-workflow requests |
+| [`workflows`](../../design-and-analysis/workflows/SKILL.md) | The workflow system: pipeline vs parallel, context handoff, routing rules |
+| [`headless-orchestration`](../../design-and-analysis/headless-orchestration/SKILL.md) | Launch a named workflow as a **detached** headless orchestrator — only on an explicit detach qualifier |
+
+## Coding
+
+### Architecture and structure
+
+| Skill | What it covers |
+|---|---|
+| [`application-structure`](../../coding/application-structure/SKILL.md) | **Start here.** Folder layout, env config, DB setup, app architecture |
+| [`bootstrap-project-scaffolding`](../../coding/bootstrap-project-scaffolding/SKILL.md) | Creating a brand-new project or service |
+| [`build-routers`](../../coding/build-routers/SKILL.md) | FastAPI endpoints, OpenAPI docs, response wrappers |
+| [`build-domain-features`](../../coding/build-domain-features/SKILL.md) | Domain entities — the `dao.py` / `model.py` / `service.py` pattern |
+| [`build-application-services`](../../coding/build-application-services/SKILL.md) | Orchestration logic — the `invoke()` pattern, router → service → domain |
+| [`build-middleware`](../../coding/build-middleware/SKILL.md) | FastAPI cross-cutting middleware (DB sessions, request tracking, auth) |
+| [`api-response-conventions`](../../coding/api-response-conventions/SKILL.md) | `SuccessResponseDAO` / `FailureResponseDAO` shapes |
+| [`graph-gateway-invoke-convention`](../../coding/graph-gateway-invoke-convention/SKILL.md) | Gateway invoke convention for graph entry points and orchestration seams |
+
+### Workers and events
+
+| Skill | What it covers |
+|---|---|
+| [`build-celery-workers`](../../coding/build-celery-workers/SKILL.md) | Celery tasks — naming, registration, routes, beat |
+| [`build-dbos-workflow-orchestration-pattern`](../../coding/build-dbos-workflow-orchestration-pattern/SKILL.md) | Multi-step durable workflows with DBOS queues and recursive watchers |
+| [`build-schedulers-tasks-with-dbos`](../../coding/build-schedulers-tasks-with-dbos/SKILL.md) | DBOS init, DB pool config, scheduled tasks |
+| [`build-event-handlers`](../../coding/build-event-handlers/SKILL.md) | Event handler routing and dispatch |
+| [`build-partitioned-events`](../../coding/build-partitioned-events/SKILL.md) | Event partitioning via consistent hashing |
+
+### AI and agents
+
+| Skill | What it covers |
+|---|---|
+| [`build-react-agent-with-langgraph`](../../coding/build-react-agent-with-langgraph/SKILL.md) | LangGraph ReAct loops — state, nodes, routing, graph assembly |
+| [`build-agent-tools`](../../coding/build-agent-tools/SKILL.md) | LangChain `@tool` conventions — schema DAO + tool class + thin bridge |
+| [`test-graphs-and-agents`](../../coding/test-graphs-and-agents/SKILL.md) | Testing LangGraph agents with the `FauxChatModel` pattern |
+
+### External systems
+
+| Skill | What it covers |
+|---|---|
+| [`build-clients`](../../coding/build-clients/SKILL.md) | External API clients (aiohttp/httpx), DAOs, error handling, testing |
+| [`build-clickhouse-features`](../../coding/build-clickhouse-features/SKILL.md) | ClickHouse clients, migrations, DAOs, S3, queries |
+| [`build-tcp-codec`](../../coding/build-tcp-codec/SKILL.md) | Length-prefixed TCP codec — framing, header, checksum, size bounds |
+| [`auth-security-patterns`](../../coding/auth-security-patterns/SKILL.md) | Password hashing (bcrypt + SHA-256 pre-hash) and JWT session design |
+
+### Frontend (server-rendered)
+
+| Skill | What it covers |
+|---|---|
+| [`create-frontend-htmx-jinja2-fastapi-app`](../../coding/create-frontend-htmx-jinja2-fastapi-app/SKILL.md) | Server-rendered FastAPI + Jinja2 + HTMX frontends |
+
+### Code quality
+
+| Skill | What it covers |
+|---|---|
+| [`code-review-rules`](../../coding/code-review-rules/SKILL.md) | Fast-pass checklist of non-negotiable hard rules — a violation is a blocker |
+| [`declarative-method-structure`](../../coding/declarative-method-structure/SKILL.md) | Tell, don't ask — flat structure, early returns, no nested conditionals |
+| [`naming-and-clarity`](../../coding/naming-and-clarity/SKILL.md) | Self-describing names, Build/Create/BuildAndCreate and publish/consume verbs |
+| [`method-docstrings`](../../coding/method-docstrings/SKILL.md) | Google-style docstrings on every method and function |
+| [`named-arguments-and-type-hints`](../../coding/named-arguments-and-type-hints/SKILL.md) | Keyword arguments and explicit type hints everywhere |
+| [`code-test-loop`](../../coding/code-test-loop/SKILL.md) | The coding cadence — code → test → green → next chunk |
 
 ### Testing
 
-| File | What it covers |
-|------|---------------|
-| [skills/coding/test-verification-policy/SKILL.md](../../coding/test-verification-policy/SKILL.md) | Every code change needs passing tests covering all decision points |
-| [skills/coding/setup-dependencies-and-tests/SKILL.md](../../coding/setup-dependencies-and-tests/SKILL.md) | PostgreSQL setup, Docker Compose, transactional test fixtures |
-| [skills/coding/switch-environments-and-run-tests/SKILL.md](../../coding/switch-environments-and-run-tests/SKILL.md) | loadenv helper, environment switching, test execution |
+| Skill | What it covers |
+|---|---|
+| [`test-verification-policy`](../../coding/test-verification-policy/SKILL.md) | Coverage and decision-path checklist before declaring tests done |
+| [`test-domain-services`](../../coding/test-domain-services/SKILL.md) | Testing domain services — Pydantic DAOs, service methods, persistence |
+| [`test-app-services`](../../coding/test-app-services/SKILL.md) | Testing application services with mocked dependencies |
+| [`test-controllers`](../../coding/test-controllers/SKILL.md) | Testing FastAPI routers via `TestClient` |
+| [`setup-dependencies-and-tests`](../../coding/setup-dependencies-and-tests/SKILL.md) | Postgres, Docker, `conftest.py`, transactional fixtures |
+| [`switch-environments-and-run-tests`](../../coding/switch-environments-and-run-tests/SKILL.md) | Environment switching and test execution |
 
-### Integration Tests (cross-service)
+### Setup and tooling
 
-| File | What it covers |
-|------|---------------|
-| [skills/integration-tests/01-test-setup/SKILL.md](../../integration-tests/01-test-setup/SKILL.md) | Stack setup, Docker orchestration, DB seeding, env isolation. **Hard Constraints** block at top — no NATS subs, one service per cluster, ordered Backgrounds, explicit feature-flag preconditions |
-| [skills/integration-tests/02-test-execution/SKILL.md](../../integration-tests/02-test-execution/SKILL.md) | Authoring tests with pytest, pytest-bdd, playwright |
-| [skills/integration-tests/03-teardown-and-reporting/SKILL.md](../../integration-tests/03-teardown-and-reporting/SKILL.md) | Cleanup, dependency-ordered DB reset, reporting. Includes the `information_schema.referential_constraints` discovery query and two-pass deletes for raceable tables |
-| [skills/integration-tests/04-scenario-conventions/SKILL.md](../../integration-tests/04-scenario-conventions/SKILL.md) | File org, fixture layering, step-def patterns, mock server design. Background step ordering + V2 SOR assertion conventions |
-| [skills/integration-tests/05-step-definitions-with-domain-helpers/SKILL.md](../../integration-tests/05-step-definitions-with-domain-helpers/SKILL.md) | Step defs that consume domain helpers from source repos. Explicit feature-flag preconditions + snapshot-based assertions |
-| [skills/integration-tests/06-generate-feature-requests/SKILL.md](../../integration-tests/06-generate-feature-requests/SKILL.md) | Drafting feature-request docs that precede integration tests |
-| [skills/integration-tests/07-debugging-failing-tests/SKILL.md](../../integration-tests/07-debugging-failing-tests/SKILL.md) | **The 7-step methodology** for any integration-test failure — starts with Step 0 service inventory audit |
-| [skills/integration-tests/08-generating-test-plans/SKILL.md](../../integration-tests/08-generating-test-plans/SKILL.md) | Generating detailed test plans before writing complex integration tests |
-| [skills/integration-tests/09-plan-to-code/SKILL.md](../../integration-tests/09-plan-to-code/SKILL.md) | Converting a test plan into code, scenario-by-scenario |
-| [skills/integration-tests/10-cardinal-rules-and-anti-patterns/SKILL.md](../../integration-tests/10-cardinal-rules-and-anti-patterns/SKILL.md) | Hard NOs and ALWAYS-DOs for integration-test work. **Read before any integration-test code change.** Critical rule: no duplicate long-running services across containers |
-| [skills/integration-tests/11-integration-test-investigation-format/SKILL.md](../../integration-tests/11-integration-test-investigation-format/SKILL.md) | Structured writeup format for integration-test failures — companion to `skills/design-and-analysis/describe-a-problem/SKILL.md` |
+| Skill | What it covers |
+|---|---|
+| [`setup-alembic`](../../coding/setup-alembic/SKILL.md) | Initialising and managing Alembic migrations |
+| [`python-path-and-import-resolution`](../../coding/python-path-and-import-resolution/SKILL.md) | `PYTHONPATH` convention and import-failure debugging |
+| [`build-api-documentation`](../../coding/build-api-documentation/SKILL.md) | Redoc + FastAPI API docs |
+| [`generate-swagger-documentation`](../../coding/generate-swagger-documentation/SKILL.md) | OpenAPI / Swagger docs across multiple services |
+| [`build-vscode-launch-configurations`](../../coding/build-vscode-launch-configurations/SKILL.md) | Authoring VS Code launch configurations |
 
-### Setup & Infrastructure
+## Git Ops
 
-| File | What it covers |
-|------|---------------|
-| [skills/coding/setup-alembic/SKILL.md](../../coding/setup-alembic/SKILL.md) | Alembic migration setup, env.py config, creating migrations |
-| [skills/coding/python-path-and-import-resolution/SKILL.md](../../coding/python-path-and-import-resolution/SKILL.md) | PYTHONPATH convention for src.* import resolution |
+| Skill | What it covers |
+|---|---|
+| [`git-ops-orchestrator`](../../git-ops/git-ops-orchestrator/SKILL.md) | Gateway — routes a git request into the right branching, commit, PR, or worktree skill |
+| [`branching-and-commit-conventions`](../../git-ops/branching-and-commit-conventions/SKILL.md) | Git safety rails, branch naming, commit messages, PR guardrails |
+| [`create-feature-branch`](../../git-ops/create-feature-branch/SKILL.md) | Create a task-scoped feature branch from the latest main |
+| [`sync-main`](../../git-ops/sync-main/SKILL.md) | Refresh local main from remote without clobbering in-flight work |
+| [`commit-and-push`](../../git-ops/commit-and-push/SKILL.md) | Stage, confirm the message, commit safely, push to the correct upstream |
+| [`generate-pr-description`](../../git-ops/generate-pr-description/SKILL.md) | Generate a PR title and body from branch, commits, diff, and template |
+| [`create-pull-request`](../../git-ops/create-pull-request/SKILL.md) | Open a PR against the correct base branch |
+| [`load-pr-context`](../../git-ops/load-pr-context/SKILL.md) | Collect PR metadata, diff themes, review comments, next actions |
+| [`fix-pr-review`](../../git-ops/fix-pr-review/SKILL.md) | Address review comments, integrate base safely, rerun verification, push |
+| [`ship-feature`](../../git-ops/ship-feature/SKILL.md) | Commit → push → open MR/PR → merge → checkout main and pull |
+| [`gitlab-issues`](../../git-ops/gitlab-issues/SKILL.md) | Publish specification files to GitLab Issues and manage labels and state with `glab` |
+| [`worktrees`](../../git-ops/worktrees/SKILL.md) | Git worktrees for latest-main reads, parallel branches, reviewer/writer isolation |
+| [`release-process`](../../git-ops/release-process/SKILL.md) | Release a new version of slo — bump, MR, merge, tag, publish installer |
 
-### Documentation & Review
+## CLI
 
-| File | What it covers |
-|------|---------------|
-| [skills/design-and-analysis/review-feature-code/SKILL.md](../../design-and-analysis/review-feature-code/SKILL.md) | Structured code review against specifications |
-| [skills/design-and-analysis/update-documentation-after-code-changes/SKILL.md](../../design-and-analysis/update-documentation-after-code-changes/SKILL.md) | When and how to update skills/orientation/research/SKILL.md, AGENTS.md, and code prompts |
-| [skills/coding/generate-swagger-documentation/SKILL.md](../../coding/generate-swagger-documentation/SKILL.md) | Generate OpenAPI/Swagger docs across multiple services with per-service sub-agents |
-| [skills/design-and-analysis/distill-learnings/SKILL.md](../../design-and-analysis/distill-learnings/SKILL.md) | Distill reusable insights into workspace-level `LEARNINGS.md` after implementation sessions |
+| Skill | What it covers |
+|---|---|
+| [`cli-readme`](../../cli/cli-readme/SKILL.md) | Orientation for the CLI family — read first |
+| [`build-typer-cli-apps`](../../cli/build-typer-cli-apps/SKILL.md) | User-facing Python CLIs with Typer + Rich, default TUI launch, subcommands |
+| [`build-cli-commands`](../../cli/build-cli-commands/SKILL.md) | Eighteen hard rules for adding an operator-facing CLI verb end-to-end |
+| [`build-cli-command-class`](../../cli/build-cli-command-class/SKILL.md) | Command class conventions — naming, the three required methods, `execute()` discipline |
+| [`build-cli-modules`](../../cli/build-cli-modules/SKILL.md) | Module standards — `@handle_cli_errors`, two-console discipline, polling, retry, dry-run gate |
+
+## TUI
+
+| Skill | What it covers |
+|---|---|
+| [`tui-readme`](../../tui/tui-readme/SKILL.md) | Orientation for the Textual TUI family — read first |
+| [`build-textual-tuis`](../../tui/build-textual-tuis/SKILL.md) | Textual TUIs with explicit app/router/renderer/widget boundaries |
+| [`tui-scheduled-operations`](../../tui/tui-scheduled-operations/SKILL.md) | Operate scheduled tasks from an interactive TUI session |
+| [`tui-scheduled-workflows`](../../tui/tui-scheduled-workflows/SKILL.md) | Supervise dynamic workflows, recover stalled orchestrators, clean up monitors |
+| [`slodiff`](../../tui/slodiff/SKILL.md) | Show the git diff (HEAD vs worktree) for one file as structured before/after content |
+
+## Integration Tests
+
+| Skill | What it covers |
+|---|---|
+| [`01-test-setup`](../../integration-tests/01-test-setup/SKILL.md) | Stack setup, Docker orchestration, DB seeding, env isolation. **Hard Constraints** block at the top |
+| [`02-test-execution`](../../integration-tests/02-test-execution/SKILL.md) | Authoring scenarios with pytest, pytest-bdd, Playwright |
+| [`03-teardown-and-reporting`](../../integration-tests/03-teardown-and-reporting/SKILL.md) | Cleanup, dependency-ordered DB reset, reporting |
+| [`04-scenario-conventions`](../../integration-tests/04-scenario-conventions/SKILL.md) | File organization, fixture layering, step-def patterns, mock server design |
+| [`05-step-definitions-with-domain-helpers`](../../integration-tests/05-step-definitions-with-domain-helpers/SKILL.md) | Step defs that consume domain helpers from source repos |
+| [`06-generate-feature-requests`](../../integration-tests/06-generate-feature-requests/SKILL.md) | Drafting the feature-request docs that precede integration tests |
+| [`07-debugging-failing-tests`](../../integration-tests/07-debugging-failing-tests/SKILL.md) | **The 7-step methodology** for any integration-test failure |
+| [`08-generating-test-plans`](../../integration-tests/08-generating-test-plans/SKILL.md) | Detailed test plans before writing complex integration tests |
+| [`09-plan-to-code`](../../integration-tests/09-plan-to-code/SKILL.md) | Converting a test plan into code, scenario by scenario |
+| [`10-cardinal-rules-and-anti-patterns`](../../integration-tests/10-cardinal-rules-and-anti-patterns/SKILL.md) | Hard NOs and ALWAYS-DOs. **Read before any integration-test change** |
+| [`11-integration-test-investigation-format`](../../integration-tests/11-integration-test-investigation-format/SKILL.md) | Structured writeup format for integration-test failures |
+
+## Frontend / Vue
+
+| Skill | What it covers |
+|---|---|
+| [`vue-coding-conventions`](../../frontend-vue/vue-coding-conventions/SKILL.md) | Mandatory Vue 3 / TypeScript conventions — read first |
+| [`build-vue-components`](../../frontend-vue/build-vue-components/SKILL.md) | The 3-layer pattern mirroring the backend (component / composable / API) |
+| [`build-websocket-endpoints`](../../frontend-vue/build-websocket-endpoints/SKILL.md) | Real-time WebSocket bridges between Vue and backend agents |
+| [`01-vue-fundamentals`](../../frontend-vue/01-vue-fundamentals/SKILL.md) | Tutorial: templates, directives, reactivity basics |
+| [`02-typescript-essentials`](../../frontend-vue/02-typescript-essentials/SKILL.md) | Tutorial: TypeScript essentials for Vue components |
+| [`03-composition-api`](../../frontend-vue/03-composition-api/SKILL.md) | Tutorial: Composition API patterns |
+| [`04-pinia-state-management`](../../frontend-vue/04-pinia-state-management/SKILL.md) | Tutorial: Pinia state management |
+| [`05-vue-router`](../../frontend-vue/05-vue-router/SKILL.md) | Tutorial: Vue Router setup and navigation |
+| [`06-composables`](../../frontend-vue/06-composables/SKILL.md) | Tutorial: writing and using composables |
+| [`07-websocket-integration`](../../frontend-vue/07-websocket-integration/SKILL.md) | Tutorial: WebSocket integration in Vue |
+| [`08-bootstrap-scss-theming`](../../frontend-vue/08-bootstrap-scss-theming/SKILL.md) | Tutorial: Bootstrap + SCSS theming |
+
+## Presentation
+
+| Skill | What it covers |
+|---|---|
+| [`present-as-html`](../../presentation/present-as-html/SKILL.md) | Self-contained HTML — scroll-snap slide deck or paged documents, Slo design language |
+| [`present-as-single-page`](../../presentation/present-as-single-page/SKILL.md) | One long scrolling page with a hero, anchored sections, optional sticky TOC |
+| [`present-as-pdf-book`](../../presentation/present-as-pdf-book/SKILL.md) | Print-ready O'Reilly-style PDF via WeasyPrint — cover, TOC, part dividers, callouts |
+
+## User Content
+
+| Skill | What it covers |
+|---|---|
+| [`create-user-skill`](../../user-content/create-user-skill/SKILL.md) | Create a personal skill at `~/.slo/user_skills` |
+| [`create-user-workflow`](../../user-content/create-user-workflow/SKILL.md) | Create a personal pipeline workflow at `~/.slo/user_workflows` |
 
 ---
 
-## Analyze Folder
+## Configuration placeholders
 
-The `analyze/` subfolder contains prompts for **understanding, documenting, and reporting** on your codebase — not for writing new code.
+Some skills use `{{PLACEHOLDER}}` variables for project-specific values. After
+copying a skill into a project, search and replace:
 
-| File | What it does |
-|------|-------------|
-| [find-how-it-works.md](../../design-and-analysis/find-how-it-works/SKILL.md) | Trace a feature end-to-end: router -> service -> DAO -> DB. Use when someone asks "how does X work?" |
-| [feature-specifications.md](../../design-and-analysis/feature-specifications/SKILL.md) | Style guide for writing implementation blueprints. Follow this when creating specs for new features |
-| [generate-agents-md.md](../../design-and-analysis/generate-agents-md/SKILL.md) | Step-by-step prompt to generate or regenerate `AGENTS.md` from the current codebase |
-| [generate-research-md.md](../../design-and-analysis/generate-research-md/SKILL.md) | Step-by-step prompt to generate or regenerate `skills/orientation/research/SKILL.md` as a full codebase index |
-| `daily-morning-standup-report.md` | Generate a daily standup summary from git history and JIRA tickets |
-| `daily-priorities.md` | Generate a prioritized task list for the day based on sprint state |
-| `weekly-update-generator.md` | Generate weekly progress reports from commit history and ticket status |
-| `weekly-bottleneck-report-generator.md` | Identify blockers, bottlenecks, and risk areas across the team |
+| Placeholder | Description | Example |
+|---|---|---|
+| `{{PROJECT_NAME}}` | Project name | `MyApp` |
+| `{{project_module}}` | Python module name (lowercase) | `myapp` |
+| `{{MONOREPO_NAME}}` | Monorepo name, if applicable | `orders-platform` |
+| `{{API_BASE_URL}}` | API base URL | `https://api.example.com` |
+| `{{DOMAIN}}` | Domain name | `example.com` |
+| `{{PRODUCT_NAME}}` | Product identifier | `MyProduct` |
+
+Most files are already generic and require no replacement.

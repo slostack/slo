@@ -214,9 +214,9 @@ surface in PR review.
 
 ---
 
-## Reference in your skills/orientation/claude/SKILL.md
+## Reference in your CLAUDE.md
 
-This rule belongs in the "Always-on rules" section of your skills/orientation/claude/SKILL.md:
+This rule belongs in the "Always-on rules" section of your CLAUDE.md:
 
 ```markdown
 @<workspace>/skills/coding/code-test-loop/SKILL.md

@@ -34,7 +34,7 @@ branching, committing, pushing, or opening a PR.
 
 ## Precedence
 
-1. **Repo-local instructions win.** Read `AGENTS.md`, `skills/orientation/claude/SKILL.md`, `CONTRIBUTING.md`,
+1. **Repo-local instructions win.** Read `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`,
    or other repo docs first when they define git rules.
 2. **User instructions override defaults** when explicit.
 3. **Slo defaults below apply only when the repo is silent or inconsistent.**

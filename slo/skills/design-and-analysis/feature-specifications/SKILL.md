@@ -25,25 +25,47 @@ source_prompt: analyze/feature-specifications.md
 ## Examples
 
 - The user asks for an end-to-end workflow that fits: Style guide for writing technical feature specifications.
-- Use when authoring a spec from scratch — covers structure, scope, acceptance criteria, sequencing. 
+- Use when authoring a spec from scratch — covers structure, scope, acceptance criteria, sequencing.
 
-**Default workflow:** 
-- load feature-specifications-pre-hook first (pre-hook), 
-- then this, 
-- then feature-specifications-post-hook (post-hook). 
+**Default workflow:**
+- load feature-specifications-pre-hook first (pre-hook),
+- then this,
+- then feature-specifications-post-hook (post-hook).
 
 The older gather-feature-context and feature-specification-verification skills remain available as legacy companions when explicitly requested.
 
 ## Slo defaults for request and specification artifacts
 
-Unless the user explicitly overrides these paths, use:
+**Read the companion feature-development skills first.** Unless the user asks you not to, skim the sibling skills in this group before drafting — they carry the hooks, verification, and task-breakdown steps this guide leans on, and they keep the spec consistent with the rest of the Slo workflow:
+
+- `feature-specifications-pre-hook` — the PRE hook that builds the context bundle
+- `feature-specifications-post-hook` — the POST hook that verifies and decides on splitting
+- `feature-specification-verification` — the verification pass
+- `breakdown-feature-spec-to-tasks` — splitting an approved spec into tasks
+- `gather-feature-context` — legacy context companion (on request)
+
+**Skill location.** These live under the Slo skill library at
+`~/.local/pipx/venvs/slo/lib/python3.11/site-packages/skills/design-and-analysis/`,
+with personal overrides under `~/.slo/user_skills/`. Inside a repo checkout they mirror to
+`skills/design-and-analysis/`.
+
+**Write for humans first.** Use simple, direct language throughout, and lean on visual representation — ASCII diagrams, numbered user journeys, before/after trees, and tables — wherever a picture makes the change quicker to understand than prose.
+
+**Load the project's rules before drafting.** A spec is only as grounded as the conventions it honors. Read whichever of these exist, home-directory copy and repo-root copy both:
+
+- `~/.slo/SLO.md` and a root `SLO.md`
+- `~/.claude/CLAUDE.md` and a root `CLAUDE.md`
+- `~/.codex/AGENTS.md` and a root `AGENTS.md`
+- a project `RESEARCH.md` and a project `MEMORY.md`, when the project maintains them
+
+**Artifact paths.** Unless the user explicitly overrides these paths, use:
 
 ```text
 <feature-requests-root> = ${SLO_FEATURE_REQUESTS_DIR:-~/.slo/projects/<project_name>/feature-requests}
 <feature-specifications-root> = ${SLO_FEATURE_SPECIFICATIONS_DIR:-~/.slo/projects/<project_name>/feature-specifications}
 ```
 
-Use one folder per feature:
+**Expected structure.** One folder per feature. The `overview.md` carries the product framing and ends with the brief technical overview; each numbered sibling is one standalone technical sub-spec:
 
 ```text
 <feature-requests-root>/
@@ -52,8 +74,9 @@ Use one folder per feature:
 
 <feature-specifications-root>/
 └── 01-example-feature/
-    ├── overview.md
-    ├── 01.a-sub-step.md
+    ├── overview.md            # Overview → Brief Technical Overview (business + product framing)
+    ├── 01.a.1-first-slice.md  # Technical Sub-Spec (one of n)
+    ├── 01.a.2-second-slice.md
     └── plan.md
 ```
 
@@ -63,72 +86,34 @@ Use one folder per feature:
 
 This prompt is wrapped by two non-optional hooks. The agent must run them in order, without being asked:
 
-1. **PRE hook — [`feature-specifications-pre-hook.md`](../feature-specifications-pre-hook/SKILL.md).** Run this *before* writing a single line of the spec. It loads skills/orientation/claude/SKILL.md, AGENTS.md, skills/orientation/research/SKILL.md, MEMORY.md, the Knowledge Base, the affected code surface, the relevant `build-*.md` conventions, and the second-order requirements (scale, latency, logging, idempotency, deployment posture). Its output — the **PRE-Hook Context Bundle** — is the brief this style guide is applied against. Do not draft the spec until the bundle exists in the conversation.
+1. **PRE hook — [`feature-specifications-pre-hook.md`](../feature-specifications-pre-hook/SKILL.md).** Run this *before* writing a single line of the spec. It loads CLAUDE.md, AGENTS.md, RESEARCH.md, MEMORY.md, the Knowledge Base, the affected code surface, the relevant `build-*.md` conventions, and the second-order requirements (scale, latency, logging, idempotency, deployment posture). Its output — the **PRE-Hook Context Bundle** — is the brief this style guide is applied against. Do not draft the spec until the bundle exists in the conversation.
 
-2. **POST hook — [`feature-specifications-post-hook.md`](../feature-specifications-post-hook/SKILL.md).** Run this *immediately after* the spec body is drafted (or revised). It invokes [`feature-specification-verification.md`](../feature-specification-verification/SKILL.md), cross-checks the spec against every applicable code-convention prompt, always runs the DRY consolidation pass over the entities and data structures the spec introduces, decides whether the scope should be split via [`breakdown-feature-spec-to-tasks.md`](../breakdown-feature-spec-to-tasks/SKILL.md), audits example richness, validates the human-readable narrative sections enumerated below, validates test coverage per `skills/coding/test-verification-policy/SKILL.md`, and validates the chosen spec mode. If the verdict is REVISE, the agent edits the spec in place and re-runs the hook until it returns READY. Only a READY verdict makes the spec eligible for commit / wiki publication / hand-off.
+2. **POST hook — [`feature-specifications-post-hook.md`](../feature-specifications-post-hook/SKILL.md).** Run this *immediately after* the spec body is drafted (or revised). It invokes [`feature-specification-verification.md`](../feature-specification-verification/SKILL.md), cross-checks the spec against every applicable code-convention prompt, always runs the DRY consolidation pass over the entities and data structures the spec introduces, decides whether the scope should be split via [`breakdown-feature-spec-to-tasks.md`](../breakdown-feature-spec-to-tasks/SKILL.md), audits example richness, validates the human-readable narrative sections enumerated below, and validates test coverage per `skills/coding/test-verification-policy/SKILL.md`. If the verdict is REVISE, the agent edits the spec in place and re-runs the hook until it returns READY. Only a READY verdict makes the spec eligible for commit / wiki publication / hand-off.
 
 A feature specification produced without both hooks is considered incomplete.
 
 ---
 
-## Mandatory Spec Mode Selection
+## One Specification, Product Framing *and* Engineering Detail Together
 
-Every feature specification must include **BOTH** of these two modes **before drafting begins** unless the user asks for only one specifically. 
-
-When specifically asked, the chosen mode must be written into the PRE-Hook Context Bundle.
-
-### Mode A — Business / product feature spec
-
-Use this mode when the document is primarily explaining:
-
-- the product or business ask,
-- a multi-layer feature spanning backend, frontend, workflows, and rollout,
-- user/admin journeys,
-- requirements traceability back to JIRA / Confluence / stakeholders,
-- what the organization is building and why.
-
-This mode still needs technical detail, but the document is led by product intent and lifecycle.
-
-### Mode B — Engineering implementation sub-spec
-
-Use this mode when the document is primarily explaining:
-
-- one technical slice of a larger feature,
-- one architectural boundary or runtime seam,
-- a refactor, deletion, wiring change, runtime behavior shift, or implementation phase,
-- a child spec that engineers should be able to implement directly,
-- a document like `02.a.1` through `02.a.6` under `specifications/02-slo-tui-cli/`.
-
-This mode is a **standalone engineering chapter**. It must read like an O'Reilly implementation guide: why this slice exists, what is true in the code today, what earlier design text is stale, what this sub-spec changes, the end-to-end flow it owns, and the concrete code/tests needed to land it.
-
-### Mode-selection heuristics
-
-Default to **Business / product feature spec** when:
-
-- the ask starts from product intent or business behavior,
-- the spec spans multiple layers or repos as one feature,
-- the feature is still being shaped at the requirements level,
-- the document is the parent overview that later breaks down into technical slices.
-
-Default to **Engineering implementation sub-spec** when:
-
-- the ask references a parent spec,
-- the document is one dependency-ordered child task or technical slice,
-- the main goal is to make one implementation seam low-ambiguity,
-- the feature is mostly about control flow, runtime architecture, session/wiring behavior, deletion, migration, or internal component structure.
-
-If the mode is unclear, ask the operator or state the inference explicitly before drafting.
+> **There is a single specification shape.** It is **not** a choice between a "business" document and an "engineering" document — every non-trivial feature needs both, and they live together as one family:
+>
+> - an **`overview.md`** that carries the product/business framing and ends with a brief technical overview, and
+> - one or more **technical sub-specs** (`01.a.1`, `01.a.2`, …) that each own one implementation slice in full engineering detail.
+>
+> A tiny, single-slice feature may fold both halves into one document. A larger feature keeps the overview thin and pushes the depth into numbered sub-specs. Either way, the reader always gets the product story first and the implementation-ready detail second — **never one without the other**.
+>
+> **Write for two audiences at once.** The overview and the narrative must be plain enough for a human to follow with no prior context; the sub-specs must be precise enough for an implementation agent to build from with no follow-up questions. Simple language throughout. Gradual context. Introduce existing concepts before you change them.
+>
+> **Only depart from carrying both halves** when the user explicitly asks for just the overview or just a single sub-spec. When they do, state that inference before drafting.
+>
+> **Open like an O'Reilly chapter.** Every specification — the overview and every child sub-spec — must begin with the problem and the runtime or business story, orient the reader inside the existing system, then progressively narrow into components and code. Do **not** jump straight into method names or low-level implementation details before the reader understands the change in plain English.
+>
+> Use a mix of narrative, numbered steps, ASCII diagrams, and tables to orient the reader. Avoid silent code dumps or silent prose. Every behavioral claim must be grounded in a real code sample with a `file:line` citation. This document is for the user *and* the AI, so lay emphasis on readability and clarity.
 
 ---
 
-## Shared Opening Requirements (Both Modes)
-
-Every feature specification and every broken-down child spec must open like an **O'Reilly technical book chapter**: begin with the problem and the runtime or business story, orient the reader inside the existing system, then progressively narrow into components and code. Do **not** jump straight into method names or low-level implementation details before the reader understands the change in plain English.
-
-> Use a mix of narrative, numbered steps, ASCII diagrams, and tables to orient the reader. Avoid silent code dumps or silent prose. Every behavioral claim must be grounded in a real code sample with a `file:line` citation.
-> 
-> This document is for the user and the AI so lay emphasis on readbility and clarity. 
-
+## Shared Opening Requirements
 
 ### Mandatory opening section: `## Context`
 
@@ -155,77 +140,69 @@ That section must explicitly state the issue and the chosen resolution.
 
 ---
 
-## Mode-Specific Canonical Structures
+## Canonical Structure
 
-Remember every non-trivial spec requires both components unless explicitly requested. 
+Every feature specification progresses through the same arc: product intent → the existing landscape and its gaps → a walk-through of the change a human can follow → a brief technical map → the deep technical sub-specs. The overview owns the first four; the sub-specs own the fifth, one slice at a time.
 
-## Mode A — Business / product feature spec
+### The `overview.md` — product framing and technical map
 
-Use this mode for parent specs and broad feature documents. The exact headings may vary slightly by feature, but the following structure is the default target:
+1. **`## Overview`**
+   - Describe the business / product ask.
+   - Describe the entire feature being implemented and what it addresses.
+   - Say what the organization or team is building, and **why**.
 
-1. `## Context`
-2. `## The journey this plan owns a slice of` *(when applicable)*
-3. `## Scope` / `## Goals` / `## Non-goals`
-4. `## Current product or system behavior`
-5. `## Proposed behavior`
-6. `## Domain / API / workflow / UI changes`
-7. `## Code Reference`
-8. `## Tests`
-9. `## Acceptance Criteria`
-10. `## Risks / rollout / dependencies`
+2. **`## Overview — Existing Feature`**
+   - **What exists today and its challenges** — the current behavior and where it falls short.
+   - **What is needed** — the gap between today and the goal.
+   - **The changes required** — the shape of the work at a high level.
 
-Use this mode when the reader needs strong product and business framing before technical depth.
+3. **`## Full Feature Walk Through`**
+   - Walk the reader through a simple journey, describing the control flow from a functional or visual perspective — what is going to happen, step by step.
+   - Use visual aids: ASCII diagrams, a numbered user journey, before/after sketches. User journeys are usually the best example vehicle.
+   - **Trace requirements.** When the request alludes to a JIRA / Confluence / project-management story, pull it in through the available connectors (or ask the operator for access) and tie the walk-through back to those requirements.
 
-## Mode B — Engineering implementation sub-spec
+4. **`## A Brief Technical Overview`**
+   - The things the sub-specs will cover in greater detail.
+   - A quick walk-through of all the changes, without granular detail.
+   - Highlight, at a **class or method level**, what gets changed to reach the goal — enough to map the feature onto the code, not enough to implement it yet.
+   - List the child sub-specs and the slice each one owns, in dependency order.
 
-Use this mode for child technical slices and implementation-ready engineering chapters. This mode should look like `02.a.1` onward under `specifications/02-slo-tui-cli/`.
+### The technical sub-specs — one standalone engineering chapter per slice
 
-### Required metadata header
+> Each sub-spec is a **standalone engineering chapter**. It must read like an O'Reilly implementation guide: why this slice exists, what is true in the code today, what earlier design text is stale, what this sub-spec changes, the end-to-end flow it owns, and the concrete code and tests needed to land it. Use the simplest language. Design it for humans *and* for the specificity agents need.
 
-Engineering implementation sub-specs must begin with a compact metadata line under the H1. Include, when known:
+Each technical sub-spec (`01.a.1` … `01.a.n`) is a child of the overview and covers **one** technical slice. It must:
 
-- `Status`
-- `Owner`
-- `Last updated`
-- `Parent spec`
-- `Branch`
-- `Repo`
-- `Approx. size`
+- describe **how it fits into the larger solution** and what the outcome will be when this slice is done;
+- state the **architectural boundary** it owns in clear terms;
+- carry the actual change — a refactor, deletion, wiring change, runtime-behavior shift, or implementation phase — with **code-level implementation detail** that honors the conventions in the applicable skills and leaves **no ambiguity** for the implementing agent;
+- be directly implementable by an engineer without flipping back to the parent overview;
+- follow the repo's numbering scheme (e.g. `02.a.1` … `02.a.6` under `specifications/02-slo-tui-cli/`).
 
-### Required title format
+**Required metadata header.** Begin each sub-spec with a compact metadata line under the H1, including when known: `Status`, `Owner`, `Last updated`, `Parent spec`, `Branch`, `Repo`, `Approx. size`.
 
-Engineering implementation sub-spec titles may use either of these formats:
+**Required title format.** Either form is acceptable — do not force `Step N - ...` if the repo already uses `02.a.1`:
 
 - `Step 02.a.1 — Owning One Agent Session Per Process`
 - `02.a.1 — Owning One Agent Session Per Process`
 
-Do **not** force everything into `Step N - ...` if the repo's spec numbering scheme already uses forms like `02.a.1`.
-
-### Required numbered structure
-
-Engineering implementation sub-specs must use this canonical structure unless the operator explicitly asks for a different one:
+**Required numbered structure** (unless the operator explicitly asks for a different one):
 
 1. `## 1. Context`
-2. `## 2. Why`
-3. `## 3. Current State`
-4. `## 4. Proposed Approach`
-5. `## 5. Domain Introductions`
-6. `## 6. End-to-End Flow`
-7. `## 7. Implementation Details`
-8. `## 8. Tests`
+2. `## 2. Why` — why this slice exists and what it unlocks.
+3. `## 3. Current State` — what is true in code **today**: real symbols, real file paths, current constraints, and any live deltas from older design text. If earlier specs or snippets are stale, say so explicitly and correct them here.
+4. `## 4. Proposed Approach` — the design decision in plain English before any code appears.
+5. `## 5. Domain Introductions` — define each new noun conceptually before it is used in the flow or code.
+6. `## 6. End-to-End Flow` — walk the reader through the runtime slice this sub-spec owns.
+7. `## 7. Implementation Details` — code-level detail, implementation order, verification commands, and manual smoke guidance where applicable. Honor the conventions in the applicable skills.
+8. `## 8. Tests` — see the test requirements below.
 9. `## 9. Acceptance Criteria`
-10. `## 10. Dependencies`
+10. `## 10. Dependencies` — what blocks this slice and what it blocks downstream.
 
-### Additional engineering-sub-spec requirements
+**Tests a sub-spec must specify:**
 
-- The document must be **standalone**. A developer should not need to keep flipping back to the parent spec to understand the slice.
-- `## 3. Current State` must record what is true in code **today**: real symbols, real file paths, current constraints, and any live deltas from older design text.
-- If earlier specs or snippets are stale, say so explicitly and correct them in the new spec.
-- `## 4. Proposed Approach` must explain the design decision in plain English before code appears.
-- `## 5. Domain Introductions` must define each new noun conceptually before it is used in flow or code sections.
-- `## 6. End-to-End Flow` must walk the reader through the runtime slice this sub-spec owns, even if a later control-flow section dives deeper.
-- `## 7. Implementation Details` should include implementation order, verification commands, and manual smoke guidance when applicable.
-- `## 10. Dependencies` must clearly state what blocks this slice and what it blocks downstream.
+- **Unit tests** that verify a single behavior in isolation.
+- **Functional tests** that exercise the whole workflow this slice owns, starting from wherever the journey actually begins — a controller, a worker, or a CLI invocation — and driving it end to end, creating the right state for each assertion and asserting on the real output. A shallow mock-only test is not a functional test where project conventions require integration, transactional, or end-to-end verification.
 
 ---
 
@@ -250,11 +227,11 @@ The POST hook runs a mandatory consolidation pass over the entities and data str
 
 ## Journey and Flow Sections
 
-### `## The journey this plan owns a slice of`
+### `## Full Feature Walk Through` and the journey it owns
 
-Use this section whenever the plan is part of a larger user-facing or system-facing journey. Walk the reader through the full surrounding journey and call out which slice this plan owns. Numbered steps or an ASCII diagram are both acceptable.
+The overview's `## Full Feature Walk Through` covers the full surrounding journey. When a sub-spec owns only a slice of a larger user-facing or system-facing journey, restate the surrounding journey briefly and call out which slice this sub-spec owns. Numbered steps or an ASCII diagram are both acceptable.
 
-Skip it only when the plan is purely cross-cutting (e.g. logging utility, base controller, tiny internal helper).
+Skip the journey framing only when the work is purely cross-cutting (e.g. logging utility, base controller, tiny internal helper).
 
 ### `## Control Flow: <hot-path-name> (Step-by-Step)`
 
@@ -292,7 +269,7 @@ For a bug report specifically, use these three ordered sections:
 
 ## `## Code Reference` Rules
 
-Every code block in `## Code Reference` must be preceded by 1-3 sentences of plain English explaining what the snippet does and why it is shaped that way. Silent code dumps are banned. Silent prose is banned too — behavioral claims need a code sample. Every substantive claim about runtime behavior must be grounded in a **real code sample copied faithfully from the actual source, with a `file:line` citation**. This applies everywhere a spec describes how code behaves, and in a bug spec it applies in **both** the ideal-behavior walkthrough and the problem sections. Prose-only descriptions of control flow are not sufficient — show the actual code.
+Every code block in `## Code Reference` (and in a sub-spec's `## 7. Implementation Details`) must be preceded by 1-3 sentences of plain English explaining what the snippet does and why it is shaped that way. Silent code dumps are banned. Silent prose is banned too — behavioral claims need a code sample. Every substantive claim about runtime behavior must be grounded in a **real code sample copied faithfully from the actual source, with a `file:line` citation**. This applies everywhere a spec describes how code behaves, and in a bug spec it applies in **both** the ideal-behavior walkthrough and the problem sections. Prose-only descriptions of control flow are not sufficient — show the actual code.
 
 If a class is central to the feature, do **not** show only a stub signature. Show:
 
@@ -314,7 +291,7 @@ Code examples must be low-ambiguity and implementation-ready. Use:
 - Google-style docstrings,
 - real identifiers and realistic values.
 
-When a spec is Mode B, embed the **full corrected example locally** rather than assuming the reader will consult the parent spec.
+In a technical sub-spec, embed the **full corrected example locally** rather than assuming the reader will consult the parent overview.
 
 ---
 
@@ -386,7 +363,7 @@ Always include, when applicable:
 - scoped formatting / lint / test commands,
 - manual smoke steps for interactive or runtime-heavy features.
 
-Engineering implementation sub-specs should also state:
+Technical sub-specs should also state:
 
 - what remains intentionally unchanged,
 - what prior design text is now stale,
@@ -428,8 +405,8 @@ Engineering implementation sub-specs should also state:
 7. **Progressiveness** — move from simple to complex, broad to narrow.
 8. **Progressive disclosure** — runtime or business story first, then structure, then components, then code.
 9. **Low-ambiguity code samples** — code examples are part of the implementation brief, not decoration.
-10. **Mode fidelity** — choose the correct spec mode and follow its structure rigorously.
-11. **Standalone engineering slices** — Mode B specs must stand on their own.
+10. **Both halves together** — product framing and engineering detail ship as one family; the overview sets the story, the sub-specs make each slice implementable.
+11. **Standalone engineering slices** — each technical sub-spec must stand on its own.
 12. **Drift correction** — when older spec text is stale, say so explicitly and correct it.
 13. **Code samples as grounding** — every behavioral claim is backed by real source, copied faithfully with a `file:line` citation. Silent prose is banned as surely as silent code dumps.
 14. **Ideal before break** — bug and analysis specs walk the correct design end to end before pinpointing where it fails.
@@ -440,11 +417,11 @@ Engineering implementation sub-specs should also state:
 
 **For AI:** When generating documentation in this style:
 
-- Choose and declare the correct spec mode before writing.
+- Carry both halves — product overview and technical sub-specs — unless the user explicitly asks for only one.
 - Prioritize developer efficiency — the spec should be directly implementable.
 - Keep the opening human-readable and gradual, like an O'Reilly chapter.
 - Preserve implementation rigor while improving readability.
-- Use the exact structure required by the chosen mode.
+- Use the canonical structure: Overview → Existing Feature → Full Feature Walk Through → Brief Technical Overview → technical sub-specs.
 - Include concrete examples with realistic data and file paths.
 - Ground every behavioral claim in a real code sample with a `file:line` citation — never describe control flow in prose alone.
 - Before proposing any new artefact, search the code for an existing owner of that responsibility; when one exists, consolidate (delete and replace, encapsulate, or re-design) instead of adding a redundant construct.

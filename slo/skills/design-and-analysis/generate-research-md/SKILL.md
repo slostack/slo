@@ -26,7 +26,7 @@ source_prompt: analyze/generate-research-md.md
 
 ## Guidance
 
-Use this prompt when `skills/orientation/research/SKILL.md` is empty, missing sections, or needs to be updated after adding new domains, routers, workers, or integrations.
+Use this prompt when `RESEARCH.md` is empty, missing sections, or needs to be updated after adding new domains, routers, workers, or integrations.
 
 ---
 
@@ -40,7 +40,7 @@ Produce a complete `docs/RESEARCH.md` in the repository's `docs/` folder that se
 
 Read and explore all of the following before writing:
 
-1. `skills/orientation/readme/SKILL.md` — project name, business domain, high-level purpose
+1. `README.md` — project name, business domain, high-level purpose
 2. `pyproject.toml` (or `package.json`) — technology stack versions
 3. `config/cfg.py` — environment variable inventory
 4. **All files under `src/`** — use Glob and Read tools to map every module
@@ -54,7 +54,7 @@ Use the file structure itself as the source of truth. Do not rely on assumptions
 
 ## Step 2 — Required Sections
 
-`skills/orientation/research/SKILL.md` must contain all of the following sections. Only omit a section if the project genuinely does not have that layer.
+`RESEARCH.md` must contain all of the following sections. Only omit a section if the project genuinely does not have that layer.
 
 ---
 
@@ -355,9 +355,9 @@ A table of every folder under `skills/` and what it contains. This helps agents 
 
 ---
 
-## Step 3 — Keeping skills/orientation/research/SKILL.md Current
+## Step 3 — Keeping RESEARCH.md Current
 
-skills/orientation/research/SKILL.md must be updated whenever:
+RESEARCH.md must be updated whenever:
 
 - A new domain module is added to `src/domains/`
 - A new router is added to `src/routers/`

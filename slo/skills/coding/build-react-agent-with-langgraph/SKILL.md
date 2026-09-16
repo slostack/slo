@@ -540,5 +540,5 @@ The `_build_assessment_prompt()` function determines the phase, selects the appr
 - [ ] `create_llm()` is imported from `src/agents/base.py` (not duplicated)
 - [ ] `ProgressEvent` TypedDict defined for streaming events
 - [ ] Status message and detail extraction helpers implemented
-- [ ] Updated `skills/orientation/research/SKILL.md` agents section
+- [ ] Updated `RESEARCH.md` agents section
 - [ ] Updated `AGENTS.md` code prompts table

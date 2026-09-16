@@ -57,7 +57,7 @@ Use this prompt to review a feature specification document and identify gaps, am
 
 ## Purpose
 
-Act as a verification layer for specifications generated using [`feature-specifications.md`](../feature-specifications/SKILL.md). Review the spec against the source JIRA story, codebase architecture, coding conventions, and the **chosen spec mode** to surface anything that was missed, under-specified, or structurally misaligned before implementation begins.
+Act as a verification layer for specifications generated using [`feature-specifications.md`](../feature-specifications/SKILL.md). Review the spec against the source JIRA story, codebase architecture, coding conventions, and the **expected structure** (an overview vs a technical sub-spec, within the single specification family) to surface anything that was missed, under-specified, or structurally misaligned before implementation begins.
 
 ---
 
@@ -72,7 +72,7 @@ Optional:
 
 3. **Confluence page URL(s)** — if the JIRA ticket links to Confluence specs
 4. **Scope constraints** — specific areas to focus the review on
-5. **Expected spec mode** — if already known from the PRE hook
+5. **Expected artefact** (overview or technical sub-spec) — if already known from the PRE hook
 
 ---
 
@@ -82,14 +82,16 @@ Optional:
 
 Read the spec document in full. Build a mental model of what the spec proposes.
 
-Before judging structure, identify which mode the document is using per [`feature-specifications.md`](../feature-specifications/SKILL.md):
+Before judging structure, identify which artefact of the single specification family the document is, per [`feature-specifications.md`](../feature-specifications/SKILL.md). There is one spec shape — an **overview** plus one or more **technical sub-specs** — not a choice between a business document and an engineering document:
 
-- **Mode A — Business / product feature spec**
-- **Mode B — Engineering implementation sub-spec**
+- **the overview** (`overview.md`) — product/business framing plus a brief technical overview;
+- **a technical sub-spec** (`NN.a.n`) — one standalone engineering slice.
 
-If the expected mode was supplied and the document clearly uses the wrong one, record a mode mismatch immediately.
+If the expected artefact was supplied and the document clearly uses the wrong structure for what it is, record a structure mismatch immediately.
 
 ### 1.2 Fetch the Source JIRA Story
+
+> This may not always be present or needed. 
 
 Use `getJiraIssue` to fetch the original ticket. Extract:
 
@@ -105,17 +107,17 @@ Use `getJiraIssue` to fetch the original ticket. Extract:
 
 Read the relevant code-prompt files to understand what a correct implementation looks like in this codebase. Err toward reading more rather than fewer.
 
-### 1.4 Read skills/orientation/research/SKILL.md
+### 1.4 Read RESEARCH.md
 
-Read `skills/orientation/research/SKILL.md` to understand existing domains, services, workers, integrations, and adjacent infrastructure the spec should reuse or acknowledge.
+Read `RESEARCH.md` to understand existing domains, services, workers, integrations, and adjacent infrastructure the spec should reuse or acknowledge.
 
 ---
 
-## Step 2 — JIRA Requirement Traceability
+## Step 2 — Task/JIRA Requirement Traceability 
 
 Every requirement in the source ask must map to something in the spec.
 
-### 2.1 Extract All Requirements from JIRA
+### 2.1 Extract All Requirements from Task Specification/JIRA
 
 Parse the ticket into a numbered list of discrete requirements, including explicit requirements, implicit requirements, clarifications in comments, and descoped items.
 
@@ -133,7 +135,7 @@ For each extracted requirement, determine its coverage:
 ### 2.3 Present the Traceability Matrix
 
 ```markdown
-### JIRA Requirement Traceability
+### Task/JIRA Requirement Traceability
 
 | # | Requirement (from JIRA) | Spec Coverage | Spec Section | Notes |
 |---|---|---|---|---|
@@ -302,7 +304,7 @@ Record each finding using the **REDUNDANCY** format in Step 6.5a.
 
 ---
 
-## Step 5 — Style, Structure, and Mode Review
+## Step 5 — Style and Structure Review
 
 ### 5.1 Shared structure compliance
 
@@ -320,9 +322,9 @@ Verify:
 - [ ] call-outs are grouped cleanly rather than stacked
 - [ ] file trees are full enough to orient the reader
 
-### 5.2 Mode A — Business / product feature spec review
+### 5.2 Overview review — product framing
 
-If the draft is Mode A, verify:
+If the draft is the **overview**, verify:
 
 - [ ] product or business framing leads the document
 - [ ] user/admin journey is covered when applicable
@@ -330,9 +332,9 @@ If the draft is Mode A, verify:
 - [ ] rollout / risk / stakeholder boundaries are covered where relevant
 - [ ] the spec does not collapse into a narrow technical child slice unless that was intended
 
-### 5.3 Mode B — Engineering implementation sub-spec review
+### 5.3 Technical sub-spec review — engineering structure
 
-If the draft is Mode B, verify:
+If the draft is a **technical sub-spec**, verify:
 
 - [ ] metadata header exists under the H1
 - [ ] title format is compatible with repo numbering (e.g. `02.a.1 — ...`)
@@ -355,10 +357,13 @@ If the draft is Mode B, verify:
 - [ ] end-to-end flow is explained before low-level implementation detail
 - [ ] implementation order / verification commands / manual smoke are included when applicable
 - [ ] dependencies are explicit
+- [ ] Assert the presence of adequate implementation detail in the form of code ( in scenarios where it is warranted ) such that the implementing agent faces no ambiguity. 
+  - [ ] The agent should know how the code would look
+  - [ ] How to implement it with fully fleshed out methods, classes, tests. 
 
 ### 5.4 Actionability
 
-For both modes, verify:
+For both the overview and technical sub-specs, verify:
 
 - [ ] a developer can implement directly from this spec without clarification
 - [ ] every file to create or modify has a full path
@@ -377,7 +382,7 @@ For both modes, verify:
 
 | Metric | Value |
 |---|---|
-| **Spec Mode** | Mode A / Mode B |
+| **Artefact** | overview / technical sub-spec |
 | **JIRA Requirements Covered** | X / Y (Z%) |
 | **Architectural Layers Complete** | X / Y |
 | **Redundancy Gaps Found** | N |
@@ -432,12 +437,12 @@ For both modes, verify:
 
 Treat every redundancy gap as CRITICAL.
 
-### 6.5 Mode / structure gaps
+### 6.5 Structure gaps
 
 ```markdown
-### MODE OR STRUCTURE GAP: [Short description]
+### STRUCTURE GAP: [Short description]
 
-**Expected mode:** Mode A / Mode B
+**Expected artefact:** overview / technical sub-spec
 **Observed issue:** ...
 **Why it matters:** ...
 **Required correction:** ...
@@ -463,8 +468,8 @@ Before presenting results:
 - [ ] adjacent features were checked to confirm the gap is real,
 - [ ] the review is actionable,
 - [ ] JIRA comments were read,
-- [ ] the spec-mode judgment is explicit,
-- [ ] Mode B docs were checked for standalone readability and canonical structure when applicable.
+- [ ] the artefact judgment (overview vs technical sub-spec) is explicit,
+- [ ] technical sub-specs were checked for standalone readability and canonical structure when applicable.
 
 ---
 

@@ -32,9 +32,9 @@ After completing any code change — feature, refactor, bug fix, or convention c
 
 ## What to Update
 
-### 1. skills/orientation/research/SKILL.md — Codebase Index
+### 1. RESEARCH.md — Codebase Index
 
-Update `skills/orientation/research/SKILL.md` whenever a code change alters the **structure, purpose, or interface** of a component.
+Update `RESEARCH.md` whenever a code change alters the **structure, purpose, or interface** of a component.
 
 | Change Type | Action |
 |---|---|
@@ -48,7 +48,7 @@ Update `skills/orientation/research/SKILL.md` whenever a code change alters the 
 | Technology added or removed from the stack | Update the Technology Stack table |
 | Key stats changed (new domain, new agent, etc.) | Update the Key Stats table |
 
-**Do not update** skills/orientation/research/SKILL.md for:
+**Do not update** RESEARCH.md for:
 - Bug fixes or logic changes that don't alter a component's described purpose
 - Adding a test for an already-described service
 - Internal refactoring with no change to public responsibility
@@ -82,7 +82,7 @@ Update `AGENTS.md` when:
 After completing a code change:
 
 1. **Scan your changes** — review the files you modified, added, or removed.
-2. **Check skills/orientation/research/SKILL.md** — does the codebase index still accurately describe the components you touched? Update if not.
+2. **Check RESEARCH.md** — does the codebase index still accurately describe the components you touched? Update if not.
 3. **Check code prompts** — did your change establish or modify a convention? Update the relevant code-prompt.
 4. **Check AGENTS.md** — did you add a new code-prompt, agent, or tool? Update the table.
 5. **Verify consistency** — ensure that examples in code-prompts match the actual implementation. If a code-prompt says "return an error string" but the code now returns `[]`, the code-prompt must be updated.

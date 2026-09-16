@@ -85,3 +85,15 @@ slo --plugin plugins/bash_live_output/plugin.py
 - TUI tests: `tests/tui/test_tool_block_partial.py`, `tests/tui/test_event_renderer_overrides.py`, `tests/tui/test_plugins_slash_command.py`, and `tests/tui/test_usage_status_bar_plugins.py`.
 - Bundled-plugin contract: `tests/plugins/test_bash_live_output_plugin.py`.
 - CLI lifecycle surface: `tests/cli/test_plugin_cli.py`.
+
+## Slotui specification recovery (spec 79; planned, not implemented)
+
+`/root/Code/specifications/projects/slo/specifications/79-tui-v2/` contains
+the proposed Slotui extraction, not current runtime architecture. Its
+cross-file contracts were independently reconciled in
+`verification-report-round4.md`: the generic session remains an
+async-generator single-flight gateway, generic history activation is only
+`apply_rewrite(rewrite=...) -> None`, and the terminal renderer exposes a
+fixture-only capture API for conformance. Before implementation, treat that
+report and `tasks.md` as the dependency order and rerun the named executable
+gates; do not infer that Slotui modules already exist in this repository.

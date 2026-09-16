@@ -38,7 +38,7 @@ Before setting up Alembic, ensure you have completed the following from the main
 4. PostgreSQL running (via Docker Compose)
 5. The `loadenv` helper function configured in your `.bashrc`
 
-Refer to `skills/orientation/readme/SKILL.md` and `setup-readme.md` for detailed instructions on these prerequisites.
+Refer to `README.md` and `setup-readme.md` for detailed instructions on these prerequisites.
 
 ## Install Alembic
 

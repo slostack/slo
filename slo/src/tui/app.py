@@ -19,25 +19,30 @@ from textual.widget import Widget
 from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
-from config.cfg import cfg
 from config.logger import log_error
-from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
-from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
+from src.agents.reasoning_capabilities import resolve_reasoning_config
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
-from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
+from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
-from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-from src.agents.reasoning_capabilities import resolve_reasoning_config
+from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.browser_host import BrowserHost
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
+from src.tui.assembly.ports import (
+    SloAgentSessionFactory,
+    SloClipboardPort,
+    SloDetachedVisualizerLauncher,
+    SloDetachedWorkflowRendererFactory,
+)
 from src.tui.authentication import AuthenticationScreen
 from src.tui.prompt_history import PromptHistoryNavigator
-from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
+from src.tui.slash_router import SlashRouter
 from src.tui.slash_suggestion_engine import (
     SlashSuggestionEngine,
     SlashSuggestionStateDAO,
@@ -63,7 +68,7 @@ from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, LiveWorkflowLabelDAO
 from src.tui.workflows.renderer import DetachedWorkflowRenderer
 from src.tui.workflows.service import DetachedWorkflowAppService
 
-__all__ = ["SloTUI", "PromptInput"]
+__all__ = ["PromptInput", "SloTUI"]
 
 
 _ABORT_HARD_CANCEL_GRACE_SECONDS: float = 2.0
@@ -417,6 +422,10 @@ class SloTUI(App):
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
         workflow_handle_store: Optional[WorkflowHandleStore] = None,
         browser_host: Optional[BrowserHost] = None,
+        clipboard: Optional[SloClipboardPort] = None,
+        detached_workflow_renderer_factory: Optional[SloDetachedWorkflowRendererFactory] = None,
+        visualizer_launcher: Optional[SloDetachedVisualizerLauncher] = None,
+        session_factory: Optional[SloAgentSessionFactory] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -438,6 +447,15 @@ class SloTUI(App):
             browser_host (Optional[BrowserHost]): Optional injected host that
                 decides whether link clicks may open a browser. ``None`` uses
                 ``BrowserHost.current()``.
+            clipboard (Optional[SloClipboardPort]): Optional Slo copy transport.
+                ``None`` preserves the current local-clipboard then OSC-52 delivery.
+            detached_workflow_renderer_factory (Optional[SloDetachedWorkflowRendererFactory]):
+                Optional current workflow renderer builder. ``None`` preserves the
+                existing renderer construction.
+            visualizer_launcher (Optional[SloDetachedVisualizerLauncher]): Optional
+                best-effort visualizer launcher. ``None`` preserves the concrete launcher.
+            session_factory (Optional[SloAgentSessionFactory]): Optional lazy replacement
+                session factory for `/new`. ``None`` preserves ``SloAgentSession.build``.
         """
         super().__init__()
         self._browser_host: BrowserHost = browser_host or BrowserHost.current()
@@ -445,7 +463,14 @@ class SloTUI(App):
         self.register_theme(SLO_DARK_THEME)
         self.theme = self.DEFAULT_THEME
         self._session: SloAgentSession = session
-        self._attach_pool_to_session(session=self._session)
+        self._clipboard_port: Optional[SloClipboardPort] = clipboard
+        self._detached_workflow_renderer_factory: Optional[SloDetachedWorkflowRendererFactory] = (
+            detached_workflow_renderer_factory
+        )
+        self._visualizer_launcher: Optional[SloDetachedVisualizerLauncher] = visualizer_launcher
+        self._session_factory: Optional[SloAgentSessionFactory] = session_factory
+        if session_factory is None:
+            self._attach_pool_to_session(session=self._session)
         self._transcript_scroll: Optional[TranscriptScroll] = None
         self._transcript_content: Optional[Vertical] = None
         self._chat_shell: Optional[Vertical] = None
@@ -1045,9 +1070,14 @@ class SloTUI(App):
             DetachedWorkflowRenderer: The composed renderer.
         """
         if self._workflow_renderer is None:
-            self._workflow_renderer = DetachedWorkflowRenderer(
-                notice_sink=_WorkflowNoticeAdapter(tui=self),
-            )
+            notice_sink: _WorkflowNoticeAdapter = _WorkflowNoticeAdapter(tui=self)
+            if self._detached_workflow_renderer_factory is None:
+                self._workflow_renderer = DetachedWorkflowRenderer(notice_sink=notice_sink)
+            else:
+                self._workflow_renderer = self._detached_workflow_renderer_factory.build_renderer(
+                    notice_sink=notice_sink,
+                    visualizer_launcher=self._resolved_visualizer_launcher(),
+                )
         return self._workflow_renderer
 
     def _maybe_launch_workflow_visualizer(self, *, result_text: str) -> None:
@@ -1624,42 +1654,53 @@ class SloTUI(App):
         self.copy_to_clipboard(selection)
 
     def copy_to_clipboard(self, text: str) -> None:
-        """Deliver text to the clipboard via a local clipboard, then OSC 52.
+        """Deliver selected text through the injected Slo transport or current fallback.
 
-        The single clipboard funnel for the TUI, shared by the keyboard copy binding
-        (``action_copy_visible_text``) and mouse-selection auto-copy
-        (``on_text_selected``). Tries ``pyperclip`` first so a local clipboard works
-        even where OSC 52 does not (e.g. macOS Terminal), then always calls the
-        Textual base implementation, which emits an OSC 52 escape so copy also works
-        over SSH/tmux. A ``pyperclip`` import failure or copy error is swallowed and
-        never blocks the OSC 52 write.
+        WHAT: Preserves current selection policy while delegating transport to the assembly port.
+        WHO: Keyboard and mouse selection paths share this public TUI clipboard funnel.
+        WHEN: An operator selects non-empty copyable text in the mounted application.
 
         Args:
-            text (str): The text to place on the clipboard.
+            text (str): Selected text to place on the clipboard.
         """
-        self._copy_via_local_clipboard(text=text)
-        super().copy_to_clipboard(text)
+        if self._clipboard_port is not None:
+            self._clipboard_port.copy(text=text)
+            return
+        self._current_clipboard_port().copy(text=text)
+
+    def _current_clipboard_port(self) -> SloClipboardPort:
+        """Build the existing local-then-OSC-52 transport for unassembled callers.
+
+        WHAT: Supplies the legacy transport only when no explicit assembly collaborator exists.
+        WHO: copy_to_clipboard calls this for direct SloTUI construction in current tests and tools.
+        WHEN: During a copy action after application construction, never during assembly startup.
+
+        Returns:
+            SloClipboardPort: Current local clipboard followed by this app's OSC-52 endpoint.
+        """
+        from src.tui.assembly.factory import DefaultSloClipboardPort  # noqa: PLC0415
+
+        return DefaultSloClipboardPort(osc52_clipboard=_TextualOsc52ClipboardPort(app=self))
 
     @staticmethod
     def _copy_via_local_clipboard(*, text: str) -> bool:
-        """Best-effort local-clipboard copy via ``pyperclip``.
+        """Attempt the existing local clipboard copy without blocking OSC-52 fallback.
 
-        Called only by ``copy_to_clipboard``. Import and copy errors are swallowed so
-        a missing or unusable ``pyperclip`` never blocks OSC 52 delivery.
+        WHAT: Retains the public compatibility helper while the assembly port owns delivery.
+        WHO: Existing focused clipboard tests and direct current TUI callers may invoke it.
+        WHEN: Only during a copy action before terminal clipboard delivery.
 
         Args:
-            text (str): The text to copy locally.
+            text (str): Selected text to deliver to the local clipboard.
 
         Returns:
-            bool: True when ``pyperclip`` copied without raising, else False.
+            bool: True when local clipboard delivery succeeds, otherwise False.
         """
         try:
             import pyperclip
-        except ImportError:
-            return False
-        try:
+
             pyperclip.copy(text)
-        except Exception:  # best-effort local clipboard; must never block OSC 52
+        except Exception:
             return False
         return True
 
@@ -1894,9 +1935,7 @@ class SloTUI(App):
         """
         old_session: SloAgentSession = self._session
         old_session.unsubscribe(handler=self._render_event)
-        new_session: SloAgentSession = SloAgentSession.build(
-            config=self._build_replacement_session_config(old_session=old_session),
-        )
+        new_session: SloAgentSession = self._build_replacement_session(old_session=old_session)
         self._attach_pool_to_session(session=new_session)
         if requested_name is not None:
             await new_session.rename_session(session_name=requested_name)
@@ -2032,10 +2071,8 @@ class SloTUI(App):
         if self._visualizer_launched_for_run:
             return
         self._visualizer_launched_for_run = True
-        from src.tui.visualizer_launcher import VisualizerLauncher  # noqa: PLC0415
-
         parent_session_id: str = self._session.session_id
-        launched: bool = VisualizerLauncher.launch(parent_session_id=parent_session_id)
+        launched: bool = self._resolved_visualizer_launcher().launch(parent_session_id=parent_session_id)
         if self._adapter is None:
             return
         if launched:
@@ -2084,6 +2121,42 @@ class SloTUI(App):
         )
 
         OrchestratorSessionBootstrap.attach(session=session)
+
+    def _resolved_visualizer_launcher(self) -> SloDetachedVisualizerLauncher:
+        """Return the injected launcher or Slo's existing concrete launcher adapter.
+
+        WHAT: Preserves visualizer behavior when assembly has not injected a public port.
+        WHO: The workflow renderer factory and sub-agent visualizer path call this helper.
+        WHEN: Only after current Slo policy has requested a visualizer launch.
+
+        Returns:
+            SloDetachedVisualizerLauncher: Explicit injected port or current concrete adapter.
+        """
+        if self._visualizer_launcher is not None:
+            return self._visualizer_launcher
+        from src.tui.assembly.factory import (
+            DefaultSloDetachedVisualizerLauncher,  # noqa: PLC0415
+        )
+
+        return DefaultSloDetachedVisualizerLauncher()
+
+    def _build_replacement_session(self, *, old_session: SloAgentSession) -> SloAgentSession:
+        """Build a `/new` replacement through the injected factory when supplied.
+
+        WHAT: Retains existing replacement config behavior while using the public session seam.
+        WHO: `_replace_idle_session_and_clear_queue` calls this after unsubscribing the old session.
+        WHEN: Only for idle `/new` replacement before existing promotion and re-subscription.
+
+        Args:
+            old_session (SloAgentSession): Active session whose runtime facts seed the replacement.
+
+        Returns:
+            SloAgentSession: Fresh lazy replacement session.
+        """
+        config: SessionConfigDAO = self._build_replacement_session_config(old_session=old_session)
+        if self._session_factory is None:
+            return SloAgentSession.build(config=config)
+        return self._session_factory.build_session(config=config)
 
     @staticmethod
     def _build_replacement_session_config(*, old_session: SloAgentSession) -> SessionConfigDAO:
@@ -3222,6 +3295,34 @@ class _TranscriptAdapter:
             bool: True when any non-separator line has already been recorded.
         """
         return any(classes != "turn-separator" for _content, classes in self.lines)
+
+
+class _TextualOsc52ClipboardPort:
+    """Adapt one SloTUI instance to Textual's base OSC-52 clipboard writer."""
+
+    def __init__(self, *, app: SloTUI) -> None:
+        """Store the current application without emitting terminal output.
+
+        WHAT: Retains the app whose base Textual implementation owns OSC-52 output.
+        WHO: SloTUI creates this adapter only for direct legacy copy-path calls.
+        WHEN: After application construction and only when no assembly clipboard is injected.
+
+        Args:
+            app (SloTUI): Current Textual application.
+        """
+        self._app: SloTUI = app
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Invoke Textual's base clipboard implementation without re-entering SloTUI.
+
+        WHAT: Sends text through Textual's OSC-52 implementation directly.
+        WHO: DefaultSloClipboardPort calls this after its local clipboard attempt.
+        WHEN: During a direct current TUI copy action.
+
+        Args:
+            text (str): Selected text to send through OSC-52.
+        """
+        App.copy_to_clipboard(self._app, text)
 
 
 class _WorkflowNoticeAdapter:

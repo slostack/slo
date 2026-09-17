@@ -7,122 +7,99 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 import typer
 
+from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.cli.typer_dispatch import TyperDispatch
+from src.tui.assembly.dao import SloTuiAssemblyConfigDAO
+
+
+class _RecordingTuiAssemblyFactory:
+    """Record the closed configuration received at the interactive factory gateway."""
+
+    def __init__(self, *, call_order: list[str] | None = None) -> None:
+        """Initialize a recorder with an optional shared call-order log.
+
+        Args:
+            call_order (list[str] | None): Shared trace used to prove logging wraps delegation.
+        """
+        self.configs: list[SloTuiAssemblyConfigDAO] = []
+        self._call_order: list[str] | None = call_order
+
+    def run(self, *, config: SloTuiAssemblyConfigDAO) -> None:
+        """Record one factory delegation without constructing an application.
+
+        Args:
+            config (SloTuiAssemblyConfigDAO): Resolved closed-scenario CLI facts.
+        """
+        if self._call_order is not None:
+            self._call_order.append("factory")
+        self.configs.append(config)
 
 
 class TestTyperDispatchTui:
-    """Cover ``TyperDispatch.tui``."""
+    """Cover the interactive CLI-to-assembly boundary."""
 
-    def test_tui_builds_session_and_runs_slo_tui_with_mouse_enabled(self, tmp_path: Path) -> None:
-        """``tui`` builds the session for the given workdir and runs ``SloTUI`` with mouse capture enabled."""
-        fake_session: MagicMock = MagicMock(name="SloAgentSession")
-
-        with (
-            patch(
-                "src.cli.typer_dispatch.interactive_logging",
-                return_value=nullcontext(),
-            ),
-            patch(
-                "src.cli.typer_dispatch.SloAgentSession.build",
-                return_value=fake_session,
-            ) as mock_build,
-            patch(
-                "src.cli.typer_dispatch.SloTUI",
-            ) as MockSloTUI,
-        ):
-            TyperDispatch.tui(workdir=tmp_path)
-
-        mock_build.assert_called_once()
-        config = mock_build.call_args.kwargs["config"]
-        assert config.workdir == tmp_path.resolve()
-
-        MockSloTUI.assert_called_once_with(session=fake_session)
-        MockSloTUI.return_value.run.assert_called_once_with(mouse=True)
-
-    def test_tui_defaults_workdir_to_cwd(self) -> None:
-        """``workdir=None`` resolves to ``Path.cwd().resolve()``."""
-        fake_session: MagicMock = MagicMock(name="SloAgentSession")
+    def test_tui_delegates_once_with_closed_resolved_config(self, tmp_path: Path) -> None:
+        """Interactive dispatch resolves facts, selects Textual, and makes one factory call."""
+        workspace_file: Path = tmp_path / "project.code-workspace"
+        workspace_file.write_text('{"folders": []}', encoding="utf-8")
+        first_plugin: Path = tmp_path / "first.py"
+        second_plugin: Path = tmp_path / "second.py"
+        factory: _RecordingTuiAssemblyFactory = _RecordingTuiAssemblyFactory()
 
         with (
+            patch("src.cli.typer_dispatch.interactive_logging", return_value=nullcontext()),
             patch(
-                "src.cli.typer_dispatch.interactive_logging",
-                return_value=nullcontext(),
-            ),
-            patch(
-                "src.cli.typer_dispatch.SloAgentSession.build",
-                return_value=fake_session,
-            ) as mock_build,
-            patch("src.cli.typer_dispatch.SloTUI"),
-        ):
-            TyperDispatch.tui(workdir=None)
-
-        config = mock_build.call_args.kwargs["config"]
-        assert config.workdir == Path.cwd().resolve()
-
-    def test_tui_enters_interactive_logging_before_building_session(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """The TUI path wraps session startup in ``interactive_logging``."""
-        fake_session: MagicMock = MagicMock(name="SloAgentSession")
-        fake_context: MagicMock = MagicMock(name="interactive_logging_context")
-        enter_order: list[str] = []
-
-        def _build(*args, **kwargs):
-            enter_order.append("build")
-            return fake_session
-
-        fake_context.__enter__.side_effect = lambda: enter_order.append("enter")
-        fake_context.__exit__.return_value = False
-
-        with (
-            patch(
-                "src.cli.typer_dispatch.interactive_logging",
-                return_value=fake_context,
-            ) as mock_interactive_logging,
-            patch(
-                "src.cli.typer_dispatch.SloAgentSession.build",
-                side_effect=_build,
-            ),
-            patch("src.cli.typer_dispatch.SloTUI"),
-        ):
-            TyperDispatch.tui(workdir=tmp_path)
-
-        mock_interactive_logging.assert_called_once()
-        assert enter_order == ["enter", "build"]
-
-    def test_tui_resolves_named_session_reference_before_building_session(self, tmp_path: Path) -> None:
-        """Named session references resolve to canonical ids before config assembly."""
-        fake_session: MagicMock = MagicMock(name="SloAgentSession")
-
-        with (
-            patch(
-                "src.cli.typer_dispatch.interactive_logging",
-                return_value=nullcontext(),
-            ),
+                "src.cli.typer_dispatch._build_default_tui_assembly_factory",
+                return_value=factory,
+            ) as build_default,
             patch(
                 "src.cli.typer_dispatch.TyperDispatch._resolve_resume_reference",
                 return_value="resolved-session-id",
-            ) as mock_resolve_resume_reference,
-            patch(
-                "src.cli.typer_dispatch.SloAgentSession.build",
-                return_value=fake_session,
-            ) as mock_build,
-            patch("src.cli.typer_dispatch.SloTUI"),
+            ) as resolve_resume_reference,
         ):
             TyperDispatch.tui(
                 workdir=tmp_path,
+                workspace_file=workspace_file,
                 resume_session_reference="release prep",
+                plugin_paths=[first_plugin, second_plugin],
             )
 
-        mock_resolve_resume_reference.assert_called_once_with(
-            resume_session_reference="release prep",
-        )
-        config = mock_build.call_args.kwargs["config"]
-        assert config.session_id == "resolved-session-id"
+        resolve_resume_reference.assert_called_once_with(resume_session_reference="release prep")
+        build_default.assert_called_once_with()
+        assert factory.configs == [
+            SloTuiAssemblyConfigDAO(
+                environment_scenario="textual_current",
+                workdir=tmp_path.resolve(),
+                workspace_file=workspace_file.resolve(),
+                resume_session_id="resolved-session-id",
+                plugin_paths=(first_plugin, second_plugin),
+            )
+        ]
+
+    def test_tui_defaults_workdir_to_cwd_and_enters_logging_before_factory(self) -> None:
+        """The default CLI path retains its logging lifetime around the single delegation."""
+        call_order: list[str] = []
+        factory: _RecordingTuiAssemblyFactory = _RecordingTuiAssemblyFactory(call_order=call_order)
+        context: MagicMock = MagicMock(name="interactive_logging_context")
+        context.__enter__.side_effect = lambda: call_order.append("enter")
+        context.__exit__.return_value = False
+
+        with (
+            patch("src.cli.typer_dispatch.interactive_logging", return_value=context),
+            patch(
+                "src.cli.typer_dispatch._build_default_tui_assembly_factory",
+                return_value=factory,
+            ),
+        ):
+            TyperDispatch.tui(workdir=None)
+
+        assert call_order == ["enter", "factory"]
+        assert factory.configs[0].workdir == Path.cwd().resolve()
+        assert factory.configs[0].workspace_file is None
+        assert factory.configs[0].resume_session_id is None
+        assert factory.configs[0].plugin_paths == ()
 
     def test_resolve_resume_reference_returns_none_when_missing(self) -> None:
         """No CLI resume reference means a fresh session."""
@@ -150,36 +127,16 @@ class TestTyperDispatchTui:
             side_effect=ValueError("unknown session reference: release prep"),
         )
 
-        with patch(
-            "src.cli.typer_dispatch.FilesystemSessionHistoryStore",
-            return_value=fake_store,
-        ):
-            with pytest.raises(ValueError, match="unknown session reference: release prep"):
-                TyperDispatch._resolve_resume_reference(
-                    resume_session_reference="release prep",
-                )
-
-    def test_tui_threads_resolved_workspace_file_into_session_config(self, tmp_path: Path) -> None:
-        """A valid workspace file is resolved and stored on SessionConfigDAO."""
-        fake_session: MagicMock = MagicMock(name="SloAgentSession")
-        workspace_file: Path = tmp_path / "x.code-workspace"
-        workspace_file.write_text('{"folders": []}', encoding="utf-8")
-
         with (
             patch(
-                "src.cli.typer_dispatch.interactive_logging",
-                return_value=nullcontext(),
+                "src.cli.typer_dispatch.FilesystemSessionHistoryStore",
+                return_value=fake_store,
             ),
-            patch(
-                "src.cli.typer_dispatch.SloAgentSession.build",
-                return_value=fake_session,
-            ) as mock_build,
-            patch("src.cli.typer_dispatch.SloTUI"),
+            pytest.raises(ValueError, match="unknown session reference: release prep"),
         ):
-            TyperDispatch.tui(workdir=tmp_path, workspace_file=workspace_file)
-
-        config = mock_build.call_args.kwargs["config"]
-        assert config.workspace_file == workspace_file.resolve()
+            TyperDispatch._resolve_resume_reference(
+                resume_session_reference="release prep",
+            )
 
     def test_tui_raises_bad_parameter_when_workspace_file_is_missing(self, tmp_path: Path) -> None:
         """A missing workspace file fails fast before any session is built."""
@@ -189,25 +146,38 @@ class TestTyperDispatchTui:
                 workspace_file=tmp_path / "missing.code-workspace",
             )
 
-    def test_tui_threads_none_when_workspace_file_is_omitted(self, tmp_path: Path) -> None:
-        """Omitting ``--workspace`` leaves SessionConfigDAO.workspace_file unset."""
-        fake_session: MagicMock = MagicMock(name="SloAgentSession")
+
+class TestTyperDispatchTuiExclusions:
+    """Verify non-interactive CLI routes never reach the TUI assembly gateway."""
+
+    def test_run_headless_does_not_construct_tui_assembly(self) -> None:
+        """The headless route retains its own runner assembly and bypasses the interactive gateway."""
+        runner: MagicMock = MagicMock(name="headless_runner")
+        runner.invoke = AsyncMock(return_value=0)
 
         with (
+            patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
+            patch("src.cli.typer_dispatch.HeadlessRunner", return_value=runner),
+            patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
             patch(
-                "src.cli.typer_dispatch.interactive_logging",
-                return_value=nullcontext(),
+                "src.cli.typer_dispatch._build_default_tui_assembly_factory",
+                side_effect=AssertionError("headless must not assemble the TUI"),
             ),
-            patch(
-                "src.cli.typer_dispatch.SloAgentSession.build",
-                return_value=fake_session,
-            ) as mock_build,
-            patch("src.cli.typer_dispatch.SloTUI"),
         ):
-            TyperDispatch.tui(workdir=tmp_path)
+            exit_code: int = TyperDispatch.run_headless(prompt="headless prompt")
 
-        config = mock_build.call_args.kwargs["config"]
-        assert config.workspace_file is None
+        assert exit_code == 0
+
+    def test_visualize_does_not_construct_interactive_tui_assembly(self) -> None:
+        """The standalone visualizer owns its existing app construction and bypasses the gateway."""
+        with (
+            patch(
+                "src.cli.typer_dispatch._build_default_tui_assembly_factory",
+                side_effect=AssertionError("visualize must not assemble the interactive TUI"),
+            ),
+            pytest.raises(typer.Exit),
+        ):
+            TyperDispatch.visualize(session_reference="session-1", detail_format="unsupported")
 
 
 class TestTyperDispatchUpdate:
@@ -337,7 +307,7 @@ class TestRunHeadlessReasoningOverride:
         self,
         tmp_path: Path,
         **kwargs,
-    ) -> "SessionConfigDAO":
+    ) -> SessionConfigDAO:
         """Run ``run_headless`` with all heavy dependencies patched out."""
         from contextlib import nullcontext
 
@@ -469,7 +439,7 @@ class TestRunHeadlessResumeImpliesHistory:
 class TestRunHeadlessSessionIdResolution:
     """Session-id follows the resolution chain: resume > explicit > env > None."""
 
-    def _run_headless_capture_config(self, **kwargs) -> "SessionConfigDAO":
+    def _run_headless_capture_config(self, **kwargs) -> SessionConfigDAO:
         from contextlib import nullcontext
 
         captured: list = []
@@ -512,7 +482,7 @@ class TestRunHeadlessSessionIdResolution:
 class TestRunHeadlessSystemPromptOverrides:
     """``--system-prompt-file`` and ``--append-system-prompt-file`` load file content."""
 
-    def _capture_config(self, **kwargs) -> "SessionConfigDAO":
+    def _capture_config(self, **kwargs) -> SessionConfigDAO:
         from contextlib import nullcontext
 
         captured: list = []
@@ -567,10 +537,8 @@ class TestRunHeadlessSystemPromptOverrides:
 class TestApplySystemPromptB64Override:
     """``TyperDispatch._apply_system_prompt_b64_override`` decodes and applies a b64 system prompt."""
 
-    def _capture_config(self, **kwargs) -> "SessionConfigDAO":
+    def _capture_config(self, **kwargs) -> SessionConfigDAO:
         """Run ``run_headless`` and return the config that would be passed to HeadlessRunner."""
-        from src.agents.slo_agent.sessions.dao import SessionConfigDAO  # noqa: F401
-
         captured: list = []
 
         def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):

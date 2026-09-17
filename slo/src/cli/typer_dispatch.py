@@ -28,25 +28,44 @@ from __future__ import annotations
 import asyncio
 import base64
 from pathlib import Path
-from typing import Optional
 
 import typer
 
-from config.cfg import SLO_HOME as _CFG_SLO_HOME, cfg
-from config.logger import configure_app_file_logging, interactive_logging, log_info
+from config.cfg import SLO_HOME as _CFG_SLO_HOME
+from config.cfg import cfg
+from config.logger import interactive_logging, log_info
 from config.model_pool_config import parse_model_pool_config
-from src.agents.reasoning_capabilities import ReasoningLevel
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
-from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPreferencesStoreCorruptError
-from src.agents.slo_agent.preferences.service import UserPreferencesStore
-from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.plugins.installer import PluginInstallerService
+from src.agents.slo_agent.preferences.dao import (
+    UserPreferencesDAO,
+    UserPreferencesStoreCorruptError,
+)
+from src.agents.slo_agent.preferences.service import UserPreferencesStore
+from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.cli.headless import HeadlessRunner
 from src.cli.headless_logging import headless_logging
 from src.cli.headless_request import resolve_session_id, validate_session_id
 from src.cli.update import Updater
-from src.tui.app import SloTUI
+from src.tui.assembly.dao import SloTuiAssemblyConfigDAO
+from src.tui.assembly.ports import SloTuiAssemblyFactory
+
+
+def _build_default_tui_assembly_factory() -> SloTuiAssemblyFactory:
+    """Build the selected current-TUI factory without importing it during CLI module load.
+
+    WHAT: Defers production assembly wiring until the interactive CLI route has selected its
+        closed scenario, keeping headless and visualizer imports independent of Textual assembly.
+    WHO: ``TyperDispatch.tui`` calls this once inside its existing interactive logging context.
+    WHEN: After resolved CLI facts form ``SloTuiAssemblyConfigDAO`` and before the factory runs.
+
+    Returns:
+        SloTuiAssemblyFactory: The unstarted public assembly factory for ``textual_current``.
+    """
+    from src.tui.assembly.factory import DefaultSloTuiAssemblyFactory
+
+    return DefaultSloTuiAssemblyFactory.build_default()
+
 
 __all__ = ["TyperDispatch"]
 
@@ -62,10 +81,10 @@ class TyperDispatch:
     def tui(
         cls,
         *,
-        workdir: Optional[Path],
-        workspace_file: Optional[Path] = None,
-        resume_session_reference: Optional[str] = None,
-        plugin_paths: Optional[list[Path]] = None,
+        workdir: Path | None,
+        workspace_file: Path | None = None,
+        resume_session_reference: str | None = None,
+        plugin_paths: list[Path] | None = None,
     ) -> None:
         """Open the Textual TUI scoped to ``workdir`` (or the cwd).
 
@@ -83,22 +102,23 @@ class TyperDispatch:
                 a new UUID4.
         """
         resolved_workdir: Path = (workdir or Path.cwd()).resolve()
-        resolved_workspace_file: Optional[Path] = cls._resolve_workspace_file(
+        resolved_workspace_file: Path | None = cls._resolve_workspace_file(
             workspace_file=workspace_file,
         )
-        resolved_session_id: Optional[str] = cls._resolve_resume_reference(
+        resolved_session_id: str | None = cls._resolve_resume_reference(
             resume_session_reference=resume_session_reference,
         )
         slo_home: Path = _CFG_SLO_HOME
+        assembly_config: SloTuiAssemblyConfigDAO = SloTuiAssemblyConfigDAO(
+            environment_scenario="textual_current",
+            workdir=resolved_workdir,
+            workspace_file=resolved_workspace_file,
+            resume_session_id=resolved_session_id,
+            plugin_paths=tuple(plugin_paths or ()),
+        )
         with interactive_logging(slo_home=slo_home):
-            config: SessionConfigDAO = cls._build_session_config(
-                workdir=resolved_workdir,
-                workspace_file=resolved_workspace_file,
-                resume_session_id=resolved_session_id,
-                plugin_paths=plugin_paths,
-            )
-            session: SloAgentSession = SloAgentSession.build(config=config)
-            SloTUI(session=session).run(mouse=True)
+            assembly_factory: SloTuiAssemblyFactory = _build_default_tui_assembly_factory()
+            assembly_factory.run(config=assembly_config)
 
     @classmethod
     def run_headless(
@@ -106,19 +126,19 @@ class TyperDispatch:
         *,
         prompt: str,
         as_json: bool = True,
-        model: Optional[str] = None,
-        reasoning: Optional[str] = None,
-        cwd: Optional[str] = None,
+        model: str | None = None,
+        reasoning: str | None = None,
+        cwd: str | None = None,
         enable_history: bool = False,
-        resume: Optional[str] = None,
-        workspace: Optional[Path] = None,
-        explicit_session_id: Optional[str] = None,
-        system_prompt_file: Optional[Path] = None,
-        append_system_prompt_file: Optional[Path] = None,
+        resume: str | None = None,
+        workspace: Path | None = None,
+        explicit_session_id: str | None = None,
+        system_prompt_file: Path | None = None,
+        append_system_prompt_file: Path | None = None,
         orchestrator_mode: bool = False,
-        system_prompt_b64: Optional[str] = None,
-        notify_session_id: Optional[str] = None,
-        plugin_paths: Optional[list[Path]] = None,
+        system_prompt_b64: str | None = None,
+        notify_session_id: str | None = None,
+        plugin_paths: list[Path] | None = None,
     ) -> int:
         """Run one agent loop headlessly, stream JSONL to stdout, return exit code.
 
@@ -171,16 +191,16 @@ class TyperDispatch:
         """
         slo_home: Path = _CFG_SLO_HOME
         resolved_workdir: Path = (Path(cwd) if cwd else Path.cwd()).resolve()
-        resolved_workspace_file: Optional[Path] = cls._resolve_workspace_file(
+        resolved_workspace_file: Path | None = cls._resolve_workspace_file(
             workspace_file=workspace,
         )
-        resume_session_id: Optional[str] = cls._resolve_resume_reference(
+        resume_session_id: str | None = cls._resolve_resume_reference(
             resume_session_reference=resume,
         )
-        validated_explicit_id: Optional[str] = (
+        validated_explicit_id: str | None = (
             validate_session_id(value=explicit_session_id) if explicit_session_id else None
         )
-        canonical_session_id: Optional[str] = resolve_session_id(
+        canonical_session_id: str | None = resolve_session_id(
             resume_session_id=resume_session_id,
             explicit_session_id=validated_explicit_id,
         )
@@ -236,9 +256,11 @@ class TyperDispatch:
             detail_format (str, optional): Transcript rendering mode (``textual`` /
                 ``markdown`` / ``html``). Defaults to ``"textual"``.
         """
-        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer  # noqa: PLC0415
-        from src.tui.tree_export_format import TreeExportFormat  # noqa: PLC0415
-        from src.tui.workflow_visualizer_loader import (  # noqa: PLC0415
+        from src.tui.headless_workflow_visualizer import (
+            HeadlessWorkflowVisualizer,
+        )
+        from src.tui.tree_export_format import TreeExportFormat
+        from src.tui.workflow_visualizer_loader import (
             HeadlessWorkflowVisualizerConfigDAO,
         )
 
@@ -267,8 +289,8 @@ class TyperDispatch:
         cls,
         *,
         action: str,
-        source_url: Optional[str] = None,
-        plugin_id: Optional[str] = None,
+        source_url: str | None = None,
+        plugin_id: str | None = None,
         confirmed: bool = False,
     ) -> str:
         """Run one managed plugin lifecycle action at the CLI async boundary.
@@ -291,8 +313,8 @@ class TyperDispatch:
         cls,
         *,
         action: str,
-        source_url: Optional[str],
-        plugin_id: Optional[str],
+        source_url: str | None,
+        plugin_id: str | None,
         confirmed: bool,
     ) -> str:
         """Delegate one plugin action to its single managed-state owner.
@@ -330,7 +352,7 @@ class TyperDispatch:
         raise ValueError(f"unknown plugin action: {action}")
 
     @classmethod
-    def update(cls, *, development: bool, ref: Optional[str] = None) -> None:
+    def update(cls, *, development: bool, ref: str | None = None) -> None:
         """Reinstall slo via pipx from the repo (delegates to :class:`Updater`).
 
         Args:
@@ -344,8 +366,8 @@ class TyperDispatch:
     def _resolve_resume_reference(
         cls,
         *,
-        resume_session_reference: Optional[str],
-    ) -> Optional[str]:
+        resume_session_reference: str | None,
+    ) -> str | None:
         """Resolve the CLI resume reference to a canonical session id.
 
         Args:
@@ -365,8 +387,8 @@ class TyperDispatch:
     def _resolve_workspace_file(
         cls,
         *,
-        workspace_file: Optional[Path],
-    ) -> Optional[Path]:
+        workspace_file: Path | None,
+    ) -> Path | None:
         """Validate and resolve an optional workspace file path.
 
         Args:
@@ -399,9 +421,9 @@ class TyperDispatch:
         cls,
         *,
         workdir: Path,
-        workspace_file: Optional[Path] = None,
-        resume_session_id: Optional[str] = None,
-        plugin_paths: Optional[list[Path]] = None,
+        workspace_file: Path | None = None,
+        resume_session_id: str | None = None,
+        plugin_paths: list[Path] | None = None,
     ) -> SessionConfigDAO:
         """Assemble session config from preferences, then env, then cfg defaults.
 
@@ -436,7 +458,7 @@ class TyperDispatch:
 
         model_name: str = prefs.default_model_name or cfg("DEFAULT_MODEL_NAME") or "gpt-5.4"
         resolved_model_name: str
-        fallback_notice: Optional[str]
+        fallback_notice: str | None
         resolved_model_name, fallback_notice = resolve_model_name_with_fallback(
             model_name=model_name,
         )
@@ -458,7 +480,7 @@ class TyperDispatch:
         cls,
         *,
         config: SessionConfigDAO,
-        model: Optional[str],
+        model: str | None,
     ) -> SessionConfigDAO:
         """Return a copy of *config* with the model name overridden if supplied.
 
@@ -479,7 +501,7 @@ class TyperDispatch:
         cls,
         *,
         config: SessionConfigDAO,
-        reasoning: Optional[str],
+        reasoning: str | None,
     ) -> SessionConfigDAO:
         """Return a copy of *config* with ``reasoning_level`` set if *reasoning* supplied.
 
@@ -523,8 +545,8 @@ class TyperDispatch:
         cls,
         *,
         config: SessionConfigDAO,
-        system_prompt_file: Optional[Path],
-        append_system_prompt_file: Optional[Path],
+        system_prompt_file: Path | None,
+        append_system_prompt_file: Path | None,
     ) -> SessionConfigDAO:
         """Load optional prompt files and return a copy of *config* with them applied.
 
@@ -567,7 +589,7 @@ class TyperDispatch:
         cls,
         *,
         config: SessionConfigDAO,
-        system_prompt_b64: Optional[str],
+        system_prompt_b64: str | None,
     ) -> SessionConfigDAO:
         """Decode a base64 system prompt and apply it to *config*.
 

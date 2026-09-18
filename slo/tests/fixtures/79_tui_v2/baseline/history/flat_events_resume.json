@@ -1,0 +1,21 @@
+{
+  "event_bytes": [
+    "{\"schema_version\":1,\"event_id\":\"<UUID>\",\"session_id\":\"<UUID>\",\"turn_id\":\"turn-1\",\"sequence\":1,\"kind\":\"user_message\",\"iteration\":0,\"recorded_at\":\"<TIMESTAMP>\",\"payload\":{\"role\":null,\"content\":\"resume me\",\"tool_name\":null,\"tool_call_id\":null,\"tool_calls\":null,\"tool_input\":null,\"tool_output\":null,\"message\":null,\"error_message\":null,\"model_name\":null,\"workdir\":null,\"delta_kind\":null,\"block_id\":null,\"delta\":null,\"redacted\":null,\"tool_arguments_delta\":null,\"metadata\":{},\"token_usage\":3}}",
+    "{\"schema_version\":1,\"event_id\":\"<UUID>\",\"session_id\":\"<UUID>\",\"turn_id\":\"turn-1\",\"sequence\":2,\"kind\":\"assistant_message\",\"iteration\":0,\"recorded_at\":\"<TIMESTAMP>\",\"payload\":{\"role\":null,\"content\":\"resumed response\",\"tool_name\":null,\"tool_call_id\":null,\"tool_calls\":null,\"tool_input\":null,\"tool_output\":null,\"message\":null,\"error_message\":null,\"model_name\":null,\"workdir\":null,\"delta_kind\":null,\"block_id\":null,\"delta\":null,\"redacted\":null,\"tool_arguments_delta\":null,\"metadata\":{},\"token_usage\":4}}"
+  ],
+  "event_kinds": [
+    "user_message",
+    "assistant_message"
+  ],
+  "event_sequences": [
+    1,
+    2
+  ],
+  "metadata": {
+    "latest_sequence": 2,
+    "session_id": "<UUID>",
+    "session_name": "Release   Prep",
+    "session_name_key": "release prep"
+  },
+  "resolved_session_id": "<UUID>"
+}

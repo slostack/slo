@@ -1,0 +1,52 @@
+{
+  "builtin": {
+    "remainder": "",
+    "result": {
+      "abort_run": false,
+      "git_diff_path": null,
+      "open_auth_modal": false,
+      "refresh_context_window": false,
+      "refresh_title": false,
+      "refresh_usage_status": false,
+      "rename_current_session_to": null,
+      "render_tree": null,
+      "rendered": null,
+      "replace_session": false,
+      "requested_session_name": null,
+      "should_clear": true,
+      "should_exit": false,
+      "steer_pending_message": null,
+      "toggle_theme": false,
+      "tree_format": null
+    },
+    "token": "clear"
+  },
+  "plugin": {
+    "calls": [
+      {
+        "handler": "plugin",
+        "rest": "plugin remainder"
+      }
+    ],
+    "remainder": "plugin remainder",
+    "result": {
+      "abort_run": false,
+      "git_diff_path": null,
+      "open_auth_modal": false,
+      "refresh_context_window": false,
+      "refresh_title": false,
+      "refresh_usage_status": false,
+      "rename_current_session_to": null,
+      "render_tree": null,
+      "rendered": "plugin:plugin remainder",
+      "replace_session": false,
+      "requested_session_name": null,
+      "should_clear": true,
+      "should_exit": false,
+      "steer_pending_message": null,
+      "toggle_theme": false,
+      "tree_format": null
+    },
+    "token": "clear"
+  }
+}

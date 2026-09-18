@@ -1,0 +1,42 @@
+{
+  "bare": {
+    "exception": null,
+    "exit_code": 0
+  },
+  "invocations": [
+    {
+      "resume_session_reference": null,
+      "workdir": null,
+      "workspace_file": null
+    },
+    {
+      "resume_session_reference": "Release Prep",
+      "workdir": "<TEMP_ROOT>",
+      "workspace_file": null
+    },
+    {
+      "update": {
+        "development": true,
+        "ref": null
+      }
+    },
+    {
+      "update": {
+        "development": false,
+        "ref": null
+      }
+    }
+  ],
+  "known_subcommand": {
+    "exception": null,
+    "exit_code": 0
+  },
+  "subcommand_named_workdir": {
+    "exception": null,
+    "exit_code": 0
+  },
+  "workdir_resume": {
+    "exception": null,
+    "exit_code": 0
+  }
+}

@@ -2956,8 +2956,8 @@ class TestSloTUIAuthMount:
         unsupported model names as "has credential" and skips the modal.
         """
         monkeypatch.setattr(
-            "src.tui.app.cfg",
-            lambda key: "mistral-large" if key == "DEFAULT_MODEL_NAME" else "",
+            "src.tui.app.provider_for_model",
+            lambda *, model_name: (_ for _ in ()).throw(ValueError("unsupported model")),
         )
         session: SloAgentSession = _build_session(
             responses=[AIMessage(content="unused")],

@@ -1,0 +1,119 @@
+{
+  "child": {
+    "environment": {
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "SLO_79_TUI_V2_B2_SCENARIO": "live_replay_queue_copy",
+      "SLO_AUTO_VISUALIZE": "0",
+      "SLO_ENV": "test",
+      "SLO_PLUGINS_DISABLED": "1",
+      "TERM": "xterm-256color"
+    },
+    "reaped": true,
+    "return_code": 0
+  },
+  "effects": [
+    {
+      "kind": "session_injected",
+      "text": null
+    },
+    {
+      "kind": "provider_injected",
+      "text": null
+    },
+    {
+      "kind": "replay_injected",
+      "text": null
+    },
+    {
+      "kind": "replay_hydration_awaited",
+      "text": "entries=1"
+    },
+    {
+      "kind": "replay_hydration_awaited",
+      "text": "startup_notice_requested"
+    },
+    {
+      "kind": "replay_hydration_awaited",
+      "text": "entries=1"
+    },
+    {
+      "kind": "replay_hydration_awaited",
+      "text": "startup_notice_requested"
+    },
+    {
+      "kind": "prompt_started",
+      "text": "first"
+    },
+    {
+      "kind": "prompt_queued",
+      "text": "queued stale"
+    },
+    {
+      "kind": "prompt_queued",
+      "text": "queued latest"
+    },
+    {
+      "kind": "prompt_queued",
+      "text": "interrupt_requested"
+    },
+    {
+      "kind": "prompt_completed",
+      "text": "first"
+    },
+    {
+      "kind": "prompt_started",
+      "text": "queued latest"
+    },
+    {
+      "kind": "prompt_completed",
+      "text": "queued latest"
+    },
+    {
+      "kind": "clipboard_copy",
+      "text": "characters=1202"
+    }
+  ],
+  "pty": {
+    "cursor": {
+      "column": 0,
+      "row": 26
+    },
+    "frame": [
+      "   79_tui_v2 replay answer: recovered response complete",
+      "  79_tui_v2 replay reasoning: provider stream disconnected before committed output; replayed",
+      "  safely",
+      "  79_tui_v2 replay answer: recovered response complete",
+      "  slo, Copyright (C) 2026 Siddharth Ravichandran. This program comes with ABSOLUTELY NO",
+      "  WARRANTY; see LICENSE. This is free software, and you are welcome to redistribute it under",
+      "  GPLv2.",
+      "  Tip: use /help to see available commands. Session: 79-tui-v2-b2-child-session. Initialized     ▂▂",
+      "  model: gpt-5.4. Reasoning: high. Provider detail: effort high.",
+      "  ──────────────────",
+      "   first",
+      "  (queued prompt held — it will run next; resubmit to replace it, /clear to drop it)",
+      "  (aborting…)",
+      "  ──────────────────",
+      " ╭────────────────────────────────────────────────────────────────────────────────────────────────╮",
+      " ╰────────────────────────────────────────────────────────────────────────────────────────────────╯",
+      "  gpt-5.4 · reasoning high · usage unavailable · out 8.2k · effort high · tpm 500k · rpm 30"
+    ],
+    "markers": [
+      "79_tui_v2 replay reasoning: provider stream disconnected before committed output; replayed safely",
+      "79_tui_v2 replay answer: recovered response complete",
+      "Queued: queued latest"
+    ],
+    "raw": {
+      "osc52_base64": "G101MjtjO056bGZkSFZwWDNZeUlISmxjR3hoZVNCaGJuTjNaWEk2SUhKbFkyOTJaWEpsWkNCeVpYTndiMjV6WlNCamIyMXdiR1YwWlFvM09WOTBkV2xmZGpJZ2NtVndiR0Y1SUhKbFlYTnZibWx1WnpvZ2NISnZkbWxrWlhJZ2MzUnlaV0Z0SUdScGMyTnZibTVsWTNSbFpDQmlaV1p2Y21VZ1kyOXRiV2wwZEdWa0lHOTFkSEIxZERzZ2NtVndiR0Y1WldRZ2MyRm1aV3g1Q2pjNVgzUjFhVjkyTWlCeVpYQnNZWGtnWVc1emQyVnlPaUJ5WldOdmRtVnlaV1FnY21WemNHOXVjMlVnWTI5dGNHeGxkR1VLYzJ4dkxDQkRiM0I1Y21sbmFIUWdLRU1wSURJd01qWWdVMmxrWkdoaGNuUm9JRkpoZG1samFHRnVaSEpoYmk0Z1ZHaHBjeUJ3Y205bmNtRnRJR052YldWeklIZHBkR2dnUVVKVFQweFZWRVZNV1NCT1R5QlhRVkpTUVU1VVdUc2djMlZsSUV4SlEwVk9VMFV1SUZSb2FYTWdhWE1nWm5KbFpTQnpiMlowZDJGeVpTd2dZVzVrSUhsdmRTQmhjbVVnZDJWc1kyOXRaU0IwYnlCeVpXUnBjM1J5YVdKMWRHVWdhWFFnZFc1a1pYSWdSMUJNZGpJdUNsUnBjRG9nZFhObElDOW9aV3h3SUhSdklITmxaU0JoZG1GcGJHRmliR1VnWTI5dGJXRnVaSE11SUZObGMzTnBiMjQ2SURjNUxYUjFhUzEyTWkxaU1pMWphR2xzWkMxelpYTnphVzl1TGlCSmJtbDBhV0ZzYVhwbFpDQnRiMlJsYkRvZ1ozQjBMVFV1TkM0Z1VtVmhjMjl1YVc1bk9pQm9hV2RvTGlCUWNtOTJhV1JsY2lCa1pYUmhhV3c2SUdWbVptOXlkQ0JvYVdkb0xnbzNPVjkwZFdsZmRqSWdjbVZ3YkdGNUlHRnVjM2RsY2pvZ2NtVmpiM1psY21Wa0lISmxjM0J2Ym5ObElHTnZiWEJzWlhSbENqYzVYM1IxYVY5Mk1pQnlaWEJzWVhrZ2NtVmhjMjl1YVc1bk9pQndjbTkyYVdSbGNpQnpkSEpsWVcwZ1pHbHpZMjl1Ym1WamRHVmtJR0psWm05eVpTQmpiMjF0YVhSMFpXUWdiM1YwY0hWME95QnlaWEJzWVhsbFpDQnpZV1psYkhrS056bGZkSFZwWDNZeUlISmxjR3hoZVNCaGJuTjNaWEk2SUhKbFkyOTJaWEpsWkNCeVpYTndiMjV6WlNCamIyMXdiR1YwWlFwemJHOHNJRU52Y0hseWFXZG9kQ0FvUXlrZ01qQXlOaUJUYVdSa2FHRnlkR2dnVW1GMmFXTm9ZVzVrY21GdUxpQlVhR2x6SUhCeWIyZHlZVzBnWTI5dFpYTWdkMmwwYUNCQlFsTlBURlZVUlV4WklFNVBJRmRCVWxKQlRsUlpPeUJ6WldVZ1RFbERSVTVUUlM0Z1ZHaHBjeUJwY3lCbWNtVmxJSE52Wm5SM1lYSmxMQ0JoYm1RZ2VXOTFJR0Z5WlNCM1pXeGpiMjFsSUhSdklISmxaR2x6ZEhKcFluVjBaU0JwZENCMWJtUmxjaUJIVUV4Mk1pNEtWR2x3T2lCMWMyVWdMMmhsYkhBZ2RHOGdjMlZsSUdGMllXbHNZV0pzWlNCamIyMXRZVzVrY3k0Z1UyVnpjMmx2YmpvZ056a3RkSFZwTFhZeUxXSXlMV05vYVd4a0xYTmxjM05wYjI0dUlFbHVhWFJwWVd4cGVtVmtJRzF2WkdWc09pQm5jSFF0TlM0MExpQlNaV0Z6YjI1cGJtYzZJR2hwWjJndUlGQnliM1pwWkdWeUlHUmxkR0ZwYkRvZ1pXWm1iM0owSUdocFoyZ3VDajRnWm1seWMzUUtLSEYxWlhWbFpDQndjbTl0Y0hRZ2FHVnNaQ0RpZ0pRZ2FYUWdkMmxzYkNCeWRXNGdibVY0ZERzZ2NtVnpkV0p0YVhRZ2RHOGdjbVZ3YkdGalpTQnBkQ3dnTDJOc1pXRnlJSFJ2SUdSeWIzQWdhWFFwQ2loaFltOXlkR2x1WitLQXBpa0tQaUJ4ZFdWMVpXUWdiR0YwWlhOMAc=",
+      "osc52_sha256": "7dd4c6fba641a27c3eeb10a456ac6bf6b827bcb1c6443596114cfb5571d0527e"
+    },
+    "written_inputs_base64": [
+      "Zmlyc3QN",
+      "cXVldWVkIHN0YWxlDQ==",
+      "cXVldWVkIGxhdGVzdA0=",
+      "Aw==",
+      "G1s5OTs2dQ==",
+      "Aw=="
+    ]
+  }
+}

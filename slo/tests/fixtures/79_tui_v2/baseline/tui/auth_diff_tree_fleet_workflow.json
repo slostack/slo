@@ -1,0 +1,70 @@
+{
+  "child": {
+    "command": [
+      "<PYTHON>",
+      "-m",
+      "src.cli"
+    ],
+    "environment": {
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "SLO_79_TUI_V2_B2_SCENARIO": "auth_diff_tree_fleet_workflow",
+      "SLO_AUTO_VISUALIZE": "0",
+      "SLO_ENV": "test",
+      "SLO_LOG_LEVEL": "ERROR",
+      "SLO_PLUGINS_DISABLED": "1",
+      "TERM": "xterm-256color"
+    },
+    "reaped": true,
+    "return_code": 0
+  },
+  "effects": [
+    {
+      "kind": "session_injected",
+      "text": null
+    },
+    {
+      "kind": "provider_injected",
+      "text": null
+    },
+    {
+      "kind": "auth_screen_shown",
+      "text": "AuthenticationScreen"
+    },
+    {
+      "kind": "prompt_started",
+      "text": "overlay"
+    },
+    {
+      "kind": "prompt_completed",
+      "text": "overlay"
+    },
+    {
+      "kind": "prompt_started",
+      "text": "overlay"
+    },
+    {
+      "kind": "prompt_completed",
+      "text": "overlay"
+    }
+  ],
+  "pty": {
+    "forbidden_markers": [
+      "credential_lookup_attempt",
+      "provider_attempt",
+      "network_attempt"
+    ],
+    "required_markers": [
+      "AuthenticationScreen",
+      "GitDiffScreen",
+      "tree format: markdown; root kind: session; root children: 1",
+      "⊇ task-1: spawned",
+      "⊇ Opened workflow visualizer in a new window (session orch-1).",
+      "workflow wf-1: launching"
+    ],
+    "written_inputs_base64": [
+      "b3ZlcmxheQ0=",
+      "Aw=="
+    ]
+  }
+}

@@ -903,7 +903,143 @@ class PubmedSearchGraph:
 
 ---
 
-## Section 7 — Findings Report Format
+## Section 7 — Review Feedback Requirements (MR/PR)
+
+Apply this section when producing a merge-request or pull-request review. It
+adds presentation and completeness requirements to the hard rules above; it
+does not replace any existing rule.
+
+### 7.1 Explain the problem and its risk
+
+- [ ] Each blocking finding identifies the affected file/line where possible.
+- [ ] Each finding explains what the current approach does, not just its name.
+- [ ] Each finding states the concrete consequence: incorrect data, lost rows,
+      ambiguous ownership, security exposure, fragile migration behavior, or
+      missing user behavior.
+- [ ] Each finding proposes a convention-aligned fix and names the verification
+      needed to prove it.
+- [ ] Findings use simple, guided language. A developer should be able to act
+      without guessing the intended design.
+
+```markdown
+### [High] Do not duplicate the Doctors SQLAlchemy model
+
+**Where:** `src/apps/admin_backend/domains/doctor/model.py:1`
+
+**Problem:** Admin defines a second mapping for the Doctors-owned table.
+
+**Why it matters:** Two mappings for one physical table can drift and prompted a
+runtime metadata-removal workaround. Migration discovery then depends on global
+mutable state and can omit or misrepresent tables.
+
+**Recommended change:** Keep `Doctor` defined only in Doctors. At the explicit
+Admin application-service boundary, import it for read-only directory queries
+and pass it to the Admin directory domain service.
+
+**Verification:** Add application-service delegation coverage and domain SQL
+coverage using the Doctors model with Admin-owned redemption joins.
+```
+
+### 7.2 Preserve domain ownership and explicit read-only boundaries
+
+- [ ] A physical database table has one SQLAlchemy model owner. Do not add a
+      duplicate model in a consumer application merely to query it.
+- [ ] A cross-domain read is explicit at the application-service boundary and
+      is read-only unless the repository explicitly defines a write contract.
+- [ ] The consuming domain service owns its projection/query behavior; it does
+      not claim ownership of the source model.
+- [ ] Do not create an access table, shared-schema package, or metadata
+      workaround when existing models and relationships satisfy the read use
+      case.
+- [ ] Do not mutate global SQLAlchemy metadata at runtime (for example,
+      `metadata.remove(metadata.tables[table_name])`) to hide duplicate
+      mappings. Remove the duplicate mapping and combine normal metadata only
+      where the migration configuration requires it.
+
+For the Admin doctor-directory pattern, the permitted boundary is:
+
+```text
+router → Admin application service → Admin doctor-directory domain service
+                              │
+                              └── imports Doctors-owned Doctor/Session models
+                                  for read-only queries
+```
+
+The Admin application service is where the dependency is visible. The Admin
+directory service may join those models to Admin-owned `Company`, `AccessCode`,
+and `AccessCodeRedemption` data, but it must not write Doctors-owned tables or
+create another `Doctor` mapping.
+
+### 7.3 Directory/read-model correctness
+
+- [ ] Optional related data uses `LEFT JOIN`; an inner join must not remove a
+      primary record that has no redemption, subscription, activity, or other
+      optional relation.
+- [ ] If the output chooses a "latest" related record, the rule is documented
+      in the API/feature language and implemented deterministically.
+- [ ] A latest redemption selection orders by `redeemed_at DESC`, then `id
+      DESC` as a stable tie-breaker, and filters to successful redemptions when
+      the requirement says successful.
+- [ ] A primary record with no selected relation returns documented null values
+      (for example sponsor/coupon/plan are `null`), rather than disappearing.
+- [ ] An inactive primary account remains visible when the directory
+      requirement calls for it and exposes its status accurately.
+- [ ] API fields do not imply a different business meaning than the query. If
+      sponsor/coupon/plan come from the latest successful redemption, do not
+      call them a current subscription or live entitlement.
+
+### 7.4 Specification, testing, and review output
+
+- [ ] The review maps every relevant specification item to **Implemented**,
+      **Partial**, **Missing**, or **Deferred (explicitly recorded)**.
+- [ ] The review calls out product work not implemented: explicit permission
+      rules, complete filter metadata, stable backend-owned reference values,
+      keyboard navigation, exports, and equivalent requirements from the spec.
+- [ ] The review distinguishes tests that exist from behavior those tests
+      actually assert.
+- [ ] Required domain SQL tests cover, where relevant: no optional relation,
+      no activity, latest-record selection and tie-break, name/email search,
+      combined filters, ordering, page sizes, and final-page recovery.
+- [ ] Required controller tests cover authorization matrix, validation, route
+      wiring, and response envelope. Required application-service tests cover
+      delegation and the explicit model boundary.
+- [ ] The review ranks findings **Critical**, **High**, **Medium**, then
+      **Low**, with Critical/High items clearly marked as must-fix before
+      merge.
+- [ ] The review ends with a checklist grouped into: must-fix code,
+      required tests, product/specification decisions, and documentation.
+
+Use this concise review shape after the detailed hard-rule analysis:
+
+```markdown
+## Summary
+<What works and overall merge readiness.>
+
+## Findings by severity
+### Critical — must fix before merge
+### High — must fix before merge
+### Medium — should fix in this MR
+### Low — non-blocking
+
+## Recommended design
+<Ownership, read-only boundary, query/business rule, and implementation example.>
+
+## Specification coverage
+| Requirement | Status | Evidence | Needed action |
+
+## Test assessment
+| Area | Existing coverage | Required coverage |
+
+## Completion checklist
+### Must fix before merge
+- [ ] ...
+### Required tests
+- [ ] ...
+### Documentation and decisions
+- [ ] ...
+```
+
+## Section 8 — Findings Report Format
 
 ```markdown
 ## Blockers (hard rule broken — must fix before merge)

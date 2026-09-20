@@ -415,6 +415,25 @@ Technical sub-specs should also state:
 
 ---
 
+## Important: Implementation Details Are the Implementation Contract
+
+> **This is the most important part of an engineering specification. Do not skim it or treat it as a casual summary.** `## 7. Implementation Details` is the implementation contract for the coding agent: it must provide a granular, code-level representation of how the feature will look and behave, while honoring all applicable repository conventions. An implementing agent must not need to infer file placement, symbol ownership, behavior, error handling, or the tests that prove the change works.
+
+Read the packaged [`implementation-details-granularity.md`](../../samples/implementation-details-granularity.md) sample before drafting or reviewing non-trivial implementation details. It ships with the Slo skill bundle, so this reference is available in both repository checkouts and installed `pipx` environments. Follow its pattern of stating implementation order, identifying exact files and symbols, documenting current versus target behavior, showing full implementation-ready examples where a change is non-obvious, and naming the precise test changes required.
+
+For every implementation slice, this section must explicitly state, as applicable:
+
+- **Where code belongs:** the full repository-relative path of every file to create, modify, move, or delete; the containing folder or package; and why that location is the established owner under the application structure and coding conventions.
+- **What changes in each file:** the exact classes, functions, methods, constants, models, types, templates, registrations, and call sites involved. State whether a symbol is added, changed, removed, renamed, or rewired, and identify the adjacent interfaces that must change with it.
+- **How the code behaves:** ordered control flow; input, output, and type contracts; state transitions; data ownership; configuration; error and boundary behavior; ordering and idempotency rules; and intentionally unchanged behavior. Resolve every meaningful branch or edge case rather than leaving it for the implementer to decide.
+- **How the code should be shaped:** implementation order, signatures and realistic values where they eliminate uncertainty, and complete or before/after code examples for non-trivial changes. Examples must be consistent with the repository's naming, typing, docstring, layering, dependency-injection, and test conventions — they are a build brief, not illustrative pseudocode.
+- **What existing code is affected:** real `file:line` references for the current implementation, explicit replacements for stale behavior, and the exact consolidation or deletion required to keep a single owner for each responsibility.
+- **How the feature is validated:** exact test file paths; existing tests to update, replace, or remove; new test names or cases; fixtures and setup; the behavior and assertions each test covers; required unit, integration, functional, CLI, or end-to-end coverage as appropriate; and scoped format, lint, type-check, and test commands. Include manual smoke steps when automation cannot fully validate the runtime behavior.
+
+A statement such as “update the service,” “add tests,” or “handle errors” is insufficient. Replace it with the concrete file, symbol, behavior, expected result, and test assertion. If a competent implementing agent could reasonably make two different architectural or behavioral choices from the text, the implementation details are incomplete and the specification must be revised before hand-off.
+
+---
+
 **For AI:** When generating documentation in this style:
 
 - Carry both halves — product overview and technical sub-specs — unless the user explicitly asks for only one.

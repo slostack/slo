@@ -394,7 +394,10 @@ async def test_sync_dynamic_workflow_executes_in_session(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_headless_dynamic_workflow_detaches_without_blocking(tmp_path: Path) -> None:
+async def test_headless_dynamic_workflow_detaches_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A "headless dynamic workflows" turn detaches once and returns immediately.
 
     End-to-end contract for the detached route: the scripted model answers
@@ -406,6 +409,11 @@ async def test_headless_dynamic_workflow_detaches_without_blocking(tmp_path: Pat
     present, its env carries SLO_WORKFLOW_ID, and re-promoting a session
     from that argv yields a bundle without launch_workflow.
     """
+    # This scenario is the top-level launch path. A test process may itself
+    # inherit SLO_WORKFLOW_ID from a headless orchestrator, but that value is
+    # only valid for the separate recursion-guard assertion below.
+    monkeypatch.delenv("SLO_WORKFLOW_ID", raising=False)
+
     recorded: dict = {}
     session: SloAgentSession = build_orchestrator_session(
         history_root=tmp_path,

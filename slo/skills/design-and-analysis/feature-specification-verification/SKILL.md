@@ -357,9 +357,16 @@ If the draft is a **technical sub-spec**, verify:
 - [ ] end-to-end flow is explained before low-level implementation detail
 - [ ] implementation order / verification commands / manual smoke are included when applicable
 - [ ] dependencies are explicit
-- [ ] Assert the presence of adequate implementation detail in the form of code ( in scenarios where it is warranted ) such that the implementing agent faces no ambiguity. 
-  - [ ] The agent should know how the code would look
-  - [ ] How to implement it with fully fleshed out methods, classes, tests. 
+- [ ] **Implementation-details contract is satisfied.** Treat this as a release-blocking review, not a superficial heading check. Compare the draft against the packaged [`implementation-details-granularity.md`](../../samples/implementation-details-granularity.md) sample, which is shipped with Slo and available in installed environments.
+  - [ ] Every created, modified, moved, or deleted file has an explicit repository-relative path and a stated place in the application structure.
+  - [ ] Every affected class, function, method, model, type, constant, registration, and call site is named, with whether it is added, changed, removed, or rewired.
+  - [ ] The implementation order and end-to-end behavior cover inputs, outputs, state and error paths, configuration, edge cases, and intentionally unchanged behavior without forcing the implementer to choose semantics.
+  - [ ] Non-trivial work includes implementation-ready, convention-compliant code detail (signatures, types, realistic values, or complete before/after examples as appropriate), rather than vague directives or pseudocode.
+  - [ ] Current behavior and affected existing code are grounded in real `file:line` references; stale behavior, replacement behavior, and required consolidation or deletions are explicit.
+  - [ ] Tests are concrete: test file paths; tests to add, update, replace, or remove; named scenarios or test methods; fixtures/setup; assertions; required test level; and scoped verification commands and manual smoke steps where applicable.
+  - [ ] The specified code and tests honor the repository's applicable coding, layering, naming, typing, dependency, and test conventions.
+  - [ ] No reasonable implementer could reach materially different file-placement, API, behavioral, error-handling, or test-coverage decisions from the draft.
+- [ ] Flag missing, vague, ambiguous, or convention-violating implementation detail as a **CRITICAL** gap. A bare `## 7. Implementation Details` heading, “add tests,” or “update the service” does not pass verification.
 
 ### 5.4 Actionability
 
@@ -470,6 +477,7 @@ Before presenting results:
 - [ ] JIRA comments were read,
 - [ ] the artefact judgment (overview vs technical sub-spec) is explicit,
 - [ ] technical sub-specs were checked for standalone readability and canonical structure when applicable.
+- [ ] implementation details were reviewed as the implementation contract: granular file placement, symbol-level behavior, convention compliance, and concrete test coverage leave no material ambiguity for the coding agent.
 
 ---
 

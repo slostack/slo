@@ -63,6 +63,14 @@ Execute the PRE hook first. The PRE hook produces the **PRE-Hook Context Bundle*
 
 Apply the style guide from `feature-specifications.md` to draft the specification. The spec must choose and declare its mode (Mode A — Business/product, or Mode B — Engineering implementation sub-spec) before the first heading is written.
 
+### Required implementation-details pass — do not skim
+
+Before the draft is eligible for the POST hook, perform a dedicated implementation-details pass for every engineering slice. `## 7. Implementation Details` is the most important part of the specification: it is the coding agent's implementation contract, not a high-level recap. Read the packaged granularity sample at `skills/samples/implementation-details-granularity.md` as the required standard; it is shipped with Slo and is therefore available in installed environments.
+
+The pass must ensure the sub-spec leaves no material implementation decision ambiguous. It must name the exact repository-relative files and folders involved; exact symbols and call sites to add, change, remove, or rewire; implementation order; current and target behavior; input/output, state, error, configuration, edge-case, and unchanged-behavior rules; convention-compliant implementation-ready code detail for non-trivial work; and consolidation or deletion work needed to preserve single ownership.
+
+The same pass must prescribe validation rather than merely saying “add tests”: identify exact test file paths, existing tests to update or replace, new test scenarios or names, fixtures/setup, expected assertions, required test levels, verification commands, and manual smoke steps where applicable. The prescribed code and tests must honor the conventions established by the PRE-Hook Context Bundle. If an implementing agent could reasonably make different choices about code placement, behavior, or test coverage, revise the draft before running the POST hook.
+
 Once the spec body is drafted, execute the POST hook. The POST hook runs formal verification, audits narrative sections, cross-checks against coding conventions, **always runs the DRY consolidation pass**, assesses granularity, audits example richness, and validates test coverage. If the verdict is REVISE, edit the spec in place and re-run the POST hook until the verdict is READY.
 
 The consolidation pass is the step that keeps the system design DRY. A generated specification frequently proposes functionality that already exists in the code — doing the same work wholly, doing part of it, or owning the responsibility the new design duplicates. Redundant artefacts, entities, and domains cause confusion that outlives the feature, so every artefact the spec introduces is checked against the existing code and consolidated by deleting and replacing it, encapsulating it within our conventions, or re-designing the existing component to absorb the new functionality. Responsibilities stay single, isolated, and clean, with distinguishable boundaries documented in the comments and explicit interfaces to adjacent responsibilities. Any surviving redundancy is an automatic REVISE.
@@ -106,7 +114,7 @@ Wait for confirmation before continuing.
 
 **What this step does:**
 
-Run the full verification procedure from `feature-specification-verification.md`. This is an independent, adversarial review of the spec produced in Step 1 — not a rubber-stamp. It re-derives requirements from the JIRA source of truth, maps them against the spec, audits the full architectural stack for completeness, independently searches the code for existing owners of every artefact the spec introduces, traces the control flow, checks for missing error paths, and assesses spec mode and structure compliance independently.
+Run the full verification procedure from `feature-specification-verification.md`. This is an independent, adversarial review of the spec produced in Step 1 — not a rubber-stamp. It re-derives requirements from the JIRA source of truth, maps them against the spec, audits the full architectural stack for completeness, independently searches the code for existing owners of every artefact the spec introduces, traces the control flow, checks for missing error paths, and assesses spec mode and structure compliance independently. It must also verify the implementation-details contract as a CRITICAL gate: granular code placement, symbol-level changes and behavior, convention compliance, and concrete test coverage must leave no material ambiguity for the implementing agent.
 
 The verification must produce a formal report with:
 - JIRA Requirement Traceability Matrix

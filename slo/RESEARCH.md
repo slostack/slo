@@ -22,10 +22,10 @@ document before planning or changing a feature.
 
 ## Slotui core consumer scaffold (spec 79.integration)
 
-- `src/integrations/slotui/` is deliberately dependency-free production scaffolding: it does **not** import `slotui` or install anything at runtime.
-- An explicit `--presentation slotui_core --slotui-core-reference <absolute-json>` request reads a typed local reference, verifies the exact manifest bytes SHA-256, strict manifest schema, local regular-wheel URL/path, filename, wheel SHA-256, dist-info name/version, export surface, and terminal/editor/events/session/history/replay/slash/live-transcript capability declaration. The only generated installation plan is `python -m pip install --disable-pip-version-check --no-index --no-deps <exact-wheel>` for a clean release venv.
-- Missing/invalid proof fails closed with an operator-clear error. `textual_current` remains the bare CLI default, and headless rejects all interactive presentation selection rather than silently changing behavior.
-- `SlotuiParityMatrix` records b.2 adapter boundaries only. Images, LaTex, and Mermaid are literal/raw fallbacks; this work makes no rich parity claim. Tests use wheel-shaped zip and typed manifest fixtures that raise if imported, so b.0.1's uncommitted source tree is never consulted at runtime.
+- `src/integrations/slotui/` is deliberately dependency-free **Slo adapter-fixture** scaffolding, not a Slotui b.1 owner schema: it never imports `slotui`, installs a wheel, or claims clean-venv execution.
+- An explicit `--presentation slotui_core --slotui-core-reference <absolute-json>` request verifies exact local reference and manifest bytes, canonical non-self-referential manifest hash, exact local regular wheel, `METADATA` name/version/`Requires-Python`, source identity/clean assertion, immutable module-qualified generic export signature/hash via archive AST (no import), exact required generic capability list, opaque b.0 stream / b.0.1 live-transcript evidence hashes, and core test-report hashes. Package registry, VCS, source directory, relative path, duplicate/missing/rich-only export, or static archive mismatch fails closed.
+- A **verified** core fixture still fails with the clear integration-unavailable error before a Textual factory/session is constructed; it never falls through to `textual_current`. This preserves the default and headless separation until a real Slo core presentation assembly exists.
+- There is intentionally no pip argv: future b.3 installation/execution must require an independently provisioned fresh Python, distinct from the Slo interpreter. `SlotuiParityMatrix` records b.2 adapter boundaries only. Images, LaTex, and Mermaid are literal/raw fallbacks; this work makes no rich parity claim. Tests use wheel-shaped ZIP fixtures that raise if imported, so protected core source is never consulted at runtime.
 
 ## Verification
 

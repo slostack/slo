@@ -222,16 +222,22 @@ slo/
 
 ### Slotui consumer scaffold (spec 79.integration)
 
-`src/integrations/slotui/` is an independently valid, **non-runtime** consumer scaffold for a
-future protected Slotui core release. It parses only an explicit absolute local reference,
-verifies manifest fixture bytes/schema/digest, exact wheel filename/version/hash, regular-zip
-wheel metadata, declared export surface, and the terminal/editor/events/session/history/replay/
-slash/live-transcript capability set. Its sole installation plan is a fresh-venv
-`python -m pip install --no-index --no-deps <wheel>` command. It rejects package registries,
-VCS/git, editable/source directories, relative paths, and all fallback/import-before-verify
-behavior. No `slotui` import or dependency exists in Slo until a real protected-release wheel
-is available. `SlotuiParityMatrix` maps the b.2 baseline areas to future adapter boundaries and
-expressly provides literal/raw image/LaTex/Mermaid fallback only; it claims no rich parity.
+`src/integrations/slotui/` is an independently valid, **non-runtime** Slo adapter-fixture
+consumer scaffold for a future protected Slotui core release; it is not an owner b.1 schema.
+It parses only an explicit absolute local reference and verifies pinned manifest fixture bytes,
+its canonical non-self-referential projection hash, exact wheel filename/version/hash, regular
+ZIP metadata including `Requires-Python`, protected source identity/clean assertion, immutable
+module-qualified generic export signature/hash (via wheel-source AST, never import), exact
+terminal/editor/events/session/history/replay/slash/live-transcript capability list, opaque b.0
+stream and b.0.1 live-transcript evidence hashes, and core test report hashes. It rejects package
+registries, VCS/git, editable/source directories, relative paths, duplicate/ambiguous/rich-only
+exports, and all fallback/import-before-verify behavior. Static verification deliberately produces
+no pip/install argv and makes no clean-venv execution claim; a future b.3 executor must own a
+separately supplied fresh Python. `--presentation slotui_core` verifies then **fails closed** before
+any Textual factory/session path with an explicit integration-unavailable error until Slo core
+presentation assembly exists. No `slotui` import or dependency exists in Slo. `SlotuiParityMatrix`
+maps b.2 baseline areas to future adapter boundaries and expressly provides literal/raw
+image/LaTex/Mermaid fallback only; it claims no rich parity.
 
 ### Context Window Snapshot and manual compaction (spec 62)
 

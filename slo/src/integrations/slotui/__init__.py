@@ -1,15 +1,19 @@
-"""Fail-closed consumer scaffolding for a released Slotui core wheel.
+"""Fail-closed Slo consumer scaffold for a future protected Slotui core release.
 
-This package validates release artifacts and presentation selection without
-importing, installing, or otherwise executing Slotui from Slo's checkout.
+The package only verifies Slo-owned typed adapter fixtures.  It never imports,
+installs, or claims ownership of Slotui's future b.1 schema or runtime.
 """
 
 from src.integrations.slotui.dao import (
     REQUIRED_SLOTUI_CAPABILITIES,
     SlotuiCoreArtifactReferenceDAO,
     SlotuiCoreCapabilityDAO,
-    SlotuiCoreInstallationPlanDAO,
+    SlotuiCoreExportDAO,
     SlotuiCoreManifestDAO,
+    SlotuiCoreSourceIdentityDAO,
+    SlotuiCoreTestReportHashDAO,
+    SlotuiCoreVerificationReceiptDAO,
+    SlotuiOpaqueEvidenceDAO,
     SlotuiPresentationSelectionDAO,
 )
 from src.integrations.slotui.parity import SlotuiParityMatrix, SlotuiParityMatrixEntryDAO
@@ -20,11 +24,15 @@ __all__ = [
     "REQUIRED_SLOTUI_CAPABILITIES",
     "SlotuiCoreArtifactReferenceDAO",
     "SlotuiCoreCapabilityDAO",
-    "SlotuiCoreInstallationPlanDAO",
+    "SlotuiCoreExportDAO",
     "SlotuiCoreManifestDAO",
+    "SlotuiCoreSourceIdentityDAO",
+    "SlotuiCoreTestReportHashDAO",
     "SlotuiCoreUnavailableError",
     "SlotuiCoreVerificationError",
+    "SlotuiCoreVerificationReceiptDAO",
     "SlotuiCoreWheelVerificationService",
+    "SlotuiOpaqueEvidenceDAO",
     "SlotuiParityMatrix",
     "SlotuiParityMatrixEntryDAO",
     "SlotuiPresentationSelectionDAO",

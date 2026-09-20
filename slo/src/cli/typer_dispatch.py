@@ -90,9 +90,11 @@ class TyperDispatch:
         presentation: str = "textual_current",
         slotui_core_reference: Path | None = None,
     ) -> None:
-        """Open the Textual TUI scoped to ``workdir`` (or the cwd).
+        """Open the selected interactive presentation scoped to ``workdir`` (or the cwd).
 
-        Interactive runs temporarily swap the root logger away from
+        ``slotui_core`` is verified then rejected before this method can build
+        a Textual factory or session because Slo core assembly is not released.
+        Interactive Textual runs temporarily swap the root logger away from
         terminal streams so Textual owns the screen without stdout/stderr
         log lines punching through the layout.
 
@@ -379,7 +381,7 @@ class TyperDispatch:
         presentation: str,
         slotui_core_reference: Path | None,
     ) -> None:
-        """Validate explicit interactive presentation selection before current TUI assembly.
+        """Validate selection and fail closed before any current TUI assembly.
 
         Args:
             presentation (str): Operator presentation token from the CLI parse surface.
@@ -387,7 +389,7 @@ class TyperDispatch:
 
         Raises:
             ValueError: If the presentation token is not in the closed interactive vocabulary.
-            SlotuiCoreUnavailableError: If explicit core selection lacks a verified local wheel.
+            SlotuiCoreUnavailableError: If core proof fails or verified core lacks Slo runtime assembly.
         """
         selected_presentation: SlotuiPresentationName = cls._parse_interactive_presentation(
             presentation=presentation,

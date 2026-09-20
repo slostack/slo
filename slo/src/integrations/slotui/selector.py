@@ -1,4 +1,4 @@
-"""Explicit interactive Slotui selection that never changes default Slo behavior."""
+"""Explicit Slotui selection that fails closed until runtime assembly is delivered."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ __all__ = ["SlotuiCoreUnavailableError", "SlotuiPresentationSelector"]
 
 
 class SlotuiCoreUnavailableError(ValueError):
-    """Report an explicit Slotui request that lacks a verified released core wheel."""
+    """Report an explicit Slotui request that cannot start a Slotui presentation."""
 
 
 class SlotuiPresentationSelector:
-    """Select the current Textual default or verify an explicit released Slotui core request."""
+    """Select current Textual or statically verify and reject unavailable future core selection."""
 
     @classmethod
     def select(
@@ -30,34 +30,36 @@ class SlotuiPresentationSelector:
         presentation: SlotuiPresentationName,
         core_reference_path: Path | None,
     ) -> SlotuiPresentationSelectionDAO:
-        """Select one interactive presentation without importing the Slotui package.
+        """Select one interactive presentation without importing or installing Slotui.
+
+        A verified core adapter fixture remains an error because Slo has no core
+        presentation factory or session assembly yet.  This prevents verified
+        opt-in from silently launching the current Textual presentation.
 
         Args:
-            presentation (SlotuiPresentationName): Explicit requested interactive presentation.
-            core_reference_path (Path | None): Absolute JSON reference to a pinned core manifest.
+            presentation (SlotuiPresentationName): Explicit interactive selection.
+            core_reference_path (Path | None): Absolute JSON reference to a pinned adapter fixture.
 
         Returns:
-            SlotuiPresentationSelectionDAO: Current default or verified future-core selection.
+            SlotuiPresentationSelectionDAO: Textual selection only.
 
         Raises:
-            SlotuiCoreUnavailableError: If an opt-in core request lacks a trusted local release proof.
+            SlotuiCoreUnavailableError: If core proof is absent, invalid, or verified but unassembled.
         """
         if presentation == "textual_current":
             return SlotuiPresentationSelectionDAO(presentation="textual_current")
-        return cls._select_verified_core(core_reference_path=core_reference_path)
+        cls._verify_then_reject_unavailable_core(core_reference_path=core_reference_path)
+        raise AssertionError("unreachable after Slotui core unavailable error")
 
     @classmethod
-    def _select_verified_core(cls, *, core_reference_path: Path | None) -> SlotuiPresentationSelectionDAO:
-        """Load and verify a typed local core reference for the opt-in route.
+    def _verify_then_reject_unavailable_core(cls, *, core_reference_path: Path | None) -> None:
+        """Verify the local adapter fixture then stop before current Textual assembly.
 
         Args:
             core_reference_path (Path | None): Candidate local release-reference JSON file.
 
-        Returns:
-            SlotuiPresentationSelectionDAO: Verified core selection with a safe fresh-venv plan.
-
         Raises:
-            SlotuiCoreUnavailableError: If proof is missing, malformed, or cannot verify exact wheel bytes.
+            SlotuiCoreUnavailableError: If proof fails or core integration is not assembled.
         """
         if core_reference_path is None:
             raise SlotuiCoreUnavailableError(
@@ -66,28 +68,31 @@ class SlotuiPresentationSelector:
             )
         try:
             reference: SlotuiCoreArtifactReferenceDAO = cls._load_reference(path=core_reference_path)
-            plan = SlotuiCoreWheelVerificationService.build_installation_plan(reference=reference)
+            SlotuiCoreWheelVerificationService.build_verification_receipt(reference=reference)
         except (OSError, ValidationError, SlotuiCoreVerificationError, ValueError) as error:
             raise SlotuiCoreUnavailableError(
                 "Slotui core was requested, but a verified Slotui core wheel is unavailable; "
-                "the reference, manifest, or local wheel failed verification."
+                "the adapter fixture reference, manifest, or local wheel failed static verification."
             ) from error
-        return SlotuiPresentationSelectionDAO(presentation="slotui_core", core_installation_plan=plan)
+        raise SlotuiCoreUnavailableError(
+            "Slotui core wheel was verified, but Slo core presentation integration is not available yet; "
+            "Slo will not fall back to the Textual presentation."
+        )
 
     @staticmethod
     def _load_reference(*, path: Path) -> SlotuiCoreArtifactReferenceDAO:
-        """Load the typed, absolute local manifest reference without fallback discovery.
+        """Load one explicitly supplied typed adapter-fixture reference without fallback discovery.
 
         Args:
             path (Path): Explicit local JSON reference supplied by the operator.
 
         Returns:
-            SlotuiCoreArtifactReferenceDAO: Strict immutable manifest reference.
+            SlotuiCoreArtifactReferenceDAO: Strict immutable local fixture reference.
 
         Raises:
             ValueError: If the requested reference is not one readable regular file.
         """
         resolved_path: Path = path.expanduser().resolve()
-        if not resolved_path.is_file():
-            raise ValueError("Slotui core reference is unavailable or is not a regular file")
+        if not resolved_path.is_file() or resolved_path.is_symlink():
+            raise ValueError("Slotui core adapter fixture reference is unavailable or is not a regular file")
         return SlotuiCoreArtifactReferenceDAO.model_validate_json(resolved_path.read_text(encoding="utf-8"))

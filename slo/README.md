@@ -20,7 +20,10 @@
 > timer can feed a live TUI session without creating a second writer.
 > User-defined skills and workflows can be dropped into `~/.slo/user_skills/`
 > and `~/.slo/user_workflows/` and are automatically merged with the 116
-> vendored skills at session start.
+> vendored skills at session start. The vendored skills ship inside the
+> installed pipx package; the installer persists their absolute path as the
+> `SLO_SKILLS_DIR` default in `~/.slo/shell/environment.sh` (see
+> `docs/INSTALL.md` §2.1).
 >
 > **Plugin extensions (Feature 75):** Slo supports trusted Python plugins with
 > managed GitHub/GitLab installation (`slo plugin install <url> --yes`, `list`,
@@ -35,7 +38,10 @@
 > In a development checkout, dog-food the bundled renderer explicitly with:
 > `slo --plugin plugins/bash_live_output/plugin.py`. Operator installs use the
 > managed lifecycle; the packaged bundled payload records
-> `https://github.com/slo/slo` plus `package:<version>` provenance.
+> `https://github.com/slo/slo` plus `package:<version>` provenance. (That
+> `github.com/slo/slo` value is the bundled plugin's own provenance record
+> only — the public installer and `slo update` fetch Slo itself from GitLab,
+> `https://gitlab.com/core-27/slo.git`; see `docs/INSTALL.md`.)
 >
 > v0.8.0 added a **third AI provider: Kimi For Coding (KFC)** — an
 > OpenAI-compatible API from Moonshot AI with a `ModelPool` fallback router and

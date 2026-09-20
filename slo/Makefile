@@ -39,7 +39,9 @@ refresh-skills:  ## Pull upstream skills and rebuild INDEX.md
 	PYTHONPATH=$(PWD) poetry run python scripts/refresh_skills.py
 	$(MAKE) build-skill-index
 
-# Install slo to ~/.slo/ via pipx (sub-spec 01.n).
+# Install slo's code via pipx through install.sh (sub-spec 01.n), then
+# finalise the non-secret managed environment file under ~/.slo/shell/ (spec 80).
+# Code is never installed into ~/.slo — that directory is runtime data.
 install:  ## Install slo locally via install.sh
 	bash install.sh
 

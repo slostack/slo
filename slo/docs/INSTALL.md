@@ -14,7 +14,7 @@ command (`src/cli/update.py`).
 ## 1. Mental model
 
 Slo installs as an **isolated [pipx](https://pipx.pypa.io) application**, built
-straight from the public GitHub repo:
+straight from the public GitLab repo:
 
 ```
 pipx install --force --python <python3.11> "git+https://gitlab.com/core-27/slo.git@<ref>#subdirectory=slo"
@@ -24,9 +24,14 @@ Two things follow from this:
 
 - **Code vs. data are separate.** pipx owns the *code* (an isolated venv plus
   the `slo` binary on your `PATH`). `~/.slo` (a.k.a. `SLO_HOME`) is *runtime
-  data only* — sessions, logs, and `global/authentication.json`. **Install,
-  upgrade, and uninstall never touch `~/.slo`.** The installer creates the
-  directory if missing but writes nothing into it.
+  data only* — sessions, logs, and `global/authentication.json`. Install,
+  upgrade, and uninstall never modify those. The installer creates the
+  directory if missing; after a successful install it additionally owns
+  **one non-secret file** there — the managed environment file
+  `$HOME/.slo/shell/environment.sh` (see §2.1) — and bounded source blocks
+  in your shell startup files. It never creates a checkout, never copies
+  vendored skills into `~/.slo`, and never touches sessions, credentials,
+  user skills, user workflows, or a legacy `~/.slo/skills` tree.
 - **The project lives in a subdirectory.** The repo root has no
   `pyproject.toml`; the Python package is under `slo/`. That is why the pip
   requirement carries `#subdirectory=slo`.
@@ -47,26 +52,63 @@ place, and every step is a no-op when already satisfied.
 2. Resolves `SLO_HOME` (default `~/.slo`) and ensures it exists — as the data
    dir, not a checkout.
 3. Runs `pipx install --force --python <interpreter> "git+…@<ref>#subdirectory=slo"`.
+4. **Finalises the persistent shell environment** (only after a successful
+   pipx install — see §2.1).
+
+### 2.1 Persistent shell environment (the managed environment file)
+
+A child process cannot export variables into the shell that ran
+`curl … | bash`, so durable defaults need startup-file integration. After the
+pipx install succeeds, the installer:
+
+1. Resolves the installed package's **vendored skills directory** from
+   distribution metadata — `pipx runpip slo show slo` → its `Location:` field →
+   `<Location>/skills` — and requires a readable `INDEX.md` there. No Python
+   version, pipx root, or checkout path is ever guessed; a metadata or
+   validation failure aborts finalisation non-zero *before* any file changes.
+2. Atomically writes the **managed environment file**
+   `$HOME/.slo/shell/environment.sh` (mode `0644`, non-secret, marked
+   `# >>> slo managed environment >>>` / `# <<< slo managed environment <<<`).
+   It supplies *defaults only*:
+   - `SLO_HOME` defaults to `$HOME/.slo`;
+   - `SLO_SKILLS_DIR` defaults to the validated absolute vendored skills path.
+   A value you exported *before* the shell sources the file always wins —
+   `config/cfg.py` keeps its explicit-environment-first precedence.
+3. Reconciles one bounded **shell source block** in each supported startup
+   file — `.bash_profile` (login Bash), `.bashrc` (interactive non-login
+   Bash), `.zshenv` (all Zsh), and `.profile` (POSIX login fallback). The
+   block only sources the managed file behind a readable guard; it never
+   contains the resolved path. Unrecognised files, symlinks, and malformed or
+   duplicate marker states are *refused, never overwritten*.
+
+**Coverage boundary (deliberate):** supported interactive shells get the
+defaults on their next start, and any shell they spawn inherits the exports.
+Sterile processes — `env -i sh -c …`, `bash --noprofile --norc -c …`, cron,
+services, GUI launchers — cannot be configured by an installer; they keep
+`config/cfg.py`'s fallback resolution (explicit env → populated legacy
+`~/.slo/skills` → package-adjacent tree) or need an explicit
+`SLO_HOME` / `SLO_SKILLS_DIR`.
 
 **Configuration (environment variables)**
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `SLO_REPO_URL` | `https://gitlab.com/core-27/slo.git` | Public Git URL to install from |
-| `SLO_REF` | `main` | Branch / tag / commit to install |
+| `SLO_REF` | `main` | Branch / tag / commit to install — the source-of-truth ref selector |
+| `SLO_VERSION` | unset | Compatibility selector: `dev` → `main`; any other value overrides `SLO_REF` |
 | `SLO_REPO_SUBDIR` | `slo` | Subdirectory holding `pyproject.toml` (set empty for a root-level project) |
 | `SLO_PYTHON_VERSION` | `3.11.7` | Pinned interpreter version |
 | `SLO_OS_RELEASE_FILE` | `/etc/os-release` | Linux distro-detection file (test-only override) |
 
 `bash install.sh --development` is an explicit alias for `SLO_REF=main`.
 
-### 2.1 Public repository installation
+### 2.2 Public repository installation
 
 The installer installs from the public repository and does not read, inject,
 or persist repository credentials. Existing deploy-token or personal-access-token
 variables in the environment are ignored by `install.sh`.
 
-### 2.2 Direct local run (operator / testing)
+### 2.3 Direct local run (operator / testing)
 
 ```bash
 bash install.sh
@@ -106,7 +148,7 @@ curl -fsSL https://get-slo.sh/install.sh | bash
 Cloudflare API with `curl` (no `wrangler`/Node needed). At a high level it:
 
 1. Verifies the Cloudflare token can reach the account's Workers.
-2. Fetches the **canonical public** `install.sh` from GitHub
+2. Fetches the **canonical public** `install.sh` from GitLab
    `core-27/slo@<SLO_SOURCE_REF>` (default `main`) — or publishes a local file
    when `INSTALL_SH` is set (testing).
 3. Optionally pins the hosted default install ref (`PUBLISH_SLO_REF`).
@@ -138,6 +180,15 @@ Edit** scoped to the target zone.
 It uses the public repository URL, like the installer. Your `~/.slo` data is
 untouched.
 
+**`slo update` is pipx-only (deliberate).** It reinstalls the code venv and
+never refreshes the managed environment file or any shell source block — the
+public installer is the single owner of persistent shell defaults, and the
+updater is not a second writer. If a reinstall ever changes pipx's
+installation Location so the persisted `SLO_SKILLS_DIR` goes stale, the exact
+recovery is to rerun the public installer
+(`curl -fsSL https://get-slo.sh/install.sh | bash`); its finalisation
+re-resolves the current metadata and atomically refreshes the managed file.
+
 You can always upgrade by simply re-running the installer
 (`curl -fsSL https://get-slo.sh/install.sh | … bash`) instead.
 
@@ -153,8 +204,10 @@ pipx uninstall slo
 ```
 
 This removes the code venv and the `slo` binary. **Your `~/.slo` runtime data
-(sessions, logs, credentials) survives** — delete it manually if you truly want
-a clean slate.
+(sessions, logs, credentials) survives** — delete it manually if you truly
+want a clean slate. The managed environment file and shell source blocks are
+inert once Slo is gone (the block guards on readability), and may be removed
+by hand if desired.
 
 > **pyenv shim shadowing.** If you also have a `slo` installed inside a pyenv
 > virtualenv (e.g. a developer checkout), `which slo` may resolve to

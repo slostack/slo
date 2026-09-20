@@ -204,6 +204,54 @@ class TestMain:
             main(["--development", "--ref", "v1.2.3"])
 
 
+class TestUpdateIsNotAnEnvironmentWriter:
+    """M2 (spec 80.a.2): ``slo update`` is pipx-only, never a shell writer.
+
+    The updater deliberately does NOT refresh the installer-managed environment
+    file or any profile source block: there is exactly one owner of persistent
+    shell defaults (``install.sh`` finalisation). If a pipx reinstall changes
+    the distribution Location, the documented recovery is rerunning the public
+    installer, whose finalisation refreshes the managed file atomically.
+    """
+
+    def test_invoke_never_touches_the_managed_environment_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A full update writes nothing under the managed shell file path."""
+        home: Path = tmp_path / "home"
+        managed_file: Path = home / ".slo" / "shell" / "environment.sh"
+        managed_file.parent.mkdir(parents=True)
+        managed_file.write_text("# existing managed content\n")
+        before: bytes = managed_file.read_bytes()
+        monkeypatch.setenv("HOME", str(home))
+        with patch("src.cli.update.Updater._pipx_install") as install:
+            Updater.invoke(ref="v9.9.9")
+        install.assert_called_once()
+        assert managed_file.read_bytes() == before
+
+    def test_invoke_never_touches_shell_profiles(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A full update edits no shell startup file in the user's home."""
+        home: Path = tmp_path / "home"
+        home.mkdir()
+        profiles: dict[str, Path] = {
+            name: home / name for name in (".bash_profile", ".bashrc", ".zshenv", ".profile")
+        }
+        for name, profile in profiles.items():
+            profile.write_text(f"# {name} user content\n")
+        before: dict[str, bytes] = {name: path.read_bytes() for name, path in profiles.items()}
+        monkeypatch.setenv("HOME", str(home))
+        with patch("src.cli.update.Updater._pipx_install"):
+            Updater.invoke(ref="v9.9.9")
+        for name, profile in profiles.items():
+            assert profile.read_bytes() == before[name], name
+
+
 class TestCheckPathAfterInstall:
     """``_check_path_after_install`` warns when ``~/.local/bin`` is off PATH."""
 

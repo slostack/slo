@@ -39,8 +39,14 @@ task. The output looks like your codebase, not like a model's default style.
 
 ## 1. Installation
 
-Slo installs with a single command. The installer pulls the pinned release,
-installs it with `pipx`, and drops the skill library into `~/.slo/`.
+Slo installs with a single command. The installer pulls the pinned release and
+installs it with `pipx`. The 116 vendored skill documents ship **inside the
+installed package** (beside it in pipx's venv, not in `~/.slo/`); after a
+successful install the installer writes one non-secret managed environment
+file, `~/.slo/shell/environment.sh`, which defaults `SLO_HOME` to `~/.slo` and
+`SLO_SKILLS_DIR` to that validated installed skills path, and attaches it to
+your shell startup files. Your own skills still live in `~/.slo/user_skills/`
+and override the built-ins by name.
 
 ```bash
 curl -fsSL https://get-slo.sh/install.sh | bash
@@ -64,19 +70,20 @@ are in.
 
 ### Choosing a version
 
-The hosted installer is pinned to the latest release by default. `SLO_VERSION`
-overrides what gets installed — a release tag, the `dev` shortcut for the
-`main` branch, or any other branch or ref name:
+The hosted installer is pinned to the latest release by default. `SLO_REF` is
+the source-of-truth selector — a release tag, branch, or commit. The older
+`SLO_VERSION` variable still works as a compatibility alias (`dev` means the
+`main` branch; anything else is treated as a ref):
 
 ```bash
 # a specific release version
-curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=v0.15.0 bash
+curl -fsSL https://get-slo.sh/install.sh | SLO_REF=v0.15.0 bash
 
 # the development version — tracks the main branch
-curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=dev bash
+curl -fsSL https://get-slo.sh/install.sh | SLO_REF=main bash
 
 # any other development ref (branch, tag, or commit)
-curl -fsSL https://get-slo.sh/install.sh | SLO_VERSION=feature-my-branch bash
+curl -fsSL https://get-slo.sh/install.sh | SLO_REF=feature-my-branch bash
 ```
 
 ### Updating
@@ -209,7 +216,8 @@ starts with it loaded. Slo can write that file for you — just ask.
 ~/.slo/
 ├── global/
 │   └── authentication.json     your provider credentials (chmod 0600)
-├── skills/                     the 116 built-in skill documents
+├── shell/
+│   └── environment.sh          installer-managed defaults (SLO_HOME, SLO_SKILLS_DIR)
 ├── user_skills/                YOUR skills — these override the built-ins
 ├── user_workflows/             your own multi-step workflows
 ├── sessions/history/
@@ -223,7 +231,11 @@ starts with it loaded. Slo can write that file for you — just ask.
         └── runs/<run_id>.json  one immutable record per fire
 ```
 
-Set `SLO_HOME` to move this whole tree somewhere else.
+Set `SLO_HOME` to move this whole tree somewhere else. The 116 vendored skill
+documents are *not* here — they ship inside the installed pipx package, and
+the managed `shell/environment.sh` points `SLO_SKILLS_DIR` at them. (A
+populated legacy `~/.slo/skills` tree, if you have one from an old install, is
+left untouched and remains a fallback when `SLO_SKILLS_DIR` is unset.)
 
 ---
 
@@ -518,7 +530,7 @@ All configuration is environment variables.
 | `SLO_DEFAULT_MODEL_NAME` | `gpt-5.4` | Model used when none is specified |
 | `SLO_SESSION_ID` | generated | Fixed session id for headless runs |
 | `SLO_KB_DIR` | unset | Path to a markdown knowledge base |
-| `SLO_SKILLS_DIR` | bundled | Override the skills directory |
+| `SLO_SKILLS_DIR` | installed package's `skills/` | Override the vendored skills directory |
 | `SLO_LOG_FORMAT` | `json` | `json` or `text` |
 
 **Credentials**

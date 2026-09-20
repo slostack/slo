@@ -20,6 +20,7 @@ The build is slow, so this is opt-in like the install smoke test.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -47,6 +48,13 @@ _REQUIRED_PLUGIN_ENTRIES: tuple[str, ...] = (
 def _build_wheel(*, output_dir: Path) -> Path:
     """Build the project wheel into ``output_dir`` and return its path.
 
+    Prefers ``python -m poetry build``; falls back to ``python -m pip wheel``
+    with build isolation disabled, which drives the same ``poetry-core`` PEP
+    517 backend and therefore exercises the identical ``[tool.poetry] include``
+    package-data contract. The fallback exists because a dev environment can
+    have ``poetry-core`` (the build backend) without the ``poetry`` CLI (the
+    project manager).
+
     Args:
         output_dir (Path): Directory to write the wheel into.
 
@@ -56,13 +64,48 @@ def _build_wheel(*, output_dir: Path) -> Path:
     Raises:
         AssertionError: If the build fails or produces no wheel.
     """
-    result = subprocess.run(
-        [sys.executable, "-m", "poetry", "build", "-f", "wheel", "-o", str(output_dir)],
-        cwd=str(_REPO_ROOT),
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"poetry build failed:\n{result.stderr}"
+    try:
+        import poetry.core  # noqa: F401
+
+        backend_available: bool = True
+    except ModuleNotFoundError:
+        backend_available = False
+    poetry_result: subprocess.CompletedProcess[str] | None = None
+    if backend_available:
+        poetry_result = subprocess.run(
+            [sys.executable, "-m", "poetry", "build", "-f", "wheel", "-o", str(output_dir)],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+    if poetry_result is None or poetry_result.returncode != 0:
+        # Prefer the PATH-resolved interpreter over sys.executable: inside a
+        # pyenv-managed checkout, sys.executable is the version pinned by
+        # .python-version, which may lack the poetry-core backend that the
+        # active development environment (PATH) provides.
+        builder_python: str = shutil.which("python3.11") or sys.executable
+        pip_result = subprocess.run(
+            [
+                builder_python,
+                "-m",
+                "pip",
+                "wheel",
+                str(_REPO_ROOT),
+                "--no-deps",
+                "--no-build-isolation",
+                "-w",
+                str(output_dir),
+            ],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        poetry_note: str = (
+            f"poetry build failed:\n{poetry_result.stderr}\n"
+            if poetry_result is not None
+            else "poetry CLI unavailable in this interpreter; using pip wheel.\n"
+        )
+        assert pip_result.returncode == 0, f"{poetry_note}pip wheel fallback failed:\n{pip_result.stderr}"
     wheels: list[Path] = sorted(output_dir.glob("*.whl"))
     assert wheels, f"no wheel produced in {output_dir}"
     return wheels[-1]

@@ -145,6 +145,8 @@ slo/
 │   │   │   ├── prompt_snippets.py     # TOOL_PROMPT_SNIPPETS dict → system prompt tool lines
 │   │   │   └── _blocking.py / _truncate.py / _gitignore.py / _image_content.py
 │   │   └── reasoning_capabilities.py  # compatibility projection over ModelCatalogService reasoning profiles
+│   ├── integrations/
+│   │   └── slotui/                  # fail-closed local wheel proof, explicit future-core selector, b.2 parity matrix (never imports Slotui)
 │   ├── auth/
 │   │   ├── credential_resolver.py     # CredentialResolver — env → store → legacy Claude
 │   │   ├── credential_store.py        # CredentialStore — ~/.slo/global/authentication.json
@@ -218,6 +220,19 @@ slo/
 └── CLAUDE.md  (loads AGENTS.md on every session)
 ```
 
+### Slotui consumer scaffold (spec 79.integration)
+
+`src/integrations/slotui/` is an independently valid, **non-runtime** consumer scaffold for a
+future protected Slotui core release. It parses only an explicit absolute local reference,
+verifies manifest fixture bytes/schema/digest, exact wheel filename/version/hash, regular-zip
+wheel metadata, declared export surface, and the terminal/editor/events/session/history/replay/
+slash/live-transcript capability set. Its sole installation plan is a fresh-venv
+`python -m pip install --no-index --no-deps <wheel>` command. It rejects package registries,
+VCS/git, editable/source directories, relative paths, and all fallback/import-before-verify
+behavior. No `slotui` import or dependency exists in Slo until a real protected-release wheel
+is available. `SlotuiParityMatrix` maps the b.2 baseline areas to future adapter boundaries and
+expressly provides literal/raw image/LaTex/Mermaid fallback only; it claims no rich parity.
+
 ### Context Window Snapshot and manual compaction (spec 62)
 
 `ContextWindowSnapshotService` (`src/agents/slo_agent/compaction/context_window.py`) is a pure
@@ -270,7 +285,10 @@ slo (console script → src/cli/__main__.py)
 
 - `TyperDispatch` — parses CLI flags, resolves model/provider plus `--resume` session
   references and optional `--workspace <file.code-workspace>`, launches the TUI or a headless run,
-  and owns the async boundary for `slo plugin install|list|uninstall|upgrade`.
+  and owns the async boundary for `slo plugin install|list|uninstall|upgrade`. Interactive
+  `--presentation textual_current` remains the default; `--presentation slotui_core` is an explicit
+  future opt-in that must verify a typed, digest-pinned local wheel manifest through
+  `src/integrations/slotui/` before any installation or import. Headless never selects presentation.
 - `SloTUI` — Textual app. Owns the layout (header, scroll container, `UsageStatusBar`,
   `PromptInput`, footer), mounts transcript widgets, dispatches slash commands, owns
   `/new` session replacement + `/rename`, manages in-process prompt-history recall, and

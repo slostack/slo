@@ -50,6 +50,7 @@ class TestTyperDispatchTui:
 
         with (
             patch("src.cli.typer_dispatch.interactive_logging", return_value=nullcontext()),
+            patch("src.cli.typer_dispatch.SlotuiPresentationSelector.select"),
             patch(
                 "src.cli.typer_dispatch._build_default_tui_assembly_factory",
                 return_value=factory,
@@ -88,6 +89,7 @@ class TestTyperDispatchTui:
 
         with (
             patch("src.cli.typer_dispatch.interactive_logging", return_value=context),
+            patch("src.cli.typer_dispatch.SlotuiPresentationSelector.select"),
             patch(
                 "src.cli.typer_dispatch._build_default_tui_assembly_factory",
                 return_value=factory,
@@ -140,7 +142,10 @@ class TestTyperDispatchTui:
 
     def test_tui_raises_bad_parameter_when_workspace_file_is_missing(self, tmp_path: Path) -> None:
         """A missing workspace file fails fast before any session is built."""
-        with pytest.raises(typer.BadParameter, match="Workspace file not found"):
+        with (
+            patch("src.cli.typer_dispatch.SlotuiPresentationSelector.select"),
+            pytest.raises(typer.BadParameter, match="Workspace file not found"),
+        ):
             TyperDispatch.tui(
                 workdir=tmp_path,
                 workspace_file=tmp_path / "missing.code-workspace",

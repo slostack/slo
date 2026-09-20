@@ -109,6 +109,16 @@ def _default(
         "--plugin",
         help="Trusted explicit plugin file; repeat to preserve load order.",
     ),
+    presentation: str = typer.Option(
+        "textual_current",
+        "--presentation",
+        help="Interactive presentation: textual_current (default) or slotui_core (explicit opt-in).",
+    ),
+    slotui_core_reference: Optional[Path] = typer.Option(
+        None,
+        "--slotui-core-reference",
+        help="Absolute local Slotui core release-reference JSON; required only for --presentation slotui_core.",
+    ),
     version: bool = typer.Option(
         False,
         "--version",
@@ -129,6 +139,9 @@ def _default(
     }
     if plugin:
         tui_kwargs["plugin_paths"] = plugin
+    if presentation != "textual_current":
+        tui_kwargs["presentation"] = presentation
+        tui_kwargs["slotui_core_reference"] = slotui_core_reference
     TyperDispatch.tui(**tui_kwargs)  # type: ignore[arg-type]
 
 

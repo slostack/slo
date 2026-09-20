@@ -47,6 +47,8 @@ from src.cli.headless import HeadlessRunner
 from src.cli.headless_logging import headless_logging
 from src.cli.headless_request import resolve_session_id, validate_session_id
 from src.cli.update import Updater
+from src.integrations.slotui.dao import SlotuiPresentationName
+from src.integrations.slotui.selector import SlotuiPresentationSelector
 from src.tui.assembly.dao import SloTuiAssemblyConfigDAO
 from src.tui.assembly.ports import SloTuiAssemblyFactory
 
@@ -85,6 +87,8 @@ class TyperDispatch:
         workspace_file: Path | None = None,
         resume_session_reference: str | None = None,
         plugin_paths: list[Path] | None = None,
+        presentation: str = "textual_current",
+        slotui_core_reference: Path | None = None,
     ) -> None:
         """Open the Textual TUI scoped to ``workdir`` (or the cwd).
 
@@ -101,6 +105,10 @@ class TyperDispatch:
                 reopen (session id or unique session name). ``None`` allocates
                 a new UUID4.
         """
+        cls._validate_interactive_presentation(
+            presentation=presentation,
+            slotui_core_reference=slotui_core_reference,
+        )
         resolved_workdir: Path = (workdir or Path.cwd()).resolve()
         resolved_workspace_file: Path | None = cls._resolve_workspace_file(
             workspace_file=workspace_file,
@@ -139,6 +147,7 @@ class TyperDispatch:
         system_prompt_b64: str | None = None,
         notify_session_id: str | None = None,
         plugin_paths: list[Path] | None = None,
+        presentation: str | None = None,
     ) -> int:
         """Run one agent loop headlessly, stream JSONL to stdout, return exit code.
 
@@ -189,6 +198,7 @@ class TyperDispatch:
         Returns:
             int: POSIX exit code: ``0`` completed, ``2`` aborted, ``1`` failed.
         """
+        cls._reject_headless_presentation(presentation=presentation)
         slo_home: Path = _CFG_SLO_HOME
         resolved_workdir: Path = (Path(cwd) if cwd else Path.cwd()).resolve()
         resolved_workspace_file: Path | None = cls._resolve_workspace_file(
@@ -361,6 +371,63 @@ class TyperDispatch:
             ref (Optional[str]): Explicit branch / tag / commit to install.
         """
         Updater.invoke(development=development, ref=ref)
+
+    @classmethod
+    def _validate_interactive_presentation(
+        cls,
+        *,
+        presentation: str,
+        slotui_core_reference: Path | None,
+    ) -> None:
+        """Validate explicit interactive presentation selection before current TUI assembly.
+
+        Args:
+            presentation (str): Operator presentation token from the CLI parse surface.
+            slotui_core_reference (Path | None): Optional typed local core proof reference.
+
+        Raises:
+            ValueError: If the presentation token is not in the closed interactive vocabulary.
+            SlotuiCoreUnavailableError: If explicit core selection lacks a verified local wheel.
+        """
+        selected_presentation: SlotuiPresentationName = cls._parse_interactive_presentation(
+            presentation=presentation,
+        )
+        SlotuiPresentationSelector.select(
+            presentation=selected_presentation,
+            core_reference_path=slotui_core_reference,
+        )
+
+    @staticmethod
+    def _parse_interactive_presentation(*, presentation: str) -> SlotuiPresentationName:
+        """Convert a closed CLI presentation token to the typed integration vocabulary.
+
+        Args:
+            presentation (str): Raw operator token parsed by Typer.
+
+        Returns:
+            SlotuiPresentationName: Typed current or future-core interactive selection.
+
+        Raises:
+            ValueError: If the token is not a supported interactive presentation.
+        """
+        if presentation == "textual_current":
+            return "textual_current"
+        if presentation == "slotui_core":
+            return "slotui_core"
+        raise ValueError("unknown interactive presentation; use textual_current or slotui_core")
+
+    @classmethod
+    def _reject_headless_presentation(cls, *, presentation: str | None) -> None:
+        """Keep headless execution independent from every interactive presentation selection.
+
+        Args:
+            presentation (str | None): Optional wrongly-routed interactive selector value.
+
+        Raises:
+            ValueError: If a caller attempts to select a presentation on the headless route.
+        """
+        if presentation is not None:
+            raise ValueError("presentation selection applies only to interactive Slo TUI runs")
 
     @classmethod
     def _resolve_resume_reference(

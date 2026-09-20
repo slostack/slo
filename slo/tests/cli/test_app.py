@@ -59,7 +59,11 @@ class TestAppSurface:
             result = runner.invoke(app, ["--resume", explicit])
 
         assert result.exit_code == 0
-        mock_tui.assert_called_once_with(workdir=None, workspace_file=None, resume_session_reference=explicit)
+        mock_tui.assert_called_once_with(
+            workdir=None,
+            workspace_file=None,
+            resume_session_reference=explicit,
+        )
 
     def test_resume_flag_threads_session_name_reference_into_dispatch(self) -> None:
         """``slo --resume <name>`` reaches the dispatcher with the raw reference."""
@@ -68,7 +72,9 @@ class TestAppSurface:
 
         assert result.exit_code == 0
         mock_tui.assert_called_once_with(
-            workdir=None, workspace_file=None, resume_session_reference="release prep"
+            workdir=None,
+            workspace_file=None,
+            resume_session_reference="release prep",
         )
 
     def test_workspace_flag_threads_path_into_dispatch(self, tmp_path: Path) -> None:

@@ -47,7 +47,7 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 | `make lint` | `poetry run mypy src/` |
 | `make format` | `poetry run black src/ tests/` (line length 110) |
 | `make build-skill-index` | Regenerate `skills/INDEX.md` from committed `SKILL.md` files |
-| `make install` | `install.sh` → pipx install to `~/.slo/` |
+| `make install` | `install.sh` → pipx install of the code, then finalise the managed shell environment file under `~/.slo/shell/` |
 
 ---
 

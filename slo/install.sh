@@ -5,10 +5,14 @@
 #
 # Installs slo as a normal pipx application straight from its git repository.
 # pipx builds the package in its own isolated venv and puts the `slo` binary on
-# your PATH. NOTHING is written to SLO_HOME (~/.slo) — that directory is slo's
-# *runtime data* (sessions, logs, credentials), NOT a code checkout. The old
-# installer cloned the repo into ~/.slo, which collides with that data and
-# aborts ("destination path already exists") on any machine where slo has run.
+# your PATH. SLO_HOME (~/.slo) is slo's *runtime data* (sessions, logs,
+# credentials), NOT a code checkout — the old installer cloned the repo into
+# ~/.slo, which collides with that data and aborts ("destination path already
+# exists") on any machine where slo has run. After a successful pipx install,
+# the ONLY writes under SLO_HOME are the non-secret managed environment file
+# ~/.slo/shell/environment.sh (default SLO_HOME + SLO_SKILLS_DIR) and bounded
+# source blocks in shell startup files (spec 80); sessions, credentials, user
+# skills, user workflows, and any legacy ~/.slo/skills tree are never touched.
 #
 # On a bare machine this first provisions the toolchain pipx needs. macOS uses
 # Homebrew for pyenv, git, and pipx. Debian-family Linux uses apt for git,
@@ -386,6 +390,297 @@ slo_install() {
     pipx install --force --python "$python_bin" "$spec"
 }
 
+# ---- 7. Shell environment finalisation (spec 80) ----------------------------
+# After a successful pipx install, persist two *defaults* so fresh supported
+# shells launch slo with an explicit SLO_HOME and SLO_SKILLS_DIR:
+#   SLO_HOME=$HOME/.slo
+#   SLO_SKILLS_DIR=<installed package location>/skills
+# One installer-owned managed environment file ($HOME/.slo/shell/environment.sh)
+# defines both defaults; shell profiles carry only a bounded source block that
+# reads it. config/cfg.py remains the sole runtime resolver — the managed file
+# feeds its existing explicit-environment branch and never replaces it.
+
+slo_resolve_vendored_skills_dir() {
+    # Resolve the vendored skills directory of the JUST-INSTALLED pipx package.
+    #
+    # The ONLY source of truth is pip distribution metadata:
+    # `pipx runpip slo show slo` → its `Location:` field → `<Location>/skills`.
+    # Guessing a pipx layout (venvs/slo/lib/pythonX.Y/site-packages), a repo
+    # checkout, or $SLO_HOME/skills is PROHIBITED: any of those silently
+    # couples persistent shell state to a Python version, a pipx default root,
+    # or a checkout path that an upgrade can invalidate.
+    #
+    # stdout contract: exactly one canonical absolute path, no log prefix.
+    # All diagnostics go to stderr; any failure returns non-zero.
+    local show_output=""
+    if ! show_output="$(pipx runpip slo show slo 2>/dev/null)"; then
+        echo "error: 'pipx runpip slo show slo' failed; fix the pipx install and re-run this installer." >&2
+        return 1
+    fi
+    local location="" line=""
+    while IFS= read -r line; do
+        case "$line" in
+            "Location: "*)
+                if [ -n "$location" ]; then
+                    echo "error: ambiguous 'pipx runpip slo show slo' output: multiple Location fields." >&2
+                    return 1
+                fi
+                location="${line#Location: }"
+                ;;
+        esac
+    done <<< "$show_output"
+    if [ -z "$location" ]; then
+        echo "error: 'pipx runpip slo show slo' reported no Location field; refusing to guess the pipx layout." >&2
+        return 1
+    fi
+    local candidate="$location/skills"
+    if [ ! -d "$candidate" ]; then
+        echo "error: vendored skills directory not found at $candidate (is the wheel complete?)." >&2
+        return 1
+    fi
+    if [ ! -f "$candidate/INDEX.md" ] || [ ! -r "$candidate/INDEX.md" ]; then
+        echo "error: no readable INDEX.md in $candidate; refusing to persist a broken SLO_SKILLS_DIR." >&2
+        return 1
+    fi
+    # Canonicalise to the physical absolute path (no symlink components).
+    local canonical=""
+    if ! canonical="$(cd -- "$candidate" 2>/dev/null && pwd -P)"; then
+        echo "error: failed to canonicalise the vendored skills directory at $candidate." >&2
+        return 1
+    fi
+    echo "$canonical"
+}
+
+slo_shell_single_quote() {
+    # POSIX-safe single-quote encoder: wraps "$1" in single quotes, replacing
+    # every literal apostrophe with the standard close-quote, escaped
+    # apostrophe, reopen-quote sequence. The result is safe to embed verbatim
+    # in generated shell as a literal string (no expansion, no word splitting).
+    local value="$1"
+    printf "'%s'" "${value//\'/\'\\\'\'}"
+}
+
+slo_write_managed_environment_file() {
+    # Atomically write the installer-owned managed environment file.
+    #
+    # $HOME/.slo/shell/environment.sh is the ONLY persistent definition of the
+    # two shell defaults. It supplies defaults only: a caller that exports
+    # SLO_HOME or SLO_SKILLS_DIR before source time keeps that value, which is
+    # what keeps config/cfg.py's explicit-override precedence intact. The file
+    # is non-secret, so it is mode 0644: owner-writable for a rerun,
+    # source-readable by the owning user's shells, never executable.
+    #
+    # Safety contract: an existing target must be a regular file carrying
+    # exactly one complete Slo marker pair. Anything else (unmarked user file,
+    # symlink, directory, device) is refused untouched — never deleted.
+    local vendored_skills_dir="$1"
+    if [ ! -d "$vendored_skills_dir" ]; then
+        echo "error: vendored skills directory $vendored_skills_dir does not exist; not writing the managed environment file." >&2
+        return 1
+    fi
+    local managed_file="$HOME/.slo/shell/environment.sh"
+    local mark_begin="# >>> slo managed environment >>>"
+    local mark_end="# <<< slo managed environment <<<"
+    local quoted_skills_dir=""
+    quoted_skills_dir="$(slo_shell_single_quote "$vendored_skills_dir")"
+    local content="$mark_begin
+# This file is generated by the Slo installer. Edit shell profiles, not this file.
+if [ -z \"\${SLO_HOME+x}\" ]; then
+    export SLO_HOME=\"\$HOME/.slo\"
+fi
+if [ -z \"\${SLO_SKILLS_DIR+x}\" ]; then
+    export SLO_SKILLS_DIR=$quoted_skills_dir
+fi
+$mark_end"
+    if [ -L "$managed_file" ]; then
+        echo "error: refusing to overwrite $managed_file: it is a symlink. Move it aside deliberately and re-run." >&2
+        return 1
+    fi
+    if [ -e "$managed_file" ] && [ ! -f "$managed_file" ]; then
+        echo "error: refusing to overwrite $managed_file: it is not a regular file. Move it aside deliberately and re-run." >&2
+        return 1
+    fi
+    if [ -f "$managed_file" ]; then
+        local begin_count end_count
+        # `|| true`: grep exits 1 when there are no matches, and under
+        # `set -e` that aborts the substitution before we can refuse cleanly.
+        begin_count="$(grep -cF -- "$mark_begin" "$managed_file" || true)"
+        end_count="$(grep -cF -- "$mark_end" "$managed_file" || true)"
+        if [ "$begin_count" != "1" ] || [ "$end_count" != "1" ]; then
+            echo "error: refusing to overwrite $managed_file: it does not carry exactly one Slo managed-environment marker pair. Move it aside deliberately and re-run." >&2
+            return 1
+        fi
+        if cmp -s "$managed_file" - <<< "$content"; then
+            slo_log "managed environment file already current: $managed_file"
+            return 0
+        fi
+    fi
+    mkdir -p "$HOME/.slo/shell"
+    local tmp_file=""
+    tmp_file="$(mktemp "$HOME/.slo/shell/.environment.sh.XXXXXX")"
+    chmod 0644 "$tmp_file"
+    if ! printf '%s\n' "$content" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        echo "error: failed to write the managed environment file at $managed_file." >&2
+        return 1
+    fi
+    if ! mv -f "$tmp_file" "$managed_file"; then
+        rm -f "$tmp_file"
+        echo "error: failed to activate the managed environment file at $managed_file." >&2
+        return 1
+    fi
+    slo_log "managed environment file written: $managed_file"
+}
+
+slo_shell_source_block() {
+    # Echo the canonical shell source block: the ONLY text the installer ever
+    # adds to a profile. It sources the managed environment file behind a
+    # readable-file guard and declares no variables itself — the managed file
+    # is the single owner of both defaults.
+    local mark_begin="# >>> slo managed environment >>>"
+    local mark_end="# <<< slo managed environment <<<"
+    printf '%s\n' "$mark_begin
+if [ -r \"\$HOME/.slo/shell/environment.sh\" ]; then
+    . \"\$HOME/.slo/shell/environment.sh\"
+fi
+$mark_end"
+}
+
+slo_reconcile_shell_source_block() {
+    # Safely add or refresh exactly one Slo shell source block in one profile.
+    #
+    # Decision contract (never guesses):
+    #   missing file            → create it with one block
+    #   no markers              → append one block, preserving all content
+    #   one complete marker pair→ replace only that block, preserving the rest
+    #                             byte-for-byte; identical bytes → already current
+    #   malformed/multiple      → refuse, leave the file untouched, return 1
+    #
+    # The profile is NEVER sourced or executed: markers are matched as fixed
+    # strings only.
+    local profile_path="$1"
+    local mark_begin="# >>> slo managed environment >>>"
+    local mark_end="# <<< slo managed environment <<<"
+    local block=""
+    block="$(slo_shell_source_block)"
+    if [ -L "$profile_path" ]; then
+        echo "error: refusing to edit $profile_path: it is a symlink. Repair it deliberately and re-run." >&2
+        return 1
+    fi
+    if [ ! -e "$profile_path" ]; then
+        if ! printf '%s\n' "$block" > "$profile_path"; then
+            echo "error: failed to create $profile_path with the Slo shell source block." >&2
+            return 1
+        fi
+        slo_log "shell source block written: $profile_path"
+        return 0
+    fi
+    if [ ! -f "$profile_path" ]; then
+        echo "error: refusing to edit $profile_path: it is not a regular file. Repair it deliberately and re-run." >&2
+        return 1
+    fi
+    local begin_count end_count
+    begin_count="$(grep -cF -- "$mark_begin" "$profile_path" || true)"
+    end_count="$(grep -cF -- "$mark_end" "$profile_path" || true)"
+    if [ "$begin_count" = "0" ] && [ "$end_count" = "0" ]; then
+        # Append after a separating newline; add a trailing newline to a file
+        # that lacks one so the block never glues onto user content.
+        if [ -s "$profile_path" ] && [ "$(tail -c 1 "$profile_path" | wc -l)" = "0" ]; then
+            printf '\n' >> "$profile_path"
+        fi
+        {
+            printf '\n'
+            printf '%s\n' "$block"
+        } >> "$profile_path"
+        slo_log "shell source block appended: $profile_path"
+        return 0
+    fi
+    if [ "$begin_count" != "1" ] || [ "$end_count" != "1" ]; then
+        echo "error: refusing to edit $profile_path: found $begin_count begin and $end_count end Slo markers (expected exactly one pair). Repair the file manually and re-run." >&2
+        return 1
+    fi
+    # Exactly one pair: refuse nested (begin inside begin..end) or reversed
+    # markers rather than risk deleting user configuration.
+    local first_begin first_end
+    first_begin="$(grep -nF -- "$mark_begin" "$profile_path" | head -n 1 | cut -d: -f1)"
+    first_end="$(grep -nF -- "$mark_end" "$profile_path" | head -n 1 | cut -d: -f1)"
+    if [ "$first_end" -le "$first_begin" ]; then
+        echo "error: refusing to edit $profile_path: Slo end marker appears before the begin marker. Repair the file manually and re-run." >&2
+        return 1
+    fi
+    local current_block=""
+    current_block="$(sed -n "${first_begin},${first_end}p" "$profile_path")"
+    if [ "$current_block" = "$block" ]; then
+        slo_log "shell source block already current: $profile_path"
+        return 0
+    fi
+    # Streamed same-directory construction + atomic rename. NEVER rebuild the
+    # file through command substitution (`updated="$(...)"`): that strips
+    # every trailing newline byte and breaks the contract that content outside
+    # the replaced marker pair is preserved byte-for-byte. Here the bytes
+    # before the pair and after it (including a trailing blank-line run) are
+    # copied to the staged file exactly as they exist on disk.
+    local tmp_file=""
+    tmp_file="$(mktemp "${profile_path}.slo.XXXXXX")"
+    if ! {
+        if [ "$first_begin" -gt 1 ]; then
+            sed "1,$((first_begin - 1))!d" "$profile_path"
+        fi
+        printf '%s\n' "$block"
+        sed "$((first_end + 1)),\$!d" "$profile_path"
+    } > "$tmp_file"; then
+        rm -f "$tmp_file"
+        echo "error: failed to stage the updated $profile_path." >&2
+        return 1
+    fi
+    if ! mv -f "$tmp_file" "$profile_path"; then
+        rm -f "$tmp_file"
+        echo "error: failed to activate the updated $profile_path." >&2
+        return 1
+    fi
+    slo_log "shell source block updated: $profile_path"
+}
+
+slo_install_shell_environment() {
+    # Apply the fixed supported-shell profile matrix.
+    #
+    # Bash login reads .bash_profile; interactive non-login Bash reads .bashrc;
+    # .zshenv is read by every Zsh (login and non-login); .profile is the
+    # POSIX login-shell and unknown-shell fallback. Descendant non-interactive
+    # shells of those configured shells inherit the exports. Deliberately
+    # sterile processes (env -i, bash --noprofile --norc, cron, services, GUI
+    # launchers) cannot be configured by an installer and keep config/cfg.py's
+    # fallback resolution — that boundary is documented, not hidden.
+    local profile=""
+    for profile in "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zshenv" "$HOME/.profile"; do
+        slo_reconcile_shell_source_block "$profile" || return 1
+    done
+}
+
+slo_finalize_shell_environment() {
+    # Post-install finalisation gateway: resolve → write managed file →
+    # reconcile profiles. Called from main ONLY after `pipx install` succeeds,
+    # so a failed install can never persist a new SLO_SKILLS_DIR. A failure
+    # here means the package was installed but shell environment setup failed;
+    # the message names the stage and the run exits non-zero without rolling
+    # back the pipx venv or any user runtime data.
+    local vendored_skills_dir=""
+    if ! vendored_skills_dir="$(slo_resolve_vendored_skills_dir)"; then
+        echo "error: slo code installed, but shell environment finalisation failed while resolving the vendored skills directory (see above). Fix the issue and re-run this installer." >&2
+        return 1
+    fi
+    slo_log "resolved vendored skills directory: $vendored_skills_dir"
+    if ! slo_write_managed_environment_file "$vendored_skills_dir"; then
+        echo "error: slo code installed, but shell environment finalisation failed while writing the managed environment file (see above). Fix the issue and re-run this installer." >&2
+        return 1
+    fi
+    if ! slo_install_shell_environment; then
+        echo "error: slo code installed, but shell environment finalisation failed while updating shell profiles (see above). Repair the named profile and re-run this installer." >&2
+        return 1
+    fi
+    slo_log "shell environment configured: open a new shell, or source ~/.slo/shell/environment.sh"
+}
+
 slo_ensure_local_bin_on_path() {
     # Detect the user's shell and ensure ~/.local/bin is on PATH in the rc file.
     # Idempotent: skips silently if the export line is already present in the rc
@@ -468,6 +763,7 @@ main() {
     slo_ensure_pipx
     slo_ensure_home >/dev/null
     slo_install
+    slo_finalize_shell_environment
     slo_ensure_local_bin_on_path
     slo_print_path
 }

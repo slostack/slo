@@ -9,7 +9,9 @@ directly, so sourcing it exposes every function for isolated testing.
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -17,6 +19,83 @@ import pytest
 
 INSTALL_SH: Path = Path(__file__).resolve().parents[2] / "install.sh"
 BASH: str = shutil.which("bash") or "/bin/bash"
+ZSH: str | None = shutil.which("zsh")
+DASH: str | None = shutil.which("dash")
+SH: str | None = shutil.which("sh")
+
+MANAGED_ENV_MARK_BEGIN: str = "# >>> slo managed environment >>>"
+MANAGED_ENV_MARK_END: str = "# <<< slo managed environment <<<"
+MANAGED_ENV_REL: str = ".slo/shell/environment.sh"
+PROFILE_MATRIX: tuple[str, ...] = (".bash_profile", ".bashrc", ".zshenv", ".profile")
+CANONICAL_SOURCE_BLOCK: bytes = (
+    MANAGED_ENV_MARK_BEGIN.encode()
+    + b"\n"
+    b'if [ -r "$HOME/.slo/shell/environment.sh" ]; then\n'
+    b'    . "$HOME/.slo/shell/environment.sh"\n'
+    b"fi\n"
+    + MANAGED_ENV_MARK_END.encode()
+    + b"\n"
+)
+
+
+def marker_pair_count(*, text: str) -> int:
+    """Count complete Slo managed-environment marker pairs in a file's text.
+
+    A complete pair is an end marker appearing after a begin marker; nested or
+    unmatched markers therefore count as zero (malformed), matching the
+    installer's refusal contract.
+
+    Args:
+        text (str): Profile or managed-file content to inspect.
+
+    Returns:
+        int: Number of well-ordered begin/end marker pairs.
+    """
+    count: int = 0
+    cursor: int = 0
+    while True:
+        begin: int = text.find(MANAGED_ENV_MARK_BEGIN, cursor)
+        if begin < 0:
+            return count
+        end: int = text.find(MANAGED_ENV_MARK_END, begin + len(MANAGED_ENV_MARK_BEGIN))
+        if end < 0:
+            return count
+        count += 1
+        cursor = end + len(MANAGED_ENV_MARK_END)
+
+
+def write_fake_pipx_show(*, bin_dir: Path, location: Path | None) -> None:
+    """Install a fake ``pipx`` that records calls and serves deterministic metadata.
+
+    Only the exact ``runpip slo show slo`` invocation answers; the fake exits
+    non-zero for any other ``runpip`` argument set so tests drive the
+    metadata-parse decision points deterministically.
+
+    Args:
+        bin_dir (Path): FakeBin bin directory to write ``pipx`` into.
+        location (Path | None): Fake distribution Location to report; ``None``
+            makes the fake emit no ``Location:`` line.
+    """
+    script_lines: list[str] = [
+        "#!/bin/sh",
+        'echo "pipx $*" >> "$SLO_CALL_LOG"',
+        'if [ "$1" = "runpip" ] && [ "$2" = "slo" ] && [ "$3" = "show" ] && [ "$4" = "slo" ] && [ -z "${5:-}" ]; then',
+        '  echo "Name: slo"',
+        '  echo "Version: 0.15.0"',
+    ]
+    if location is not None:
+        script_lines.append(f'  echo "Location: {location}"')
+    script_lines += [
+        "  exit 0",
+        "fi",
+        'if [ "$1" = "runpip" ]; then',
+        "  exit 1",
+        "fi",
+        "exit 0",
+    ]
+    path: Path = bin_dir / "pipx"
+    path.write_text("\n".join(script_lines) + "\n")
+    path.chmod(0o755)
 
 
 class FakeBin:
@@ -28,7 +107,12 @@ class FakeBin:
     """
 
     def __init__(self, *, root: Path) -> None:
-        """Create the fake bin dir, call log, and a real ``mkdir`` the installer needs.
+        """Create the fake bin dir, call log, and an isolated fake HOME.
+
+        The fake HOME deliberately contains a space and an apostrophe so every
+        generated path exercises the installer's POSIX quoting path. The real
+        tools the installer/shell startup need (``mkdir``, ``grep``, ``uname``)
+        are symlinked into the fake bin; everything else is opted in per test.
 
         Args:
             root (Path): Temp root for the bin dir, call log, and fake HOME.
@@ -36,12 +120,109 @@ class FakeBin:
         self._root: Path = root
         self._bin: Path = root / "bin"
         self._bin.mkdir(parents=True, exist_ok=True)
-        self._home: Path = root / "home"
+        self._home: Path = root / "home with ' spaces"
         self._home.mkdir(parents=True, exist_ok=True)
         self._log: Path = root / "calls.log"
         self._log.write_text("")
         self._os_release: Path | None = None
-        self._symlink_real(name="mkdir")
+        for tool in (
+            "mkdir", "grep", "uname", "chmod", "mktemp", "mv", "rm", "cmp",
+            "echo", "printf", "sed", "head", "tail", "cut", "wc", "cat",
+        ):
+            self._symlink_real(name=tool)
+
+    def write_fake_pipx(self, *, location: Path | None) -> None:
+        """Install the deterministic fake ``pipx`` metadata server.
+
+        Args:
+            location (Path | None): Fake distribution Location; ``None`` makes
+                the fake emit no ``Location:`` line.
+        """
+        write_fake_pipx_show(bin_dir=self._bin, location=location)
+
+    def make_package_location(self, *, name: str = "site-packages", index: bool = True) -> Path:
+        """Create a fake pipx distribution location with a vendored skills tree.
+
+        Args:
+            name (str): Directory name to create under the root.
+            index (bool): Whether ``skills/INDEX.md`` is a real file. Pass
+                ``False`` to simulate a wheel missing the populated-tree marker.
+
+        Returns:
+            Path: The fake distribution location (the value pip metadata would
+                report as ``Location:``).
+        """
+        location: Path = self._root / name
+        skills_dir: Path = location / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        if index:
+            (skills_dir / "INDEX.md").write_text("# skill index\n")
+        return location
+
+    def run_shell_env(
+        self,
+        *,
+        args: list[str],
+        stdin: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a real shell against the isolated roots without sourcing install.sh.
+
+        WHAT: Executes ``bash``/``zsh`` with the given args under the FakeBin
+            PATH and isolated HOME/XDG/PIPX/PYENV roots, with the runtime
+            variables under test (``SLO_HOME``/``SLO_SKILLS_DIR``) scrubbed
+            unless explicitly supplied.
+        WHO: Fresh-shell startup tests (login / interactive / POSIX modes) that
+            must observe what a real new shell inherits from the profiles the
+            installer reconciled.
+
+        Args:
+            args (list[str]): Shell executable plus its arguments.
+            stdin (str | None): Optional stdin script (used for ``bash -i``).
+            env (dict[str, str] | None): Extra environment overrides.
+
+        Returns:
+            subprocess.CompletedProcess[str]: The completed shell process.
+        """
+        full_env: dict[str, str] = self._isolated_env()
+        if env:
+            full_env.update(env)
+        return subprocess.run(
+            args,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            env=full_env,
+            timeout=60,
+        )
+
+    @property
+    def home(self) -> Path:
+        """Return the isolated fake HOME (contains a space and an apostrophe).
+
+        Returns:
+            Path: The fake HOME path.
+        """
+        return self._home
+
+    @property
+    def managed_env_file(self) -> Path:
+        """Return the canonical managed environment file path for this fake HOME.
+
+        Returns:
+            Path: ``$HOME/.slo/shell/environment.sh``.
+        """
+        return self._home / MANAGED_ENV_REL
+
+    @property
+    def profile_paths(self) -> dict[str, Path]:
+        """Return the supported shell startup file paths under the fake HOME.
+
+        Returns:
+            dict[str, Path]: ``{name: absolute path}`` for ``.bash_profile``,
+                ``.bashrc``, ``.zshenv``, and ``.profile``.
+        """
+        return {name: self._home / name for name in PROFILE_MATRIX}
 
     def _symlink_real(self, *, name: str) -> None:
         """Symlink a real system executable into the fake bin (e.g. ``mkdir``).
@@ -96,11 +277,7 @@ class FakeBin:
         Returns:
             subprocess.CompletedProcess[str]: The completed bash process.
         """
-        full_env: dict[str, str] = {
-            "PATH": str(self._bin),
-            "HOME": str(self._home),
-            "SLO_CALL_LOG": str(self._log),
-        }
+        full_env: dict[str, str] = self._isolated_env()
         if env:
             full_env.update(env)
         if self._os_release is not None and "SLO_OS_RELEASE_FILE" not in full_env:
@@ -112,6 +289,38 @@ class FakeBin:
             text=True,
             env=full_env,
         )
+
+    def _isolated_env(self) -> dict[str, str]:
+        """Build the fully isolated base environment for one unit subprocess.
+
+        Every writable root a shell-startup path might touch is tmp-owned:
+        HOME, the XDG roots, the pipx roots, the pyenv root, and the
+        os-release file. ``SLO_HOME``/``SLO_SKILLS_DIR`` are deliberately
+        absent so tests control source-time overrides explicitly. All other
+        host variables are scrubbed so nothing leaks from the dev machine.
+
+        Returns:
+            dict[str, str]: The base environment for subprocesses.
+        """
+        base: dict[str, str] = {
+            "PATH": str(self._bin),
+            "HOME": str(self._home),
+            "SLO_CALL_LOG": str(self._log),
+            "SHELL": BASH,
+            "TERM": "dumb",
+            "LANG": "C.UTF-8",
+            "XDG_CONFIG_HOME": str(self._root / "xdg-config"),
+            "XDG_DATA_HOME": str(self._root / "xdg-data"),
+            "XDG_CACHE_HOME": str(self._root / "xdg-cache"),
+            "PIPX_HOME": str(self._root / "pipx-home"),
+            "PIPX_BIN_DIR": str(self._root / "pipx-bin"),
+            "PYENV_ROOT": str(self._root / "pyenv"),
+            "SLO_OS_RELEASE_FILE": str(self._root / "os-release"),
+        }
+        proxy_vars: dict[str, str] = {
+            key: value for key, value in os.environ.items() if key.lower().endswith("_proxy")
+        }
+        return base | proxy_vars
 
     @property
     def calls(self) -> list[str]:
@@ -492,6 +701,601 @@ class TestRepoConfig:
             env={"SLO_REPO_URL": "git@gitlab.com:core-27/slo.git"},
         )
         assert result.stdout.strip() == "git@gitlab.com:core-27/slo.git"
+
+
+class TestResolveVendoredSkillsDir:
+    """`slo_resolve_vendored_skills_dir` resolves ONLY via pipx Location metadata."""
+
+    def test_resolve_vendored_skills_dir_when_pipx_location_has_index(self, fake_bin: FakeBin) -> None:
+        """Happy path: physical absolute `<Location>/skills`, clean stdout."""
+        location: Path = fake_bin.make_package_location()
+        fake_bin.write_fake_pipx(location=location)
+        result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(location / "skills")
+        assert "Location" not in result.stdout
+
+    def test_resolve_vendored_skills_dir_when_location_is_missing(self, fake_bin: FakeBin) -> None:
+        """No `Location:` field → non-zero, stderr diagnostic, empty stdout."""
+        fake_bin.write_fake_pipx(location=None)
+        result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert result.stdout.strip() == ""
+
+    def test_resolve_vendored_skills_dir_when_location_is_ambiguous(self, fake_bin: FakeBin) -> None:
+        """Two `Location:` lines → non-zero (refuse to guess)."""
+        location_a: Path = fake_bin.make_package_location(name="loc-a")
+        location_b: Path = fake_bin.make_package_location(name="loc-b")
+        pipx_path: Path = fake_bin._bin / "pipx"  # noqa: SLF001 — test harness setup.
+        pipx_path.write_text(
+            "#!/bin/sh\n"
+            'echo "pipx $*" >> "$SLO_CALL_LOG"\n'
+            'if [ "$1" = "runpip" ]; then\n'
+            '  echo "Name: slo"\n'
+            f'  echo "Location: {location_a}"\n'
+            f'  echo "Location: {location_b}"\n'
+            "  exit 0\n"
+            "fi\n"
+        )
+        pipx_path.chmod(0o755)
+        result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert result.stdout.strip() == ""
+
+    def test_resolve_vendored_skills_dir_when_runpip_fails(self, fake_bin: FakeBin) -> None:
+        """`pipx runpip slo show slo` failing → non-zero, no stdout path."""
+        pipx_path: Path = fake_bin._bin / "pipx"  # noqa: SLF001 — test harness setup.
+        pipx_path.write_text("#!/bin/sh\n" 'echo "pipx $*" >> "$SLO_CALL_LOG"\nexit 1\n')
+        pipx_path.chmod(0o755)
+        result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert result.stdout.strip() == ""
+
+    def test_resolve_vendored_skills_dir_when_index_is_missing(self, fake_bin: FakeBin) -> None:
+        """`<Location>/skills` without a readable INDEX.md is rejected."""
+        location: Path = fake_bin.make_package_location(index=False)
+        fake_bin.write_fake_pipx(location=location)
+        result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert "INDEX.md" in result.stderr
+        assert result.stdout.strip() == ""
+
+    def test_resolve_vendored_skills_dir_when_candidate_is_not_a_directory(self, fake_bin: FakeBin) -> None:
+        """`<Location>/skills` as a regular file is rejected."""
+        location: Path = fake_bin._root / "broken-location"  # noqa: SLF001 — test harness setup.
+        location.mkdir(parents=True)
+        (location / "skills").write_text("not a directory\n")
+        fake_bin.write_fake_pipx(location=location)
+        result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert result.stdout.strip() == ""
+
+    def test_resolve_vendored_skills_dir_never_guesses_pipx_layout(self, fake_bin: FakeBin) -> None:
+        """A populated default pipx root is NOT a fallback: metadata failure is terminal."""
+        default_root: Path = fake_bin._root / "pipx-home" / "venvs" / "slo" / "lib" / "python3.11" / "site-packages"  # noqa: SLF001
+        (default_root / "skills").mkdir(parents=True)
+        (default_root / "skills" / "INDEX.md").write_text("# index\n")
+        fake_bin.write_fake_pipx(location=None)
+        result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
+        assert result.returncode != 0
+        assert str(default_root) not in result.stdout
+
+
+class TestWriteManagedEnvironmentFile:
+    """`slo_write_managed_environment_file` owns exactly one marked 0644 file."""
+
+    def _write(self, fake_bin: FakeBin, *, skills_dir: Path) -> subprocess.CompletedProcess[str]:
+        """Invoke the writer with an explicit vendored skills directory.
+
+        Args:
+            fake_bin (FakeBin): The isolated harness.
+            skills_dir (Path): Resolved vendored skills directory to persist.
+
+        Returns:
+            subprocess.CompletedProcess[str]: The writer's completed process.
+        """
+        return fake_bin.run(
+            snippet=f'slo_write_managed_environment_file "{skills_dir}"',
+        )
+
+    def test_write_managed_environment_creates_marked_0644_file(self, fake_bin: FakeBin) -> None:
+        """Fresh write: marker pair, POSIX-quoted skills path, mode 0644."""
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = self._write(fake_bin, skills_dir=skills_dir)
+        assert result.returncode == 0, result.stderr
+        managed: Path = fake_bin.managed_env_file
+        assert managed.is_file()
+        mode: int = managed.stat().st_mode & 0o777
+        assert mode == 0o644, oct(mode)
+        text: str = managed.read_text()
+        assert marker_pair_count(text=text) == 1
+        assert '[ -z "${SLO_HOME+x}" ]' in text
+        assert '[ -z "${SLO_SKILLS_DIR+x}" ]' in text
+        assert "SLO_SKILLS_DIR='" in text
+        assert str(skills_dir) not in text or f"'{skills_dir}'" in text
+        assert "$HOME" not in text.split("SLO_SKILLS_DIR=")[1].splitlines()[0]
+
+    def test_environment_file_when_home_contains_spaces_and_apostrophe(self, fake_bin: FakeBin) -> None:
+        """Sourcing exports the LITERAL paths — no splitting, no code execution."""
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = self._write(fake_bin, skills_dir=skills_dir)
+        assert result.returncode == 0, result.stderr
+        sourced = fake_bin.run(
+            snippet='. "$HOME/.slo/shell/environment.sh" && printf "%s\n%s\n" "$SLO_HOME" "$SLO_SKILLS_DIR"',
+        )
+        assert sourced.returncode == 0, sourced.stderr
+        lines: list[str] = sourced.stdout.splitlines()
+        assert lines == [f"{fake_bin.home}/.slo", str(skills_dir)]
+
+    def test_write_managed_environment_replaces_marked_file_atomically(self, fake_bin: FakeBin) -> None:
+        """A previously written marked file is refreshed with the new path."""
+        old_skills: Path = fake_bin.make_package_location(name="old") / "skills"
+        new_skills: Path = fake_bin.make_package_location(name="new") / "skills"
+        first = self._write(fake_bin, skills_dir=old_skills)
+        assert first.returncode == 0, first.stderr
+        second = self._write(fake_bin, skills_dir=new_skills)
+        assert second.returncode == 0, second.stderr
+        text: str = fake_bin.managed_env_file.read_text()
+        assert marker_pair_count(text=text) == 1
+        assert str(new_skills) in text
+        assert str(old_skills) not in text
+
+    def test_write_managed_environment_when_content_is_already_current(self, fake_bin: FakeBin) -> None:
+        """Identical bytes → `already current`, and the file is not replaced."""
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        first = self._write(fake_bin, skills_dir=skills_dir)
+        assert first.returncode == 0, first.stderr
+        before: bytes = fake_bin.managed_env_file.read_bytes()
+        inode_before: int = fake_bin.managed_env_file.stat().st_ino
+        second = self._write(fake_bin, skills_dir=skills_dir)
+        assert second.returncode == 0, second.stderr
+        assert "already current" in second.stderr
+        assert fake_bin.managed_env_file.read_bytes() == before
+        assert fake_bin.managed_env_file.stat().st_ino == inode_before
+
+    def test_write_managed_environment_when_existing_file_is_unmarked(self, fake_bin: FakeBin) -> None:
+        """An unmarked user file at the managed path is refused, byte-identical."""
+        managed: Path = fake_bin.managed_env_file
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        managed.write_text("# my own file\nexport SLO_HOME=/custom\n")
+        before: bytes = managed.read_bytes()
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = self._write(fake_bin, skills_dir=skills_dir)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert managed.read_bytes() == before
+
+    def test_write_managed_environment_when_markers_are_malformed(self, fake_bin: FakeBin) -> None:
+        """A file with an unmatched marker is refused without mutation."""
+        managed: Path = fake_bin.managed_env_file
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        managed.write_text(f"{MANAGED_ENV_MARK_BEGIN}\nexport SLO_HOME=x\n")
+        before: bytes = managed.read_bytes()
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = self._write(fake_bin, skills_dir=skills_dir)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert managed.read_bytes() == before
+
+    def test_write_managed_environment_when_target_is_symlink(self, fake_bin: FakeBin) -> None:
+        """A symlink at the managed path is refused; its target is untouched."""
+        managed: Path = fake_bin.managed_env_file
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        outside: Path = fake_bin.home / "elsewhere.sh"
+        outside.write_text("# untouched\n")
+        managed.symlink_to(outside)
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = self._write(fake_bin, skills_dir=skills_dir)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert managed.is_symlink()
+        assert outside.read_text() == "# untouched\n"
+
+    def test_write_managed_environment_when_target_is_a_directory(self, fake_bin: FakeBin) -> None:
+        """A directory at the managed path is refused and left in place."""
+        managed: Path = fake_bin.managed_env_file
+        managed.mkdir(parents=True)
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = self._write(fake_bin, skills_dir=skills_dir)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert managed.is_dir()
+
+    def test_write_managed_environment_when_target_is_a_fifo(self, fake_bin: FakeBin) -> None:
+        """A non-regular file (FIFO) at the managed path is refused, untouched."""
+        managed: Path = fake_bin.managed_env_file
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(managed)
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = self._write(fake_bin, skills_dir=skills_dir)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert stat.S_ISFIFO(managed.stat().st_mode)
+
+    def test_write_managed_environment_when_skills_dir_is_missing(self, fake_bin: FakeBin) -> None:
+        """A non-existent skills dir is refused before any file is created."""
+        result = self._write(fake_bin, skills_dir=fake_bin.home / "nope" / "skills")
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert not fake_bin.managed_env_file.exists()
+
+
+class TestReconcileShellSourceBlock:
+    """`slo_reconcile_shell_source_block` edits exactly one bounded block per profile."""
+
+    def _reconcile(self, fake_bin: FakeBin, *, profile: Path) -> subprocess.CompletedProcess[str]:
+        """Invoke the one-profile reconciler against an explicit path.
+
+        Args:
+            fake_bin (FakeBin): The isolated harness.
+            profile (Path): Profile file path to reconcile.
+
+        Returns:
+            subprocess.CompletedProcess[str]: The reconciler's completed process.
+        """
+        return fake_bin.run(snippet=f'slo_reconcile_shell_source_block "{profile}"')
+
+    def test_reconcile_shell_source_block_when_profile_is_missing(self, fake_bin: FakeBin) -> None:
+        """A missing profile is created with exactly one source block."""
+        profile: Path = fake_bin.profile_paths[".bashrc"]
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode == 0, result.stderr
+        text: str = profile.read_text()
+        assert marker_pair_count(text=text) == 1
+        assert '[ -r "$HOME/.slo/shell/environment.sh" ]' in text
+        assert '. "$HOME/.slo/shell/environment.sh"' in text
+
+    def test_reconcile_shell_source_block_when_no_markers(self, fake_bin: FakeBin) -> None:
+        """An existing markerless profile gains one appended block, content kept."""
+        profile: Path = fake_bin.profile_paths[".bashrc"]
+        profile.write_text("export EDITOR=vim\nalias ll='ls -la'\n")
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode == 0, result.stderr
+        text: str = profile.read_text()
+        assert text.startswith("export EDITOR=vim\nalias ll='ls -la'\n")
+        assert marker_pair_count(text=text) == 1
+
+    def test_reconcile_shell_source_block_when_rerun(self, fake_bin: FakeBin) -> None:
+        """Rerun: exactly one marker pair, already-current, outside content intact."""
+        profile: Path = fake_bin.profile_paths[".bashrc"]
+        profile.write_text("# user header\n")
+        first = self._reconcile(fake_bin, profile=profile)
+        assert first.returncode == 0, first.stderr
+        second = self._reconcile(fake_bin, profile=profile)
+        assert second.returncode == 0, second.stderr
+        assert "already current" in second.stderr
+        text: str = profile.read_text()
+        assert text.startswith("# user header\n")
+        assert text.count(MANAGED_ENV_MARK_BEGIN) == 1
+        assert text.count(MANAGED_ENV_MARK_END) == 1
+
+    def test_reconcile_shell_source_block_replaces_existing_pair(self, fake_bin: FakeBin) -> None:
+        """One complete stale pair is replaced in place; surrounding bytes kept."""
+        profile: Path = fake_bin.profile_paths[".zshenv"]
+        profile.write_text(
+            "# before\n"
+            f"{MANAGED_ENV_MARK_BEGIN}\n"
+            ". /old/stale/path.sh\n"
+            f"{MANAGED_ENV_MARK_END}\n"
+            "# after\n"
+        )
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode == 0, result.stderr
+        text: str = profile.read_text()
+        assert text.startswith("# before\n")
+        assert text.endswith("# after\n")
+        assert "/old/stale/path.sh" not in text
+        assert marker_pair_count(text=text) == 1
+        assert '. "$HOME/.slo/shell/environment.sh"' in text
+
+    def test_reconcile_shell_source_block_when_markers_are_malformed(self, fake_bin: FakeBin) -> None:
+        """An unmatched begin marker refuses without touching the file."""
+        profile: Path = fake_bin.profile_paths[".profile"]
+        profile.write_text(f"# mine\n{MANAGED_ENV_MARK_BEGIN}\n# unfinished\n")
+        before: bytes = profile.read_bytes()
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert profile.read_bytes() == before
+
+    def test_reconcile_shell_source_block_when_multiple_pairs(self, fake_bin: FakeBin) -> None:
+        """Two complete pairs refuse without touching the file."""
+        profile: Path = fake_bin.profile_paths[".profile"]
+        pair: str = (
+            f"{MANAGED_ENV_MARK_BEGIN}\n"
+            '. "$HOME/.slo/shell/environment.sh"\n'
+            f"{MANAGED_ENV_MARK_END}\n"
+        )
+        profile.write_text(f"# mine\n{pair}{pair}")
+        before: bytes = profile.read_bytes()
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert profile.read_bytes() == before
+
+    def test_reconcile_shell_source_block_preserves_every_byte_outside_the_replaced_block(
+        self, fake_bin: FakeBin
+    ) -> None:
+        """Replacement must be byte-exact: prefix and suffix (including a trailing
+        blank-line run) survive unchanged; no command-substitution newline loss."""
+        profile: Path = fake_bin.profile_paths[".bash_profile"]
+        prefix: bytes = b"# user preamble\nexport EDITOR=vim\n"
+        stale_pair: bytes = (
+            MANAGED_ENV_MARK_BEGIN.encode()
+            + b"\n"
+            b"# old managed line\n"
+            + MANAGED_ENV_MARK_END.encode()
+            + b"\n"
+        )
+        suffix: bytes = b"# trailing user content\n\n\n\n"
+        profile.write_bytes(prefix + stale_pair + suffix)
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode == 0, result.stderr
+        assert profile.read_bytes() == prefix + CANONICAL_SOURCE_BLOCK + suffix
+
+    def test_reconcile_shell_source_block_when_suffix_is_only_trailing_newlines(
+        self, fake_bin: FakeBin
+    ) -> None:
+        """A block followed by nothing but blank lines keeps every newline byte."""
+        profile: Path = fake_bin.profile_paths[".bashrc"]
+        stale_pair: bytes = (
+            MANAGED_ENV_MARK_BEGIN.encode()
+            + b"\n"
+            b"# old managed line\n"
+            + MANAGED_ENV_MARK_END.encode()
+            + b"\n"
+        )
+        profile.write_bytes(stale_pair + b"\n\n\n")
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode == 0, result.stderr
+        assert profile.read_bytes() == CANONICAL_SOURCE_BLOCK + b"\n\n\n"
+
+    def test_reconcile_shell_source_block_replacement_happens_via_atomic_rename(
+        self, fake_bin: FakeBin
+    ) -> None:
+        """A replaced block lands via same-directory temp + rename, not in-place
+        rewriting: the profile gets a fresh inode and no temp files leak."""
+        profile: Path = fake_bin.profile_paths[".bashrc"]
+        stale_pair: bytes = (
+            MANAGED_ENV_MARK_BEGIN.encode()
+            + b"\n"
+            b"# old managed line\n"
+            + MANAGED_ENV_MARK_END.encode()
+            + b"\n"
+        )
+        profile.write_bytes(b"# before\n" + stale_pair)
+        inode_before: int = profile.stat().st_ino
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode == 0, result.stderr
+        assert profile.stat().st_ino != inode_before
+        leftovers: list[Path] = [
+            path for path in profile.parent.iterdir() if path.name.startswith(profile.name + ".slo.")
+        ]
+        assert leftovers == []
+
+    def test_reconcile_shell_source_block_when_target_is_a_fifo(self, fake_bin: FakeBin) -> None:
+        """A non-regular file (FIFO) at the profile path is refused, untouched."""
+        profile: Path = fake_bin.profile_paths[".profile"]
+        os.mkfifo(profile)
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert stat.S_ISFIFO(profile.stat().st_mode)
+
+    def test_reconcile_shell_source_block_when_target_is_symlink(self, fake_bin: FakeBin) -> None:
+        """A symlink profile path refuses; the link target is untouched."""
+        profile: Path = fake_bin.profile_paths[".bashrc"]
+        outside: Path = fake_bin.home / "real-bashrc"
+        outside.write_text("# real\n")
+        profile.symlink_to(outside)
+        result = self._reconcile(fake_bin, profile=profile)
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert profile.is_symlink()
+        assert outside.read_text() == "# real\n"
+
+
+class TestInstallShellEnvironment:
+    """`slo_install_shell_environment` applies the fixed Bash/Zsh/POSIX matrix."""
+
+    def test_install_shell_environment_writes_all_four_profiles(self, fake_bin: FakeBin) -> None:
+        """Every supported profile gains exactly one canonical source block."""
+        result = fake_bin.run(snippet="slo_install_shell_environment")
+        assert result.returncode == 0, result.stderr
+        for name, path in fake_bin.profile_paths.items():
+            text: str = path.read_text()
+            assert marker_pair_count(text=text) == 1, name
+            assert '. "$HOME/.slo/shell/environment.sh"' in text, name
+
+    def test_install_shell_environment_preserves_existing_content(self, fake_bin: FakeBin) -> None:
+        """Pre-existing user content survives in every profile."""
+        for name, path in fake_bin.profile_paths.items():
+            path.write_text(f"# {name} user content\n")
+        result = fake_bin.run(snippet="slo_install_shell_environment")
+        assert result.returncode == 0, result.stderr
+        for name, path in fake_bin.profile_paths.items():
+            assert path.read_text().startswith(f"# {name} user content\n")
+
+    def test_install_shell_environment_refuses_malformed_profile(self, fake_bin: FakeBin) -> None:
+        """One malformed profile fails the matrix; the file stays untouched."""
+        bad: Path = fake_bin.profile_paths[".zshenv"]
+        bad.write_text(f"{MANAGED_ENV_MARK_BEGIN}\n# broken\n")
+        before: bytes = bad.read_bytes()
+        result = fake_bin.run(snippet="slo_install_shell_environment")
+        assert result.returncode != 0
+        assert "error:" in result.stderr
+        assert bad.read_bytes() == before
+
+
+class TestFinalizeShellEnvironment:
+    """`slo_finalize_shell_environment` gateway: resolve → write → reconcile."""
+
+    def test_finalize_shell_environment_happy_path(self, fake_bin: FakeBin) -> None:
+        """Full finalisation: managed file plus one block per profile."""
+        location: Path = fake_bin.make_package_location()
+        fake_bin.write_fake_pipx(location=location)
+        result = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert result.returncode == 0, result.stderr
+        assert fake_bin.managed_env_file.is_file()
+        text: str = fake_bin.managed_env_file.read_text()
+        assert str(location / "skills") in text
+        for name, path in fake_bin.profile_paths.items():
+            assert marker_pair_count(text=path.read_text()) == 1, name
+
+    def test_finalize_shell_environment_when_metadata_is_missing(self, fake_bin: FakeBin) -> None:
+        """No pipx Location → non-zero, no managed file, no profile blocks."""
+        fake_bin.write_fake_pipx(location=None)
+        result = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert result.returncode != 0
+        assert not fake_bin.managed_env_file.exists()
+        for path in fake_bin.profile_paths.values():
+            assert not path.exists()
+
+    def test_finalize_shell_environment_when_pipx_install_fails(self, fake_bin: FakeBin) -> None:
+        """A failed `pipx install` must produce NO persistent shell state."""
+        pipx_path: Path = fake_bin._bin / "pipx"  # noqa: SLF001 — test harness setup.
+        pipx_path.write_text(
+            "#!/bin/sh\n"
+            'echo "pipx $*" >> "$SLO_CALL_LOG"\n'
+            'if [ "$1" = "install" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        pipx_path.chmod(0o755)
+        result = fake_bin.run(snippet="slo_install || exit 99; slo_finalize_shell_environment")
+        assert result.returncode == 99
+        assert not fake_bin.managed_env_file.exists()
+        for path in fake_bin.profile_paths.values():
+            assert not path.exists()
+
+    def test_finalize_shell_environment_rerun_is_idempotent(self, fake_bin: FakeBin) -> None:
+        """A second run keeps one block per profile and a current managed file."""
+        location: Path = fake_bin.make_package_location()
+        fake_bin.write_fake_pipx(location=location)
+        first = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert first.returncode == 0, first.stderr
+        second = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert second.returncode == 0, second.stderr
+        assert "already current" in second.stderr
+        for name, path in fake_bin.profile_paths.items():
+            text: str = path.read_text()
+            assert text.count(MANAGED_ENV_MARK_BEGIN) == 1, name
+
+    def test_finalize_shell_environment_rerun_refreshes_moved_location(self, fake_bin: FakeBin) -> None:
+        """A pipx Location change is picked up on rerun (the M2 recovery path)."""
+        old_location: Path = fake_bin.make_package_location(name="old")
+        fake_bin.write_fake_pipx(location=old_location)
+        first = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert first.returncode == 0, first.stderr
+        assert str(old_location / "skills") in fake_bin.managed_env_file.read_text()
+        new_location: Path = fake_bin.make_package_location(name="new")
+        fake_bin.write_fake_pipx(location=new_location)
+        second = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert second.returncode == 0, second.stderr
+        text: str = fake_bin.managed_env_file.read_text()
+        assert str(new_location / "skills") in text
+        assert str(old_location / "skills") not in text
+        for name, path in fake_bin.profile_paths.items():
+            assert path.read_text().count(MANAGED_ENV_MARK_BEGIN) == 1, name
+
+    def test_finalize_preserves_user_skills_and_absent_user_workflows(self, fake_bin: FakeBin) -> None:
+        """User skills are untouched; user workflows stay absent; no legacy copy."""
+        user_skill: Path = fake_bin.home / ".slo" / "user_skills" / "my-skill" / "SKILL.md"
+        user_skill.parent.mkdir(parents=True)
+        user_skill.write_text("---\nname: my-skill\n---\n")
+        location: Path = fake_bin.make_package_location()
+        fake_bin.write_fake_pipx(location=location)
+        result = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert result.returncode == 0, result.stderr
+        assert user_skill.read_text() == "---\nname: my-skill\n---\n"
+        assert not (fake_bin.home / ".slo" / "user_workflows").exists()
+        assert not (fake_bin.home / ".slo" / "skills").exists()
+
+
+class TestFreshShellStartup:
+    """Real shells started against the isolated HOME inherit the defaults."""
+
+    def _finalize(self, fake_bin: FakeBin) -> Path:
+        """Run finalisation against a fake package location.
+
+        Args:
+            fake_bin (FakeBin): The isolated harness.
+
+        Returns:
+            Path: The fake package location used.
+        """
+        location: Path = fake_bin.make_package_location()
+        fake_bin.write_fake_pipx(location=location)
+        result = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert result.returncode == 0, result.stderr
+        return location
+
+    def test_bash_login_shell_exports_defaults(self, fake_bin: FakeBin) -> None:
+        """`bash --login` reads `.bash_profile` and exports both defaults."""
+        location: Path = self._finalize(fake_bin)
+        result = fake_bin.run_shell_env(
+            args=[BASH, "--login", "-c", 'printf "%s\n%s\n" "$SLO_HOME" "$SLO_SKILLS_DIR"'],
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [f"{fake_bin.home}/.slo", str(location / "skills")]
+
+    def test_bash_interactive_non_login_shell_exports_defaults(self, fake_bin: FakeBin) -> None:
+        """`bash -i` reads `.bashrc` and exports both defaults."""
+        location: Path = self._finalize(fake_bin)
+        result = fake_bin.run_shell_env(
+            args=[BASH, "-i", "-c", 'printf "%s\n%s\n" "$SLO_HOME" "$SLO_SKILLS_DIR"'],
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [f"{fake_bin.home}/.slo", str(location / "skills")]
+
+    @pytest.mark.skipif(ZSH is None, reason="zsh not installed on the test host")
+    def test_zsh_login_and_interactive_non_login_shell_export_defaults(self, fake_bin: FakeBin) -> None:
+        """Both zsh modes read `.zshenv` and export both defaults."""
+        assert ZSH is not None
+        location: Path = self._finalize(fake_bin)
+        for args in (
+            [ZSH, "--login", "-c", 'printf "%s\n%s\n" "$SLO_HOME" "$SLO_SKILLS_DIR"'],
+            [ZSH, "-i", "-c", 'printf "%s\n%s\n" "$SLO_HOME" "$SLO_SKILLS_DIR"'],
+        ):
+            result = fake_bin.run_shell_env(args=args)
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.splitlines() == [f"{fake_bin.home}/.slo", str(location / "skills")]
+
+    def test_posix_sh_login_shell_exports_defaults(self, fake_bin: FakeBin) -> None:
+        """A genuine POSIX login shell (``dash -l`` / ``sh -l``) reads ``.profile``
+        and exports both defaults — not a manual source from a Bash subshell."""
+        login_shell: str | None = DASH or SH
+        if login_shell is None:
+            pytest.skip("no POSIX sh (dash or sh) available on the test host")
+        location: Path = self._finalize(fake_bin)
+        result = fake_bin.run_shell_env(
+            args=[
+                login_shell,
+                "-l",
+                "-c",
+                'printf "%s\n%s\n" "${SLO_HOME:-}" "${SLO_SKILLS_DIR:-}"',
+            ],
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [f"{fake_bin.home}/.slo", str(location / "skills")]
+
+    def test_explicit_environment_override_survives_source(self, fake_bin: FakeBin) -> None:
+        """Pre-exported SLO_HOME / SLO_SKILLS_DIR win over the managed defaults."""
+        self._finalize(fake_bin)
+        custom_home: Path = fake_bin.home / "custom-slo-home"
+        custom_skills: Path = fake_bin.home / "custom-skills"
+        result = fake_bin.run_shell_env(
+            args=[BASH, "--login", "-c", 'printf "%s\n%s\n" "$SLO_HOME" "$SLO_SKILLS_DIR"'],
+            env={"SLO_HOME": str(custom_home), "SLO_SKILLS_DIR": str(custom_skills)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [str(custom_home), str(custom_skills)]
 
 
 class TestSourcingGuard:

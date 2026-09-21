@@ -43,11 +43,18 @@ from src.agents.slo_agent.preferences.dao import (
 )
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.cli.headless import HeadlessRunner
 from src.cli.headless_logging import headless_logging
 from src.cli.headless_request import resolve_session_id, validate_session_id
 from src.cli.update import Updater
-from src.integrations.slotui.dao import SlotuiPresentationName
+from src.integrations.slotui.dao import SlotuiPresentationName, SlotuiPresentationSelectionDAO
+from src.integrations.slotui.host import (
+    InstalledSlotuiHostProcessFactory,
+    SlotuiCoreHostError,
+    SlotuiCoreHostService,
+    SlotuiHostProcessFactory,
+)
 from src.integrations.slotui.selector import SlotuiPresentationSelector
 from src.tui.assembly.dao import SloTuiAssemblyConfigDAO
 from src.tui.assembly.ports import SloTuiAssemblyFactory
@@ -92,11 +99,11 @@ class TyperDispatch:
     ) -> None:
         """Open the selected interactive presentation scoped to ``workdir`` (or the cwd).
 
-        ``slotui_core`` is verified then rejected before this method can build
-        a Textual factory or session because Slo core assembly is not released.
-        Interactive Textual runs temporarily swap the root logger away from
-        terminal streams so Textual owns the screen without stdout/stderr
-        log lines punching through the layout.
+        ``slotui_core`` statically verifies the exact local wheel before creating a real
+        ``SloAgentSession``. It then runs a persistent fresh installed-wheel host connected to that
+        session through local IPC. Slo never imports Slotui and never falls back to Textual.
+        Textual runs temporarily swap the root logger away from terminal streams so Textual owns
+        the screen without stdout/stderr log lines punching through the layout.
 
         Args:
             workdir (Optional[Path]): Directory to scope the TUI to.
@@ -107,7 +114,7 @@ class TyperDispatch:
                 reopen (session id or unique session name). ``None`` allocates
                 a new UUID4.
         """
-        cls._validate_interactive_presentation(
+        selection: SlotuiPresentationSelectionDAO = cls._validate_interactive_presentation(
             presentation=presentation,
             slotui_core_reference=slotui_core_reference,
         )
@@ -118,6 +125,15 @@ class TyperDispatch:
         resolved_session_id: str | None = cls._resolve_resume_reference(
             resume_session_reference=resume_session_reference,
         )
+        if selection.presentation == "slotui_core":
+            cls._run_slotui_core_opt_in(
+                selection=selection,
+                workdir=resolved_workdir,
+                workspace_file=resolved_workspace_file,
+                resume_session_id=resolved_session_id,
+                plugin_paths=plugin_paths,
+            )
+            return
         slo_home: Path = _CFG_SLO_HOME
         assembly_config: SloTuiAssemblyConfigDAO = SloTuiAssemblyConfigDAO(
             environment_scenario="textual_current",
@@ -380,8 +396,8 @@ class TyperDispatch:
         *,
         presentation: str,
         slotui_core_reference: Path | None,
-    ) -> None:
-        """Validate selection and fail closed before any current TUI assembly.
+    ) -> SlotuiPresentationSelectionDAO:
+        """Validate selection before any current TUI assembly.
 
         Args:
             presentation (str): Operator presentation token from the CLI parse surface.
@@ -389,15 +405,72 @@ class TyperDispatch:
 
         Raises:
             ValueError: If the presentation token is not in the closed interactive vocabulary.
-            SlotuiCoreUnavailableError: If core proof fails or verified core lacks Slo runtime assembly.
+            SlotuiCoreUnavailableError: If core proof or isolated runtime fails.
+
+        Returns:
+            SlotuiPresentationSelectionDAO: Typed current or verified isolated-core selection.
         """
         selected_presentation: SlotuiPresentationName = cls._parse_interactive_presentation(
             presentation=presentation,
         )
-        SlotuiPresentationSelector.select(
+        return SlotuiPresentationSelector.select(
             presentation=selected_presentation,
             core_reference_path=slotui_core_reference,
         )
+
+    @classmethod
+    def _run_slotui_core_opt_in(
+        cls,
+        *,
+        selection: SlotuiPresentationSelectionDAO,
+        workdir: Path,
+        workspace_file: Path | None,
+        resume_session_id: str | None,
+        plugin_paths: list[Path] | None,
+        process_factory: SlotuiHostProcessFactory | None = None,
+    ) -> None:
+        """Run a persistent isolated Slotui terminal attached to an actual Slo session.
+
+        WHAT: Builds the ordinary Slo session with resolved interactive facts, then delegates its
+            lifetime to a fresh installed-wheel Slotui host process over Slo-owned local IPC.
+        WHO: ``tui`` calls this only for a statically verified explicit ``slotui_core`` selection.
+        WHEN: Instead of constructing the default Textual assembly; it returns only after host exit.
+
+        Args:
+            selection (SlotuiPresentationSelectionDAO): Static receipt for the exact candidate wheel.
+            workdir (Path): Resolved work directory for the actual Slo session and child host.
+            workspace_file (Path | None): Resolved optional VSCode workspace fact.
+            resume_session_id (str | None): Canonical session ID resolved before host construction.
+            plugin_paths (list[Path] | None): Explicit trusted plugin paths preserved for the Slo session.
+            process_factory (SlotuiHostProcessFactory | None): Test seam for a non-runtime child host.
+
+        Raises:
+            SlotuiCoreHostError: If the persistent installed-wheel host cannot enter or sustain its lifecycle.
+            ValueError: If the static selection does not carry the exact core receipt.
+        """
+        receipt = selection.core_verification_receipt
+        if selection.presentation != "slotui_core" or receipt is None:
+            raise ValueError("Slotui core opt-in requires a verified core selection")
+        config: SessionConfigDAO = cls._build_session_config(
+            workdir=workdir,
+            workspace_file=workspace_file,
+            resume_session_id=resume_session_id,
+            plugin_paths=plugin_paths,
+        )
+        session = SloAgentSession.build(config=config)
+        factory: SlotuiHostProcessFactory = process_factory or InstalledSlotuiHostProcessFactory()
+        host_service = SlotuiCoreHostService(
+            session=session,
+            process=factory.build(receipt=receipt),
+            workdir=workdir,
+            resume_session_id=resume_session_id,
+        )
+        try:
+            asyncio.run(host_service.invoke())
+        except SlotuiCoreHostError:
+            raise
+        except Exception as error:
+            raise SlotuiCoreHostError("Slotui core host failed; current Textual was not started") from error
 
     @staticmethod
     def _parse_interactive_presentation(*, presentation: str) -> SlotuiPresentationName:

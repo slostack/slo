@@ -1,4 +1,4 @@
-"""Tests for explicit Slotui selection without a runtime Slotui import or fallback."""
+"""Tests for explicit Slotui selection without a Slo-process runtime import or fallback."""
 
 from __future__ import annotations
 
@@ -39,10 +39,10 @@ def test_select_when_slotui_core_is_requested_without_reference_fails_closed() -
         SlotuiPresentationSelector.select(presentation="slotui_core", core_reference_path=None)
 
 
-def test_select_when_slotui_core_reference_is_verified_still_fails_before_textual_fallback(
+def test_select_when_slotui_core_reference_is_verified_returns_static_host_receipt_without_runtime_smoke(
     tmp_path: Path,
 ) -> None:
-    """Stop after static proof because no Slotui presentation assembly exists in Slo yet."""
+    """Select core only after static proof includes the exact persistent host export contract."""
     wheel_path: Path = _write_wheel_fixture(tmp_path=tmp_path)
     payload: dict[str, object] = _manifest_payload(wheel_path=wheel_path)
     _finalize_manifest_hash(payload=payload)
@@ -50,10 +50,13 @@ def test_select_when_slotui_core_reference_is_verified_still_fails_before_textua
     reference = _write_reference(tmp_path=tmp_path, payload=payload)
     reference_path.write_text(reference.model_dump_json(), encoding="utf-8")
 
-    with pytest.raises(
-        SlotuiCoreUnavailableError, match="wheel was verified.*integration is not available yet"
-    ):
-        SlotuiPresentationSelector.select(presentation="slotui_core", core_reference_path=reference_path)
+    selected = SlotuiPresentationSelector.select(
+        presentation="slotui_core",
+        core_reference_path=reference_path,
+    )
+
+    assert selected.presentation == "slotui_core"
+    assert selected.core_verification_receipt is not None
 
 
 def test_tui_when_default_option_keeps_current_textual_assembly(tmp_path: Path) -> None:
@@ -71,30 +74,27 @@ def test_tui_when_default_option_keeps_current_textual_assembly(tmp_path: Path) 
     factory.run.assert_called_once()
 
 
-def test_tui_when_verified_slotui_core_requested_never_invokes_textual_factory_or_session(
+def test_tui_when_verified_slotui_core_requested_runs_persistent_host_never_textual_factory(
     tmp_path: Path,
 ) -> None:
-    """Prove the dispatcher end-to-end guard runs before the current assembly factory/session route."""
-    wheel_path: Path = _write_wheel_fixture(tmp_path=tmp_path)
-    payload: dict[str, object] = _manifest_payload(wheel_path=wheel_path)
-    _finalize_manifest_hash(payload=payload)
-    reference = _write_reference(tmp_path=tmp_path, payload=payload)
-    reference_path: Path = tmp_path / "slotui-core-reference.json"
-    reference_path.write_text(reference.model_dump_json(), encoding="utf-8")
+    """Prove dispatcher constructs no current Textual assembly on the persistent core route."""
+    core_selection = MagicMock()
+    core_selection.presentation = "slotui_core"
+    core_selection.core_verification_receipt = MagicMock(version="0.1.0")
 
     with (
+        patch("src.cli.typer_dispatch.SlotuiPresentationSelector.select", return_value=core_selection),
         patch("src.cli.typer_dispatch._build_default_tui_assembly_factory") as build_factory,
-        patch("src.cli.typer_dispatch.SloTuiAssemblyConfigDAO") as assembly_config,
-        pytest.raises(SlotuiCoreUnavailableError, match="wheel was verified.*not available yet"),
+        patch("src.cli.typer_dispatch.TyperDispatch._run_slotui_core_opt_in") as run_host,
     ):
         TyperDispatch.tui(
             workdir=tmp_path,
             presentation="slotui_core",
-            slotui_core_reference=reference_path,
+            slotui_core_reference=tmp_path / "reference.json",
         )
 
     build_factory.assert_not_called()
-    assembly_config.assert_not_called()
+    run_host.assert_called_once()
 
 
 def test_cli_when_slotui_core_requested_forwards_explicit_opt_in_to_dispatch() -> None:

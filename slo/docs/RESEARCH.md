@@ -86,6 +86,49 @@ slo --plugin plugins/bash_live_output/plugin.py
 - Bundled-plugin contract: `tests/plugins/test_bash_live_output_plugin.py`.
 - CLI lifecycle surface: `tests/cli/test_plugin_cli.py`.
 
+## Slotui protected consumer lane (spec 79.integration)
+
+`src/integrations/slotui/` is a fail-closed v2 consumer boundary: ordinary Slo
+never imports Slotui. `SlotuiPresentationSelector` statically verifies a
+digest-pinned absolute release reference, canonical manifest, exact local wheel,
+generic evidence, **one candidate-defined async adapter**, and **one
+candidate-defined async runner** by ZIP/AST. The runner has a pinned keyword-only
+`control_socket`/`adapter_module`/`adapter_symbol`/`protocol_version` signature,
+must directly load/call the manifested adapter with `launch` and `control`, and
+must also have one candidate-owned `__main__` AST bridge which uses `argparse` to
+parse the four exact `python -I -m` host flags from `sys.argv[1:]` and passes them
+by keyword through `asyncio.run` to that manifested runner. An inert `asyncio.run`
+launcher is rejected. Slo never invents Slotui constructors from generic exports.
+
+The explicit `slotui_core` architecture builds a normal in-process
+`SloAgentSession`, then launches a fresh installed-wheel candidate venv over a
+private Unix-domain **control socket**; terminal stdio is not JSON IPC. The
+ordered typed handshake is `launch` command → matching `launch_ack` → source
+isolation attestation → all-ready `host_active`. Per-kind Pydantic invariants
+forbid mixed launch/stream/notice payloads. A candidate editor submit invokes
+the real parent session under reject-while-busy policy; every mapped parent
+mutation requires an exact, separately routed `transcript_ack`. Startup is
+transactional and bounded; EOF gets capped stderr diagnostics and cleanup
+closes/reaps/removes all temporary resources. Candidate parity remains unproven
+for resume, queue, history/replay/slash and overlays; raw/literal
+image/LaTex/Mermaid is the only fallback claim.
+
+The pure host/control-port tests, including a real deterministic
+`SloAgentSession` with `FauxChatModel`, prove Slo architecture only and are not
+protected candidate evidence. `test_runtime.py` is skipped without absolute
+`SLO_SLOTUI_CANDIDATE_REFERENCE`; only protected CI's candidate hook can execute
+its actual-installed-wheel submit → mutation mount/ack → orderly-close proof.
+A launch reference must be v2 and explicitly include `bundle_path` plus
+`bundle_sha256`; Slo no longer derives a colocated conventional bundle. A supplied
+legacy reference is not fully pinned and must not be edited in the candidate
+directory. Use `SlotuiCoreReferenceDerivationService.derive(...)` to create a
+separate, new v2 reference from the legacy manifest pointer and an explicit
+regular bundle path; derivation refuses to overwrite the legacy file. The E2E
+roundtrip creates that derived reference in its test directory when its env input
+is legacy, then verifies/launches only the derived v2 reference. No candidate
+reference or completed candidate proof is checked in. Headless rejects
+presentation selection. See `docs/slotui-integration.md`.
+
 ## Slotui specification recovery (spec 79; planned, not implemented)
 
 `/root/Code/specifications/projects/slo/specifications/79-tui-v2/` contains

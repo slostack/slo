@@ -222,22 +222,35 @@ slo/
 
 ### Slotui consumer scaffold (spec 79.integration)
 
-`src/integrations/slotui/` is an independently valid, **non-runtime** Slo adapter-fixture
-consumer scaffold for a future protected Slotui core release; it is not an owner b.1 schema.
-It parses only an explicit absolute local reference and verifies pinned manifest fixture bytes,
-its canonical non-self-referential projection hash, exact wheel filename/version/hash, regular
-ZIP metadata including `Requires-Python`, protected source identity/clean assertion, immutable
-module-qualified generic export signature/hash (via wheel-source AST, never import), exact
-terminal/editor/events/session/history/replay/slash/live-transcript capability list, opaque b.0
-stream and b.0.1 live-transcript evidence hashes, and core test report hashes. It rejects package
-registries, VCS/git, editable/source directories, relative paths, duplicate/ambiguous/rich-only
-exports, and all fallback/import-before-verify behavior. Static verification deliberately produces
-no pip/install argv and makes no clean-venv execution claim; a future b.3 executor must own a
-separately supplied fresh Python. `--presentation slotui_core` verifies then **fails closed** before
-any Textual factory/session path with an explicit integration-unavailable error until Slo core
-presentation assembly exists. No `slotui` import or dependency exists in Slo. `SlotuiParityMatrix`
-maps b.2 baseline areas to future adapter boundaries and expressly provides literal/raw
-image/LaTex/Mermaid fallback only; it claims no rich parity.
+`src/integrations/slotui/` is a fail-closed protected-candidate consumer boundary, never an
+owner b.1 schema. Normal Slo never imports or depends on Slotui. `textual_current` remains the
+default; headless rejects presentation selection. An explicit `--presentation slotui_core` accepts
+only an absolute digest-pinned release reference and statically verifies canonical manifest bytes,
+exact local regular wheel/version/hash/`Requires-Python`, clean protected-source identity, generic
+export/evidence hashes, one candidate-defined async adapter, and one candidate-defined async
+runner. ZIP/AST verification proves their exact keyword-only signatures, that the runner directly
+loads and calls the manifested adapter with `launch`/`control`, and that the runner module's unique
+candidate-owned `if __name__ == "__main__"` bridge uses `argparse` to require the four exact host
+flags from `sys.argv[1:]` before `asyncio.run` calls the manifested runner with those parsed values.
+Registries, VCS, source/editable paths, ambiguous/rich-only exports, inert `asyncio.run`,
+imports-before-verification, and all fallbacks are rejected.
+
+After static proof, the interactive core lane builds a normal in-process `SloAgentSession` and
+starts a persistent fresh-venv process containing only the exact installed wheel. The candidate owns
+terminal/root/editor/mounted transcript; parent and candidate communicate only through a private
+Unix-domain JSONL control socket (terminal stdio is never IPC). Startup is typed and ordered:
+parent `launch` command → matching `launch_ack` → isolation attestation → all-ready `host_active`.
+Editor submissions call the real parent session under a one-prompt reject-while-busy policy. Every
+actual parent stream event becomes a typed mutation and must receive an exact candidate
+`transcript_ack`, routed separately from lifecycle/editor frames. Startup and teardown are bounded
+and transactional. Candidate parity is still unproven for resume, queues, history/replay/slash,
+overlays, and rich rendering; raw/literal image/LaTex/Mermaid is the only fallback claim.
+
+`tests/integrations/slotui/test_host.py` is pure control-port/real-Faux-session architecture coverage
+and is not candidate evidence. `test_runtime.py` is skipped unless protected CI supplies absolute
+`SLO_SLOTUI_CANDIDATE_REFERENCE`; only its documented hook-driven real-wheel roundtrip can prove
+the candidate. No such proof is claimed by this checkout. `SlotuiParityMatrix` maps b.2 baseline
+areas to candidate adapter boundaries only.
 
 ### Context Window Snapshot and manual compaction (spec 62)
 

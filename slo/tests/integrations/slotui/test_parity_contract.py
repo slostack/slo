@@ -28,6 +28,10 @@ def test_build_matrix_expressly_marks_overlay_and_rich_content_as_future_adapter
 
     assert by_case["auth_diff_tree_fleet_workflow_overlays"].status == "scaffolded"
     assert by_case["auth_diff_tree_fleet_workflow_overlays"].rich_parity_claimed is False
+    assert by_case["editor_queue_copy"].status == "candidate_gated"
+    assert "editor queue" in by_case["editor_queue_copy"].non_goals
+    assert by_case["session_history_replay_slash"].status == "candidate_gated"
+    assert "replay" in by_case["session_history_replay_slash"].non_goals
     assert by_case["literal_raw_fallback_images_latex_mermaid"].status == "literal_fallback_only"
     assert by_case["literal_raw_fallback_images_latex_mermaid"].rich_parity_claimed is False
     assert "Mermaid rendering" in by_case["literal_raw_fallback_images_latex_mermaid"].non_goals

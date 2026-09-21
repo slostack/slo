@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from langchain_core.messages import AIMessage
 
 from src.agents.providers.faux import FauxChatModel
@@ -15,7 +15,6 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.integrations.slotui.dao import SlotuiCoreArtifactReferenceDAO
 from src.integrations.slotui.host import InstalledSlotuiHostProcess, SlotuiCoreHostService
 from src.integrations.slotui.host_protocol import SLOTUI_HOST_CONTROL_PROTOCOL_VERSION
-from src.integrations.slotui.reference import SlotuiCoreReferenceDerivationService
 from src.integrations.slotui.verifier import SlotuiCoreWheelVerificationService
 
 _CANDIDATE_REFERENCE_ENV: str = "SLO_SLOTUI_CANDIDATE_REFERENCE"
@@ -24,7 +23,7 @@ _CANDIDATE_REFERENCE_ENV: str = "SLO_SLOTUI_CANDIDATE_REFERENCE"
 @pytest.mark.e2e
 def test_real_bundle_static_verification_accepts_the_supplied_complete_closure(tmp_path: Path) -> None:
     """Verify the supplied v2 reference and every pinned offline wheel without importing Slotui."""
-    reference_path: Path = _require_pinned_candidate_reference(tmp_path=tmp_path)
+    reference_path: Path = _require_production_pinned_candidate_reference()
     reference = SlotuiCoreArtifactReferenceDAO.model_validate_json(reference_path.read_text(encoding="utf-8"))
 
     receipt = SlotuiCoreWheelVerificationService.build_verification_receipt(reference=reference)
@@ -44,7 +43,7 @@ async def test_real_candidate_adapter_roundtrips_editor_submit_and_actual_slo_se
     the assertions below intentionally inspect only Slo's installed-process
     boundary and never import or emulate candidate code.
     """
-    reference_path: Path = _require_pinned_candidate_reference(tmp_path=tmp_path)
+    reference_path: Path = _require_production_pinned_candidate_reference()
     reference = SlotuiCoreArtifactReferenceDAO.model_validate_json(reference_path.read_text(encoding="utf-8"))
     receipt = SlotuiCoreWheelVerificationService.build_verification_receipt(reference=reference)
     process = InstalledSlotuiHostProcess(receipt=receipt)
@@ -83,30 +82,46 @@ async def test_real_candidate_adapter_roundtrips_editor_submit_and_actual_slo_se
     assert receipt.manifest.candidate_adapter.protocol_version == SLOTUI_HOST_CONTROL_PROTOCOL_VERSION
 
 
-def _require_pinned_candidate_reference(*, tmp_path: Path | None) -> Path:
-    """Resolve a supplied v2 reference or derive a separate pinned one from a legacy input.
+def test_runtime_gate_when_supplied_reference_is_legacy_rejects_without_deriving(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep production E2E aligned with selector behavior for missing bundle pins."""
+    legacy_reference: Path = tmp_path / "legacy-reference.json"
+    legacy_reference.write_text(
+        """{
+  \"schema_version\": \"slo-slotui-candidate-adapter-v2\",
+  \"candidate_label\": \"legacy\",
+  \"manifest_path\": \"/absolute/manifest.json\",
+  \"manifest_sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"
+}""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(_CANDIDATE_REFERENCE_ENV, str(legacy_reference))
 
-    Args:
-        tmp_path (Path | None): Test-local output root for legacy conversion. ``None`` rejects
-            an unpinned legacy environment reference.
+    with pytest.raises(pytest.fail.Exception, match="production-compatible v2 reference"):
+        _require_production_pinned_candidate_reference()
+
+
+def _require_production_pinned_candidate_reference() -> Path:
+    """Require the exact production v2 release reference without test-local derivation.
+
+    A legacy pointer lacks its independent bundle path and digest, so Slo's
+    production selector rejects it. Tests must prove the same input the operator
+    could launch; they never manufacture a temporary release reference.
 
     Returns:
-        Path: Existing or newly derived absolute v2 pinned reference.
+        Path: Existing fully pinned regular v2 reference supplied by release CI.
     """
     reference_path: Path = _require_candidate_reference_path()
-    payload: dict[str, object] = _load_reference_payload(path=reference_path)
-    if "bundle_path" in payload and "bundle_sha256" in payload:
-        return reference_path
-    if tmp_path is None:
+    try:
+        SlotuiCoreArtifactReferenceDAO.model_validate_json(reference_path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError, ValueError) as error:
         pytest.fail(
-            f"{_CANDIDATE_REFERENCE_ENV} is a legacy unpinned reference; run the runtime roundtrip "
-            "test to derive a temporary v2 reference with its colocated bundle"
+            f"{_CANDIDATE_REFERENCE_ENV} is not a production-compatible v2 reference: {error}. "
+            "It must supply bundle_path and bundle_sha256; Slo will not derive those fields at runtime."
         )
-    return _derive_pinned_reference(
-        legacy_reference_path=reference_path,
-        bundle_path=reference_path.parent / "slotui-local-core-candidate.bundle.json",
-        output_path=tmp_path / "slotui-derived-pinned-reference.json",
-    )
+    return reference_path
 
 
 def _require_candidate_reference_path() -> Path:
@@ -124,40 +139,3 @@ def _require_candidate_reference_path() -> Path:
     if not reference_path.is_file() or reference_path.is_symlink():
         pytest.fail("candidate runtime reference must name an existing regular non-symlink file")
     return reference_path
-
-
-def _load_reference_payload(*, path: Path) -> dict[str, object]:
-    """Load the environment reference only to determine whether its v2 bundle pins exist.
-
-    Args:
-        path (Path): Existing regular candidate reference file.
-
-    Returns:
-        dict[str, object]: JSON object used to select direct validation or explicit derivation.
-    """
-    try:
-        payload: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as error:
-        pytest.fail(f"candidate runtime reference must contain JSON: {error}")
-    if not isinstance(payload, dict):
-        pytest.fail("candidate runtime reference must contain a JSON object")
-    return payload
-
-
-def _derive_pinned_reference(*, legacy_reference_path: Path, bundle_path: Path, output_path: Path) -> Path:
-    """Write and return a test-local v2 reference without changing legacy candidate artifacts.
-
-    Args:
-        legacy_reference_path (Path): Supplied legacy candidate reference.
-        bundle_path (Path): Explicit colocated local candidate bundle to pin.
-        output_path (Path): New test-local reference destination.
-
-    Returns:
-        Path: New absolute fully pinned v2 reference.
-    """
-    SlotuiCoreReferenceDerivationService.derive(
-        legacy_reference_path=legacy_reference_path,
-        bundle_path=bundle_path,
-        output_path=output_path,
-    )
-    return output_path

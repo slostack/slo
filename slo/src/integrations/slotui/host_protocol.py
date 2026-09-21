@@ -228,8 +228,10 @@ class SlotuiStreamEventMapper:
             return "create"
         if event_kind in {"thinking_delta", "text_delta", "tool_call_delta", "tool_output_update"}:
             return "append"
-        if event_kind in {"thinking_end", "text_end", "tool_call_end", "tool_result", "run_completed"}:
+        if event_kind in {"thinking_end", "tool_call_end", "tool_result", "run_completed"}:
             return "end"
+        if event_kind == "text_end":
+            return "notice"
         if event_kind in {"run_aborted", "run_failed", "sub_agent_failed", "recovery_exhausted"}:
             return "failed"
         return "notice"

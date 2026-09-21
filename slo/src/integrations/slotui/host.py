@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -201,7 +202,7 @@ class SlotuiCoreHostService:
                     )
                 )
                 await self._require_transcript_ack(mutation_id=mutation_id)
-                if event.kind in {"run_completed", "text_end"}:
+                if event.kind == "run_completed":
                     return
         except asyncio.CancelledError:
             raise
@@ -292,6 +293,7 @@ class InstalledSlotuiHostProcess:
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr_tail: bytearray = bytearray()
         self._launch_acknowledged: bool = False
+        self._startup_deadline: float | None = None
         self._event_queue: asyncio.Queue[SlotuiHostEventDAO] = asyncio.Queue()
         self._startup_events: deque[SlotuiHostEventDAO] = deque()
         self._ack_waiters: dict[str, asyncio.Future[None]] = {}
@@ -325,6 +327,7 @@ class InstalledSlotuiHostProcess:
             interpreter_path: Path = await self._create_and_install(runtime_root=runtime_root)
             socket_path: Path = runtime_root / "control.sock"
             await self._open_control_server(socket_path=socket_path)
+            self._start_startup_deadline()
             await self._spawn_candidate(interpreter_path=interpreter_path, socket_path=socket_path)
             await self._await_control_connection()
             await self._send_launch(config=config, socket_path=socket_path)
@@ -463,7 +466,7 @@ class InstalledSlotuiHostProcess:
         interpreter: Path = runtime_root / "venv" / "bin" / "python"
         if not interpreter.is_file():
             raise SlotuiCoreHostError("Slotui candidate venv did not create a Python interpreter")
-        verified_wheel_paths: tuple[Path, ...] = self._receipt.verified_wheel_paths
+        requirements_path: Path = self._write_verified_requirements(runtime_root=runtime_root)
         await _run_checked_command(
             command=(
                 str(interpreter),
@@ -474,8 +477,10 @@ class InstalledSlotuiHostProcess:
                 "--disable-pip-version-check",
                 "--no-index",
                 "--no-input",
-                "--no-deps",
-                *(str(wheel_path) for wheel_path in verified_wheel_paths),
+                "--require-hashes",
+                "--only-binary=:all:",
+                "--requirement",
+                str(requirements_path),
             ),
             cwd=runtime_root,
             timeout_seconds=self._setup_timeout_seconds,
@@ -486,6 +491,23 @@ class InstalledSlotuiHostProcess:
             timeout_seconds=self._setup_timeout_seconds,
         )
         return interpreter
+
+    def _write_verified_requirements(self, *, runtime_root: Path) -> Path:
+        """Write hash-locked direct wheel URLs from the static verification receipt.
+
+        Args:
+            runtime_root (Path): Isolated root that owns the transient requirements file.
+
+        Returns:
+            Path: Requirements file that names only receipt-verified wheel bytes.
+        """
+        requirements_path: Path = runtime_root / "verified-requirements.txt"
+        lines: list[str] = []
+        for wheel_path in self._receipt.verified_wheel_paths:
+            digest: str = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+            lines.append(f"{wheel_path.as_uri()} --hash=sha256:{digest}")
+        requirements_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return requirements_path
 
     async def _open_control_server(self, *, socket_path: Path) -> None:
         """Listen on a private Unix socket for exactly one candidate connection.
@@ -677,6 +699,10 @@ class InstalledSlotuiHostProcess:
         active: SlotuiHostEventDAO = await self._next_startup_event()
         self._validate_active(event=active)
 
+    def _start_startup_deadline(self) -> None:
+        """Start the one wall-clock deadline shared by ordered startup frames."""
+        self._startup_deadline = asyncio.get_running_loop().time() + self._readiness_timeout_seconds
+
     async def _next_startup_event(self) -> SlotuiHostEventDAO:
         """Return the next lifecycle startup frame while preserving early editor submissions.
 
@@ -687,7 +713,7 @@ class InstalledSlotuiHostProcess:
             SlotuiCoreHostError: If the peer fails, closes, or violates lifecycle ordering.
         """
         while True:
-            event: SlotuiHostEventDAO = await self._next_routed_event()
+            event: SlotuiHostEventDAO = await self._next_startup_routed_event()
             if event.kind == "editor_submit":
                 self._startup_events.append(event)
                 continue
@@ -733,6 +759,25 @@ class InstalledSlotuiHostProcess:
         ):
             raise SlotuiCoreHostError("Slotui candidate adapter did not report a ready TuiApp lifecycle")
 
+    async def _next_startup_routed_event(self) -> SlotuiHostEventDAO:
+        """Wait only for the remaining wall-clock startup budget.
+
+        Returns:
+            SlotuiHostEventDAO: Next router event during launch validation.
+
+        Raises:
+            SlotuiCoreHostError: If startup has exhausted its shared deadline.
+        """
+        if self._startup_deadline is None:
+            self._start_startup_deadline()
+        remaining_seconds: float = self._startup_deadline - asyncio.get_running_loop().time()
+        if remaining_seconds <= 0:
+            raise SlotuiCoreHostError("Slotui startup handshake timed out")
+        try:
+            return await asyncio.wait_for(self._next_routed_event(), timeout=remaining_seconds)
+        except asyncio.TimeoutError as error:
+            raise SlotuiCoreHostError("Slotui startup handshake timed out") from error
+
     async def _next_receive_event(self) -> SlotuiHostEventDAO:
         """Return one buffered startup editor event or the next router lifecycle event.
 
@@ -746,6 +791,11 @@ class InstalledSlotuiHostProcess:
     async def _next_routed_event(self) -> SlotuiHostEventDAO:
         """Wait for lifecycle/editor input without ever reading the socket directly.
 
+        A receive already blocked on the queue must also observe the router's
+        orderly close. The router therefore enqueues ``host_closed`` before it
+        resolves its independent teardown future, rather than only resolving
+        the latter and leaving the queue consumer to time out.
+
         Returns:
             SlotuiHostEventDAO: Next routed lifecycle/editor event.
 
@@ -756,12 +806,7 @@ class InstalledSlotuiHostProcess:
             raise self._router_failure
         if not self._event_queue.empty():
             return self._event_queue.get_nowait()
-        try:
-            return await asyncio.wait_for(self._event_queue.get(), timeout=self._readiness_timeout_seconds)
-        except asyncio.TimeoutError as error:
-            if self._router_failure is not None:
-                raise self._router_failure from error
-            raise SlotuiCoreHostError("Slotui candidate did not send a lifecycle event") from error
+        return await self._event_queue.get()
 
     async def _write_command(self, *, command: SlotuiHostCommandDAO, permit_during_close: bool) -> None:
         """Serialize validated control writes and register stream acknowledgements before peer receipt.
@@ -819,7 +864,9 @@ class InstalledSlotuiHostProcess:
             self._route_transcript_ack(event=event)
             return
         if event.kind == "host_closed":
+            self._event_queue.put_nowait(event)
             self._resolve_host_closed()
+            return
         if event.kind == "host_failed":
             self._fail_host_lifecycle(detail=event.detail)
         self._event_queue.put_nowait(event)

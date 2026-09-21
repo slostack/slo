@@ -45,11 +45,15 @@ can create a venv. It parses every wheel's sole `METADATA` with
 `packaging.requirements.Requirement`, evaluates markers for the candidate venv's
 Python 3.11/Linux target, recursively derives the active `Requires-Dist` graph
 from `slotui`, and rejects missing, version-incompatible, or unreachable declared
-wheels. The receipt retains only those exact verified wheel paths; setup uses
-`pip install --no-index --no-deps <each-verified-wheel-path>`, never `--find-links`
-over the artifact directory. Thus an arbitrary colocated wheel cannot be selected
-by pip. A modified manifest, bundle, wheel, source identity, `Requires-Python`,
-filename, or dependency declaration fails closed.
+wheels. The receipt retains only those exact verified wheel paths. Setup writes
+one temporary requirements file containing every verified wheel as an explicit
+`file://` URL plus its SHA-256, then runs pip's offline resolver with
+`--no-index --require-hashes --only-binary=:all: --requirement <file>`. It does
+**not** use `--no-deps`, `--find-links`, or an artifact-directory scan. Thus pip
+can resolve only the verified full closure, enforces its hashes again at install
+time, and fails rather than accepting an incomplete transitive dependency. A
+modified manifest, bundle, wheel, source identity, `Requires-Python`, filename,
+or dependency declaration fails closed.
 
 The pinned canonical manifest must declare exact local wheel filename/version,
 SHA-256, `Requires-Python`, protected source identity with `clean: true`, generic
@@ -149,20 +153,27 @@ Slo parent session <--- JSONL control commands/events ---> candidate adapter
 ```
 
 Startup is transactional and bounded: fresh venv creation, then an offline
-complete-closure install:
+complete-closure install. The ordered startup handshake is bounded; after
+`host_active`, the control connection remains open indefinitely for interactive
+editor input (there is no startup-timeout-derived idle-session cutoff):
 
 ```bash
-<isolated-venv>/bin/python -I -m pip install --no-index --no-input --no-deps \
-  <verified-core-wheel> <verified-runtime-dependency-wheel> ...
+<isolated-venv>/bin/python -I -m pip install --no-index --no-input \
+  --require-hashes --only-binary=:all: --requirement <hash-locked-verified-closure.txt>
 <isolated-venv>/bin/python -I -m pip check
 ```
 
-Slo never uses `--no-deps`, an index, a VCS URL, a source checkout, editable
-installation, or a fallback package location. The install source is only the
-verified bundle directory. Socket connect, a typed `launch` command,
-matching `launch_ack`, adapter attestation, and TuiApp readiness all time out. A
-candidate may not attest before acknowledging the exact manifested adapter
-launch. Any failure closes socket/server, drains bounded stderr, terminates then
+The requirements file contains only the receipt's exact wheel `file://` URLs and
+SHA-256 pins; no directory is supplied as a package source. Pip therefore cannot
+resolve an undeclared package from an index or ambient directory, and refuses any
+incomplete or hash-mismatched closure. Slo never uses `--no-deps`, an index, a
+VCS URL, a source checkout, editable installation, `--find-links`, or a fallback
+package location. The install inputs are only the exact verified bundle wheel
+paths. A single wall-clock startup deadline covers control-socket connect, typed
+`launch`, matching `launch_ack`, attestation, and all-ready `host_active`. Once
+active, the control socket has no startup-derived idle timeout and may wait for a
+human editor submission indefinitely. Any startup failure—including a connected
+but silent candidate—closes socket/server, drains bounded stderr, terminates then
 kills/reaps the child when needed, and removes the temp root. EOF reports return
 code plus a capped stderr tail. Parent stderr is drained continuously to avoid
 pipe deadlock.
@@ -195,9 +206,15 @@ or silently replaced. Parent session exceptions are caught and sent as explicit
 `session_failed` transcript failures, never left as background task exceptions.
 
 Tool lifecycle maps explicitly: `tool_call_start` creates, delta/output updates
-append, and `tool_call_end`/`tool_result` end. Every `StreamEventKind` has a
-mapped create/append/end/failed/notice operation. This is a protocol mapping,
-not a claim that the unavailable candidate renders them correctly.
+append, and `tool_call_end`/`tool_result` end. `text_end` is a nonterminal
+notice. `run_completed` is the canonical terminal `end`: the candidate sends
+the exact `transcript_ack` first, then closes the host control connection.
+`run_aborted` and `run_failed` are `failed` mutations and are also exactly
+acknowledged, but Slo's test transport does not autonomously close after either
+failure. The host forwards and requires an exact `transcript_ack` for **every**
+parent stream event, including each terminal mutation. The E2E asserts no
+outstanding or unconsumed mutation IDs. This is a control-protocol proof, not a
+general rendering-parity claim.
 
 ## Launch and limitations
 
@@ -222,7 +239,11 @@ PY
 The output must be a new path; derivation refuses to overwrite the legacy
 reference. It retains the legacy manifest facts while adding the independently
 calculated bundle SHA-256, so only the resulting v2 reference is valid for
-launch:
+launch. This is an **operator/release-CI preparation step**, not a production
+or E2E fallback: `slotui_core` and its runtime E2E accept only an already
+supplied, directly valid v2 reference. A legacy reference is rejected because
+it omits the externally provided `bundle_path` and `bundle_sha256` facts needed
+to prove the full closure:
 
 ```bash
 slo --presentation slotui_core \
@@ -256,14 +277,19 @@ and protected release-CI evidence are required before any stronger claim.
   It contains no toy wheel or fake candidate runtime evidence.
 
 The architecture and pure control-port tests are delivered in this checkout. The
-candidate-gated runtime test uses the supplied local bundle when
-`SLO_SLOTUI_CANDIDATE_REFERENCE` names its absolute release reference. If that
-environment reference is legacy/unpinned, the E2E test creates a test-local,
-separate derived v2 reference from its explicit colocated bundle; it never edits
-candidate artifacts. It creates a real `SloAgentSession` with `FauxChatModel`, sets the candidate-defined
-`SLO_SLOTUI_PROTOCOL_TEST_PROMPT`, and runs the actual installed wheel in a fresh venv
-with `python -I` and a private PTY. The test requires test-hook editor submission,
-actual parent response mutations, exact post-apply acknowledgements, candidate-initiated
-orderly close, reaped child, removed isolated venv/socket root, and closed PTY descriptors.
-It is skipped only when no candidate reference is supplied; it never skips merely because
-pytest has no TTY. No general Slotui parity claim follows from this control-path coverage.
+candidate-gated runtime test accepts only an already absolute, regular,
+fully-pinned v2 `SLO_SLOTUI_CANDIDATE_REFERENCE`; it does not derive or rewrite a
+reference. The supplied immutable reference presently lacks `bundle_path` and
+`bundle_sha256`, so it is deliberately rejected as incompatible and **cannot**
+perform a clean archive proof unchanged. Clean archive proof can be performed
+only after protected release CI or an operator supplies a separate v2 reference
+pinning the exact immutable bundle. With that input, the E2E creates a real
+`SloAgentSession` with `FauxChatModel`, sets the candidate-defined
+`SLO_SLOTUI_PROTOCOL_TEST_PROMPT`, and runs the actual installed wheel in a
+fresh venv with `python -I` and a private PTY. It requires test-hook editor
+submission, all parent response and terminal mutations, exact post-apply ACKs,
+zero outstanding/unconsumed mutation IDs, candidate-initiated orderly close,
+reaped child, removed isolated venv/socket root, and closed PTY descriptors. It
+is skipped only when no candidate reference is supplied; it never skips merely
+because pytest has no TTY. No general Slotui parity claim follows from this
+control-path coverage.

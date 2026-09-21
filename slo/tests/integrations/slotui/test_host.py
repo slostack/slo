@@ -82,6 +82,7 @@ class _NonRuntimeFakeHostProcess:
         self._settle_on_receive: bool = settle_on_receive
         self.started_config: SlotuiHostLaunchConfigDAO | None = None
         self.commands: list[SlotuiHostCommandDAO] = []
+        self.acknowledged_mutation_ids: list[str] = []
         self.closed: bool = False
 
     async def start(self, *, config: SlotuiHostLaunchConfigDAO) -> None:
@@ -109,7 +110,7 @@ class _NonRuntimeFakeHostProcess:
         Args:
             mutation_id (str): Parent mutation key intentionally not emulated by this fake.
         """
-        del mutation_id
+        self.acknowledged_mutation_ids.append(mutation_id)
 
     async def send(self, *, command: SlotuiHostCommandDAO) -> None:
         """Record parent control command.
@@ -156,6 +157,31 @@ def test_mapper_maps_every_actual_stream_kind_with_identity_and_explicit_operati
     assert mutation.kind in {"create", "append", "update", "end", "notice", "failed"}
 
 
+def test_mapper_when_parent_text_ends_uses_nonterminal_notice() -> None:
+    """Keep a closed assistant text block distinct from the canonical run terminal."""
+    mutation = SlotuiStreamEventMapper.invoke(event=AgentStreamEventDAO(kind="text_end"))
+
+    assert mutation.kind == "notice"
+    assert mutation.text == "text end"
+
+
+def test_mapper_when_parent_run_completes_uses_terminal_end() -> None:
+    """Map successful canonical completion to the candidate terminal mutation."""
+    mutation = SlotuiStreamEventMapper.invoke(event=AgentStreamEventDAO(kind="run_completed"))
+
+    assert mutation.kind == "end"
+    assert mutation.text == "run completed"
+
+
+@pytest.mark.parametrize("event_kind", ("run_aborted", "run_failed"))
+def test_mapper_when_parent_run_fails_uses_terminal_failure(event_kind: StreamEventKind) -> None:
+    """Retain explicit terminal failure mutations for unsuccessful canonical runs."""
+    mutation = SlotuiStreamEventMapper.invoke(event=AgentStreamEventDAO(kind=event_kind))
+
+    assert mutation.kind == "failed"
+    assert mutation.text == event_kind.replace("_", " ")
+
+
 async def test_host_lifecycle_forwards_one_submission_to_actual_session_and_closes_cleanly(
     tmp_path: Path,
 ) -> None:
@@ -194,6 +220,90 @@ async def test_host_lifecycle_forwards_one_submission_to_actual_session_and_clos
     ]
     assert all(command.kind == "stream_event" for command in process.commands[3:])
     assert process.closed is True
+
+
+async def test_host_lifecycle_when_text_end_precedes_terminal_run_forwards_and_acknowledges_both() -> None:
+    """Keep forwarding after a text block closes until the parent emits its run terminal event."""
+    session = _NonRuntimeFakeSession(
+        events=(
+            AgentStreamEventDAO(kind="text_end", content="answer"),
+            AgentStreamEventDAO(kind="run_completed"),
+        )
+    )
+    process = _NonRuntimeFakeHostProcess(
+        events=(
+            SlotuiHostEventDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="editor_submit",
+                prompt="complete the run",
+            ),
+            SlotuiHostEventDAO(protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION, kind="host_closed"),
+        )
+    )
+    service = SlotuiCoreHostService(
+        session=session,  # type: ignore[arg-type]  # Intentional protocol-only fake.
+        process=process,
+        workdir=Path("/tmp/workdir"),
+        resume_session_id=None,
+    )
+
+    await asyncio.wait_for(service.invoke(), timeout=1.0)
+
+    stream_commands: list[SlotuiHostCommandDAO] = [
+        command for command in process.commands if command.kind == "stream_event"
+    ]
+    assert [command.mutation.metadata["stream_kind"] for command in stream_commands] == [
+        "text_end",
+        "run_completed",
+    ]
+    assert [command.mutation.kind for command in stream_commands] == ["notice", "end"]
+    assert [command.mutation_id for command in stream_commands] == [
+        "slotui-mutation-1",
+        "slotui-mutation-2",
+    ]
+    assert process.acknowledged_mutation_ids == ["slotui-mutation-1", "slotui-mutation-2"]
+    assert process.closed is True
+
+
+@pytest.mark.parametrize("terminal_kind", ("run_aborted", "run_failed"))
+async def test_host_lifecycle_when_text_end_precedes_unsuccessful_terminal_forwards_and_acknowledges_terminal(
+    terminal_kind: StreamEventKind,
+) -> None:
+    """Forward and acknowledge every canonical terminal outcome after a text block closes."""
+    session = _NonRuntimeFakeSession(
+        events=(
+            AgentStreamEventDAO(kind="text_end", content="partial answer"),
+            AgentStreamEventDAO(kind=terminal_kind),
+        )
+    )
+    process = _NonRuntimeFakeHostProcess(
+        events=(
+            SlotuiHostEventDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="editor_submit",
+                prompt="end unsuccessfully",
+            ),
+            SlotuiHostEventDAO(protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION, kind="host_closed"),
+        )
+    )
+    service = SlotuiCoreHostService(
+        session=session,  # type: ignore[arg-type]  # Intentional protocol-only fake.
+        process=process,
+        workdir=Path("/tmp/workdir"),
+        resume_session_id=None,
+    )
+
+    await asyncio.wait_for(service.invoke(), timeout=1.0)
+
+    stream_commands: list[SlotuiHostCommandDAO] = [
+        command for command in process.commands if command.kind == "stream_event"
+    ]
+    assert [command.mutation.metadata["stream_kind"] for command in stream_commands] == [
+        "text_end",
+        terminal_kind,
+    ]
+    assert [command.mutation.kind for command in stream_commands] == ["notice", "failed"]
+    assert process.acknowledged_mutation_ids == ["slotui-mutation-1", "slotui-mutation-2"]
 
 
 async def test_host_lifecycle_when_rapid_submissions_rejects_second_without_background_exception() -> None:
@@ -314,6 +424,64 @@ async def test_installed_host_process_spawns_verified_runner_module_with_exact_h
     process._close_terminal_pty()
 
 
+async def test_installed_host_process_writes_hash_locked_offline_resolver_input(tmp_path: Path) -> None:
+    """Allow pip to resolve only direct URLs from the exact verified receipt closure."""
+    core_wheel: Path = tmp_path / "slotui-0.1.0-py3-none-any.whl"
+    dependency_wheel: Path = tmp_path / "runtime_dependency-0.1.0-py3-none-any.whl"
+    core_wheel.write_bytes(b"verified core bytes")
+    dependency_wheel.write_bytes(b"verified dependency bytes")
+    process = InstalledSlotuiHostProcess(
+        receipt=cast(
+            SlotuiCoreVerificationReceiptDAO,
+            SimpleNamespace(verified_wheel_paths=(core_wheel, dependency_wheel)),
+        )
+    )
+
+    requirements_path: Path = process._write_verified_requirements(runtime_root=tmp_path)
+
+    lines: list[str] = requirements_path.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        f"{core_wheel.as_uri()} --hash=sha256:{__import__('hashlib').sha256(core_wheel.read_bytes()).hexdigest()}",
+        (
+            f"{dependency_wheel.as_uri()} "
+            f"--hash=sha256:{__import__('hashlib').sha256(dependency_wheel.read_bytes()).hexdigest()}"
+        ),
+    ]
+
+
+async def test_installed_host_process_when_resolver_reports_incomplete_dependency_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Reject pip's offline failure rather than continuing with an incomplete installed closure."""
+    core_wheel: Path = tmp_path / "slotui-0.1.0-py3-none-any.whl"
+    core_wheel.write_bytes(b"verified core bytes")
+    process = InstalledSlotuiHostProcess(
+        receipt=cast(
+            SlotuiCoreVerificationReceiptDAO,
+            SimpleNamespace(verified_wheel_paths=(core_wheel,)),
+        )
+    )
+    interpreter_path: Path = tmp_path / "venv" / "bin" / "python"
+    interpreter_path.parent.mkdir(parents=True)
+    interpreter_path.touch()
+    with (
+        patch("src.integrations.slotui.host._run_checked_command", new_callable=AsyncMock) as run_checked,
+        patch.object(process, "_write_verified_requirements", return_value=tmp_path / "requirements.txt"),
+    ):
+        run_checked.side_effect = (
+            None,
+            SlotuiCoreHostError("Slotui isolated setup failed: unresolved dependency"),
+        )
+
+        with pytest.raises(SlotuiCoreHostError, match="unresolved dependency"):
+            await process._create_and_install(runtime_root=tmp_path)
+
+    assert run_checked.await_count == 2
+    resolver_command: tuple[str, ...] = run_checked.await_args_list[1].kwargs["command"]
+    assert "--require-hashes" in resolver_command
+    assert "--no-deps" not in resolver_command
+
+
 def test_installed_host_environment_disables_pip_config_and_source_inheritance() -> None:
     """Pin the isolated-child configuration without treating a fake as candidate evidence."""
     environment = _clean_child_environment()
@@ -346,6 +514,46 @@ def test_host_command_when_kind_payloads_are_mixed_rejects(payload: dict[str, ob
     """Reject command payloads that could cross launch and stream protocol boundaries."""
     with pytest.raises(ValueError, match=match):
         SlotuiHostCommandDAO.model_validate(payload)
+
+
+async def test_slo_owned_socket_transport_serializes_null_optional_protocol_fields_for_candidate_contract(
+    tmp_path: Path,
+) -> None:
+    """Preserve explicit nulls required by the candidate's closed launch and mutation shapes."""
+    process, peer, server = await _build_slo_owned_socket_transport(tmp_path=tmp_path)
+    try:
+        await process.send(
+            command=SlotuiHostCommandDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="launch",
+                launch=SlotuiHostLaunchConfigDAO(
+                    protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                    workdir="/tmp",
+                    resume_session_id=None,
+                    session_id="session",
+                    control_socket_path="/tmp/control.sock",
+                    adapter_declaration="slotui.adapter.launch",
+                ),
+            )
+        )
+        launch_command: SlotuiHostCommandDAO = await peer.receive_command()
+        assert launch_command.launch is not None
+        assert launch_command.launch.resume_session_id is None
+        await process.send(
+            command=SlotuiHostCommandDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="stream_event",
+                mutation=SlotuiStreamEventMapper.invoke(event=AgentStreamEventDAO(kind="run_completed")),
+                mutation_id="terminal",
+            )
+        )
+        stream_command: SlotuiHostCommandDAO = await peer.receive_command()
+        assert stream_command.mutation is not None
+        assert stream_command.mutation.block_id is None
+        assert stream_command.mutation.tool_name is None
+        assert stream_command.mutation.tool_call_id is None
+    finally:
+        await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
 
 
 def test_host_event_when_editor_submit_carries_lifecycle_field_rejects() -> None:
@@ -514,6 +722,38 @@ async def test_slo_owned_socket_transport_routes_interleaved_editor_and_exact_ac
         await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
 
 
+async def test_slo_owned_socket_transport_when_acknowledgement_arrives_before_waiter_is_registered(
+    tmp_path: Path,
+) -> None:
+    """Consume an already-routed exact acknowledgement without leaving stale protocol state."""
+    process, peer, server = await _build_slo_owned_socket_transport(tmp_path=tmp_path)
+    try:
+        await process.send(
+            command=SlotuiHostCommandDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="stream_event",
+                mutation=SlotuiStreamEventMapper.invoke(event=AgentStreamEventDAO(kind="run_completed")),
+                mutation_id="terminal",
+            )
+        )
+        await peer.receive_command()
+        await peer.send_event(
+            event=SlotuiHostEventDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="transcript_ack",
+                mutation_id="terminal",
+            )
+        )
+        await asyncio.sleep(0)
+
+        await process.require_transcript_ack(mutation_id="terminal")
+
+        assert process._sent_mutation_ids == set()
+        assert process._acknowledged_mutation_ids == set()
+    finally:
+        await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
+
+
 async def test_slo_owned_socket_transport_when_acknowledgement_is_mismatched_fans_out_failure(
     tmp_path: Path,
 ) -> None:
@@ -550,6 +790,18 @@ async def test_slo_owned_socket_transport_when_acknowledgement_is_mismatched_fan
         await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
 
 
+async def test_slo_owned_socket_transport_when_no_outstanding_acknowledgement_is_requested_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Reject an acknowledgement wait for a mutation that Slo never emitted."""
+    process, peer, server = await _build_slo_owned_socket_transport(tmp_path=tmp_path)
+    try:
+        with pytest.raises(SlotuiCoreHostError, match="unsent mutation"):
+            await process.require_transcript_ack(mutation_id="missing")
+    finally:
+        await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
+
+
 async def test_slo_owned_socket_transport_when_acknowledgement_times_out_fails_router_and_tears_down(
     tmp_path: Path,
 ) -> None:
@@ -572,6 +824,58 @@ async def test_slo_owned_socket_transport_when_acknowledgement_times_out_fails_r
             await process.require_transcript_ack(mutation_id="timeout")
         with pytest.raises(SlotuiCoreHostError, match="timeout"):
             await process.receive().__anext__()
+    finally:
+        await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
+
+
+async def test_slo_owned_socket_transport_when_blocked_receive_gets_peer_host_closed_once(
+    tmp_path: Path,
+) -> None:
+    """Wake a blocked receive with the peer's one orderly close event, not a timeout."""
+    process, peer, server = await _build_slo_owned_socket_transport(tmp_path=tmp_path)
+    try:
+        waiting_for_close: asyncio.Task[SlotuiHostEventDAO] = asyncio.create_task(
+            process.receive().__anext__()
+        )
+        await asyncio.sleep(0)
+        assert waiting_for_close.done() is False
+
+        await peer.send_event(
+            event=SlotuiHostEventDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="host_closed",
+            )
+        )
+
+        closed_event: SlotuiHostEventDAO = await asyncio.wait_for(waiting_for_close, timeout=1.0)
+        assert closed_event.kind == "host_closed"
+        assert process._event_queue.empty()
+        assert process._router_task is not None and process._router_task.done()
+    finally:
+        await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
+
+
+async def test_slo_owned_socket_transport_when_active_candidate_is_idle_waits_for_editor_input(
+    tmp_path: Path,
+) -> None:
+    """Keep the live interactive socket open beyond the bounded startup deadline."""
+    process, peer, server = await _build_slo_owned_socket_transport(tmp_path=tmp_path)
+    try:
+        await asyncio.sleep(process._readiness_timeout_seconds * 2)
+        waiting_for_editor: asyncio.Task[SlotuiHostEventDAO] = asyncio.create_task(
+            process.receive().__anext__()
+        )
+        await asyncio.sleep(0)
+        assert waiting_for_editor.done() is False
+        await peer.send_event(
+            event=SlotuiHostEventDAO(
+                protocol_version=SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
+                kind="editor_submit",
+                prompt="after idle interval",
+            )
+        )
+
+        assert (await asyncio.wait_for(waiting_for_editor, timeout=1.0)).prompt == "after idle interval"
     finally:
         await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
 
@@ -635,10 +939,29 @@ async def test_slo_owned_socket_transport_when_peer_eof_fans_out_ack_failure(tmp
         await server.wait_closed()
 
 
+async def test_installed_host_process_when_connected_candidate_is_silent_during_handshake_times_out_and_cleans_up(
+    tmp_path: Path,
+) -> None:
+    """Apply one startup deadline to a connected peer that never acknowledges launch readiness."""
+    process, peer, server = await _build_slo_owned_socket_transport(tmp_path=tmp_path)
+    process._start_startup_deadline()
+    try:
+        with pytest.raises(SlotuiCoreHostError, match="startup handshake timed out"):
+            await process._next_startup_event()
+        assert process._router_failure is None
+    finally:
+        await _close_slo_owned_socket_transport(process=process, peer=peer, server=server)
+
+    assert process._closed is True
+    assert process._reader is None
+    assert process._writer is None
+
+
 async def test_slo_owned_socket_transport_buffers_editor_frame_during_ordered_startup(tmp_path: Path) -> None:
     """Preserve an early editor frame while startup consumes launch, attestation, and active in order."""
     process, peer, server = await _build_slo_owned_socket_transport(tmp_path=tmp_path)
     declaration: str = "slotui.adapter.launch"
+    process._start_startup_deadline()
     try:
         await peer.send_event(
             event=SlotuiHostEventDAO(

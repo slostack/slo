@@ -39,6 +39,25 @@ def test_select_when_slotui_core_is_requested_without_reference_fails_closed() -
         SlotuiPresentationSelector.select(presentation="slotui_core", core_reference_path=None)
 
 
+def test_select_when_legacy_unpinned_reference_is_supplied_rejects_before_candidate_runtime(
+    tmp_path: Path,
+) -> None:
+    """Reject a legacy manifest pointer because production may not infer its bundle facts."""
+    legacy_reference: Path = tmp_path / "legacy-reference.json"
+    legacy_reference.write_text(
+        """{
+  \"schema_version\": \"slo-slotui-candidate-adapter-v2\",
+  \"candidate_label\": \"legacy\",
+  \"manifest_path\": \"/absolute/manifest.json\",
+  \"manifest_sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"
+}""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SlotuiCoreUnavailableError, match="failed static verification"):
+        SlotuiPresentationSelector.select(presentation="slotui_core", core_reference_path=legacy_reference)
+
+
 def test_select_when_slotui_core_reference_is_verified_returns_static_host_receipt_without_runtime_smoke(
     tmp_path: Path,
 ) -> None:

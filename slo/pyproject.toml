@@ -109,6 +109,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "e2e: integration tests that call real provider APIs or run the installer in Docker (off by default)",
+    "isolated_pty: runs in a private subprocess because it temporarily replaces process stdio with a PTY",
 ]
 addopts = "-m 'not e2e'"
 

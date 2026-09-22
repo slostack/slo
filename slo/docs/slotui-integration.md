@@ -138,9 +138,20 @@ async def <manifested-symbol>(* , launch, control) -> None:
 
 The candidate process retains its terminal stdin/stdout. Control JSON **never**
 shares those descriptors. The installed host allocates a private PTY for the candidate
-(`pty.openpty()`), passes its slave as child stdin/stdout, and closes both descriptors
-after candidate terminal teardown; this makes the candidate-gated runtime test valid
-from a noninteractive pytest worker while preserving candidate terminal ownership. The parent creates a private Unix-domain socket inside
+(`pty.openpty()`), passes its slave as child stdin/stdout, and retains its master as
+the exclusive terminal bridge endpoint. The candidate need not emit any terminal FD
+marker: release E2E inspects `/proc/<child-pid>/fd/0` and `/proc/<child-pid>/fd/1`
+from Slo's test-only host receipt, proving both resolve to Slo's private slave and not
+the invoking parent PTY; it also receipts the separate Unix control socket. For an interactive caller, the bridge puts the
+actual invoking stdin into raw mode exactly once, forwards partial input reads to the
+private master and partial master output writes back to the invoking stdout with
+readiness-based backpressure, restores the original termios and file-status flags
+exactly once, and keeps JSON strictly on the separate Unix socket. The bridge copies
+invoking-terminal geometry to the child PTY on startup and `SIGWINCH`, sends that
+signal only to the child's isolated process group, and treats `SIGINT`/`SIGTERM` as
+bounded bridge shutdown requests before socket/process teardown. In captured/non-TTY
+test workers it does not take over stdio but retains the private PTY, so the candidate
+still owns a terminal. The parent creates a private Unix-domain socket inside
 a temporary runtime directory; candidate runner connects to it. JSONL frames move
 only over that socket:
 

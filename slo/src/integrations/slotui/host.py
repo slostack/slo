@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import shutil
+import signal
+import struct
 import sys
-import termios
 import tempfile
+import termios
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.integrations.slotui.dao import SlotuiCoreVerificationReceiptDAO
@@ -35,6 +39,8 @@ __all__ = [
     "InstalledSlotuiHostProcessFactory",
     "SlotuiCoreHostError",
     "SlotuiCoreHostService",
+    "SlotuiTerminalBridge",
+    "SlotuiTerminalInspectionReceipt",
     "SlotuiHostProcess",
     "SlotuiHostProcessFactory",
 ]
@@ -47,6 +53,488 @@ _FORBIDDEN_SLOTUI_SOURCE: Path = Path("/root/Code/slo-tui/src")
 
 class SlotuiCoreHostError(RuntimeError):
     """Report a fail-closed candidate host lifecycle failure."""
+
+
+class SlotuiTerminalInspectionReceipt:
+    """Slo-owned process inspection facts for the private candidate terminal.
+
+    This deliberately remains an in-memory host test seam.  It is collected from
+    the operating system after spawning the installed wheel, never requested
+    from, sent to, or rendered by the candidate.
+    """
+
+    def __init__(
+        self,
+        *,
+        child_pid: int,
+        child_stdin_device: int,
+        child_stdin_inode: int,
+        child_stdout_device: int,
+        child_stdout_inode: int,
+        private_slave_device: int,
+        private_slave_inode: int,
+        child_process_group_id: int,
+        control_socket_path: Path,
+    ) -> None:
+        """Store immutable parent-side child descriptor observations."""
+        self.child_pid: int = child_pid
+        self.child_stdin_device: int = child_stdin_device
+        self.child_stdin_inode: int = child_stdin_inode
+        self.child_stdout_device: int = child_stdout_device
+        self.child_stdout_inode: int = child_stdout_inode
+        self.private_slave_device: int = private_slave_device
+        self.private_slave_inode: int = private_slave_inode
+        self.child_process_group_id: int = child_process_group_id
+        self.control_socket_path: Path = control_socket_path
+
+    @property
+    def child_stdin_identity(self) -> tuple[int, int]:
+        """Return the OS identity of installed child fd 0."""
+        return (self.child_stdin_device, self.child_stdin_inode)
+
+    @property
+    def child_stdout_identity(self) -> tuple[int, int]:
+        """Return the OS identity of installed child fd 1."""
+        return (self.child_stdout_device, self.child_stdout_inode)
+
+    @property
+    def private_slave_identity(self) -> tuple[int, int]:
+        """Return the OS identity of Slo's private PTY slave."""
+        return (self.private_slave_device, self.private_slave_inode)
+
+
+class SlotuiTerminalBridge:
+    """Bridge the invoking terminal to one retained private candidate PTY master."""
+
+    _READ_SIZE_BYTES: int = 65_536
+
+    def __init__(
+        self,
+        *,
+        child_terminal_fd: int,
+        host_stdin_fd: int,
+        host_stdout_fd: int,
+        process_group_id: int,
+    ) -> None:
+        """Store one private child PTY and optional invoking-terminal descriptors.
+
+        Args:
+            child_terminal_fd (int): Parent-held PTY master connected only to the candidate.
+            host_stdin_fd (int): Invoking terminal input descriptor.
+            host_stdout_fd (int): Invoking terminal output descriptor.
+            process_group_id (int): Candidate session group that receives resize propagation.
+        """
+        self._child_terminal_fd: int = child_terminal_fd
+        self._host_stdin_fd: int = host_stdin_fd
+        self._host_stdout_fd: int = host_stdout_fd
+        self._process_group_id: int = process_group_id
+        self._host_terminal_attributes: list[int | list[bytes | int]] | None = None
+        self._host_stdin_flags: int | None = None
+        self._host_stdout_flags: int | None = None
+        self._child_terminal_flags: int | None = None
+        self._host_terminal_active: bool = False
+        self._signal_handlers: dict[int, object] = {}
+        self._child_read_task: asyncio.Task[None] | None = None
+        self._input_pump_task: asyncio.Task[None] | None = None
+        self._input_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=32)
+        self._closing: bool = False
+        self._closed: bool = False
+        self._output_lock: asyncio.Lock = asyncio.Lock()
+        self._input_lock: asyncio.Lock = asyncio.Lock()
+        self._close_callback: Callable[[], None] | None = None
+        self._candidate_to_parent_bytes_forwarded: int = 0
+        self._parent_to_candidate_bytes_forwarded: int = 0
+
+    @property
+    def candidate_to_parent_bytes_forwarded(self) -> int:
+        """Return exact private-PTY bytes forwarded to the invoking terminal."""
+        return self._candidate_to_parent_bytes_forwarded
+
+    @property
+    def parent_to_candidate_bytes_forwarded(self) -> int:
+        """Return exact invoking-terminal bytes forwarded to the private PTY."""
+        return self._parent_to_candidate_bytes_forwarded
+
+    def bind_close_callback(self, *, close_callback: Callable[[], None]) -> None:
+        """Bind the installed host's idempotent close/reap entrypoint.
+
+        Args:
+            close_callback (Callable[[], None]): Scheduler-safe callback that starts the
+                owning ``InstalledSlotuiHostProcess.aclose`` lifecycle exactly once.
+        """
+        self._close_callback = close_callback
+
+    async def start(self) -> None:
+        """Enter raw mode and begin both terminal forwarding directions transactionally.
+
+        WHAT: Acquires the real invoking terminal only when both standard
+            descriptors are TTYs, switches stdin to raw mode, copies its current
+            dimensions to the candidate PTY, and starts independent async bridge
+            tasks. In noninteractive test workers it leaves stdio untouched while
+            retaining the candidate PTY.
+        WHO: ``InstalledSlotuiHostProcess`` starts it after candidate readiness.
+        WHEN: Once per active candidate host, before the first human keystroke.
+
+        Raises:
+            OSError: If raw-mode setup or descriptor configuration fails.
+        """
+        try:
+            self._configure_child_terminal_nonblocking()
+            if not self._can_bridge_invoking_terminal():
+                return
+            self._enter_host_raw_mode()
+            self._configure_host_stdout_nonblocking()
+            self._copy_host_terminal_size_to_child()
+            self._host_terminal_active = True
+            loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+            self._child_read_task = asyncio.create_task(self._copy_child_terminal_output())
+            self._input_pump_task = asyncio.create_task(self._pump_host_terminal_input())
+            loop.add_reader(self._host_stdin_fd, self._enqueue_host_terminal_input)
+            self._install_host_signal_handlers()
+        except BaseException:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        """Stop forwarding and restore every bridge-owned descriptor exactly once.
+
+        WHAT: Cancels bridge readers, awaits them, restores saved file-status flags
+            and termios attributes, and always completes despite cancellation.
+        WHO: ``InstalledSlotuiHostProcess.aclose`` invokes this before process reap.
+        WHEN: On all host teardown paths including cancellation and startup failure.
+        """
+        if self._closed:
+            return
+        self._closing = True
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            self._remove_host_terminal_reader()
+            self._restore_host_signal_handlers()
+            await self._cancel_bridge_tasks()
+        except asyncio.CancelledError as error:
+            cancellation = error
+        finally:
+            self._restore_host_terminal_mode()
+            self._restore_bridge_file_status_flags()
+            self._closed = True
+        if cancellation is not None:
+            raise cancellation
+
+    def _can_bridge_invoking_terminal(self) -> bool:
+        """Determine whether the current process owns both real terminal endpoints.
+
+        Returns:
+            bool: ``True`` only when terminal input and output can safely be bridged.
+        """
+        return (
+            self._host_stdin_fd >= 0
+            and self._host_stdout_fd >= 0
+            and os.isatty(self._host_stdin_fd)
+            and os.isatty(self._host_stdout_fd)
+        )
+
+    def _configure_child_terminal_nonblocking(self) -> None:
+        """Configure retained private PTY reads and writes for cancellation-friendly forwarding."""
+        self._child_terminal_flags = self._set_nonblocking(fd=self._child_terminal_fd)
+
+    def _enter_host_raw_mode(self) -> None:
+        """Save the invoking terminal attributes then enter raw input mode."""
+        self._host_terminal_attributes = termios.tcgetattr(self._host_stdin_fd)
+        self._host_stdin_flags = self._set_nonblocking(fd=self._host_stdin_fd)
+        __import__("tty").setraw(self._host_stdin_fd)
+
+    def _configure_host_stdout_nonblocking(self) -> None:
+        """Save and make the invoking output descriptor nonblocking for true backpressure."""
+        if self._host_stdout_fd == self._host_stdin_fd:
+            self._host_stdout_flags = self._host_stdin_flags
+            return
+        self._host_stdout_flags = self._set_nonblocking(fd=self._host_stdout_fd)
+
+    def _copy_host_terminal_size_to_child(self) -> None:
+        """Set the child PTY window size from the invoking terminal and signal it.
+
+        A candidate receives its actual terminal dimensions even though it does
+        not inherit Slo's stdio. SIGWINCH is delivered to the candidate process
+        group, never through the JSON control socket.
+        """
+        rows, columns, x_pixels, y_pixels = _terminal_window_size(fd=self._host_stdout_fd)
+        fcntl.ioctl(
+            self._child_terminal_fd,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", rows, columns, x_pixels, y_pixels),
+        )
+        if self._process_group_id == os.getpgrp():
+            return
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self._process_group_id, signal.SIGWINCH)
+
+    async def _copy_child_terminal_output(self) -> None:
+        """Copy partial candidate PTY output to the invoking terminal with backpressure.
+
+        WHAT: Repeatedly reads available child-terminal bytes and drains each exact
+            partial chunk to the invoking terminal before reading again.
+        WHO: Started by ``start`` for an interactive host session.
+        WHEN: Runs until PTY EOF/EIO, cancellation, or host teardown.
+        """
+        try:
+            while not self._closing:
+                data: bytes | None = await self._read_child_terminal_bytes()
+                if data is None:
+                    self._request_full_host_close()
+                    return
+                await self._write_all(fd=self._host_stdout_fd, data=data, lock=self._output_lock)
+                self._candidate_to_parent_bytes_forwarded += len(data)
+        except asyncio.CancelledError:
+            raise
+        except OSError:
+            self._request_full_host_close()
+
+    def _enqueue_host_terminal_input(self) -> None:
+        """Append one terminal read to the bounded ordered input pump.
+
+        WHAT: Reads one available raw input fragment and queues it for the single
+            owning pump. It never overwrites detached tasks, so every accepted byte
+            retains FIFO order and bounded memory.
+        WHO: The event loop calls it after ``start`` registers the host stdin FD.
+        WHEN: Once per readable real-terminal notification until teardown removes it.
+        """
+        if self._closing:
+            return
+        try:
+            data: bytes = os.read(self._host_stdin_fd, self._READ_SIZE_BYTES)
+        except BlockingIOError:
+            return
+        if not data:
+            self._enqueue_input_eof()
+            self._remove_host_terminal_reader()
+            return
+        self._enqueue_input_chunk(data=data)
+
+    def _enqueue_input_chunk(self, *, data: bytes) -> None:
+        """Queue input without creating an unowned write task.
+
+        Args:
+            data (bytes): Complete raw terminal fragment in arrival order.
+        """
+        try:
+            self._input_queue.put_nowait(data)
+        except asyncio.QueueFull:
+            self._remove_host_terminal_reader()
+            self._request_full_host_close()
+
+    def _enqueue_input_eof(self) -> None:
+        """Signal the ordered input pump that invoking-terminal input has ended."""
+        with contextlib.suppress(asyncio.QueueFull):
+            self._input_queue.put_nowait(None)
+
+    async def _pump_host_terminal_input(self) -> None:
+        """Write each queued input fragment to the candidate PTY in exact FIFO order.
+
+        WHAT: Owns every host-to-child write task and applies destination backpressure
+            before advancing to the next queued fragment.
+        WHO: ``start`` creates one pump after raw mode is active.
+        WHEN: Runs until host input EOF, bridge teardown, or a terminal I/O failure.
+        """
+        try:
+            while not self._closing:
+                data: bytes | None = await self._input_queue.get()
+                if data is None:
+                    return
+                await self._write_all(fd=self._child_terminal_fd, data=data, lock=self._input_lock)
+                self._parent_to_candidate_bytes_forwarded += len(data)
+        except asyncio.CancelledError:
+            raise
+        except OSError:
+            self._request_full_host_close()
+
+    def _remove_host_terminal_reader(self) -> None:
+        """Remove the registered invoking-terminal reader exactly once."""
+        if not self._host_terminal_active:
+            return
+        with contextlib.suppress(RuntimeError, ValueError):
+            asyncio.get_running_loop().remove_reader(self._host_stdin_fd)
+
+    def _install_host_signal_handlers(self) -> None:
+        """Install temporary SIGINT/SIGTERM/SIGWINCH forwarding for one interactive bridge.
+
+        Signals are terminal lifecycle controls, not socket control frames. SIGINT
+        and SIGTERM schedule the same bounded host close path; SIGWINCH copies
+        window geometry to the candidate PTY and signals its isolated process group.
+        """
+        for signal_number, handler in (
+            (signal.SIGINT, self._schedule_signal_close),
+            (signal.SIGTERM, self._schedule_signal_close),
+            (signal.SIGWINCH, self._handle_resize_signal),
+        ):
+            self._signal_handlers[signal_number] = signal.getsignal(signal_number)
+            signal.signal(signal_number, handler)
+
+    def _handle_resize_signal(self, _: int, __: object) -> None:
+        """Copy invoking-terminal geometry after one process SIGWINCH delivery."""
+        self._copy_host_terminal_size_to_child()
+
+    def _schedule_signal_close(self, _: int, __: object) -> None:
+        """Request full installed-host close/reap after an invoking-terminal interrupt."""
+        self._request_full_host_close()
+
+    def _request_full_host_close(self) -> None:
+        """Schedule the installed host lifecycle close rather than bridge-only cleanup."""
+        if self._closing or self._close_callback is None:
+            return
+        self._close_callback()
+
+    def _restore_host_signal_handlers(self) -> None:
+        """Restore every signal handler replaced while the terminal bridge was active."""
+        for signal_number, handler in self._signal_handlers.items():
+            signal.signal(signal_number, cast(signal.Handlers, handler))
+        self._signal_handlers.clear()
+
+    async def _read_child_terminal_bytes(self) -> bytes | None:
+        """Read one available child PTY chunk while treating EOF and EIO as terminal close.
+
+        Returns:
+            bytes | None: A nonempty output chunk or ``None`` once the PTY has closed.
+        """
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        while not self._closing:
+            try:
+                data: bytes = os.read(self._child_terminal_fd, self._READ_SIZE_BYTES)
+            except BlockingIOError:
+                await self._wait_readable(loop=loop, fd=self._child_terminal_fd)
+                continue
+            except OSError as error:
+                if error.errno == errno.EIO:
+                    return None
+                raise
+            return data or None
+        return None
+
+    async def _write_all(self, *, fd: int, data: bytes, lock: asyncio.Lock) -> None:
+        """Write a complete partial read, waiting for writability after every short write.
+
+        Args:
+            fd (int): Destination terminal descriptor.
+            data (bytes): Exact source bytes from one bridge read.
+            lock (asyncio.Lock): Per-direction lock preventing interleaved writes.
+        """
+        offset: int = 0
+        async with lock:
+            while offset < len(data):
+                try:
+                    written: int = os.write(fd, data[offset:])
+                except BlockingIOError:
+                    await self._wait_writable(loop=asyncio.get_running_loop(), fd=fd)
+                    continue
+                if written == 0:
+                    raise OSError("Slotui terminal bridge destination closed")
+                offset += written
+
+    @staticmethod
+    def _set_nonblocking(*, fd: int) -> int:
+        """Set one bridge-owned descriptor nonblocking and return its original flags.
+
+        Args:
+            fd (int): Terminal descriptor read or written by an asyncio bridge task.
+
+        Returns:
+            int: Original file-status flags restored during bridge close.
+        """
+        original_flags: int = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+        return original_flags
+
+    @staticmethod
+    async def _wait_readable(*, loop: asyncio.AbstractEventLoop, fd: int) -> None:
+        """Await one readable notification and unregister its callback.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): Owning event loop.
+            fd (int): Descriptor whose readability is awaited.
+        """
+        ready: asyncio.Future[None] = loop.create_future()
+
+        def mark_ready() -> None:
+            """Resolve the one-shot reader future after removing its loop callback."""
+            loop.remove_reader(fd)
+            if not ready.done():
+                ready.set_result(None)
+
+        loop.add_reader(fd, mark_ready)
+        try:
+            await ready
+        finally:
+            loop.remove_reader(fd)
+
+    @staticmethod
+    async def _wait_writable(*, loop: asyncio.AbstractEventLoop, fd: int) -> None:
+        """Await one writable notification and unregister its callback.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): Owning event loop.
+            fd (int): Descriptor whose writability is awaited.
+        """
+        ready: asyncio.Future[None] = loop.create_future()
+
+        def mark_ready() -> None:
+            """Resolve the one-shot writer future after removing its loop callback."""
+            loop.remove_writer(fd)
+            if not ready.done():
+                ready.set_result(None)
+
+        loop.add_writer(fd, mark_ready)
+        try:
+            await ready
+        finally:
+            loop.remove_writer(fd)
+
+    async def _cancel_bridge_tasks(self) -> None:
+        """Cancel and await each forwarder without suppressing unrelated failures."""
+        tasks: tuple[asyncio.Task[None] | None, ...] = (self._child_read_task, self._input_pump_task)
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+        for task in tasks:
+            if task is not None:
+                with contextlib.suppress(asyncio.CancelledError, OSError):
+                    await task
+        self._child_read_task = None
+        self._input_pump_task = None
+
+    def _restore_host_terminal_mode(self) -> None:
+        """Restore the real invoking terminal attributes only once after raw mode."""
+        if self._host_terminal_attributes is None:
+            return
+        with contextlib.suppress(termios.error):
+            termios.tcsetattr(
+                self._host_stdin_fd,
+                termios.TCSADRAIN,
+                self._host_terminal_attributes,
+            )
+        self._host_terminal_attributes = None
+        self._host_terminal_active = False
+
+    def _restore_bridge_file_status_flags(self) -> None:
+        """Restore stdin, stdout, and private PTY file-status flags after bridge teardown."""
+        self._restore_file_status_flags(fd=self._host_stdin_fd, flags=self._host_stdin_flags)
+        if self._host_stdout_fd != self._host_stdin_fd:
+            self._restore_file_status_flags(fd=self._host_stdout_fd, flags=self._host_stdout_flags)
+        self._restore_file_status_flags(fd=self._child_terminal_fd, flags=self._child_terminal_flags)
+        self._host_stdin_flags = None
+        self._host_stdout_flags = None
+        self._child_terminal_flags = None
+
+    @staticmethod
+    def _restore_file_status_flags(*, fd: int, flags: int | None) -> None:
+        """Restore a saved descriptor flag set when a bridge startup step completed.
+
+        Args:
+            fd (int): Descriptor whose nonblocking setting belongs to the bridge.
+            flags (int | None): Original flags or ``None`` when setup never reached it.
+        """
+        if flags is None:
+            return
+        with contextlib.suppress(OSError):
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags)
 
 
 class SlotuiHostProcess(Protocol):
@@ -310,6 +798,9 @@ class InstalledSlotuiHostProcess:
         self._terminal_master_fd: int | None = None
         self._terminal_slave_fd: int | None = None
         self._terminal_original_attributes: list[int | list[bytes | int]] | None = None
+        self._terminal_bridge: SlotuiTerminalBridge | None = None
+        self._terminal_inspection_receipt: SlotuiTerminalInspectionReceipt | None = None
+        self._close_task: asyncio.Task[None] | None = None
 
     async def start(self, *, config: SlotuiHostLaunchConfigDAO) -> None:
         """Create, install, connect, and verify the candidate adapter transactionally.
@@ -332,9 +823,10 @@ class InstalledSlotuiHostProcess:
             await self._await_control_connection()
             await self._send_launch(config=config, socket_path=socket_path)
             await self._require_active_attestation()
-        except Exception as error:
-            await self.aclose()
-            if isinstance(error, SlotuiCoreHostError):
+            await self._start_terminal_bridge()
+        except BaseException as error:
+            await self._close_after_start_failure()
+            if isinstance(error, (SlotuiCoreHostError, asyncio.CancelledError)):
                 raise
             raise SlotuiCoreHostError("Slotui candidate startup failed") from error
 
@@ -413,21 +905,56 @@ class InstalledSlotuiHostProcess:
     async def aclose(self) -> None:
         """Request typed shutdown, then clean up every socket, task, process, and temp resource.
 
-        The method is idempotent. It never competes with ``receive`` for a socket
-        frame: the router resolves ``host_closed`` independently before a forced
-        terminate is considered.
+        The method is idempotent and concurrent-safe. It never competes with
+        ``receive`` for a socket frame: the router resolves ``host_closed``
+        independently before a forced terminate is considered.
         """
         if self._closed:
             return
+        if self._close_task is not None:
+            await asyncio.shield(self._close_task)
+            return
+        self._close_task = asyncio.create_task(self._close_resources())
+        await asyncio.shield(self._close_task)
+
+    async def _close_after_start_failure(self) -> None:
+        """Complete transactional startup rollback even when the caller cancels start."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_resources())
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._close_task)
+            raise
+
+    async def _close_resources(self) -> None:
+        """Run the full close/reap sequence once and restore resources in a finally block."""
         self._closing = True
-        orderly_closed: bool = await self._request_orderly_shutdown()
-        await self._close_writer()
-        await self._stop_process(force=not orderly_closed)
-        await self._stop_server()
-        await self._await_stderr_task()
-        self._close_terminal_pty()
-        self._remove_runtime_root()
-        self._closed = True
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            orderly_closed: bool = await self._request_orderly_shutdown()
+            await self._close_terminal_bridge()
+            await self._close_writer()
+            await self._stop_process(force=not orderly_closed)
+            await self._stop_server()
+            await self._await_stderr_task()
+        except asyncio.CancelledError as error:
+            cancellation = error
+        finally:
+            await self._complete_forced_close()
+            self._close_terminal_pty()
+            self._remove_runtime_root()
+            self._closed = True
+        if cancellation is not None:
+            raise cancellation
+
+    async def _complete_forced_close(self) -> None:
+        """Finish required resource cleanup when ordinary shutdown failed or was cancelled."""
+        await asyncio.shield(self._close_terminal_bridge())
+        await asyncio.shield(self._close_writer())
+        await asyncio.shield(self._stop_process(force=True))
+        await asyncio.shield(self._stop_server())
+        await asyncio.shield(self._await_stderr_task())
 
     def _create_runtime_root(self) -> Path:
         """Create an isolated runtime root outside Slo and forbidden candidate source trees.
@@ -539,7 +1066,7 @@ class InstalledSlotuiHostProcess:
             "--protocol-version",
             SLOTUI_HOST_CONTROL_PROTOCOL_VERSION,
         )
-        _, terminal_slave_fd = self._open_terminal_pty()
+        terminal_master_fd, terminal_slave_fd = self._open_terminal_pty()
         try:
             self._process = await asyncio.create_subprocess_exec(
                 *command,
@@ -548,29 +1075,82 @@ class InstalledSlotuiHostProcess:
                 stdin=terminal_slave_fd,
                 stdout=terminal_slave_fd,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
         except Exception:
             self._close_terminal_pty()
             raise
+        self._terminal_inspection_receipt = _inspect_child_terminal_fds(
+            child_pid=self._process.pid,
+            private_slave_fd=terminal_slave_fd,
+            control_socket_path=socket_path,
+        )
         os.close(terminal_slave_fd)
         self._terminal_slave_fd = None
+        self._terminal_bridge = SlotuiTerminalBridge(
+            child_terminal_fd=terminal_master_fd,
+            host_stdin_fd=_standard_stream_fileno(stream=sys.stdin),
+            host_stdout_fd=_standard_stream_fileno(stream=sys.stdout),
+            process_group_id=self._process.pid,
+        )
+        self._terminal_bridge.bind_close_callback(close_callback=self._schedule_close)
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
     def _open_terminal_pty(self) -> tuple[int, int]:
         """Allocate a private pseudo-terminal for the candidate terminal lifecycle.
 
-        The candidate requires terminal ownership.  Pytest workers commonly have
+        The candidate requires terminal ownership. Pytest workers commonly have
         pipes for standard streams, so inheriting them would make the verified
-        installed runner fail before its protocol hook can run.
+        installed runner fail before its protocol hook can run. The terminal bridge
+        retains the master while the child owns the slave as its controlling terminal.
 
         Returns:
-            tuple[int, int]: Parent-read master descriptor and child stdio slave descriptor.
+            tuple[int, int]: Parent-held master descriptor and child stdio slave descriptor.
         """
         master_fd, slave_fd = __import__("pty").openpty()
         self._terminal_master_fd = master_fd
         self._terminal_slave_fd = slave_fd
         self._terminal_original_attributes = termios.tcgetattr(slave_fd)
         return master_fd, slave_fd
+
+    async def _start_terminal_bridge(self) -> None:
+        """Start forwarding the invoking terminal only after candidate readiness.
+
+        WHAT: Starts the host-owned raw terminal bridge after the candidate has
+            mounted its terminal/root/editor/transcript and completed control IPC
+            attestation.
+        WHO: ``start`` calls this after the typed ``host_active`` handshake.
+        WHEN: The bridge lives until ``aclose`` begins; no JSON control frame ever
+            traverses it.
+
+        Raises:
+            SlotuiCoreHostError: If the bridge could not acquire the invoking terminal.
+        """
+        if self._terminal_bridge is None:
+            raise SlotuiCoreHostError("Slotui candidate terminal bridge is unavailable")
+        try:
+            await self._terminal_bridge.start()
+        except Exception as error:
+            raise SlotuiCoreHostError("Slotui candidate terminal bridge could not start") from error
+
+    def _schedule_close(self) -> None:
+        """Schedule the installed host's full idempotent close/reap lifecycle from bridge events."""
+        if self._closed or self._close_task is not None:
+            return
+        self._close_task = asyncio.create_task(self._close_resources())
+
+    async def _close_terminal_bridge(self) -> None:
+        """Restore the invoking terminal and stop both forwarding directions once.
+
+        WHAT: Stops reader/writer tasks, restores the real terminal attributes, and
+            leaves child process reaping to the host lifecycle.
+        WHO: ``aclose`` calls this before socket and process teardown.
+        WHEN: On orderly exit, startup failure, cancellation, and signal-triggered close.
+        """
+        if self._terminal_bridge is None:
+            return
+        await self._terminal_bridge.aclose()
+        self._terminal_bridge = None
 
     def _close_terminal_pty(self) -> None:
         """Restore then close the host-owned pseudo-terminal descriptors exactly once."""
@@ -632,7 +1212,7 @@ class InstalledSlotuiHostProcess:
             raise
         except SlotuiCoreHostError as error:
             self._fail_socket_router(error=error)
-        except Exception as error:
+        except Exception:
             self._fail_socket_router(error=SlotuiCoreHostError("Slotui candidate socket router failed"))
 
     async def _await_control_connection(self) -> None:
@@ -770,7 +1350,10 @@ class InstalledSlotuiHostProcess:
         """
         if self._startup_deadline is None:
             self._start_startup_deadline()
-        remaining_seconds: float = self._startup_deadline - asyncio.get_running_loop().time()
+        startup_deadline: float | None = self._startup_deadline
+        if startup_deadline is None:
+            raise SlotuiCoreHostError("Slotui startup deadline is unavailable")
+        remaining_seconds: float = startup_deadline - asyncio.get_running_loop().time()
         if remaining_seconds <= 0:
             raise SlotuiCoreHostError("Slotui startup handshake timed out")
         try:
@@ -1052,10 +1635,10 @@ class InstalledSlotuiHostProcess:
         self._reader = None
 
     async def _stop_process(self, *, force: bool) -> None:
-        """Reap the child, escalating only after failed or timed-out orderly closure.
+        """Reap the isolated child process group after socket and terminal shutdown.
 
         Args:
-            force (bool): Whether protocol shutdown failed and termination is required.
+            force (bool): Whether protocol shutdown failed and group termination is required.
         """
         if self._process is None:
             return
@@ -1066,13 +1649,33 @@ class InstalledSlotuiHostProcess:
             except asyncio.TimeoutError:
                 force = True
         if process.returncode is None and force:
-            process.terminate()
+            self._terminate_process_group(process=process)
             try:
                 await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                process.kill()
+                self._kill_process_group(process=process)
                 await process.wait()
         self._process = None
+
+    @staticmethod
+    def _terminate_process_group(*, process: asyncio.subprocess.Process) -> None:
+        """Send SIGTERM to the child session rather than only its Python runner.
+
+        Args:
+            process (asyncio.subprocess.Process): Candidate runner started in its own session.
+        """
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+
+    @staticmethod
+    def _kill_process_group(*, process: asyncio.subprocess.Process) -> None:
+        """Send SIGKILL to a candidate group that ignored bounded teardown.
+
+        Args:
+            process (asyncio.subprocess.Process): Candidate runner started in its own session.
+        """
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
 
     async def _stop_server(self) -> None:
         """Close the Unix server and await its socket cleanup."""
@@ -1141,6 +1744,69 @@ async def _run_checked_command(*, command: tuple[str, ...], cwd: Path, timeout_s
     if process.returncode != 0:
         message: str = stderr.decode("utf-8", errors="replace")[-_STDERR_LIMIT_BYTES:]
         raise SlotuiCoreHostError(f"Slotui isolated setup failed: {message}")
+
+
+def _standard_stream_fileno(*, stream: object) -> int:
+    """Return a standard terminal descriptor or a non-TTY sentinel under capture.
+
+    Args:
+        stream (object): Process standard stream, possibly replaced by a test capture object.
+
+    Returns:
+        int: Real descriptor or ``-1`` when the stream deliberately has none.
+    """
+    fileno: object | None = getattr(stream, "fileno", None)
+    if fileno is None or not callable(fileno):
+        return -1
+    try:
+        return fileno()
+    except OSError:
+        return -1
+
+
+def _inspect_child_terminal_fds(
+    *, child_pid: int, private_slave_fd: int, control_socket_path: Path
+) -> SlotuiTerminalInspectionReceipt:
+    """Read Linux process descriptors to receipt Slo's child-only PTY ownership.
+
+    The receipt uses procfs rather than candidate output, so an immutable
+    installed candidate cannot forge it by printing a marker.  It is intentionally
+    a host-private test seam and is not part of the Slotui control protocol.
+    """
+    proc_fd_directory: Path = Path("/proc") / str(child_pid) / "fd"
+    try:
+        child_stdin = (proc_fd_directory / "0").stat()
+        child_stdout = (proc_fd_directory / "1").stat()
+        private_slave = os.fstat(private_slave_fd)
+        process_group_id = os.getpgid(child_pid)
+    except OSError as error:
+        raise SlotuiCoreHostError("Slotui could not inspect installed child PTY descriptors") from error
+    if not os.isatty(private_slave_fd):
+        raise SlotuiCoreHostError("Slotui private child terminal slave is not a TTY")
+    return SlotuiTerminalInspectionReceipt(
+        child_pid=child_pid,
+        child_stdin_device=child_stdin.st_rdev,
+        child_stdin_inode=child_stdin.st_ino,
+        child_stdout_device=child_stdout.st_rdev,
+        child_stdout_inode=child_stdout.st_ino,
+        private_slave_device=private_slave.st_rdev,
+        private_slave_inode=private_slave.st_ino,
+        child_process_group_id=process_group_id,
+        control_socket_path=control_socket_path,
+    )
+
+
+def _terminal_window_size(*, fd: int) -> tuple[int, int, int, int]:
+    """Return terminal rows, columns, and pixel dimensions for one descriptor.
+
+    Args:
+        fd (int): Terminal descriptor whose current window geometry is required.
+
+    Returns:
+        tuple[int, int, int, int]: Rows, columns, horizontal pixels, and vertical pixels.
+    """
+    payload: bytes = fcntl.ioctl(fd, termios.TIOCGWINSZ, bytes(8))
+    return struct.unpack("HHHH", payload)
 
 
 def _clean_child_environment() -> dict[str, str]:

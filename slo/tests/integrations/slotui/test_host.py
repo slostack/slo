@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import os
+import pty
+import signal
+import struct
+import termios
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +27,7 @@ from src.integrations.slotui.host import (
     InstalledSlotuiHostProcess,
     SlotuiCoreHostError,
     SlotuiCoreHostService,
+    SlotuiTerminalBridge,
     _clean_child_environment,
     _slo_source_root,
 )
@@ -393,7 +400,10 @@ async def test_installed_host_process_spawns_verified_runner_module_with_exact_h
         "src.integrations.slotui.host.asyncio.create_subprocess_exec", new_callable=AsyncMock
     ) as spawn:
         spawn.return_value = subprocess
-        with patch.object(process, "_drain_stderr", new_callable=AsyncMock):
+        with (
+            patch.object(process, "_drain_stderr", new_callable=AsyncMock),
+            patch("src.integrations.slotui.host._inspect_child_terminal_fds"),
+        ):
             await process._spawn_candidate(
                 interpreter_path=Path("/isolated/venv/bin/python"),
                 socket_path=Path("/isolated/control.sock"),
@@ -480,6 +490,267 @@ async def test_installed_host_process_when_resolver_reports_incomplete_dependenc
     resolver_command: tuple[str, ...] = run_checked.await_args_list[1].kwargs["command"]
     assert "--require-hashes" in resolver_command
     assert "--no-deps" not in resolver_command
+
+
+async def test_terminal_bridge_when_real_terminal_is_available_forwards_input_output_resizes_and_restores_once() -> (
+    None
+):
+    """Bridge a real invoking PTY to a retained child PTY without using JSON IPC.
+
+    The test proves the parent terminal is raw only during the bridge, terminal
+    bytes flow in both directions, a resize reaches the child PTY, and duplicate
+    close requests restore the exact original attributes once.
+    """
+    host_master_fd, host_slave_fd = pty.openpty()
+    child_master_fd, child_slave_fd = pty.openpty()
+    original_host_attributes = termios.tcgetattr(host_slave_fd)
+    child_attributes = termios.tcgetattr(child_slave_fd)
+    child_attributes[3] &= ~(termios.ICANON | termios.ECHO)
+    termios.tcsetattr(child_slave_fd, termios.TCSANOW, child_attributes)
+    bridge = SlotuiTerminalBridge(
+        child_terminal_fd=child_master_fd,
+        host_stdin_fd=host_slave_fd,
+        host_stdout_fd=host_slave_fd,
+        process_group_id=os.getpgrp(),
+    )
+    original_signal = signal.signal(signal.SIGWINCH, signal.SIG_IGN)
+    try:
+        await bridge.start()
+        assert termios.tcgetattr(host_slave_fd) != original_host_attributes
+        await asyncio.sleep(0)
+
+        os.write(host_master_fd, b"host input")
+        await _wait_for_terminal_bytes(fd=child_slave_fd, expected=b"host input")
+        os.write(child_slave_fd, b"candidate output")
+        await _wait_for_terminal_bytes(fd=host_master_fd, expected=b"candidate output")
+
+        fcntl.ioctl(host_master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 31, 117, 0, 0))
+        os.kill(os.getpid(), signal.SIGWINCH)
+        await asyncio.sleep(0.01)
+        child_rows, child_columns, _, _ = struct.unpack(
+            "HHHH", fcntl.ioctl(child_master_fd, termios.TIOCGWINSZ, bytes(8))
+        )
+        assert (child_rows, child_columns) == (31, 117)
+
+        await bridge.aclose()
+        await bridge.aclose()
+        assert termios.tcgetattr(host_slave_fd) == original_host_attributes
+        assert signal.getsignal(signal.SIGWINCH) == signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGWINCH, original_signal)
+        for file_descriptor in (host_master_fd, host_slave_fd, child_master_fd, child_slave_fd):
+            os.close(file_descriptor)
+
+
+@pytest.mark.parametrize("signal_number", (signal.SIGINT, signal.SIGTERM))
+async def test_terminal_bridge_when_interrupt_signal_requests_full_host_close_and_restores_terminal(
+    signal_number: int,
+) -> None:
+    """Delegate each terminal interrupt to the owning installed-host close/reap callback."""
+    host_master_fd, host_slave_fd = pty.openpty()
+    child_master_fd, child_slave_fd = pty.openpty()
+    original_host_attributes = termios.tcgetattr(host_slave_fd)
+    bridge = SlotuiTerminalBridge(
+        child_terminal_fd=child_master_fd,
+        host_stdin_fd=host_slave_fd,
+        host_stdout_fd=host_slave_fd,
+        process_group_id=os.getpgrp(),
+    )
+    close_requested = asyncio.Event()
+    original_signal = signal.signal(signal_number, signal.SIG_IGN)
+    try:
+        bridge.bind_close_callback(close_callback=close_requested.set)
+        await bridge.start()
+        os.kill(os.getpid(), signal_number)
+        await asyncio.wait_for(close_requested.wait(), timeout=1.0)
+        await bridge.aclose()
+        assert termios.tcgetattr(host_slave_fd) == original_host_attributes
+        assert signal.getsignal(signal_number) == signal.SIG_IGN
+    finally:
+        signal.signal(signal_number, original_signal)
+        for file_descriptor in (host_master_fd, host_slave_fd, child_master_fd, child_slave_fd):
+            os.close(file_descriptor)
+
+
+async def test_terminal_bridge_when_child_pty_eof_requests_full_host_close_and_restores_terminal() -> None:
+    """Treat child PTY EOF as a host lifecycle failure, not a detached task exit."""
+    host_master_fd, host_slave_fd = pty.openpty()
+    child_master_fd, child_slave_fd = pty.openpty()
+    original_host_attributes = termios.tcgetattr(host_slave_fd)
+    bridge = SlotuiTerminalBridge(
+        child_terminal_fd=child_master_fd,
+        host_stdin_fd=host_slave_fd,
+        host_stdout_fd=host_slave_fd,
+        process_group_id=os.getpgrp(),
+    )
+    close_requested = asyncio.Event()
+    try:
+        bridge.bind_close_callback(close_callback=close_requested.set)
+        await bridge.start()
+        os.close(child_slave_fd)
+        await asyncio.wait_for(close_requested.wait(), timeout=1.0)
+        await bridge.aclose()
+        assert termios.tcgetattr(host_slave_fd) == original_host_attributes
+    finally:
+        for file_descriptor in (host_master_fd, host_slave_fd, child_master_fd):
+            with __import__("contextlib").suppress(OSError):
+                os.close(file_descriptor)
+
+
+async def test_terminal_bridge_when_start_is_cancelled_restores_all_flags_and_termios() -> None:
+    """Roll back raw mode and nonblocking changes when startup is cancelled mid-transaction."""
+    host_master_fd, host_slave_fd = pty.openpty()
+    child_master_fd, child_slave_fd = pty.openpty()
+    original_host_attributes = termios.tcgetattr(host_slave_fd)
+    original_host_input_flags = fcntl.fcntl(host_slave_fd, fcntl.F_GETFL)
+    original_child_flags = fcntl.fcntl(child_master_fd, fcntl.F_GETFL)
+    bridge = SlotuiTerminalBridge(
+        child_terminal_fd=child_master_fd,
+        host_stdin_fd=host_slave_fd,
+        host_stdout_fd=host_slave_fd,
+        process_group_id=os.getpgrp(),
+    )
+    try:
+        with patch.object(bridge, "_copy_host_terminal_size_to_child", side_effect=asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await bridge.start()
+        assert termios.tcgetattr(host_slave_fd) == original_host_attributes
+        assert fcntl.fcntl(host_slave_fd, fcntl.F_GETFL) == original_host_input_flags
+        assert fcntl.fcntl(child_master_fd, fcntl.F_GETFL) == original_child_flags
+    finally:
+        for file_descriptor in (host_master_fd, host_slave_fd, child_master_fd, child_slave_fd):
+            os.close(file_descriptor)
+
+
+async def test_terminal_bridge_when_input_queue_is_full_requests_full_close_without_dropping_owned_tasks() -> (
+    None
+):
+    """Bound queued host input instead of overwriting detached write tasks."""
+    child_master_fd, child_slave_fd = pty.openpty()
+    bridge = SlotuiTerminalBridge(
+        child_terminal_fd=child_master_fd,
+        host_stdin_fd=-1,
+        host_stdout_fd=-1,
+        process_group_id=os.getpgrp(),
+    )
+    close_requested = asyncio.Event()
+    try:
+        bridge.bind_close_callback(close_callback=close_requested.set)
+        for _ in range(bridge._input_queue.maxsize):
+            bridge._enqueue_input_chunk(data=b"x")
+        bridge._enqueue_input_chunk(data=b"overflow")
+        await asyncio.wait_for(close_requested.wait(), timeout=1.0)
+        assert bridge._input_queue.qsize() == bridge._input_queue.maxsize
+    finally:
+        await bridge.aclose()
+        os.close(child_master_fd)
+        os.close(child_slave_fd)
+
+
+async def test_terminal_bridge_when_invoking_streams_are_not_ttys_leaves_them_unmodified() -> None:
+    """Retain the private child PTY without taking over captured test stdio."""
+    child_master_fd, child_slave_fd = pty.openpty()
+    bridge = SlotuiTerminalBridge(
+        child_terminal_fd=child_master_fd,
+        host_stdin_fd=-1,
+        host_stdout_fd=-1,
+        process_group_id=os.getpgrp(),
+    )
+    try:
+        await bridge.start()
+        assert bridge._host_terminal_active is False
+        assert bridge._child_read_task is None
+        assert bridge._input_pump_task is None
+    finally:
+        await bridge.aclose()
+        os.close(child_master_fd)
+        os.close(child_slave_fd)
+
+
+async def test_installed_host_process_when_closed_terminates_the_candidate_process_group(
+    tmp_path: Path,
+) -> None:
+    """Escalate a failed candidate shutdown to the isolated child process group."""
+    process = InstalledSlotuiHostProcess(
+        receipt=cast(SlotuiCoreVerificationReceiptDAO, SimpleNamespace(manifest=SimpleNamespace()))
+    )
+    child = MagicMock()
+    child.pid = 4321
+    child.returncode = None
+    child.wait = AsyncMock(return_value=None)
+    process._process = child
+
+    with patch("src.integrations.slotui.host.os.killpg") as kill_process_group:
+        await process._stop_process(force=True)
+
+    kill_process_group.assert_called_once_with(4321, signal.SIGTERM)
+    assert process._process is None
+
+
+async def test_installed_host_process_when_bridge_requests_close_reaps_every_owned_resource() -> None:
+    """Route bridge EOF/signals through the installed process's full idempotent close sequence."""
+    process = InstalledSlotuiHostProcess(
+        receipt=cast(SlotuiCoreVerificationReceiptDAO, SimpleNamespace(manifest=SimpleNamespace()))
+    )
+    request_orderly_shutdown = AsyncMock(return_value=False)
+    close_terminal_bridge = AsyncMock()
+    close_writer = AsyncMock()
+    stop_process = AsyncMock()
+    stop_server = AsyncMock()
+    await_stderr_task = AsyncMock()
+    close_terminal_pty = MagicMock()
+    remove_runtime_root = MagicMock()
+
+    with (
+        patch.object(process, "_request_orderly_shutdown", request_orderly_shutdown),
+        patch.object(process, "_close_terminal_bridge", close_terminal_bridge),
+        patch.object(process, "_close_writer", close_writer),
+        patch.object(process, "_stop_process", stop_process),
+        patch.object(process, "_stop_server", stop_server),
+        patch.object(process, "_await_stderr_task", await_stderr_task),
+        patch.object(process, "_close_terminal_pty", close_terminal_pty),
+        patch.object(process, "_remove_runtime_root", remove_runtime_root),
+    ):
+        process._schedule_close()
+        assert process._close_task is not None
+        await process._close_task
+
+    close_terminal_bridge.assert_awaited()
+    close_writer.assert_awaited()
+    stop_process.assert_awaited_with(force=True)
+    stop_server.assert_awaited()
+    await_stderr_task.assert_awaited()
+    close_terminal_pty.assert_called_once()
+    remove_runtime_root.assert_called_once()
+    assert process._closed is True
+
+
+async def _wait_for_terminal_bytes(*, fd: int, expected: bytes) -> bytes:
+    """Read a PTY endpoint until it contains an expected bridged partial payload.
+
+    Args:
+        fd (int): PTY master or slave endpoint expected to receive terminal bytes.
+        expected (bytes): Exact byte sequence that proves the bridge direction.
+
+    Returns:
+        bytes: All bytes read through the expected payload.
+    """
+    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+    original_flags: int = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+    received: bytearray = bytearray()
+    deadline: float = loop.time() + 1.0
+    try:
+        while expected not in received:
+            if loop.time() >= deadline:
+                raise AssertionError(f"missing {expected!r} from terminal payload {bytes(received)!r}")
+            try:
+                received.extend(os.read(fd, 65_536))
+            except BlockingIOError:
+                await asyncio.sleep(0.01)
+        return bytes(received)
+    finally:
+        fcntl.fcntl(fd, fcntl.F_SETFL, original_flags)
 
 
 def test_installed_host_environment_disables_pip_config_and_source_inheritance() -> None:

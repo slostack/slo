@@ -113,9 +113,15 @@ closes/reaps/removes all temporary resources. Candidate parity remains unproven
 for resume, queue, history/replay/slash and overlays; raw/literal
 image/LaTex/Mermaid is the only fallback claim.
 
-The pure host/control-port tests, including a real deterministic
-`SloAgentSession` with `FauxChatModel`, prove Slo architecture only and are not
-protected candidate evidence. `test_runtime.py` is skipped without absolute
+The host retains a private candidate PTY master and, only when Slo itself has
+real TTY stdin/stdout, `SlotuiTerminalBridge` raw-mode bridges those descriptors
+without using the Unix socket for terminal bytes. It carries partial I/O with
+readiness backpressure, propagates initial and `SIGWINCH` dimensions to the
+candidate group, restores termios and file flags exactly once, and translates
+host `SIGINT`/`SIGTERM` to bounded bridge close before process reaping. The pure
+host/control-port tests, including a real deterministic `SloAgentSession` with
+`FauxChatModel`, prove Slo architecture only and are not protected candidate
+evidence. `test_runtime.py` is skipped without absolute
 `SLO_SLOTUI_CANDIDATE_REFERENCE`; only protected CI's candidate hook can execute
 its actual-installed-wheel submit → mutation mount/ack → orderly-close proof.
 A launch reference must be v2 and explicitly include `bundle_path` plus

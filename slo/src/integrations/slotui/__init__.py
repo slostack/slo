@@ -22,6 +22,7 @@ from src.integrations.slotui.host import (
     InstalledSlotuiHostProcessFactory,
     SlotuiCoreHostError,
     SlotuiCoreHostService,
+    SlotuiTerminalBridge,
     SlotuiHostProcess,
     SlotuiHostProcessFactory,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "SlotuiCoreHostError",
     "SlotuiCoreHostService",
     "SlotuiCoreManifestDAO",
+    "SlotuiTerminalBridge",
     "SlotuiCoreReferenceDerivationError",
     "SlotuiCoreReferenceDerivationService",
     "SlotuiCoreSourceIdentityDAO",

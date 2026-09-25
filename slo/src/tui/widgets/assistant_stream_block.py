@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Optional, cast
+from typing import Optional
 
-from rich.console import RenderableType
-from rich.markdown import Markdown
-from rich.padding import Padding
-from textual.app import ComposeResult, RenderResult
+from textual.app import ComposeResult
+from textual.content import Content, Span
 from textual.containers import Vertical
 from textual.message import Message
 from textual.selection import Selection
 from textual.timer import Timer
-from textual.visual import Visual, VisualType
 from textual.widgets import Static
 
 from src.tui.widgets.literal_text_static import LiteralTextStatic
-from src.tui.widgets.selectable_rich_visual import SelectableRichVisual
+from src.tui.widgets.markdown_content_compiler import (
+    MarkdownContentCompiler,
+    MarkdownContentDAO,
+    _resolve_semantic_spans,
+)
 
 __all__ = ["AssistantStreamBlock"]
 
@@ -25,14 +26,11 @@ _STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
 
 
 class AssistantAnswerBody(Static):
-    """Answer-only markdown surface whose raw text stays selectable.
+    """Answer-only body whose compiled visible Markdown remains selectable.
 
-    WHAT: Renders the accumulated assistant answer as vertically padded
-    markdown through ``SelectableRichVisual`` (so the mouse-selection
-    highlight is baked into its strips and tracks the content across
-    scrolls) and serves the raw answer text to Textual's selection machinery
-    through the documented ``Widget.get_selection`` seam (the base
-    implementation cannot extract text from a Rich markdown visual).
+    WHAT: Compiles owner-held raw Markdown to Textual ``Content`` and serves
+    that visible buffer to native selection. ``Content`` supplies truthful
+    per-cell offsets and native selection paint without an offset mapper.
     WHO: ``AssistantStreamBlock`` owns one instance as ``_answer_body``;
     ``Screen.get_selected_text`` queries it after a mouse selection.
     WHEN: Updated at every answer render boundary; queried whenever the
@@ -46,14 +44,14 @@ class AssistantAnswerBody(Static):
             classes (Optional[str]): Space-separated CSS classes.
         """
         super().__init__(content="", classes=classes)
-        self._answer_text: str = ""
+        self._raw_markdown: str = ""
+        self._visible_text: str = ""
 
     def show_answer(self, *, text: str) -> None:
-        """Render the answer with vertical-only Rich padding.
+        """Compile and render owner-held raw Markdown through Textual Content.
 
-        WHAT: Stores the raw answer for selection extraction, then updates
-        the padded-markdown renderable, or hides the surface when no answer
-        text exists.
+        WHAT: Stores raw Markdown, compiles its visible buffer, then updates
+        one `Content` visual or hides the surface when visible text is empty.
         WHO: ``AssistantStreamBlock._render_answer`` calls it after accepted
         streamed or final text.
         WHEN: Runs at an answer render boundary.
@@ -61,40 +59,28 @@ class AssistantAnswerBody(Static):
         Args:
             text (str): Raw assistant answer text.
         """
-        self._answer_text = text
-        if not text:
+        self._raw_markdown = text
+        compilation = MarkdownContentCompiler.compile(raw_markdown=text)
+        self._visible_text = compilation.visible_text
+        if not self._visible_text:
             self.update("")
             self.display = False
             return
         self.display = True
         self.update(
-            Padding(
-                renderable=Markdown(self._escape_markdown_breakers(text=text)),
-                pad=(1, 0, 1, 0),
-            )
+            Content(text=self._visible_text, spans=list(self._resolved_spans(compilation=compilation)))
         )
 
-    def render(self) -> RenderResult:
-        """Render the stored markdown through the selection-aware visual.
-
-        WHAT: Wraps the padded-markdown content in ``SelectableRichVisual``
-        so the mouse-selection highlight is baked into this surface's strips
-        in content coordinates and tracks the text across parent scrolls;
-        plain string content (the empty state) falls through unchanged.
-        WHO: Textual's ``Widget._render`` calls it on every repaint.
-        WHEN: At every render pass while the body is mounted.
-
-        Returns:
-            RenderResult: The selection-aware visual wrapping the stored
-                renderable, or the raw string content when empty.
-        """
-        content: VisualType = self.content
-        if isinstance(content, (str, Visual)):
-            return content
-        return SelectableRichVisual(widget=self, renderable=cast(RenderableType, content))
+    def _resolved_spans(self, *, compilation: MarkdownContentDAO) -> tuple[Span, ...]:
+        """Resolve semantic spans only after this body is mounted in an app."""
+        if not self.is_mounted:
+            return compilation.spans
+        return _resolve_semantic_spans(
+            spans=compilation.spans, theme_variables=self.app.current_theme.variables
+        )
 
     def get_selection(self, selection: Selection) -> Optional[tuple[str, str]]:
-        """Return the selected slice of the raw answer text.
+        """Return the selected slice of the visible answer buffer.
 
         WHAT: Serves the raw (unescaped) answer text through Textual's
         documented custom-widget selection seam so a mouse drag over the
@@ -107,24 +93,12 @@ class AssistantAnswerBody(Static):
             selection (Selection): The selected range in content coordinates.
 
         Returns:
-            Optional[tuple[str, str]]: Extracted answer text and its line
+            Optional[tuple[str, str]]: Extracted visible answer text and its line
                 ending, or ``None`` when no answer text exists.
         """
-        if not self._answer_text:
+        if not self._visible_text:
             return None
-        return selection.extract(self._answer_text), "\n"
-
-    @staticmethod
-    def _escape_markdown_breakers(*, text: str) -> str:
-        """Escape angle-bracket fragments that break transcript readability.
-
-        Args:
-            text (str): Raw assistant answer text.
-
-        Returns:
-            str: Stabilized markdown text.
-        """
-        return text.replace("<", "\\<").replace(">", "\\>")
+        return selection.extract(self._visible_text), "\n"
 
 
 class AssistantStreamBlock(Vertical):
@@ -189,28 +163,6 @@ class AssistantStreamBlock(Vertical):
         color: $text;
         background: transparent;
         text-style: none;
-    }
-
-    AssistantStreamBlock .assistant-answer-body Heading {
-        color: $md-heading;
-        text-style: bold;
-    }
-
-    AssistantStreamBlock .assistant-answer-body BulletList {
-        color: $text;
-    }
-
-    AssistantStreamBlock .assistant-answer-body OrderedList {
-        color: $text;
-    }
-
-    AssistantStreamBlock .assistant-answer-body BlockQuote {
-        color: $text;
-    }
-
-    AssistantStreamBlock .assistant-answer-body CodeBlock {
-        color: $text;
-        background: transparent;
     }
 
     AssistantStreamBlock .assistant-terminal-warning {
@@ -383,11 +335,22 @@ class AssistantStreamBlock(Vertical):
         return self._finalized
 
     def get_copyable_text(self) -> str:
-        """Return only answer text for the established focused-copy action.
+        """Return the visible answer, compiling a direct raw test/update assignment if needed.
 
         Returns:
-            str: This block's answer, never a reasoning segment.
+            str: This block's visible answer, never a reasoning segment.
         """
+        if self._answer_text != self._answer_body._raw_markdown:
+            self._answer_body.show_answer(text=self._answer_text)
+        return self.visible_answer_text
+
+    @property
+    def visible_answer_text(self) -> str:
+        """Return the answer body's compiler-emitted visible text."""
+        return self._answer_body._visible_text
+
+    def get_raw_markdown_for_copy(self) -> str:
+        """Return the complete raw Markdown for the explicit raw-copy action."""
         return self._answer_text
 
     def append_text(self, *, delta: str) -> None:
@@ -474,7 +437,7 @@ class AssistantStreamBlock(Vertical):
         """Render the current answer on the answer surface.
 
         WHAT: Hands the accumulated raw answer text to the answer surface,
-        which renders vertically padded markdown or hides itself when no
+        which renders compiler-visible ``Content`` or hides itself when no
         answer text exists.
         WHO: ``_flush_answer`` calls it after accepted streamed or final text.
         WHEN: Runs at an answer render boundary.

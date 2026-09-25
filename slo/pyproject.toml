@@ -53,6 +53,10 @@ dependencies = [
     "textual (>=8.2.7,<9.0.0)",
     "pyperclip (>=1.11.0,<2.0.0)",
     "rich (>=14.0.0,<16.0.0)",
+    # AST owner for conventional visible Markdown transcript buffers.
+    "markdown-it-py (>=4.2.0,<5.0.0)",
+    # Token boundaries for compiler-emitted fenced-code Content spans.
+    "pygments (>=2.20.0,<3.0.0)",
     # Floor is 0.26 — the ``_SloGroup`` override targets the vendored-Click
     # ``TyperGroup`` introduced in the 0.20 line, and the lock validates 0.26.x.
     # Keep the ceiling on the next minor: pipx resolves from these bounds, not

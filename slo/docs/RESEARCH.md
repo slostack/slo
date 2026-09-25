@@ -87,6 +87,33 @@ slo --plugin plugins/bash_live_output/plugin.py
   resolved reasoning; K2 coding models remain off-only and never receive
   `thinking` or OpenAI Responses fields.
 
+## Granular AI-message selection (spec 81.c.1)
+
+- `MarkdownContentCompiler` (`src/tui/widgets/markdown_content_compiler.py`) is
+  the one pure markdown-it AST compiler for answer, thinking, and user bodies.
+  Its sole append-only writer returns raw Markdown, independently selectable
+  conventional visible text, and role-name spans over that visible text. The
+  body widgets resolve those roles through active theme variables only once
+  mounted, then render `Content(visible_text, ...)`; raw source remains exactly
+  on the owning block for explicit whole-message raw copy. Pygments only adds
+  spans over compiler-emitted code for exact case-insensitive trim-only aliases:
+  Python, shell, JSON/YAML, diff/patch, JavaScript/TypeScript, TOML/INI/XML/HTML/
+  CSS/SQL/Dockerfile/Markdown. Diff/patch also adds additive semantic
+  added/removed/hunk/file line spans. Every fenced and indented block has
+  `markdown-code`; unknown, malformed, attribute-bearing, unlabeled,
+  resolver-failed, lexer-failed, and reconstruction-failed fences retain exact
+  visible code with generic spans only.
+- Textual owns visible-buffer hit testing, native selection paint, range state,
+  and scroll attachment. No visible/raw mapper, Rich visual, custom Screen, or
+  second clipboard path exists. Standard focused copy returns visible text;
+  `ctrl+shift+m` / `meta+shift+m` walks a focused body's ancestors to the
+  nearest block raw provider and uses `SloTUI.copy_to_clipboard()`.
+- Selection coverage: `tests/tui/test_markdown_content_compiler.py`,
+  `tests/tui/test_user_message_block.py`,
+  `tests/tui/test_selection_scroll_highlight.py`,
+  `tests/tui/test_selection_copy.py`, `tests/tui/test_selection_copy_e2e.py`,
+  and replay hydration in `tests/tui/test_replay_resume.py`.
+
 ## Verification owners
 
 - Plugin tests: `tests/agents/slo_agent/plugins/`.

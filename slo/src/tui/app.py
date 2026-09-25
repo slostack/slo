@@ -390,6 +390,8 @@ class SloTUI(App):
         Binding(key="ctrl+o", action="toggle_expandable_details", description="expand/collapse all"),
         Binding(key="ctrl+shift+c", action="copy_visible_text", description="copy"),
         Binding(key="meta+c", action="copy_visible_text", description="copy", show=False),
+        Binding(key="ctrl+shift+m", action="copy_raw_markdown", description="copy raw markdown"),
+        Binding(key="meta+shift+m", action="copy_raw_markdown", description="copy raw markdown", show=False),
         Binding(
             key="ctrl+end",
             action="scroll_to_bottom",
@@ -1604,6 +1606,13 @@ class SloTUI(App):
         if not text:
             return
         self.copy_to_clipboard(text)
+
+    async def action_copy_raw_markdown(self) -> None:
+        """Copy whole raw Markdown from the nearest focused transcript-block provider."""
+        raw_markdown: str = self._focused_raw_markdown()
+        if not raw_markdown:
+            return
+        self.copy_to_clipboard(raw_markdown)
 
     async def on_text_selected(self, event: events.TextSelected) -> None:
         """Auto-copy the mouse-selected transcript span to the clipboard.
@@ -2890,6 +2899,24 @@ class SloTUI(App):
         if get_text is None:
             return ""
         return get_text()
+
+    def _focused_raw_markdown(self) -> str:
+        """Resolve raw Markdown from the focused widget or nearest provider ancestor."""
+        focused = self.focused
+        if focused is None:
+            return ""
+        for widget in (focused, *focused.ancestors):
+            if "get_raw_markdown_for_copy" not in vars(widget):
+                provider = getattr(widget, "get_raw_markdown_for_copy", None)
+                if provider is None:
+                    continue
+            else:
+                provider = vars(widget)["get_raw_markdown_for_copy"]
+            if not callable(provider):
+                return ""
+            raw_markdown = provider()
+            return raw_markdown if isinstance(raw_markdown, str) and raw_markdown else ""
+        return ""
 
     def _selected_prompt_text(self) -> str:
         """Return the selected prompt text, or ``""`` when nothing is selected."""

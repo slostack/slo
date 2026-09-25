@@ -503,44 +503,35 @@ single survival notice; `/clear` and an allowed `/new` replacement discard it (c
 explicitly removes the anchored block). Slash commands and inbox `chat_turn` items never
 enter the user queue.
 
-**Transcript copy and output padding (spec 72.a.3):** there is no card-local copy
-control on any transcript block. Copy runs through `SloTUI` only — the focus chord
-(`ctrl+shift+c` / `meta+c` → `action_copy_visible_text` → the focused block's
-`get_copyable_text()`) and mouse drag selection (`on_text_selected`) both funnel into
-`copy_to_clipboard` (pyperclip → OSC 52). The flattened answer surface
-(`AssistantAnswerBody`, owned by `AssistantStreamBlock` as its `._answer_body`) serves
-its raw answer text through Textual's documented `Widget.get_selection` seam, so a
-drag over the markdown answer lands the answer itself — never a card-control label —
-on the shared funnel. All four message widgets
+**Transcript copy and output padding (specs 72.a.3 and 81):** there is no
+card-local copy control on any transcript block. Copy runs through `SloTUI` only —
+the focus chord (`ctrl+shift+c` / `meta+c` → `action_copy_visible_text` → the
+focused block's `get_copyable_text()`) and mouse drag selection (`on_text_selected`)
+both funnel into `copy_to_clipboard` (pyperclip → OSC 52). All four message widgets
 (`UserMessageBlock`, `AssistantStreamThinkingBlock`, `AssistantStreamBlock`,
-`ToolExecutionBlock`) follow the uniform `TRANSCRIPT_OUTPUT_PAD` convention: CSS
-`padding: 0 1`, with Rich `Padding` horizontal zero / vertical one on user, thinking,
-and answer content; the `#transcript-content` outer-frame padding is unchanged.
-Terminal-native copy currently means flattened selection plus these existing clipboard
-paths: OSC 133 prompt-zone markers are deferred pending a Textual-supported
-terminal-output seam that preserves raw zero-cell controls end-to-end (in pinned
-Textual 8.2.8, raw OSC bytes inside a `Strip` segment add cells and are mangled by
-compositor cropping, and `Driver.write` is unsynchronized with compositor output).
+`ToolExecutionBlock`) retain the uniform `TRANSCRIPT_OUTPUT_PAD` convention: CSS
+`padding: 0 1`; the `#transcript-content` outer-frame padding is unchanged.
+Terminal-native copy remains flattened selection plus these existing clipboard paths:
+OSC 133 prompt-zone markers are deferred pending a Textual-supported terminal-output
+seam that preserves raw zero-cell controls end-to-end.
 
-**Selection highlight on the AI surfaces (spec 72 follow-up):** Textual 8.2.8's
-`RichVisual.render_strips` silently drops the render-time selection option, and
-Rich-rendered strips carry no offset meta, so a drag over `AssistantAnswerBody`
-or `AssistantThinkingBody` (the thinking block's body, which now mirrors the
-answer body's `get_selection` seam) falls back to a whole-widget `SELECT_ALL`
-entry in `Screen.selections` and never painted the highlight at all. Both bodies
-override `render()` to wrap their padded-markdown content in
-`SelectableRichVisual` (`src/tui/widgets/selectable_rich_visual.py`), which
-re-applies `options.selection` to the rendered strips in content coordinates —
-the highlight is baked into the widget's own strips and therefore tracks the
-selected text exactly across transcript scrolls (no stale screen-space paint).
-The approved UX: a drag over either AI surface highlights the whole body — the
-same span that copy extracts — and the selection is never cleared to hide paint.
-`tests/tui/test_selection_scroll_highlight.py` pins this at compositor level.
-Both themes pin explicit `screen-selection-background` /
-`screen-selection-foreground` variables (bright accent band + dark text, the
-same readability precedent as `button-color-foreground`): Textual's default of
-`primary.with_alpha(0.5)` + transparent foreground made selected text
-illegible on these palettes.
+**Granular Markdown selection on textual message bodies (spec 81.c.1):**
+`MarkdownContentCompiler` (`src/tui/widgets/markdown_content_compiler.py`) is the one
+app-free markdown-it AST-to-visible-text owner for `AssistantAnswerBody`,
+`AssistantThinkingBody`, and `UserMessageBody`. Its single append-only writer produces
+`MarkdownContentDAO(raw_markdown, visible_text, spans)`: raw Markdown remains owned by the
+message block, while `Content` renders and native drag selection extracts only the readable
+visible buffer. Role-name spans resolve through the active Slo theme only at mounted body
+boundaries; Pygments adds spans, never display text, for exact case-insensitive trim-only fence aliases (Python, shell, data, diff/patch, JS/TS, TOML/INI/XML/HTML/CSS/SQL/Dockerfile/Markdown). Every fenced and indented code block retains `markdown-code`; unknown, attribute-bearing, unlabeled, resolver-failed, lexer-failed, and reconstruction-failed fences remain generic-only. Diff/patch adds additive `markdown-code-diff-added`, `markdown-code-diff-removed`, `markdown-code-diff-hunk`, and `markdown-code-diff-file` line roles defined in both themes.
+There is no offset mapper, Rich visual, custom selection paint, second clipboard path, or
+scroll-time selection clearing. Standard focused copy returns the complete visible buffer;
+`ctrl+shift+m` / `meta+shift+m` resolves the nearest focused transcript-block owner and uses
+the same `copy_to_clipboard()` funnel to copy its complete raw Markdown. Both themes retain
+native `screen-selection-background` / `screen-selection-foreground` ownership. Tests in
+`test_markdown_content_compiler.py`, `test_user_message_block.py`,
+`test_selection_scroll_highlight.py`, `test_selection_copy.py`, and
+`test_selection_copy_e2e.py` cover compiler output, themes, raw/visible copy, native drags,
+paint, scrolling, and replay.
 
 **Session replay:** `ReplayEntryProjector.build_entries()` reads the on-disk JSONL and
 emits `TranscriptEntryDAO` objects. `TranscriptProjector.project_replay_entry()` mounts the

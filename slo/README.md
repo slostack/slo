@@ -60,8 +60,8 @@
 > transactional manual compaction (`/context-window`, `/compact`); and
 > **v0.15.0** added the clean-room Git diff viewer (`/diff` plus the
 > `show_git_diff` tool, raising the default bundle to **10 tools**),
-> terminal-safe transcript copying (drag-select auto-copy and a per-response
-> Copy control, requiring `textual >= 8.2.7`), and bounded image reads
+> terminal-safe transcript copying (visible Markdown AI/user body drag-range
+> auto-copy plus focused visible/raw full-block copy, requiring `textual >= 8.2.7`), and bounded image reads
 > (1568 px longest edge, 5 MiB payload cap) that store a compact
 > `[image attached: …]` reference in durable history instead of base64.
 
@@ -430,8 +430,10 @@ of lines for `read`, number of matches for `grep`, exit code and line
 count for `bash`, and so on. The summarizer is a class-level dispatch
 table in `src/tui/event_renderer.py`.
 
-When the agent finishes, the final response renders as Markdown — code
-blocks, lists, headings, all rendered by Rich:
+When the agent finishes, the final response is shown as conventional readable
+Markdown: headings, lists, code fences, and link destinations are compiled away
+from the visible selectable buffer while exact raw Markdown remains available
+through the explicit raw-copy shortcut.
 
 ```
 This project is a Python coding agent built on LangGraph and Textual…
@@ -464,11 +466,14 @@ colors because the palette only changes which RGB the tokens resolve to.
 
 **Copying text.** Drag the mouse across the transcript to select any range;
 releasing the drag **auto-copies** the selection to your clipboard — no
-keystroke needed. Delivery tries a local clipboard (`pyperclip`) first and
-always falls back to an OSC 52 escape, so copy works both locally and over
-SSH/tmux. The old keyboard binding (`ctrl+shift+c` / `meta+c`) still copies
-the focused block, prompt selection, or visible transcript, and now also
-emits OSC 52. Native selection needs Textual's selection API, so slo pins
+keystroke needed. AI answer, thinking, and user bodies support character, word,
+and wrapped-range selection from their compiler-produced visible Markdown buffer.
+Structural source chrome is hidden in normal rendering; exact whole-message raw
+Markdown is available from a focused transcript body through `ctrl+shift+m` /
+`meta+shift+m`. Standard `ctrl+shift+c` / `meta+c` copies the complete visible
+body buffer. Every path uses the same local `pyperclip` then OSC 52 delivery
+funnel, so copy works both locally and over SSH/tmux. Native selection needs Textual's
+selection API, so slo pins
 `textual >= 8.2.7`. One consequence of that version: `Static` treats `[...]`
 in a string as console markup, so every plain-text transcript surface is
 rendered through `LiteralTextStatic` (a `Static` with `markup=False`) to keep
@@ -1266,10 +1271,11 @@ event loop and produced the "mangled, unspaced markdown" symptom.
 `#transcript-content` and mutated in place thereafter:
 
 - **`UserMessageBlock`** (`widgets/user_message_block.py`) is a `Vertical`
-  with a single `Static`. It renders the user turn as padded markdown and
-  is built once — its renderable is constructed in `__init__` (not
-  `on_mount`), because setting a `Static`'s content mid-mount-cycle races
-  the child's first render and Textual raises while compositing.
+  with a single compiler-produced visible `Content` body. It retains exact raw
+  Markdown on the block and is built once — its
+  renderable is constructed in `__init__` (not `on_mount`), because setting a
+  `Static`'s content mid-mount-cycle races the child's first render and
+  Textual raises while compositing.
 
 - **`AssistantStreamBlock`** (`widgets/assistant_stream_block.py`) is an
   answer-only `Vertical` — one `AssistantAnswerBody` surface plus a
@@ -1278,18 +1284,20 @@ event loop and produced the "mangled, unspaced markdown" symptom.
   one widget per normalized thinking segment (keyed by `block_id`), mounted
   in true chronological order between answer and tool blocks.
   `append_thinking` / `append_text` accumulate into each block's own buffer
-  and re-render **only that block's** `Static`:
+  and re-render **only that block's** compiler-visible `Content` body.
+  `markdown_content_compiler.py` is the shared markdown-it AST owner: it writes
+  a readable visible buffer and semantic spans while the block retains raw
+  Markdown for explicit raw copy. Generic code spans precede safe Pygments
+  overlays for exact case-insensitive trim-only aliases (Python, shell, data,
+  diff/patch, JS/TS, TOML/INI/XML/HTML/CSS/SQL/Dockerfile/Markdown); diff and
+  patch also add semantic added/removed/hunk/file line roles. Every fenced and
+  indented block retains generic code styling, including unknown, malformed,
+  attribute-bearing, unlabeled, unclosed, resolver-failed, lexer-failed, and
+  reconstruction-failed fences; tokenization never changes the visible code.
 
-  ```python
-  def _render_thinking(self) -> None:
-      self._thinking_body.update(
-          Padding(Markdown(self._thinking_text.strip(), style="italic"), pad=(0, 1, 0, 1))
-      )
-  ```
-
-  Reasoning renders as muted italic markdown with Pi-style horizontal
-  padding, and — deliberately — **without** a literal "Thinking" heading,
-  because the region is already visually distinct. `finalize(final_text=)`
+  Reasoning renders as muted italic visible text with Pi-style
+  horizontal padding, and — deliberately — **without** a literal "Thinking"
+  heading, because the region is already visually distinct. `finalize(final_text=)`
   overwrites the answer with the completed text from the runtime (the
   source of truth), so streamed-delta artifacts never survive into the
   final view.
@@ -1308,7 +1316,8 @@ untouched. That is the property that eliminates the quadratic reparse.
 
 **The component hierarchy.** After this feature, `#transcript-content` is a
 flat, ordered column of dedicated components — one per conversational
-entry — and each component owns its own markdown `Static`(s):
+entry — and each textual message component owns its own compiler-visible
+`Content` body:
 
 ```
 SloTUI (App)
@@ -1316,10 +1325,10 @@ SloTUI (App)
     ├── VerticalScroll #transcript-scroll
     │   └── Vertical #transcript-content          ← entries mount here, in order
     │       ├── UserMessageBlock                  user turn
-    │       │   └── Static .user-message-body          (markdown, rendered ONCE at build)
+    │       │   └── Content .user-message-body         (compiled visible Markdown, rendered ONCE at build)
     │       ├── AssistantStreamBlock  (iteration 0)   assistant turn
-    │       │   ├── Static .assistant-thinking-body    (reasoning markdown)
-    │       │   ├── Static .assistant-answer-body  ◀━━ REPARSED at end of stream
+    │       │   ├── Content .assistant-thinking-body   (compiled visible reasoning)
+    │       │   ├── Content .assistant-answer-body ◀━━ UPDATED at end of stream
     │       │   └── Static .assistant-terminal-warning
     │       ├── ToolExecutionBlock  (tool_call_id)    tool call
     │       │   ├── Static .tool-call-headline         (⏺, rebuilt on each arg delta)
@@ -1334,24 +1343,24 @@ SloTUI (App)
 
 **Which component is independently reprocessed at end-of-stream.** The
 **`AssistantStreamBlock`** is the one re-rendered when the message stream
-closes. During streaming its `answer` region reparses the *partial*
+closes. During streaming its `answer` region updates the *partial* source
 buffer on each `text_delta`; then at the **end** of the assistant message
-stream the completed truth replaces that partial in a single final reparse
-of **that block's answer `Static` only**:
+stream the completed truth replaces that partial in one final update of
+**that block's answer `Content` only**:
 
 - `text_end` (carrying completed text) → `set_answer(content=...)` →
-  `_render_answer()` reparses the full answer markdown.
-- `run_completed` → `finalize(final_text=...)` → `_render_answer()` reparses
-  once more with the runtime's authoritative final text, so any
-  streamed-delta spacing/markdown artifacts are discarded.
+  `_render_answer()` updates compiler-visible styled `Content`.
+- `run_completed` → `finalize(final_text=...)` → `_render_answer()` updates
+  once more with the runtime's authoritative final source, so any
+  streamed-delta spacing artifacts are discarded.
 
 The thinking block is likewise replaced once via `set_thinking` on a
 content-bearing repair `thinking_end` (a contentless end leaves the segment
-open for its repair). By contrast, the **`UserMessageBlock`** renders its markdown
-exactly once at construction and is never reprocessed, and a
-**`ToolExecutionBlock`** reparses its result line only when its single
-`tool_result` arrives. So the end-of-stream markdown reprocessing is scoped
-to one `Static` — the answer region of the current turn's
+open for its repair). By contrast, the **`UserMessageBlock`** renders its
+compiler-visible content exactly once at construction and is never reprocessed,
+and a **`ToolExecutionBlock`** updates its result line only when its single
+`tool_result` arrives. So the end-of-stream source update is scoped to one
+`Content` body — the answer region of the current turn's
 `AssistantStreamBlock` — never the transcript as a whole.
 
 #### 4.10.1 The Transcript Window, Block Liveness, and the Protected Tail
@@ -2555,7 +2564,7 @@ tui/
 │   ├── sub_agent_fleet_panel.py   # SubAgentFleetPanel — live fleet status rows (one per active sub-agent)
 │   ├── tool_execution_block.py    # one live tool call: ⏺ headline + ⎿ result
 │   ├── usage_status_bar.py        # UsageStatusBar — token/rate display above footer
-│   └── user_message_block.py      # one user turn: padded markdown
+│   └── user_message_block.py      # one user turn: raw source + compiled visible Content
 ├── event_renderer.py           # ⏺/⎿ formatters + tool summarizers (shared by live + recorded)
 ├── model_catalog.py            # supported_models_by_provider()
 └── thinking_spinner.py         # Rotating-verb ✦ spinner (fixed in #status-region)
@@ -2616,9 +2625,9 @@ into replay.
 | **`AssistantChunkNormalizer`** | Per-turn; turns raw `AIMessageChunk`s into ordered `*_start`/`*_delta`/`*_end` events. |
 | **`TurnStreamAccumulator`** | Per-turn; holds completed-node truth (final text, tool messages) for the stop-hook and final answer. |
 | **`TranscriptProjector`** | Stateful event→widget machine. Mounts live stream events *and* replay entries: one `UserMessageBlock` per user turn, one `AssistantStreamBlock` per iteration, one `ToolExecutionBlock` per tool call. |
-| **`UserMessageBlock`** | A mounted widget for one user turn — padded markdown, rendered once at construction. |
+| **`UserMessageBlock`** | A mounted widget for one user turn — exact raw source plus compiler-visible Content, rendered once at construction. |
 | **`AssistantStreamThinkingBlock`** | A mounted widget for one thinking segment, keyed by normalized `block_id`; sealed by its repair end or a terminal sweep. |
-| **`AssistantStreamBlock`** | A mounted answer-only widget for one assistant iteration. Re-renders only itself; the answer surface is the one reparsed at end-of-stream. |
+| **`AssistantStreamBlock`** | A mounted answer-only widget for one assistant iteration. Updates only itself; its raw answer owner recompiles the terminal visible body update. |
 | **`ToolExecutionBlock`** | A mounted widget for one live tool call — ⏺ headline + ⎿ result. |
 | **`TranscriptEntryDAO`** | The replay-time counterpart to `AgentStreamEventDAO` — one completed entry (`user`/`assistant`/`tool`) reconstructed from history. |
 | **`ReplayEntryProjector`** | Folds canonical history events into ordered `TranscriptEntryDAO`s for replay (renamed from the old history `TranscriptProjector`; also still renders `transcript.md`). |

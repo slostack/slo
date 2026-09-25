@@ -44,6 +44,27 @@ def _contrast_ratio(*, foreground: str, background: str) -> float:
     return (max(first, second) + 0.05) / (min(first, second) + 0.05)
 
 
+_MARKDOWN_COMPILER_TOKENS: tuple[str, ...] = (
+    "markdown-heading",
+    "markdown-muted",
+    "markdown-quote",
+    "markdown-emphasis",
+    "markdown-strong",
+    "markdown-inline-code",
+    "markdown-code",
+    "markdown-link",
+    "markdown-code-keyword",
+    "markdown-code-string",
+    "markdown-code-comment",
+    "markdown-code-number",
+    "markdown-code-name",
+    "markdown-code-punctuation",
+    "markdown-code-diff-added",
+    "markdown-code-diff-removed",
+    "markdown-code-diff-hunk",
+    "markdown-code-diff-file",
+)
+
 _CANONICAL_PI_TOKENS: tuple[str, ...] = (
     "user-msg-bg",
     "tool-pending-bg",
@@ -228,6 +249,7 @@ class TestCanonicalPiSemanticTokens:
             "screen-selection-background",
             "screen-selection-foreground",
             *_CANONICAL_PI_TOKENS,
+            *_MARKDOWN_COMPILER_TOKENS,
             *_AUTH_TOKENS,
         }
 

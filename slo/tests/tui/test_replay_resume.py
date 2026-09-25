@@ -227,7 +227,9 @@ class TestTUIHydration:
             assert any("seeded prompt" in c for c in contents)
             assert any("seeded reply" in c for c in contents)
             # ... and replay mounts the same components the live path mounts.
-            assert len(app.query(UserMessageBlock)) >= 1
+            user_block: UserMessageBlock = app.query_one(UserMessageBlock)
+            assert user_block.text == "seeded prompt"
+            assert str(user_block._body.content) == "seeded prompt"
             assert len(app.query(AssistantStreamBlock)) >= 1
 
 

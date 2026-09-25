@@ -12,6 +12,7 @@ from pygments import lex
 from pygments.lexer import Lexer
 from pygments.lexers import get_lexer_by_name
 from pygments.token import Comment, Keyword, Literal, Name, Number, String, Token
+from textual._cells import cell_len
 from textual.content import Span
 from textual.style import Style
 
@@ -21,6 +22,14 @@ _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_LEXER_ALIASES: dict[str, str] = {
     "python": "python",
     "py": "python",
+    "go": "go",
+    "golang": "go",
+    "c": "c",
+    "c++": "cpp",
+    "c#": "csharp",
+    "java": "java",
+    "rust": "rust",
+    "zig": "zig",
     "bash": "bash",
     "sh": "bash",
     "shell": "bash",
@@ -152,8 +161,6 @@ class MarkdownContentCompiler:
             return _plain_visible_fallback(raw_markdown=raw_markdown)
         try:
             tokens: list[MarkdownToken] = MarkdownIt("gfm-like").parse(raw_markdown)
-            if _contains_table_token(tokens=tokens):
-                return _plain_visible_fallback(raw_markdown=raw_markdown)
             writer = _VisibleBufferWriter()
             _BlockCompiler(tokens=tokens, writer=writer).compile()
             return writer.build(raw_markdown=raw_markdown)
@@ -217,6 +224,15 @@ class _BlockCompiler:
                     quote_depth=quote_depth,
                     list_line_context=list_line_context,
                 )
+                first_block = False
+                list_line_context = None
+                continue
+            if token_type == "table_open":
+                if not first_block:
+                    self._append_container_separator(
+                        quote_depth=quote_depth, list_line_context=list_line_context
+                    )
+                self._compile_table(quote_depth=quote_depth, list_line_context=list_line_context)
                 first_block = False
                 list_line_context = None
                 continue
@@ -295,6 +311,113 @@ class _BlockCompiler:
             return
         self._writer.append_text(text=getattr(token, "content", ""))
         self._index += 1
+
+    def _compile_table(self, *, quote_depth: int, list_line_context: Optional[_ListLineContext]) -> None:
+        """Compile one markdown-it table as terminal-cell-width-aligned visible columns."""
+        rows: list[list[tuple[MarkdownToken, bool]]] = self._consume_table_rows()
+        column_widths: list[int] = self._table_column_widths(rows=rows)
+        self._append_table_rows(
+            rows=rows,
+            column_widths=column_widths,
+            quote_depth=quote_depth,
+            list_line_context=list_line_context,
+        )
+
+    def _consume_table_rows(self) -> list[list[tuple[MarkdownToken, bool]]]:
+        """Consume the current table and retain every row's inline AST cells."""
+        rows: list[list[tuple[MarkdownToken, bool]]] = []
+        self._index += 1
+        while self._index < len(self._tokens):
+            token: MarkdownToken = self._tokens[self._index]
+            token_type: str = getattr(token, "type", "")
+            if token_type == "table_close":
+                self._index += 1
+                return rows
+            if token_type == "tr_open":
+                cells: list[tuple[MarkdownToken, bool]] = self._consume_table_row()
+                if cells:
+                    rows.append(cells)
+                continue
+            self._index += 1
+        return rows
+
+    def _consume_table_row(self) -> list[tuple[MarkdownToken, bool]]:
+        """Consume one table row and return its inline cell tokens with header metadata."""
+        cells: list[tuple[MarkdownToken, bool]] = []
+        self._index += 1
+        while self._index < len(self._tokens):
+            token: MarkdownToken = self._tokens[self._index]
+            token_type: str = getattr(token, "type", "")
+            if token_type == "tr_close":
+                self._index += 1
+                return cells
+            if token_type not in {"th_open", "td_open"}:
+                self._index += 1
+                continue
+            inline: MarkdownToken = self._tokens[self._index + 1]
+            cells.append((inline, token_type == "th_open"))
+            self._index += 3
+        return cells
+
+    def _table_column_widths(self, *, rows: list[list[tuple[MarkdownToken, bool]]]) -> list[int]:
+        """Return the maximum terminal-cell width for each table column."""
+        column_widths: list[int] = []
+        for row in rows:
+            for column_index, (inline, _is_header) in enumerate(row):
+                visible_width: int = cell_len(self._visible_text_for_inline(token=inline))
+                if column_index == len(column_widths):
+                    column_widths.append(visible_width)
+                    continue
+                column_widths[column_index] = max(column_widths[column_index], visible_width)
+        return column_widths
+
+    def _append_table_rows(
+        self,
+        *,
+        rows: list[list[tuple[MarkdownToken, bool]]],
+        column_widths: list[int],
+        quote_depth: int,
+        list_line_context: Optional[_ListLineContext],
+    ) -> None:
+        """Append every table row with padding after each non-final visible cell."""
+        for row in rows:
+            self._append_table_row(
+                cells=row,
+                column_widths=column_widths,
+                quote_depth=quote_depth,
+                list_line_context=list_line_context,
+            )
+
+    def _append_table_row(
+        self,
+        *,
+        cells: list[tuple[MarkdownToken, bool]],
+        column_widths: list[int],
+        quote_depth: int,
+        list_line_context: Optional[_ListLineContext],
+    ) -> None:
+        """Append one aligned header or data row without source-only Markdown delimiters."""
+        self._append_line_prefix(quote_depth=quote_depth, list_line_context=list_line_context)
+        row_start: int = self._writer.length
+        is_header: bool = all(cell_is_header for _inline, cell_is_header in cells)
+        for column_index, (inline, _cell_is_header) in enumerate(cells):
+            cell_start: int = self._writer.length
+            _append_inline(token=inline, writer=self._writer)
+            if column_index == len(cells) - 1:
+                continue
+            cell_width: int = cell_len(self._writer.visible_text[cell_start : self._writer.length])
+            padding_width: int = max(column_widths[column_index] - cell_width, 0)
+            self._writer.append_text(text=" " * padding_width)
+            self._writer.append_styled_text(text=" · ", role="markdown-muted")
+        if is_header:
+            self._writer.add_span(start=row_start, end=self._writer.length, role="markdown-heading")
+        self._writer.append_newline_if_needed()
+
+    def _visible_text_for_inline(self, *, token: MarkdownToken) -> str:
+        """Compile one inline cell into isolated visible text for width measurement only."""
+        writer = _VisibleBufferWriter()
+        _append_inline(token=token, writer=writer)
+        return writer.visible_text
 
     def _compile_list(self, *, token: object, quote_depth: int, depth: int) -> None:
         """Compile a list using AST start metadata and compiler-owned markers."""
@@ -513,11 +636,6 @@ def _role_for_token(*, token_type: Token) -> str:
     if token_type in Name:
         return "markdown-code-name"
     return "markdown-code-punctuation"
-
-
-def _contains_table_token(*, tokens: list[MarkdownToken]) -> bool:
-    """Return whether parsing produced GFM table structure that needs literal fallback."""
-    return any(getattr(token, "type", "").startswith("table_") for token in tokens)
 
 
 def _plain_visible_fallback(*, raw_markdown: str) -> MarkdownContentDAO:

@@ -13,6 +13,7 @@ from textual.selection import SELECT_ALL, Selection
 from textual.style import Style
 
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.user_message_block import UserMessageBlock, UserMessageBody
 
 
@@ -31,6 +32,25 @@ class _Harness(App):
         with VerticalScroll():
             with Vertical():
                 yield UserMessageBlock(text=self._text)
+
+
+class _LayoutHarness(App):
+    """Mount comparable user and compact tool blocks under the active Slo theme."""
+
+    def __init__(self, *, user_text: str) -> None:
+        """Store the exact user source used by the compositor fixture."""
+        super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.register_theme(SLO_DARK_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
+        self._user_text: str = user_text
+
+    def compose(self) -> ComposeResult:
+        """Compose one full-width user band and one default compact tool card."""
+        with VerticalScroll():
+            with Vertical():
+                yield UserMessageBlock(text=self._user_text)
+                yield ToolExecutionBlock(tool_call_id="layout-tool", tool_name=None)
 
 
 class TestUserMessageBlock:
@@ -74,13 +94,49 @@ class TestUserMessageBlock:
         """An empty compiler buffer remains unselectable."""
         assert UserMessageBody(source_text="").get_selection(SELECT_ALL) is None
 
-    def test_user_band_padding_and_no_collapse_are_preserved(self) -> None:
-        """The compiler rewire leaves established user transcript ownership intact."""
+    def test_user_band_css_preserves_compact_card_insets_and_vertical_breathing_room(self) -> None:
+        """The selectable user body uses CSS layout rather than a Rich padding visual."""
         block = UserMessageBlock(text="# hello")
         block.set_expanded(expanded=False)
         assert block._expanded is True
-        assert "padding: 0 1;" in UserMessageBlock.DEFAULT_CSS
+        assert "padding: 1 1 2 1;" in UserMessageBlock.DEFAULT_CSS
+        assert "align-vertical: middle;" in UserMessageBlock.DEFAULT_CSS
+        assert "text-align: left;" in UserMessageBlock.DEFAULT_CSS
         assert "background: $user-msg-bg;" in UserMessageBlock.DEFAULT_CSS
+
+    @pytest.mark.asyncio
+    async def test_one_line_band_matches_compact_tool_height_and_fills_available_width(self) -> None:
+        """Compositor geometry keeps the user band compact, inset, centred, and full-width."""
+        app = _LayoutHarness(user_text="one line")
+
+        async with app.run_test(size=(80, 16)) as pilot:
+            await pilot.pause()
+            user: UserMessageBlock = app.query_one(UserMessageBlock)
+            tool: ToolExecutionBlock = app.query_one(ToolExecutionBlock)
+
+            assert user.region.width == 80
+            assert user.content_region.width == 78
+            assert user.region.height == tool.region.height == 4
+            assert user._body.region.y == user.region.y + 1
+            assert user._body.region.x == user.region.x + 1
+            assert user._body.region.width == user.content_region.width
+            assert user.styles.background == user._body.styles.background
+
+    @pytest.mark.asyncio
+    async def test_multiline_body_grows_without_clipping_and_keeps_native_visible_selection(self) -> None:
+        """Natural multiline growth leaves every visible line selectable after the CSS-only layout change."""
+        source: str = "first line\nsecond line\nthird line"
+        app = _LayoutHarness(user_text=source)
+
+        async with app.run_test(size=(40, 16)) as pilot:
+            await pilot.pause()
+            user: UserMessageBlock = app.query_one(UserMessageBlock)
+            body: UserMessageBody = user._body
+
+            assert user.region.height == 6
+            assert body.region.height == 3
+            assert body.region.y == user.region.y + 1
+            assert body.get_selection(SELECT_ALL) == (source, "\n")
 
     def test_focused_copy_is_visible_and_raw_copy_is_exact_source(self) -> None:
         """The two complete-copy paths deliberately return their separate buffers."""

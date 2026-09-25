@@ -69,7 +69,27 @@ value = 1
         assert compiled.visible_text == source
         assert compiled.spans == ()
 
-    @pytest.mark.parametrize("language", ["python", "py", "bash", "sh", "shell", "json", "yaml", "yml"])
+    @pytest.mark.parametrize(
+        "language",
+        [
+            "python",
+            "py",
+            "go",
+            "golang",
+            "c",
+            "c++",
+            "c#",
+            "java",
+            "rust",
+            "zig",
+            "bash",
+            "sh",
+            "shell",
+            "json",
+            "yaml",
+            "yml",
+        ],
+    )
     def test_supported_fence_aliases_add_generic_and_token_roles(self, language: str) -> None:
         """Supported aliases tokenize only the already-emitted visible code text."""
         compiled = MarkdownContentCompiler.compile(raw_markdown=f"```{language}\nvalue = 1\n```")
@@ -78,7 +98,7 @@ value = 1
         assert len(compiled.spans) > 1
 
     @pytest.mark.parametrize(
-        "source", ["```rust\nlet value = 1;\n```", "```python {.line-numbers}\nvalue = 1\n```"]
+        "source", ["```kotlin\nval value = 1\n```", "```python {.line-numbers}\nvalue = 1\n```"]
     )
     def test_unknown_or_attribute_bearing_fences_use_generic_code_only(self, source: str) -> None:
         """Fence labels are exact aliases rather than guessed language prefixes."""
@@ -120,10 +140,79 @@ value = 1
         """List indentation is two spaces per AST depth, regardless of marker width."""
         assert MarkdownContentCompiler.compile(raw_markdown=source).visible_text == expected
 
-    def test_compiles_tables_without_corrupting_cell_boundaries(self) -> None:
-        """Table syntax remains literal when the bounded renderer has no table layout."""
-        source: str = "| a | b |\n|---|---|\n| 1 | 2 |"
-        assert MarkdownContentCompiler.compile(raw_markdown=source).visible_text == source
+    def test_compiles_example_table_as_aligned_unlabelled_terminal_columns(self) -> None:
+        """Headers supply labels while padded visible columns align every separator and data value."""
+        source: str = """| Item | User message | Assistant answer |
+| --- | --- | --- |
+| Horizontal padding | 0 1 | 0 1 |
+| Outer margin | 1 0 1 0 | 1 0 1 0 |
+| Old inner Rich padding | Removed | Removed |"""
+
+        compiled = MarkdownContentCompiler.compile(raw_markdown=source)
+
+        assert compiled.raw_markdown == source
+        assert compiled.visible_text == (
+            "Item                   · User message · Assistant answer\n"
+            "Horizontal padding     · 0 1          · 0 1\n"
+            "Outer margin           · 1 0 1 0      · 1 0 1 0\n"
+            "Old inner Rich padding · Removed      · Removed"
+        )
+        assert "Horizontal padding:" not in compiled.visible_text
+        assert "|" not in compiled.visible_text
+        assert "---" not in compiled.visible_text
+        assert "markdown-heading" in _roles(source=source)
+        assert "markdown-muted" in _roles(source=source)
+
+    def test_hides_table_alignment_markers_and_preserves_inline_cell_roles_after_padding(self) -> None:
+        """Alignment syntax stays source-only and inline spans remain bounded after column padding."""
+        source: str = (
+            "| Owner | Status |\n| :--- | ---: |\n| **Ada** | `ready` |\n| Longest owner | [done](https://example.test) |"
+        )
+
+        compiled = MarkdownContentCompiler.compile(raw_markdown=source)
+
+        assert compiled.visible_text == "Owner         · Status\nAda           · ready\nLongest owner · done"
+        assert all(marker not in compiled.visible_text for marker in ("|", ":---", "---:"))
+        assert "markdown-strong" in _roles(source=source)
+        assert "markdown-inline-code" in _roles(source=source)
+        assert "markdown-link" in _roles(source=source)
+        assert all(0 <= span.start < span.end <= len(compiled.visible_text) for span in compiled.spans)
+
+    def test_aligns_wide_unicode_cells_using_terminal_cell_width(self) -> None:
+        """Wide Unicode cells receive display-width padding rather than code-point-length padding."""
+        source: str = "| Label | State |\n| --- | --- |\n| 表 | 😀 |\n| Alpha | ready |"
+
+        compiled = MarkdownContentCompiler.compile(raw_markdown=source)
+
+        assert compiled.visible_text == "Label · State\n表    · 😀\nAlpha · ready"
+        separator_columns: list[int] = [line.index("·") for line in compiled.visible_text.splitlines()]
+        assert separator_columns == [6, 5, 6]
+
+    def test_preserves_inline_link_text_in_table_cells_without_raw_link_syntax(self) -> None:
+        """Table cells reuse inline AST compilation and therefore keep readable link labels only."""
+        source: str = "| Document | Owner |\n| --- | --- |\n| [guide](https://example.test) | *Ada* |"
+
+        compiled = MarkdownContentCompiler.compile(raw_markdown=source)
+
+        assert compiled.visible_text == "Document · Owner\nguide    · Ada"
+        assert "https://example.test" not in compiled.visible_text
+        assert "markdown-link" in _roles(source=source)
+        assert "markdown-emphasis" in _roles(source=source)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "copy | this without a delimiter\nand retain it",
+            "| malformed | source\n| no delimiter",
+        ],
+    )
+    def test_keeps_non_table_pipe_text_as_safe_selectable_literal_source(self, source: str) -> None:
+        """Pipe-like prose that markdown-it does not classify as a table remains unchanged and selectable."""
+        compiled = MarkdownContentCompiler.compile(raw_markdown=source)
+
+        assert compiled.raw_markdown == source
+        assert compiled.visible_text == source
+        assert compiled.spans == ()
 
     def test_compiles_strikethrough_without_dropping_its_text_or_style(self) -> None:
         """GFM strikethrough keeps its child text and receives a visible semantic style."""

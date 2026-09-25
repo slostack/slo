@@ -83,13 +83,17 @@ class UserMessageBlock(Vertical):
         width: 100%;
         height: auto;
         margin: 1 0 1 0;
-        padding: 0 1;
+        padding: 1 1 2 1;
         background: $user-msg-bg;
+        align-vertical: middle;
     }
 
     UserMessageBlock .user-message-body {
+        width: 100%;
+        height: auto;
         color: $text;
         text-style: bold;
+        text-align: left;
         background: $user-msg-bg;
     }
     """

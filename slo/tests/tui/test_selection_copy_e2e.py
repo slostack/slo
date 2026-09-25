@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
+from textual.selection import SELECT_ALL
 
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
@@ -26,6 +27,7 @@ from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThink
 from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
+from src.tui.widgets.user_message_block import UserMessageBlock
 
 
 def _build_session() -> SloAgentSession:
@@ -64,44 +66,105 @@ class TestMouseSelectionE2E:
     """End-to-end mouse-drag selection → clipboard proof."""
 
     @pytest.mark.asyncio
-    async def test_drag_across_answer_block_selects_answer_without_copy_label(self) -> None:
-        """A real drag across an answer block selects the answer text, never ``Copy`` (spec 72.a.3).
-
-        Before the copy-header deletion, a drag over an answer block captured
-        the selectable header control, so the word ``Copy`` contaminated the
-        selection rectangle. The flattened block's answer surface is
-        selectable through Textual's documented ``Widget.get_selection`` seam,
-        so the drag must land the raw answer text — and only that text — on
-        the shared clipboard funnel.
-        """
+    async def test_drag_over_markdown_rich_answer_auto_copies_visible_text_without_markers(self) -> None:
+        """A derived Pilot drag copies the rendered answer label rather than Markdown source chrome."""
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             block: AssistantStreamBlock = await app.mount_assistant_block()
-            block.finalize(final_text="answer spans the block")
+            block.finalize(
+                final_text="# Plan\n\n[answer label](https://example.test)\n\n```python\nvalue = 1\n```"
+            )
             await pilot.pause(delay=0.1)
 
-            region = block.region
-            assert region.area > 0
-            start: tuple[int, int] = (region.x, region.y)
-            end: tuple[int, int] = (region.x + region.width - 1, region.y + region.height - 1)
-
+            body = block._answer_body
+            region = body.region
+            start: tuple[int, int] = (region.x, region.y + 2)
+            end: tuple[int, int] = (region.x + len("answer label"), region.y + 2)
             await pilot.mouse_down(offset=start)
+            await pilot.hover(offset=end)
             await pilot.mouse_up(offset=end)
             await pilot.pause()
 
             selection: Optional[str] = app.screen.get_selected_text()
-            assert selection is not None
-            assert "answer spans the block" in selection
-            assert "Copy" not in selection
+            assert selection == "answer label"
             assert app._clipboard == selection
-            captured_widgets = list(app.screen.selections)
-            assert captured_widgets, "drag should capture at least the answer surface"
-            for widget in captured_widgets:
-                assert widget is block or widget in block.query(
-                    "*"
-                ), "selection must stay on answer-block surfaces"
+            assert app.screen.selections[body] != SELECT_ALL
+            assert all(marker not in selection for marker in ["#", "`", "[", "]", "https://", "python"])
+
+    @pytest.mark.asyncio
+    async def test_drag_over_markdown_rich_user_auto_copies_visible_text_without_markers(self) -> None:
+        """A derived Pilot drag copies the rendered user code line without fence or link source markers."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            block: UserMessageBlock = await app.mount_user_message_block(
+                text="# Plan\n\n[user label](https://example.test)\n\n```python\nvalue = 1\n```"
+            )
+            await pilot.pause(delay=0.1)
+
+            body = block._body
+            region = body.region
+            start: tuple[int, int] = (region.x, region.y + 4)
+            end: tuple[int, int] = (region.x + len("value = 1"), region.y + 4)
+            await pilot.mouse_down(offset=start)
+            await pilot.hover(offset=end)
+            await pilot.mouse_up(offset=end)
+            await pilot.pause()
+
+            selection: Optional[str] = app.screen.get_selected_text()
+            assert selection == "value = 1"
+            assert app._clipboard == selection
+            assert app.screen.selections[body] != SELECT_ALL
+            assert all(marker not in selection for marker in ["#", "`", "[", "]", "https://", "python"])
+
+    @pytest.mark.asyncio
+    async def test_drag_over_markdown_rich_thinking_auto_copies_visible_text_without_markers(self) -> None:
+        """A real drag over wrapped thinking selects only compiler-emitted visible text."""
+        app: SloTUI = SloTUI(session=_build_session())
+
+        async with app.run_test(size=(48, 30)) as pilot:
+            await pilot.pause()
+            block: AssistantStreamThinkingBlock = await app.mount_thinking_block()
+            block.set_thinking(
+                content=(
+                    "# Reasoning plan\n\n"
+                    "**Wrapped thinking label with enough words to wrap** and "
+                    "[reference](https://example.test) plus `inline`.\n\n"
+                    "```python\nvalue = 1\n```"
+                )
+            )
+            await pilot.pause(delay=0.1)
+
+            body = block._body
+            visible_text: str = body._visible_text
+            target_text: str = "Wrapped thinking label with enough words to wrap"
+            target_offset: int = visible_text.index(target_text)
+            target_line: int = visible_text[:target_offset].count("\n")
+            target_column: int = len(visible_text[:target_offset].rsplit("\n", maxsplit=1)[-1])
+            region = body.region
+            assert region.area > 0
+
+            # The visible label wraps. Derive its post-layout coordinates from
+            # the body region and drag the first rendered line only.
+            start: tuple[int, int] = (region.x + target_column, region.y + target_line)
+            expected_selection: str = "Wrapped thinking label with enough"
+            end: tuple[int, int] = (
+                region.x + target_column + len(expected_selection) - 1,
+                region.y + target_line,
+            )
+            await pilot.mouse_down(offset=start)
+            await pilot.hover(offset=end)
+            await pilot.mouse_up(offset=end)
+            await pilot.pause()
+
+            selection: Optional[str] = app.screen.get_selected_text()
+            assert selection == expected_selection
+            assert app._clipboard == expected_selection
+            assert app.screen.selections[body] != SELECT_ALL
+            assert all(marker not in selection for marker in ["#", "**", "`", "[", "]", "https://", "python"])
 
     @pytest.mark.asyncio
     async def test_mouse_drag_selection_auto_copies_to_clipboard(self) -> None:

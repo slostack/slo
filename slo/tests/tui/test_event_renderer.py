@@ -102,6 +102,19 @@ class TestEventRendererDispatch:
         # Glyph + space + 120 chars + ellipsis
         assert content == f"⎿ {'x' * 120}…"
 
+    def test_bash_without_a_command_shows_preparing_headline(self) -> None:
+        """A bash call with incomplete arguments says it is preparing its command."""
+        log: FakeRichLog = FakeRichLog()
+        event: ProgressEventDAO = ProgressEventDAO(
+            is_final=False,
+            tool_name="bash",
+            tool_input={},
+        )
+
+        EventRenderer.render(event=event, log=log)
+
+        assert log.writes == [("⏺ bash — preparing command…", "tool-line")]
+
     def test_long_bash_command_is_truncated_in_the_headline(self) -> None:
         """A long bash command is truncated to 60 chars + ellipsis in the headline."""
         log: FakeRichLog = FakeRichLog()

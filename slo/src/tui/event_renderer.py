@@ -271,7 +271,9 @@ def _format_bash_call(*, tool_input: dict[str, Any]) -> str:
     Returns:
         str: Bash-specific headline body.
     """
-    command: str = _string_arg(tool_input=tool_input, key="command") or "..."
+    command: str = _string_arg(tool_input=tool_input, key="command") or ""
+    if not command:
+        return "bash — preparing command…"
     headline: str = f"$ {_truncate_inline_text(value=command)}"
     timeout: Optional[int] = _int_arg(tool_input=tool_input, key="timeout")
     if timeout is not None:

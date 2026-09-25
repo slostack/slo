@@ -2571,17 +2571,19 @@ class TestFlattenedTranscriptCopy:
 
         assert handler_names == ["on_assistant_stream_block_rendered"]
 
-    def test_four_transcript_blocks_share_transcript_output_pad(self) -> None:
-        """All four message widgets use the uniform ``padding: 0 1`` convention."""
-        message_blocks: list[type[Widget]] = [
-            UserMessageBlock,
+    def test_transcript_blocks_use_their_declared_output_padding_contracts(self) -> None:
+        """Assistant and tool blocks keep their compact inset while the user band owns its vertical breathing room."""
+        compact_blocks: list[type[Widget]] = [
             AssistantStreamThinkingBlock,
             AssistantStreamBlock,
             ToolExecutionBlock,
         ]
-        for block_class in message_blocks:
+        for block_class in compact_blocks:
             block_rule: str = block_class.DEFAULT_CSS.split(f"{block_class.__name__} {{")[1].split("}")[0]
             assert "padding: 0 1;" in block_rule, f"{block_class.__name__} must use padding: 0 1"
+
+        user_block_rule: str = UserMessageBlock.DEFAULT_CSS.split("UserMessageBlock {")[1].split("}")[0]
+        assert "padding: 1 1 2 1;" in user_block_rule
 
     @pytest.mark.asyncio
     async def test_focused_assistant_answer_copy_stays_green(self) -> None:

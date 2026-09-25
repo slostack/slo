@@ -38,6 +38,7 @@ _IMPORT_TO_DISTRIBUTION: dict[str, str] = {
     "PIL": "pillow",
     "yaml": "pyyaml",
     "pythonjsonlogger": "python-json-logger",
+    "markdown_it": "markdown-it-py",
 }
 
 # Imports deliberately left undeclared because they are optional: the code

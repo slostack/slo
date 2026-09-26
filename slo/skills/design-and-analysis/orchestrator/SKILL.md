@@ -60,6 +60,7 @@ routing hints below.
 1. **Detect whether this is a workflow task or an individual-skill task.**
    - The phrases `dynamic workflows` and `dyanmic workflows` **without a detach qualifier** are an explicit request for in-session multi-agent workflow execution; route them to `workflows` (spawn_sub_agents runs the phases in-session).
    - The same phrases **with a detach qualifier** ("headless", "detached", "independent") or detach wording ("in the background", "without blocking") are a detachment request; route them to `headless-orchestration` (launch_workflow detaches a headless orchestrator). A detached orchestrator never calls `launch_workflow`.
+   - **Stopping a detached workflow** goes through `/workflows abort <workflow-id>` (or `SIGTERM` to the orchestrator pid for a shell-launched `slo run --orchestrator`), never `pkill` / `kill` from the bash tool. A raw kill leaves the session's workflow handle out of step with the orchestrator's status, and every later `launch_workflow` in that session fails with `no evidence-backed correction`. Details: `headless-orchestration` → "Stopping a running workflow".
    - Workflow tasks span multiple phases: context gathering, spec writing,
      implementation, testing, review, or documentation updates.
    - Individual-skill tasks are narrower: write a router, update a client,

@@ -285,6 +285,40 @@ done
 
 ---
 
+## Stopping a running workflow — `/workflows abort`, never `pkill`
+
+**Mandatory.** Stop a detached workflow only through Slo's abort path. Never
+stop it with `pkill`, `kill`, `killall`, or a hand-written process-tree kill
+from the bash tool. This applies even when the operator asks you to "stop the
+workflow and commit what we have": stop it through the abort path first, then
+snapshot.
+
+| Launched from | Correct way to stop it |
+|---|---|
+| A TUI session via `launch_workflow` | The operator runs `/workflows abort <workflow-id>` in the owning session. An agent that needs the workflow stopped asks the operator to run it and waits until `workflow_status` reports `aborted`. |
+| A shell or CI via `slo run --orchestrator` (no TUI handle) | Send `SIGTERM` to the orchestrator pid only (`kill -TERM "$ORCH_PID"`). It routes to the runner's cooperative abort, which records `aborted` and stops its own children. Do not signal the children or the process group. |
+
+**Why:** a TUI-launched workflow has two durable records: the owning session's
+handle (`workflows/<workflow-id>.json`) and the orchestrator's own status file
+(`orchestrator.json`). `/workflows abort` writes a durable abort request, stops
+the orchestrator group, and marks the handle `aborted`, so both records agree.
+A raw `pkill` bypasses the handle. The orchestrator records `aborted`, but the
+handle can be left `failed`. The reconcile step has no legal correction from
+`failed` to `aborted`, so every later `launch_workflow` in that session fails
+with:
+
+```text
+no evidence-backed correction for <workflow-id>: failed -> aborted
+```
+
+That one stale handle then blocks all new launches in the session, not just
+the one that was killed.
+
+**Verify:** after stopping, `workflow_status <workflow-id>` must report
+`aborted` before you relaunch, commit a snapshot, or report the stop as done.
+
+---
+
 ## Step 6 — Serial vs. parallel phase dispatch inside the orchestrator
 
 The orchestrator (running as the `--orchestrator` headless process) uses `spawn_sub_agents` to dispatch phases. The dispatch strategy is determined by the workflow type:
@@ -373,7 +407,7 @@ python -m src.cli visualize --session "$WORKFLOW_SESSION" --no-follow
 |---|---|---|
 | `0` | `run_completed` — success | Extract synthesis; workflow done. |
 | `1` | `run_failed` | Read stderr: `tail -30 "${WORKFLOW_SESSION}.err"`. Check which phase failed in the JSONL. Retry with `--resume "$WORKFLOW_SESSION"` after fixing the root cause. |
-| `2` | `run_aborted` | Aborted (SIGINT / timeout). Resume if partial work exists, or relaunch. |
+| `2` | `run_aborted` | Aborted (`/workflows abort`, SIGTERM, or timeout). Resume if partial work exists, or relaunch. Never cause this state with `pkill`; see "Stopping a running workflow". |
 
 ---
 
@@ -498,6 +532,10 @@ Step 4: Launch with --orchestrator --enable-history --session-id --cwd --model
         Immediately output session id + visualize command to user (mandatory)
 
 Step 5: Monitor via visualizer or poll output JSONL for terminal event
+
+Stop:   /workflows abort <workflow-id> (TUI) or SIGTERM to the orchestrator pid (shell).
+        NEVER pkill/kill the process tree — it leaves a stale handle that blocks
+        every later launch_workflow in the session.
 
 Step 6: Serial phases → mode="single" per phase; chain → mode="chain"
         Parallel phases → mode="parallel", then mode="single" for synthesis

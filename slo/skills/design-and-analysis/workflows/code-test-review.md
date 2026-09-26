@@ -248,6 +248,7 @@ The following rules remain in effect throughout this workflow:
 - Secret scanning before commit — eye-scan all staged content for API keys, tokens, bcrypt hashes, and private keys before any `git commit`.
 - Confirmation before commit, push, or PR — `ALWAYS SEEK CONFIRMATION BEFORE COMMITTING CODE, PUSHING CODE TO REMOTE REPOSITORIES OR MERGING CODE`.
 - The agent still needs to gather context. Reading the relevant `build-*.md` and KB entries is required before writing code for a new layer, not optional.
+- When this workflow runs detached, stop it only with `/workflows abort <workflow-id>` (or `SIGTERM` to the orchestrator pid for a shell launch). Never `pkill` / `kill` its process tree, even to snapshot work before a commit. A raw kill leaves a stale handle that makes every later `launch_workflow` in the session fail with `no evidence-backed correction`. See `skills/design-and-analysis/headless-orchestration/SKILL.md` → "Stopping a running workflow".
 
 ---
 
@@ -270,4 +271,5 @@ Step 3: Completion Check (fresh scan; percentage score; pending guidance)
 
 [MANUAL] pause at end of each step
 [AUTO]   run to completion, confirm before commit/push/PR
+[STOP]   detached run → /workflows abort <workflow-id>; never pkill/kill
 ```

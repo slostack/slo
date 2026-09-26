@@ -154,11 +154,13 @@ Lead the briefing with the domain explanation. Engineers and reviewers rarely sh
 3. **Confluence — PRDs and product pages** — PRDs are usually written by product/business and explain the *why* and the customer/operator workflow. Search separately for `"PRD"`, `"Product Requirement"`, `"Proposal"`, `"Strategy"` alongside the subject keyword. Don't stop at the first RFC — the PRD almost always lives on a sibling page.
 4. **Confluence — runbooks, post-mortems, compliance pages** — for regulated or SLA-bound areas (dispute handling, refunds, data-retention, partner contractual rules) there are usually compliance one-pagers or operational runbooks. Pull these for the regulatory framing.
 5. **Google Drive — meeting notes and chat threads** — if a Google Drive / Docs connector is available, search Drive for the subject keywords and pull any **meeting notes, design conversations, vendor discussions, customer-success threads, or product brainstorms** that pre-date the JIRA ticket. These often contain the "real" rationale before it got sanitised into a ticket. If no Drive connector is available, **ask the user** whether such a thread exists and request a link.
-6. **Knowledge base** — grep `$SLO_KB_DIR`:
+6. **Knowledge base** — locate it first with `skills/design-and-analysis/locate-knowledge-base/SKILL.md`.
+   Discovery is non-blocking: when no KB is found, tell the user, offer to
+   create one, and move on to the next source. Otherwise grep `$SLO_KB_DIR`:
    ```bash
-   rg -i "<subject keywords>" $SLO_KB_DIR
+   rg -i "<subject keywords>" "$SLO_KB_DIR"
    ```
-   - Start at `KB/Home.md` and the relevant repo's `index.md`.
+   - Start at the KB entry point (`Welcome.md` or `index.md`) and the relevant repo's `index.md`.
    - Always read `gotchas.md` in the relevant domain folder.
 7. **Memory** — check `<project-memory>/MEMORY.md` for prior project / feedback / reference notes on the subject. The memory often has a one-line summary plus a link to the deeper page.
 8. **External authoritative sources (only if internal sources are thin)** — for industry terminology, use reputable references (regulator guidance, published standards, vendor public docs). Cite the source URL in the briefing. Do not rely on training-time recall for regulatory definitions.

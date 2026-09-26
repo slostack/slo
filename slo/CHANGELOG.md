@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-09-26
+
+**Skills no longer stop when no knowledge base is configured.**
+
+### Changed
+
+- **Non-blocking knowledge-base discovery.** A new `locate-knowledge-base`
+  skill checks `SLO_KB_DIR`, then `$SLO_HOME/KnowledgeBase/KB`
+  (`~/.slo/KnowledgeBase/KB` by default), for a `Welcome.md` or `index.md`
+  entry point. When none is found it tells the user, offers to create one,
+  sets `SLO_HOME` if unset, and keeps working. The specification workflow no
+  longer treats reading `$SLO_KB_DIR/Welcome.md` as a pre-condition, and every
+  skill that reads the KB now defers to this procedure. A committed-skills
+  test enforces it.
+
 ## [0.18.0] — 2026-09-26
 
 **The TUI now renders assistant and user messages as selectable Markdown with

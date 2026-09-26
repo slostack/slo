@@ -40,7 +40,7 @@ task. The output looks like your codebase, not like a model's default style.
 ## 1. Installation
 
 Slo installs with a single command. The installer pulls the pinned release and
-installs it with `pipx`. The 116 vendored skill documents ship **inside the
+installs it with `pipx`. The 117 vendored skill documents ship **inside the
 installed package** (beside it in pipx's venv, not in `~/.slo/`); after a
 successful install the installer writes one non-secret managed environment
 file, `~/.slo/shell/environment.sh`, which defaults `SLO_HOME` to `~/.slo` and
@@ -231,7 +231,7 @@ starts with it loaded. Slo can write that file for you — just ask.
         └── runs/<run_id>.json  one immutable record per fire
 ```
 
-Set `SLO_HOME` to move this whole tree somewhere else. The 116 vendored skill
+Set `SLO_HOME` to move this whole tree somewhere else. The 117 vendored skill
 documents are *not* here — they ship inside the installed pipx package, and
 the managed `shell/environment.sh` points `SLO_SKILLS_DIR` at them. (A
 populated legacy `~/.slo/skills` tree, if you have one from an old install, is
@@ -581,7 +581,7 @@ You never name a skill. You describe the task; Slo finds the skill.
         with named arguments and type hints."
         │
         ▼
-  Slo reads skills/INDEX.md  (the catalogue of all 116)
+  Slo reads skills/INDEX.md  (the catalogue of all 117)
         │
         ▼
   matches: build-routers
@@ -596,7 +596,7 @@ You never name a skill. You describe the task; Slo finds the skill.
 ```
 
 The system prompt only carries a *pointer* to `skills/INDEX.md`. The agent reads
-the index, picks what it needs, and reads only those files — so 116 skills cost
+the index, picks what it needs, and reads only those files — so 117 skills cost
 almost nothing until they are actually relevant.
 
 ### 4.2 What ships in the box
@@ -908,7 +908,7 @@ slo/
 │   ├── auth/                    credential resolver, store, OAuth flows
 │   ├── cli/                     Typer app: run / serve / visualize / update / schedule
 │   └── tui/                     the Textual UI (see §6.7)
-├── skills/                      116 SKILL.md files + INDEX.md
+├── skills/                      117 SKILL.md files + INDEX.md
 ├── tests/                       ~3,200 tests
 └── docs/                        headless + scheduler cookbooks
 ```
@@ -1111,7 +1111,12 @@ patterns, failure-mode lookups, and conventions too broad for one repo.
 export SLO_KB_DIR=~/Code/KnowledgeBase/KB
 ```
 
-**Ask Slo what it knows.** Rather than memorising 116 skill names:
+No `SLO_KB_DIR`? Skills also look in `$SLO_HOME/KnowledgeBase/KB`
+(`~/.slo/KnowledgeBase/KB` by default) for a `Welcome.md` or `index.md`. If
+neither location has a knowledge base, the agent says so, offers to create
+one there, and keeps working. A missing knowledge base never blocks a task.
+
+**Ask Slo what it knows.** Rather than memorising 117 skill names:
 
 > "What skills do you have for working with Vue components?"
 

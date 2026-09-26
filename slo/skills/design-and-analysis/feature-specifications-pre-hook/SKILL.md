@@ -129,7 +129,11 @@ If the operator asked for only one half, state that inference and why. Otherwise
 
 The KB at `$SLO_KB_DIR/` is the durable cross-session memory. Read it scoped to the feature.
 
-1. Always read `KB/Home.md` (or the vault's index page) to refresh the index.
+**Knowledge base discovery is non-blocking.** Locate the KB with `skills/design-and-analysis/locate-knowledge-base/SKILL.md`
+first. When no KB is found, tell the user, offer to create one, record
+"no knowledge base found" in the Context Bundle, and continue to Step 4.
+
+1. Read the KB entry point (`Welcome.md` or `index.md`; `Home.md` in older vaults) to refresh the index.
 2. For each KB folder whose scope overlaps the feature, read its `index.md` and any clearly relevant entry.
 3. Specifically scan each visited README's **"I saw this error, what now?"** table for failure modes the spec must pre-empt.
 

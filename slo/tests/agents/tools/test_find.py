@@ -29,6 +29,24 @@ async def test_find_matches_glob(repo: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_when_pattern_is_basename_matches_nested_files(repo: Path) -> None:
+    """Regression: '*.py' used to match only the search root's direct children."""
+    result = await find_tool.ainvoke({"pattern": "*.py", "path": str(repo)})
+    assert "src/a.py" in result
+    assert "src/b.py" in result
+    assert "dist/out.py" not in result  # gitignored
+
+
+@pytest.mark.asyncio
+async def test_find_when_pattern_has_directory_part_matches_only_that_level(repo: Path) -> None:
+    (repo / "src" / "deep").mkdir()
+    (repo / "src" / "deep" / "c.py").write_text("")
+    result = await find_tool.ainvoke({"pattern": "src/*.py", "path": str(repo)})
+    assert "src/a.py" in result
+    assert "src/deep/c.py" not in result
+
+
+@pytest.mark.asyncio
 async def test_find_empty_returns_message(repo: Path) -> None:
     result = await find_tool.ainvoke({"pattern": "**/*.rs", "path": str(repo)})
     assert "no files matching" in result

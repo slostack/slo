@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from config.logger import log_error, log_info
 from src.agents.tools._blocking import run_blocking_tool_call
 from src.agents.tools._gitignore import GitignoreFilter
+from src.agents.tools._glob import GlobMatcher
 from src.agents.tools._truncate import (
     DEFAULT_LIMIT_FIND,
     DEFAULT_MAX_BYTES,
@@ -34,7 +35,11 @@ class FindSchemaDAO(BaseModel):
     """LangChain args schema for the find tool."""
 
     pattern: str = Field(
-        description=("Glob pattern to match files, e.g. '*.py', '**/*.json', " "or 'src/**/*.spec.py'"),
+        description=(
+            "Glob pattern to match files. A pattern without '/' matches file names "
+            "at any depth, e.g. '*.py'; a pattern with '/' is matched relative to "
+            "the search directory, e.g. 'src/*.py' or 'src/**/*.spec.py'"
+        ),
     )
     path: Optional[str] = Field(
         default=None,
@@ -63,7 +68,7 @@ class FindTool:
         """Glob-walk ``path`` and return matching relative paths.
 
         Args:
-            pattern (str): Python glob pattern.
+            pattern (str): Tool glob pattern; see ``GlobMatcher``.
             path (Optional[str]): Search root. Defaults to cwd.
             limit (Optional[int]): Hard cap on result count.
 
@@ -89,7 +94,7 @@ class FindTool:
         """Glob-walk ``path`` synchronously and return matching paths.
 
         Args:
-            pattern (str): Python glob pattern.
+            pattern (str): Tool glob pattern; see ``GlobMatcher``.
             path (Optional[str]): Search root. Defaults to cwd.
             limit (Optional[int]): Hard cap on result count.
 
@@ -108,7 +113,7 @@ class FindTool:
 
             out: list[str] = []
             total_bytes = 0
-            for match in root.glob(pattern):
+            for match in GlobMatcher.iter_matches(root=root, pattern=pattern):
                 if not match.is_file():
                     continue
                 if filt.is_ignored(path=match):

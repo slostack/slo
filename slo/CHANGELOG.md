@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`find` and `grep` search nested directories for file-name globs.** A
+  pattern with no `/` (for example `*.py`, `process.py`) matched only the
+  search directory's direct children, so agents got "no files matching" /
+  "no matches" for files one level down and concluded they did not exist.
+  Such patterns now match at any depth, like `find -name` and `rg -g`; a
+  pattern with a `/` (`src/*.py`, `**/*.json`) is matched relative to the
+  search directory as before. The rule lives in one place,
+  `src/agents/tools/_glob.py`.
+
 ## [0.19.0] — 2026-09-26
 
 **`slo update` now sets missing Slo environment defaults, and the system prompt

@@ -41,7 +41,11 @@ Before the first step begins, confirm:
 
 - The operator has provided a feature description, JIRA ticket, Confluence URL, or verbal brief.
 - `AGENTS.md` and `docs/RESEARCH.md` have been read (or are already in context). If either is empty, populate it before proceeding — see the CLAUDE.md instruction on empty `AGENTS.md` / `docs/RESEARCH.md`.
-- The KB index at `$SLO_KB_DIR/Welcome.md` has been read (or is already in context).
+- The knowledge base has been looked for with `skills/design-and-analysis/locate-knowledge-base/SKILL.md`. This check is
+  non-blocking: read the entry point (`Welcome.md` or `index.md` under
+  `$SLO_KB_DIR`) when it exists. When no KB is found, tell the user, offer to
+  create one, and continue the workflow without it. A missing KB is never a
+  reason to stop.
 
 ---
 

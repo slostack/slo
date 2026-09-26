@@ -80,8 +80,12 @@ Increasing `poll_until` from 30s to 60s when a test "sometimes" times out is a w
 Before opening `pytest -s --pdb` or asking the user, grep the KB:
 
 ```bash
-rg -i "<keyword>" $SLO_KB_DIR/integration_tests
+rg -i "<keyword>" "$SLO_KB_DIR/integration_tests"
 ```
+
+Locate the KB with `skills/design-and-analysis/locate-knowledge-base/SKILL.md` first. This is non-blocking:
+when no KB is found, tell the user, offer to create one, and carry on debugging
+from the code, logs, and `07-debugging-failing-tests.md`.
 
 If the symptom matches any entry in `gotchas.md`, `cardinal-rules.md`, or `debugging-cheatsheet.md`, follow that page's playbook before constructing a new hypothesis. The KB exists so the next reader does not pay the same cost. See `[[meta/kb-upkeep-rule]]` for the upstream rule.
 

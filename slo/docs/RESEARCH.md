@@ -114,6 +114,20 @@ slo --plugin plugins/bash_live_output/plugin.py
   `tests/tui/test_selection_copy.py`, `tests/tui/test_selection_copy_e2e.py`,
   and replay hydration in `tests/tui/test_replay_resume.py`.
 
+## Knowledge-base discovery in skills
+
+- The KB is optional. `skills/design-and-analysis/locate-knowledge-base/SKILL.md`
+  is the single owner of discovery: `$SLO_KB_DIR`, then
+  `${SLO_HOME:-~/.slo}/KnowledgeBase/KB`; entry point `Welcome.md`, `index.md`,
+  `Index.md`, or legacy `Home.md`.
+- A missing KB never blocks a skill. The agent tells the user, offers to create
+  one (setting `SLO_HOME` when unset), and persists the variables in the user's
+  shell profile, never in the installer-owned `~/.slo/shell/environment.sh`.
+- `tests/agents/skills/test_committed_skills.py` fails any skill that references
+  `$SLO_KB_DIR` without deferring to that skill and stating it is non-blocking.
+- The runtime `KB_BLOCK` in `src/agents/slo_agent/prompts/system_prompt.py`
+  still reads only `SLO_KB_DIR` and names `Home.md` as the start page.
+
 ## Verification owners
 
 - Plugin tests: `tests/agents/slo_agent/plugins/`.

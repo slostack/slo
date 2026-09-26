@@ -77,3 +77,41 @@ class TestCommittedSkills:
             text = skill_file.read_text(encoding="utf-8")
             for snippet in FORBIDDEN_SNIPPETS:
                 assert snippet not in text, f"{skill_file}: found forbidden snippet {snippet!r}"
+
+
+LOCATE_KB_SKILL_PATH = "skills/design-and-analysis/locate-knowledge-base/SKILL.md"
+
+
+class TestKnowledgeBaseDiscoveryIsNonBlocking:
+    """Every skill that reads the KB defers to one non-blocking discovery procedure.
+
+    A new user has no ``SLO_KB_DIR``; a skill that treats the KB as a hard
+    pre-condition stalls them on a variable they have never heard of.
+    """
+
+    def test_locate_knowledge_base_skill_defines_the_procedure(self) -> None:
+        text = (SKILLS_DIR.parent / LOCATE_KB_SKILL_PATH).read_text(encoding="utf-8")
+        for required in (
+            "$SLO_KB_DIR",
+            "Welcome.md",
+            "index.md",
+            "$SLO_HOME/KnowledgeBase/KB",
+            "~/.slo/KnowledgeBase/KB",
+            'export SLO_HOME="$HOME/.slo"',
+            "Never stop",
+        ):
+            assert required in text, f"locate-knowledge-base is missing {required!r}"
+
+    def test_every_kb_reader_defers_to_the_non_blocking_procedure(self) -> None:
+        readers = [
+            path
+            for path in sorted(SKILLS_DIR.rglob("*.md"))
+            if "$SLO_KB_DIR" in path.read_text(encoding="utf-8")
+            and not path.as_posix().endswith(LOCATE_KB_SKILL_PATH)
+            and path.name != "INDEX.md"
+        ]
+        assert readers, "expected at least one skill to reference $SLO_KB_DIR"
+        for path in readers:
+            text = path.read_text(encoding="utf-8")
+            assert LOCATE_KB_SKILL_PATH in text, f"{path}: must defer to {LOCATE_KB_SKILL_PATH}"
+            assert "non-blocking" in text, f"{path}: must state that KB discovery is non-blocking"

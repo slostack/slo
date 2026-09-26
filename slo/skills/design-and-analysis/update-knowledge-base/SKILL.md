@@ -30,6 +30,19 @@ source_prompt: update-knowledge-base.md
 
 ---
 
+## Before you write: locate the KB (non-blocking)
+
+Run `skills/design-and-analysis/locate-knowledge-base/SKILL.md` first. It resolves `$SLO_KB_DIR`,
+then `$SLO_HOME/KnowledgeBase/KB` (`~/.slo/KnowledgeBase/KB` by default), and
+finds the entry point (`Welcome.md` or `index.md`).
+
+- **KB found** — continue with this skill. Link new top-level pages from the entry point.
+- **No KB found** — tell the user, point them at `SLO_KB_DIR`, and ask whether to
+  create one there. On yes, follow that skill's creation steps and continue. On no,
+  put the learnings in your final summary instead. Do not stop or fail the session.
+
+---
+
 ## Purpose
 
 The Knowledge Base is the long-term institutional memory for the order-management platform. Unlike `LEARNINGS.md` (which captures reusable coding solutions) or `RESEARCH.md` (which indexes the codebase), the KB captures **business context, architecture, design decisions, gotchas, and cross-repo knowledge** in an interlinked Obsidian vault.
@@ -131,7 +144,7 @@ real vault already uses.
 
 ```
 $SLO_KB_DIR/
-├── Home.md                              # Entry point — links to all repos and cross-cutting concerns
+├── Welcome.md                           # Entry point (or index.md) — links to all repos and cross-cutting concerns
 ├── architecture/                        # Cross-cutting architectural knowledge
 │   ├── system-overview.md               #   How services connect (inter-service map)
 │   ├── event-bus.md                     #   Redis Streams, NATS, Celery messaging

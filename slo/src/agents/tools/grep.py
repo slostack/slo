@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from config.logger import log_error, log_info
 from src.agents.tools._blocking import run_blocking_tool_call
 from src.agents.tools._gitignore import GitignoreFilter
+from src.agents.tools._glob import GlobMatcher
 from src.agents.tools._truncate import (
     DEFAULT_LIMIT_GREP,
     DEFAULT_MAX_BYTES,
@@ -42,7 +43,11 @@ class GrepSchemaDAO(BaseModel):
     )
     glob: Optional[str] = Field(
         default=None,
-        description="Filter files by glob pattern, e.g. '*.py' or '**/*.spec.py'",
+        description=(
+            "Filter files by glob pattern. A pattern without '/' matches file names "
+            "at any depth, e.g. '*.py'; a pattern with '/' is matched relative to "
+            "the search directory, e.g. 'src/*.py' or 'src/**/*.spec.py'"
+        ),
     )
     ignoreCase: Optional[bool] = Field(
         default=False,
@@ -196,9 +201,18 @@ class GrepTool:
             return f"Error: grep failed: {exc}"
 
     @classmethod
-    def _iter_files(cls, root: Path, glob: Optional[str]) -> list[Path]:
-        pattern = glob or "**/*"
-        return [p for p in root.glob(pattern) if p.is_file()]
+    def _iter_files(cls, *, root: Path, glob: Optional[str]) -> list[Path]:
+        """Return the files under ``root`` that the optional ``glob`` filter selects.
+
+        Args:
+            root (Path): Directory the search is rooted at.
+            glob (Optional[str]): Tool glob filter; every file when omitted.
+
+        Returns:
+            list[Path]: Matching files, before gitignore filtering.
+        """
+        pattern: str = glob or "**/*"
+        return [p for p in GlobMatcher.iter_matches(root=root, pattern=pattern) if p.is_file()]
 
     @classmethod
     def _append_context(

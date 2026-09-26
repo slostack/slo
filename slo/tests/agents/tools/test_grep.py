@@ -68,6 +68,37 @@ async def test_grep_glob_filter(repo: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_grep_when_glob_is_basename_filters_nested_files(repo: Path) -> None:
+    """Regression: glob='*.py' used to search only the search root's direct children."""
+    (repo / "src" / "skip.txt").write_text("def foo():\n")
+    result = await grep_tool.ainvoke(
+        {
+            "pattern": "def foo",
+            "path": str(repo),
+            "glob": "*.py",
+        }
+    )
+    assert "a.py" in result
+    assert "skip.txt" not in result
+    assert "secret.py" not in result  # gitignored
+
+
+@pytest.mark.asyncio
+async def test_grep_when_glob_has_directory_part_matches_only_that_level(repo: Path) -> None:
+    (repo / "src" / "deep").mkdir()
+    (repo / "src" / "deep" / "c.py").write_text("def foo():\n")
+    result = await grep_tool.ainvoke(
+        {
+            "pattern": "def foo",
+            "path": str(repo),
+            "glob": "src/*.py",
+        }
+    )
+    assert "a.py" in result
+    assert "c.py" not in result
+
+
+@pytest.mark.asyncio
 async def test_grep_limit(repo: Path) -> None:
     for i in range(150):
         (repo / "src" / f"f{i}.py").write_text("def foo():\n")

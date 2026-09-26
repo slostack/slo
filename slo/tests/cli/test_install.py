@@ -1188,7 +1188,7 @@ class TestFinalizeShellEnvironment:
             assert text.count(MANAGED_ENV_MARK_BEGIN) == 1, name
 
     def test_finalize_shell_environment_rerun_refreshes_moved_location(self, fake_bin: FakeBin) -> None:
-        """A pipx Location change is picked up on rerun (the M2 recovery path)."""
+        """A pipx Location change is picked up on rerun of the installer."""
         old_location: Path = fake_bin.make_package_location(name="old")
         fake_bin.write_fake_pipx(location=old_location)
         first = fake_bin.run(snippet="slo_finalize_shell_environment")

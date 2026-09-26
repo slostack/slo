@@ -37,18 +37,25 @@ skill that reads `$SLO_KB_DIR` defers to this procedure.
 
 ## Step 1 — Look for a KB
 
-Check two places, in order. A place counts as a KB only when it is a directory
-that holds an entry point: `Welcome.md`, `index.md`, `Index.md`, or (legacy
-vaults) `Home.md`.
+Check these places, in order. A place counts as a KB only when it is a
+directory that holds an entry point: `Welcome.md`, `index.md`, `Index.md`, or
+(legacy vaults) `Home.md`. When a variable points at a file (for example
+`.../KB/Welcome.md`), use the directory that contains it.
 
 | Order | Location | Meaning |
 |---|---|---|
 | 1 | `$SLO_KB_DIR` | The user's explicit choice. |
-| 2 | `$SLO_HOME/KnowledgeBase/KB` (`~/.slo/KnowledgeBase/KB` when `SLO_HOME` is unset) | The Slo default location. |
+| 2 | `$KB_DIR` | Accepted fallback name. |
+| 3 | `$SLO_HOME/KnowledgeBase/KB` (`~/.slo/KnowledgeBase/KB` when `SLO_HOME` is unset) | The Slo default location. |
+
+The installer and `slo update` set `SLO_KB_DIR` to the default location when
+neither variable exists, but they never create the directory. The system
+prompt's Knowledge Base section shows the path Slo resolved for this session.
 
 ```bash
-for dir in "${SLO_KB_DIR:-}" "${SLO_HOME:-$HOME/.slo}/KnowledgeBase/KB"; do
+for dir in "${SLO_KB_DIR:-}" "${KB_DIR:-}" "${SLO_HOME:-$HOME/.slo}/KnowledgeBase/KB"; do
   [ -n "$dir" ] || continue
+  [ -f "$dir" ] && dir="$(dirname "$dir")"
   for entry in Welcome.md index.md Index.md Home.md; do
     [ -f "$dir/$entry" ] && { echo "$dir/$entry"; break 2; }
   done
@@ -69,8 +76,8 @@ to the pages the task needs.
 
 1. Tell the user plainly:
    - No knowledge base was found.
-   - Which paths were checked, and whether `SLO_KB_DIR` is unset or points to a
-     missing directory or entry point.
+   - Which paths were checked, and whether `SLO_KB_DIR` / `KB_DIR` are unset or
+     point to a missing directory or entry point.
    - `SLO_KB_DIR` is the environment variable that points Slo at a KB.
 2. Ask **once per session** whether to create one at `$SLO_HOME/KnowledgeBase/KB`
    (`~/.slo/KnowledgeBase/KB` when `SLO_HOME` is unset). Also offer the choice

@@ -11,6 +11,11 @@ This mirrors ``install.sh`` exactly — both reinstall via
 update share one mechanism. The repo identity and layout below are kept in sync
 with ``SLO_REPO_URL`` / ``SLO_REPO_SUBDIR`` in ``install.sh``.
 
+After the reinstall, :class:`ShellEnvironmentDefaults` sets any missing
+``SLO_HOME`` / ``SLO_SKILLS_DIR`` / ``SLO_KB_DIR`` default by running the
+just-installed ``install.sh --finalize-environment``. ``install.sh`` stays the
+only writer of shell state; variables that already exist are never touched.
+
 Stdlib-only on purpose: no third-party imports, so the logic stays usable from
 minimal contexts and matches ``install.sh``'s constraints.
 """
@@ -24,11 +29,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import ClassVar, Optional
+from typing import ClassVar, Mapping, Optional
 
 from config.cfg import cfg as _cfg
 
-__all__ = ["Updater", "main"]
+__all__ = ["ShellEnvironmentDefaults", "Updater", "main"]
 
 
 class Updater:
@@ -38,7 +43,8 @@ class Updater:
     command. It resolves a git ref (latest release, ``main``, or an explicit
     ref), builds the pip VCS requirement, and reinstalls with ``pipx install
     --force`` — replacing the pipx venv in place and leaving ``SLO_HOME``
-    (runtime data) untouched.
+    (runtime data) untouched. It then sets any missing environment defaults
+    through :class:`ShellEnvironmentDefaults`.
     """
 
     # ---- Repository identity (keep in sync with install.sh) ----------------
@@ -61,6 +67,7 @@ class Updater:
         """
         target = ref or ("main" if development else cls.resolve_latest_release_tag())
         cls._pipx_install(spec=cls._pipx_spec(ref=target))
+        ShellEnvironmentDefaults.ensure(environ=os.environ)
 
     @classmethod
     def resolve_latest_release_tag(cls) -> str:
@@ -218,6 +225,156 @@ class Updater:
         except OSError:
             return True
         return completed.returncode != 0
+
+
+class ShellEnvironmentDefaults:
+    """Set missing Slo environment defaults after ``slo update`` reinstalls the package.
+
+    Only variables that do not exist are set: when ``SLO_HOME``,
+    ``SLO_SKILLS_DIR``, and ``SLO_KB_DIR`` (or its ``KB_DIR`` fallback) all
+    exist, shell files are left untouched. Otherwise the just-installed
+    ``install.sh --finalize-environment`` writes the managed environment file
+    and profile source blocks, whose lines themselves only fill unset
+    variables. An existing ``SLO_SKILLS_DIR`` is never rewritten, but a stale
+    one is reported so the user can fix their own export.
+    """
+
+    # Each required variable and the names that satisfy it, in precedence order.
+    REQUIRED: ClassVar[dict[str, tuple[str, ...]]] = {
+        "SLO_HOME": ("SLO_HOME",),
+        "SLO_SKILLS_DIR": ("SLO_SKILLS_DIR",),
+        "SLO_KB_DIR": ("SLO_KB_DIR", "KB_DIR"),
+    }
+
+    @classmethod
+    def ensure(cls, *, environ: Mapping[str, str]) -> None:
+        """Set missing defaults via the installed ``install.sh``, then report a stale skills path.
+
+        Args:
+            environ: The environment ``slo update`` runs in.
+
+        Raises:
+            SystemExit: When a default is missing and the installed package or
+                its installer cannot be found or fails. The package itself is
+                already updated at that point, and the message says so.
+        """
+        location = cls.installed_location()
+        missing = cls.missing(environ=environ)
+        if missing:
+            cls._finalize(location=location, missing=missing)
+        else:
+            print(
+                "slo update: SLO_HOME, SLO_SKILLS_DIR and SLO_KB_DIR are already set; "
+                "shell environment left unchanged.",
+                file=sys.stderr,
+            )
+        cls._report_skills_dir(environ=environ, location=location)
+
+    @classmethod
+    def missing(cls, *, environ: Mapping[str, str]) -> list[str]:
+        """Return the required variables that do not exist (set-but-empty counts as existing).
+
+        Args:
+            environ: The environment to inspect.
+
+        Returns:
+            The missing variable names, in ``REQUIRED`` order.
+        """
+        return [
+            name for name, accepted in cls.REQUIRED.items() if not any(key in environ for key in accepted)
+        ]
+
+    @staticmethod
+    def installed_location() -> Optional[Path]:
+        """Return the installed distribution ``Location`` from ``pipx runpip slo show slo``.
+
+        Mirrors ``slo_resolve_vendored_skills_dir`` in ``install.sh``: pip
+        metadata is the only source of truth, and the pipx layout is never guessed.
+
+        Returns:
+            The single reported ``Location``, or ``None`` when pipx fails or the
+            metadata has no, or more than one, ``Location`` field.
+        """
+        try:
+            completed = subprocess.run(
+                ["pipx", "runpip", "slo", "show", "slo"],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        locations = [
+            line.removeprefix("Location: ").strip()
+            for line in completed.stdout.splitlines()
+            if line.startswith("Location: ")
+        ]
+        return Path(locations[0]) if len(locations) == 1 else None
+
+    @classmethod
+    def _finalize(cls, *, location: Optional[Path], missing: list[str]) -> None:
+        """Run the installed ``install.sh --finalize-environment``.
+
+        Args:
+            location: Installed distribution location, or ``None`` when unknown.
+            missing: Variable names being defaulted, for the progress message.
+
+        Raises:
+            SystemExit: When the installer cannot be found or fails.
+        """
+        failure_prefix = "slo was updated, but its environment defaults could not be set"
+        if location is None:
+            raise SystemExit(
+                f"{failure_prefix}: 'pipx runpip slo show slo' did not report the installed location. "
+                "Re-run the public install.sh to set them."
+            )
+        installer = location / "install.sh"
+        if not installer.is_file():
+            raise SystemExit(
+                f"{failure_prefix}: {installer} is missing. Re-run the public install.sh to set them."
+            )
+        print(f"slo update: setting missing Slo environment defaults: {', '.join(missing)}", file=sys.stderr)
+        try:
+            subprocess.run(
+                [shutil.which("bash") or "bash", str(installer), "--finalize-environment"], check=True
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise SystemExit(
+                f"{failure_prefix} ({error}). Fix the issue above, then run: "
+                f"bash {installer} --finalize-environment"
+            ) from error
+        print(
+            "slo update: open a new shell (or source ~/.slo/shell/environment.sh) to pick them up.",
+            file=sys.stderr,
+        )
+
+    @staticmethod
+    def _report_skills_dir(*, environ: Mapping[str, str], location: Optional[Path]) -> None:
+        """Warn when an existing ``SLO_SKILLS_DIR`` is broken or differs from the installed skills.
+
+        Args:
+            environ: The environment ``slo update`` runs in.
+            location: Installed distribution location, or ``None`` when unknown.
+        """
+        if "SLO_SKILLS_DIR" not in environ:
+            return
+        configured = environ["SLO_SKILLS_DIR"]
+        installed = location / "skills" if location is not None else None
+        installed_text = str(installed) if installed is not None else "an unknown location"
+        if not configured or not (Path(configured) / "INDEX.md").is_file():
+            print(
+                f"slo update: warning: SLO_SKILLS_DIR={configured!r} has no INDEX.md, so Slo cannot load "
+                f"its skills. The installed skills are at {installed_text}. Update or remove that "
+                "export in your shell profile.",
+                file=sys.stderr,
+            )
+            return
+        if installed is not None and os.path.realpath(configured) != os.path.realpath(installed):
+            print(
+                f"slo update: note: SLO_SKILLS_DIR points to {configured}, not the skills just installed "
+                f"at {installed}. Slo will keep using {configured}.",
+                file=sys.stderr,
+            )
 
 
 def main(argv: Optional[list[str]] = None) -> int:

@@ -10,7 +10,7 @@
 # ~/.slo, which collides with that data and aborts ("destination path already
 # exists") on any machine where slo has run. After a successful pipx install,
 # the ONLY writes under SLO_HOME are the non-secret managed environment file
-# ~/.slo/shell/environment.sh (default SLO_HOME + SLO_SKILLS_DIR) and bounded
+# ~/.slo/shell/environment.sh (default SLO_HOME, SLO_SKILLS_DIR, SLO_KB_DIR) and bounded
 # source blocks in shell startup files (spec 80); sessions, credentials, user
 # skills, user workflows, and any legacy ~/.slo/skills tree are never touched.
 #
@@ -391,10 +391,13 @@ slo_install() {
 }
 
 # ---- 7. Shell environment finalisation (spec 80) ----------------------------
-# After a successful pipx install, persist two *defaults* so fresh supported
-# shells launch slo with an explicit SLO_HOME and SLO_SKILLS_DIR:
+# After a successful pipx install, persist three *defaults* so fresh supported
+# shells launch slo with an explicit SLO_HOME, SLO_SKILLS_DIR, and SLO_KB_DIR:
 #   SLO_HOME=$HOME/.slo
 #   SLO_SKILLS_DIR=<installed package location>/skills
+#   SLO_KB_DIR=$KB_DIR, else $SLO_HOME/KnowledgeBase/KB
+# `slo update` reaches the same code through `install.sh --finalize-environment`
+# (run from the just-installed package) when any of them is missing.
 # One installer-owned managed environment file ($HOME/.slo/shell/environment.sh)
 # defines both defaults; shell profiles carry only a bounded source block that
 # reads it. config/cfg.py remains the sole runtime resolver — the managed file
@@ -464,9 +467,11 @@ slo_write_managed_environment_file() {
     # Atomically write the installer-owned managed environment file.
     #
     # $HOME/.slo/shell/environment.sh is the ONLY persistent definition of the
-    # two shell defaults. It supplies defaults only: a caller that exports
-    # SLO_HOME or SLO_SKILLS_DIR before source time keeps that value, which is
-    # what keeps config/cfg.py's explicit-override precedence intact. The file
+    # three shell defaults. It supplies defaults only: a caller that exports
+    # SLO_HOME, SLO_SKILLS_DIR, or SLO_KB_DIR before source time keeps that
+    # value, which is what keeps config/cfg.py's explicit-override precedence
+    # intact. SLO_KB_DIR falls back to KB_DIR, then $SLO_HOME/KnowledgeBase/KB;
+    # only the variable is set, the directory is never created here. The file
     # is non-secret, so it is mode 0644: owner-writable for a rerun,
     # source-readable by the owning user's shells, never executable.
     #
@@ -490,6 +495,13 @@ if [ -z \"\${SLO_HOME+x}\" ]; then
 fi
 if [ -z \"\${SLO_SKILLS_DIR+x}\" ]; then
     export SLO_SKILLS_DIR=$quoted_skills_dir
+fi
+if [ -z \"\${SLO_KB_DIR+x}\" ]; then
+    if [ -n \"\${KB_DIR:-}\" ]; then
+        export SLO_KB_DIR=\"\$KB_DIR\"
+    else
+        export SLO_KB_DIR=\"\$SLO_HOME/KnowledgeBase/KB\"
+    fi
 fi
 $mark_end"
     if [ -L "$managed_file" ]; then
@@ -752,6 +764,13 @@ EOF
 main() {
     # `--development` is an explicit alias for tracking the main branch (the
     # default); pin a release instead with SLO_REF=<tag>.
+    # `--finalize-environment` runs only the shell-environment step. `slo update`
+    # uses it after its own pipx reinstall, so nothing is provisioned or
+    # reinstalled here.
+    if [ "${1:-}" = "--finalize-environment" ]; then
+        slo_finalize_shell_environment
+        return
+    fi
     if [ "${1:-}" = "--development" ]; then
         SLO_REF="main"
     fi

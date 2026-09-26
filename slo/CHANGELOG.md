@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-09-26
+
+**`slo update` now sets missing Slo environment defaults, and the system prompt
+tells the agent where skills and the knowledge base came from and how to find
+them when that path is wrong.**
+
+### Changed
+
+- **`slo update` sets missing environment defaults.** After a successful pipx
+  reinstall, every mode (`slo update`, `--development`, `--ref`) checks for
+  `SLO_HOME`, `SLO_SKILLS_DIR`, and `SLO_KB_DIR` (or `KB_DIR`). When any is
+  missing it runs the installed `install.sh --finalize-environment`; variables
+  that exist are never changed. It warns when an existing `SLO_SKILLS_DIR` has
+  no `INDEX.md` or differs from the skills just installed. This supersedes
+  spec 80.a.2, where `slo update` never wrote shell state; `install.sh` remains
+  the only writer and now ships inside the package.
+- **Managed environment defaults `SLO_KB_DIR`.** `~/.slo/shell/environment.sh`
+  sets `SLO_KB_DIR` to `$KB_DIR`, else `$SLO_HOME/KnowledgeBase/KB`, only when
+  it is unset. Only the variable is set; the directory is never created.
+- **System prompt names its sources.** The Skills section shows the resolved
+  `INDEX.md` path, the setting it came from, and OS-independent recovery steps
+  (`$SLO_SKILLS_DIR` → `$SLO_HOME/skills` → `pipx runpip slo show slo`). The
+  Knowledge Base section shows the resolved path and source, the lookup order
+  (`SLO_KB_DIR` → `KB_DIR` → `$SLO_HOME/KnowledgeBase/KB`), and that a missing
+  knowledge base never blocks a task.
+- **`SLO_HOME` is honoured for the skills fallback.** The second skills
+  candidate is `$SLO_HOME/skills`, not a hard-coded `~/.slo/skills`.
+- **A knowledge-base path that points at a file** (for example
+  `.../KB/Welcome.md`) now resolves to its directory, in both the runtime and
+  the `locate-knowledge-base` skill, which also accepts `KB_DIR`.
+
 ## [0.18.1] — 2026-09-26
 
 **Skills no longer stop when no knowledge base is configured.**

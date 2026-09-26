@@ -13,7 +13,7 @@ from typing import Optional, Sequence
 
 from langchain_core.tools import BaseTool
 
-from config.cfg import SKILLS_DIR
+from config.cfg import KB_LOCATION, SKILLS_LOCATION
 from config.logger import log_info
 from src.agents.slo_agent.project_context.dao import ContextFileEntryDAO
 from src.agents.slo_agent.skills.dao import SkillEntryDAO
@@ -25,12 +25,13 @@ from src.agents.slo_agent.prompts.system_prompt import (
     GUIDELINE_PREFER_NATIVE_EXPLORERS,
     GUIDELINE_WRITE_CONTENT_INLINE,
     GUIDELINES_HEADER,
-    KB_BLOCK,
+    KB_BLOCK_TEMPLATE,
     PROJECT_CONTEXT_CLOSE,
     PROJECT_CONTEXT_OPEN,
     PROJECT_INSTRUCTIONS_TEMPLATE,
     ROLE_LINE,
     SKILLS_BLOCK_TEMPLATE,
+    SKILLS_SOURCE_LINE_TEMPLATE,
     WORKSPACE_FOLDERS_HEADER,
     WORKSPACE_FOLDER_LINE_PATH_ONLY,
     WORKSPACE_FOLDER_LINE_WITH_NAME,
@@ -251,20 +252,28 @@ class SystemPromptBuilder:
             str: The rendered skills section.
         """
         if skills:
-            return cls._format_skills_as_xml(skills=skills)
-        skills_index_path: str = os.path.join(SKILLS_DIR, "INDEX.md")
+            source_line: str = SKILLS_SOURCE_LINE_TEMPLATE.format(
+                skills_dir=SKILLS_LOCATION.path,
+                skills_source=SKILLS_LOCATION.source,
+            )
+            return f"{cls._format_skills_as_xml(skills=skills)}\n\n{source_line}"
+        skills_index_path: str = os.path.join(SKILLS_LOCATION.path, "INDEX.md")
         return SKILLS_BLOCK_TEMPLATE.format(
             skills_index_path=skills_index_path,
+            skills_source=SKILLS_LOCATION.source,
         ).strip()
 
     @classmethod
     def _build_knowledge_base_block(cls) -> str:
-        """Return the knowledge base guidance block.
+        """Return the knowledge base guidance block for the resolved KB location.
 
         Returns:
             str: The rendered knowledge base block.
         """
-        return KB_BLOCK.strip()
+        return KB_BLOCK_TEMPLATE.format(
+            kb_dir=KB_LOCATION.path,
+            kb_source=KB_LOCATION.source,
+        ).strip()
 
     @classmethod
     def _format_skills_as_xml(cls, *, skills: list[SkillEntryDAO]) -> str:

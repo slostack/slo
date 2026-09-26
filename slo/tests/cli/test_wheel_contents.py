@@ -39,6 +39,9 @@ _REQUIRED_ENTRIES: tuple[str, ...] = (
     "skills/coding/declarative-method-structure/SKILL.md",
 )
 
+# ``slo update`` runs ``<site-packages>/install.sh --finalize-environment``.
+_REQUIRED_INSTALLER_ENTRY: str = "install.sh"
+
 _REQUIRED_PLUGIN_ENTRIES: tuple[str, ...] = (
     "plugins/bash_live_output/slo-plugin.json",
     "plugins/bash_live_output/plugin.py",
@@ -184,3 +187,19 @@ class TestWheelShipsBundledPlugins:
 
         missing: list[str] = [entry for entry in _REQUIRED_PLUGIN_ENTRIES if entry not in names]
         assert missing == [], f"wheel is missing bundled plugin files: {missing}"
+
+
+@pytest.mark.skipif(
+    os.environ.get("SLO_PACKAGING_E2E") != "1",
+    reason="opt-in only: set SLO_PACKAGING_E2E=1 (runs a full poetry build)",
+)
+class TestWheelShipsInstaller:
+    """``[tool.poetry] include`` must place install.sh at the package location."""
+
+    def test_wheel_contains_install_sh_at_its_root(self, tmp_path: Path) -> None:
+        """``slo update`` finds the installer at ``<Location>/install.sh``."""
+        wheel: Path = _build_wheel(output_dir=tmp_path)
+        with zipfile.ZipFile(wheel) as archive:
+            assert _REQUIRED_INSTALLER_ENTRY in archive.namelist()
+            shipped: bytes = archive.read(_REQUIRED_INSTALLER_ENTRY)
+        assert shipped == (_REPO_ROOT / "install.sh").read_bytes()

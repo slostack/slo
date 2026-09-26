@@ -1298,6 +1298,116 @@ class TestFreshShellStartup:
         assert result.stdout.splitlines() == [str(custom_home), str(custom_skills)]
 
 
+class TestManagedEnvironmentKnowledgeBaseDefault:
+    """The managed file also defaults ``SLO_KB_DIR`` — variable only, never a directory."""
+
+    PRINT: str = 'printf "%s\n%s\n" "$SLO_HOME" "$SLO_KB_DIR"'
+
+    def _source(self, fake_bin: FakeBin, *, env: dict[str, str] | None = None) -> list[str]:
+        """Write the managed file, source it under ``env``, and return SLO_HOME / SLO_KB_DIR.
+
+        Args:
+            fake_bin (FakeBin): The isolated harness.
+            env (dict[str, str] | None): Variables exported before sourcing.
+
+        Returns:
+            list[str]: ``[SLO_HOME, SLO_KB_DIR]`` as seen after sourcing.
+        """
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        written = fake_bin.run(snippet=f'slo_write_managed_environment_file "{skills_dir}"')
+        assert written.returncode == 0, written.stderr
+        sourced = fake_bin.run(snippet=f'. "$HOME/.slo/shell/environment.sh" && {self.PRINT}', env=env)
+        assert sourced.returncode == 0, sourced.stderr
+        return sourced.stdout.splitlines()
+
+    def test_managed_file_guards_slo_kb_dir_by_existence(self, fake_bin: FakeBin) -> None:
+        skills_dir: Path = fake_bin.make_package_location() / "skills"
+        result = fake_bin.run(snippet=f'slo_write_managed_environment_file "{skills_dir}"')
+        assert result.returncode == 0, result.stderr
+        text: str = fake_bin.managed_env_file.read_text()
+        assert '[ -z "${SLO_KB_DIR+x}" ]' in text
+        assert text.index("SLO_HOME=") < text.index("SLO_KB_DIR=")
+
+    def test_defaults_under_home_dot_slo_when_nothing_is_set(self, fake_bin: FakeBin) -> None:
+        home_dir: str = f"{fake_bin.home}/.slo"
+        assert self._source(fake_bin) == [home_dir, f"{home_dir}/KnowledgeBase/KB"]
+
+    def test_follows_a_preset_slo_home(self, fake_bin: FakeBin) -> None:
+        custom: str = str(fake_bin.home / "custom slo home")
+        assert self._source(fake_bin, env={"SLO_HOME": custom}) == [custom, f"{custom}/KnowledgeBase/KB"]
+
+    def test_kb_dir_is_used_when_slo_kb_dir_is_unset(self, fake_bin: FakeBin) -> None:
+        alias: str = str(fake_bin.home / "alias KB")
+        assert self._source(fake_bin, env={"KB_DIR": alias})[1] == alias
+
+    def test_preset_slo_kb_dir_wins_over_kb_dir(self, fake_bin: FakeBin) -> None:
+        canonical: str = str(fake_bin.home / "canonical KB")
+        env: dict[str, str] = {"SLO_KB_DIR": canonical, "KB_DIR": str(fake_bin.home / "alias")}
+        assert self._source(fake_bin, env=env)[1] == canonical
+
+    def test_a_set_but_empty_slo_kb_dir_is_left_alone(self, fake_bin: FakeBin) -> None:
+        """Existence, not value, decides: the managed file never overrides a set variable."""
+        assert self._source(fake_bin, env={"SLO_KB_DIR": ""})[1] == ""
+
+    def test_kb_path_with_apostrophe_is_not_executed_or_split(self, fake_bin: FakeBin) -> None:
+        tricky: str = str(fake_bin.home / "it's $(touch pwned) KB")
+        assert self._source(fake_bin, env={"KB_DIR": tricky})[1] == tricky
+        assert not (Path.cwd() / "pwned").exists()
+
+    def test_sourcing_never_creates_the_kb_directory(self, fake_bin: FakeBin) -> None:
+        self._source(fake_bin)
+        assert not (fake_bin.home / ".slo" / "KnowledgeBase").exists()
+
+    def test_fresh_login_shell_exports_the_kb_default(self, fake_bin: FakeBin) -> None:
+        location: Path = fake_bin.make_package_location()
+        fake_bin.write_fake_pipx(location=location)
+        finalized = fake_bin.run(snippet="slo_finalize_shell_environment")
+        assert finalized.returncode == 0, finalized.stderr
+        result = fake_bin.run_shell_env(args=[BASH, "--login", "-c", self.PRINT])
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1] == f"{fake_bin.home}/.slo/KnowledgeBase/KB"
+
+
+class TestFinalizeEnvironmentMode:
+    """``install.sh --finalize-environment`` runs only the shell-environment step.
+
+    ``slo update`` calls this mode on the just-installed copy, so it must never
+    provision toolchains or reinstall the package.
+    """
+
+    def _run(self, fake_bin: FakeBin) -> subprocess.CompletedProcess[str]:
+        return fake_bin.run_shell_env(args=[BASH, str(INSTALL_SH), "--finalize-environment"])
+
+    def test_writes_managed_file_and_profiles_without_installing(self, fake_bin: FakeBin) -> None:
+        location: Path = fake_bin.make_package_location()
+        fake_bin.write_fake_pipx(location=location)
+        for tool in ("brew", "git", "apt-get", "pyenv", "sudo"):
+            fake_bin.add(name=tool)
+        result = self._run(fake_bin)
+        assert result.returncode == 0, result.stderr
+        assert str(location / "skills") in fake_bin.managed_env_file.read_text()
+        for name, path in fake_bin.profile_paths.items():
+            assert marker_pair_count(text=path.read_text()) == 1, name
+        assert fake_bin.calls == ["pipx runpip slo show slo"]
+
+    def test_fails_without_writing_when_the_package_cannot_be_located(self, fake_bin: FakeBin) -> None:
+        fake_bin.write_fake_pipx(location=None)
+        result = self._run(fake_bin)
+        assert result.returncode != 0
+        assert not fake_bin.managed_env_file.exists()
+        for path in fake_bin.profile_paths.values():
+            assert not path.exists()
+
+    def test_rerun_is_idempotent(self, fake_bin: FakeBin) -> None:
+        fake_bin.write_fake_pipx(location=fake_bin.make_package_location())
+        assert self._run(fake_bin).returncode == 0
+        snapshot: dict[str, bytes] = {n: p.read_bytes() for n, p in fake_bin.profile_paths.items()}
+        managed: bytes = fake_bin.managed_env_file.read_bytes()
+        assert self._run(fake_bin).returncode == 0
+        assert {n: p.read_bytes() for n, p in fake_bin.profile_paths.items()} == snapshot
+        assert fake_bin.managed_env_file.read_bytes() == managed
+
+
 class TestSourcingGuard:
     """Sourcing install.sh must not run `main` (so tests can call functions)."""
 

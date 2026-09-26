@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-26
+
+**The TUI now renders assistant and user messages as selectable Markdown with
+aligned tables, the public installer persists Slo home and vendored skills
+defaults, and the skill library gains MR/PR review, implementation-detail, and
+workflow-abort guidance.**
+
+### Added
+
+- **Selectable Markdown transcripts.** Assistant messages render as
+  Markdown while their visible content stays selectable (`38d5528`).
+- **Aligned Markdown tables.** Tables render as aligned terminal columns
+  using display-cell widths, keeping raw Markdown, selection, and inline
+  styles. Fenced-code lexer aliases now cover Go, C/C++, C#, Java, Rust, and
+  Zig (`c117afe`).
+- **Installer persists Slo home and vendored skills defaults.** The pipx
+  install resolves the installed distribution, validates its
+  `skills/INDEX.md` tree, and atomically writes the Slo shell environment
+  file, with idempotent source blocks for Bash, Zsh, and POSIX login
+  profiles. Explicit environment overrides are preserved and unsafe
+  user-managed files are refused (`c79ba40`).
+
+### Changed
+
+- **User-message cards regain vertical spacing** after the Content
+  rendering migration: compact turns match tool-call height, fill the
+  transcript width, and grow with multi-line text (`c117afe`).
+
+### Skills and documentation
+
+- **MR/PR review guidance.** `development-reviews` is now a guided,
+  severity-ranked review workflow, and `code-review-rules` covers domain
+  ownership, directory queries, migrations, and review output (`e42561a`).
+- **Implementation-details granularity sample.** A shipped `skills/samples`
+  reference shows code-level feature-spec examples. Specification
+  verification treats ambiguous implementation detail as CRITICAL
+  (`72015b3`).
+- **Stop detached workflows with `/workflows abort`, never `pkill`.** A
+  raw kill leaves a stale workflow handle that makes every later
+  `launch_workflow` in the session fail with `no evidence-backed
+  correction`. Documented in `headless-orchestration`, and repeated in
+  `orchestrator` and `code-test-review` (`218203a`).
+
+### Tests
+
+- Headless workflow launch routing clears an inherited `SLO_WORKFLOW_ID`,
+  so the routing end-to-end test is deterministic when run from inside a
+  detached workflow (`6070de6`).
+- The committed skills catalog expectation recognises the `samples` group
+  (`7e9b086`).
+
 ## [0.17.0] — 2026-09-16
 
 **Kimi K3 reasoning is now correctly catalogued and wired: Slo maps its

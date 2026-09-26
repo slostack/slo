@@ -43,9 +43,11 @@ Slo installs with a single command. The installer pulls the pinned release and
 installs it with `pipx`. The 117 vendored skill documents ship **inside the
 installed package** (beside it in pipx's venv, not in `~/.slo/`); after a
 successful install the installer writes one non-secret managed environment
-file, `~/.slo/shell/environment.sh`, which defaults `SLO_HOME` to `~/.slo` and
-`SLO_SKILLS_DIR` to that validated installed skills path, and attaches it to
-your shell startup files. Your own skills still live in `~/.slo/user_skills/`
+file, `~/.slo/shell/environment.sh`, which defaults `SLO_HOME` to `~/.slo`,
+`SLO_SKILLS_DIR` to that validated installed skills path, and `SLO_KB_DIR` to
+`$KB_DIR` or `$SLO_HOME/KnowledgeBase/KB`, and attaches it to your shell
+startup files. Each default applies only when that variable is not already
+set, and the knowledge-base folder itself is never created. Your own skills still live in `~/.slo/user_skills/`
 and override the built-ins by name.
 
 ```bash
@@ -89,8 +91,15 @@ curl -fsSL https://get-slo.sh/install.sh | SLO_REF=feature-my-branch bash
 ### Updating
 
 ```bash
-slo update
+slo update                 # latest release
+slo update --development   # track main
 ```
+
+After reinstalling, `slo update` checks for `SLO_HOME`, `SLO_SKILLS_DIR`, and
+`SLO_KB_DIR` (or `KB_DIR`). If any is missing, it runs the installed
+`install.sh --finalize-environment` to set the missing defaults; variables that
+already exist are left alone. It also warns when an existing `SLO_SKILLS_DIR`
+has no `INDEX.md` or differs from the skills it just installed.
 
 ### Requirements
 
@@ -217,7 +226,7 @@ starts with it loaded. Slo can write that file for you — just ask.
 ├── global/
 │   └── authentication.json     your provider credentials (chmod 0600)
 ├── shell/
-│   └── environment.sh          installer-managed defaults (SLO_HOME, SLO_SKILLS_DIR)
+│   └── environment.sh          installer-managed defaults (SLO_HOME, SLO_SKILLS_DIR, SLO_KB_DIR)
 ├── user_skills/                YOUR skills — these override the built-ins
 ├── user_workflows/             your own multi-step workflows
 ├── sessions/history/
@@ -234,7 +243,7 @@ starts with it loaded. Slo can write that file for you — just ask.
 Set `SLO_HOME` to move this whole tree somewhere else. The 117 vendored skill
 documents are *not* here — they ship inside the installed pipx package, and
 the managed `shell/environment.sh` points `SLO_SKILLS_DIR` at them. (A
-populated legacy `~/.slo/skills` tree, if you have one from an old install, is
+populated legacy `$SLO_HOME/skills` tree, if you have one from an old install, is
 left untouched and remains a fallback when `SLO_SKILLS_DIR` is unset.)
 
 ---
@@ -529,7 +538,8 @@ All configuration is environment variables.
 | `SLO_HOME` | `~/.slo` | Base directory for everything |
 | `SLO_DEFAULT_MODEL_NAME` | `gpt-5.4` | Model used when none is specified |
 | `SLO_SESSION_ID` | generated | Fixed session id for headless runs |
-| `SLO_KB_DIR` | unset | Path to a markdown knowledge base |
+| `SLO_KB_DIR` | `$KB_DIR`, else `$SLO_HOME/KnowledgeBase/KB` | Path to a markdown knowledge base (optional; may not exist) |
+| `KB_DIR` | unset | Fallback name for `SLO_KB_DIR` |
 | `SLO_SKILLS_DIR` | installed package's `skills/` | Override the vendored skills directory |
 | `SLO_LOG_FORMAT` | `json` | `json` or `text` |
 

@@ -250,7 +250,9 @@ shim on your `$PATH` calls `src.cli:main`, which defers to the Typer app in
 
 To upgrade later, run `slo update` (latest release tag), `slo update
 --development` (`main`), or `slo update --ref <ref>` — or simply re-run the
-`curl | bash` line above.
+`curl | bash` line above. Every `slo update` mode then sets any missing
+`SLO_HOME` / `SLO_SKILLS_DIR` / `SLO_KB_DIR` default by running the installed
+`install.sh --finalize-environment`; existing variables are never changed.
 
 ### 1.3 The Developer Path — pyenv + Poetry
 

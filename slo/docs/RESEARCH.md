@@ -125,8 +125,30 @@ slo --plugin plugins/bash_live_output/plugin.py
   shell profile, never in the installer-owned `~/.slo/shell/environment.sh`.
 - `tests/agents/skills/test_committed_skills.py` fails any skill that references
   `$SLO_KB_DIR` without deferring to that skill and stating it is non-blocking.
-- The runtime `KB_BLOCK` in `src/agents/slo_agent/prompts/system_prompt.py`
-  still reads only `SLO_KB_DIR` and names `Home.md` as the start page.
+- The runtime prompt matches it: `config.cfg.KB_LOCATION` resolves `SLO_KB_DIR` →
+  `KB_DIR` → `$SLO_HOME/KnowledgeBase/KB` (a file path resolves to its directory)
+  and `KB_BLOCK_TEMPLATE` renders that path, its source, and the lookup order.
+
+## Environment defaults and `slo update` (supersedes spec 80.a.2)
+
+- `install.sh` is still the only writer of shell state. `slo update` (all modes)
+  runs the just-installed `<Location>/install.sh --finalize-environment` after a
+  successful pipx reinstall; `install.sh` ships in the wheel for this.
+- `ShellEnvironmentDefaults` in `src/cli/update.py` runs that step only when
+  `SLO_HOME`, `SLO_SKILLS_DIR`, or `SLO_KB_DIR` (or `KB_DIR`) does not exist
+  (set-but-empty counts as existing). The managed file's lines are also
+  existence-guarded, so a user's own export always wins.
+- Consequence: a stale `SLO_SKILLS_DIR` export is never rewritten. `slo update`
+  warns when it has no `INDEX.md` or differs from the installed skills; the
+  prompt gives the agent recovery steps (`$SLO_SKILLS_DIR` → `$SLO_HOME/skills` →
+  `pipx runpip slo show slo`).
+- Tests that reload `config.cfg` rebind `ResolvedDirectory`; compare its fields,
+  not instances, in tests.
+- Coverage: `tests/cli/test_update.py` (decisions + real-bash end-to-end),
+  `tests/cli/test_install.py` (`TestManagedEnvironmentKnowledgeBaseDefault`,
+  `TestFinalizeEnvironmentMode`), `tests/config/test_cfg.py`,
+  `tests/agents/slo_agent/test_prompts.py`, and the opt-in
+  `tests/cli/test_wheel_contents.py::TestWheelShipsInstaller`.
 
 ## Verification owners
 

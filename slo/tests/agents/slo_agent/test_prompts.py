@@ -20,9 +20,11 @@ from __future__ import annotations
 import os
 import re
 
+import pytest
+
 from langchain_core.tools import BaseTool, tool
 
-from config.cfg import SKILLS_DIR
+from config.cfg import SKILLS_DIR, ResolvedDirectory
 from src.agents.slo_agent.project_context.dao import ContextFileEntryDAO
 from src.agents.slo_agent.prompts import SystemPromptBuilder
 from src.agents.slo_agent.prompts.system_prompt import PROJECT_INSTRUCTIONS_TEMPLATE
@@ -437,3 +439,77 @@ class TestSystemPromptBuilderOrchestratorDefault:
             custom_prompt=DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
         )
         assert "Current date:" in result
+
+
+SKILLS_AT = ResolvedDirectory(path="/opt/any os/slo/skills", source="`SLO_SKILLS_DIR`")
+KB_AT = ResolvedDirectory(path="/data/kb home/KB", source="`KB_DIR`")
+
+
+@pytest.fixture
+def resolved_locations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the builder's resolved skills and KB locations to synthetic values."""
+    monkeypatch.setattr("src.agents.slo_agent.prompts.SKILLS_LOCATION", SKILLS_AT)
+    monkeypatch.setattr("src.agents.slo_agent.prompts.KB_LOCATION", KB_AT)
+
+
+@pytest.mark.usefixtures("resolved_locations")
+class TestSkillsLocationGuidance:
+    """The prompt names where skills came from and how to find them when that fails."""
+
+    def test_index_pointer_names_the_env_var_resolved_path_and_source(self) -> None:
+        prompt: str = SystemPromptBuilder.invoke(skills=[])
+        assert "`SLO_SKILLS_DIR`" in prompt
+        assert f"`{os.path.join(SKILLS_AT.path, 'INDEX.md')}`" in prompt
+        assert f"resolved from {SKILLS_AT.source}" in prompt
+
+    def test_index_pointer_gives_os_independent_recovery_steps(self) -> None:
+        """A broken path is recoverable: env var, then SLO_HOME, then pip metadata."""
+        prompt: str = SystemPromptBuilder.invoke(skills=[])
+        steps: list[str] = [
+            "1. `$SLO_SKILLS_DIR`",
+            "2. `$SLO_HOME/skills`",
+            "3. ",
+            "pipx runpip slo show slo",
+        ]
+        positions: list[int] = [prompt.index(step) for step in steps]
+        assert positions == sorted(positions)
+        assert "`<Location>/skills`" in prompt
+        assert "`slo update`" in prompt
+
+    def test_xml_manifest_names_the_skills_directory_and_override(self) -> None:
+        prompt: str = SystemPromptBuilder.invoke(
+            skills=[SkillEntryDAO(name="sync-main", description="Refresh main.", file_path="/x/SKILL.md")]
+        )
+        assert f"`{SKILLS_AT.path}`" in prompt
+        assert f"resolved from {SKILLS_AT.source}" in prompt
+        assert "`SLO_SKILLS_DIR`" in prompt
+
+
+@pytest.mark.usefixtures("resolved_locations")
+class TestKnowledgeBaseLocationGuidance:
+    """The KB block mirrors the locate-knowledge-base skill and never gates the task."""
+
+    def test_names_the_resolved_path_and_source(self) -> None:
+        prompt: str = SystemPromptBuilder.invoke()
+        assert f"`{KB_AT.path}`" in prompt
+        assert f"resolved from {KB_AT.source}" in prompt
+
+    def test_lists_the_lookup_order(self) -> None:
+        prompt: str = SystemPromptBuilder.invoke()
+        steps: list[str] = ["1. `$SLO_KB_DIR`", "2. `$KB_DIR`", "3. `$SLO_HOME/KnowledgeBase/KB`"]
+        positions: list[int] = [prompt.index(step) for step in steps]
+        assert positions == sorted(positions)
+        assert "`~/.slo/KnowledgeBase/KB`" in prompt
+
+    def test_names_every_entry_point_and_the_file_path_case(self) -> None:
+        prompt: str = SystemPromptBuilder.invoke()
+        for entry in ("`Welcome.md`", "`index.md`", "`Index.md`", "`Home.md`"):
+            assert entry in prompt
+        assert "points at a file" in prompt
+
+    def test_missing_kb_is_non_blocking_and_points_at_the_skill(self) -> None:
+        prompt: str = SystemPromptBuilder.invoke()
+        assert "never blocks" in prompt
+        assert "locate-knowledge-base" in prompt
+        assert "offer to create" in prompt
+        assert "no knowledge base is available" not in prompt

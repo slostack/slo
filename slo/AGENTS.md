@@ -96,7 +96,7 @@ slo/
 │   │   │   │   └── service.py         # SkillsLoader
 │   │   │   ├── prompts/
 │   │   │   │   ├── __init__.py        # SystemPromptBuilder — assembles runtime system prompt
-│   │   │   │   └── system_prompt.py   # All static string constants (ROLE_LINE, KB_BLOCK, …)
+│   │   │   │   └── system_prompt.py   # All static string constants (ROLE_LINE, KB_BLOCK_TEMPLATE, …)
 │   │   │   ├── dao.py                 # SloAgentConfigDAO and related
 │   │   │   ├── history/
 │   │   │   │   ├── atomic_io.py       # AtomicFileWriter — shared temp+replace durable-state writer
@@ -157,7 +157,7 @@ slo/
 │   │   ├── app.py                     # Typer app — bare `slo` opens TUI; `--resume` accepts session id or name
 │   │   ├── typer_dispatch.py          # TyperDispatch — routes CLI subcommands + resolves session references
 │   │   ├── plugin.py                  # `slo plugin install|list|uninstall|upgrade` parse surface
-│   │   ├── update.py                  # `slo update` self-updater
+│   │   ├── update.py                  # `slo update` self-updater + ShellEnvironmentDefaults
 │   │   └── __main__.py
 │   ├── tui/
 │   │   ├── app.py                     # SloTUI (Textual App) + PromptInput + /new,/rename + prompt-history recall
@@ -307,8 +307,12 @@ prompt in this section order:
    `TOOL_PROMPT_SNIPPETS` entry (`src/agents/tools/prompt_snippets.py`)
 3. Custom tools note
 4. Guidelines block (adapts based on whether bash + native explorers are both present)
-5. Skills block — path to `skills/INDEX.md` interpolated from `SKILLS_DIR`
-6. Knowledge base block (`KB_BLOCK`)
+5. Skills block — the XML manifest plus a line naming `SKILLS_LOCATION` (path + source) when
+   skills loaded; otherwise `SKILLS_BLOCK_TEMPLATE`: `<SKILLS_LOCATION.path>/INDEX.md`, its
+   source, and OS-independent recovery steps (`$SLO_SKILLS_DIR` → `$SLO_HOME/skills` →
+   `pipx runpip slo show slo` → `<Location>/skills`)
+6. Knowledge base block (`KB_BLOCK_TEMPLATE`) — `KB_LOCATION` path + source and the
+   `locate-knowledge-base` lookup order; a missing KB never blocks
 7. Optional append block (`append_system_prompt`)
 8. Project context block — each discovered file wrapped in `<project_instructions path=…>`
 9. Current date line
@@ -440,13 +444,16 @@ slow test suites".
 
 ## 8. Knowledge Base
 
-- **Path:** controlled by the `SLO_KB_DIR` environment variable.
+- **Path:** `config.cfg.KB_LOCATION` — `SLO_KB_DIR`, else `KB_DIR` (fallback alias), else
+  `$SLO_HOME/KnowledgeBase/KB`. A value pointing at a file resolves to its directory. The
+  path may not exist; resolution never creates it.
 - **Workspace files:** when `slo --workspace <file.code-workspace>` is used, the workspace file itself is not treated as a project-instruction file; instead its declared folders seed additional `ProjectContextDiscovery` walks.
-- **In-prompt:** `KB_BLOCK` in `system_prompt.py` instructs the agent to consult the KB
-  when it exists. The block includes the path resolved from `SLO_KB_DIR` at build time.
-- **Conditional availability:** if `SLO_KB_DIR` is unset or the path does not exist, the
-  KB block still appears in the prompt but the agent will find nothing at the path. Set
-  `SLO_KB_DIR=<absolute path to your KB checkout>` in `environments/development.env`.
+- **In-prompt:** `KB_BLOCK_TEMPLATE` in `system_prompt.py` shows the resolved path and its
+  source, the lookup order, and the entry points (`Welcome.md`, `index.md`, `Index.md`,
+  `Home.md`). When no KB is found the agent tells the user, offers to create one
+  (`locate-knowledge-base` skill), and continues.
+- **Shell default:** the installer's managed `~/.slo/shell/environment.sh` sets
+  `SLO_KB_DIR` (from `KB_DIR`, else `$SLO_HOME/KnowledgeBase/KB`) only when it is unset.
 
 ---
 

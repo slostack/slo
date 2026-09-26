@@ -1,6 +1,6 @@
 [project]
 name = "slo"
-version = "0.18.1"
+version = "0.19.0"
 description = "Python ReAct agent harness, modelled on pi.dev"
 authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
 license = "GPL-2.0-only"
@@ -91,9 +91,14 @@ build-backend = "poetry.core.masonry.api"
   # this entry the wheel omits the payload and
   # ``slo plugin install-bundled-bash-live-output`` fails with
   # "plugin source has no readable slo-plugin.json".
+  #
+  # install.sh ships at ``<site-packages>/install.sh`` so ``slo update`` can run
+  # the just-installed copy's ``--finalize-environment`` step: the installer
+  # stays the only writer of the managed shell environment file.
   include = [
       { path = "skills/**/*", format = ["sdist", "wheel"] },
       { path = "plugins/**/*", format = ["sdist", "wheel"] },
+      { path = "install.sh", format = ["sdist", "wheel"] },
   ]
   
 [dependency-groups]

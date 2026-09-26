@@ -4,14 +4,14 @@ This module owns prompt wording only. It does not assemble the final
 prompt and it does not import ``SystemPromptBuilder``. That separation
 keeps the file constants-only and avoids circular imports.
 
-The Skills and Knowledge Base blocks are preserved verbatim from the
-pre-02.a static prompt: skills remain pointer-based (the prompt tells the
-model where the skills index lives and when to read it, rather than
-inlining skill bodies), and the knowledge base block keeps its
-``SLO_KB_DIR`` guidance. The ``{skills_index_path}`` placeholder is left
-unresolved here; the builder interpolates it at assembly time from
-``config.cfg.SKILLS_DIR`` so this module stays free of runtime config
-imports.
+Skills remain pointer-based (the prompt tells the model where the skills
+index lives and when to read it, rather than inlining skill bodies). Both the
+Skills and Knowledge Base blocks name the environment variable behind each
+directory, the path it resolved to for this session, and OS-independent steps
+to find the directory when that path is wrong. The ``{...}`` placeholders are
+left unresolved here; the builder interpolates them at assembly time from
+``config.cfg.SKILLS_LOCATION`` / ``config.cfg.KB_LOCATION`` so this module
+stays free of runtime config imports.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ __all__ = [
     "GUIDELINE_PREFER_NATIVE_EXPLORERS",
     "GUIDELINE_WRITE_CONTENT_INLINE",
     "SKILLS_BLOCK_TEMPLATE",
-    "KB_BLOCK",
+    "SKILLS_SOURCE_LINE_TEMPLATE",
+    "KB_BLOCK_TEMPLATE",
     "PROJECT_CONTEXT_OPEN",
     "PROJECT_CONTEXT_CLOSE",
     "PROJECT_INSTRUCTIONS_TEMPLATE",
@@ -79,31 +80,58 @@ Each skill is a markdown file with YAML frontmatter (`name`, `description`,
 `when_to_use`, `group`, `kind`) and instructional content for one kind of task.
 The index is grouped into workflows and individual skills so routing is fast.
 
-The full list of available skills lives at `{skills_index_path}`. At the start of any
-non-trivial task, read `{skills_index_path}` with the `read` tool to see what conventions
-or workflows apply. When the task description matches a skill's description or
-`when_to_use` hint, load that skill's `SKILL.md` (the path is listed in the index) and
-follow its instructions precisely before writing code or producing output. Skills are
-not optional — when one matches, it is the authoritative source for that kind of work.
-Some skills name companion skills to load alongside them (a "pre-hook" or
-"post-hook"); honour those."""
+The skills catalogue is `INDEX.md` inside the directory named by the `SLO_SKILLS_DIR`
+environment variable. For this session it is `{skills_index_path}`
+(resolved from {skills_source}). At the start of any non-trivial task, read it with the `read` tool
+to see what conventions or workflows apply. When the task description matches a
+skill's description or `when_to_use` hint, load that skill's `SKILL.md` (the path is
+listed in the index) and follow its instructions precisely before writing code or
+producing output. Skills are not optional — when one matches, it is the authoritative
+source for that kind of work. Some skills name companion skills to load alongside them
+(a "pre-hook" or "post-hook"); honour those.
 
-KB_BLOCK: str = """\
+If that file cannot be read, find the skills directory yourself and use the first
+candidate that contains `INDEX.md`:
+
+1. `$SLO_SKILLS_DIR`
+2. `$SLO_HOME/skills` (`~/.slo/skills` when `SLO_HOME` is unset)
+3. The installed package: run `pipx runpip slo show slo` and use `<Location>/skills`.
+
+If none has an `INDEX.md`, tell the user the skills could not be found, suggest
+`slo update` to set `SLO_SKILLS_DIR`, and continue without them."""
+
+SKILLS_SOURCE_LINE_TEMPLATE: str = (
+    "These skills are loaded from `{skills_dir}` (resolved from {skills_source}); "
+    "the `SLO_SKILLS_DIR` environment variable overrides that directory."
+)
+
+KB_BLOCK_TEMPLATE: str = """\
 ## Knowledge Base
 
-The project knowledge base lives at the path stored in the `SLO_KB_DIR` environment
-variable. It holds architectural context, domain rationale, and gotchas that are NOT
-visible from the code.
+The project knowledge base holds architectural context, domain rationale, and gotchas
+that are NOT visible from the code. It is optional: a missing knowledge base
+never blocks a task.
 
-- ALWAYS consult it before designing or debugging: start at `Home.md`, then the
-  relevant `<repo>/index.md` and `<repo>/gotchas.md`. Use `grep` and `find` to search
-  it.
+For this session it is `{kb_dir}` (resolved from {kb_source}). If that directory has
+no entry point, look in this order and use the first directory that has one
+(`Welcome.md`, `index.md`, `Index.md`, or `Home.md`):
+
+1. `$SLO_KB_DIR`
+2. `$KB_DIR`
+3. `$SLO_HOME/KnowledgeBase/KB` (`~/.slo/KnowledgeBase/KB` when `SLO_HOME` is unset)
+
+When a variable points at a file, use the directory that contains it.
+
+- When found, ALWAYS consult it before designing or debugging: start at its entry
+  point, then the relevant `<repo>/index.md` and `<repo>/gotchas.md`. Use `grep` and
+  `find` to search it.
 - Record non-obvious discoveries back into it — a bug whose root cause wasn't visible
   from the code, a constraint / quirk, or a design decision future readers would
   otherwise re-derive — by writing / editing the appropriate page with the existing
   `write` / `edit` tools.
-
-If `SLO_KB_DIR` is unset, no knowledge base is available for this session."""
+- When none is found, tell the user, name `SLO_KB_DIR`, and offer to create one at
+  `$SLO_HOME/KnowledgeBase/KB` (the `locate-knowledge-base` skill has the steps).
+  Continue the task without it."""
 
 PROJECT_CONTEXT_OPEN: str = "<project_context>\n\n" "Project-specific instructions and guidelines:\n"
 

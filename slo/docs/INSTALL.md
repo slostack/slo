@@ -71,7 +71,9 @@ pipx install succeeds, the installer:
    `# >>> slo managed environment >>>` / `# <<< slo managed environment <<<`).
    It supplies *defaults only*:
    - `SLO_HOME` defaults to `$HOME/.slo`;
-   - `SLO_SKILLS_DIR` defaults to the validated absolute vendored skills path.
+   - `SLO_SKILLS_DIR` defaults to the validated absolute vendored skills path;
+   - `SLO_KB_DIR` defaults to `$KB_DIR`, else `$SLO_HOME/KnowledgeBase/KB`
+     (the variable only — the directory is never created).
    A value you exported *before* the shell sources the file always wins —
    `config/cfg.py` keeps its explicit-environment-first precedence.
 3. Reconciles one bounded **shell source block** in each supported startup
@@ -86,7 +88,8 @@ defaults on their next start, and any shell they spawn inherits the exports.
 Sterile processes — `env -i sh -c …`, `bash --noprofile --norc -c …`, cron,
 services, GUI launchers — cannot be configured by an installer; they keep
 `config/cfg.py`'s fallback resolution (explicit env → populated legacy
-`~/.slo/skills` → package-adjacent tree) or need an explicit
+`$SLO_HOME/skills` → package-adjacent tree; KB: `SLO_KB_DIR` → `KB_DIR` →
+`$SLO_HOME/KnowledgeBase/KB`) or need an explicit
 `SLO_HOME` / `SLO_SKILLS_DIR`.
 
 **Configuration (environment variables)**
@@ -180,20 +183,27 @@ Edit** scoped to the target zone.
 It uses the public repository URL, like the installer. Your `~/.slo` data is
 untouched.
 
-**`slo update` is pipx-only (deliberate).** It reinstalls the code venv and
-never refreshes the managed environment file or any shell source block — the
-public installer is the single owner of persistent shell defaults, and the
-updater is not a second writer. If a reinstall ever changes pipx's
-installation Location so the persisted `SLO_SKILLS_DIR` goes stale, the exact
-recovery is to rerun the public installer
-(`curl -fsSL https://get-slo.sh/install.sh | bash`); its finalisation
-re-resolves the current metadata and atomically refreshes the managed file.
+**`slo update` sets missing environment defaults (supersedes 80.a.2).** After a
+successful pipx reinstall, every mode checks whether `SLO_HOME`,
+`SLO_SKILLS_DIR`, and `SLO_KB_DIR` (or `KB_DIR`) exist. If any is missing, it
+runs the just-installed `<Location>/install.sh --finalize-environment`, so the
+installer stays the single writer of shell state. If all exist, shell files
+are left untouched.
+
+Existing variables are never changed. When an existing `SLO_SKILLS_DIR` has no
+`INDEX.md` or differs from the skills just installed, `slo update` prints a
+warning with the installed path; update or remove your own export. To refresh
+the managed file by hand, run `bash <Location>/install.sh --finalize-environment`
+(`pipx runpip slo show slo` prints `Location`).
 
 You can always upgrade by simply re-running the installer
 (`curl -fsSL https://get-slo.sh/install.sh | … bash`) instead.
 
 > An already-installed copy carries whatever `update.py` shipped with it; after
 > a major installer change, run the installer once to pick up the new updater.
+> In particular, the first `slo update` from 0.18.x or older still runs the old
+> pipx-only updater; the environment check starts with the update after that,
+> or run `bash <Location>/install.sh --finalize-environment` once.
 
 ---
 

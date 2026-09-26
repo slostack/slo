@@ -9,6 +9,8 @@ auth-URL injection, interpreter resolution, and uv-backend fallback.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -16,7 +18,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.cli.update import Updater, main
+from src.cli.update import ShellEnvironmentDefaults, Updater, main
+
+INSTALL_SH: Path = Path(__file__).resolve().parents[2] / "install.sh"
+BASH: str = shutil.which("bash") or "/bin/bash"
+SLO_VARS: tuple[str, ...] = ("SLO_HOME", "SLO_SKILLS_DIR", "SLO_KB_DIR", "KB_DIR")
 
 
 def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -154,6 +160,11 @@ class TestPipxInstall:
 class TestInvoke:
     """``invoke`` resolves the right ref per mode and installs it."""
 
+    @pytest.fixture(autouse=True)
+    def _no_environment_step(self) -> None:
+        with patch("src.cli.update.ShellEnvironmentDefaults.ensure"):
+            yield
+
     def _patched(self) -> tuple[MagicMock, MagicMock, MagicMock]:
         return (
             patch("src.cli.update.Updater._pipx_install"),
@@ -204,52 +215,265 @@ class TestMain:
             main(["--development", "--ref", "v1.2.3"])
 
 
-class TestUpdateIsNotAnEnvironmentWriter:
-    """M2 (spec 80.a.2): ``slo update`` is pipx-only, never a shell writer.
+class TestInvokeEnsuresEnvironmentDefaults:
+    """Every update mode sets missing environment defaults, and only after pipx succeeds."""
 
-    The updater deliberately does NOT refresh the installer-managed environment
-    file or any profile source block: there is exactly one owner of persistent
-    shell defaults (``install.sh`` finalisation). If a pipx reinstall changes
-    the distribution Location, the documented recovery is rerunning the public
-    installer, whose finalisation refreshes the managed file atomically.
-    """
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{}, {"development": True}, {"ref": "feature-x"}],
+        ids=["release", "development", "ref"],
+    )
+    def test_runs_after_a_successful_install(self, kwargs: dict[str, object]) -> None:
+        order: list[str] = []
+        with (
+            patch("src.cli.update.Updater.resolve_latest_release_tag", return_value="v9.9.9"),
+            patch("src.cli.update.Updater._pipx_install", side_effect=lambda *, spec: order.append("pipx")),
+            patch(
+                "src.cli.update.ShellEnvironmentDefaults.ensure",
+                side_effect=lambda *, environ: order.append("environment"),
+            ) as ensure,
+        ):
+            Updater.invoke(**kwargs)  # type: ignore[arg-type]
+        assert order == ["pipx", "environment"]
+        assert ensure.call_args.kwargs["environ"] is os.environ
 
-    def test_invoke_never_touches_the_managed_environment_file(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+    def test_is_skipped_when_pipx_fails(self) -> None:
+        with (
+            patch(
+                "src.cli.update.Updater._pipx_install",
+                side_effect=subprocess.CalledProcessError(returncode=1, cmd=["pipx"]),
+            ),
+            patch("src.cli.update.ShellEnvironmentDefaults.ensure") as ensure,
+        ):
+            with pytest.raises(subprocess.CalledProcessError):
+                Updater.invoke(ref="v9.9.9")
+        ensure.assert_not_called()
+
+
+class TestMissingEnvironmentDefaults:
+    """``missing`` decides by existence; ``KB_DIR`` stands in for ``SLO_KB_DIR``."""
+
+    def test_all_missing(self) -> None:
+        assert ShellEnvironmentDefaults.missing(environ={}) == ["SLO_HOME", "SLO_SKILLS_DIR", "SLO_KB_DIR"]
+
+    def test_kb_dir_counts_as_slo_kb_dir(self) -> None:
+        environ: dict[str, str] = {"SLO_HOME": "/h", "SLO_SKILLS_DIR": "/s", "KB_DIR": "/k"}
+        assert ShellEnvironmentDefaults.missing(environ=environ) == []
+
+    def test_set_but_empty_counts_as_present(self) -> None:
+        environ: dict[str, str] = {"SLO_HOME": "", "SLO_SKILLS_DIR": "", "SLO_KB_DIR": ""}
+        assert ShellEnvironmentDefaults.missing(environ=environ) == []
+
+    def test_reports_only_what_is_missing(self) -> None:
+        assert ShellEnvironmentDefaults.missing(environ={"SLO_HOME": "/h", "SLO_KB_DIR": "/k"}) == [
+            "SLO_SKILLS_DIR"
+        ]
+
+
+class TestInstalledLocation:
+    """``installed_location`` reads pip metadata exactly like install.sh."""
+
+    def test_returns_the_single_location(self) -> None:
+        with patch("subprocess.run", return_value=_completed("Name: slo\nLocation: /pkgs/site\n")):
+            assert ShellEnvironmentDefaults.installed_location() == Path("/pkgs/site")
+
+    @pytest.mark.parametrize(
+        "stdout",
+        ["Name: slo\n", "Location: /a\nLocation: /b\n"],
+        ids=["no-location", "ambiguous"],
+    )
+    def test_returns_none_when_metadata_is_unusable(self, stdout: str) -> None:
+        with patch("subprocess.run", return_value=_completed(stdout)):
+            assert ShellEnvironmentDefaults.installed_location() is None
+
+    def test_returns_none_when_pipx_fails(self) -> None:
+        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["pipx"])):
+            assert ShellEnvironmentDefaults.installed_location() is None
+
+    def test_returns_none_when_pipx_is_absent(self) -> None:
+        with patch("subprocess.run", side_effect=FileNotFoundError("pipx")):
+            assert ShellEnvironmentDefaults.installed_location() is None
+
+
+def _package_location(root: Path, *, with_installer: bool = True) -> Path:
+    """Create a fake installed package: ``skills/INDEX.md`` plus a real ``install.sh`` copy."""
+    location: Path = root / "site packages"
+    (location / "skills").mkdir(parents=True)
+    (location / "skills" / "INDEX.md").write_text("# index\n")
+    if with_installer:
+        shutil.copy(INSTALL_SH, location / "install.sh")
+    return location
+
+
+class TestEnsureDecisions:
+    """``ensure`` runs the installer step only when a variable is missing, and fails loudly."""
+
+    def test_all_present_runs_nothing_and_says_so(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A full update writes nothing under the managed shell file path."""
-        home: Path = tmp_path / "home"
-        managed_file: Path = home / ".slo" / "shell" / "environment.sh"
-        managed_file.parent.mkdir(parents=True)
-        managed_file.write_text("# existing managed content\n")
-        before: bytes = managed_file.read_bytes()
-        monkeypatch.setenv("HOME", str(home))
-        with patch("src.cli.update.Updater._pipx_install") as install:
-            Updater.invoke(ref="v9.9.9")
-        install.assert_called_once()
-        assert managed_file.read_bytes() == before
-
-    def test_invoke_never_touches_shell_profiles(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A full update edits no shell startup file in the user's home."""
-        home: Path = tmp_path / "home"
-        home.mkdir()
-        profiles: dict[str, Path] = {
-            name: home / name for name in (".bash_profile", ".bashrc", ".zshenv", ".profile")
+        location: Path = _package_location(tmp_path)
+        environ: dict[str, str] = {
+            "SLO_HOME": "/h",
+            "SLO_SKILLS_DIR": str(location / "skills"),
+            "SLO_KB_DIR": "/k",
         }
-        for name, profile in profiles.items():
-            profile.write_text(f"# {name} user content\n")
-        before: dict[str, bytes] = {name: path.read_bytes() for name, path in profiles.items()}
+        with (
+            patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location),
+            patch("subprocess.run") as run,
+        ):
+            ShellEnvironmentDefaults.ensure(environ=environ)
+        run.assert_not_called()
+        err: str = capsys.readouterr().err
+        assert "already set" in err
+        assert "SLO_SKILLS_DIR" not in err.split("already set")[1]
+
+    def test_missing_runs_the_installed_finalize_step(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        location: Path = _package_location(tmp_path)
+        with (
+            patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location),
+            patch("subprocess.run", return_value=_completed()) as run,
+        ):
+            ShellEnvironmentDefaults.ensure(environ={"SLO_HOME": "/h"})
+        command: list[str] = run.call_args.args[0]
+        assert command[1:] == [str(location / "install.sh"), "--finalize-environment"]
+        assert os.path.basename(command[0]) == "bash"
+        assert run.call_args.kwargs["check"] is True
+        assert "SLO_SKILLS_DIR, SLO_KB_DIR" in capsys.readouterr().err
+
+    def test_missing_without_a_locatable_package_exits_non_zero(self) -> None:
+        with patch.object(ShellEnvironmentDefaults, "installed_location", return_value=None):
+            with pytest.raises(SystemExit) as raised:
+                ShellEnvironmentDefaults.ensure(environ={})
+        assert "slo was updated" in str(raised.value)
+        assert "install.sh" in str(raised.value)
+
+    def test_missing_installer_copy_exits_non_zero(self, tmp_path: Path) -> None:
+        location: Path = _package_location(tmp_path, with_installer=False)
+        with patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location):
+            with pytest.raises(SystemExit) as raised:
+                ShellEnvironmentDefaults.ensure(environ={})
+        assert "install.sh" in str(raised.value)
+
+    def test_finalize_failure_exits_non_zero(self, tmp_path: Path) -> None:
+        location: Path = _package_location(tmp_path)
+        with (
+            patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location),
+            patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["bash"])),
+        ):
+            with pytest.raises(SystemExit) as raised:
+                ShellEnvironmentDefaults.ensure(environ={})
+        assert "slo was updated" in str(raised.value)
+
+
+class TestStaleSkillsDirWarning:
+    """An existing ``SLO_SKILLS_DIR`` is never rewritten, but a wrong one is reported."""
+
+    def _ensure(self, *, skills_dir: Path, location: Path | None) -> str:
+        environ: dict[str, str] = {"SLO_HOME": "/h", "SLO_SKILLS_DIR": str(skills_dir), "SLO_KB_DIR": "/k"}
+        with (
+            patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location),
+            patch("subprocess.run") as run,
+        ):
+            ShellEnvironmentDefaults.ensure(environ=environ)
+        run.assert_not_called()
+        return self._capsys.readouterr().err
+
+    @pytest.fixture(autouse=True)
+    def _capture(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._capsys = capsys
+
+    def test_matching_path_is_quiet(self, tmp_path: Path) -> None:
+        location: Path = _package_location(tmp_path)
+        assert "warning" not in self._ensure(skills_dir=location / "skills", location=location)
+
+    def test_path_without_index_is_a_warning(self, tmp_path: Path) -> None:
+        location: Path = _package_location(tmp_path)
+        err: str = self._ensure(skills_dir=tmp_path / "gone", location=location)
+        assert "warning" in err
+        assert "INDEX.md" in err
+        assert str(location / "skills") in err
+
+    def test_different_valid_path_is_a_note(self, tmp_path: Path) -> None:
+        location: Path = _package_location(tmp_path)
+        custom: Path = tmp_path / "dev checkout" / "skills"
+        custom.mkdir(parents=True)
+        (custom / "INDEX.md").write_text("# index\n")
+        err: str = self._ensure(skills_dir=custom, location=location)
+        assert "warning" not in err
+        assert str(custom) in err
+        assert str(location / "skills") in err
+
+
+class TestEnsureEndToEnd:
+    """Real bash runs the real install.sh copy against an isolated HOME and a fake pipx."""
+
+    @pytest.fixture
+    def isolated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+        home: Path = tmp_path / "home with ' quote"
+        home.mkdir()
+        location: Path = _package_location(tmp_path)
+        bin_dir: Path = tmp_path / "bin"
+        bin_dir.mkdir()
+        pipx: Path = bin_dir / "pipx"
+        pipx.write_text(
+            "#!/bin/sh\n"
+            'if [ "$*" = "runpip slo show slo" ]; then\n'
+            '  echo "Name: slo"\n'
+            f'  echo "Location: {location}"\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        pipx.chmod(0o755)
         monkeypatch.setenv("HOME", str(home))
-        with patch("src.cli.update.Updater._pipx_install"):
-            Updater.invoke(ref="v9.9.9")
-        for name, profile in profiles.items():
-            assert profile.read_bytes() == before[name], name
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        for name in SLO_VARS:
+            monkeypatch.delenv(name, raising=False)
+        return home, location
+
+    def _login_shell_values(self, *, home: Path) -> list[str]:
+        result = subprocess.run(
+            [BASH, "--login", "-c", 'printf "%s\n%s\n%s\n" "$SLO_HOME" "$SLO_SKILLS_DIR" "$SLO_KB_DIR"'],
+            env={"HOME": str(home), "PATH": os.environ["PATH"], "TERM": "dumb"},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.splitlines()
+
+    def test_missing_variables_are_persisted_for_new_shells(self, isolated: tuple[Path, Path]) -> None:
+        home, location = isolated
+        ShellEnvironmentDefaults.ensure(environ=os.environ)
+        assert (home / ".slo" / "shell" / "environment.sh").is_file()
+        for profile in (".bash_profile", ".bashrc", ".zshenv", ".profile"):
+            assert "slo managed environment" in (home / profile).read_text(), profile
+        assert self._login_shell_values(home=home) == [
+            f"{home}/.slo",
+            os.path.realpath(location / "skills"),
+            f"{home}/.slo/KnowledgeBase/KB",
+        ]
+        assert not (home / ".slo" / "KnowledgeBase").exists()
+
+    def test_all_present_leaves_home_untouched(
+        self, isolated: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home, location = isolated
+        (home / ".bashrc").write_text("# user bashrc\n")
+        monkeypatch.setenv("SLO_HOME", str(home / ".slo"))
+        monkeypatch.setenv("SLO_SKILLS_DIR", str(location / "skills"))
+        monkeypatch.setenv("KB_DIR", str(home / "kb"))
+        ShellEnvironmentDefaults.ensure(environ=os.environ)
+        assert sorted(p.name for p in home.iterdir()) == [".bashrc"]
+        assert (home / ".bashrc").read_text() == "# user bashrc\n"
+
+    def test_rerun_is_idempotent(self, isolated: tuple[Path, Path]) -> None:
+        home, _ = isolated
+        ShellEnvironmentDefaults.ensure(environ=os.environ)
+        snapshot: dict[str, bytes] = {p.name: p.read_bytes() for p in home.iterdir() if p.is_file()}
+        ShellEnvironmentDefaults.ensure(environ=os.environ)
+        assert {p.name: p.read_bytes() for p in home.iterdir() if p.is_file()} == snapshot
 
 
 class TestCheckPathAfterInstall:

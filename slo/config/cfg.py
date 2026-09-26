@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -181,14 +182,39 @@ def _is_populated_skills_tree(*, candidate: Path) -> bool:
     return (candidate / "INDEX.md").is_file()
 
 
-def _resolve_skills_dir() -> str:
+@dataclass(frozen=True)
+class ResolvedDirectory:
+    """An absolute directory and the setting that supplied it.
+
+    ``source`` is written for the system prompt (e.g. ``"`SLO_SKILLS_DIR`"``)
+    so the agent can tell the user which setting to change when the directory
+    turns out to be wrong.
+    """
+
+    path: str
+    source: str
+
+
+def _current_slo_home() -> Path:
+    """Return ``$SLO_HOME``, or ``~/.slo`` when it is unset or empty.
+
+    Read at call time rather than from the module constant so resolution
+    follows the environment the caller (or a test) sets.
+
+    Returns:
+        Path: The Slo runtime home.
+    """
+    return Path(os.environ.get("SLO_HOME") or str(Path.home() / ".slo"))
+
+
+def _resolve_skills_location() -> ResolvedDirectory:
     """Pick the skills directory by precedence (sub-spec 01.n §5.4).
 
     Order:
-        1. ``$SLO_SKILLS_DIR`` if set (explicit override; honoured verbatim so
-           a wrong value surfaces as a loud missing-directory error rather
-           than being silently swapped for a different tree).
-        2. ``~/.slo/skills`` when it is a populated skills tree (operator
+        1. ``$SLO_SKILLS_DIR`` if set and non-empty (explicit override; honoured
+           verbatim so a wrong value surfaces as a loud missing-directory error
+           rather than being silently swapped for a different tree).
+        2. ``$SLO_HOME/skills`` when it is a populated skills tree (operator
            override / legacy clone install).
         3. The ``skills/`` directory alongside this file — ``site-packages/``
            for a pipx install (shipped via ``[tool.poetry] include``) and the
@@ -198,24 +224,63 @@ def _resolve_skills_dir() -> str:
     stale directory falls through to the next candidate instead of winning.
 
     Returns:
-        Absolute path string. Never ``None`` — falls through to the
-        package-adjacent path even when nothing validates, so misconfiguration
-        surfaces as "FileNotFoundError when reading INDEX.md" rather than a
-        silent None. ``SkillsLoader.load_merged`` logs the zero-skill case.
+        ResolvedDirectory: Absolute path and its source. Never ``None`` — falls
+        through to the package-adjacent path even when nothing validates, so
+        misconfiguration surfaces as "FileNotFoundError when reading INDEX.md"
+        rather than a silent None. ``SkillsLoader.load_merged`` logs the
+        zero-skill case.
     """
     override = os.environ.get("SLO_SKILLS_DIR")
     if override:
-        return os.path.abspath(override)
+        return ResolvedDirectory(path=os.path.abspath(override), source="`SLO_SKILLS_DIR`")
 
-    installed = Path.home() / ".slo" / "skills"
+    installed = _current_slo_home() / "skills"
     if _is_populated_skills_tree(candidate=installed):
-        return str(installed)
+        return ResolvedDirectory(path=str(installed), source="`$SLO_HOME/skills`")
 
     packaged = Path(__file__).resolve().parent.parent / "skills"
-    return str(packaged)
+    return ResolvedDirectory(path=str(packaged), source="the installed slo package")
 
 
-SKILLS_DIR: str = _resolve_skills_dir()
+def _resolve_skills_dir() -> str:
+    """Return the resolved skills directory path (see ``_resolve_skills_location``).
+
+    Returns:
+        str: Absolute skills directory path.
+    """
+    return _resolve_skills_location().path
+
+
+def _resolve_kb_location() -> ResolvedDirectory:
+    """Pick the knowledge-base directory by precedence.
+
+    Order:
+        1. ``$SLO_KB_DIR`` (canonical).
+        2. ``$KB_DIR`` (accepted fallback alias).
+        3. ``$SLO_HOME/KnowledgeBase/KB`` (the Slo default).
+
+    Empty values count as unset. A value that points at a file (for example
+    ``.../KB/Welcome.md``) resolves to the file's directory. Resolution never
+    touches the filesystem beyond that check: the directory may not exist,
+    and the ``locate-knowledge-base`` skill decides what to do then.
+
+    Returns:
+        ResolvedDirectory: Absolute path and its source.
+    """
+    for name in ("SLO_KB_DIR", "KB_DIR"):
+        value = os.environ.get(name)
+        if value:
+            candidate = Path(os.path.abspath(os.path.expanduser(value)))
+            directory = candidate.parent if candidate.is_file() else candidate
+            return ResolvedDirectory(path=str(directory), source=f"`{name}`")
+    return ResolvedDirectory(
+        path=str(_current_slo_home() / "KnowledgeBase" / "KB"),
+        source="the default `$SLO_HOME/KnowledgeBase/KB`",
+    )
+
+
+SKILLS_LOCATION: ResolvedDirectory = _resolve_skills_location()
+SKILLS_DIR: str = SKILLS_LOCATION.path
 
 # User-defined skills and workflows (spec 29).
 # These directories are created on first write by the creation skills;
@@ -230,9 +295,11 @@ USER_WORKFLOWS_DIR: str = os.environ.get(
 )
 
 # SLO_KB_DIR is the local one-way mirror of the canonical knowledge base.
-# Slo reads and writes only this path; the system prompt references the env
-# variable name so the agent can resolve it via bash if needed.
-SLO_KB_DIR = os.environ.get("SLO_KB_DIR", None)
+# Slo reads and writes only this path. It is always resolved (see
+# ``_resolve_kb_location``) but may not exist; the system prompt tells the
+# agent how to locate or offer to create it.
+KB_LOCATION: ResolvedDirectory = _resolve_kb_location()
+SLO_KB_DIR: str = KB_LOCATION.path
 # SLO_KB_SOURCE is the canonical KB path that ``make kb-snapshot`` mirrors from.
 SLO_KB_SOURCE = os.environ.get("SLO_KB_SOURCE", None)
 

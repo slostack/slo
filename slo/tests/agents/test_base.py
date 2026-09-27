@@ -25,6 +25,7 @@ from unittest.mock import patch
 import pytest
 
 from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 
 from src.agents.base import LLMFactory
 from src.agents.providers.anthropic_claude_code import (
@@ -34,6 +35,20 @@ from src.agents.providers.anthropic_claude_code import (
 from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
+
+
+def _chat_openai(result) -> ChatOpenAI:
+    """Return the built chat model as ``ChatOpenAI`` for attribute assertions.
+
+    Args:
+        result (LLMBuildResult): Factory build result under test.
+
+    Returns:
+        ChatOpenAI: The built model, typed for OpenAI-specific fields.
+    """
+    llm = result.llm
+    assert isinstance(llm, ChatOpenAI)
+    return llm
 
 
 def _reload_cfg() -> None:
@@ -845,3 +860,219 @@ class TestAnthropicMaxTokens:
             model_kwargs=None,
         )
         assert resolved["max_tokens"] == 4096
+
+
+class TestAstraOpenAIConstruction:
+    """Feature 83.b.1: one API-ID resolution plus generic request policy in ``_build_openai``."""
+
+    def _api_key_cred(self) -> CredentialDAO:
+        """Build an OpenAI API-key credential.
+
+        Returns:
+            CredentialDAO: API-key credential for the OpenAI provider.
+        """
+        return CredentialDAO(
+            provider=ProviderName.OPENAI,
+            auth_type=AuthType.API_KEY,
+            access_token="sk-platform",
+        )
+
+    @staticmethod
+    def _oauth_cred() -> CredentialDAO:
+        """Build an OpenAI OAuth credential with the required JWT claim."""
+        return TestLLMFactoryOpenAIRouting()._oauth_cred()
+
+    @pytest.mark.parametrize(
+        ("requested_level", "provider_effort"),
+        [
+            ("off", "low"),
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+        ],
+    )
+    def test_api_key_astra_builds_responses_for_every_canonical_level(
+        self,
+        requested_level: str,
+        provider_effort: str,
+    ) -> None:
+        """API-key Astra resolves the API ID once and builds Responses with exact effort."""
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._api_key_cred(),
+            ),
+            patch(
+                "src.agents.base.ModelCatalogService.api_model_name_for",
+                return_value="gpt-6-astra",
+            ) as mock_api_model_name_for,
+            patch(
+                "src.agents.base.resolve_reasoning_config",
+                wraps=__import__(
+                    "src.agents.reasoning_capabilities",
+                    fromlist=["resolve_reasoning_config"],
+                ).resolve_reasoning_config,
+            ) as mock_resolve,
+        ):
+            result = LLMFactory.create(
+                model_name="gpt-6-astra",
+                reasoning_level=requested_level,  # type: ignore[arg-type]
+            )
+
+        mock_api_model_name_for.assert_called_once_with(model_name="gpt-6-astra")
+        assert mock_resolve.call_args.kwargs["model_name"] == "gpt-6-astra"
+        assert _chat_openai(result).model_name == "gpt-6-astra"
+        assert _chat_openai(result).reasoning == {"effort": provider_effort, "summary": "auto"}
+        assert _chat_openai(result).use_responses_api is True
+        assert _chat_openai(result).output_version == "responses/v1"
+        assert _chat_openai(result).streaming is True
+        assert _chat_openai(result).temperature is None
+        for forbidden_key in ("top_p", "top_logprobs", "logprobs"):
+            assert forbidden_key not in _chat_openai(result).model_kwargs
+
+    def test_api_key_astra_off_preserves_active_off_with_low_effort(self) -> None:
+        """Astra ``off`` resolves enabled with active ``off`` and provider effort low."""
+        with patch(
+            "src.agents.base.CredentialResolver.require",
+            return_value=self._api_key_cred(),
+        ):
+            result = LLMFactory.create(
+                model_name="gpt-6-astra",
+                reasoning_level="off",
+            )
+
+        assert _chat_openai(result).reasoning == {"effort": "low", "summary": "auto"}
+        assert _chat_openai(result).reasoning["effort"] not in {"none", "off"}  # type: ignore[index]
+        assert _chat_openai(result).use_responses_api is True
+        assert _chat_openai(result).temperature is None
+
+    def test_api_key_astra_strips_forbidden_sampling_kwargs_without_mutating_caller(self) -> None:
+        """All four forbidden keys are removed from a copied mapping; caller data is intact."""
+        caller_kwargs: dict = {
+            "temperature": 0.9,
+            "top_p": 0.5,
+            "top_logprobs": 3,
+            "logprobs": True,
+            "parallel_tool_calls": True,
+        }
+        with patch(
+            "src.agents.base.CredentialResolver.require",
+            return_value=self._api_key_cred(),
+        ):
+            result = LLMFactory.create(
+                model_name="gpt-6-astra",
+                reasoning_level="high",
+                model_kwargs=caller_kwargs,
+            )
+
+        assert caller_kwargs == {
+            "temperature": 0.9,
+            "top_p": 0.5,
+            "top_logprobs": 3,
+            "logprobs": True,
+            "parallel_tool_calls": True,
+        }
+        assert _chat_openai(result).temperature is None
+        assert _chat_openai(result).model_kwargs == {"parallel_tool_calls": True}
+
+    def test_api_key_lane_sends_non_identity_api_model_id(self) -> None:
+        """A patched non-identity API ID reaches ``ChatOpenAI(model=...)`` verbatim."""
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._api_key_cred(),
+            ),
+            patch(
+                "src.agents.base.ModelCatalogService.api_model_name_for",
+                return_value="sentinel-api-id",
+            ) as mock_api_model_name_for,
+            patch(
+                "src.agents.base.resolve_reasoning_config",
+                wraps=__import__(
+                    "src.agents.reasoning_capabilities",
+                    fromlist=["resolve_reasoning_config"],
+                ).resolve_reasoning_config,
+            ) as mock_resolve,
+        ):
+            result = LLMFactory.create(model_name="gpt-6-astra", reasoning_level="high")
+
+        mock_api_model_name_for.assert_called_once_with(model_name="gpt-6-astra")
+        assert mock_resolve.call_args.kwargs["model_name"] == "gpt-6-astra"
+        assert _chat_openai(result).model_name == "sentinel-api-id"
+
+    def test_oauth_lane_sends_non_identity_api_model_id(self) -> None:
+        """A patched non-identity API ID reaches the Codex builder verbatim."""
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._oauth_cred(),
+            ),
+            patch(
+                "src.agents.base.ModelCatalogService.api_model_name_for",
+                return_value="sentinel-api-id",
+            ) as mock_api_model_name_for,
+            patch("src.agents.base.build_chatgpt_backed_chat_openai") as mock_builder,
+        ):
+            LLMFactory.create(model_name="gpt-6-astra", reasoning_level="high")
+
+        mock_api_model_name_for.assert_called_once_with(model_name="gpt-6-astra")
+        mock_builder.assert_called_once()
+        assert mock_builder.call_args.kwargs["model_name"] == "sentinel-api-id"
+
+    def test_oauth_astra_builder_receives_api_id_sanitized_inputs_and_forced_low_off(self) -> None:
+        """OAuth Astra receives the API ID, no temperature, copied extras, and forced-low off."""
+        caller_kwargs: dict = {"top_p": 0.5, "logprobs": True, "parallel_tool_calls": True}
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._oauth_cred(),
+            ),
+            patch("src.agents.base.build_chatgpt_backed_chat_openai") as mock_builder,
+        ):
+            LLMFactory.create(
+                model_name="gpt-6-astra",
+                reasoning_level="off",
+                model_kwargs=caller_kwargs,
+            )
+
+        mock_builder.assert_called_once()
+        kwargs = mock_builder.call_args.kwargs
+        assert kwargs["model_name"] == "gpt-6-astra"
+        assert kwargs["temperature"] is None
+        assert kwargs["model_kwargs"] == {"parallel_tool_calls": True}
+        assert kwargs["reasoning"].enabled is True
+        assert kwargs["reasoning"].active_level == "off"
+        assert kwargs["reasoning"].provider_effort == "low"
+        assert caller_kwargs == {"top_p": 0.5, "logprobs": True, "parallel_tool_calls": True}
+
+
+class TestOpenAIRequestPolicyRegression:
+    """Feature 83.b.1: non-Astra disabled-reasoning Chat-Completions behavior is unchanged."""
+
+    def test_gpt_5_4_off_keeps_chat_completions_with_temperature(self) -> None:
+        """gpt-5.4 ``off`` retains Chat Completions with caller extras."""
+        cred = CredentialDAO(
+            provider=ProviderName.OPENAI,
+            auth_type=AuthType.API_KEY,
+            access_token="sk-platform",
+        )
+        caller_kwargs: dict = {"top_p": 0.5, "parallel_tool_calls": True}
+
+        with patch(
+            "src.agents.base.CredentialResolver.require",
+            return_value=cred,
+        ):
+            result = LLMFactory.create(
+                model_name="gpt-5.4",
+                reasoning_level="off",
+                model_kwargs=caller_kwargs,
+            )
+
+        assert _chat_openai(result).use_responses_api in (False, None)
+        assert _chat_openai(result).reasoning is None
+        assert _chat_openai(result).top_p == 0.5
+        assert _chat_openai(result).model_kwargs == {"parallel_tool_calls": True}
+        assert caller_kwargs == {"top_p": 0.5, "parallel_tool_calls": True}

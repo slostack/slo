@@ -257,3 +257,106 @@ class TestAnthropicProviderDefault:
         defaults = SeedModelCatalog.provider_default_models()
 
         assert defaults[ProviderName.ANTHROPIC] == "claude-opus-4-8-1m-context"
+
+
+class TestAstraSeedEntry:
+    """Feature 83.a.1: first-class, picker-visible ``gpt-6-astra`` catalog record."""
+
+    def test_astra_seed_entry_has_evidence_backed_runtime_policy(self) -> None:
+        """Astra's identity, visibility, and runtime policy match the spec table."""
+        snapshot = SeedModelCatalog.load()
+
+        assert "gpt-6-astra" in snapshot.entries
+        entry = snapshot.entries["gpt-6-astra"]
+        assert entry.model_name == "gpt-6-astra"
+        assert entry.api_model_name is None
+        assert entry.provider is ProviderName.OPENAI
+        assert entry.support_tier == "first_class"
+        assert entry.visible_in_picker is True
+        runtime = entry.runtime_profile
+        assert runtime.context_window == 1_050_000
+        assert runtime.max_tokens == 128_000
+        assert runtime.streaming is True
+        assert runtime.requests_per_minute == 500
+        assert runtime.tokens_per_minute == 500_000
+        assert runtime.automatic_retry_attempts == 2
+        assert runtime.local_retry_wait_cap_seconds == 30
+
+    def test_astra_is_the_only_astra_entry(self) -> None:
+        """Exactly one seed entry carries the Astra identity or API ID."""
+        snapshot = SeedModelCatalog.load()
+
+        astral_entries = [
+            entry
+            for entry in snapshot.entries.values()
+            if entry.model_name == "gpt-6-astra" or entry.api_model_name == "gpt-6-astra"
+        ]
+        assert len(astral_entries) == 1
+        assert "astra" not in snapshot.aliases
+
+    def test_astra_seed_profile_maps_all_canonical_levels(self) -> None:
+        """Astra supports all seven levels, defaults high, and maps efforts exactly."""
+        snapshot = SeedModelCatalog.load()
+
+        profile = snapshot.entries["gpt-6-astra"].reasoning_profile
+        assert profile.supported_levels == [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert profile.default_level == "high"
+        assert profile.provider_effort_map == {
+            "off": "low",
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max",
+        }
+        assert profile.provider_budget_map == {}
+        assert profile.provider_reasoning_required is True
+        assert profile.forbid_sampling_parameters_when_enabled is True
+
+    def test_legacy_k3_profile_remains_unchanged(self) -> None:
+        """K3 keeps low/high/xhigh with the existing ``xhigh -> max`` mapping."""
+        snapshot = SeedModelCatalog.load()
+
+        profile = snapshot.entries["kimi-k3"].reasoning_profile
+        assert profile.supported_levels == ["low", "high", "xhigh"]
+        assert profile.default_level == "xhigh"
+        assert profile.provider_effort_map == {
+            "low": "low",
+            "high": "high",
+            "xhigh": "max",
+        }
+        assert profile.provider_reasoning_required is False
+        assert profile.forbid_sampling_parameters_when_enabled is False
+
+    def test_legacy_profiles_default_both_astra_flags_to_false(self) -> None:
+        """No legacy profile gains the new reasoning-policy flags."""
+        snapshot = SeedModelCatalog.load()
+
+        for model_name, entry in snapshot.entries.items():
+            if model_name == "gpt-6-astra":
+                continue
+            assert entry.reasoning_profile.provider_reasoning_required is False, model_name
+            assert entry.reasoning_profile.forbid_sampling_parameters_when_enabled is False, model_name
+
+    def test_openai_provider_default_remains_gpt_5_4(self) -> None:
+        """Adding Astra does not promote it to the OpenAI provider default."""
+        defaults = SeedModelCatalog.provider_default_models()
+
+        assert defaults[ProviderName.OPENAI] == "gpt-5.4"
+
+    def test_openai_discovery_template_retains_flagship_profile(self) -> None:
+        """The gpt-5.* family template keeps the six-level flagship profile."""
+        snapshot = SeedModelCatalog.load()
+
+        template = next(t for t in snapshot.templates if "gpt-5." in t.family_patterns)
+        assert "max" not in template.reasoning_profile.supported_levels
+        assert template.reasoning_profile.provider_reasoning_required is False

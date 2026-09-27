@@ -129,8 +129,13 @@ class TestSupportedModelsByProvider:
         assert "kimi-k3" in result[ProviderName.KIMI_FOR_CODING]
 
     def test_claude_mythos_is_hidden_by_default(self) -> None:
-        """The conditional entry is not visible."""
-        result: dict[ProviderName, list[str]] = supported_models_by_provider()
+        """The seed-hidden entry is absent unless an operator cache overrides visibility."""
+        from src.agents.model_catalog.seed import SeedModelCatalog
+
+        seed_snapshot: ModelCatalogSnapshotDAO = SeedModelCatalog.load()
+        with patch.object(ModelCatalogService, "load", return_value=seed_snapshot):
+            result: dict[ProviderName, list[str]] = supported_models_by_provider()
+
         for models in result.values():
             assert "claude-mythos" not in models
 
@@ -158,6 +163,13 @@ class TestModelSuggestionEntries:
             reasoning_profile=ModelReasoningProfileDAO(
                 supported_levels=["off", "minimal", "low", "medium", "high", "xhigh"],
                 default_level="high",
+                provider_effort_map={
+                    "minimal": "low",
+                    "low": "low",
+                    "medium": "medium",
+                    "high": "high",
+                    "xhigh": "xhigh",
+                },
             ),
         )
         base_snapshot = ModelCatalogService.load()
@@ -227,3 +239,34 @@ class TestClaude48SuggestionEntries:
             assert entry.display_name == display_name, model_name
         assert entries_by_name["claude-opus-4-8"].is_active is True
         assert entries_by_name["claude-haiku-4-5"].is_active is False
+
+
+class TestAstraPickerProjection:
+    """Feature 83.a.1: Astra appears once under OpenAI with all seven levels."""
+
+    def test_astra_appears_once_under_openai(self) -> None:
+        """The picker projection lists gpt-6-astra exactly once under OpenAI."""
+        result: dict[ProviderName, list[str]] = supported_models_by_provider()
+
+        assert result[ProviderName.OPENAI].count("gpt-6-astra") == 1
+
+    def test_astra_not_listed_under_other_providers(self) -> None:
+        """Astra never appears under Anthropic or Kimi For Coding."""
+        result: dict[ProviderName, list[str]] = supported_models_by_provider()
+
+        assert "gpt-6-astra" not in result.get(ProviderName.ANTHROPIC, [])
+        assert "gpt-6-astra" not in result.get(ProviderName.KIMI_FOR_CODING, [])
+
+    def test_astra_suggestion_entry_carries_seven_level_reasoning_summary(self) -> None:
+        """The suggestion projection renders Astra's seven canonical levels."""
+        entries: list[ModelSuggestionEntryDAO] = model_suggestion_entries(
+            active_model_name="gpt-6-astra",
+        )
+        astra_entries: list[ModelSuggestionEntryDAO] = [
+            entry for entry in entries if entry.model_name == "gpt-6-astra"
+        ]
+
+        assert len(astra_entries) == 1
+        assert astra_entries[0].reasoning_summary == "off, minimal, low, medium, high, xhigh, max"
+        assert astra_entries[0].provider is ProviderName.OPENAI
+        assert astra_entries[0].is_active is True

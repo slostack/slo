@@ -88,3 +88,25 @@ class TestSessionConfigDAOPoolPrimaryAlignment:
         """Without a pool, model_name is left as supplied."""
         config = SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4")
         assert config.model_name == "gpt-5.4"
+
+
+class TestSessionConfigDAOCanonicalMax:
+    """Feature 83.a.1: ``SessionConfigDAO.reasoning_level`` accepts ``max``."""
+
+    def test_reasoning_level_accepts_canonical_max(self, tmp_path: Path) -> None:
+        """The shared canonical literal admits ``max`` for session config."""
+        config: SessionConfigDAO = SessionConfigDAO(
+            workdir=tmp_path,
+            model_name="gpt-6-astra",
+            reasoning_level="max",
+        )
+
+        assert config.reasoning_level == "max"
+
+    def test_reasoning_level_rejects_invalid_token(self, tmp_path: Path) -> None:
+        """Unknown reasoning tokens remain rejected."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            SessionConfigDAO(workdir=tmp_path, reasoning_level="ultra")  # type: ignore[arg-type]

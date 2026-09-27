@@ -110,6 +110,13 @@ class TestOverrideApplication:
             reasoning_profile=ModelReasoningProfileDAO(
                 supported_levels=["off", "minimal", "low", "medium", "high", "xhigh"],
                 default_level="high",
+                provider_effort_map={
+                    "minimal": "low",
+                    "low": "low",
+                    "medium": "medium",
+                    "high": "high",
+                    "xhigh": "high",
+                },
             ),
         )
 

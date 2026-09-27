@@ -153,7 +153,7 @@ def _run(
     reasoning: Optional[str] = typer.Option(
         None,
         "--reasoning",
-        help="Reasoning level override (off / minimal / low / medium / high / xhigh).",
+        help="Reasoning level override (off / minimal / low / medium / high / xhigh / max).",
     ),
     cwd: Optional[str] = typer.Option(
         None,

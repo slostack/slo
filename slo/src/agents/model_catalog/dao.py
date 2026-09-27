@@ -4,12 +4,27 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.auth.credential_dao import ProviderName
 
-ReasoningLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+ReasoningLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 """Slo's canonical provider-neutral reasoning vocabulary."""
+
+CANONICAL_REASONING_LEVEL_ORDER: tuple[ReasoningLevel, ...] = (
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
+"""The single owner of the canonical reasoning-level ordering.
+
+``reasoning_capabilities.REASONING_LEVELS`` derives from this tuple; no other
+module re-declares the order.
+"""
 
 
 class ModelRuntimeProfileDAO(BaseModel):
@@ -41,13 +56,20 @@ class ModelReasoningProfileDAO(BaseModel):
 
     Attributes:
         supported_levels (list[ReasoningLevel]): Canonical reasoning levels
-            Slo exposes for the model.
+            Slo exposes for the model. Must be unique and follow
+            ``CANONICAL_REASONING_LEVEL_ORDER``.
         default_level (ReasoningLevel): Default seeded level when not explicitly
-            overridden.
+            overridden. Must be one of ``supported_levels``.
         provider_effort_map (dict[ReasoningLevel, str]): Provider-native effort
-            mapping per canonical level.
+            mapping per canonical level. Keys must be supported levels.
         provider_budget_map (dict[ReasoningLevel, int]): Provider-native budget
-            mapping per canonical level.
+            mapping per canonical level. Keys must be supported levels.
+        provider_reasoning_required (bool): When ``True``, a selected canonical
+            ``off`` still resolves to enabled provider reasoning; the profile
+            must then support ``off`` and map it to a provider effort.
+        forbid_sampling_parameters_when_enabled (bool): When ``True``, enabled
+            reasoning forbids provider sampling inputs (``temperature``,
+            ``top_p``, ``top_logprobs``, ``logprobs``) at request construction.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -56,6 +78,90 @@ class ModelReasoningProfileDAO(BaseModel):
     default_level: ReasoningLevel
     provider_effort_map: dict[ReasoningLevel, str] = Field(default_factory=dict)
     provider_budget_map: dict[ReasoningLevel, int] = Field(default_factory=dict)
+    provider_reasoning_required: bool = False
+    forbid_sampling_parameters_when_enabled: bool = False
+
+    @model_validator(mode="after")
+    def _validate_reasoning_profile_consistency(self) -> "ModelReasoningProfileDAO":
+        """Enforce generic profile invariants against the canonical vocabulary.
+
+        Returns:
+            ModelReasoningProfileDAO: Self after validation.
+
+        Raises:
+            ValueError: When levels are duplicated, out of canonical order,
+                the default is unsupported, a translation key is unsupported,
+                an enabled level lacks exactly one translation, or
+                ``provider_reasoning_required`` lacks an ``off`` effort entry.
+        """
+        self._validate_supported_levels_shape()
+        self._validate_default_level_membership()
+        self._validate_translation_key_membership()
+        self._validate_enabled_level_translations()
+        self._validate_provider_reasoning_required_off_entry()
+        return self
+
+    def _validate_supported_levels_shape(self) -> None:
+        """Reject duplicate or non-canonically-ordered supported levels."""
+        if len(set(self.supported_levels)) != len(self.supported_levels):
+            raise ValueError("supported_levels must not contain duplicate reasoning levels.")
+        ordered_index: dict[ReasoningLevel, int] = {
+            level: index for index, level in enumerate(CANONICAL_REASONING_LEVEL_ORDER)
+        }
+        indexes: list[int] = [ordered_index[level] for level in self.supported_levels]
+        if indexes != sorted(indexes):
+            raise ValueError("supported_levels must follow the canonical order of reasoning levels.")
+
+    def _validate_default_level_membership(self) -> None:
+        """Reject a default level outside the supported levels."""
+        if self.default_level not in self.supported_levels:
+            raise ValueError(
+                f"default_level '{self.default_level}' must be one of supported_levels."
+            )
+
+    def _validate_translation_key_membership(self) -> None:
+        """Reject provider translation keys outside the supported levels."""
+        for key in self.provider_effort_map:
+            if key not in self.supported_levels:
+                raise ValueError(
+                    f"provider_effort_map key '{key}' must be one of supported_levels."
+                )
+        for key in self.provider_budget_map:
+            if key not in self.supported_levels:
+                raise ValueError(
+                    f"provider_budget_map key '{key}' must be one of supported_levels."
+                )
+
+    def _validate_enabled_level_translations(self) -> None:
+        """Require exactly one translation for each reasoning-enabled level."""
+        for level in self.supported_levels:
+            if level == "off":
+                continue
+            has_effort: bool = level in self.provider_effort_map
+            has_budget: bool = level in self.provider_budget_map
+            if has_effort and has_budget:
+                raise ValueError(
+                    f"Level '{level}' must carry exactly one translation: "
+                    "provider effort XOR provider budget."
+                )
+            if not has_effort and not has_budget:
+                raise ValueError(
+                    f"Reasoning-enabled level '{level}' is missing a provider translation "
+                    "(effort or budget)."
+                )
+
+    def _validate_provider_reasoning_required_off_entry(self) -> None:
+        """Require an ``off`` effort mapping when provider reasoning is required."""
+        if not self.provider_reasoning_required:
+            return
+        if "off" not in self.supported_levels:
+            raise ValueError(
+                "provider_reasoning_required=True requires 'off' in supported_levels."
+            )
+        if "off" not in self.provider_effort_map:
+            raise ValueError(
+                "provider_reasoning_required=True requires an 'off' provider_effort_map entry."
+            )
 
 
 class ModelCatalogEntryDAO(BaseModel):

@@ -133,6 +133,7 @@ def build_chatgpt_backed_chat_openai(
     session_id: str,
     temperature: Optional[float] = None,
     reasoning: Optional[ResolvedReasoningConfigDAO] = None,
+    model_kwargs: Optional[dict[str, Any]] = None,
     streaming: bool = True,
     http_async_client: Optional[Any] = None,
 ) -> ChatOpenAI:
@@ -156,6 +157,10 @@ def build_chatgpt_backed_chat_openai(
         temperature (Optional[float]): Forwarded to ``ChatOpenAI``.
         reasoning (Optional[ResolvedReasoningConfigDAO]): Resolved
             provider-ready reasoning config.
+        model_kwargs (Optional[dict[str, Any]]): Optional caller-supplied
+            extra request kwargs. Copied before forwarding; the builder never
+            mutates the caller's mapping and never decides which values are
+            forbidden (that policy lives in the factory).
         streaming (bool): Streaming flag. Defaults to ``True`` so the
             ReAct loop sees deltas as they arrive.
         http_async_client (Optional[Any]): Optional pre-built
@@ -186,6 +191,7 @@ def build_chatgpt_backed_chat_openai(
         include=["reasoning.encrypted_content"],
         reasoning=openai_reasoning_payload(reasoning=reasoning),
         temperature=temperature,
+        model_kwargs=dict(model_kwargs or {}),
         streaming=streaming,
         # ``ChatOpenAI`` would otherwise transparently retry 429s a few
         # times before surfacing them. For the ChatGPT lane we want

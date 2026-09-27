@@ -540,3 +540,29 @@ class TestAdaptChatGptBackendRequest:
         )
         assert msgs == original
         assert "instructions" not in kwargs
+
+
+class TestPostConstructionToolBinding:
+    """Feature 83.b.1: generic tool binding happens after factory construction."""
+
+    def test_factory_constructed_model_receives_bind_tools_after_construction(self) -> None:
+        """``build_slo_agent`` binds tools to the factory product, with no model branch."""
+        bound_models: list[str] = []
+
+        class _BindingProbe:
+            """Records the post-construction ``bind_tools`` call."""
+
+            def bind_tools(self, *, tools: list) -> "_BindingProbe":
+                bound_models.append("bound")
+                return self
+
+            def __getattr__(self, name: str) -> None:
+                raise AttributeError(name)
+
+        result = build_slo_agent(
+            llm=_BindingProbe(),  # type: ignore[arg-type]
+            tools=[write_tool],
+        )
+
+        assert bound_models == ["bound"]
+        assert result.llm is not None

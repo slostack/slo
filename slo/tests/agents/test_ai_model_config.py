@@ -158,3 +158,21 @@ class TestCodexModelDefaults:
         assert MODEL_DEFAULTS["gpt-5.3-codex"]["streaming"] is True
         assert MODEL_DEFAULTS["gpt-5.3-codex-spark"]["streaming"] is True
         assert MODEL_DEFAULTS["gpt-5.2-codex"]["streaming"] is True
+
+
+class TestAstraModelDefaults:
+    """Feature 83.a.1: MODEL_DEFAULTS projects the Astra seed runtime policy."""
+
+    def test_astra_defaults_project_seed_runtime_policy(self) -> None:
+        """The projection carries every documented/runtime value and no invented field."""
+        defaults = MODEL_DEFAULTS["gpt-6-astra"]
+
+        assert defaults["max_tokens"] == 128_000
+        assert defaults["context_window"] == 1_050_000
+        assert defaults["streaming"] is True
+        assert defaults["requests_per_minute"] == 500
+        assert defaults["tokens_per_minute"] == 500_000
+        assert defaults["automatic_retry_attempts"] == 2
+        assert defaults["local_retry_wait_cap_seconds"] == 30
+        assert defaults["temperature"] == 0.1
+        assert "max_input" not in defaults

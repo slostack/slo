@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
@@ -355,3 +356,70 @@ class TestReplayThinkingParity:
                 ]
                 for thinking, _answer in pairs:
                     assert thinking.finalized is True
+
+
+class TestTUIStreamReconnectAstra:
+    """Feature 83.c.1: the real TUI renders one safe reconnect notice for Astra."""
+
+    @pytest.mark.asyncio
+    async def test_astra_tui_renders_one_safe_reconnect_then_completion(self, tmp_path: Path) -> None:
+        """An Astra-configured reconnect renders once, without raw transport text."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                reasoning_level="high",
+                enable_history=False,
+            )
+        )
+        session._agent = SloAgent(llm=FauxChatModel(responses=[]), cwd=str(tmp_path), tools=[])
+        invocation_count: int = 0
+
+        async def _scripted_invoke(**_: object):
+            nonlocal invocation_count
+            invocation_count += 1
+            if invocation_count == 1:
+                raise ProviderStreamFailure(
+                    decision=StreamRecoveryDecisionDAO(
+                        action=StreamRecoveryAction.RETRY_FRESH_CONNECTION,
+                        reason_code="provider_stream_disconnected",
+                        retry_delay_seconds=0.0,
+                        exception_family="httpx.RemoteProtocolError",
+                    ),
+                    partial_output_committed=False,
+                    attempt_number=1,
+                )
+            yield AgentStreamEventDAO(kind="text_delta", delta="recovered")
+            yield AgentStreamEventDAO(kind="run_completed", content="recovered")
+
+        app: SloTUI = SloTUI(session=session)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(session.agent, "invoke", _scripted_invoke),
+                patch(
+                    "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                    MagicMock(side_effect=AssertionError("discovery forbidden")),
+                ) as mock_refresh,
+            ):
+                await app._run_prompt(text="functional retry")
+            await pilot.pause()
+
+        assert invocation_count == 2
+        assert app._adapter is not None
+        transcript: list[str] = [content for content, _classes in app._adapter.lines]
+        reconnect_lines: list[str] = [
+            content for content in transcript if "provider_stream_disconnected" in content
+        ]
+        assert len(reconnect_lines) == 1
+        # The notice uses only the approved reason code and redacted family label;
+        # no raw exception message text is rendered.
+        assert reconnect_lines[0].startswith("(reconnecting after provider_stream_disconnected:")
+        assert not any(
+            "RemoteProtocolError(" in content or "Server disconnected" in content
+            for content in transcript
+        )
+        mock_refresh.assert_not_called()
+        assert session.active_model_name == "gpt-6-astra"
+        assert session.is_running is False
+        assert app._in_flight_task is None

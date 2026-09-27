@@ -14,6 +14,8 @@ dispatch and the ``MODEL_DEFAULTS`` fallback chain.
 import dataclasses
 from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeAlias, runtime_checkable
 
+import httpx
+
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
@@ -33,8 +35,10 @@ from src.agents.providers.openai_codex import (
     openai_reasoning_payload,
 )
 from src.agents.reasoning_capabilities import (
+    ModelReasoningCapabilityDAO,
     ReasoningLevel,
     ResolvedReasoningConfigDAO,
+    capability_for_model,
     resolve_reasoning_config,
 )
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
@@ -152,6 +156,7 @@ class LLMFactory:
         model_kwargs: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
         reasoning_level: ReasoningLevel = "off",
+        http_async_client: Optional[httpx.AsyncClient] = None,
     ) -> LLMBuildResult:
         """Create a LangChain chat model from a model name.
 
@@ -173,6 +178,9 @@ class LLMFactory:
                 otherwise.
             reasoning_level (ReasoningLevel): Canonical active reasoning
                 level forwarded into provider-native payload translation.
+            http_async_client (Optional[httpx.AsyncClient]): Optional OpenAI
+                async HTTP client. Test callers inject a local transport here;
+                ``None`` preserves the SDK-created production client.
 
         Returns:
             LLMBuildResult: A configured LangChain chat model wrapped with
@@ -191,6 +199,7 @@ class LLMFactory:
             model_kwargs=model_kwargs,
             session_id=session_id,
             reasoning_level=reasoning_level,
+            http_async_client=http_async_client,
         )
         if model_name.startswith(cls._ANTHROPIC_PREFIXES):
             llm: LLM = cls._build_anthropic(model_name=model_name, resolved=resolved)
@@ -218,6 +227,7 @@ class LLMFactory:
         model_kwargs: Optional[dict[str, Any]],
         session_id: Optional[str] = None,
         reasoning_level: ReasoningLevel = "off",
+        http_async_client: Optional[httpx.AsyncClient] = None,
     ) -> dict[str, Any]:
         """Resolve constructor kwargs by layering callers over MODEL_DEFAULTS.
 
@@ -233,6 +243,8 @@ class LLMFactory:
                 OpenAI builds.
             reasoning_level (ReasoningLevel): Canonical active reasoning
                 level forwarded into provider translation.
+            http_async_client (Optional[httpx.AsyncClient]): Optional OpenAI
+                async HTTP client forwarded without creating one.
 
         Returns:
             dict[str, Any]: Keys ``temperature``, ``streaming``, ``max_retries``,
@@ -247,6 +259,7 @@ class LLMFactory:
             "model_kwargs": model_kwargs or {},
             "session_id": session_id,
             "reasoning_level": reasoning_level,
+            "http_async_client": http_async_client,
         }
 
     @classmethod
@@ -379,26 +392,36 @@ class LLMFactory:
             ChatOpenAI: Configured chat model on the appropriate lane.
         """
         cred: CredentialDAO = CredentialResolver.require(provider=ProviderName.OPENAI)
+        api_model_name: str = ModelCatalogService.api_model_name_for(model_name=model_name)
         resolved_reasoning: ResolvedReasoningConfigDAO = resolve_reasoning_config(
             model_name=model_name,
             requested_level=resolved["reasoning_level"],
         )
+        sanitized_temperature, sanitized_model_kwargs = cls._resolve_openai_request_policy(
+            model_name=model_name,
+            resolved_reasoning=resolved_reasoning,
+            temperature=resolved["temperature"],
+            model_kwargs=resolved["model_kwargs"],
+        )
         if cred.auth_type == AuthType.OAUTH:
             return build_chatgpt_backed_chat_openai(
-                model_name=model_name,
+                model_name=api_model_name,
                 cred=cred,
                 session_id=resolved["session_id"] or model_name,
-                temperature=resolved["temperature"],
+                temperature=sanitized_temperature,
                 reasoning=resolved_reasoning,
+                model_kwargs=sanitized_model_kwargs,
                 streaming=resolved["streaming"],
+                http_async_client=resolved["http_async_client"],
             )
         openai_kwargs: dict[str, Any] = {
-            "model": model_name,
+            "model": api_model_name,
             "streaming": resolved["streaming"],
             "max_retries": resolved["max_retries"],
             "max_tokens": resolved["max_tokens"],
             "api_key": cred.access_token,
-            "model_kwargs": resolved["model_kwargs"],
+            "model_kwargs": sanitized_model_kwargs,
+            "http_async_client": resolved["http_async_client"],
         }
         openai_reasoning: Optional[dict[str, str]] = openai_reasoning_payload(
             reasoning=resolved_reasoning,
@@ -407,9 +430,46 @@ class LLMFactory:
             openai_kwargs["reasoning"] = openai_reasoning
             openai_kwargs["use_responses_api"] = True
             openai_kwargs["output_version"] = "responses/v1"
-        elif resolved["temperature"] is not None:
-            openai_kwargs["temperature"] = resolved["temperature"]
+        elif sanitized_temperature is not None:
+            openai_kwargs["temperature"] = sanitized_temperature
         return ChatOpenAI(**openai_kwargs)
+
+    @classmethod
+    def _resolve_openai_request_policy(
+        cls,
+        *,
+        model_name: str,
+        resolved_reasoning: ResolvedReasoningConfigDAO,
+        temperature: Optional[float],
+        model_kwargs: dict[str, Any],
+    ) -> tuple[Optional[float], dict[str, Any]]:
+        """Return copied OpenAI constructor inputs permitted by the catalog profile.
+
+        Called by ``_build_openai`` after canonical reasoning resolution and
+        before OAuth/API-key construction. It consults the generic capability
+        projection, never a model-name conditional, and removes only the
+        sampling values forbidden for enabled reasoning (``temperature``,
+        ``top_p``, ``top_logprobs``, ``logprobs``). Caller mappings are never
+        mutated.
+
+        Args:
+            model_name (str): Canonical model name used for capability lookup.
+            resolved_reasoning (ResolvedReasoningConfigDAO): Resolved reasoning
+                config for the active model.
+            temperature (Optional[float]): Resolved caller temperature.
+            model_kwargs (dict[str, Any]): Resolved caller extra kwargs.
+
+        Returns:
+            tuple[Optional[float], dict[str, Any]]: Sanitized temperature and a
+                newly copied extras mapping.
+        """
+        sanitized_model_kwargs: dict[str, Any] = dict(model_kwargs)
+        capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name)
+        if not (resolved_reasoning.enabled and capability.forbid_sampling_parameters_when_enabled):
+            return temperature, sanitized_model_kwargs
+        for forbidden_key in ("temperature", "top_p", "top_logprobs", "logprobs"):
+            sanitized_model_kwargs.pop(forbidden_key, None)
+        return None, sanitized_model_kwargs
 
     @classmethod
     def _build_kimi_for_coding_chat_openai(

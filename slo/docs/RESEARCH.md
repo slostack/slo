@@ -150,6 +150,26 @@ slo --plugin plugins/bash_live_output/plugin.py
   `tests/agents/slo_agent/test_prompts.py`, and the opt-in
   `tests/cli/test_wheel_contents.py::TestWheelShipsInstaller`.
 
+## Feature 83 — `gpt-6-astra` static policy and request construction
+
+- The canonical catalog (`src/agents/model_catalog/seed.py`) owns the single picker-visible
+  `gpt-6-astra` record. Its `500 RPM / 500,000 TPM` values are a static conservative
+  local Tier-1 policy, **not** an account entitlement, discovery result, or availability
+  claim. Generic catalog/profile flags own provider reasoning requirements and sampling
+  restrictions; no Astra-specific provider, recovery, discovery, graph, or TUI branch exists.
+- `ReasoningLevel` is the global seven-level vocabulary: `off`, `minimal`, `low`, `medium`,
+  `high`, `xhigh`, `max`. Astra persists/displays `off`, while generic resolution enables
+  provider reasoning with effort `low`; it never sends provider `off` or `none`. Legacy
+  profiles retain their own supported subsets.
+- `LLMFactory._build_openai()` resolves the provider API model ID once and applies the
+  generic profile request policy to a copied extras mapping. Astra's enabled path uses
+  Responses; bound tools therefore use the Responses flat function-tool representation.
+  Enabled Astra requests omit `temperature`, `top_p`, `top_logprobs`, and `logprobs`.
+- Offline `MockTransport` tests cover the Astra Responses stream/body, resolved effort,
+  and flat tool form. Selection/autocomplete and bounded recovery tests explicitly forbid
+  discovery. **No live provider or entitlement smoke ran**, so this records construction
+  policy only—not remote availability or credential entitlement.
+
 ## Verification owners
 
 - Plugin tests: `tests/agents/slo_agent/plugins/`.

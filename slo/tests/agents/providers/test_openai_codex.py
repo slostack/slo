@@ -21,7 +21,10 @@ import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from unittest.mock import patch
 
+from src.agents.base import LLMFactory
 from src.agents.providers.openai_codex import (
     build_chatgpt_backed_chat_openai,
     extract_chatgpt_account_id,
@@ -82,8 +85,8 @@ def _enabled_reasoning(
     """
     return ResolvedReasoningConfigDAO(
         enabled=True,
-        requested_level=requested_level,
-        active_level=active_level,
+        requested_level=requested_level,  # type: ignore[arg-type]
+        active_level=active_level,  # type: ignore[arg-type]
         provider_effort=effort,
         provider_summary_mode="auto",
     )
@@ -289,6 +292,46 @@ class TestBuildChatgptBackedChatOpenAI:
 
         assert chat.reasoning is None
 
+    def test_forwards_copied_sanitized_model_kwargs(self) -> None:
+        """Supplied sanitized extras reach ``ChatOpenAI`` as a fresh copy."""
+        cred: CredentialDAO = _oauth_cred(
+            access_token=_build_jwt(
+                claims={
+                    "https://api.openai.com/auth": {"chatgpt_account_id": "x"},
+                },
+            ),
+        )
+        caller_kwargs: dict[str, Any] = {"parallel_tool_calls": True}
+
+        chat = build_chatgpt_backed_chat_openai(
+            model_name="gpt-6-astra",
+            cred=cred,
+            session_id="s-extras",
+            model_kwargs=caller_kwargs,
+        )
+
+        assert chat.model_kwargs == {"parallel_tool_calls": True}
+        caller_kwargs["parallel_tool_calls"] = False
+        assert chat.model_kwargs == {"parallel_tool_calls": True}
+
+    def test_omitted_model_kwargs_defaults_to_empty_mapping(self) -> None:
+        """No extras → an empty model-kwargs mapping on the chat model."""
+        cred: CredentialDAO = _oauth_cred(
+            access_token=_build_jwt(
+                claims={
+                    "https://api.openai.com/auth": {"chatgpt_account_id": "x"},
+                },
+            ),
+        )
+
+        chat = build_chatgpt_backed_chat_openai(
+            model_name="gpt-6-astra",
+            cred=cred,
+            session_id="s-default",
+        )
+
+        assert chat.model_kwargs == {}
+
 
 @tool
 def _probe_read(path: str) -> str:
@@ -302,6 +345,8 @@ def _captured_via_mock_transport(
     session_id: str,
     messages: list,
     reasoning: ResolvedReasoningConfigDAO | None = None,
+    model_kwargs: dict[str, Any] | None = None,
+    model_name: str = "gpt-5",
 ) -> dict[str, Any]:
     """Run one ``ainvoke`` against a ``MockTransport`` and return the captured request.
 
@@ -312,6 +357,9 @@ def _captured_via_mock_transport(
         messages (list): LangChain message history to send.
         reasoning (ResolvedReasoningConfigDAO | None): Optional resolved
             reasoning config forwarded to the builder.
+        model_kwargs (dict[str, Any] | None): Optional sanitized extras
+            forwarded to the builder.
+        model_name (str): Provider-facing model ID used in the captured request.
 
     Returns:
         dict[str, Any]: ``{"method", "url", "headers", "body"}``.
@@ -345,10 +393,11 @@ def _captured_via_mock_transport(
         transport=httpx.MockTransport(_handler),
     )
     chat = build_chatgpt_backed_chat_openai(
-        model_name="gpt-5",
+        model_name=model_name,
         cred=cred,
         session_id=session_id,
         reasoning=reasoning,
+        model_kwargs=model_kwargs,
         http_async_client=mock_client,
     )
     chat_with_tools = chat.bind_tools(tools=[_probe_read])
@@ -528,3 +577,137 @@ class TestWireFormat:
         assert "parameters" in tools_payload[0]
         # Chat-Completions nesting MUST NOT be present.
         assert "function" not in tools_payload[0]
+
+
+class TestSanitizedExtrasWireFormat:
+    """Feature 83.b.1: sanitized extras reach the Responses wire unchanged."""
+
+    def test_oauth_codex_astra_bound_tool_request_uses_responses_without_sampling_fields(self) -> None:
+        """OAuth/Codex builder capture proves its own Responses wire contract."""
+        cred: CredentialDAO = _oauth_cred(
+            access_token=_build_jwt(
+                claims={
+                    "https://api.openai.com/auth": {"chatgpt_account_id": "acct-w"},
+                },
+            ),
+        )
+
+        captured = _captured_via_mock_transport(
+            cred=cred,
+            session_id="s-astra-oauth-codex-contract",
+            messages=[HumanMessage(content="list files")],
+            reasoning=_enabled_reasoning(requested_level="off", active_level="off", effort="low"),
+            model_kwargs={"parallel_tool_calls": True},
+            model_name="gpt-6-astra",
+        )
+
+        body: dict[str, Any] = captured["body"]
+        assert captured["url"] == "https://chatgpt.com/backend-api/codex/responses"
+        assert body["model"] == "gpt-6-astra"
+        assert body["stream"] is True
+        assert body["reasoning"] == {"effort": "low", "summary": "auto"}
+        assert body["parallel_tool_calls"] is True
+        assert "input" in body
+        assert body["tools"][0]["type"] == "function"
+        assert body["tools"][0]["name"] == "_probe_read"
+        assert "parameters" in body["tools"][0]
+        assert "function" not in body["tools"][0]
+        for forbidden_key in ("temperature", "top_p", "top_logprobs", "logprobs"):
+            assert forbidden_key not in body
+
+    def test_api_key_astra_factory_bound_tool_streams_platform_responses_without_sampling_fields(self) -> None:
+        """Factory API-key Astra streams a local Platform Responses request, never Codex."""
+        captured: dict[str, Any] = {}
+
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            """Capture the Platform request and return a minimal Responses SSE stream."""
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            captured["body"] = json.loads(request.content.decode())
+            return httpx.Response(
+                status_code=200,
+                headers={"content-type": "text/event-stream"},
+                content=(
+                    b"event: response.created\n"
+                    b'data: {"type": "response.created", "response": {"id": "resp_test", "status": "in_progress"}}\n\n'
+                    b"event: response.completed\n"
+                    b'data: {"type": "response.completed", "response": {"id": "resp_test", "status": "completed", "output": []}}\n\n'
+                ),
+            )
+
+        credential: CredentialDAO = CredentialDAO(
+            provider=ProviderName.OPENAI,
+            auth_type=AuthType.API_KEY,
+            access_token="sk-platform-test",
+        )
+        mock_client: httpx.AsyncClient = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        with patch("src.agents.base.CredentialResolver.require", return_value=credential):
+            product = LLMFactory.create(
+                model_name="gpt-6-astra",
+                reasoning_level="off",
+                model_kwargs={
+                    "parallel_tool_calls": True,
+                    "top_p": 0.5,
+                    "top_logprobs": 3,
+                    "logprobs": True,
+                },
+                http_async_client=mock_client,
+            )
+
+        assert isinstance(product.llm, ChatOpenAI)
+        chat_with_tools = product.llm.bind_tools(tools=[_probe_read])
+
+        import asyncio
+
+        async def _stream_request() -> None:
+            """Drain the bound factory model stream to force its HTTP request."""
+            try:
+                async for _ in chat_with_tools.astream(input=[HumanMessage(content="list files")]):
+                    pass
+            except Exception:  # noqa: BLE001
+                # A minimal synthetic SSE response need only reach the wire-capture seam.
+                pass
+
+        asyncio.run(_stream_request())
+
+        body: dict[str, Any] = captured["body"]
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://api.openai.com/v1/responses"
+        assert "/backend-api/codex/" not in captured["url"]
+        assert body["model"] == "gpt-6-astra"
+        assert body["stream"] is True
+        assert body["reasoning"] == {"effort": "low", "summary": "auto"}
+        assert body["parallel_tool_calls"] is True
+        assert "input" in body
+        assert body["tools"][0]["type"] == "function"
+        assert body["tools"][0]["name"] == "_probe_read"
+        assert "parameters" in body["tools"][0]
+        assert "function" not in body["tools"][0]
+        for forbidden_key in ("temperature", "top_p", "top_logprobs", "logprobs"):
+            assert forbidden_key not in body
+
+    def test_sanitized_extras_present_and_no_forbidden_sampling_fields(self) -> None:
+        """A sanitized caller mapping appears on the body; forbidden keys never do."""
+        cred: CredentialDAO = _oauth_cred(
+            access_token=_build_jwt(
+                claims={
+                    "https://api.openai.com/auth": {"chatgpt_account_id": "acct-w"},
+                },
+            ),
+        )
+
+        captured = _captured_via_mock_transport(
+            cred=cred,
+            session_id="s-sanitized",
+            messages=[HumanMessage(content="hi")],
+            reasoning=_enabled_reasoning(effort="low"),
+            model_kwargs={"parallel_tool_calls": True},
+        )
+
+        body: dict[str, Any] = captured["body"]
+        assert body["parallel_tool_calls"] is True
+        for forbidden_key in ("temperature", "top_p", "top_logprobs", "logprobs"):
+            assert forbidden_key not in body
+        assert body["reasoning"] == {"effort": "low", "summary": "auto"}
+        assert body["store"] is False
+        assert body["stream"] is True

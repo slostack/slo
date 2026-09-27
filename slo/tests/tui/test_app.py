@@ -23,7 +23,7 @@ from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.agents.slo_agent.sessions.dao import ManualCompactionResultDAO
+from src.agents.slo_agent.sessions.dao import ManualCompactionResultDAO, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -3107,7 +3107,6 @@ class TestSloTUIPoolAttachment:
     def test_attach_pool_to_session_sets_spawn_tool_on_session(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` injects the spawn tool into the session config."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
-        from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 
         session: SloAgentSession = SloAgentSession.build(
             config=SessionConfigDAO(
@@ -3126,7 +3125,6 @@ class TestSloTUIPoolAttachment:
     def test_attach_pool_to_session_sets_append_system_prompt(self, tmp_path: Path) -> None:
         """``_attach_pool_to_session`` injects the orchestrator addendum."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
-        from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 
         session: SloAgentSession = SloAgentSession.build(
             config=SessionConfigDAO(
@@ -3144,7 +3142,6 @@ class TestSloTUIPoolAttachment:
     def test_headless_session_does_not_have_spawn_tool(self, tmp_path: Path) -> None:
         """``HeadlessRunner``-built sessions have no ``spawn_sub_agents`` tool."""
         from src.agents.slo_agent.sessions.service import SloAgentSession
-        from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 
         # Simulate how HeadlessRunner builds its session — no _attach_pool_to_session
         session: SloAgentSession = SloAgentSession.build(
@@ -4824,3 +4821,48 @@ class TestTypingNoReflow:
                 ), f"Expected visible=False for plain prose but got {recorded_state}"
             # The final stored state on the menu must be non-visible.
             assert app._suggestion_menu._state.visible is False
+
+
+class TestAstraTerminalOAuthRejection:
+    """Feature 83.c.1: an Astra terminal OAuth rejection renders once, stays usable."""
+
+    @pytest.mark.asyncio
+    async def test_astra_oauth_4xx_renders_one_safe_error_and_allows_follow_up(self, tmp_path: Path) -> None:
+        """One safe error notice, no duplicates/raw output, then a follow-up runs."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                reasoning_level="high",
+                enable_history=False,
+            )
+        )
+        session._agent = SloAgent(llm=FauxChatModel(responses=[]), cwd=str(tmp_path), tools=[])
+        invocation_count: int = 0
+
+        async def _failing_invoke(**_: object):
+            nonlocal invocation_count
+            invocation_count += 1
+            raise ValueError("Error code: 403 - unsupported model for this credential")
+            yield  # pragma: no cover - async generator protocol
+
+        async def _completing_invoke(**_: object):
+            yield AgentStreamEventDAO(kind="run_completed", content="follow-up ok")
+
+        app: SloTUI = SloTUI(session=session)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(session.agent, "invoke", _failing_invoke):
+                await app._run_prompt(text="oauth attempt")
+            with patch.object(session.agent, "invoke", _completing_invoke):
+                await app._run_prompt(text="next action")
+            await pilot.pause()
+
+        assert invocation_count == 1
+        assert app._adapter is not None
+        transcript: list[str] = [content for content, _classes in app._adapter.lines]
+        error_lines: list[str] = [content for content in transcript if "unsupported model" in content]
+        assert len(error_lines) == 1
+        assert session.is_running is False
+        assert app._in_flight_task is None
+        assert app._spinner is None

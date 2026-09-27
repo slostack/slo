@@ -44,6 +44,55 @@ def _openai_flagship_runtime_profile() -> ModelRuntimeProfileDAO:
     )
 
 
+def _openai_astra_reasoning_profile() -> ModelReasoningProfileDAO:
+    """Return the gpt-6-astra reasoning profile (feature 83).
+
+    Astra supports every canonical level, requires provider reasoning for every
+    request (a selected Slo ``off`` resolves to enabled provider effort ``low``;
+    the provider rejects ``none`` with HTTP 400), and forbids sampling inputs on
+    reasoning/tool requests.
+
+    Returns:
+        ModelReasoningProfileDAO: Seven-level Astra reasoning profile.
+    """
+    return ModelReasoningProfileDAO(
+        supported_levels=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        default_level="high",
+        provider_effort_map={
+            "off": "low",
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max",
+        },
+        provider_reasoning_required=True,
+        forbid_sampling_parameters_when_enabled=True,
+    )
+
+
+def _openai_astra_runtime_profile() -> ModelRuntimeProfileDAO:
+    """Return the gpt-6-astra runtime profile.
+
+    Rate values are Slo's conservative local Tier-1 baseline, not a discovered
+    account entitlement. Documented maximum input is 922,000 tokens; it is
+    evidence prose only, not a separate runtime field.
+
+    Returns:
+        ModelRuntimeProfileDAO: Evidence-backed Astra runtime profile.
+    """
+    return ModelRuntimeProfileDAO(
+        max_tokens=128_000,
+        context_window=1_050_000,
+        streaming=True,
+        requests_per_minute=500,
+        tokens_per_minute=500_000,
+        automatic_retry_attempts=2,
+        local_retry_wait_cap_seconds=30,
+    )
+
+
 def _anthropic_adaptive_reasoning_profile(
     *,
     supports_xhigh: bool,
@@ -211,6 +260,16 @@ class SeedModelCatalog:
                 visible_in_picker=True,
                 runtime_profile=_openai_flagship_runtime_profile(),
                 reasoning_profile=_openai_flagship_reasoning_profile(),
+            ),
+            # OpenAI gpt-6-astra (feature 83): canonical identity equals API ID
+            ModelCatalogEntryDAO(
+                model_name="gpt-6-astra",
+                display_name="GPT-6 Astra",
+                provider=ProviderName.OPENAI,
+                support_tier="first_class",
+                visible_in_picker=True,
+                runtime_profile=_openai_astra_runtime_profile(),
+                reasoning_profile=_openai_astra_reasoning_profile(),
             ),
             # Anthropic Claude family
             ModelCatalogEntryDAO(

@@ -84,7 +84,7 @@ class SpawnSubAgentsSchemaDAO(BaseModel):
             "array directly, do NOT wrap it in a string. Each object must have "
             '"task_id" (str) and "prompt" (str). Optional fields: "cwd" (str), '
             '"model" (str), "reasoning_level" (str — one of "off", "minimal", '
-            '"low", "medium", "high", "xhigh"; the key is "reasoning_level", NOT '
+            '"low", "medium", "high", "xhigh", "max"; the key is "reasoning_level", NOT '
             '"reasoning"), "system_prompt" (str). An unknown model name is '
             "rejected before any child spawns, with the supported model list in "
             "the error."
@@ -329,7 +329,7 @@ Different phases can use different models to balance cost and quality. Pass the 
 
 If only one model is available, omit the `model` field from all tasks — the pool default applies.
 
-To set a phase's reasoning budget, pass the `reasoning_level` field (the key is `reasoning_level`, NOT `reasoning`) alongside `model`. Valid values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`:
+To set a phase's reasoning budget, pass the `reasoning_level` field (the key is `reasoning_level`, NOT `reasoning`) alongside `model`. Valid values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`:
 
 ```json
 { "mode": "single", "tasks": [{ "task_id": "review", "prompt": "<review prompt>", "model": "claude-opus-4-8", "reasoning_level": "medium" }] }

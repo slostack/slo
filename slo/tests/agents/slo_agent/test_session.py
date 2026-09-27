@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -1738,3 +1739,382 @@ class TestRecordWorkflowUpdate:
             "[workflow update] phase 1 done",
             "[workflow update] phase 2 done",
         ]
+
+
+class TestAstraSessionReasoningState:
+    """Feature 83.a.1: Astra sessions seed, persist, and switch canonical levels."""
+
+    def test_astra_session_seeds_high_reasoning_default(self, tmp_path: Path) -> None:
+        """An Astra session with no override seeds to ``high``."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                enable_history=False,
+            )
+        )
+
+        assert session.active_model_name == "gpt-6-astra"
+        assert session.active_reasoning_level == "high"
+
+    def test_astra_session_switch_reasoning_to_off_preserves_off_state(self, tmp_path: Path) -> None:
+        """Switching to ``off`` keeps canonical off state (never rewritten to low)."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                enable_history=False,
+            )
+        )
+
+        active_level = session.switch_reasoning_level(reasoning_level="off")
+
+        assert active_level == "off"
+        assert session.active_reasoning_level == "off"
+
+    def test_astra_session_switch_reasoning_to_max_selects_max(self, tmp_path: Path) -> None:
+        """Switching to canonical ``max`` selects ``max`` unchanged for Astra."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                enable_history=False,
+            )
+        )
+
+        active_level = session.switch_reasoning_level(reasoning_level="max")
+
+        assert active_level == "max"
+        assert session.active_reasoning_level == "max"
+
+    def test_astra_off_state_survives_model_switch_away_and_back(self, tmp_path: Path) -> None:
+        """Switching away from Astra clamps per the new model; returning keeps off."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                reasoning_level="off",
+                enable_history=False,
+            )
+        )
+
+        session.switch_model(model_name="gpt-4.1")
+        assert session.active_reasoning_level == "off"
+
+        session.switch_model(model_name="gpt-6-astra")
+        assert session.active_reasoning_level == "off"
+
+    def test_max_reasoning_reclamps_when_switching_to_legacy_model(self, tmp_path: Path) -> None:
+        """Astra ``max`` clamps to the legacy highest level on a model switch."""
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                reasoning_level="max",
+                enable_history=False,
+            )
+        )
+
+        session.switch_model(model_name="gpt-5.4")
+
+        assert session.active_reasoning_level == "xhigh"
+
+
+
+class TestAstraBoundedSessionContracts:
+    """Feature 83.c.1: Astra-configured sessions preserve policy through recovery."""
+
+    @staticmethod
+    def _forbid_discovery() -> MagicMock:
+        """Patch catalog discovery to fail loudly if invoked.
+
+        Returns:
+            MagicMock: The failing refresh stand-in for call assertions.
+        """
+        return MagicMock(side_effect=AssertionError("discovery forbidden"))
+
+    @staticmethod
+    def _build_astra_session(tmp_path: Path) -> SloAgentSession:
+        """Build a lazy Astra-configured session with no history.
+
+        Args:
+            tmp_path (Path): Test workdir.
+
+        Returns:
+            SloAgentSession: Config-driven session; the agent is built lazily.
+        """
+        return SloAgentSession.build(
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="gpt-6-astra",
+                reasoning_level="high",
+                enable_history=False,
+            )
+        )
+
+    @staticmethod
+    def _api_key_credential() -> CredentialDAO:
+        """Build a fake OpenAI API-key credential.
+
+        Returns:
+            CredentialDAO: API-key credential; never a real token.
+        """
+        return CredentialDAO(
+            provider=ProviderName.OPENAI,
+            auth_type=AuthType.API_KEY,
+            access_token="sk-fake-test-only",
+        )
+
+    @staticmethod
+    def _observing_build_agent(
+        *,
+        session: SloAgentSession,
+        captured: list[tuple[str, str, str, str | None, bool | None, bool]],
+    ) -> Callable[[], SloAgent]:
+        """Wrap ``session._build_agent`` to record the stable attempt tuple.
+
+        Replaces the real LLM with a ``FauxChatModel`` after the real build so
+        the lazy seam runs exactly once and no network is touched.
+
+        Args:
+            session (SloAgentSession): Session whose lazy build is observed.
+            captured (list[tuple[str, str, str, str | None, bool | None, bool]]):
+                Sink for one tuple per policy observation.
+
+        Returns:
+            callable: The observing ``_build_agent`` replacement.
+        """
+        from src.agents.reasoning_capabilities import resolve_reasoning_config
+
+        real_build_agent = session._build_agent
+
+        def _observing_build_agent() -> SloAgent:
+            agent: SloAgent = real_build_agent()
+            resolved = resolve_reasoning_config(
+                model_name=session.active_model_name,
+                requested_level=session.active_reasoning_level,
+            )
+            captured.append(
+                (
+                    session.active_model_name,
+                    "api_key",
+                    resolved.active_level,
+                    resolved.provider_effort,
+                    agent.llm.use_responses_api,
+                    all(
+                        key not in agent.llm.model_kwargs
+                        for key in ("temperature", "top_p", "top_logprobs", "logprobs")
+                    ),
+                )
+            )
+            agent._llm = FauxChatModel(responses=[])
+            return agent
+
+        return _observing_build_agent
+
+    @pytest.mark.asyncio
+    async def test_astra_pre_commit_disconnect_reconnects_once_with_unchanged_policy(
+        self, tmp_path: Path
+    ) -> None:
+        """A typed pre-commit disconnect reconnects once with an unchanged policy tuple."""
+        from src.agents.providers.stream_recovery.dao import (
+            ProviderStreamFailure,
+            StreamRecoveryAction,
+            StreamRecoveryDecisionDAO,
+        )
+
+        captured: list[tuple[str, str, str, str | None, bool | None, bool]] = []
+        session: SloAgentSession = self._build_astra_session(tmp_path=tmp_path)
+        invocation_count: int = 0
+
+        async def _scripted_invoke(**_: object):
+            nonlocal invocation_count
+            invocation_count += 1
+            if invocation_count == 1:
+                raise ProviderStreamFailure(
+                    decision=StreamRecoveryDecisionDAO(
+                        action=StreamRecoveryAction.RETRY_FRESH_CONNECTION,
+                        reason_code="provider_stream_disconnected",
+                        retry_delay_seconds=0.0,
+                        exception_family="httpx.RemoteProtocolError",
+                    ),
+                    partial_output_committed=False,
+                    attempt_number=1,
+                )
+            yield AgentStreamEventDAO(kind="run_completed", content="recovered")
+
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._api_key_credential(),
+            ),
+            patch.object(
+                session,
+                "_build_agent",
+                self._observing_build_agent(session=session, captured=captured),
+            ),
+            patch(
+                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                self._forbid_discovery(),
+            ) as mock_refresh,
+        ):
+            await session._ensure_agent_ready()
+            with patch.object(session.agent, "invoke", _scripted_invoke):
+                events: list[AgentStreamEventDAO] = []
+                async for event in session.invoke(text="recover"):
+                    events.append(event)
+
+        assert invocation_count == 2
+        assert [event.kind for event in events] == ["stream_reconnecting", "run_completed"]
+        expected_tuple = ("gpt-6-astra", "api_key", "high", "high", True, True)
+        assert captured == [expected_tuple]
+        assert [
+            (
+                session.active_model_name,
+                "api_key",
+                session.active_reasoning_level,
+                "high",
+                True,
+                True,
+            )
+            for _ in range(invocation_count)
+        ] == [expected_tuple, expected_tuple]
+        mock_refresh.assert_not_called()
+        assert session.active_model_name == "gpt-6-astra"
+        assert session.active_reasoning_level == "high"
+        assert session.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_astra_committed_disconnect_uses_existing_continuation_without_raw_replay(
+        self, tmp_path: Path
+    ) -> None:
+        """A committed disconnect continues once without replaying raw transport text."""
+        from src.agents.providers.stream_recovery.dao import (
+            ProviderStreamFailure,
+            StreamRecoveryAction,
+            StreamRecoveryDecisionDAO,
+        )
+
+        captured: list[tuple[str, str, str, str | None, bool | None, bool]] = []
+        session: SloAgentSession = self._build_astra_session(tmp_path=tmp_path)
+        invocation_texts: list[str] = []
+
+        async def _scripted_invoke(*, query: str, **_: object):
+            invocation_texts.append(query)
+            if len(invocation_texts) == 1:
+                yield AgentStreamEventDAO(kind="text_delta", delta="partial", iteration=0)
+                raise ProviderStreamFailure(
+                    decision=StreamRecoveryDecisionDAO(
+                        action=StreamRecoveryAction.DO_NOT_REPLAY,
+                        reason_code="provider_stream_interrupted",
+                        exception_family="httpx.ReadTimeout",
+                    ),
+                    partial_output_committed=True,
+                    attempt_number=1,
+                )
+            yield AgentStreamEventDAO(kind="run_completed", content="recovered")
+
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=self._api_key_credential(),
+            ),
+            patch.object(
+                session,
+                "_build_agent",
+                self._observing_build_agent(session=session, captured=captured),
+            ),
+            patch(
+                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                self._forbid_discovery(),
+            ) as mock_refresh,
+        ):
+            await session._ensure_agent_ready()
+            with patch.object(session.agent, "invoke", _scripted_invoke):
+                events: list[AgentStreamEventDAO] = []
+                async for event in session.invoke(text="finish the task"):
+                    events.append(event)
+
+        assert [event.kind for event in events] == [
+            "text_delta",
+            "run_retrying",
+            "run_completed",
+        ]
+        assert invocation_texts[0] == "finish the task"
+        assert len(invocation_texts) == 2
+        assert "Continuation attempt 2/5." in invocation_texts[1]
+        assert "finish the task" in invocation_texts[1]
+        assert "httpx.ReadTimeout" not in invocation_texts[1]
+        expected_tuple = ("gpt-6-astra", "api_key", "high", "high", True, True)
+        assert captured == [expected_tuple]
+        assert [
+            (
+                session.active_model_name,
+                "api_key",
+                session.active_reasoning_level,
+                "high",
+                True,
+                True,
+            )
+            for _ in invocation_texts
+        ] == [expected_tuple, expected_tuple]
+        mock_refresh.assert_not_called()
+        assert session.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_astra_oauth_4xx_is_terminal_without_discovery_or_api_key_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """A representative OAuth-classified OTHER error terminates once with no fallback."""
+        session: SloAgentSession = self._build_astra_session(tmp_path=tmp_path)
+        oauth_cred: CredentialDAO = CredentialDAO(
+            provider=ProviderName.OPENAI,
+            auth_type=AuthType.OAUTH,
+            access_token="fake-oauth-token-test-only",
+        )
+
+        with (
+            patch(
+                "src.agents.base.CredentialResolver.require",
+                return_value=oauth_cred,
+            ) as mock_require,
+            patch(
+                "src.agents.base.build_chatgpt_backed_chat_openai",
+                side_effect=ValueError("Error code: 403 - unsupported model for this credential"),
+            ) as mock_oauth_builder,
+            patch(
+                "src.agents.base.ChatOpenAI",
+            ) as mock_api_key_constructor,
+            patch(
+                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                self._forbid_discovery(),
+            ) as mock_refresh,
+        ):
+            events: list[AgentStreamEventDAO] = []
+            with pytest.raises(ValueError, match="unsupported model"):
+                async for event in session.invoke(text="hello"):
+                    events.append(event)
+
+        assert [event.kind for event in events] == []
+        # One OAuth warm plus one lazy build — both resolve the OPENAI OAuth
+        # credential; the API-key constructor never runs.
+        assert mock_require.call_count == 2
+        assert all(
+            call.kwargs["provider"] is ProviderName.OPENAI for call in mock_require.call_args_list
+        )
+        mock_oauth_builder.assert_called_once()
+        mock_api_key_constructor.assert_not_called()
+        mock_refresh.assert_not_called()
+        assert session.is_running is False
+
+        session._agent = SloAgent(llm=FauxChatModel(responses=[]), cwd=str(tmp_path))
+        follow_up_events: list[AgentStreamEventDAO] = []
+
+        async def _completing_invoke(**_: object):
+            yield AgentStreamEventDAO(kind="run_completed", content="follow-up ok")
+
+        with patch.object(session.agent, "invoke", _completing_invoke):
+            async for event in session.invoke(text="next action"):
+                follow_up_events.append(event)
+
+        assert [event.kind for event in follow_up_events] == ["run_completed"]

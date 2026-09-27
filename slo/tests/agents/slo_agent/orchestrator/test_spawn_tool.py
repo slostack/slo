@@ -626,3 +626,50 @@ class TestSpawnSubAgentsResolutionErrors:
 
         assert "error" in json.loads(raw)
         pool.dispatch.assert_not_awaited()
+
+
+class TestSpawnToolCanonicalMax:
+    """Feature 83.a.1: orchestration payloads accept canonical ``max``."""
+
+    async def test_reasoning_level_max_validates_and_dispatches(self) -> None:
+        """A task carrying ``reasoning_level="max"`` validates and dispatches."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        tasks_json: str = json.dumps(
+            [
+                {
+                    "task_id": "t1",
+                    "prompt": "Do it.",
+                    "model": "gpt-6-astra",
+                    "reasoning_level": "max",
+                }
+            ]
+        )
+
+        await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
+
+        pool.dispatch.assert_called_once()
+
+    async def test_invalid_reasoning_level_token_is_rejected(self) -> None:
+        """An unknown reasoning token is rejected without dispatch."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "prompt": "Do it.", "reasoning_level": "ultra"}]
+        )
+
+        raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
+        parsed: dict = json.loads(raw)
+
+        assert "error" in parsed
+        pool.dispatch.assert_not_called()
+
+    def test_tool_schema_documents_max_reasoning_level(self) -> None:
+        """The tool schema enumerates the full canonical vocabulary including ``max``."""
+        pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
+        tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
+
+        description: str = tool_obj.args_schema.model_fields["tasks"].description  # type: ignore[union-attr, assignment]
+
+        for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"]:
+            assert f'"{level}"' in description

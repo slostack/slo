@@ -139,7 +139,7 @@ class TyperDispatch:
             model (Optional[str]): Model override; ``None`` falls back to
                 preferences then ``cfg("DEFAULT_MODEL_NAME")``.
             reasoning (Optional[str]): Reasoning level override
-                (``off``/``minimal``/``low``/``medium``/``high``/``xhigh``).
+                (``off``/``minimal``/``low``/``medium``/``high``/``xhigh``/``max``).
                 ``None`` keeps the model's seeded default.
             cwd (Optional[str]): Working directory for the run; ``None``
                 uses ``Path.cwd()``.
@@ -489,7 +489,7 @@ class TyperDispatch:
         Args:
             config (SessionConfigDAO): Existing config to copy.
             reasoning (Optional[str]): Raw reasoning level string from the CLI
-                (``off``/``minimal``/``low``/``medium``/``high``/``xhigh``).
+                (``off``/``minimal``/``low``/``medium``/``high``/``xhigh``/``max``).
                 ``None`` returns *config* unchanged.
 
         Returns:

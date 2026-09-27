@@ -7,6 +7,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPreferencesStoreCorruptError
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
@@ -213,3 +214,27 @@ class TestUserPreferencesModelPool:
         loaded = UserPreferencesStore.load()
         assert loaded.default_model_pool == "gpt-5.4,claude-sonnet-4-6"
         assert loaded.default_model_name == "gpt-5.4"
+
+
+class TestUserPreferencesCanonicalMax:
+    """Feature 83.a.1: canonical ``max`` is a valid persisted reasoning level."""
+
+    def test_upsert_accepts_canonical_max_reasoning_level(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``max`` persists and reloads unchanged."""
+        path: Path = tmp_path / "prefs.json"
+        monkeypatch.setenv("SLO_PREFERENCES_FILE", str(path))
+
+        result: UserPreferencesDAO = UserPreferencesStore.upsert(
+            model_name="gpt-6-astra",
+            reasoning_level="max",
+        )
+
+        assert result.default_model_name == "gpt-6-astra"
+        assert result.default_reasoning_level == "max"
+
+    def test_dao_rejects_invalid_reasoning_level(self) -> None:
+        """Unknown reasoning tokens remain rejected by the shared literal."""
+        with pytest.raises(ValidationError):
+            UserPreferencesDAO(default_reasoning_level="ultra")  # type: ignore[arg-type]

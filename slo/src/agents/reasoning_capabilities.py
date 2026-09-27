@@ -12,7 +12,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.agents.model_catalog.dao import ReasoningLevel
+from src.agents.model_catalog.dao import CANONICAL_REASONING_LEVEL_ORDER, ReasoningLevel
 from src.agents.model_catalog.service import ModelCatalogService
 from src.auth.credential_dao import ProviderName
 
@@ -32,15 +32,12 @@ __all__ = [
 ]
 
 
-REASONING_LEVELS: tuple[ReasoningLevel, ...] = (
-    "off",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-)
-"""Ordered canonical reasoning levels used for clamping."""
+REASONING_LEVELS: tuple[ReasoningLevel, ...] = CANONICAL_REASONING_LEVEL_ORDER
+"""Ordered canonical reasoning levels used for clamping.
+
+Derived from the catalog-owned ``CANONICAL_REASONING_LEVEL_ORDER``; this module
+never re-declares the order.
+"""
 
 
 class ModelReasoningCapabilityDAO(BaseModel):
@@ -59,6 +56,12 @@ class ModelReasoningCapabilityDAO(BaseModel):
             per-level provider-native thinking-budget mapping.
         provider_summary_mode (Optional[str]): Optional provider-native
             reasoning summary mode.
+        provider_reasoning_required (bool): When ``True``, a selected canonical
+            ``off`` still resolves to enabled provider reasoning with the mapped
+            ``off`` effort while ``active_level`` stays ``"off"``.
+        forbid_sampling_parameters_when_enabled (bool): When ``True``, enabled
+            reasoning forbids provider sampling inputs at request construction
+            (consumed by the LLM factory request policy).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -69,6 +72,8 @@ class ModelReasoningCapabilityDAO(BaseModel):
     provider_effort_map: dict[ReasoningLevel, str] = Field(default_factory=dict)
     provider_budget_map: dict[ReasoningLevel, int] = Field(default_factory=dict)
     provider_summary_mode: Optional[str] = None
+    provider_reasoning_required: bool = False
+    forbid_sampling_parameters_when_enabled: bool = False
 
 
 class ResolvedReasoningConfigDAO(BaseModel):
@@ -138,6 +143,8 @@ def _catalog_entry_to_capability(
         provider_effort_map=dict(profile.provider_effort_map),
         provider_budget_map=dict(profile.provider_budget_map),
         provider_summary_mode=_provider_summary_mode_for_model(model_name=entry.model_name),
+        provider_reasoning_required=profile.provider_reasoning_required,
+        forbid_sampling_parameters_when_enabled=profile.forbid_sampling_parameters_when_enabled,
     )
 
 
@@ -307,13 +314,57 @@ def resolve_reasoning_config(
         model_name=model_name,
         requested_level=requested_level,
     )
-    if not capability.reasoning_supported or active_level == "off":
+    if not capability.reasoning_supported:
         return ResolvedReasoningConfigDAO(
             enabled=False,
             requested_level=requested_level,
             active_level="off",
         )
 
+    provider_reasoning_enabled: bool = (
+        active_level != "off" or capability.provider_reasoning_required
+    )
+    if not provider_reasoning_enabled:
+        return ResolvedReasoningConfigDAO(
+            enabled=False,
+            requested_level=requested_level,
+            active_level="off",
+        )
+
+    return _resolved_provider_reasoning_config(
+        capability=capability,
+        model_name=model_name,
+        requested_level=requested_level,
+        active_level=active_level,
+    )
+
+
+def _resolved_provider_reasoning_config(
+    *,
+    capability: ModelReasoningCapabilityDAO,
+    model_name: str,
+    requested_level: ReasoningLevel,
+    active_level: ReasoningLevel,
+) -> ResolvedReasoningConfigDAO:
+    """Translate one enabled canonical level into its provider-ready config.
+
+    A profile that requires provider reasoning may reach this helper with
+    ``active_level="off"``; the canonical state is preserved while the mapped
+    provider effort is returned.
+
+    Args:
+        capability (ModelReasoningCapabilityDAO): Capability record for the model.
+        model_name (str): Supported interactive model name (error reporting only).
+        requested_level (ReasoningLevel): Requested canonical level.
+        active_level (ReasoningLevel): Final clamped canonical level.
+
+    Returns:
+        ResolvedReasoningConfigDAO: Enabled provider-ready reasoning config.
+
+    Raises:
+        ValueError: If the capability record has no provider translation for
+            the enabled level.
+    """
     provider_effort: Optional[str] = capability.provider_effort_map.get(active_level)
     provider_budget_tokens: Optional[int] = capability.provider_budget_map.get(active_level)
     if provider_effort is None and provider_budget_tokens is None:

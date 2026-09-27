@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.tui.slash_router import SlashRouter
 from src.tui.slash_suggestion_engine import SlashSuggestionEngine
@@ -102,6 +102,32 @@ class TestSlashSuggestionEngine:
         assert state.visible is True
         assert "anthropic" in (state.rows[0].detail or "")
         assert "requires /auth" in (state.rows[0].detail or "")
+
+    def test_model_argument_mode_includes_astra_without_catalog_discovery(self) -> None:
+        """Real autocomplete projects Astra from the static catalog without discovery."""
+        engine: SlashSuggestionEngine = SlashSuggestionEngine(
+            registry=SlashRouter.registry(),
+        )
+        forbidden_discovery: MagicMock = MagicMock(side_effect=AssertionError("discovery forbidden"))
+
+        with (
+            patch(
+                "src.tui.model_catalog.CredentialResolver.resolve",
+                side_effect=lambda *, provider: object(),
+            ),
+            patch(
+                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                forbidden_discovery,
+            ),
+        ):
+            state = engine.evaluate(
+                buffer_text="/model gpt-6-as",
+                active_model_name="gpt-5.4",
+            )
+
+        assert state.visible is True
+        assert [row.label for row in state.rows] == ["gpt-6-astra"]
+        forbidden_discovery.assert_not_called()
 
     def test_model_argument_mode_includes_codex_models(self) -> None:
         """The model suggestion list surfaces all OpenAI Codex variants."""

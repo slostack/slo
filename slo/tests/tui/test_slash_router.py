@@ -942,3 +942,70 @@ class TestSlashWorkflowsHandler:
             in result.rendered
         )
         assert "list detached workflows" in result.rendered
+
+
+class TestSlashReasoningHandlerAstra:
+    """Feature 83.a.1: `/reasoning` consumes the seeded seven-level Astra record."""
+
+    @pytest.mark.asyncio
+    async def test_reasoning_without_args_lists_all_seven_astra_levels(self) -> None:
+        """Bare `/reasoning` on Astra lists the full canonical vocabulary."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "gpt-6-astra"
+        session.active_reasoning_level = "high"
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/reasoning",
+            session=session,
+        )
+
+        assert "model: gpt-6-astra" in (result.rendered or "")
+        assert "reasoning: high" in (result.rendered or "")
+        assert "supported: off, minimal, low, medium, high, xhigh, max" in (result.rendered or "")
+
+    @pytest.mark.asyncio
+    async def test_reasoning_max_selects_canonical_max_for_astra(self) -> None:
+        """`/reasoning max` resolves to canonical ``max`` for Astra."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "gpt-6-astra"
+        session.active_reasoning_level = "high"
+        session.switch_reasoning_level = MagicMock(return_value="max")
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/reasoning max",
+            session=session,
+        )
+
+        session.switch_reasoning_level.assert_called_once_with(reasoning_level="max")
+        assert result.rendered == "reasoning changed high -> max"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_max_still_maps_to_legacy_highest_for_gpt_5_4(self) -> None:
+        """Legacy profiles without canonical ``max`` keep their existing highest."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "gpt-5.4"
+        session.active_reasoning_level = "high"
+        session.switch_reasoning_level = MagicMock(return_value="xhigh")
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/reasoning max",
+            session=session,
+        )
+
+        session.switch_reasoning_level.assert_called_once_with(reasoning_level="xhigh")
+        assert result.rendered == "reasoning changed high -> xhigh"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_max_token_accepts_canonical_max_for_astra(self) -> None:
+        """The literal token ``max`` parses to canonical max for Astra."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "gpt-6-astra"
+        session.active_reasoning_level = "high"
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/reasoning max",
+            session=session,
+        )
+
+        session.switch_reasoning_level.assert_called_once_with(reasoning_level="max")
+        assert "usage:" not in (result.rendered or "")

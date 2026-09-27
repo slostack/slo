@@ -10,6 +10,7 @@ directly, so sourcing it exposes every function for isolated testing.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -64,7 +65,7 @@ def marker_pair_count(*, text: str) -> int:
         cursor = end + len(MANAGED_ENV_MARK_END)
 
 
-def write_fake_pipx_show(*, bin_dir: Path, location: Path | None) -> None:
+def write_fake_pipx_show(*, fake_bin: FakeBin, location: Path | None) -> None:
     """Install a fake ``pipx`` that records calls and serves deterministic metadata.
 
     Only the exact ``runpip slo show slo`` invocation answers; the fake exits
@@ -72,7 +73,7 @@ def write_fake_pipx_show(*, bin_dir: Path, location: Path | None) -> None:
     metadata-parse decision points deterministically.
 
     Args:
-        bin_dir (Path): FakeBin bin directory to write ``pipx`` into.
+        fake_bin (FakeBin): Per-test fake command harness that owns the write root.
         location (Path | None): Fake distribution Location to report; ``None``
             makes the fake emit no ``Location:`` line.
     """
@@ -93,9 +94,8 @@ def write_fake_pipx_show(*, bin_dir: Path, location: Path | None) -> None:
         "fi",
         "exit 0",
     ]
-    path: Path = bin_dir / "pipx"
-    path.write_text("\n".join(script_lines) + "\n")
-    path.chmod(0o755)
+    path: Path = fake_bin._bin / "pipx"  # noqa: SLF001 - harness-owned write target.
+    fake_bin.write_regular_executable(content="\n".join(script_lines) + "\n", path=path)
 
 
 class FakeBin:
@@ -111,8 +111,9 @@ class FakeBin:
 
         The fake HOME deliberately contains a space and an apostrophe so every
         generated path exercises the installer's POSIX quoting path. The real
-        tools the installer/shell startup need (``mkdir``, ``grep``, ``uname``)
-        are symlinked into the fake bin; everything else is opted in per test.
+        tools the installer/shell startup need are regular wrappers in the fake
+        bin; everything else is opted in per test. No fake-bin entry is a
+        symlink, so a test can never write through a link to a host executable.
 
         Args:
             root (Path): Temp root for the bin dir, call log, and fake HOME.
@@ -129,7 +130,7 @@ class FakeBin:
             "mkdir", "grep", "uname", "chmod", "mktemp", "mv", "rm", "cmp",
             "echo", "printf", "sed", "head", "tail", "cut", "wc", "cat",
         ):
-            self._symlink_real(name=tool)
+            self._add_passthrough_wrapper(name=tool)
 
     def write_fake_pipx(self, *, location: Path | None) -> None:
         """Install the deterministic fake ``pipx`` metadata server.
@@ -138,7 +139,7 @@ class FakeBin:
             location (Path | None): Fake distribution Location; ``None`` makes
                 the fake emit no ``Location:`` line.
         """
-        write_fake_pipx_show(bin_dir=self._bin, location=location)
+        write_fake_pipx_show(fake_bin=self, location=location)
 
     def make_package_location(self, *, name: str = "site-packages", index: bool = True) -> Path:
         """Create a fake pipx distribution location with a vendored skills tree.
@@ -224,15 +225,67 @@ class FakeBin:
         """
         return {name: self._home / name for name in PROFILE_MATRIX}
 
-    def _symlink_real(self, *, name: str) -> None:
-        """Symlink a real system executable into the fake bin (e.g. ``mkdir``).
+    def _assert_path_is_within_root(self, *, path: Path) -> None:
+        """Reject a fake-bin path whose resolution escapes this fixture's fixed root.
 
         Args:
-            name (str): Executable to resolve on the host and link in.
+            path (Path): Candidate path to validate, resolving existing parents.
+
+        Raises:
+            AssertionError: If the path resolves outside this FakeBin's root.
+        """
+        resolved_path: Path = path.resolve(strict=False)
+        resolved_root: Path = self._root.resolve(strict=True)
+        assert resolved_path.is_relative_to(resolved_root), (
+            f"unsafe fake-bin path {resolved_path}; expected below {resolved_root}"
+        )
+
+    def write_regular_executable(self, *, path: Path, content: str) -> None:
+        """Replace a fixed-root fake command with a new regular executable.
+
+        The boundary is the immutable root supplied when this FakeBin was
+        constructed, never a root inferred from a caller-controlled path.
+        Existing symlinks are refused rather than unlinked, so this helper never
+        follows a link while writing. Every unlink, write, and chmod is preceded
+        and followed by fixed-root destination and parent validation.
+
+        Args:
+            path (Path): Fake command path below this instance's temp root.
+            content (str): Complete script content for the replacement command.
+
+        Raises:
+            AssertionError: If the path, parent, or existing target is unsafe.
+        """
+        self._assert_path_is_within_root(path=path.parent)
+        self._assert_path_is_within_root(path=path)
+        assert path.parent.is_dir(), f"refusing fake command with missing parent: {path.parent}"
+        assert not path.is_symlink(), f"refusing to replace symlink fake command: {path}"
+        if path.exists():
+            self._assert_path_is_within_root(path=path)
+            assert path.is_file(), f"refusing to replace non-file fake command: {path}"
+            path.unlink()
+        self._assert_path_is_within_root(path=path.parent)
+        self._assert_path_is_within_root(path=path)
+        path.write_text(content)
+        self._assert_path_is_within_root(path=path.parent)
+        self._assert_path_is_within_root(path=path)
+        assert path.is_file() and not path.is_symlink()
+        path.chmod(0o755)
+        self._assert_path_is_within_root(path=path.parent)
+        self._assert_path_is_within_root(path=path)
+
+    def _add_passthrough_wrapper(self, *, name: str) -> None:
+        """Add a regular fake-bin wrapper that executes one explicit host tool.
+
+        Args:
+            name (str): Host executable name to resolve and expose through the wrapper.
         """
         real: str | None = shutil.which(name)
         assert real is not None, f"{name} must exist on the host for the harness"
-        (self._bin / name).symlink_to(real)
+        self.write_regular_executable(
+            content=f"#!/bin/sh\nexec {shlex.quote(real)} \"$@\"\n",
+            path=self._bin / name,
+        )
 
     def add(self, *, name: str) -> None:
         """Add a fake executable that logs ``<name> <args>`` and exits 0.
@@ -241,8 +294,10 @@ class FakeBin:
             name (str): Tool name to make 'present' on PATH.
         """
         path: Path = self._bin / name
-        path.write_text(f'#!/bin/sh\necho "{name} $*" >> "$SLO_CALL_LOG"\n')
-        path.chmod(0o755)
+        self.write_regular_executable(
+            content=f'#!/bin/sh\necho "{name} $*" >> "$SLO_CALL_LOG"\n',
+            path=path,
+        )
 
     def add_uname(self, *, kernel: str) -> None:
         """Add a fake ``uname`` that echoes ``kernel`` (e.g. Darwin / Linux).
@@ -251,8 +306,10 @@ class FakeBin:
             kernel (str): Kernel name ``uname -s`` should report.
         """
         path: Path = self._bin / "uname"
-        path.write_text(f'#!/bin/sh\necho "{kernel}"\n')
-        path.chmod(0o755)
+        self.write_regular_executable(
+            content=f'#!/bin/sh\necho "{kernel}"\n',
+            path=path,
+        )
 
     def add_os_release(self, *, distro: str, id_like: str | None = None) -> None:
         """Write a fake ``os-release`` file and stage it for the next run.
@@ -343,6 +400,58 @@ def fake_bin(tmp_path: Path) -> FakeBin:
         FakeBin: The stubbed PATH harness.
     """
     return FakeBin(root=tmp_path)
+
+
+class TestFakeBinSafety:
+    """The command-faking harness cannot traverse outside its pytest temp root."""
+
+    def test_fake_bin_commands_are_regular_files_within_temp_root(self, fake_bin: FakeBin) -> None:
+        """All initially installed wrapper commands are regular files below ``tmp_path``."""
+        fake_bin.add(name="pipx")
+
+        for command_path in fake_bin._bin.iterdir():  # noqa: SLF001 - harness invariant assertion.
+            assert command_path.is_file()
+            assert not command_path.is_symlink()
+            assert command_path.resolve().is_relative_to(fake_bin._root.resolve())  # noqa: SLF001
+
+    def test_rewriting_command_cannot_alter_independent_outside_sentinel(
+        self, fake_bin: FakeBin, tmp_path: Path
+    ) -> None:
+        """Replacing a fake command unlinks its local regular file rather than following a link."""
+        outside_sentinel: Path = tmp_path / "outside-sentinel"
+        outside_sentinel.write_text("unchanged\n")
+        command_path: Path = fake_bin._bin / "rewrite-me"  # noqa: SLF001 - harness setup.
+        fake_bin.write_regular_executable(content="#!/bin/sh\nexit 0\n", path=command_path)
+        fake_bin.write_regular_executable(content="#!/bin/sh\necho rewritten\n", path=command_path)
+
+        assert outside_sentinel.read_text() == "unchanged\n"
+        assert command_path.is_file()
+        assert not command_path.is_symlink()
+
+    def test_fake_bin_writer_rejects_path_that_resolves_outside_temp_root(
+        self, fake_bin: FakeBin, tmp_path: Path
+    ) -> None:
+        """A fake command path that crosses a symlink boundary is rejected before writing."""
+        outside_dir: Path = tmp_path.parent / "outside-fake-bin-root"
+        outside_dir.mkdir(exist_ok=True)
+        escaped_bin: Path = fake_bin._root / "escaped-bin"  # noqa: SLF001 - harness setup.
+        escaped_bin.symlink_to(outside_dir, target_is_directory=True)
+        escaped_path: Path = escaped_bin / "command"
+
+        with pytest.raises(AssertionError, match="unsafe fake-bin path"):
+            fake_bin.write_regular_executable(content="#!/bin/sh\nexit 0\n", path=escaped_path)
+
+        assert not (outside_dir / "command").exists()
+
+    def test_fake_bin_writer_rejects_direct_sibling_target_before_write(self, fake_bin: FakeBin) -> None:
+        """A caller cannot derive a sibling temporary root from an outside target."""
+        outside_path: Path = fake_bin._root.parent / "outside" / "bin" / "tool"  # noqa: SLF001
+        outside_path.parent.mkdir(parents=True)
+
+        with pytest.raises(AssertionError, match="unsafe fake-bin path"):
+            fake_bin.write_regular_executable(content="#!/bin/sh\\nexit 0\\n", path=outside_path)
+
+        assert not outside_path.exists()
 
 
 class TestOsDetection:
@@ -453,15 +562,17 @@ class TestEnsurePipx:
         fake_bin.add_os_release(distro="ubuntu")
         fake_bin.add(name="python3")
         apt_get: Path = fake_bin._bin / "apt-get"  # noqa: SLF001 - test harness setup.
-        apt_get.write_text(
-            "#!/bin/sh\n"
-            'echo "apt-get $*" >> "$SLO_CALL_LOG"\n'
-            'if [ "$1" = "install" ] && [ "$2" = "-y" ] && [ "$3" = "pipx" ]; then\n'
-            "  exit 1\n"
-            "fi\n"
-            "exit 0\n"
+        fake_bin.write_regular_executable(
+            path=apt_get,
+            content=(
+                "#!/bin/sh\n"
+                'echo "apt-get $*" >> "$SLO_CALL_LOG"\n'
+                'if [ "$1" = "install" ] && [ "$2" = "-y" ] && [ "$3" = "pipx" ]; then\n'
+                "  exit 1\n"
+                "fi\n"
+                "exit 0\n"
+            ),
         )
-        apt_get.chmod(0o755)
         fake_bin.run(snippet="slo_ensure_pipx")
         assert "apt-get install -y pipx" in fake_bin.calls
         assert "apt-get install -y python3-pip python3-venv" in fake_bin.calls
@@ -630,13 +741,15 @@ class TestInstall:
         root = tmp_path / "pyenv"
         interp = root / "versions" / "3.11.7" / "bin" / "python3.11"
         interp.parent.mkdir(parents=True)
-        interp.write_text("#!/bin/sh\n")
-        interp.chmod(0o755)
+        fake_bin.write_regular_executable(content="#!/bin/sh\n", path=interp)
         fake_bin.add(name="pipx")
-        (fake_bin._bin / "pyenv").write_text(  # noqa: SLF001 — test harness.
-            f'#!/bin/sh\necho "pyenv $*" >> "$SLO_CALL_LOG"\n[ "$1" = "root" ] && echo "{root}"\nexit 0\n'
+        fake_bin.write_regular_executable(
+            path=fake_bin._bin / "pyenv",  # noqa: SLF001 — test harness.
+            content=(
+                f'#!/bin/sh\necho "pyenv $*" >> "$SLO_CALL_LOG"\n'
+                f'[ "$1" = "root" ] && echo "{root}"\nexit 0\n'
+            ),
         )
-        (fake_bin._bin / "pyenv").chmod(0o755)  # noqa: SLF001 — test harness.
         fake_bin.run(snippet="slo_install")
         assert any(f"--python {interp} " in c for c in fake_bin.calls)
 
@@ -728,17 +841,19 @@ class TestResolveVendoredSkillsDir:
         location_a: Path = fake_bin.make_package_location(name="loc-a")
         location_b: Path = fake_bin.make_package_location(name="loc-b")
         pipx_path: Path = fake_bin._bin / "pipx"  # noqa: SLF001 — test harness setup.
-        pipx_path.write_text(
-            "#!/bin/sh\n"
-            'echo "pipx $*" >> "$SLO_CALL_LOG"\n'
-            'if [ "$1" = "runpip" ]; then\n'
-            '  echo "Name: slo"\n'
-            f'  echo "Location: {location_a}"\n'
-            f'  echo "Location: {location_b}"\n'
-            "  exit 0\n"
-            "fi\n"
+        fake_bin.write_regular_executable(
+            path=pipx_path,
+            content=(
+                "#!/bin/sh\n"
+                'echo "pipx $*" >> "$SLO_CALL_LOG"\n'
+                'if [ "$1" = "runpip" ]; then\n'
+                '  echo "Name: slo"\n'
+                f'  echo "Location: {location_a}"\n'
+                f'  echo "Location: {location_b}"\n'
+                "  exit 0\n"
+                "fi\n"
+            ),
         )
-        pipx_path.chmod(0o755)
         result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
         assert result.returncode != 0
         assert "error:" in result.stderr
@@ -747,8 +862,10 @@ class TestResolveVendoredSkillsDir:
     def test_resolve_vendored_skills_dir_when_runpip_fails(self, fake_bin: FakeBin) -> None:
         """`pipx runpip slo show slo` failing → non-zero, no stdout path."""
         pipx_path: Path = fake_bin._bin / "pipx"  # noqa: SLF001 — test harness setup.
-        pipx_path.write_text("#!/bin/sh\n" 'echo "pipx $*" >> "$SLO_CALL_LOG"\nexit 1\n')
-        pipx_path.chmod(0o755)
+        fake_bin.write_regular_executable(
+            path=pipx_path,
+            content="#!/bin/sh\n" 'echo "pipx $*" >> "$SLO_CALL_LOG"\nexit 1\n',
+        )
         result = fake_bin.run(snippet="slo_resolve_vendored_skills_dir")
         assert result.returncode != 0
         assert "error:" in result.stderr
@@ -1159,15 +1276,17 @@ class TestFinalizeShellEnvironment:
     def test_finalize_shell_environment_when_pipx_install_fails(self, fake_bin: FakeBin) -> None:
         """A failed `pipx install` must produce NO persistent shell state."""
         pipx_path: Path = fake_bin._bin / "pipx"  # noqa: SLF001 — test harness setup.
-        pipx_path.write_text(
-            "#!/bin/sh\n"
-            'echo "pipx $*" >> "$SLO_CALL_LOG"\n'
-            'if [ "$1" = "install" ]; then\n'
-            "  exit 1\n"
-            "fi\n"
-            "exit 1\n"
+        fake_bin.write_regular_executable(
+            path=pipx_path,
+            content=(
+                "#!/bin/sh\n"
+                'echo "pipx $*" >> "$SLO_CALL_LOG"\n'
+                'if [ "$1" = "install" ]; then\n'
+                "  exit 1\n"
+                "fi\n"
+                "exit 1\n"
+            ),
         )
-        pipx_path.chmod(0o755)
         result = fake_bin.run(snippet="slo_install || exit 99; slo_finalize_shell_environment")
         assert result.returncode == 99
         assert not fake_bin.managed_env_file.exists()

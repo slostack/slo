@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -199,6 +200,41 @@ class TestScheduleSubprocessRunner:
         assert result.exit_code == 1
         assert result.status == "failed"
         assert result.summary == "final summary"
+
+    @pytest.mark.asyncio
+    async def test_run_fresh_executes_real_wrapper_from_hostile_cwd_and_pythonpath(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scheduler executes the persisted wrapper, whose -I ignores hostile import inputs."""
+        hostile_root: Path = tmp_path / "hostile"
+        hostile_root.mkdir()
+        (hostile_root / "src").mkdir()
+        (hostile_root / "src" / "cli.py").write_text("raise RuntimeError('foreign src selected')\n")
+        bin_dir: Path = tmp_path / "venv" / "bin"
+        bin_dir.mkdir(parents=True)
+        entry: Path = bin_dir / "slo-entry"
+        entry.write_text(
+            "import json\nimport sys\n"
+            "print(json.dumps({'foreign_present': any('hostile' in item for item in sys.path)}))\n"
+        )
+        wrapper: Path = bin_dir / "slo"
+        wrapper.write_text("#!/bin/sh\n" f"exec '{sys.executable}' -I '{entry}' \"$@\"\n")
+        wrapper.chmod(0o755)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-wrapper", session_mode="fresh"
+        ).model_copy(update={"cwd": str(hostile_root)})
+        monkeypatch.setenv("PYTHONPATH", str(hostile_root))
+
+        with patch(
+            "src.scheduling.runtime.subprocess_runner.ScheduleExecutableLocator.locate",
+            return_value=wrapper,
+        ):
+            result: ScheduleSubprocessResultDAO = await ScheduleSubprocessRunner().run_fresh(
+                definition=definition
+            )
+
+        assert result.status == "completed"
+        assert '"foreign_present": false' in result.stdout_summary
 
 
 class TestScheduleReportWriter:

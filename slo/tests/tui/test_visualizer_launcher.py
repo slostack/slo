@@ -80,16 +80,19 @@ class TestShellCommand:
     """The shell one-liner forwards allowlisted env, cds, and runs visualize."""
 
     def test_forwards_only_allowlisted_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """SLO_HOME is forwarded; a secret provider key is not."""
+        """SLO_HOME is forwarded; secrets and Python import paths are not."""
         _clear_slo_env(monkeypatch)
         monkeypatch.setenv("SLO_HOME", "/tmp/slo-home")
         monkeypatch.setenv("SLO_ANTHROPIC_API_KEY", "sk-secret")
+        monkeypatch.setenv("PYTHONPATH", "/hostile/project")
 
         command = VisualizerLauncher._shell_command(parent_session_id="s")
 
         assert "export SLO_HOME=/tmp/slo-home" in command
         assert "sk-secret" not in command
         assert "SLO_ANTHROPIC_API_KEY" not in command
+        assert "PYTHONPATH" not in command
+        assert "/hostile/project" not in command
 
     def test_quotes_paths_with_spaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A SLO_HOME containing a space is shell-quoted."""

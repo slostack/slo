@@ -1,0 +1,33 @@
+name: Release installer verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional post-release diagnostic only; GitLab owns release-fatal verification.
+        required: true
+        type: string
+
+jobs:
+  macos-installer-smoke:
+    name: macOS hosted installer smoke
+    runs-on: macos-latest
+    env:
+      SLO_HOSTED_INSTALL_E2E: "1"
+      SLO_RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+      SLO_INSTALL_URL: https://get-slo.sh/install.sh
+      PIPX_BIN_DIR: ${{ runner.temp }}/slo-pipx-bin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pipx and test dependencies
+        run: |
+          python -m pip install --upgrade pip pipx poetry
+          pipx ensurepath
+          poetry install
+      - name: Run hosted tagged installer product smoke in disposable macOS roots
+        run: |
+          export PATH="$(python -m site --user-base)/bin:$PATH"
+          poetry run pytest tests/cli/test_hosted_installer_smoke.py -m e2e -v

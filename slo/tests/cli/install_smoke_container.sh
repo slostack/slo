@@ -2,10 +2,10 @@
 # install_smoke_container.sh — hermetic in-container smoke for the public installer.
 #
 # WHO runs this: tests/cli/test_install_smoke.py, inside a fresh Docker
-# container whose ONLY mount is the repository source parent at /src:ro.
+# container whose ONLY mount is the repository parent at /src:ro.
 # WHAT it proves (spec 80.a.2, M1):
 #   * the installer runs from a fresh writable copy — never the read-only
-#     mounted /src/install.sh — once per install run;
+#     mounted /src/slo/install.sh — once per install run;
 #   * all runtime roots (HOME, XDG, pipx, pyenv) live in-container only;
 #   * finalisation writes a 0644 managed environment file whose SLO_SKILLS_DIR
 #     is a real absolute path with a readable INDEX.md and is NOT ~/.slo/skills;
@@ -51,9 +51,8 @@ MANAGED_FILE="$HOME/.slo/shell/environment.sh"
 
 # M1: every install run executes a FRESH writable copy of the read-only mount.
 run_public_installer() {
-    local installer_copy=""
     installer_copy="$(mktemp /tmp/slo-install.XXXXXX)"
-    cp /src/install.sh "$installer_copy"
+    cp /src/slo/install.sh "$installer_copy"
     chmod 0700 "$installer_copy"
     bash "$installer_copy"
     rm -f "$installer_copy"
@@ -63,10 +62,8 @@ assert_shell_defaults() {
     # $1: human-readable shell mode label; remaining args: the shell command.
     local label="$1"
     shift
-    local output=""
     output="$("$@" 2>/dev/null || true)"
     [ -n "$output" ] || fail "$label produced no output"
-    local got_home got_skills
     got_home="$(printf '%s\n' "$output" | sed -n '1p')"
     got_skills="$(printf '%s\n' "$output" | sed -n '2p')"
     [ "$got_home" = "$HOME/.slo" ] || fail "$label exported SLO_HOME=$got_home (expected $HOME/.slo)"
@@ -143,6 +140,21 @@ SKILL
 # managed environment file first and cfg.py's explicit-environment branch must
 # resolve SLO_SKILLS_DIR to the installed vendored tree.
 "$PIPX_BIN_DIR/slo" --help >/dev/null || fail "slo --help failed after install"
+python_bin="$PIPX_HOME/venvs/slo/bin/python"
+user_launcher="$PIPX_HOME/venvs/slo/bin/slo"
+entry_launcher="$PIPX_HOME/venvs/slo/bin/slo-entry"
+[ -f "$entry_launcher" ] || fail "generated slo-entry trampoline is missing"
+grep -qF -- '# >>> slo isolated launcher (v1) >>>' "$user_launcher" || fail "user launcher is not hardened"
+foreign_root="$(mktemp -d /tmp/slo-hostile.XXXXXX)"
+mkdir -p "$foreign_root/src" "$foreign_root/config" "$foreign_root/slo"
+printf '%s\n' "raise RuntimeError('foreign src selected')" > "$foreign_root/src/cli.py"
+printf '%s\n' "raise RuntimeError('foreign config selected')" > "$foreign_root/config/cfg.py"
+printf '%s\n' "raise RuntimeError('foreign slo selected')" > "$foreign_root/slo/__init__.py"
+(
+    cd "$foreign_root"
+    PYTHONPATH="$foreign_root" "$PIPX_BIN_DIR/slo" --help >/dev/null
+) || fail "hardened launcher accepted hostile PYTHONPATH"
+rm -rf "$foreign_root"
 python_bin="$PIPX_HOME/venvs/slo/bin/python"
 [ -x "$python_bin" ] || fail "no python interpreter found at $python_bin"
 # Stage the proof snippet to a file so bash --login -c receives a single word

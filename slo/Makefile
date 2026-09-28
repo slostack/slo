@@ -1,4 +1,4 @@
-.PHONY: help tui test smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release
+.PHONY: help tui test smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release release-installer-smoke
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -11,12 +11,28 @@ help:  ## Show this help message
 tui:  ## Open the Textual TUI
 	poetry run slo
 
-# Tests source the dedicated test environment (environments/tests.env).
-test:  ## Run the full test suite
-	set -a && . ./environments/tests.env && set +a && PYTHONPATH=$(PWD) poetry run pytest
+# Tests source the dedicated test environment (environments/tests.env) when it
+# exists locally. CI and clean checkouts reconstruct the same non-secret test
+# contract through environment variables, so the default gate remains usable
+# without creating a gitignored environment file.
+test:  ## Run the full non-E2E test suite
+	@if [ -r ./environments/tests.env ]; then \
+		set -a && . ./environments/tests.env && set +a; \
+	else \
+		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
+	fi; \
+	PYTHONPATH="$(PWD)" poetry run pytest -m "not e2e"
+
+test-env:  ## Print whether make test will load tests.env or its clean-checkout fallback
+	@if [ -r ./environments/tests.env ]; then echo "tests.env"; else echo "fallback"; fi
 
 smoke:  ## Run smoke tests only
-	set -a && . ./environments/tests.env && set +a && PYTHONPATH=$(PWD) poetry run pytest tests/test_smoke.py -v
+	@if [ -r ./environments/tests.env ]; then \
+		set -a && . ./environments/tests.env && set +a; \
+	else \
+		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
+	fi; \
+	PYTHONPATH="$(PWD)" poetry run pytest -m "not e2e" tests/test_smoke.py -v
 
 install-smoke:  ## Real public-installer Ubuntu/Debian smoke (needs Docker)
 	SLO_INSTALL_E2E=1 poetry run pytest tests/cli/test_install_smoke.py -m e2e -v
@@ -47,38 +63,39 @@ install:  ## Install slo locally via install.sh
 
 # Publish install.sh to Cloudflare Worker on get-slo.sh.
 # Reads CF credentials from environments/development.env.
-# Automatically pins the latest release tag as the default SLO_VERSION.
-# Re-run after any change to install.sh or after a new release to push the update.
+# Caller-supplied source/publish refs are preserved. Release mode requires both
+# to name the same tag and fetches `slo/install.sh` from that public tagged source.
 #
 # SLO_SOURCE_PATH is repo-root-relative, not relative to this Makefile. The
 # Python project lives in the repo's `slo/` subdirectory, so the committed
 # installer is at `slo/install.sh`. deploy-install-worker.sh defaults the path
 # to a bare `install.sh`, which 404s against the raw GitLab URL and aborts the
 # publish — pin it here so the target works without a manual override.
-publish-installer:  ## Push install.sh to Cloudflare Worker (pins latest tag)
-	set -a && . ./environments/development.env && set +a && \
+publish-installer:  ## Push install.sh to Cloudflare Worker (development publication unless release mode)
+	set -e; set -a && . ./environments/development.env && set +a && \
 	CF_ZONE_NAME="get-slo.sh" \
 	SLO_HOSTNAME="get-slo.sh" \
 	SLO_SOURCE_PATH="$${SLO_SOURCE_PATH:-slo/install.sh}" \
-	PUBLISH_SLO_REF="$$(t=$$(git tag --sort=-version:refname | head -1); echo "$${t:-main}")" \
+	SLO_SOURCE_REF="$${SLO_SOURCE_REF:-$$(t=$$(git tag --sort=-version:refname | head -1); echo "$${t:-main}")}" \
+	PUBLISH_SLO_REF="$${PUBLISH_SLO_REF:-$$(t=$$(git tag --sort=-version:refname | head -1); echo "$${t:-main}")}" \
 	bash deploy-install-worker.sh
 
-# Create a new release tag off of main and publish it to GitLab.
+release-installer-smoke:  ## Verify a tagged hosted installer after publication
+	@test -n "$(VERSION)" || (echo "error: VERSION is required" >&2; exit 1)
+	@SLO_HOSTED_INSTALL_E2E=1 SLO_RELEASE_TAG="$(VERSION)" SLO_INSTALL_URL="https://get-slo.sh/install.sh" poetry run pytest tests/cli/test_hosted_installer_smoke.py -m e2e -v
+
+# Create and push a release tag. The GitLab tag pipeline is the only authority
+# that publishes the installer, runs hosted release evidence, and creates the
+# GitLab release after all required gates pass.
 # Usage: make release VERSION=v0.5.0
-release:  ## Tag and publish a GitLab release  (usage: make release VERSION=vX.Y.Z)
+release:  ## Tag and push a GitLab pipeline release candidate (usage: make release VERSION=vX.Y.Z)
 	@test -n "$(VERSION)" || (echo "error: VERSION is required. Usage: make release VERSION=v0.x.y" >&2; exit 1)
+	@bash -c '[[ "$$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)\.)*(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))?$$ ]]' -- "$(VERSION)" || (echo "error: VERSION must be a strict SemVer tag: vMAJOR.MINOR.PATCH with an optional prerelease; build metadata is not allowed." >&2; exit 1)
 	@echo "→ tagging $(VERSION) on main"
 	git checkout main && git pull origin main
 	git tag -a "$(VERSION)" -m "Release $(VERSION)"
 	git push origin "$(VERSION)"
-	@echo "→ creating GitLab release $(VERSION)"
-	set -a && . ./environments/development.env && set +a && \
-	curl -fsS -X POST \
-	  --header "PRIVATE-TOKEN: $$SLO_GITLAB_PERSONAL_ACCESS_TOKEN" \
-	  --header "Content-Type: application/json" \
-	  --data "{\"name\":\"$(VERSION)\",\"tag_name\":\"$(VERSION)\",\"description\":\"Release $(VERSION)\"}" \
-	  "https://gitlab.com/api/v4/projects/core-27%2Fslo/releases" \
-	  | python3 -c "import json,sys; r=json.load(sys.stdin); print('✅ Release', r.get('tag_name'), 'created:', r.get('_links',{}).get('self',''))"
+	@echo "→ GitLab tag pipeline owns publication, hosted verification, and release creation for $(VERSION)"
 
 # One-way mirror from the canonical KB source to SLO_KB_DIR. Run manually.
 # Slo reads/writes only SLO_KB_DIR; edits to the local copy are NOT pushed back.

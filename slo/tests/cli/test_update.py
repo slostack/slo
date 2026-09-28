@@ -13,8 +13,8 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
-from unittest.mock import MagicMock, patch
+from typing import Generator, Optional
+from unittest.mock import MagicMock, _patch, patch
 
 import pytest
 
@@ -161,11 +161,14 @@ class TestInvoke:
     """``invoke`` resolves the right ref per mode and installs it."""
 
     @pytest.fixture(autouse=True)
-    def _no_environment_step(self) -> None:
-        with patch("src.cli.update.ShellEnvironmentDefaults.ensure"):
+    def _no_finalization_steps(self) -> Generator[None, None, None]:
+        with (
+            patch("src.cli.update.ShellEnvironmentDefaults.finalize_launcher"),
+            patch("src.cli.update.ShellEnvironmentDefaults.ensure"),
+        ):
             yield
 
-    def _patched(self) -> tuple[MagicMock, MagicMock, MagicMock]:
+    def _patched(self) -> tuple[_patch, _patch, _patch]:
         return (
             patch("src.cli.update.Updater._pipx_install"),
             patch("src.cli.update.Updater.resolve_latest_release_tag", return_value="v9.9.9"),
@@ -215,6 +218,42 @@ class TestMain:
             main(["--development", "--ref", "v1.2.3"])
 
 
+class TestUpdateLauncherFinalization:
+    """Updates harden regenerated scripts before touching shell defaults."""
+
+    def test_runs_launcher_finalizer_before_environment_defaults(self) -> None:
+        """Successful pipx install sequences pipx, launcher finalizer, then environment defaults."""
+        order: list[str] = []
+        with (
+            patch("src.cli.update.Updater._pipx_install", side_effect=lambda *, spec: order.append("pipx")),
+            patch(
+                "src.cli.update.ShellEnvironmentDefaults.finalize_launcher",
+                side_effect=lambda: order.append("launcher"),
+            ),
+            patch(
+                "src.cli.update.ShellEnvironmentDefaults.ensure",
+                side_effect=lambda *, environ: order.append("environment"),
+            ),
+        ):
+            Updater.invoke(ref="v9.9.9")
+
+        assert order == ["pipx", "launcher", "environment"]
+
+    def test_launcher_failure_stops_before_environment_defaults(self) -> None:
+        """Failed hardening leaves shell defaults untouched after a code reinstall."""
+        with (
+            patch("src.cli.update.Updater._pipx_install"),
+            patch(
+                "src.cli.update.ShellEnvironmentDefaults.finalize_launcher",
+                side_effect=SystemExit("launcher failed"),
+            ),
+            patch("src.cli.update.ShellEnvironmentDefaults.ensure") as ensure,
+        ):
+            with pytest.raises(SystemExit, match="launcher failed"):
+                Updater.invoke(ref="v9.9.9")
+        ensure.assert_not_called()
+
+
 class TestInvokeEnsuresEnvironmentDefaults:
     """Every update mode sets missing environment defaults, and only after pipx succeeds."""
 
@@ -229,12 +268,16 @@ class TestInvokeEnsuresEnvironmentDefaults:
             patch("src.cli.update.Updater.resolve_latest_release_tag", return_value="v9.9.9"),
             patch("src.cli.update.Updater._pipx_install", side_effect=lambda *, spec: order.append("pipx")),
             patch(
+                "src.cli.update.ShellEnvironmentDefaults.finalize_launcher",
+                side_effect=lambda: order.append("launcher"),
+            ),
+            patch(
                 "src.cli.update.ShellEnvironmentDefaults.ensure",
                 side_effect=lambda *, environ: order.append("environment"),
             ) as ensure,
         ):
             Updater.invoke(**kwargs)  # type: ignore[arg-type]
-        assert order == ["pipx", "environment"]
+        assert order == ["pipx", "launcher", "environment"]
         assert ensure.call_args.kwargs["environ"] is os.environ
 
     def test_is_skipped_when_pipx_fails(self) -> None:
@@ -243,10 +286,12 @@ class TestInvokeEnsuresEnvironmentDefaults:
                 "src.cli.update.Updater._pipx_install",
                 side_effect=subprocess.CalledProcessError(returncode=1, cmd=["pipx"]),
             ),
+            patch("src.cli.update.ShellEnvironmentDefaults.finalize_launcher") as launcher,
             patch("src.cli.update.ShellEnvironmentDefaults.ensure") as ensure,
         ):
             with pytest.raises(subprocess.CalledProcessError):
                 Updater.invoke(ref="v9.9.9")
+        launcher.assert_not_called()
         ensure.assert_not_called()
 
 
@@ -303,6 +348,74 @@ def _package_location(root: Path, *, with_installer: bool = True) -> Path:
     if with_installer:
         shutil.copy(INSTALL_SH, location / "install.sh")
     return location
+
+
+class TestLauncherFinalizer:
+    """``finalize_launcher`` only delegates to the installed shell writer."""
+
+    def test_uses_regular_installed_finalizer_with_exact_argv(self, tmp_path: Path) -> None:
+        """The updater invokes the packaged launcher-only mode through Bash."""
+        location: Path = _package_location(tmp_path)
+        with (
+            patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location),
+            patch("src.cli.update.shutil.which", return_value="/verified/bash"),
+            patch("src.cli.update.subprocess.run", return_value=_completed()) as run,
+        ):
+            ShellEnvironmentDefaults.finalize_launcher()
+
+        assert run.call_args.args[0] == [
+            "/verified/bash",
+            str(location / "install.sh"),
+            "--finalize-launcher",
+        ]
+        assert run.call_args.kwargs == {"check": True}
+
+    @pytest.mark.parametrize("kind", ["missing", "symlink"])
+    def test_refuses_missing_or_symlinked_installer_with_recovery_guidance(
+        self, tmp_path: Path, kind: str
+    ) -> None:
+        """Location artifacts that cannot be trusted stop before a subprocess is spawned."""
+        location: Path = _package_location(tmp_path, with_installer=kind != "missing")
+        installer: Path = location / "install.sh"
+        if kind == "symlink":
+            target: Path = tmp_path / "external-installer"
+            target.write_text("#!/bin/sh\\n")
+            installer.unlink()
+            installer.symlink_to(target)
+        with (
+            patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location),
+            patch("src.cli.update.subprocess.run") as run,
+        ):
+            with pytest.raises(SystemExit) as raised:
+                ShellEnvironmentDefaults.finalize_launcher()
+        assert "launcher was not finalized" in str(raised.value)
+        assert "matching tagged public installer" in str(raised.value)
+        run.assert_not_called()
+
+    def test_missing_location_includes_recovery_guidance(self) -> None:
+        """Missing metadata is an updated-but-unfinalized failure, not a fallback guess."""
+        with patch.object(ShellEnvironmentDefaults, "installed_location", return_value=None):
+            with pytest.raises(SystemExit) as raised:
+                ShellEnvironmentDefaults.finalize_launcher()
+        assert "launcher was not finalized" in str(raised.value)
+        assert "matching tagged public installer" in str(raised.value)
+
+    @pytest.mark.parametrize(
+        "error", [OSError("bash unavailable"), subprocess.CalledProcessError(1, ["bash"])]
+    )
+    def test_subprocess_failure_includes_recovery_guidance(
+        self, tmp_path: Path, error: BaseException
+    ) -> None:
+        """The launcher failure boundary retains an actionable supported-repair instruction."""
+        location: Path = _package_location(tmp_path)
+        with (
+            patch.object(ShellEnvironmentDefaults, "installed_location", return_value=location),
+            patch("src.cli.update.subprocess.run", side_effect=error),
+        ):
+            with pytest.raises(SystemExit) as raised:
+                ShellEnvironmentDefaults.finalize_launcher()
+        assert "launcher was not finalized" in str(raised.value)
+        assert "matching tagged public installer" in str(raised.value)
 
 
 class TestEnsureDecisions:
@@ -427,6 +540,17 @@ class TestEnsureEndToEnd:
             "exit 1\n"
         )
         pipx.chmod(0o755)
+        for tool in ("chmod", "mv"):
+            tool_path: Path = bin_dir / tool
+            tool_path.write_text(f'#!/bin/sh\nexec /usr/bin/busybox {tool} "$@"\n')
+            tool_path.chmod(0o755)
+        mktemp: Path = bin_dir / "mktemp"
+        mktemp.write_text(
+            "#!/bin/sh\n"
+            "path=$(printf '%s' \"$1\" | sed 's/XXXXXX/fixture/')\n"
+            'touch "$path" && printf \'%s\\n\' "$path"\n'
+        )
+        mktemp.chmod(0o755)
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
         for name in SLO_VARS:

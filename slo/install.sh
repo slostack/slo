@@ -636,6 +636,17 @@ from src.cli import main
 if __name__ == '__main__':
     sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])
     sys.exit(main())"
+    if [ "${content#*$'\n'}" = "$expected_body" ]; then
+        return 0
+    fi
+    # Current installers also generate this minimal Python 3 console script.
+    # Accept its complete body, not just an import substring: extra executable
+    # statements must still fail closed, and neither template is executed here.
+    expected_body="import sys
+from src.cli import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())"
     [ "${content#*$'\n'}" = "$expected_body" ]
 }
 

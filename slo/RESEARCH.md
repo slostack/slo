@@ -20,6 +20,12 @@ document before planning or changing a feature.
   committed compaction; a no-op/failed compaction, a second or visible failure, and HTTP
   413 do not retry.
 
+## Installer launcher finalization
+
+- `install.sh` discovers the authoritative pipx root only through `pipx environment --value PIPX_HOME`; an exported `PIPX_HOME` must never be used as a recovery fallback.
+- The isolated-launcher finalizer treats `mktemp` output as hostile until its canonical parent is exactly the validated pipx `venvs/slo/bin` directory and its filename remains a `.slo.*` stage. Revalidate before stage write, file fsync, chmod, activation, and cleanup; cleanup must not delete a rejected external path.
+- The release Docker matrix supplies `SLO_INSTALL_SMOKE_IMAGE`; `tests/cli/test_install_smoke.py` validates and runs exactly that supported image, and the repository-parent mount exposes its helper at `/src/slo/tests/cli/install_smoke_container.sh`.
+
 ## Verification
 
 - Focused session-rate-limit coverage is under

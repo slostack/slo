@@ -22,13 +22,15 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.e2e
 
-INSTALL_SH: Path = Path(__file__).resolve().parents[2] / "install.sh"
+REPOSITORY_ROOT: Path = Path(__file__).resolve().parents[2]
+INSTALL_SH: Path = REPOSITORY_ROOT / "install.sh"
 CONTAINER_SCRIPT: Path = Path(__file__).resolve().parent / "install_smoke_container.sh"
 # debian:11 was dropped from the matrix in spec 80: its deb.debian.org
 # bullseye-security index advertises point releases whose binary debs are 404
@@ -40,20 +42,49 @@ CONTAINER_SCRIPT: Path = Path(__file__).resolve().parent / "install_smoke_contai
 IMAGES: list[str] = ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "debian:13"]
 
 
-def _docker_available() -> bool:
-    """Return True when a usable docker CLI is on PATH.
+def _selected_images() -> list[str]:
+    """Return the full documented matrix or one CI-assigned supported image.
 
     Returns:
-        bool: Whether docker can be invoked for the smoke run.
+        list[str]: All supported images locally, or the validated image assigned
+            through ``SLO_INSTALL_SMOKE_IMAGE`` by the GitLab matrix.
+
+    Raises:
+        ValueError: If CI assigns an image outside the documented smoke matrix.
     """
-    return shutil.which("docker") is not None
+    assigned_image: str = os.environ.get("SLO_INSTALL_SMOKE_IMAGE", "")
+    if not assigned_image:
+        return IMAGES
+    if assigned_image not in IMAGES:
+        raise ValueError(f"SLO_INSTALL_SMOKE_IMAGE is unsupported: {assigned_image}")
+    return [assigned_image]
+
+
+def _require_docker_for_requested_e2e() -> str:
+    """Return Docker's executable path or fail an explicitly requested E2E run.
+
+    Returns:
+        str: Docker executable path.
+    """
+    docker: str | None = shutil.which("docker")
+    if docker is None:
+        pytest.fail("SLO_INSTALL_E2E=1 requires a usable docker executable on PATH")
+    return docker
+
+
+def test_requested_e2e_fails_when_docker_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit E2E request cannot silently downgrade to a skip without Docker."""
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+
+    with pytest.raises(pytest.fail.Exception, match="SLO_INSTALL_E2E=1 requires"):
+        _require_docker_for_requested_e2e()
 
 
 @pytest.mark.skipif(
-    os.environ.get("SLO_INSTALL_E2E") != "1" or not _docker_available(),
-    reason="opt-in only: set SLO_INSTALL_E2E=1 and have Docker available",
+    os.environ.get("SLO_INSTALL_E2E") != "1",
+    reason="opt-in only: set SLO_INSTALL_E2E=1",
 )
-@pytest.mark.parametrize("image", IMAGES)
+@pytest.mark.parametrize("image", _selected_images())
 def test_installer_bootstraps_and_finalises_shell_environment(image: str) -> None:
     """Run the hermetic container smoke for one base image.
 
@@ -61,19 +92,20 @@ def test_installer_bootstraps_and_finalises_shell_environment(image: str) -> Non
         image (str): Docker base image to smoke-test.
     """
     assert CONTAINER_SCRIPT.is_file(), f"missing container script: {CONTAINER_SCRIPT}"
+    docker: str = _require_docker_for_requested_e2e()
     bootstrap: str = (
         "set -e; "
         "export DEBIAN_FRONTEND=noninteractive; "
         "apt-get update && apt-get install -y curl ca-certificates zsh; "
-        "bash /src/tests/cli/install_smoke_container.sh"
+        "bash /src/slo/tests/cli/install_smoke_container.sh"
     )
     result = subprocess.run(
         [
-            "docker",
+            docker,
             "run",
             "--rm",
             "-v",
-            f"{INSTALL_SH.parent}:/src:ro",
+            f"{REPOSITORY_ROOT.parent}:/src:ro",
             image,
             "bash",
             "-lc",
@@ -89,3 +121,14 @@ def test_installer_bootstraps_and_finalises_shell_environment(image: str) -> Non
         f"--- stderr (tail) ---\n{result.stderr[-4000:]}"
     )
     assert "SMOKE-OK" in result.stdout
+
+
+@pytest.mark.skipif(
+    os.environ.get("SLO_PLATFORM_SMOKE") != "macos",
+    reason="macOS runner-only evidence: set SLO_PLATFORM_SMOKE=macos on macOS",
+)
+def test_macos_runner_contract_requires_a_real_macos_host() -> None:
+    """Refuse fictional macOS evidence when this command runs on another platform."""
+    assert sys.platform == "darwin", "SLO_PLATFORM_SMOKE=macos must run on a real macOS runner"
+    assert os.environ.get("SLO_RELEASE_TAG", "").startswith("v")
+    assert os.environ.get("SLO_INSTALL_URL", "").startswith("https://")

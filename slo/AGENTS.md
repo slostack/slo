@@ -157,7 +157,7 @@ slo/
 │   │   ├── app.py                     # Typer app — bare `slo` opens TUI; `--resume` accepts session id or name
 │   │   ├── typer_dispatch.py          # TyperDispatch — routes CLI subcommands + resolves session references
 │   │   ├── plugin.py                  # `slo plugin install|list|uninstall|upgrade` parse surface
-│   │   ├── update.py                  # `slo update` self-updater + ShellEnvironmentDefaults
+│   │   ├── update.py                  # `slo update` self-updater + installer launcher finalization + ShellEnvironmentDefaults
 │   │   └── __main__.py
 │   ├── tui/
 │   │   ├── app.py                     # SloTUI (Textual App) + PromptInput + /new,/rename + prompt-history recall
@@ -255,7 +255,7 @@ restore the deterministic archive before loading. The tree store delegates this 
 ## 4. Runtime Chain
 
 ```
-slo (console script → src/cli/__main__.py)
+slo (pipx isolated wrapper → generated slo-entry → src/cli/__main__.py)
   └── TyperDispatch (src/cli/typer_dispatch.py)
         └── SloTUI.run() (src/tui/app.py)               # Textual app, interactive path
               └── SloAgentSession (src/agents/slo_agent/sessions/service.py)
@@ -736,6 +736,18 @@ of `ModelPool` in session.py. Pool config is parsed by
   heuristic so a text-only rate limit still waits and retries under the unified classifier.
 
 ---
+
+### Installed-command isolation (spec 82.a)
+
+The installed user-facing pipx `slo` command is finalized by `install.sh` into a
+POSIX wrapper that executes the validated venv interpreter as `python -I` against
+its generated `slo-entry` trampoline. `install.sh` is the only wrapper writer;
+`Updater` invokes its packaged `--finalize-launcher` mode after pipx regeneration
+and before conditional shell finalization. Direct pipx mutations bypass this
+contract and recover by re-running the matching tagged public installer. `-I`
+protects initial CLI import resolution while preserving ordinary environment values.
+Headless source/module spawns remain sanitized-environment paths without `-I`, and
+the visualizer source fallback is trusted-source-only with no forwarded `PYTHONPATH`.
 
 ## 11. History / Persistence
 

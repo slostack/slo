@@ -2,7 +2,32 @@
 
 ## [Unreleased]
 
+## [0.20.0]
+
 ### Fixed
+
+- **Isolated pipx launcher finalization is fail-closed.** The generated public
+  `slo` launcher delegates only through packaging-owned `slo-entry`; finalization
+  validates the pipx venv and staged file at each filesystem boundary, uses an
+  atomic replacement, and refuses unsafe, altered, or user-owned launcher
+  artifacts. A normal `<venv>/bin/python` link may resolve to its base
+  interpreter only after executing that venv-side path proves `sys.prefix`
+  exactly equals the validated pipx venv. Outer-venv links, malformed or cyclic
+  interpreter chains, and unsafe launchers remain refused.
+
+### Changed
+
+- **The GitLab release contract is release-fatal.** A tagged pipeline runs the
+  non-E2E test, Black, and lint gates before publication; after publication,
+  GitLab requires direct pipx recovery, hosted installer, macOS, and the
+  Ubuntu 22.04/24.04 plus Debian 12/13 Docker installer matrix before its
+  release-record job can run. This repository only parses and collects these
+  contracts locally; it does not claim external Docker, hosted, macOS, or CI
+  evidence.
+
+- **`make release` only creates and pushes the tag.** GitLab remains the sole
+  release authority, and the deployment helper applies strict SemVer tag
+  validation, including valid prereleases.
 
 - **`find` and `grep` search nested directories for file-name globs.** A
   pattern with no `/` (for example `*.py`, `process.py`) matched only the

@@ -139,6 +139,7 @@ class TestBuildArgv:
         )
 
         assert argv[:4] == [sys.executable, "-m", "src.cli", "run"]
+        assert "-I" not in argv
         assert "--orchestrator" in argv
         assert "--json" in argv
         assert "--enable-history" in argv

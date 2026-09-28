@@ -43,13 +43,31 @@ def test_child_env_forwards_plugin_disable_switch(monkeypatch: pytest.MonkeyPatc
     assert child_env["SLO_PLUGINS_DISABLED"] == "1"
 
 
-def test_child_env_drops_secret_marked_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SLO_OPENAI_API_KEY",
+        "SLO_UPSTREAM_TOKEN",
+        "SLO_DEPLOY_SECRET",
+        "SLO_DATABASE_PASSWORD",
+    ],
+)
+def test_child_env_drops_secret_marked_vars(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     """Secret-marked SLO variables do not cross a spawn boundary."""
-    monkeypatch.setenv("SLO_OPENAI_API_KEY", "secret")
+    monkeypatch.setenv(name, "secret")
 
     child_env: dict[str, str] = build_headless_child_env()
 
-    assert "SLO_OPENAI_API_KEY" not in child_env
+    assert name not in child_env
+
+
+def test_child_env_drops_pythonpath(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Foreign import roots never cross into trusted checkout module spawns."""
+    monkeypatch.setenv("PYTHONPATH", "/hostile/project")
+
+    child_env: dict[str, str] = build_headless_child_env()
+
+    assert "PYTHONPATH" not in child_env
 
 
 def test_child_env_drops_unrelated_vars(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+
+from textual.widget import Widget
 from uuid import uuid4
 
 import pytest
@@ -41,7 +43,7 @@ def _selection_background(*, app: SloTUI) -> Color:
     return style.rich_style.bgcolor
 
 
-def _location_for_offset(*, app: SloTUI, body: object, target: Offset) -> tuple[int, int]:
+def _location_for_offset(*, app: SloTUI, body: Widget, target: Offset) -> tuple[int, int]:
     """Find a post-layout screen coordinate for one native Content offset."""
     region = body.region
     for y in range(region.y, region.bottom):
@@ -95,16 +97,18 @@ class TestPilotVisibleSelection:
         app = SloTUI(session=_build_session())
         async with app.run_test(size=(100, 30)) as pilot:
             if kind == "answer":
-                block = await app.mount_assistant_block()
-                block.finalize(final_text="# alpha bravo charlie")
-                body = block._answer_body
+                answer_block: AssistantStreamBlock = await app.mount_assistant_block()
+                answer_block.finalize(final_text="# alpha bravo charlie")
+                body: Widget = answer_block._answer_body
             elif kind == "thinking":
-                block = await app.mount_thinking_block()
-                block.set_thinking(content="# alpha bravo charlie")
-                body = block._body
+                thinking_block: AssistantStreamThinkingBlock = await app.mount_thinking_block()
+                thinking_block.set_thinking(content="# alpha bravo charlie")
+                body = thinking_block._body
             else:
-                block = await app.mount_user_message_block(text="# alpha bravo charlie")
-                body = block._body
+                user_block: UserMessageBlock = await app.mount_user_message_block(
+                    text="# alpha bravo charlie"
+                )
+                body = user_block._body
             await pilot.pause(delay=0.1)
             start = _location_for_offset(app=app, body=body, target=Offset(x=6, y=0))
             end = _location_for_offset(app=app, body=body, target=Offset(x=10, y=0))
@@ -129,21 +133,29 @@ class TestPilotVisibleSelection:
             for index in range(20):
                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
             if kind == "answer":
-                block = await app.mount_assistant_block()
-                block.finalize(final_text="# alpha bravo charlie")
-                body = block._answer_body
+                answer_block: AssistantStreamBlock = await app.mount_assistant_block()
+                answer_block.finalize(final_text="# alpha bravo charlie")
+                block: Widget = answer_block
+                body: Widget = answer_block._answer_body
             elif kind == "thinking":
-                block = await app.mount_thinking_block()
-                block.set_thinking(content="# alpha bravo charlie")
-                body = block._body
+                thinking_block: AssistantStreamThinkingBlock = await app.mount_thinking_block()
+                thinking_block.set_thinking(content="# alpha bravo charlie")
+                block = thinking_block
+                body = thinking_block._body
             else:
-                block = await app.mount_user_message_block(text="# alpha bravo charlie")
-                body = block._body
+                user_block: UserMessageBlock = await app.mount_user_message_block(
+                    text="# alpha bravo charlie"
+                )
+                block = user_block
+                body = user_block._body
             for index in range(20, 40):
                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
             await pilot.pause(delay=0.1)
             block.scroll_visible(animate=False)
             await pilot.pause(delay=0.1)
+            if kind == "user":
+                block.scroll_visible(top=True, animate=False)
+                await pilot.pause(delay=0.1)
             start = _location_for_offset(app=app, body=body, target=Offset(x=6, y=0))
             end = _location_for_offset(app=app, body=body, target=Offset(x=10, y=0))
             await pilot.mouse_down(offset=start)

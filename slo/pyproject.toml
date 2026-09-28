@@ -1,6 +1,6 @@
 [project]
 name = "slo"
-version = "0.19.0"
+version = "0.20.0"
 description = "Python ReAct agent harness, modelled on pi.dev"
 authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
 license = "GPL-2.0-only"
@@ -64,10 +64,11 @@ dependencies = [
     "typer (>=0.26,<0.28)",
 ]
 
-# 01.n: the ``slo`` console script. Body lives at src/cli/__init__.py (stub
-# in 01.n; full Typer app in 01.m).
+# The pipx user launcher and its packaging-owned import trampoline. The
+# installer replaces only ``slo`` with the isolated wrapper after pipx generates both.
 [project.scripts]
 slo = "src.cli:main"
+slo-entry = "src.cli:main"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -93,8 +94,9 @@ build-backend = "poetry.core.masonry.api"
   # "plugin source has no readable slo-plugin.json".
   #
   # install.sh ships at ``<site-packages>/install.sh`` so ``slo update`` can run
-  # the just-installed copy's ``--finalize-environment`` step: the installer
-  # stays the only writer of the managed shell environment file.
+  # the just-installed copy's ``--finalize-launcher`` before its conditional
+  # ``--finalize-environment`` step. The installer is the only wrapper and
+  # managed-shell-environment writer.
   include = [
       { path = "skills/**/*", format = ["sdist", "wheel"] },
       { path = "plugins/**/*", format = ["sdist", "wheel"] },

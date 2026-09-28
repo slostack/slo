@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -34,6 +35,8 @@ def test_build_argv_resumes_original_session_and_brief() -> None:
 
     argv: list[str] = WorkflowRelauncher._build_argv(handle=_build_handle())
 
+    assert argv[:4] == [sys.executable, "-m", "src.cli", "run"]
+    assert "-I" not in argv
     assert "-p" in argv
     assert argv[argv.index("-p") + 1] == "resume the original workflow"
     assert argv[argv.index("--resume") + 1] == "orchestrator-1"

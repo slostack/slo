@@ -463,6 +463,331 @@ slo_shell_single_quote() {
     printf "'%s'" "${value//\'/\'\\\'\'}"
 }
 
+slo_canonical_directory() {
+    # Print the physical absolute path for an existing directory.
+    local directory="$1"
+    if [ ! -d "$directory" ]; then
+        return 1
+    fi
+    (cd -- "$directory" 2>/dev/null && pwd -P)
+}
+
+slo_validate_venv_python() {
+    # Validate the venv-side interpreter pathname without resolving it for the
+    # wrapper. POSIX venvs normally make bin/python a link to a base interpreter
+    # outside the venv; only executing the venv-side path can prove the active
+    # sys.prefix remains this exact venv. Bound link traversal still rejects
+    # cycles and malformed paths before process execution.
+    local venv_root="$1" python_bin="$2" path="$2" resolved="" parent="" hops=0
+    [ ! -L "$venv_root" ] && [ -f "$python_bin" ] && [ -x "$python_bin" ] || return 1
+    while [ -L "$path" ]; do
+        hops=$((hops + 1))
+        [ "$hops" -le 16 ] || return 1
+        resolved="$(readlink "$path" 2>/dev/null || true)"
+        [ -n "$resolved" ] || return 1
+        case "$resolved" in
+            /*) path="$resolved" ;;
+            *)
+                parent="$(dirname "$path")"
+                path="$parent/$resolved"
+                ;;
+        esac
+    done
+    [ -f "$path" ] && [ -x "$path" ] || return 1
+    "$python_bin" -c 'import sys; print(sys.prefix)' 2>/dev/null | grep -Fx -- "$venv_root" >/dev/null
+}
+
+slo_is_safe_launcher_file() {
+    # Return success only for a readable, non-symlink regular launcher file.
+    local path="$1"
+    [ ! -L "$path" ] && [ -f "$path" ] && [ -r "$path" ]
+}
+
+slo_read_safe_launcher() {
+    # Print a bounded launcher only after rejecting links, non-files, and NUL bytes.
+    local path="$1" size=""
+    slo_is_safe_launcher_file "$path" || return 1
+    size="$(wc -c < "$path" | tr -d ' ')"
+    case "$size" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$size" -le 65536 ] || return 1
+    if ! LC_ALL=C grep -Iq . "$path"; then
+        return 1
+    fi
+    cat "$path"
+}
+
+slo_resolve_isolated_launcher_layout() {
+    # Resolve and validate the pipx venv that owns the two generated scripts.
+    # Stdout contract: exactly four key=value records; diagnostics use stderr.
+    local pipx_home_raw="" pipx_home="" venv_root="" bin_dir=""
+    local python_bin="" user_launcher="" entry_launcher="" show_output=""
+    local location="" line="" location_parent="" prefix=""
+    local python_prefix=""
+    if ! pipx_home_raw="$(pipx environment --value PIPX_HOME 2>/dev/null)"; then
+        echo "error: 'pipx environment --value PIPX_HOME' failed; refusing to guess the pipx layout." >&2
+        return 1
+    fi
+    if [ -z "$pipx_home_raw" ] || [ "$(printf '%s\n' "$pipx_home_raw" | wc -l | tr -d ' ')" != "1" ] || [ "${pipx_home_raw#/}" = "$pipx_home_raw" ]; then
+        echo "error: pipx reported an invalid PIPX_HOME; refusing to guess the pipx layout." >&2
+        return 1
+    fi
+    if ! pipx_home="$(slo_canonical_directory "$pipx_home_raw")"; then
+        echo "error: pipx PIPX_HOME is not a real directory: $pipx_home_raw" >&2
+        return 1
+    fi
+    venv_root="$pipx_home/venvs/slo"
+    # The named pipx application root is the outer trust boundary. Even a link
+    # to a directory under PIPX_HOME is rejected: otherwise a later retarget
+    # can redirect the finalizer's write without changing the reported root.
+    if [ -L "$venv_root" ]; then
+        echo "error: pipx slo venv directory is a symlink; refusing to follow it." >&2
+        return 1
+    fi
+    bin_dir="$venv_root/bin"
+    # Reject the bin directory as a link before canonicalization. A link may
+    # resolve beneath this venv today but can later be retargeted to redirect
+    # wrapper writes. The interpreter *inside* this direct child may still be
+    # a normal venv link to an external base Python; that is validated below.
+    if [ -L "$bin_dir" ]; then
+        echo "error: pipx slo venv/bin directory is a symlink; refusing to follow it." >&2
+        return 1
+    fi
+    if ! venv_root="$(slo_canonical_directory "$venv_root")" || ! bin_dir="$(slo_canonical_directory "$bin_dir")"; then
+        echo "error: pipx slo venv/bin directory is unavailable under $pipx_home." >&2
+        return 1
+    fi
+    if [ "$(dirname "$bin_dir")" != "$venv_root" ]; then
+        echo "error: pipx canonical venv/bin is not a direct child of the validated venv; refusing to validate the launcher." >&2
+        return 1
+    fi
+    python_bin="$bin_dir/python"
+    user_launcher="$bin_dir/slo"
+    entry_launcher="$bin_dir/slo-entry"
+    if ! slo_validate_venv_python "$venv_root" "$python_bin" || ! slo_is_safe_launcher_file "$user_launcher"; then
+        echo "error: pipx slo launcher artifacts are missing or unsafe under $bin_dir." >&2
+        return 1
+    fi
+    if ! slo_is_safe_launcher_file "$entry_launcher"; then
+        echo "error: generated slo-entry trampoline is missing or invalid under $bin_dir. Reinstall an 82.a+ Slo release." >&2
+        return 1
+    fi
+    if ! show_output="$(pipx runpip slo show slo 2>/dev/null)"; then
+        echo "error: 'pipx runpip slo show slo' failed; refusing to validate the launcher." >&2
+        return 1
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            "Location: "*)
+                if [ -n "$location" ]; then
+                    echo "error: pipx metadata has multiple Location fields; refusing to validate the launcher." >&2
+                    return 1
+                fi
+                location="${line#Location: }"
+                ;;
+        esac
+    done <<< "$show_output"
+    if [ -z "$location" ] || [ "${location#/}" = "$location" ]; then
+        echo "error: pipx metadata has no single absolute Location; refusing to validate the launcher." >&2
+        return 1
+    fi
+    if ! location_parent="$(slo_canonical_directory "$location")"; then
+        echo "error: pipx metadata Location is not a real directory: $location" >&2
+        return 1
+    fi
+    case "$location_parent" in "$venv_root"/*) ;; *)
+        echo "error: pipx metadata Location is outside the validated slo venv; refusing to validate the launcher." >&2
+        return 1
+    esac
+    # Keep the venv-side pathname intact in the generated shebang and wrapper.
+    # Its exact sys.prefix was proved by slo_validate_venv_python above.
+    printf 'venv_root=%s\npython_bin=%s\nuser_launcher=%s\nentry_launcher=%s\n' "$venv_root" "$python_bin" "$user_launcher" "$entry_launcher"
+}
+
+slo_render_isolated_launcher() {
+    # Render the one canonical user-facing wrapper from validated absolute paths.
+    local python_bin="$1" entry_launcher="$2"
+    printf '%s\n' '#!/bin/sh' '# >>> slo isolated launcher (v1) >>>' '# Generated by the Slo installer; do not edit.' "exec $(slo_shell_single_quote "$python_bin") -I $(slo_shell_single_quote "$entry_launcher") \"\$@\""
+}
+
+slo_is_recognized_generated_launcher() {
+    # Recognize only pip's src.cli:main console script. A pip/pipx-generated
+    # shebang may retain venv/bin/python even when that validated path resolves
+    # through contained links to the canonical executable used by the wrapper.
+    # Those two paths, and no arbitrary same-venv pathname, are accepted.
+    local launcher="$1" python_bin="$2" content="" expected_body="" shebang=""
+    local venv_root="" original_python=""
+    if ! content="$(slo_read_safe_launcher "$launcher")"; then
+        return 1
+    fi
+    shebang="${content%%$'\n'*}"
+    venv_root="$(dirname "$(dirname "$python_bin")")"
+    original_python="$venv_root/bin/python"
+    case "$shebang" in
+        "#!$python_bin" | "#!$original_python") ;;
+        *) return 1 ;;
+    esac
+    expected_body="# -*- coding: utf-8 -*-
+import re
+import sys
+from src.cli import main
+
+if __name__ == '__main__':
+    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])
+    sys.exit(main())"
+    [ "${content#*$'\n'}" = "$expected_body" ]
+}
+
+slo_validate_isolated_launcher_stage() {
+    # Prove a mktemp result is a new regular stage directly under the validated bin directory.
+    local tmp_file="$1" target_dir="$2" expected_path="$3" canonical_parent=""
+    [ -n "$tmp_file" ] && [ "$tmp_file" = "$expected_path" ] && [ ! -L "$tmp_file" ] && [ -f "$tmp_file" ] || return 1
+    canonical_parent="$(slo_canonical_directory "$(dirname "$tmp_file")")" || return 1
+    [ "$canonical_parent" = "$target_dir" ]
+}
+
+slo_remove_isolated_launcher_stage() {
+    # Remove only a still-validated stage file, never an arbitrary mktemp result.
+    local tmp_file="$1" target_dir="$2" expected_path="$3"
+    if slo_validate_isolated_launcher_stage "$tmp_file" "$target_dir" "$expected_path"; then
+        rm -f -- "$tmp_file"
+    fi
+}
+
+slo_write_isolated_launcher() {
+    # Atomically activate a canonical wrapper only over a recognized safe target.
+    local user_launcher="$1" python_bin="$2" entry_launcher="$3"
+    local canonical="" current="" marker_count="" tmp_file="" target_dir="" stage_template=""
+    canonical="$(slo_render_isolated_launcher "$python_bin" "$entry_launcher")"
+    if ! current="$(slo_read_safe_launcher "$user_launcher")"; then
+        echo "error: refusing to replace $user_launcher: it is not a safe regular launcher file." >&2
+        return 1
+    fi
+    if [ "$current" = "$canonical" ]; then
+        slo_log "isolated launcher already current: $user_launcher"
+        return 0
+    fi
+    marker_count="$(grep -cF -- '# >>> slo isolated launcher (' "$user_launcher" || true)"
+    if [ "$marker_count" != "0" ] || ! slo_is_recognized_generated_launcher "$user_launcher" "$python_bin"; then
+        echo "error: refusing to replace unrecognized or modified launcher: $user_launcher" >&2
+        return 1
+    fi
+    target_dir="$(slo_canonical_directory "$(dirname "$user_launcher")")" || {
+        echo "error: failed to validate isolated launcher target directory." >&2
+        return 1
+    }
+    stage_template="$target_dir/.slo.XXXXXX"
+    if ! tmp_file="$(mktemp "$stage_template")"; then
+        echo "error: failed to stage isolated launcher in $target_dir." >&2
+        return 1
+    fi
+    case "$tmp_file" in "$target_dir"/.slo.*) ;; *)
+        echo "error: failed to stage isolated launcher in $target_dir." >&2
+        return 1
+        ;;
+    esac
+    if ! slo_validate_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file"; then
+        echo "error: failed to stage isolated launcher in $target_dir." >&2
+        return 1
+    fi
+    if ! slo_validate_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file" || ! printf '%s\n' "$canonical" > "$tmp_file"; then
+        slo_remove_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file"
+        echo "error: failed to write isolated launcher for $user_launcher." >&2
+        return 1
+    fi
+    if ! slo_validate_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file" || ! slo_sync_file "$tmp_file"; then
+        slo_remove_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file"
+        echo "error: failed to sync staged isolated launcher for $user_launcher." >&2
+        return 1
+    fi
+    if ! slo_validate_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file" || ! chmod 0755 "$tmp_file"; then
+        slo_remove_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file"
+        echo "error: failed to set isolated launcher mode for $user_launcher." >&2
+        return 1
+    fi
+    # `mv` within the same directory is the portable atomic activation
+    # operation. fsync is attempted through the optional Python helper below;
+    # platforms without it retain atomic activation but report no stronger
+    # durability guarantee.
+    if ! slo_validate_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file" || ! mv -f "$tmp_file" "$user_launcher"; then
+        slo_remove_isolated_launcher_stage "$tmp_file" "$target_dir" "$tmp_file"
+        echo "error: failed to activate isolated launcher for $user_launcher." >&2
+        return 1
+    fi
+    if ! slo_canonical_directory "$target_dir" >/dev/null || ! slo_sync_directory "$target_dir"; then
+        # Rename has already activated the wrapper. Returning failure here would
+        # falsely promise preservation while leaving changed bytes in place.
+        # Keep activation successful and make the weaker durability result plain.
+        echo "warning: isolated launcher was activated but its directory could not be synced: $target_dir; metadata durability is not confirmed." >&2
+    fi
+    slo_log "isolated launcher finalized: $user_launcher"
+}
+
+slo_sync_file() {
+    # Flush one staged launcher using Python when it is available. A missing
+    # helper is tolerated for portability; a present helper failure is fatal.
+    local path="$1" python=""
+    python="$(command -v python3 2>/dev/null || true)"
+    [ -n "$python" ] || return 0
+    "$python" - "$path" <<'PY'
+import os
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    os.fsync(handle.fileno())
+PY
+}
+
+slo_sync_directory() {
+    # Flush the directory entry after atomic activation where the platform
+    # allows opening directories. Unsupported directory fsync is best effort.
+    local directory="$1" python=""
+    python="$(command -v python3 2>/dev/null || true)"
+    [ -n "$python" ] || return 0
+    "$python" - "$directory" <<'PY'
+import errno
+import os
+import sys
+
+try:
+    descriptor = os.open(sys.argv[1], os.O_RDONLY)
+except OSError as error:
+    if error.errno in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        raise SystemExit(0)
+    raise
+try:
+    os.fsync(descriptor)
+except OSError as error:
+    if error.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        raise
+finally:
+    os.close(descriptor)
+PY
+}
+
+slo_finalize_isolated_launcher() {
+    # Validate pipx artifacts then replace only its fresh generated user launcher.
+    local layout="" line="" venv_root="" python_bin="" user_launcher="" entry_launcher=""
+    if ! layout="$(slo_resolve_isolated_launcher_layout)"; then
+        echo "error: slo code installed, but launcher hardening was not completed. Re-run the matching tagged public installer." >&2
+        return 1
+    fi
+    while IFS='=' read -r key value; do
+        case "$key" in
+            venv_root) venv_root="$value" ;;
+            python_bin) python_bin="$value" ;;
+            user_launcher) user_launcher="$value" ;;
+            entry_launcher) entry_launcher="$value" ;;
+        esac
+    done <<< "$layout"
+    if ! slo_is_recognized_generated_launcher "$entry_launcher" "$python_bin"; then
+        echo "error: entry launcher is not the expected generated src.cli trampoline; refusing to harden." >&2
+        return 1
+    fi
+    slo_write_isolated_launcher "$user_launcher" "$python_bin" "$entry_launcher"
+}
+
 slo_write_managed_environment_file() {
     # Atomically write the installer-owned managed environment file.
     #
@@ -529,7 +854,10 @@ $mark_end"
     fi
     mkdir -p "$HOME/.slo/shell"
     local tmp_file=""
-    tmp_file="$(mktemp "$HOME/.slo/shell/.environment.sh.XXXXXX")"
+    if ! tmp_file="$(mktemp "$HOME/.slo/shell/.environment.sh.XXXXXX")"; then
+        echo "error: failed to stage the managed environment file at $managed_file." >&2
+        return 1
+    fi
     chmod 0644 "$tmp_file"
     if ! printf '%s\n' "$content" > "$tmp_file"; then
         rm -f "$tmp_file"
@@ -751,8 +1079,9 @@ slo installed via pipx.
 PATH updated: restart your shell (or 'source' the rc file named in the log line above).
 
 Verify:    slo --help
-Upgrade:   re-run this installer, or:
-           pipx install --force "git+${SLO_REPO_URL}@${SLO_REF}"
+Upgrade / repair: re-run the matching tagged public Slo installer.
+Direct pipx install, upgrade, or reinstall regenerates entry scripts but does not
+run Slo launcher finalisation; it is not a supported repair path.
 Uninstall: pipx uninstall slo
 
 Runtime data (sessions, logs, credentials) lives in \${SLO_HOME:-~/.slo} and is
@@ -764,9 +1093,12 @@ EOF
 main() {
     # `--development` is an explicit alias for tracking the main branch (the
     # default); pin a release instead with SLO_REF=<tag>.
-    # `--finalize-environment` runs only the shell-environment step. `slo update`
-    # uses it after its own pipx reinstall, so nothing is provisioned or
-    # reinstalled here.
+    # Dedicated finalizer modes never provision tooling, reinstall code, or inspect
+    # project configuration. The updater runs launcher finalization after pipx.
+    if [ "${1:-}" = "--finalize-launcher" ]; then
+        slo_finalize_isolated_launcher
+        return
+    fi
     if [ "${1:-}" = "--finalize-environment" ]; then
         slo_finalize_shell_environment
         return
@@ -783,6 +1115,7 @@ main() {
     slo_ensure_home >/dev/null
     slo_install
     slo_finalize_shell_environment
+    slo_finalize_isolated_launcher
     slo_ensure_local_bin_on_path
     slo_print_path
 }

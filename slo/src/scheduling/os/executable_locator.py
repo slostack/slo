@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -23,7 +24,11 @@ class ScheduleExecutableLocator:
             FileNotFoundError: When `slo` cannot be resolved.
         """
         venv_candidate: Path = Path(sys.executable).resolve().parent / "slo"
-        if venv_candidate.exists():
+        if (
+            venv_candidate.is_file()
+            and not venv_candidate.is_symlink()
+            and os.access(venv_candidate, os.X_OK)
+        ):
             return venv_candidate
         which_result: str | None = shutil.which("slo")
         if which_result is not None:

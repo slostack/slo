@@ -254,7 +254,8 @@ class TestScheduleExecutableLocator:
         fake_slo: Path = tmp_path / "bin" / "slo"
         fake_python.parent.mkdir(parents=True)
         fake_python.write_text("", encoding="utf-8")
-        fake_slo.write_text("", encoding="utf-8")
+        fake_slo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_slo.chmod(0o755)
 
         with patch("sys.executable", str(fake_python)):
             resolved: Path = ScheduleExecutableLocator.locate()

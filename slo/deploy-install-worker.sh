@@ -49,6 +49,34 @@ COMPAT_DATE="2024-11-01"
 SLO_SOURCE_REF="${SLO_SOURCE_REF:-main}"
 SLO_REPO_PROJECT="${SLO_REPO_PROJECT:-core-27/slo}"
 SLO_SOURCE_PATH="${SLO_SOURCE_PATH:-install.sh}"
+SLO_RELEASE_MODE="${SLO_RELEASE_MODE:-0}"
+
+slo_is_immutable_release_tag() {
+    # A release source is a strict SemVer vMAJOR.MINOR.PATCH tag, optionally
+    # followed by a dot-separated prerelease identifier list. A build suffix,
+    # branch, SHA, malformed numeric component, or empty prerelease is never a
+    # release authority. GitLab CI supplies CI_COMMIT_TAG; this is syntax-only.
+    [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)\.)*(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))?$ ]]
+}
+
+validate_release_publication() {
+    # Require a single immutable tag for both fetched source and baked install ref.
+    if [ "$SLO_RELEASE_MODE" != "1" ]; then
+        return 0
+    fi
+    if ! slo_is_immutable_release_tag "$SLO_SOURCE_REF"; then
+        die "release publication requires an immutable vMAJOR.MINOR.PATCH SLO_SOURCE_REF tag"
+    fi
+    if [ "$SLO_SOURCE_REF" != "${PUBLISH_SLO_REF:-}" ]; then
+        die "release publication requires SLO_SOURCE_REF and PUBLISH_SLO_REF to match"
+    fi
+    if [ "$SLO_SOURCE_PATH" != "slo/install.sh" ]; then
+        die "release publication requires SLO_SOURCE_PATH=slo/install.sh"
+    fi
+    if [ -n "${INSTALL_SH:-}" ]; then
+        die "release publication forbids the local INSTALL_SH override"
+    fi
+}
 
 log() { printf '→ %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -64,6 +92,7 @@ CF_ZONE_ID="${CLOUDFLARE_ZONE_ID:-${CF_ZONE_ID:-}}"
 command -v curl    >/dev/null || die "curl is required"
 command -v python3 >/dev/null || die "python3 is required (used to parse API JSON)"
 command -v base64  >/dev/null || die "base64 is required"
+validate_release_publication
 
 auth=(-H "Authorization: Bearer ${CF_API_TOKEN}")
 

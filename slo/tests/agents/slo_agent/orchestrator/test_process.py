@@ -100,6 +100,7 @@ class TestSubAgentProcessArgvBuilding:
 
         assert argv[0] == sys.executable
         assert argv[1:4] == ["-m", "src.cli", "run"]
+        assert "-I" not in argv
         assert "--json" in argv
         assert "-p" in argv
         assert "Analyse files." in argv

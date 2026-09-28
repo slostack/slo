@@ -24,11 +24,22 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.e2e
+
+
+def _packaging_e2e_enabled() -> bool:
+    """Return whether opt-in wheel build tests may execute.
+
+    Returns:
+        bool: True when the packaging test environment switch is enabled.
+    """
+    return os.environ.get("SLO_PACKAGING_E2E") == "1"
+
 
 _REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 
@@ -134,7 +145,7 @@ def _repo_is_a_git_checkout() -> bool:
 
 
 @pytest.mark.skipif(
-    os.environ.get("SLO_PACKAGING_E2E") != "1",
+    not _packaging_e2e_enabled(),
     reason="opt-in only: set SLO_PACKAGING_E2E=1 (runs a full poetry build)",
 )
 class TestWheelShipsSkills:
@@ -173,7 +184,7 @@ class TestWheelShipsSkills:
 
 
 @pytest.mark.skipif(
-    os.environ.get("SLO_PACKAGING_E2E") != "1",
+    not _packaging_e2e_enabled(),
     reason="opt-in only: set SLO_PACKAGING_E2E=1 (runs a full poetry build)",
 )
 class TestWheelShipsBundledPlugins:
@@ -190,7 +201,68 @@ class TestWheelShipsBundledPlugins:
 
 
 @pytest.mark.skipif(
-    os.environ.get("SLO_PACKAGING_E2E") != "1",
+    not _packaging_e2e_enabled(),
+    reason="opt-in only: set SLO_PACKAGING_E2E=1 (runs a full poetry build)",
+)
+class TestWheelConsoleScripts:
+    """The wheel declares the generated launchers required before hardening."""
+
+    def test_wheel_declares_slo_and_slo_entry(self, tmp_path: Path) -> None:
+        """Declare both immediate console scripts with the current import trampoline."""
+        wheel: Path = _build_wheel(output_dir=tmp_path)
+        with zipfile.ZipFile(wheel) as archive:
+            entry_name: str = next(
+                name for name in archive.namelist() if name.endswith(".dist-info/entry_points.txt")
+            )
+            parser: ConfigParser = ConfigParser()
+            parser.read_string(archive.read(entry_name).decode("utf-8"))
+
+        scripts: dict[str, str] = dict(parser["console_scripts"])
+        assert scripts["slo"] == "src.cli:main"
+        assert scripts["slo-entry"] == "src.cli:main"
+
+    def test_local_pipx_install_generates_two_unwrapped_console_scripts(self, tmp_path: Path) -> None:
+        """A disposable local pipx lifecycle creates both scripts before finalization."""
+        pipx: str | None = shutil.which("pipx", path=os.defpath)
+        if pipx is None:
+            pytest.skip("a real system pipx is required for the local-pipx packaging proof")
+        if Path(pipx).read_text(encoding="utf-8", errors="ignore").startswith('#!/bin/sh\nif [ "$*"'):
+            pytest.skip("system pipx is replaced by the test harness on this host")
+
+        wheel: Path = _build_wheel(output_dir=tmp_path / "wheel")
+        pipx_home: Path = tmp_path / "pipx-home"
+        pipx_bin_dir: Path = tmp_path / "pipx-bin"
+        home: Path = tmp_path / "home"
+        environment: dict[str, str] = dict(os.environ)
+        environment.update(
+            {
+                "PIPX_HOME": str(pipx_home),
+                "PIPX_BIN_DIR": str(pipx_bin_dir),
+                "PIPX_SHARED_LIBS": str(tmp_path / "pipx-shared"),
+                "HOME": str(home),
+            }
+        )
+        result: subprocess.CompletedProcess[str] = subprocess.run(
+            [pipx, "install", "--force", str(wheel)],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert result.returncode == 0, f"pipx install failed:\n{result.stdout}\n{result.stderr}"
+
+        bin_dir: Path = pipx_home / "venvs" / "slo" / "bin"
+        for script_name in ("slo", "slo-entry"):
+            script: Path = bin_dir / script_name
+            assert script.is_file() and not script.is_symlink()
+            assert os.access(script, os.X_OK)
+            script_text: str = script.read_text(encoding="utf-8")
+            assert "from src.cli import main" in script_text
+            assert "slo isolated launcher" not in script_text
+
+
+@pytest.mark.skipif(
+    not _packaging_e2e_enabled(),
     reason="opt-in only: set SLO_PACKAGING_E2E=1 (runs a full poetry build)",
 )
 class TestWheelShipsInstaller:

@@ -129,6 +129,12 @@ slo --plugin plugins/bash_live_output/plugin.py
   `KB_DIR` → `$SLO_HOME/KnowledgeBase/KB` (a file path resolves to its directory)
   and `KB_BLOCK_TEMPLATE` renders that path, its source, and the lookup order.
 
+## Isolated pipx launchers (spec 82.a)
+
+- `install.sh` is the sole writer for both the user-facing pipx `slo` wrapper and managed shell state. It validates `PIPX_HOME`, `pipx runpip` metadata, venv identity, and generated `slo`/`slo-entry` scripts before atomically replacing only the recognized generated `slo` script with `<venv>/bin/python -I slo-entry`. A normal POSIX venv's `bin/python` may link to a base interpreter outside the venv; finalization retains that venv-side pathname and accepts it only when executing it reports `sys.prefix` exactly equal to the validated venv root. Outer venv-root links, malformed/cyclic chains, and unsafe user artifacts remain refused.
+- `slo update` invokes the packaged `install.sh --finalize-launcher` immediately after a successful pipx reinstall and before conditional shell-default work. Direct pipx mutations bypass this step; recovery is the matching tagged public installer.
+- The wrapper ignores hostile Python import configuration but preserves ordinary process environment for its initial CLI process, including `SLO_SKILLS_DIR` and `SLO_KB_DIR`. Headless children remain sanitized-environment module spawns without `-I`; visualizer source fallback is trusted-source-only and does not forward `PYTHONPATH`.
+
 ## Environment defaults and `slo update` (supersedes spec 80.a.2)
 
 - `install.sh` is still the only writer of shell state. `slo update` (all modes)

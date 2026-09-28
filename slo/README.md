@@ -244,15 +244,24 @@ The script:
 
 Re-running the installer upgrades in place; it is idempotent.
 
-`pyproject.toml` declares `slo = "src.cli:main"`. After install, the `slo`
-shim on your `$PATH` calls `src.cli:main`, which defers to the Typer app in
-`src/cli/app.py`.
+`pyproject.toml` declares packaging-owned `slo` and `slo-entry` scripts, both
+currently targeting `src.cli:main`. After pipx generates both artifacts,
+`install.sh` replaces only the user-facing `slo` launcher with a validated,
+marked POSIX wrapper. The wrapper invokes the pinned pipx interpreter as
+`python -I <absolute slo-entry>`, so hostile Python import paths cannot select
+foreign `src` or `config` modules before the Typer app starts. This installed
+path is distinct from trusted development source execution, which may run
+`python -m src.cli`.
 
 To upgrade later, run `slo update` (latest release tag), `slo update
---development` (`main`), or `slo update --ref <ref>` — or simply re-run the
-`curl | bash` line above. Every `slo update` mode then sets any missing
-`SLO_HOME` / `SLO_SKILLS_DIR` / `SLO_KB_DIR` default by running the installed
+--development` (`main`), `slo update --ref <ref>`, or re-run the matching
+tagged public installer. Every successful update first runs the installed
+`install.sh --finalize-launcher`, then sets only missing `SLO_HOME`,
+`SLO_SKILLS_DIR`, and `SLO_KB_DIR` defaults through
 `install.sh --finalize-environment`; existing variables are never changed.
+Direct `pipx install`, `upgrade`, or `reinstall` bypasses launcher
+finalisation. It is not a supported repair path; rerun the matching tagged
+public installer instead.
 
 ### 1.3 The Developer Path — pyenv + Poetry
 

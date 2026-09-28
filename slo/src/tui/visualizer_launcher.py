@@ -11,9 +11,9 @@ so the sub-agent workflow is visualised live alongside the orchestrator TUI.
 Design notes:
   - **Best-effort.** ``launch`` never raises; a failed spawn returns ``False``
     so the caller can fall back to printing a manual-invocation hint.
-  - **Env-faithful.** Every ``SLO_*`` variable set in the parent process is
-    re-exported inside the new window so the child visualiser reads the same
-    session store (``SLO_HOME``), environment, and skills directory.
+  - **Env-safe.** A small non-secret ``SLO_*`` allowlist is re-exported inside
+    the new window so the child visualiser reads the same session store
+    (``SLO_HOME``) without exposing credentials through a terminal command.
   - **Platform-aware.** macOS uses ``osascript`` to drive Terminal.app (or
     iTerm); Linux probes a list of common terminal emulators. Any other
     platform (or a headless session with no window server) returns ``False``.
@@ -44,8 +44,8 @@ SpawnCallable = Callable[[list[str]], object]
 # non-secret runtime settings — provider keys and deploy tokens are never
 # forwarded, since a spawned command's argv is world-readable via ``ps``. The
 # visualiser is a read-only viewer; it only needs to locate the same session
-# store (``SLO_HOME``), honour the same env/cadence, and (for source checkouts)
-# resolve ``src.cli`` on ``PYTHONPATH``.
+# store (``SLO_HOME``) and honour the same env/cadence. The trusted source
+# fallback deliberately does not forward ``PYTHONPATH``.
 _FORWARDED_ENV_KEYS: tuple[str, ...] = (
     "SLO_HOME",
     "SLO_ENV",
@@ -53,7 +53,6 @@ _FORWARDED_ENV_KEYS: tuple[str, ...] = (
     "SLO_VISUALIZER_REFRESH_SECONDS",
     "SLO_VISUALIZER_TERMINAL_APP",
     "SLO_AUTO_VISUALIZE",
-    "PYTHONPATH",
 )
 
 # Linux terminal emulators probed in order when no override is configured. Each
@@ -147,9 +146,9 @@ class VisualizerLauncher:
     def _shell_command(cls, *, parent_session_id: str) -> str:
         """Build the shell one-liner run inside the new terminal window.
 
-        Re-exports every ``SLO_*`` env var currently set, changes into the
-        parent's working directory, then runs the visualise command. Keeps the
-        child faithful to the parent's session store and environment.
+        Re-exports the non-secret ``SLO_*`` allowlist, changes into the
+        parent's working directory, then runs the visualise command. This keeps
+        the session store and visualizer controls while excluding credentials.
 
         Args:
             parent_session_id (str): Orchestrator session id to visualise.
@@ -166,9 +165,9 @@ class VisualizerLauncher:
     def _visualize_argv(cls, *, parent_session_id: str) -> list[str]:
         """Build the bare ``slo visualize`` argv (executable + flags).
 
-        Prefers the installed ``slo`` console script; falls back to
-        ``<python> -m src.cli`` for source checkouts where ``slo`` is not on
-        ``PATH``.
+        Prefers the installed ``slo`` wrapper; falls back to trusted source
+        execution via ``<python> -m src.cli`` without ``-I`` when ``slo`` is
+        not on ``PATH``.
 
         Args:
             parent_session_id (str): Orchestrator session id to visualise.
@@ -190,8 +189,8 @@ class VisualizerLauncher:
         """Resolve how to invoke the ``slo`` CLI in the new window.
 
         Returns:
-            list[str]: ``["slo"]`` when the console script is on ``PATH``,
-                otherwise ``["<python>", "-m", "src.cli"]``.
+            list[str]: Installed wrapper argv when ``slo`` is on ``PATH``,
+                otherwise the trusted source argv ``["<python>", "-m", "src.cli"]``.
         """
         slo_bin: Optional[str] = shutil.which("slo")
         if slo_bin is not None:

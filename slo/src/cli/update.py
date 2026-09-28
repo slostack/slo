@@ -11,10 +11,11 @@ This mirrors ``install.sh`` exactly — both reinstall via
 update share one mechanism. The repo identity and layout below are kept in sync
 with ``SLO_REPO_URL`` / ``SLO_REPO_SUBDIR`` in ``install.sh``.
 
-After the reinstall, :class:`ShellEnvironmentDefaults` sets any missing
-``SLO_HOME`` / ``SLO_SKILLS_DIR`` / ``SLO_KB_DIR`` default by running the
-just-installed ``install.sh --finalize-environment``. ``install.sh`` stays the
-only writer of shell state; variables that already exist are never touched.
+After the reinstall, :class:`ShellEnvironmentDefaults` first invokes the
+just-installed ``install.sh --finalize-launcher`` so its generated user launcher
+is hardened, then conditionally sets missing ``SLO_HOME`` / ``SLO_SKILLS_DIR`` /
+``SLO_KB_DIR`` defaults. ``install.sh`` stays the only launcher and shell-state
+writer; variables that already exist are never touched.
 
 Stdlib-only on purpose: no third-party imports, so the logic stays usable from
 minimal contexts and matches ``install.sh``'s constraints.
@@ -67,6 +68,7 @@ class Updater:
         """
         target = ref or ("main" if development else cls.resolve_latest_release_tag())
         cls._pipx_install(spec=cls._pipx_spec(ref=target))
+        ShellEnvironmentDefaults.finalize_launcher()
         ShellEnvironmentDefaults.ensure(environ=os.environ)
 
     @classmethod
@@ -116,7 +118,6 @@ class Updater:
             spec += f"#subdirectory={cls.REPO_SUBDIR}"
         return spec
 
-    @classmethod
     @classmethod
     def _pipx_install(cls, *, spec: str) -> None:
         """Run ``pipx install --force`` for ``spec``, working around a broken uv shim.
@@ -245,6 +246,35 @@ class ShellEnvironmentDefaults:
         "SLO_SKILLS_DIR": ("SLO_SKILLS_DIR",),
         "SLO_KB_DIR": ("SLO_KB_DIR", "KB_DIR"),
     }
+
+    @classmethod
+    def finalize_launcher(cls) -> None:
+        """Run the installed launcher-only finalizer after pipx regeneration.
+
+        Raises:
+            SystemExit: If the installed package metadata or finalizer cannot be used.
+        """
+        location: Optional[Path] = cls.installed_location()
+        failure_prefix: str = "slo code was updated, but its launcher was not finalized"
+        if location is None:
+            raise SystemExit(
+                f"{failure_prefix}: 'pipx runpip slo show slo' did not report the installed location. "
+                "Re-run the matching tagged public installer."
+            )
+        installer: Path = location / "install.sh"
+        if installer.is_symlink() or not installer.is_file():
+            raise SystemExit(
+                f"{failure_prefix}: {installer} is unavailable. Re-run the matching tagged public installer."
+            )
+        try:
+            subprocess.run(
+                [shutil.which("bash") or "bash", str(installer), "--finalize-launcher"],
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise SystemExit(
+                f"{failure_prefix} ({error}). Re-run the matching tagged public installer."
+            ) from error
 
     @classmethod
     def ensure(cls, *, environ: Mapping[str, str]) -> None:

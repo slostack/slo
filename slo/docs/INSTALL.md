@@ -52,8 +52,13 @@ place, and every step is a no-op when already satisfied.
 2. Resolves `SLO_HOME` (default `~/.slo`) and ensures it exists — as the data
    dir, not a checkout.
 3. Runs `pipx install --force --python <interpreter> "git+…@<ref>#subdirectory=slo"`.
-4. **Finalises the persistent shell environment** (only after a successful
-   pipx install — see §2.1).
+4. Finalises the persistent shell environment (only after a successful pipx
+   install — see §2.1), then finalises the isolated user launcher. The launcher
+   finalizer retains `<venv>/bin/python` in the wrapper even when a normal POSIX
+   venv links it to a base interpreter outside the venv, but accepts that path
+   only after executing it proves `sys.prefix` is exactly the validated venv
+   root. It refuses outer venv-root symlinks, malformed or cyclic interpreter
+   chains, altered launchers, and unsafe artifacts rather than overwriting them.
 
 ### 2.1 Persistent shell environment (the managed environment file)
 
@@ -183,12 +188,32 @@ Edit** scoped to the target zone.
 It uses the public repository URL, like the installer. Your `~/.slo` data is
 untouched.
 
-**`slo update` sets missing environment defaults (supersedes 80.a.2).** After a
-successful pipx reinstall, every mode checks whether `SLO_HOME`,
+**`slo update` finalizes the isolated launcher, then sets missing environment defaults.**
+After a successful pipx reinstall, every mode runs the packaged
+`<Location>/install.sh --finalize-launcher` before checking whether `SLO_HOME`,
 `SLO_SKILLS_DIR`, and `SLO_KB_DIR` (or `KB_DIR`) exist. If any is missing, it
 runs the just-installed `<Location>/install.sh --finalize-environment`, so the
-installer stays the single writer of shell state. If all exist, shell files
+installer stays the single writer of launcher and shell state. If all exist, shell files
 are left untouched.
+
+The user-facing `slo` launcher is a generated POSIX wrapper around the validated
+pipx interpreter and `slo-entry` trampoline: it runs Python with `-I`, so hostile
+`PYTHONPATH` and `PYTHONHOME` cannot select project modules before Slo imports.
+This is import isolation, not environment scrubbing: ordinary `os.environ` values,
+including `SLO_*` configuration and credentials, remain available to the initial
+wrapped CLI process. Slo never requires, reads, or changes a target project's `.envrc`.
+
+The installed scheduler consumes that same wrapper. This guarantee does not extend
+unchanged to internal headless module launches: those use a **sanitized child
+environment** and intentionally do not add `-I`. Likewise, the visualizer's
+**trusted source fallback** is checkout-only and does not forward `PYTHONPATH`; it
+is not a replacement for the installed product wrapper.
+
+Direct `pipx install`, `upgrade`, or `reinstall` regenerates plain scripts and does
+not run Slo launcher finalization. It is not a supported repair path. Re-run the
+matching tagged public installer to restore the wrapper. A downgrade to a pre-82.a
+release intentionally restores its historic plain launcher because it has no
+`slo-entry`; isolation is restored only by reinstalling an 82.a+ release.
 
 Existing variables are never changed. When an existing `SLO_SKILLS_DIR` has no
 `INDEX.md` or differs from the skills just installed, `slo update` prints a
@@ -200,10 +225,8 @@ You can always upgrade by simply re-running the installer
 (`curl -fsSL https://get-slo.sh/install.sh | … bash`) instead.
 
 > An already-installed copy carries whatever `update.py` shipped with it; after
-> a major installer change, run the installer once to pick up the new updater.
-> In particular, the first `slo update` from 0.18.x or older still runs the old
-> pipx-only updater; the environment check starts with the update after that,
-> or run `bash <Location>/install.sh --finalize-environment` once.
+> a launcher change, re-run the matching tagged public installer once to pick up the
+> hardened updater and wrapper. Do not use a direct pipx command as repair.
 
 ---
 

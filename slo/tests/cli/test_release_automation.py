@@ -114,7 +114,7 @@ class TestReleaseAutomation:
         publish_job: dict[str, object] = pipeline["publish-installer"]  # type: ignore[assignment]
         macos_job: dict[str, object] = pipeline["macos-installer-smoke"]  # type: ignore[assignment]
         release_job: dict[str, object] = pipeline["create-gitlab-release"]  # type: ignore[assignment]
-        assert publish_job["needs"] == [{"job": "pytest"}, {"job": "format-and-lint"}]
+        assert publish_job["needs"] == [{"job": "pytest"}]
         assert macos_job["needs"] == [{"job": "publish-installer"}]
         assert release_job["needs"] == [
             {"job": "release-pipx-recovery"},
@@ -154,7 +154,7 @@ class TestReleaseAutomation:
         assert "INSTALL_SH=" not in publish_job
         assert "needs:" in publish_job
         assert "- job: pytest" in publish_job
-        assert "- job: format-and-lint" in publish_job
+        assert "format-and-lint" not in publish_job
 
     def test_gitlab_hosted_release_jobs_override_default_e2e_deselection_and_collect_the_smoke(
         self,
@@ -330,19 +330,19 @@ class TestReleaseAutomation:
         assert "CI_COMMIT_TAG" in release_job
         assert "curl -fsS -X POST" in release_job
 
-    def test_gitlab_tag_pipeline_runs_non_e2e_format_and_static_gates_before_publication(self) -> None:
-        """The release pipeline runs the real suite, Black check, and lint without a tag bypass."""
+    def test_gitlab_tag_pipeline_runs_non_e2e_tests_before_publication(self) -> None:
+        """The release pipeline makes behavioral tests, not local lint, the publication prerequisite."""
         content: str = GITLAB_CI.read_text()
-        format_start: int = content.index("format-and-lint:")
-        publish_start: int = content.index("publish-installer:")
-        format_job: str = content[format_start:publish_start]
-
-        assert "- if: $CI_COMMIT_TAG" in format_job
-        assert "poetry run black --check src/ tests/" in format_job
-        assert "make lint" in format_job
         pytest_start: int = content.index("pytest:")
-        pytest_job: str = content[pytest_start:format_start]
+        publish_start: int = content.index("publish-installer:")
+        pytest_job: str = content[pytest_start:publish_start]
+        publish_job: str = content[publish_start:content.index("secret_detection:")]
+
         assert "- if: $CI_COMMIT_TAG" in pytest_job
+        assert "format-and-lint:" not in content
+        assert "poetry run black --check" not in content
+        assert "make lint" not in content
+        assert "- job: pytest" in publish_job
 
     def test_repo_local_release_evidence_template_is_explicitly_non_evidence(self) -> None:
         """A read-only canonical spec target has a local template and exact operator destination."""

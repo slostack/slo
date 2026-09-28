@@ -327,7 +327,7 @@ class TestIsolatedLauncherWriter:
         assert user_launcher.read_bytes() == before
         assert not list(user_launcher.parent.glob(".slo.*"))
 
-    def test_managed_environment_writer_does_not_fallback_to_busybox_mktemp(self, tmp_path: Path) -> None:
+    def test_managed_environment_writer_refuses_when_mktemp_is_unavailable(self, tmp_path: Path) -> None:
         """A missing portable mktemp refuses rather than invoking an unvalidated fallback."""
         fake_bin = FakeBin(root=tmp_path)
         location: Path = fake_bin.make_package_location()
@@ -343,7 +343,7 @@ class TestIsolatedLauncherWriter:
 
         assert result.returncode != 0
         assert "failed to stage the managed environment file" in result.stderr
-        assert "busybox" not in result.stderr
+        assert "fallback" not in result.stderr.lower()
 
     def test_launcher_only_mode_does_not_call_pipx_install_or_touch_shell_profiles(
         self, tmp_path: Path

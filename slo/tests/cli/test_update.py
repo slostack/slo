@@ -540,10 +540,10 @@ class TestEnsureEndToEnd:
             "exit 1\n"
         )
         pipx.chmod(0o755)
-        # Let the test process use its verified system chmod and mv binaries. The
-        # installer only applies them to paths beneath ``tmp_path``; faking them
-        # here previously depended on BusyBox, which GitLab's Python image does
-        # not provide.
+        # The installer invokes the verified system chmod and mv binaries only
+        # for paths beneath ``tmp_path``. Do not add command shims here: fake
+        # tools must stay inside a test-local PATH prefix and this test does not
+        # need to intercept either command.
         mktemp: Path = bin_dir / "mktemp"
         mktemp.write_text(
             "#!/bin/sh\n"

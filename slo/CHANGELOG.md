@@ -2,9 +2,32 @@
 
 ## [Unreleased]
 
-## [0.20.0]
+## [0.20.0] — 2026-09-28
+
+**Installed Slo now starts in Python isolated mode so a target project's
+`PYTHONPATH` cannot replace Slo's own runtime imports.**
+
+### Added
+
+- **Packaging-owned `slo-entry` trampoline.** The public `slo` command is a
+  portable POSIX wrapper invoking the validated pipx interpreter with `-I` and
+  the separate entry script. Ordinary environment settings and credentials
+  remain available; isolated mode changes Python import resolution, not
+  `os.environ`.
+- **Cross-platform regression and release coverage.** Tests cover hostile
+  working directories/import paths, launcher refusal and failure preservation,
+  updater ordering, scheduler execution, and Linux/macOS release contracts.
 
 ### Fixed
+
+- **Current generated console scripts are recognized.** Finalization accepts
+  both the older regex-based console script and the current minimal script
+  using `sys.argv[0].removesuffix('.exe')`. Recognition compares complete known
+  bodies without executing them; foreign imports, extra code, and incorrect
+  interpreter paths are rejected. This repairs the observed 0.20.0-development
+  failure: `entry launcher is not the expected generated src.cli trampoline`.
+- **No BusyBox dependency in updater test fixtures.** Tests use available
+  standard tools instead of assuming `/usr/bin/busybox` exists.
 
 - **Isolated pipx launcher finalization is fail-closed.** The generated public
   `slo` launcher delegates only through packaging-owned `slo-entry`; finalization
@@ -17,8 +40,19 @@
 
 ### Changed
 
-- **The GitLab release contract is release-fatal.** A tagged pipeline runs the
-  non-E2E test, Black, and lint gates before publication; after publication,
+- **Supported updates finalize the launcher after reinstalling.** The packaged
+  installer remains the sole wrapper writer. `slo update` runs its launcher
+  finalizer before conditional shell-default finalization. Direct pipx
+  install/upgrade/reinstall commands bypass this step; use the matching public
+  installer to restore the wrapper. Downgrading to a pre-isolation release
+  restores that release's plain launcher and loses isolation.
+- **Launch consumers have explicit boundaries.** Scheduled installed commands
+  use the wrapper; headless children retain their sanitized environment policy,
+  rather than inheriting `-I`. The visualizer no longer forwards `PYTHONPATH`
+  into its trusted source-checkout fallback. Target `.envrc` files are untouched.
+- **The GitLab release contract is test-gated.** A tagged pipeline runs the
+  non-E2E tests before publication. Formatting and lint remain local developer
+  checks, not CI gates. After publication,
   GitLab requires direct pipx recovery, hosted installer, macOS, and the
   Ubuntu 22.04/24.04 plus Debian 12/13 Docker installer matrix before its
   release-record job can run. This repository only parses and collects these

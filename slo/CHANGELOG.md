@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-09-29
+
+**Compaction now uses provider-correct summary requests, warns before very
+large histories become slow, records safe failures durably, and shows live
+progress during manual compaction.**
+
+### Added
+
+- **A 256k-token compaction latency advisory.** At context-window refresh
+  boundaries, an available estimate at or above
+  `SLO_COMPACTION_ADVISORY_TOKENS` (default `256000`) emits one visible prompt
+  to run `/compact`. The advisory is in-memory, re-arms only after the estimate
+  falls below the threshold, and never compacts automatically. The existing
+  automatic trigger remains 70% of the effective model context window.
+- **Live `/compact` activity feedback.** Long-running slash commands can declare
+  `shows_activity`; `/compact` uses the existing fixed `ThinkingSpinner`, which
+  displays `Compacting session history…` while the summary request runs and is
+  always removed after dispatch.
+
+### Fixed
+
+- **ChatGPT subscription compaction requests use the correct wire shape.** The
+  single compaction summary seam now applies the existing ChatGPT backend
+  adapter for direct OAuth models: system content is hoisted into top-level
+  `instructions`, and unsupported `max_tokens`, `max_output_tokens`, and
+  `max_completion_tokens` fields are omitted. OpenAI API-key, Anthropic, and
+  Kimi direct requests retain their previous shape.
+- **Model-pool compaction fallback preserves each destination lane's contract.**
+  Pool summaries pass the raw system/user message pair and reserved output cap
+  through the pool so every selected or fallback member applies its own
+  request adapter. Codex-to-non-Codex fallback restores system messages and the
+  cap; non-Codex-to-Codex fallback produces instructions without output-token
+  fields.
+- **Compaction failures are durable and secret-safe.** Manual and forced
+  overflow failures emit bounded redacted `compaction_failed` events and append
+  one existing-kind `run_failed` audit record with safe provider/status
+  metadata. Failure records remain excluded from replay context, and
+  persistence failures log only safe exception classes.
+
+### Changed
+
+- **Manual, automatic, and overflow compaction share one summary invocation
+  seam.** Provider adaptation, model-pool routing, and the reserved output
+  budget now have one owner, reducing divergent behavior between compaction
+  entry points without changing the 70% automatic threshold.
+
+### Verification
+
+- Full non-E2E suite: **4,316 passed, 15 deselected** under the 6 GiB process
+  memory cap.
+- Added offline wire-contract, pool-fallback, advisory one-shot/re-arm,
+  redaction, durable-history, replay, and Textual loader coverage.
+- Changed Python files pass Black. Targeted mypy reports only the existing
+  `TranscriptProjector` optional `tool_name` mismatch already present on
+  v0.20.0; this release introduces no new mypy finding.
+
 ## [0.20.0] — 2026-09-28
 
 **Installed Slo now starts in Python isolated mode so a target project's

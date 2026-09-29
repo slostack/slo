@@ -19,6 +19,7 @@ from langchain_core.tools import tool
 
 from config.logger import interactive_logging, log_info
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.compaction.compacter import Compacter
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
@@ -1349,6 +1350,37 @@ class TestSloTUISessionInbox:
             with pytest.raises(asyncio.CancelledError):
                 await active_task
             app._in_flight_task = None
+
+    @pytest.mark.asyncio
+    async def test_compact_mounts_activity_spinner_while_running(self) -> None:
+        """A running ``/compact`` shows the fixed loader, then removes it."""
+        entered: asyncio.Event = asyncio.Event()
+        release: asyncio.Event = asyncio.Event()
+
+        async def _slow_compact() -> ManualCompactionResultDAO:
+            entered.set()
+            await release.wait()
+            return ManualCompactionResultDAO(status="compacted")
+
+        session: MagicMock = self._steering_session_stub()
+        session.compact_context = AsyncMock(side_effect=_slow_compact)
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            dispatch: asyncio.Task[None] = asyncio.create_task(app._dispatch_slash_command(line="/compact"))
+            await entered.wait()
+            await pilot.pause()
+
+            assert app._spinner is not None
+            assert len(list(app.query(ThinkingSpinner))) == 1
+
+            release.set()
+            await dispatch
+            await pilot.pause()
+
+            assert app._spinner is None
+            assert list(app.query(ThinkingSpinner)) == []
 
     @pytest.mark.asyncio
     async def test_steer_dispatches_and_renders_while_run_in_flight(self) -> None:
@@ -4866,3 +4898,31 @@ class TestAstraTerminalOAuthRejection:
         assert session.is_running is False
         assert app._in_flight_task is None
         assert app._spinner is None
+
+
+class TestCompactionAdvisedRendering:
+    """The latency advisory uses the notice funnel, never the projector (spec 85.a.2)."""
+
+    @pytest.mark.asyncio
+    async def test_compaction_advised_renders_notice_and_bypasses_projector(self) -> None:
+        """One advisory writes an adapter line and never projects or compacts."""
+        app: SloTUI = SloTUI(
+            session=_build_session(responses=[AIMessage(content="unused")]),
+        )
+        content: str = "Context is above 256,000 tokens; run /compact to help latency."
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(app, "_write_adapter_line") as mock_write,
+                patch.object(app._projector, "project", new=AsyncMock()) as mock_project,
+                patch.object(Compacter, "compact", new=AsyncMock()) as mock_compact,
+            ):
+                await app._render_event(
+                    AgentStreamEventDAO(kind="compaction_advised", content=content),
+                )
+                await pilot.pause()
+
+            mock_write.assert_called_once_with(content=content, classes="tool-result")
+            mock_project.assert_not_called()
+            mock_compact.assert_not_called()

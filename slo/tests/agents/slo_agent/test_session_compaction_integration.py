@@ -465,8 +465,15 @@ async def test_overflow_compaction_failure_preserves_original_provider_error() -
     ``None``, ``_raise_if_attempt_failed`` re-raises the original overflow
     error, and the log message is ``"overflow_compaction_failed_before_retry"``.
     """
-    session, _ = _build_session()
+    session, mock_store = _build_session()
     session._context_window_dirty = False
+    captured: list[AgentStreamEventDAO] = []
+
+    async def _capture(event: AgentStreamEventDAO) -> None:
+        """Append one dispatched event."""
+        captured.append(event)
+
+    session.subscribe(handler=_capture)
 
     async def _overflow_stream(**kwargs):
         raise RuntimeError("Your request exceeded model token limit: 262144")
@@ -495,6 +502,169 @@ async def test_overflow_compaction_failure_preserves_original_provider_error() -
         call.kwargs.get("msg") == "overflow_compaction_failed_before_retry"
         for call in mock_log_error.call_args_list
     )
+
+    failed_events = [event for event in captured if event.kind == "compaction_failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0].content == "ValueError: no viable cut point"
+    assert failed_events[0].metadata["failure_scope"] == "compaction"
+
+    scoped_audits = [
+        call.kwargs["event"]
+        for call in mock_store.append_event.await_args_list
+        if call.kwargs["event"].kind == "run_failed"
+        and call.kwargs["event"].payload.metadata.get("failure_scope") == "compaction"
+    ]
+    assert len(scoped_audits) == 1
+    original_failures = [
+        call.kwargs["event"]
+        for call in mock_store.append_event.await_args_list
+        if call.kwargs["event"].kind == "run_failed"
+        and call.kwargs["event"].payload.metadata.get("failure_scope") != "compaction"
+    ]
+    assert len(original_failures) == 1
+    assert scoped_audits[0].turn_id == original_failures[0].turn_id
+
+
+# ---------------------------------------------------------------------------
+# Composed overflow failure redaction (85.a.4 §3.4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_overflow_compaction_failure_redacts_secret_across_event_audit_and_replay() -> None:
+    """A secret-bearing overflow compaction failure is redacted on every surface.
+
+    Drives the eligible overflow path through the real session lifecycle: the
+    provider raises a context-overflow error, the forced compaction raises a
+    credential-bearing provider-shaped error, and no raw secret may reach the
+    stream event, the durable ``run_failed`` audit, or projector replay.
+    """
+    secret: str = "sk-overflow-secret-abcdef123456"
+    session, mock_store = _build_session()
+    session._context_window_dirty = False
+    captured: list[AgentStreamEventDAO] = []
+
+    async def _capture(event: AgentStreamEventDAO) -> None:
+        """Append one dispatched event."""
+        captured.append(event)
+
+    session.subscribe(handler=_capture)
+
+    async def _overflow_stream(**kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("Your request exceeded model token limit: 262144")
+        yield  # noqa: unreachable
+
+    with (
+        patch.object(
+            session,
+            "_stream_prompt_with_retries",
+            _overflow_stream,
+        ),
+        patch.object(session, "_ensure_agent_ready", new_callable=AsyncMock),
+        patch.object(
+            session,
+            "_run_compaction_if_needed",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError(f"compaction summary rejected: Authorization: Bearer {secret}"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="exceeded model token limit"):
+            async for _ in session.invoke(text="hello"):
+                pass
+
+    failed_events = [event for event in captured if event.kind == "compaction_failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0].content is not None
+    assert "RuntimeError" in failed_events[0].content
+    assert secret not in failed_events[0].content
+    assert failed_events[0].metadata["failure_scope"] == "compaction"
+    assert failed_events[0].metadata["error_class"] == "RuntimeError"
+    assert secret not in str(failed_events[0].metadata)
+
+    appended: list[SessionHistoryEventDAO] = [
+        call.kwargs["event"] for call in mock_store.append_event.await_args_list
+    ]
+    scoped_audits = [
+        event
+        for event in appended
+        if event.kind == "run_failed" and event.payload.metadata.get("failure_scope") == "compaction"
+    ]
+    assert len(scoped_audits) == 1
+    assert scoped_audits[0].payload.error_message == failed_events[0].metadata["safe_message"]
+    assert secret not in str(scoped_audits[0].payload.model_dump(mode="json"))
+
+    messages = await SessionHistoryProjector.build_message_history(events=appended)
+    replayed: str = " ".join(
+        message.content if isinstance(message.content, str) else str(message.content) for message in messages
+    )
+    assert "hello" in replayed
+    assert secret not in replayed
+    assert "compaction summary rejected" not in replayed
+
+
+@pytest.mark.asyncio
+async def test_overflow_compaction_failure_audit_persistence_error_is_redacted_in_log() -> None:
+    """A secret-bearing audit persistence error is logged by class only.
+
+    The overflow failure path appends its scoped ``run_failed`` audit
+    best-effort; when that append itself fails with a credential-bearing
+    error, the captured persistence-failure log must carry only the exception
+    class while the live ``compaction_failed`` event still reaches the user.
+    """
+    audit_secret: str = "sk-audit-persist-secret-999000"
+    session, mock_store = _build_session()
+    session._context_window_dirty = False
+    captured: list[AgentStreamEventDAO] = []
+
+    async def _capture(event: AgentStreamEventDAO) -> None:
+        """Append one dispatched event."""
+        captured.append(event)
+
+    session.subscribe(handler=_capture)
+
+    async def _overflow_stream(**kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("Your request exceeded model token limit: 262144")
+        yield  # noqa: unreachable
+
+    async def _append_event(*, event: SessionHistoryEventDAO) -> SessionHistoryEventDAO:
+        """Fail only the scoped compaction audit append with a secret-bearing error."""
+        if event.kind == "run_failed" and event.payload.metadata.get("failure_scope") == "compaction":
+            raise OSError(f"disk full while writing token {audit_secret}")
+        return event
+
+    mock_store.append_event = AsyncMock(side_effect=_append_event)
+
+    with (
+        patch.object(
+            session,
+            "_stream_prompt_with_retries",
+            _overflow_stream,
+        ),
+        patch.object(session, "_ensure_agent_ready", new_callable=AsyncMock),
+        patch.object(
+            session,
+            "_run_compaction_if_needed",
+            new_callable=AsyncMock,
+            side_effect=ValueError("no viable cut point"),
+        ),
+        patch("src.agents.slo_agent.sessions.service.log_error") as mock_log_error,
+    ):
+        with pytest.raises(RuntimeError, match="exceeded model token limit"):
+            async for _ in session.invoke(text="hello"):
+                pass
+
+    audit_failures = [
+        call
+        for call in mock_log_error.call_args_list
+        if call.kwargs.get("msg") == "compaction_failure_audit_failed"
+    ]
+    assert len(audit_failures) == 1
+    assert audit_failures[0].kwargs.get("error_class") == "OSError"
+    assert audit_secret not in str(mock_log_error.call_args_list)
+
+    failed_events = [event for event in captured if event.kind == "compaction_failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0].content == "ValueError: no viable cut point"
 
 
 # ---------------------------------------------------------------------------

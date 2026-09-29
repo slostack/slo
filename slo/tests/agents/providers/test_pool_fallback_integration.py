@@ -8,9 +8,13 @@ provider API.
 from __future__ import annotations
 
 import time
+from typing import Any, Optional, cast
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_openai import ChatOpenAI
 from unittest.mock import patch
 
 from src.agents.providers.credit_exhaustion_policy import (
@@ -19,6 +23,7 @@ from src.agents.providers.credit_exhaustion_policy import (
 )
 from src.agents.providers.model_pool import ModelPool, ModelPoolDAO, ModelPoolEntryDAO
 from src.agents.providers.faux import FauxChatModel
+from src.agents.slo_agent.graph import adapt_chatgpt_backend_request
 from src.auth.credential_dao import ProviderName
 
 # ---------------------------------------------------------------------------
@@ -241,6 +246,165 @@ class TestPoolTransientProviderFailure:
 
         assert result.generations[0].message.content == "never"
         assert pool._cooldowns.get("claude-primary", 0) > time.monotonic()
+
+
+# ---------------------------------------------------------------------------
+# Composed compaction fallback directions (85.a.4 §2 R2)
+# ---------------------------------------------------------------------------
+
+
+_SUMMARY_MESSAGES: list[BaseMessage] = [
+    SystemMessage(content="You are a conversation compactor"),
+    HumanMessage(content="compaction input"),
+]
+
+
+class _RateLimitError(Exception):
+    """Fake 429 rate-limit exception — switchable for any provider lane."""
+
+    status_code: int = 429
+
+
+def _codex_openai() -> ChatOpenAI:
+    """Build a ChatOpenAI rooted at the ChatGPT backend base URL.
+
+    Called by ``_CapturingCodexMember`` so the real adapter recognizes the
+    duck-typed member as a ChatGPT-backend Responses lane.
+
+    Returns:
+        ChatOpenAI: A model ``_uses_chatgpt_backend_responses`` classifies as Codex.
+    """
+    return ChatOpenAI(
+        model="gpt-5.4",
+        api_key="sk-test",  # type: ignore[arg-type]
+        openai_api_base="https://chatgpt.com/backend-api/codex",  # type: ignore[call-arg]
+        use_responses_api=True,
+    )
+
+
+class _CapturingMember:
+    """Duck-typed pool member that records the request the adapter shaped for it.
+
+    Used by the composed fallback-direction tests to observe exactly which
+    messages and kwargs each selected lane received.
+    """
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        """Store the optional pre-output failure.
+
+        Args:
+            error (Exception | None): Error raised before any output, or None
+                for a healthy member.
+        """
+        self.error: Exception | None = error
+        self.received_messages: list[BaseMessage] | None = None
+        self.received_kwargs: dict[str, Any] | None = None
+
+    async def _agenerate(
+        self,
+        *,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Record the shaped request, then fail or succeed as scripted.
+
+        Args:
+            messages (list[BaseMessage]): Adapter-shaped request messages.
+            stop (Optional[list[str]]): Stop sequences forwarded by the pool.
+            run_manager (Any): LangChain callback manager forwarded by the pool.
+            **kwargs: Adapter-shaped invocation kwargs.
+
+        Returns:
+            ChatResult: A minimal successful result for a healthy member.
+        """
+        self.received_messages = list(messages)
+        self.received_kwargs = dict(kwargs)
+        if self.error is not None:
+            raise self.error
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+
+class _CapturingCodexMember(_CapturingMember):
+    """Capturing member the adapter detects as ChatGPT-backend via ``.bound``."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        """Attach a ChatGPT-backend ``ChatOpenAI`` under ``.bound``.
+
+        Args:
+            error (Exception | None): Error raised before any output, or None
+                for a healthy member.
+        """
+        super().__init__(error=error)
+        self.bound: ChatOpenAI = _codex_openai()
+
+
+def _compaction_direction_pool(*, primary: object, secondary: object) -> ModelPool:
+    """Build a two-member pool wired with the real per-member request adapter.
+
+    Called by the composed fallback-direction tests so the production
+    ``adapt_chatgpt_backend_request`` shapes whichever lane the pool routes to.
+
+    Args:
+        primary (object): Priority-0 duck-typed capturing member.
+        secondary (object): Priority-1 duck-typed capturing member.
+
+    Returns:
+        ModelPool: Pool routing primary then secondary.
+    """
+    dao: ModelPoolDAO = ModelPoolDAO(
+        entries=[
+            ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
+            ModelPoolEntryDAO(
+                model_name="claude-sonnet-4-6",
+                provider=ProviderName.ANTHROPIC,
+                priority=1,
+            ),
+        ]
+    )
+    return ModelPool(
+        pool_dao=dao,
+        models={
+            "gpt-5.4": cast(BaseChatModel, primary),
+            "claude-sonnet-4-6": cast(BaseChatModel, secondary),
+        },
+        request_adapter=adapt_chatgpt_backend_request,
+    )
+
+
+class TestPoolCompactionFallbackDirections:
+    """85.a.4 §2 R2 — a pre-output fallback re-derives the correct lane shape."""
+
+    async def test_codex_primary_failure_restores_system_and_cap_for_non_codex_fallback(self) -> None:
+        """Codex→non-Codex: the fallback keeps the SystemMessage and raw cap."""
+        secondary = _CapturingMember()
+        pool = _compaction_direction_pool(
+            primary=_CapturingCodexMember(error=_RateLimitError()),
+            secondary=secondary,
+        )
+
+        result = await pool._agenerate(messages=_SUMMARY_MESSAGES, max_tokens=1234)
+
+        assert result.generations[0].message.content == "ok"
+        assert secondary.received_kwargs == {"max_tokens": 1234}
+        assert secondary.received_messages is not None
+        assert any(isinstance(m, SystemMessage) for m in secondary.received_messages)
+
+    async def test_non_codex_primary_failure_produces_instructions_for_codex_fallback(self) -> None:
+        """non-Codex→Codex: the fallback carries instructions and no output cap."""
+        secondary = _CapturingCodexMember()
+        pool = _compaction_direction_pool(
+            primary=_CapturingMember(error=_RateLimitError()),
+            secondary=secondary,
+        )
+
+        result = await pool._agenerate(messages=_SUMMARY_MESSAGES, max_tokens=1234)
+
+        assert result.generations[0].message.content == "ok"
+        assert secondary.received_kwargs == {"instructions": "You are a conversation compactor"}
+        assert secondary.received_messages is not None
+        assert all(not isinstance(m, SystemMessage) for m in secondary.received_messages)
 
 
 class TestPoolBindToolsPreservesCooldowns:

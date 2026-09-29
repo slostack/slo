@@ -567,10 +567,13 @@ non-slash prompts, gives slash suggestions precedence, and restores the preserve
 history navigation exits.
 
 **`ThinkingSpinner`** (`src/tui/thinking_spinner.py`) is mounted above `PromptInput` while
-the agent is running. It is a `Horizontal` with two child `Static`s: an accent braille
-activity glyph rotating every 0.08 s (`_BRAILLE_FRAMES`) and a muted italic text surface
-that rotates verbs every `interval_seconds` (default 1.5 s) or carries a retry/compaction
-override via `set_override_status(text=...)` — overrides never stop the glyph.
+the agent is running or while a slash command whose `SlashCommandSpecDAO.shows_activity`
+flag is true is dispatching (`/compact` is the first consumer). It is a `Horizontal` with
+two child `Static`s: an accent braille activity glyph rotating every 0.08 s
+(`_BRAILLE_FRAMES`) and a muted italic text surface that rotates verbs every
+`interval_seconds` (default 1.5 s) or carries a retry/compaction override via
+`set_override_status(text=...)` — overrides never stop the glyph. Slash dispatch only
+unmounts a spinner it mounted itself, so it cannot remove an active run spinner.
 
 **Workflow visualizer auto-launch:** when a TUI session is promoted to orchestrator mode and
 the first sub-agent is spawned, `SloTUI._maybe_launch_visualizer` opens a separate terminal

@@ -1795,11 +1795,20 @@ class SloTUI(App):
     async def _dispatch_slash_command(self, *, line: str) -> None:
         """Hand a slash command to ``SlashRouter`` and render the result.
 
+        Long-running commands (the registry's ``shows_activity`` flag) mount the
+        fixed activity spinner for the duration of the dispatch so the operator
+        sees work in progress instead of a blank screen.
+
         Args:
             line (str): The full input line including the leading slash.
         """
         self._hide_slash_suggestions()
-        result = await SlashRouter.dispatch(line=line, session=self._session)
+        mounted_activity: bool = await self._mount_slash_activity(line=line)
+        try:
+            result = await SlashRouter.dispatch(line=line, session=self._session)
+        finally:
+            if mounted_activity:
+                await self._unmount_spinner()
         if result.should_clear:
             await self.action_clear()
         if result.replace_session:
@@ -2711,6 +2720,14 @@ class SloTUI(App):
         if event.kind == "preflight_bypassed":
             self._render_preflight_bypassed_event()
             return
+        if event.kind == "compaction_advised":
+            self._write_adapter_line(
+                content=event.content or "Run /compact to help latency.",
+                classes="tool-result",
+            )
+            self._session.refresh_usage_snapshot()
+            self._refresh_usage_status_bar()
+            return
         self._apply_compaction_spinner_update(event=event)
         self._apply_recovery_spinner_update(event=event)
         if self._spinner is not None and event.kind not in {
@@ -2795,7 +2812,9 @@ class SloTUI(App):
                 self._spinner.set_override_status(text="Retrying original message…")
         elif event.kind == "compaction_failed":
             if self._spinner is not None:
-                self._spinner.set_override_status(text="Compaction failed.")
+                self._spinner.set_override_status(
+                    text=f"Compaction failed: {event.content}" if event.content else "Compaction failed."
+                )
 
     def _apply_recovery_spinner_update(self, *, event: AgentStreamEventDAO) -> None:
         """Update spinner copy for recovery lifecycle events.
@@ -2816,6 +2835,28 @@ class SloTUI(App):
         elif event.kind == "recovery_exhausted":
             if self._spinner is not None:
                 self._spinner.set_override_status(text="Could not recover automatically.")
+
+    async def _mount_slash_activity(self, *, line: str) -> bool:
+        """Mount the fixed activity spinner for a long-running slash command.
+
+        WHAT: Returns ``True`` only when this call mounted the spinner.
+        WHO: ``_dispatch_slash_command`` calls it before dispatch.
+        WHEN: Only for a registry command flagged ``shows_activity`` and only
+        while no run spinner is already mounted, so a caller never removes a
+        spinner it did not mount.
+
+        Args:
+            line (str): The full input line including the leading slash.
+
+        Returns:
+            bool: ``True`` when this call mounted the spinner.
+        """
+        if not SlashRouter.requires_activity(line=line):
+            return False
+        if self._spinner is not None:
+            return False
+        await self._mount_spinner()
+        return True
 
     async def _mount_spinner(self) -> None:
         """Mount a fixed ``ThinkingSpinner`` above the prompt input.

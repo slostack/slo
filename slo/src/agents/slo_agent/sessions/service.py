@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import tempfile
 import time
 from collections import deque
@@ -45,6 +46,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from config.ai_model_config import MODEL_DEFAULTS
 from config.cfg import cfg
 from config.logger import log_error, log_info, log_warning
+from config.timeout_resolver import positive_int_env
 from src.agents.providers.stream_recovery.dao import (
     ProviderStreamFailure,
     StreamRecoveryAction,
@@ -150,6 +152,57 @@ trip artificial multi-second waits after a few back-to-back turns. A typical tur
 emits far less; 8192 (the historical pre-02 value) keeps the local rate-limit
 behavior stable. The TUI usage snapshot still surfaces the true ceiling separately.
 """
+
+_COMPACTION_ADVISORY_DEFAULT_TOKENS: int = 256_000
+"""Default projector-faithful context estimate that triggers the latency advisory.
+
+The advisory only asks the user to run ``/compact``; it never compacts. Override
+with the positive integer environment variable ``SLO_COMPACTION_ADVISORY_TOKENS``.
+"""
+
+_COMPACTION_REDACTED_PLACEHOLDER: str = "<redacted>"
+"""Deterministic replacement applied to every matched secret fragment."""
+
+_COMPACTION_FAILURE_MESSAGE_LIMIT: int = 300
+"""Maximum length of a redacted compaction failure message before truncation."""
+
+_COMPACTION_REDACTION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+        _COMPACTION_REDACTED_PLACEHOLDER,
+    ),
+    (
+        re.compile(r"sk-ant-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+"),
+        _COMPACTION_REDACTED_PLACEHOLDER,
+    ),
+    (
+        re.compile(r"(?i)\bauthorization\b\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?[^\s,;\"'}]+"),
+        f"Authorization={_COMPACTION_REDACTED_PLACEHOLDER}",
+    ),
+    (
+        re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*"),
+        f"Bearer {_COMPACTION_REDACTED_PLACEHOLDER}",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|secret|password)"
+            r"\b\s*[:=]\s*[\"']?[^\s,;\"'}]+"
+        ),
+        rf"\1={_COMPACTION_REDACTED_PLACEHOLDER}",
+    ),
+    (
+        re.compile(
+            r"(?i)([?&](?:(?:x-amz-)?(?:signature|credential|security-token)|"
+            r"sig|token|access_token|api[_-]?key|key)=)[^&\s]+"
+        ),
+        rf"\1{_COMPACTION_REDACTED_PLACEHOLDER}",
+    ),
+    (
+        re.compile(r"://[^/\s:@]+:[^/\s@]+@"),
+        f"://{_COMPACTION_REDACTED_PLACEHOLDER}@",
+    ),
+)
+"""Ordered local redaction rules applied before any compaction failure text is surfaced."""
 
 _DEFAULT_STREAM_INACTIVITY_TIMEOUT_SECONDS: float = 10800.0
 """Maximum silence tolerated from the main agent stream before it is treated as hung.
@@ -516,6 +569,7 @@ class SloAgentSession:
         self._cooldown_seconds_remaining: Optional[int] = None
         self._startup_notice_shown_in_memory: bool = False
         self._context_window_snapshot: Optional[ContextWindowSnapshotDAO] = None
+        self._compaction_advisory_armed: bool = True
         self._usage_snapshot: SessionUsageSnapshotDAO = self._build_usage_snapshot()
         self._orchestrator_context_written: bool = False
         # Idempotency cache for record_workflow_update (spec 57.a.4): inbox
@@ -1284,8 +1338,55 @@ class SloAgentSession:
             SessionUsageSnapshotDAO: Republished usage snapshot with the cached value.
         """
         self._context_window_snapshot = await self.context_window_snapshot()
+        await self._maybe_emit_compaction_advisory(snapshot=self._context_window_snapshot)
         self._sync_usage_snapshot_commit()
         return self._rebuild_usage_snapshot().model_copy(deep=True)
+
+    @staticmethod
+    def _compaction_advisory_threshold_tokens() -> int:
+        """Return the positive advisory threshold or the 256k default.
+
+        Called by ``_maybe_emit_compaction_advisory`` at each snapshot boundary.
+
+        Returns:
+            int: Resolved ``SLO_COMPACTION_ADVISORY_TOKENS`` or the default.
+        """
+        return positive_int_env(
+            primary_name="SLO_COMPACTION_ADVISORY_TOKENS",
+            default=_COMPACTION_ADVISORY_DEFAULT_TOKENS,
+        )
+
+    async def _maybe_emit_compaction_advisory(
+        self,
+        *,
+        snapshot: ContextWindowSnapshotDAO,
+    ) -> None:
+        """Emit one latency advisory while the available snapshot is above threshold.
+
+        Called by ``refresh_context_window_snapshot`` at each snapshot boundary.
+        An unavailable estimate neither emits nor changes the armed state, and a
+        below-threshold available snapshot re-arms the one-shot advisory. This method
+        never compacts.
+
+        Args:
+            snapshot (ContextWindowSnapshotDAO): Freshly measured snapshot.
+        """
+        threshold_tokens: int = self._compaction_advisory_threshold_tokens()
+        if not snapshot.estimate_available:
+            return
+        if snapshot.estimated_used_tokens < threshold_tokens:
+            self._compaction_advisory_armed = True
+            return
+        if not self._compaction_advisory_armed:
+            return
+        self._compaction_advisory_armed = False
+        await self._dispatch_event(
+            event=AgentStreamEventDAO(
+                kind="compaction_advised",
+                content=f"Context is above {threshold_tokens:,} tokens; run /compact to help latency.",
+                metadata={"estimated_used_tokens": snapshot.estimated_used_tokens},
+            )
+        )
 
     async def _existing_history_events(self) -> Optional[list[SessionHistoryEventDAO]]:
         """Read history without creating a session or mutating durable state.
@@ -1413,11 +1514,163 @@ class SloAgentSession:
         try:
             await self._run_compaction_if_needed(turn_id=turn_id, force=True, events=events)
         except Exception as exc:  # noqa: BLE001
-            log_error(msg="manual_compaction_failed", error=str(exc))
-            await self._emit_compaction_event(kind="compaction_failed")
-            return ManualCompactionResultDAO(status="failed", detail="compaction failed")
+            log_error(
+                msg="manual_compaction_failed",
+                error_class=type(exc).__name__,
+                stack_trace=False,
+            )
+            detail: str = await self._report_compaction_failure(turn_id=turn_id, error=exc)
+            return ManualCompactionResultDAO(status="failed", detail=detail)
         await self._emit_compaction_event(kind="compaction_completed")
         return ManualCompactionResultDAO(status="compacted")
+
+    @classmethod
+    def _safe_compaction_failure_message(cls, *, error: BaseException) -> str:
+        """Return bounded redacted text safe for a result, event, and history audit.
+
+        Called by ``_report_compaction_failure`` and
+        ``_persist_compaction_failure_audit`` for every manual or overflow
+        compaction failure. The exception message is passed through the local
+        ordered redaction rules, whitespace is collapsed, and the result is
+        truncated to ``_COMPACTION_FAILURE_MESSAGE_LIMIT`` characters. When
+        nothing readable remains, the exception class name is returned.
+
+        Args:
+            error (BaseException): Raw exception raised by the compaction pipeline.
+
+        Returns:
+            str: Deterministic single-line redacted message.
+        """
+        redacted: str = str(error)
+        for pattern, replacement in _COMPACTION_REDACTION_RULES:
+            redacted = pattern.sub(replacement, redacted)
+        collapsed: str = re.sub(r"\s+", " ", redacted).strip()
+        if not collapsed:
+            return type(error).__name__
+        return collapsed[:_COMPACTION_FAILURE_MESSAGE_LIMIT]
+
+    @classmethod
+    def _compaction_failure_text(cls, *, error: BaseException) -> str:
+        """Return the operator-facing exception class and redacted message.
+
+        Called by ``_report_compaction_failure`` so the manual result detail,
+        live stream event, and durable audit all share the same actionable
+        text.
+
+        Args:
+            error (BaseException): Raw compaction exception.
+
+        Returns:
+            str: ``"<ExceptionClass>: <safe message>"``.
+        """
+        return f"{type(error).__name__}: {cls._safe_compaction_failure_message(error=error)}"
+
+    def _compaction_failure_metadata(
+        self,
+        *,
+        error: BaseException,
+        safe_message: str,
+    ) -> dict[str, object]:
+        """Build the safe metadata bag shared by the event and history audit.
+
+        Called by ``_report_compaction_failure`` and
+        ``_persist_compaction_failure_audit``. Only redacted facts are copied:
+        the failure scope, exception class, safe message, and the optionally
+        available provider name and HTTP status. Raw exception text, headers,
+        and request payloads are never included.
+
+        Args:
+            error (BaseException): Raw compaction exception.
+            safe_message (str): Redacted message from
+                ``_safe_compaction_failure_message``.
+
+        Returns:
+            dict[str, object]: Bounded safe metadata.
+        """
+        provider: Optional[ProviderName] = self._resolve_active_provider()
+        signal: Optional[ProviderErrorSignalDAO] = self._inspect_provider_error(error=error)
+        return {
+            "failure_scope": "compaction",
+            "error_class": type(error).__name__,
+            "safe_message": safe_message,
+            "provider_name": provider.value if provider is not None else None,
+            "status_code": signal.status_code if signal is not None else None,
+        }
+
+    async def _persist_compaction_failure_audit(
+        self,
+        *,
+        turn_id: str,
+        error: BaseException,
+    ) -> None:
+        """Best-effort append one replay-excluded existing-kind failure audit.
+
+        Called by ``_report_compaction_failure`` before the live event is
+        dispatched. It reuses the existing ``run_failed`` history kind with
+        ``metadata["failure_scope"] == "compaction"``; ``run_failed`` is already
+        excluded from model replay. A persistence error is swallowed and logged
+        by exception class only so the live event and manual result still reach
+        the operator.
+
+        Args:
+            turn_id (str): Turn anchoring the audit — the allocated manual turn
+                or the failed overflow attempt's turn.
+            error (BaseException): Raw compaction exception.
+        """
+        safe_message: str = self._safe_compaction_failure_message(error=error)
+        try:
+            await self._append_history_event(
+                event=self._build_event(
+                    kind="run_failed",
+                    turn_id=turn_id,
+                    payload=SessionHistoryEventPayloadDAO(
+                        error_message=safe_message,
+                        model_name=self._resolve_active_model_name(),
+                        metadata=self._compaction_failure_metadata(
+                            error=error,
+                            safe_message=safe_message,
+                        ),
+                    ),
+                ),
+            )
+        except Exception as persist_exc:  # noqa: BLE001
+            log_error(
+                msg="compaction_failure_audit_failed",
+                error_class=type(persist_exc).__name__,
+                stack_trace=False,
+            )
+
+    async def _report_compaction_failure(
+        self,
+        *,
+        turn_id: str,
+        error: BaseException,
+    ) -> str:
+        """Persist and emit redacted data for one manual or overflow failure.
+
+        Called by the manual ``/compact`` exception branch and the forced
+        overflow compaction exception branch. It produces the safe text and
+        metadata once, appends the best-effort scoped ``run_failed`` audit, then
+        dispatches the existing ``compaction_failed`` stream event with the same
+        content and metadata.
+
+        Args:
+            turn_id (str): Turn anchoring the durable audit.
+            error (BaseException): Raw compaction exception.
+
+        Returns:
+            str: Safe ``"<ExceptionClass>: <safe message>"`` for the manual
+                result detail.
+        """
+        safe_message: str = self._safe_compaction_failure_message(error=error)
+        text: str = self._compaction_failure_text(error=error)
+        await self._persist_compaction_failure_audit(turn_id=turn_id, error=error)
+        await self._emit_compaction_event(
+            kind="compaction_failed",
+            content=text,
+            metadata=self._compaction_failure_metadata(error=error, safe_message=safe_message),
+        )
+        return text
 
     async def _with_refreshed_context_window(
         self,
@@ -2665,10 +2918,13 @@ class SloAgentSession:
         except Exception as compaction_exc:  # noqa: BLE001
             log_error(
                 msg="overflow_compaction_failed_before_retry",
-                e=compaction_exc,
+                error_class=type(compaction_exc).__name__,
                 stack_trace=False,
             )
-            await self._emit_compaction_event(kind="compaction_failed")
+            await self._report_compaction_failure(
+                turn_id=result.turn_id,
+                error=compaction_exc,
+            )
             return None
         if not compacted:
             await self._emit_compaction_event(kind="compaction_failed")

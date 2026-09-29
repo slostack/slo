@@ -294,6 +294,10 @@ class TranscriptProjector:
             return
 
         if event.kind == "compaction_failed":
+            self._host.write_transcript_line(
+                content=(f"(compaction failed) {event.content}" if event.content else "(compaction failed)"),
+                classes="assistant-aborted",
+            )
             return
 
         if event.kind == "recovery_started":

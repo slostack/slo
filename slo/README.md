@@ -103,7 +103,9 @@ threading, and executor-to-history integration.
 The TUI exposes durable replay-history context separately from provider billing telemetry:
 
 - `/context-window` reports the routed model's Context Window capacity, Estimated Used Context, Available Context, and one-decimal percentage. The estimate counts selected durable replay events, not cumulative session billing totals.
-- `/compact` requests one lock-safe Manual Compaction while the session is idle. It reports a no-op when there is nothing to compact and rejects an in-flight prompt without touching history.
+- `/compact` requests one lock-safe Manual Compaction while the session is idle. It mounts the fixed activity spinner immediately and shows `Compacting session history…` while the summary request runs, reports a no-op when there is nothing to compact, and rejects an in-flight prompt without touching history. Its summary request is shaped per lane: ChatGPT-backend OAuth sends top-level `instructions` with no output-token field, direct Anthropic/OpenAI-API-key/Kimi lanes keep `max_tokens`, and a `ModelPool` shapes each selected member itself.
+- Once a durable snapshot reaches `SLO_COMPACTION_ADVISORY_TOKENS` (default 256,000), the transcript prints `Context is above 256,000 tokens; run /compact to help latency.` once while above the threshold; a later below-threshold snapshot re-arms it. The advisory is display-only and never starts compaction; the automatic trigger remains `floor(context_window * 0.70)` over persisted token usage.
+- Manual and forced-overflow compaction failures surface a bounded, redacted `ExceptionClass: message` in the result and a `compaction_failed` notice, and append one replay-excluded `run_failed` audit tagged `failure_scope="compaction"`.
 - The usage footer appends `NN.N% context used` only when a durable Context Window Snapshot is available. It refreshes at bounded lifecycle points rather than on every streamed event.
 
 ## Preface
@@ -1348,7 +1350,7 @@ SloTUI (App)
     │       │   └── …
     │       └── Static .turn-separator / .tool-result  (non-conversational notices only)
     ├── Vertical #status-region
-    │   └── ThinkingSpinner                       (fixed; mounted only during a run)
+    │   └── ThinkingSpinner                       (fixed; run or flagged slash command)
     └── PromptInput                               (pinned at the bottom)
 ```
 
@@ -1469,9 +1471,15 @@ Two consequences worth knowing:
 **The spinner.** `#status-region` is a `Vertical` docked between the
 scroll viewport and the input. `_mount_spinner` mounts the
 `ThinkingSpinner` there at run start; it stays for the whole run and is
-removed only in `_run_prompt`'s `finally`. Because it is a sibling of the
-scroll region rather than a line *inside* the transcript, scrolling
-content never hides it and the `PromptInput` never moves.
+removed only in `_run_prompt`'s `finally`. Registry commands whose
+`SlashCommandSpecDAO.shows_activity` flag is true also mount it for the
+lifetime of slash dispatch; `/compact` is the first consumer and the existing
+compaction events override its text with `Compacting session history…`.
+Slash dispatch records whether it mounted the spinner and only removes that
+instance, so a command cannot tear down a run-owned spinner. Because the
+spinner is a sibling of the scroll region rather than a line *inside* the
+transcript, scrolling content never hides it and the `PromptInput` never
+moves.
 
 **Terminal events.** When the loop ends, `react_streaming` yields one
 terminal `AgentStreamEventDAO`:

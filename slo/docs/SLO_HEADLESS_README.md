@@ -591,6 +591,7 @@ Every run ends with exactly one of these.
 | `compaction_completed` | Compaction succeeded. |
 | `compaction_failed` | Compaction failed; the original error will follow. |
 | `compaction_retrying` | Compaction succeeded; the original prompt is being retried. |
+| `compaction_advised` | Snapshot crossed the 256k advisory threshold; display-only, asks the user to run `/compact`. |
 | `recovery_started` | LLM-driven error recovery began (feature 50). |
 | `recovery_succeeded` | A recovery iteration produced a completed turn. |
 | `recovery_exhausted` | Recovery budget exhausted; `run_failed` follows. |

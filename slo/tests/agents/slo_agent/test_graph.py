@@ -24,7 +24,7 @@ from src.agents.slo_agent.graph import (
     adapt_chatgpt_backend_request,
     build_slo_agent,
 )
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.base import LLMBuildResult, LLMFactory
 from src.agents.providers.model_pool import ModelPool, ModelPoolDAO, ModelPoolEntryDAO
@@ -281,6 +281,29 @@ def test_backend_detector_unwraps_runnable_binding_shape() -> None:
     assert _uses_chatgpt_backend_responses(llm=_Wrapper(bound=platform)) is False
 
 
+def test_unwrap_helpers_terminate_when_bound_access_returns_a_fresh_wrapper() -> None:
+    """A fresh wrapper chain stops at the bounded unwrapping depth."""
+
+    class _FreshBound:
+        @property
+        def bound(self) -> "_FreshBound":
+            """Return a distinct wrapper without model-only attributes."""
+            return _FreshBound()
+
+    endless = _FreshBound()
+
+    assert _is_pool_bound(llm=endless) is False
+    assert _uses_chatgpt_backend_responses(llm=endless) is False
+
+
+def test_unwrap_helpers_ignore_absent_attributes() -> None:
+    """A chat model without wrapper attributes reports no pool and no backend."""
+    model = MagicMock(spec=BaseChatModel)
+
+    assert _is_pool_bound(llm=model) is False
+    assert _uses_chatgpt_backend_responses(llm=model) is False
+
+
 def _truncated() -> dict:
     """Anthropic output-limit response metadata."""
     return {"stop_reason": "max_tokens"}
@@ -521,24 +544,35 @@ class TestUsesChatGptBackendPoolAware:
 
 class TestAdaptChatGptBackendRequest:
     def test_hoists_instructions_for_chatgpt_member(self) -> None:
-        """System text is hoisted into instructions for a ChatGPT-backend member."""
+        """System text is hoisted into instructions; output-token kwargs are stripped."""
         msgs, kwargs = adapt_chatgpt_backend_request(
             llm=_chatgpt_backed_openai(),
             messages=[SystemMessage(content="S"), HumanMessage(content="H")],
-            kwargs={},
+            kwargs={
+                "max_tokens": 4096,
+                "max_output_tokens": 4096,
+                "max_completion_tokens": 4096,
+                "temperature": 0.1,
+            },
         )
         assert kwargs["instructions"] == "S"
+        assert "max_tokens" not in kwargs
+        assert "max_output_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+        assert kwargs["temperature"] == 0.1
         assert all(not isinstance(m, SystemMessage) for m in msgs)
 
     def test_passthrough_for_non_chatgpt_member(self) -> None:
-        """A non-ChatGPT member's request is returned unchanged."""
+        """A non-ChatGPT member's request is returned unchanged, cap included."""
         original = [SystemMessage(content="S"), HumanMessage(content="H")]
+        original_kwargs = {"max_tokens": 4096}
         msgs, kwargs = adapt_chatgpt_backend_request(
             llm=FauxChatModel(responses=[]),
             messages=original,
-            kwargs={},
+            kwargs=original_kwargs,
         )
         assert msgs == original
+        assert kwargs == original_kwargs
         assert "instructions" not in kwargs
 
 

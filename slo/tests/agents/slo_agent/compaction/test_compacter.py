@@ -9,14 +9,20 @@ Coverage targets:
 
 from __future__ import annotations
 
+import base64
+import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 
+from src.agents.providers.openai_codex import build_chatgpt_backed_chat_openai
 from src.agents.slo_agent.compaction.compacter import (
     CompactionResult,
     Compacter,
@@ -31,6 +37,7 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
 )
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,8 +72,13 @@ def _make_event(
 
 
 def _mock_llm(*, summary: str = "The summary.") -> MagicMock:
-    """Return a mock BaseChatModel whose ainvoke returns summary."""
-    llm = MagicMock()
+    """Return a mock BaseChatModel whose ainvoke returns summary.
+
+    ``spec=BaseChatModel`` keeps the double from fabricating ``.bound`` or
+    ``.active_llm``, which the pool/backend unwrapping probes would otherwise
+    follow forever.
+    """
+    llm = MagicMock(spec=BaseChatModel)
     response = MagicMock(spec=AIMessage)
     response.content = summary
     llm.ainvoke = AsyncMock(return_value=response)
@@ -474,7 +486,9 @@ class TestCompactLLMContentFormats:
         e1 = _make_event(kind="assistant_message", token_usage=10, content="a")
         e2 = _make_event(kind="assistant_message", token_usage=big, content="b")
 
-        llm = MagicMock()
+        # ``spec=BaseChatModel`` keeps the double from fabricating ``.bound`` or
+        # ``.active_llm``, which an unwrapping probe would otherwise follow.
+        llm = MagicMock(spec=BaseChatModel)
         response = MagicMock()
         response.content = [
             {"type": "text", "text": "Part one. "},
@@ -651,3 +665,177 @@ class TestMaxCompactionInputTokenUnits:
         """When context_window <= RESERVED_TOKEN_LIMIT, budget is clamped to 1."""
         result = _max_compaction_input_token_units(context_window=RESERVED_TOKEN_LIMIT - 1)
         assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# _invoke_llm_summary request shaping (85.a.1)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingCodexLane:
+    """Direct model recognized as ChatGPT-backend through its ``.bound`` model.
+
+    ``_uses_chatgpt_backend_responses`` unwraps ``.bound`` to the real
+    ``ChatOpenAI`` rooted at the ChatGPT backend, while ``_is_pool_bound``
+    stays False because the stub exposes no ``.active_llm``.
+    """
+
+    def __init__(self) -> None:
+        self.bound = ChatOpenAI(
+            model="gpt-5",
+            api_key="sk-test",  # type: ignore[arg-type]
+            openai_api_base="https://chatgpt.com/backend-api/codex",  # type: ignore[call-arg]
+            use_responses_api=True,
+        )
+        self.captured_input: list[Any] | None = None
+        self.captured_kwargs: dict[str, Any] | None = None
+
+    async def ainvoke(self, input: list[Any], **kwargs: Any) -> AIMessage:
+        self.captured_input = input
+        self.captured_kwargs = kwargs
+        return AIMessage(content="summary")
+
+
+class _PoolShapedLane:
+    """Stub the existing ``_is_pool_bound`` detector recognizes as a pool."""
+
+    def __init__(self) -> None:
+        self.active_llm: object = object()
+        self.captured_input: list[Any] | None = None
+        self.captured_kwargs: dict[str, Any] | None = None
+
+    async def ainvoke(self, input: list[Any], **kwargs: Any) -> AIMessage:
+        self.captured_input = input
+        self.captured_kwargs = kwargs
+        return AIMessage(content="summary")
+
+
+class TestInvokeLlmSummaryShaping:
+    """85.a.1 — direct models use the adapter; pools are passed raw input."""
+
+    @pytest.mark.asyncio
+    async def test_non_codex_summary_keeps_max_tokens(self) -> None:
+        """A non-Codex direct model still receives ``max_tokens`` and the system message."""
+        llm = _mock_llm(summary="s")
+
+        await Compacter._invoke_llm_summary(compaction_input="input", model_name="m", llm=llm)
+
+        call = llm.ainvoke.call_args
+        assert call.kwargs["max_tokens"] == RESERVED_TOKEN_LIMIT
+        assert any(isinstance(m, SystemMessage) for m in call.kwargs["input"])
+
+    @pytest.mark.asyncio
+    async def test_direct_codex_summary_uses_adapter_result(self) -> None:
+        """A direct ChatGPT-backend model gets human-only messages and instructions, no cap."""
+        llm = _CapturingCodexLane()
+
+        await Compacter._invoke_llm_summary(
+            compaction_input="input",
+            model_name="gpt-5",
+            llm=llm,  # type: ignore[arg-type]
+        )
+
+        assert llm.captured_kwargs is not None
+        assert "max_tokens" not in llm.captured_kwargs
+        assert "max_output_tokens" not in llm.captured_kwargs
+        assert llm.captured_kwargs["instructions"].startswith("You are a conversation compactor")
+        assert llm.captured_input is not None
+        assert all(not isinstance(m, SystemMessage) for m in llm.captured_input)
+        assert any(isinstance(m, HumanMessage) for m in llm.captured_input)
+
+    @pytest.mark.asyncio
+    async def test_pool_summary_is_not_pre_shaped(self) -> None:
+        """A pool-bound LLM receives the raw system message and raw ``max_tokens``."""
+        llm = _PoolShapedLane()
+
+        with patch("src.agents.slo_agent.compaction.compacter.adapt_chatgpt_backend_request") as adapter:
+            await Compacter._invoke_llm_summary(
+                compaction_input="input",
+                model_name="m",
+                llm=llm,  # type: ignore[arg-type]
+            )
+
+        adapter.assert_not_called()
+        assert llm.captured_kwargs == {"max_tokens": RESERVED_TOKEN_LIMIT}
+        assert llm.captured_input is not None
+        assert any(isinstance(m, SystemMessage) for m in llm.captured_input)
+
+
+# ---------------------------------------------------------------------------
+# OAuth wire regression (85.a.1)
+# ---------------------------------------------------------------------------
+
+
+def _build_jwt(*, claims: dict[str, Any]) -> str:
+    """Build a fake unsigned JWT carrying ``claims`` in its payload segment."""
+    header_b64: str = base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode("ascii")
+    payload_b64: str = (
+        base64.urlsafe_b64encode(json.dumps(claims).encode("utf-8")).rstrip(b"=").decode("ascii")
+    )
+    return f"{header_b64}.{payload_b64}.signature"
+
+
+def _oauth_cred() -> CredentialDAO:
+    """Build an OAuth OpenAI credential whose token yields a ChatGPT account id."""
+    return CredentialDAO(
+        provider=ProviderName.OPENAI,
+        auth_type=AuthType.OAUTH,
+        access_token=_build_jwt(
+            claims={"https://api.openai.com/auth": {"chatgpt_account_id": "acct-summary"}},
+        ),
+        refresh_token="rt-test",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        scope="openid profile email offline_access",
+    )
+
+
+class TestChatGptBackendSummaryRequest:
+    """85.a.1 — the real OAuth compaction request carries no output-token field."""
+
+    @pytest.mark.asyncio
+    async def test_compact_sends_instructions_without_output_token_kwargs(self) -> None:
+        """Capture the outbound ChatGPT-backend body from a real ``/compact`` request."""
+        captured: dict[str, Any] = {}
+
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            sse: bytes = (
+                b"event: response.created\n"
+                b'data: {"type": "response.created", "response": {"id": "resp_test", "status": "in_progress"}}\n\n'
+                b"event: response.completed\n"
+                b'data: {"type": "response.completed", "response": {"id": "resp_test", "status": "completed", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "summary"}]}]}}\n\n'
+            )
+            return httpx.Response(
+                status_code=200,
+                headers={"content-type": "text/event-stream"},
+                content=sse,
+            )
+
+        mock_client: httpx.AsyncClient = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        chat = build_chatgpt_backed_chat_openai(
+            model_name="gpt-5",
+            cred=_oauth_cred(),
+            session_id="sess-summary",
+            http_async_client=mock_client,
+        )
+
+        big: int = KEEP_RECENT_TOKENS + 1
+        events = [
+            _make_event(kind="user_message", token_usage=10, content="u"),
+            _make_event(kind="assistant_message", token_usage=10, content="a"),
+            _make_event(kind="assistant_message", token_usage=big, content="b"),
+        ]
+
+        try:
+            await Compacter.compact(events=events, model_name="gpt-5", llm=chat)
+        except Exception:  # noqa: BLE001
+            # The synthetic SSE need only reach the wire-capture seam.
+            pass
+
+        body: dict[str, Any] = captured["body"]
+        assert "max_tokens" not in body
+        assert "max_output_tokens" not in body
+        assert "max_completion_tokens" not in body
+        assert isinstance(body.get("instructions"), str)
+        assert "You are a conversation compactor" in body["instructions"]
+        assert all(item.get("role") != "system" for item in body["input"] if isinstance(item, dict))

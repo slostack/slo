@@ -15,6 +15,7 @@ from src.agents.slo_agent.sessions.dao import (
     ManualCompactionStatus,
 )
 from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.reasoning_capabilities import (
     ModelReasoningCapabilityDAO,
     ReasoningLevel,
@@ -156,6 +157,27 @@ class SlashRouter:
             )
         handler: SlashHandler = cls._handler_for(command_name=command.name)
         return await handler(rest=rest, session=session)
+
+    @classmethod
+    def requires_activity(cls, *, line: str) -> bool:
+        """Return whether the command on ``line`` runs long enough to show a loader.
+
+        Reads the registry's ``shows_activity`` flag. Called by
+        ``SloTUI._dispatch_slash_command`` before dispatch so a long-running
+        command mounts the fixed activity spinner instead of leaving the screen
+        blank while it works. Unknown commands are not long-running.
+
+        Args:
+            line (str): The full input line including the leading slash.
+
+        Returns:
+            bool: ``True`` only for a known command flagged ``shows_activity``.
+        """
+        command_token: str
+        _rest: str
+        command_token, _rest = cls._parse_line(line=line)
+        command: Optional[SlashCommandSpecDAO] = cls._REGISTRY.resolve(token=command_token)
+        return command is not None and command.shows_activity
 
     @staticmethod
     def _plugin_handler_for_session(
@@ -400,7 +422,10 @@ class SlashRouter:
         """
         if rest.strip():
             return SlashCommandResultDAO(rendered="usage: /context-window")
-        snapshot: ContextWindowSnapshotDAO = await session.context_window_snapshot()
+        refreshed_usage: SessionUsageSnapshotDAO = await session.refresh_context_window_snapshot()
+        snapshot: Optional[ContextWindowSnapshotDAO] = refreshed_usage.context_window_snapshot
+        if not isinstance(snapshot, ContextWindowSnapshotDAO) or not snapshot.estimate_available:
+            return SlashCommandResultDAO(rendered="context-window snapshot unavailable")
         return SlashCommandResultDAO(
             rendered=cls._format_context_window(snapshot=snapshot),
             refresh_context_window=True,

@@ -81,6 +81,24 @@ class TestSlashCommandRegistry:
                 ]
             )
 
+    def test_compact_command_shows_activity(self) -> None:
+        """``/compact`` is flagged so the TUI mounts its loader while it runs."""
+        registry: SlashCommandRegistry = build_default_registry()
+
+        compact_command = registry.resolve(token="compact")
+
+        assert compact_command is not None
+        assert compact_command.shows_activity is True
+
+    def test_other_commands_do_not_show_activity(self) -> None:
+        """Only the flagged long-running command mounts the loader."""
+        registry: SlashCommandRegistry = build_default_registry()
+
+        help_command = registry.resolve(token="help")
+
+        assert help_command is not None
+        assert help_command.shows_activity is False
+
     def test_duplicate_alias_tokens_raise_value_error(self) -> None:
         """Two commands may not bind the same alias token."""
         with pytest.raises(ValueError, match="Duplicate slash token: h"):

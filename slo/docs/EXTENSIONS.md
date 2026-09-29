@@ -74,7 +74,7 @@ Available event kinds include:
 | Tool calls | `tool_call_start`, `tool_call_delta`, `tool_call_end` |
 | Tool output | `tool_output_update`, `tool_result` |
 | Run state | `run_retrying`, `stream_reconnecting`, `run_completed`, `run_aborted`, `run_failed` |
-| Context compaction | `compaction_started`, `compaction_completed`, `compaction_failed`, `compaction_retrying` |
+| Context compaction | `compaction_started`, `compaction_completed`, `compaction_failed`, `compaction_retrying`, `compaction_advised` |
 | Recovery | `recovery_started`, `recovery_succeeded`, `recovery_exhausted` |
 | Sub-agents | `sub_agent_spawned`, `sub_agent_completed`, `sub_agent_failed`, `sub_agent_aborted`, `sub_agent_reaped` |
 

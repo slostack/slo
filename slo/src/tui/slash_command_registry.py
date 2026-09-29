@@ -32,6 +32,8 @@ class SlashCommandSpecDAO(BaseModel):
         argument_hint (Optional[str]): Short hint shown by the future
             suggestion engine before arguments are chosen.
         display_order (int): Stable ordering for ``/help`` and menus.
+        shows_activity (bool): Whether the TUI shows a live activity indicator
+            while the command runs. Only long-running commands set this.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -43,6 +45,7 @@ class SlashCommandSpecDAO(BaseModel):
     usage: Optional[str] = None
     argument_hint: Optional[str] = None
     display_order: int = 0
+    shows_activity: bool = False
 
 
 class SlashCommandRegistry:
@@ -250,6 +253,7 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         description="compact session history now",
         argument_mode="none",
         display_order=96,
+        shows_activity=True,
     ),
     SlashCommandSpecDAO(
         name="diff",

@@ -14,7 +14,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from config.ai_model_config import MODEL_DEFAULTS, ModelDefaults
 from src.agents.slo_agent.compaction.constants import (
@@ -23,6 +23,7 @@ from src.agents.slo_agent.compaction.constants import (
     KEEP_RECENT_TOKENS,
     RESERVED_TOKEN_LIMIT,
 )
+from src.agents.slo_agent.graph import _is_pool_bound, adapt_chatgpt_backend_request
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 
 __all__ = ["CompactionResult", "Compacter"]
@@ -511,7 +512,15 @@ class Compacter:
 
         Sends a system prompt instructing the model to be concise but
         complete, followed by the compaction input as a human message. Caps
-        the response at RESERVED_TOKEN_LIMIT tokens.
+        the response at RESERVED_TOKEN_LIMIT tokens, except on the ChatGPT
+        backend, which rejects output-token fields: there the existing
+        ``adapt_chatgpt_backend_request`` hoists the system prompt into
+        ``instructions`` and drops the cap. A ``ModelPool`` is passed the raw
+        messages and kwargs so its own per-member adapter shapes whichever
+        member it routes to, including a pre-output fallback.
+
+        Called by ``Compacter.compact`` (manual ``/compact``, automatic, and
+        forced overflow compaction) as the single summary request seam.
 
         Args:
             compaction_input (str): Human-readable rendering of the events
@@ -525,19 +534,26 @@ class Compacter:
         """
         system_prompt: str = _SYSTEM_PROMPT_TEMPLATE.format(model_name=model_name)
 
-        messages = [
+        messages: list[BaseMessage] = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=compaction_input),
         ]
 
         # ``max_tokens`` is a per-call model kwarg (forwarded by ``ainvoke``
-        # to the underlying model), not a ``RunnableConfig`` key — passing it
-        # as ``config`` is both a type error and a no-op. Capping the response
-        # at RESERVED_TOKEN_LIMIT keeps the compaction turn inside its budget.
-        response = await llm.ainvoke(
-            input=messages,
-            max_tokens=RESERVED_TOKEN_LIMIT,
-        )
+        # to the underlying model), not a ``RunnableConfig`` key. A pool is
+        # given the raw request so its per-member adapter can shape the
+        # selected lane; every direct model goes through the shared adapter,
+        # which strips the cap only on the ChatGPT backend.
+        request_kwargs: dict[str, object] = {"max_tokens": RESERVED_TOKEN_LIMIT}
+        if _is_pool_bound(llm=llm):
+            response = await llm.ainvoke(input=messages, **request_kwargs)  # type: ignore[arg-type]
+        else:
+            shaped_messages, shaped_kwargs = adapt_chatgpt_backend_request(
+                llm=llm,
+                messages=messages,
+                kwargs=request_kwargs,
+            )
+            response = await llm.ainvoke(input=shaped_messages, **shaped_kwargs)
 
         content = response.content
         if isinstance(content, list):

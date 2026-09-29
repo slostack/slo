@@ -74,6 +74,17 @@ system prompt is hoisted to the top-level ``instructions`` field.
 """
 
 
+_CHATGPT_BACKEND_OUTPUT_TOKEN_KWARGS: frozenset[str] = frozenset(
+    {"max_tokens", "max_output_tokens", "max_completion_tokens"}
+)
+"""Output-token kwargs the ChatGPT backend rejects.
+
+LangChain renames ``max_tokens``/``max_completion_tokens`` to
+``max_output_tokens`` on the Responses lane, so all three must be dropped for
+this backend. Read by ``adapt_chatgpt_backend_request`` only.
+"""
+
+
 _TRUNCATION_HINT: str = (
     "\n\nNote: the response was truncated at the model's output token limit, so the "
     "tool arguments may have been cut off. Write a smaller file, or create the file "
@@ -89,11 +100,14 @@ def adapt_chatgpt_backend_request(
     """Shape a request for whichever model is about to be invoked.
 
     For a ChatGPT-backend (OpenAI OAuth) model, hoist all ``SystemMessage`` text
-    into a top-level ``instructions`` kwarg and strip system messages from the
-    input list (the backend returns 400 otherwise). For every other model, return
-    the request unchanged. Used both inline by ``_make_agent_node`` for the
-    single-model path and as ``ModelPool``'s per-member ``request_adapter`` so a
-    mid-call lane switch re-derives the correct shape.
+    into a top-level ``instructions`` kwarg, strip system messages from the input
+    list, and drop every output-token kwarg (the backend rejects them; LangChain
+    would otherwise rename ``max_tokens`` to ``max_output_tokens``). For every
+    other model, return the request unchanged. Used both inline by
+    ``_make_agent_node`` for the single-model path, by
+    ``Compacter._invoke_llm_summary`` for a direct model, and as ``ModelPool``'s
+    per-member ``request_adapter`` so a mid-call lane switch re-derives the
+    correct shape.
 
     Args:
         llm (BaseChatModel): The model about to be invoked (a concrete member or
@@ -109,16 +123,31 @@ def adapt_chatgpt_backend_request(
     if not _uses_chatgpt_backend_responses(llm=llm):
         return messages, kwargs
     instructions, non_system_messages = _split_system_messages(messages=messages)
-    augmented: dict[str, Any] = dict(kwargs)
+    augmented: dict[str, Any] = {
+        key: value for key, value in kwargs.items() if key not in _CHATGPT_BACKEND_OUTPUT_TOKEN_KWARGS
+    }
     augmented["instructions"] = instructions
     return non_system_messages, augmented
+
+
+_MAX_UNWRAP_DEPTH: int = 16
+"""Maximum wrapper hops followed when unwrapping a chat model.
+
+``_is_pool_bound`` and ``_uses_chatgpt_backend_responses`` walk ``.bound`` and
+``.active_llm`` to reach the concrete model behind a ``RunnableBinding`` or a
+``ModelPool``. A real chain is at most two hops. A test double that fabricates
+a child for every attribute access would otherwise walk without end, so both
+helpers stop at this cap. Called by both unwrap helpers only.
+"""
 
 
 def _is_pool_bound(*, llm: Any) -> bool:
     """Return True when ``llm`` (possibly tool-bound) wraps a ModelPool.
 
-    Unwraps ``RunnableBinding.bound`` recursively, then checks for the
-    ``active_llm`` attribute that only ``ModelPool`` exposes.
+    Unwraps ``RunnableBinding.bound`` iteratively, then checks for the
+    ``active_llm`` attribute that only ``ModelPool`` exposes. The walk stops
+    after ``_MAX_UNWRAP_DEPTH`` hops so a self-referential test double cannot
+    recurse without end.
 
     Args:
         llm (Any): The bound chat model from the graph builder.
@@ -127,10 +156,13 @@ def _is_pool_bound(*, llm: Any) -> bool:
         bool: True iff unwrapping ``.bound`` reaches an object exposing
             ``active_llm`` (the ModelPool router).
     """
-    bound: Any = getattr(llm, "bound", None)
-    if bound is not None:
-        return _is_pool_bound(llm=bound)
-    return getattr(llm, "active_llm", None) is not None
+    current: Any = llm
+    for _ in range(_MAX_UNWRAP_DEPTH):
+        bound: Any = getattr(current, "bound", None)
+        if bound is None or bound is current:
+            break
+        current = bound
+    return getattr(current, "active_llm", None) is not None
 
 
 def _make_agent_node(llm_with_tools: BaseChatModel) -> NodeFn:
@@ -293,15 +325,20 @@ def _uses_chatgpt_backend_responses(*, llm: Any) -> bool:
         bool: ``True`` iff the underlying model is a ``ChatOpenAI`` with
             ``openai_api_base`` rooted at the ChatGPT backend.
     """
-    bound: Any = getattr(llm, "bound", None)
-    if bound is not None:
-        return _uses_chatgpt_backend_responses(llm=bound)
-    active_llm: Any = getattr(llm, "active_llm", None)
-    if active_llm is not None and active_llm is not llm:
-        return _uses_chatgpt_backend_responses(llm=active_llm)
-    if not isinstance(llm, ChatOpenAI):
+    current: Any = llm
+    for _ in range(_MAX_UNWRAP_DEPTH):
+        bound: Any = getattr(current, "bound", None)
+        if bound is not None and bound is not current:
+            current = bound
+            continue
+        active_llm: Any = getattr(current, "active_llm", None)
+        if active_llm is not None and active_llm is not current:
+            current = active_llm
+            continue
+        break
+    if not isinstance(current, ChatOpenAI):
         return False
-    base_url: Optional[str] = getattr(llm, "openai_api_base", None)
+    base_url: Optional[str] = getattr(current, "openai_api_base", None)
     if not base_url:
         return False
     return base_url.startswith(_CHATGPT_BACKEND_BASE_URL_PREFIX)

@@ -39,6 +39,7 @@ StreamEventKind = Literal[
     "compaction_completed",  # forced compaction succeeded
     "compaction_failed",  # forced compaction failed; original error will surface
     "compaction_retrying",  # compaction succeeded; retry of original prompt starting
+    "compaction_advised",  # snapshot crossed the latency advisory threshold; advisory only
     # LLM-driven recovery lifecycle (feature 50) — runtime-only, never terminal:
     "recovery_started",  # loop began recovering from a recoverable failure
     "recovery_succeeded",  # a recovery iteration produced a completed turn

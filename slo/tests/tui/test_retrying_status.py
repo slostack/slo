@@ -117,6 +117,28 @@ class TestCompactionStatusRendering:
             assert "failed" in str(spinners[0]._text.content).lower()
 
     @pytest.mark.asyncio
+    async def test_compaction_failed_spinner_includes_safe_content(self) -> None:
+        """compaction_failed includes the safe event content in the spinner override."""
+        app: SloTUI = SloTUI(session=_make_session())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._mount_spinner()
+            await app._render_event(
+                AgentStreamEventDAO(
+                    kind="compaction_failed",
+                    content="RuntimeError: Unsupported parameter: max_output_tokens",
+                )
+            )
+            await pilot.pause()
+
+            spinners: list[ThinkingSpinner] = list(app.query(selector=ThinkingSpinner))
+            assert len(spinners) == 1
+            spinner_text = str(spinners[0]._text.content)
+            assert "Compaction failed:" in spinner_text
+            assert "Unsupported parameter: max_output_tokens" in spinner_text
+
+    @pytest.mark.asyncio
     async def test_compaction_events_do_not_clear_spinner_override(self) -> None:
         """Compaction events leave the spinner mounted (unlike normal events that clear override)."""
         app: SloTUI = SloTUI(session=_make_session())

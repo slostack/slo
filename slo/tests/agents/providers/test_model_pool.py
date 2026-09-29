@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import time
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional, cast
 
 import httpx
 
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_openai import ChatOpenAI
 from pydantic import ConfigDict, PrivateAttr
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +26,7 @@ from src.agents.providers.model_pool import (
     ModelPoolEntryDAO,
     RouteSwitchRecordDAO,
 )
+from src.agents.slo_agent.graph import adapt_chatgpt_backend_request
 from src.auth.credential_dao import ProviderName
 
 
@@ -657,3 +659,157 @@ class TestModelPoolBindToolsPreservesSurface:
         bound: ModelPool = pool.bind_tools(tools=[])
         assert "gpt-5.4" in bound._cooldowns
         assert bound._request_adapter is pool._request_adapter
+
+
+# ---------------------------------------------------------------------------
+# Compaction request adapter contract (85.a.1)
+# ---------------------------------------------------------------------------
+
+
+def _codex_openai() -> ChatOpenAI:
+    """Build a ChatOpenAI rooted at the ChatGPT backend base URL.
+
+    Returns:
+        ChatOpenAI: A model ``_uses_chatgpt_backend_responses`` classifies as Codex.
+    """
+    return ChatOpenAI(
+        model="gpt-5.4",
+        api_key="sk-test",  # type: ignore[arg-type]
+        openai_api_base="https://chatgpt.com/backend-api/codex",  # type: ignore[call-arg]
+        use_responses_api=True,
+    )
+
+
+class _CapturingChatMember:
+    """Duck-typed pool member that records the request the adapter shaped for it."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.received_messages: list[BaseMessage] | None = None
+        self.received_kwargs: dict[str, Any] | None = None
+
+    async def _agenerate(
+        self,
+        *,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.received_messages = list(messages)
+        self.received_kwargs = dict(kwargs)
+        if self.error is not None:
+            raise self.error
+        return _make_result(content="ok")
+
+
+class _CapturingCodexChatMember(_CapturingChatMember):
+    """Capturing member the adapter detects as ChatGPT-backend via ``.bound``."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        super().__init__(error=error)
+        self.bound: ChatOpenAI = _codex_openai()
+
+
+class _SpyRequestAdapter:
+    """Records raw (model, messages, kwargs) and delegates to the real adapter."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, list[BaseMessage], dict[str, Any]]] = []
+
+    def __call__(
+        self,
+        model: BaseChatModel,
+        messages: list[BaseMessage],
+        kwargs: dict[str, Any],
+    ) -> tuple[list[BaseMessage], dict[str, Any]]:
+        self.calls.append((model, list(messages), dict(kwargs)))
+        return adapt_chatgpt_backend_request(llm=model, messages=messages, kwargs=kwargs)
+
+
+def _compaction_pool(
+    *,
+    primary: object,
+    secondary: object,
+    request_adapter: Any,
+) -> ModelPool:
+    """Build a two-member pool around capture members and a request adapter.
+
+    Args:
+        primary (object): Priority-0 member (duck-typed capturing member).
+        secondary (object): Priority-1 member (duck-typed capturing member).
+        request_adapter (Any): Per-member request shaper under test.
+
+    Returns:
+        ModelPool: Pool wiring both capturing members in priority order.
+    """
+    dao: ModelPoolDAO = ModelPoolDAO(
+        entries=[
+            ModelPoolEntryDAO(model_name="gpt-5.4", provider=ProviderName.OPENAI, priority=0),
+            ModelPoolEntryDAO(model_name="claude-sonnet-4-6", provider=ProviderName.ANTHROPIC, priority=1),
+        ]
+    )
+    return ModelPool(
+        pool_dao=dao,
+        models={
+            "gpt-5.4": cast(BaseChatModel, primary),
+            "claude-sonnet-4-6": cast(BaseChatModel, secondary),
+        },
+        request_adapter=request_adapter,
+    )
+
+
+_RAW_SUMMARY_MESSAGES: list[BaseMessage] = [
+    SystemMessage(content="You are a conversation compactor"),
+    HumanMessage(content="input"),
+]
+
+
+class TestModelPoolCompactionRequestAdapter:
+    """85.a.1 — pools see raw summary input; the adapter shapes each attempt."""
+
+    async def test_adapter_receives_raw_system_messages_and_cap_per_attempt(self) -> None:
+        """Both the failed primary and the fallback see raw system messages and raw cap."""
+        spy = _SpyRequestAdapter()
+        pool = _compaction_pool(
+            primary=_CapturingCodexChatMember(error=_StatusError(status_code=429)),
+            secondary=_CapturingChatMember(),
+            request_adapter=spy,
+        )
+
+        await pool._agenerate(messages=_RAW_SUMMARY_MESSAGES, max_tokens=1234)
+
+        assert len(spy.calls) == 2
+        for _model, messages, kwargs in spy.calls:
+            assert any(isinstance(m, SystemMessage) for m in messages)
+            assert kwargs == {"max_tokens": 1234}
+
+    async def test_codex_primary_failure_reshapes_for_non_codex_fallback(self) -> None:
+        """A Codex primary 429 falls back with the system message and cap retained."""
+        secondary = _CapturingChatMember()
+        pool = _compaction_pool(
+            primary=_CapturingCodexChatMember(error=_StatusError(status_code=429)),
+            secondary=secondary,
+            request_adapter=adapt_chatgpt_backend_request,
+        )
+
+        await pool._agenerate(messages=_RAW_SUMMARY_MESSAGES, max_tokens=1234)
+
+        assert secondary.received_kwargs == {"max_tokens": 1234}
+        assert secondary.received_messages is not None
+        assert any(isinstance(m, SystemMessage) for m in secondary.received_messages)
+
+    async def test_non_codex_primary_failure_creates_instructions_for_codex_fallback(self) -> None:
+        """A non-Codex primary 429 falls back to a Codex member shaped with instructions."""
+        secondary = _CapturingCodexChatMember()
+        pool = _compaction_pool(
+            primary=_CapturingChatMember(error=_StatusError(status_code=429)),
+            secondary=secondary,
+            request_adapter=adapt_chatgpt_backend_request,
+        )
+
+        await pool._agenerate(messages=_RAW_SUMMARY_MESSAGES, max_tokens=1234)
+
+        assert secondary.received_kwargs == {"instructions": "You are a conversation compactor"}
+        assert secondary.received_messages is not None
+        assert all(not isinstance(m, SystemMessage) for m in secondary.received_messages)

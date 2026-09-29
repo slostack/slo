@@ -383,3 +383,29 @@ async def test_workflow_update_in_retained_tail_survives_compaction() -> None:
     assert "[workflow update] phase 1 done" in contents
     assert "retained turn" in contents
     assert "pre-cut turn" not in contents
+
+
+@pytest.mark.asyncio
+async def test_scoped_compaction_failure_audit_is_not_replayed() -> None:
+    """A run_failed audit tagged failure_scope=compaction never reaches replay."""
+    diagnostic = "RuntimeError: Unsupported parameter: max_output_tokens"
+    audit = SessionHistoryEventDAO(
+        event_id=str(uuid.uuid4()),
+        session_id="sess-test",
+        turn_id="t1",
+        sequence=5,
+        kind="run_failed",
+        payload=SessionHistoryEventPayloadDAO(
+            error_message=diagnostic,
+            metadata={"failure_scope": "compaction"},
+        ),
+    )
+    events = [
+        *_make_completed_turn(turn_id="t1", start_seq=1, user_content="hello"),
+        audit,
+    ]
+
+    messages = await SessionHistoryProjector.build_message_history(events=events)
+    replayed = " ".join(str(m.content) for m in messages)
+
+    assert diagnostic not in replayed

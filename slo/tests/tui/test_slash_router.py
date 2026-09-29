@@ -1009,3 +1009,17 @@ class TestSlashReasoningHandlerAstra:
 
         session.switch_reasoning_level.assert_called_once_with(reasoning_level="max")
         assert "usage:" not in (result.rendered or "")
+
+
+class TestSlashRouterActivity:
+    """Registry-driven long-running detection for the TUI activity loader."""
+
+    def test_compact_requires_activity(self) -> None:
+        """``/compact`` is the long-running command that shows the loader."""
+        assert SlashRouter.requires_activity(line="/compact") is True
+
+    def test_quick_and_unknown_commands_do_not_require_activity(self) -> None:
+        """Ordinary commands and unknown tokens never mount the loader."""
+        assert SlashRouter.requires_activity(line="/model gpt-5.4") is False
+        assert SlashRouter.requires_activity(line="/help") is False
+        assert SlashRouter.requires_activity(line="/nope") is False

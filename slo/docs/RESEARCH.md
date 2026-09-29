@@ -77,6 +77,55 @@ slo --plugin plugins/bash_live_output/plugin.py
   `ModelCatalogService`, and triggers at `floor(context_window * 0.70)`; unknown models retain the
   conservative default capacity.
 
+## Compaction revisited (spec 85)
+
+- **One summary-request seam.** `Compacter._invoke_llm_summary` is the single
+  manual/automatic/overflow summary call. For a direct model it runs the request through the
+  existing `graph/service.py::adapt_chatgpt_backend_request`, which now also drops
+  `max_tokens`/`max_output_tokens`/`max_completion_tokens` on the ChatGPT-backend branch while
+  hoisting system text into top-level `instructions`. For a `ModelPool` (`_is_pool_bound`) it
+  passes the raw `[SystemMessage, HumanMessage]` list and `max_tokens=RESERVED_TOKEN_LIMIT` so the
+  pool's own per-member adapter shapes whichever lane it routes to, including a pre-output
+  fallback. Anthropic, OpenAI API-key, and Kimi direct lanes are unchanged.
+- **The default automatic trigger is unchanged.** `CompactionChecker.should_compact` still gates
+  on `floor(context_window * 0.70)` over all persisted event `token_usage`; no absolute input
+  ceiling or capacity resolver was added.
+- **256k latency advisory.** `SloAgentSession` holds one in-memory `_compaction_advisory_armed`
+  boolean (initially `True`) and evaluates it only in `refresh_context_window_snapshot()` — never
+  on streamed deltas. At or above `SLO_COMPACTION_ADVISORY_TOKENS` (default `256_000`, resolved by
+  `config.timeout_resolver.positive_int_env`) with `snapshot.estimate_available`, it dispatches the
+  one new `StreamEventKind` literal `compaction_advised`, then disarms. A later available
+  below-threshold snapshot re-arms it; an unavailable estimate neither emits nor re-arms. The
+  advisory asks the user to run the literal `/compact`; it never compacts. `SloTUI._render_event`
+  renders it through `_write_adapter_line(classes="tool-result")` with no widget or projector
+  branch, and `/context-window` enters the same refresh boundary.
+- **Durable redacted failures.** Manual and forced-overflow failures reuse existing structures: a
+  bounded `"<ExceptionClass>: <redacted message>"` from `_safe_compaction_failure_message`, the
+  existing `compaction_failed` stream event with safe metadata
+  (`failure_scope="compaction"`, `error_class`, `safe_message`, optional provider/status), and one
+  existing-kind `run_failed` audit appended best-effort (persistence errors log class only).
+  `run_failed` is already excluded from replay. No new history kind, failure DAO, or widget was
+  added.
+- **Manual-compaction activity.** `SlashCommandSpecDAO.shows_activity` is the declarative seam for
+  long-running slash commands. `/compact` sets it, and `SloTUI._dispatch_slash_command` mounts the
+  existing `ThinkingSpinner` before awaiting dispatch and removes it in `finally` only when that
+  dispatch mounted it. The existing `compaction_started` event changes the visible text to
+  `Compacting session history…`; no new event or widget was introduced.
+- **Composed offline verification (85.a.4).** The composed contract tests live in:
+  `test_session_manual_compaction.py::test_oauth_manual_compaction_persists_and_projects_summary`
+  (real OAuth `ChatOpenAI` over `httpx.MockTransport` driven through
+  `SloAgentSession.compact_context()`; wire has `instructions` and no output-token field, exactly
+  one replayable `compaction_summary`),
+  `test_compacter.py::TestChatGptBackendSummaryRequest` (wire capture),
+  `test_pool_fallback_integration.py::TestPoolCompactionFallbackDirections` (Codex→non-Codex
+  restores system/cap; non-Codex→Codex yields instructions/no cap through the real per-member
+  adapter), `test_session_compaction_advisory.py` (threshold/one-shot/re-arm/env/unavailable),
+  `test_session_compaction_integration.py` (secret-bearing overflow failure redacted across event,
+  audit, persistence log, and projector replay), and `test_projector_compaction.py` (scoped audit
+  excluded from replay). The pool's switch seam is `ProviderErrorClassifier.inspect` (not the
+  older `classify`), so pool tests must use error shapes the real classifier treats as switchable
+  (e.g. 429 on any lane, 402 only on Anthropic).
+
 ## Kimi K3 reasoning
 
 - The model catalog owns K3's canonical `low`, `high`, and `xhigh` reasoning

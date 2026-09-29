@@ -1431,14 +1431,34 @@ class TestCompactionEventProjection:
         assert "retry" in content.lower()
 
     @pytest.mark.asyncio
-    async def test_compaction_failed_does_not_write_transcript_line(self) -> None:
-        """compaction_failed is handled silently — the original error will surface."""
+    async def test_compaction_failed_with_content_writes_safe_notice(self) -> None:
+        """compaction_failed with content writes exactly one safe notice."""
+        host = FakeHost()
+        projector = TranscriptProjector(host=host)
+
+        await projector.project(
+            event=AgentStreamEventDAO(
+                kind="compaction_failed",
+                content="RuntimeError: Unsupported parameter: max_output_tokens",
+            )
+        )
+
+        assert len(host.lines) == 1
+        content, _ = host.lines[0]
+        assert "compaction failed" in content.lower()
+        assert "Unsupported parameter: max_output_tokens" in content
+
+    @pytest.mark.asyncio
+    async def test_compaction_failed_without_content_writes_fallback_notice(self) -> None:
+        """compaction_failed without content keeps the terse fallback notice."""
         host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(event=AgentStreamEventDAO(kind="compaction_failed"))
 
-        assert len(host.lines) == 0, "compaction_failed must not add a transcript line"
+        assert len(host.lines) == 1
+        content, _ = host.lines[0]
+        assert content == "(compaction failed)"
 
     @pytest.mark.asyncio
     async def test_compaction_events_do_not_affect_assistant_blocks(self) -> None:
@@ -1446,7 +1466,12 @@ class TestCompactionEventProjection:
         host = FakeHost()
         projector = TranscriptProjector(host=host)
 
-        for kind in ("compaction_started", "compaction_completed", "compaction_retrying"):
+        for kind in (
+            "compaction_started",
+            "compaction_completed",
+            "compaction_retrying",
+            "compaction_failed",
+        ):
             await projector.project(event=AgentStreamEventDAO(kind=kind))  # type: ignore[arg-type]
 
         assert len(host.blocks) == 0, "no assistant blocks should be mounted"

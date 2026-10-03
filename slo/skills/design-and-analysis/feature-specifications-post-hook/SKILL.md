@@ -53,6 +53,12 @@ Use one folder per feature:
 
 ## Guidance
 
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+
 ## Purpose
 
 A self-review pass that runs **after** a feature specification has been drafted using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to catch gaps, convention drift, **redundant functionality that already exists in the code**, oversized scope, weak examples, missing test coverage, and **structural mismatches** — an overview missing its product framing, a technical sub-spec missing its engineering structure, or a feature that carries only one half when both were expected — before the spec is handed to a developer or published to the wiki.

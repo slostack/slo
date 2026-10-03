@@ -66,7 +66,13 @@ GUIDELINE_WRITE_CONTENT_INLINE: str = (
 SKILLS_BLOCK_TEMPLATE: str = """\
 ## Skills
 
-Slo ships a curated set of skills under `skills/`. They cover several kinds of work:
+Slo ships a layered skill library under `skills/`. Start with
+`skills/engineering/engineering-routing/SKILL.md`: select shared policy, affected
+language conventions, component/test-category recipes and only relevant frameworks.
+Read project contracts and inspect the runtime manifest for installed user overrides;
+the bundled index alone is not the complete catalog. Do not apply Python-specific
+commands or syntax universally. These are prompt-selection instructions, not an
+automatic runtime classifier. They cover several kinds of work:
 
 - **Coding-convention skills** — how to build routers, agent tools, services, domain
   features, Vue components, write tests, apply style rules, scaffold a project, etc.

@@ -959,3 +959,38 @@ is diagnostic-only history and is excluded from replay context.
 
 Keep **Section 5** (System Prompt Assembly) and **Section 6** (Tool Bundle) accurate — they
 directly affect what every agent session sees and does.
+
+## Workflow-turn counting
+
+Use `skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`
+for counting and stopping rules. One workflow turn is a complete pass through
+all required phases, not one agent dispatch. Track partial passes, phase retries
+and dispatch limits separately. Disclose a harness budget conflict before launch;
+never claim repeated writing attempts were complete writing-and-review cycles.
+The default orchestrator prompt allows eight workflow turns started per task,
+including partial turns, and six dispatch calls per workflow turn (retries
+included): at most 48 calls per task. Failed tasks allow three retries after the
+initial attempt; aborted tasks are never retried. A new revision turn resets only
+its dispatch count, not task-wide turns or failed-task retries. Resume and takeover
+preserve counts. These are prompt rules, not runtime counters. The runtime pool
+defaults to six concurrent children via `SLO_SUBAGENT_MAX_CONCURRENCY`, a separate
+limit. Advance on verified phase verdicts and artifacts, not process exit alone.
+
+## Feature 87 — layered skill discovery
+
+The skills prompt now directs non-trivial tasks through
+`skills/engineering/engineering-routing/SKILL.md`: shared policy, affected language
+root, component/test-category recipe, relevant framework, then explicit project
+contracts. Python recipes live in `skills/languages/python/` with old `skills/coding/`
+paths retained as non-invocable forwarders. Go and TypeScript families are bundled
+under `skills/languages/`; Vue and canonical workflow paths remain stable.
+
+The runtime loader still merges bundled → user skills → user workflows by name;
+no automatic routing classifier or extra project skill-loading tier was added.
+Descriptions carry applicability because the XML manifest does not expose arbitrary
+metadata fields. `make refresh-skills` rebuilds `skills/INDEX.md` directly from
+the current authored tree, using the same builder as `make build-skill-index`.
+Neither command imports upstream prompts, rewrites skill bodies, or removes
+workflow definitions, samples or assets. `SLO_CODE_PROMPTS_DIR` is no longer used. See
+`docs/skills-reorganization/overview.md` and `preservation-map.md` for authority,
+source inventory, migrations, verification and limitations.

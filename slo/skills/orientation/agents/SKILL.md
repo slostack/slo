@@ -43,10 +43,17 @@ orientation contract:
 | Any other agent | `AGENTS.md` | — |
 
 Read whichever of these exist — the home-directory copy **and** the repo-root
-copy. When two files disagree, the more specific one wins (repo-root over
-home-directory, nested over root).
+copy. Project instructions specialize general guidance. Conflicting requirements need
+an explicit approved exception; locality alone does not silently waive a shared
+obligation. Identify both authorities and seek a decision when intent is unclear.
 
 ## Guidance
+
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
 
 When asked to write, modify, or reason about code in this repository, read
 `AGENTS.md` first. Skip this for general questions about syntax, language

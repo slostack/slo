@@ -141,7 +141,7 @@ Clarity does not stop at the name. Every non-trivial function carries a document
 - **WHO** calls it,
 - **WHEN** in the flow it runs.
 
-This is the same standard captured in the `method-docstrings` skill — see `skills/coding/method-docstrings/SKILL.md` for the full format and language-specific examples. A good name plus a rich doc comment means the reader never has to reverse-engineer the body.
+This is the same standard captured in the `method-docstrings` skill — see `skills/languages/python/method-docstrings/SKILL.md` for the full format and language-specific examples. A good name plus a rich doc comment means the reader never has to reverse-engineer the body.
 
 ---
 

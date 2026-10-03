@@ -67,9 +67,9 @@ independently. **For `Command` class structure** (naming, triad,
 
 Cross-references: [`build-cli-commands.md`](../build-cli-commands/SKILL.md),
 [`build-cli-command-class.md`](../build-cli-command-class/SKILL.md),
-``skills/coding/declarative-method-structure/SKILL.md``,
-``skills/coding/named-arguments-and-type-hints/SKILL.md``,
-``skills/coding/method-docstrings/SKILL.md``,
+``skills/languages/python/declarative-method-structure/SKILL.md``,
+``skills/languages/python/named-arguments-and-type-hints/SKILL.md``,
+``skills/languages/python/method-docstrings/SKILL.md``,
 ``../../plans/cli-router/overview.md`` §2.1.
 
 ---

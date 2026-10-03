@@ -269,7 +269,7 @@ If you can verify neither the model file nor the live data (e.g. behind a firewa
 
 - Find the **closest analogous feature** already implemented and capture the file layout it used (router + app service + domain `dao.py`/`model.py`/`service.py`).
 - Find the **existing owners** of every capability the feature implies. The system may already do this work wholly, do part of it, or own the responsibility the feature is about to duplicate — and the existing component is usually named differently, which is why it gets missed. For each hit, record the symbol and `file:line`, whether the overlap is whole, partial, or adjacent, and whether the spec should consolidate by deleting and replacing it, encapsulating the new behavior in it, or re-designing it to absorb the new functionality. Redundant artefacts, entities, and domains are a design defect; the briefing must give the spec writer what it needs to keep the design DRY.
-- Pull the matching **coding skill** from `skills/coding/` (e.g., `skills/coding/build-routers/SKILL.md`, `skills/coding/build-application-services/SKILL.md`, `skills/coding/build-event-handlers/SKILL.md`, `skills/coding/build-dbos-workflow-orchestration-pattern/SKILL.md`).
+- Pull the matching **coding skill** from `skills/coding/` (e.g., `skills/languages/python/build-routers/SKILL.md`, `skills/languages/python/build-application-services/SKILL.md`, `skills/languages/python/build-event-handlers/SKILL.md`, `skills/languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md`).
 - Note any **conventions** that apply: named args, type hints, Google docstrings, declarative method structure, single-responsibility app services.
 - Note any **gotchas** from `KB/<repo>/gotchas.md` that the spec must respect.
 

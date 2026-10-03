@@ -86,11 +86,11 @@ The new convention must not conflict with these project-wide rules. Re-read thes
 
 | Convention File | What To Check |
 |---|---|
-| `skills/coding/application-structure/SKILL.md` | Folder layout, config patterns, connector usage |
-| `skills/coding/declarative-method-structure/SKILL.md` | Flat code, single decision per method, early returns |
-| `skills/coding/named-arguments-and-type-hints/SKILL.md` | All function signatures must use named args + type hints |
-| `skills/coding/method-docstrings/SKILL.md` | Google-style docstrings on all public methods |
-| `skills/coding/python-path-and-import-resolution/SKILL.md` | Import path conventions |
+| `skills/languages/python/application-structure/SKILL.md` | Folder layout, config patterns, connector usage |
+| `skills/languages/python/declarative-method-structure/SKILL.md` | Flat code, single decision per method, early returns |
+| `skills/languages/python/named-arguments-and-type-hints/SKILL.md` | All function signatures must use named args + type hints |
+| `skills/languages/python/method-docstrings/SKILL.md` | Google-style docstrings on all public methods |
+| `skills/languages/python/python-path-and-import-resolution/SKILL.md` | Import path conventions |
 | `skills/coding/test-verification-policy/SKILL.md` | Every decision point must have a test |
 | `skills/git-ops/branching-and-commit-conventions/SKILL.md` | Git workflow |
 
@@ -291,7 +291,7 @@ If the project uses prompt syncing (check `skills/`), copy the new code-prompt t
 
 2. **Always show real code.** Templates must be complete and runnable. No `# TODO` placeholders, no `pass` bodies, no `...` ellipsis in method signatures.
 
-3. **Match the tone and depth of existing prompts.** Read `skills/coding/build-clients/SKILL.md` and `skills/coding/build-celery-workers/SKILL.md` as your quality bar. The new prompt should feel like it was written by the same author.
+3. **Match the tone and depth of existing prompts.** Read `skills/languages/python/build-clients/SKILL.md` and `skills/languages/python/build-celery-workers/SKILL.md` as your quality bar. The new prompt should feel like it was written by the same author.
 
 4. **One pattern per file.** Don't combine multiple conventions into a single prompt. If the new feature involves a new domain pattern AND a new worker pattern, create separate prompts for each (or extend the existing ones).
 

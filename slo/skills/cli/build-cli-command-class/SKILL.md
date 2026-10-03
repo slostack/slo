@@ -37,9 +37,9 @@ Companion documents — read these; do not expect this file to duplicate them:
 
 - [`build-cli-modules.md`](../build-cli-modules/SKILL.md) — full module shape, stack rules, `@handle_cli_errors`, argument patterns, two-console discipline, polling, retry, tests.
 - [`build-cli-commands.md`](../build-cli-commands/SKILL.md) — Makefile shape, CLI → router → AppService layering, auth, idempotency.
-- ``skills/coding/declarative-method-structure/SKILL.md`` — Tell-don't-ask, one decision per method, orchestrator = table of contents.
-- ``skills/coding/named-arguments-and-type-hints/SKILL.md`` — every parameter typed, every call site named.
-- ``skills/coding/method-docstrings/SKILL.md`` — Google-style docstrings on every public and protected method.
+- ``skills/languages/python/declarative-method-structure/SKILL.md`` — Tell-don't-ask, one decision per method, orchestrator = table of contents.
+- ``skills/languages/python/named-arguments-and-type-hints/SKILL.md`` — every parameter typed, every call site named.
+- ``skills/languages/python/method-docstrings/SKILL.md`` — Google-style docstrings on every public and protected method.
 
 The canonical reference implementation is
 `verifier/cli/verify_run.py` — `VerifyFlowCommand`, `TriggerCommand`,
@@ -202,7 +202,7 @@ finally:
 ## Rule 3 — `execute` must read like a table of contents
 
 This is a restatement of the
-``skills/coding/declarative-method-structure/SKILL.md``
+``skills/languages/python/declarative-method-structure/SKILL.md``
 orchestrator rule applied specifically to CLI commands. It is repeated here
 because it is the most commonly violated rule in this layer.
 
@@ -759,7 +759,7 @@ async def execute(self) -> None:
 ```
 
 `invoke` is the Application Service lifecycle method (see
-`skills/coding/build-application-services/SKILL.md`). CLI Command classes use `execute` so the
+`skills/languages/python/build-application-services/SKILL.md`). CLI Command classes use `execute` so the
 two layers are immediately distinguishable. Never import the verb from the
 wrong layer.
 
@@ -829,6 +829,6 @@ convention was not followed.
 - [ ] No method named `invoke`, `run`, `trigger`, `start`, or `dispatch` at the public entry point.
 - [ ] Private helper methods use descriptive verb names (`_trigger`, `_poll_until_terminal`, `_resolve_env_profile_id`, etc.).
 - [ ] Class docstring answers all four questions: **Purpose / Invoker / Launches / Part of** (Rule 9). Restating the class name in English is a violation.
-- [ ] Every method has a Google-style docstring (see ``skills/coding/method-docstrings/SKILL.md``).
-- [ ] Every call site uses named arguments (see ``skills/coding/named-arguments-and-type-hints/SKILL.md``).
+- [ ] Every method has a Google-style docstring (see ``skills/languages/python/method-docstrings/SKILL.md``).
+- [ ] Every call site uses named arguments (see ``skills/languages/python/named-arguments-and-type-hints/SKILL.md``).
 - [ ] Tests cover: happy path via `VerifyFlowCommand.build(...).execute()` (mocked client); each private helper individually; the Typer verb via `CliRunner`.

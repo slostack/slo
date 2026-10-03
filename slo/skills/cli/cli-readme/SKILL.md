@@ -72,6 +72,6 @@ Every operator verb is a `.PHONY:` Make target with ≤ 4 recipe lines. Real wor
 
 - **TUI conventions** — [`../skills/tui/build-textual-tuis/SKILL.md`](../../tui/build-textual-tuis/SKILL.md) (for product CLIs that open a Textual TUI)
 - **Deployment conventions** — ``../deployment/conventions.md`` (deploy-time choreography, secrets pipeline — complements operator CLI rules)
-- **Application service patterns** — [`../skills/coding/build-application-services/SKILL.md`](../../coding/build-application-services/SKILL.md) (the layer operator CLIs call through the router)
-- **Router patterns** — [`../skills/coding/build-routers/SKILL.md`](../../coding/build-routers/SKILL.md) (the `/api/v1/cli/*` endpoint layer)
-- **Python ground rules** — [`../skills/coding/named-arguments-and-type-hints/SKILL.md`](../../coding/named-arguments-and-type-hints/SKILL.md), [`../skills/coding/declarative-method-structure/SKILL.md`](../../coding/declarative-method-structure/SKILL.md), [`../skills/coding/method-docstrings/SKILL.md`](../../coding/method-docstrings/SKILL.md)
+- **Application service patterns** — [`../skills/languages/python/build-application-services/SKILL.md`](../../coding/build-application-services/SKILL.md) (the layer operator CLIs call through the router)
+- **Router patterns** — [`../skills/languages/python/build-routers/SKILL.md`](../../coding/build-routers/SKILL.md) (the `/api/v1/cli/*` endpoint layer)
+- **Python ground rules** — [`../skills/languages/python/named-arguments-and-type-hints/SKILL.md`](../../coding/named-arguments-and-type-hints/SKILL.md), [`../skills/languages/python/declarative-method-structure/SKILL.md`](../../coding/declarative-method-structure/SKILL.md), [`../skills/languages/python/method-docstrings/SKILL.md`](../../coding/method-docstrings/SKILL.md)

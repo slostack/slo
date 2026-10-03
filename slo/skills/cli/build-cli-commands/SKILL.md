@@ -144,7 +144,7 @@ Named arguments on every 2+-arg call site. Explicit type hints on every signatur
 
 **Why:** a "small" script grows. The 80-line `parse_trigger_response.py` started as 12 lines of inline Python; today it has a custom exception class, two callable entry points, and a unit-test suite. Conventions that would have made the original 12 lines longer pay for themselves the moment the file crosses 30.
 
-**How to apply:** cross-link the global Python rules — ``skills/coding/named-arguments-and-type-hints/SKILL.md``, ``skills/coding/declarative-method-structure/SKILL.md``, ``skills/coding/method-docstrings/SKILL.md``. Treat `verifier/scripts/parse_trigger_response.py` as the reference implementation — read it before writing a new helper.
+**How to apply:** cross-link the global Python rules — ``skills/languages/python/named-arguments-and-type-hints/SKILL.md``, ``skills/languages/python/declarative-method-structure/SKILL.md``, ``skills/languages/python/method-docstrings/SKILL.md``. Treat `verifier/scripts/parse_trigger_response.py` as the reference implementation — read it before writing a new helper.
 
 ---
 
@@ -171,7 +171,7 @@ If the operator's CLI and the user's browser both trigger "rerun verification", 
 
 **Why:** every duplication is a bug waiting to happen. The CLI and the SPA must not have parallel implementations of "build a payment", "trigger a verifier run", "rotate a key", or "purge a session" — drift between them is a class of bug we refuse to ship.
 
-**How to apply:** cross-link ``skills/coding/build-application-services/SKILL.md`` — that's where the orchestration lives. The router stays a thin translator (HTTP body → Application Service args → HTTP envelope). The CLI module stays a thin transport (Make args → token + HTTP POST → parse envelope → exit code).
+**How to apply:** cross-link ``skills/languages/python/build-application-services/SKILL.md`` — that's where the orchestration lives. The router stays a thin translator (HTTP body → Application Service args → HTTP envelope). The CLI module stays a thin transport (Make args → token + HTTP POST → parse envelope → exit code).
 
 ### 13. Make target → Python CLI module → router is the standard; direct DB / filesystem access from the operator host is the exception
 
@@ -191,7 +191,7 @@ The Vue SPA's `/api/v1/*` routes stay unauthenticated at the service layer (assu
 
 **Why:** the SPA serves trusted browsers on the operator's tailnet (or behind an edge auth proxy); CLI endpoints in some deploys face direct internet access (e.g. an on-call engineer running `make` from a laptop on coffee-shop wifi). Transport-level auth on the CLI prefix means "yes, even from the internet, this is safe" — without forcing the SPA into a token flow that's overkill for browser traffic.
 
-**How to apply:** add a new FastAPI router file `src/routers/cli_<area>_router.py` mounted at prefix `/api/v1/cli`. Apply a `Depends(verify_cli_token)` (or equivalent middleware) to every route under it. The SPA routers under `/api/v1/<area>` continue to use the existing unauthenticated chain. Cross-link ``skills/coding/build-routers/SKILL.md`` for router structure.
+**How to apply:** add a new FastAPI router file `src/routers/cli_<area>_router.py` mounted at prefix `/api/v1/cli`. Apply a `Depends(verify_cli_token)` (or equivalent middleware) to every route under it. The SPA routers under `/api/v1/<area>` continue to use the existing unauthenticated chain. Cross-link ``skills/languages/python/build-routers/SKILL.md`` for router structure.
 
 ### 15. Tokens live in two places: the Swarm-mounted secret and the operator's `~/.orders/<env>/cli-token` (chmod 0600, gitignored)
 

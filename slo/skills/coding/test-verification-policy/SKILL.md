@@ -26,6 +26,11 @@ source_prompt: test-verification-policy.md
 
 ## Guidance
 
+Shared obligation authority: `skills/engineering/engineering-testing/SKILL.md`.
+The detailed stack examples below retain existing Python/Vue verification recipes;
+they do not prescribe their commands, framework, mocking policy or file layout to
+Go or another language. Use the routing guide to select the appropriate test category.
+
 Every code change must be verified by unit tests before it is considered complete. This is not optional — untested code is unfinished code.
 
 ---

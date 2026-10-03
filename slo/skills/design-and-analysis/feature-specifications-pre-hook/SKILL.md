@@ -53,6 +53,12 @@ Use one folder per feature:
 
 ## Guidance
 
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+
 ## Purpose
 
 A context-gathering pass that runs **before** the agent drafts or revises a feature specification using [`feature-specifications.md`](../feature-specifications/SKILL.md). The goal is to load every piece of background knowledge the spec must respect — durable knowledge (KB), point-in-time memory (MEMORY.md), repo guardrails (CLAUDE.md / AGENTS.md / RESEARCH.md), code conventions, and the current state of the affected surface area — so the resulting spec is consistent with the rest of the system instead of inventing patterns from scratch.
@@ -219,24 +225,24 @@ Once you know the surface area, read **every** matching rule under `skills/codin
 
 Common mappings (read all that apply):
 
-- application services → `skills/coding/build-application-services/SKILL.md`
-- domain features → `skills/coding/build-domain-features/SKILL.md`
-- FastAPI routers → `skills/coding/build-routers/SKILL.md`
-- middleware → `skills/coding/build-middleware/SKILL.md`
-- event handlers → `skills/coding/build-event-handlers/SKILL.md`
-- partitioned events → `skills/coding/build-partitioned-events/SKILL.md`
-- Celery workers → `skills/coding/build-celery-workers/SKILL.md`
-- DBOS workflows → `skills/coding/build-dbos-workflow-orchestration-pattern/SKILL.md`
-- DBOS schedulers / tasks → `skills/coding/build-schedulers-tasks-with-dbos/SKILL.md`
-- LangGraph agents → `skills/coding/build-react-agent-with-langgraph/SKILL.md`
-- agent tools → `skills/coding/build-agent-tools/SKILL.md`
-- graph / gateway invoke convention → `skills/coding/graph-gateway-invoke-convention/SKILL.md`
-- API clients → `skills/coding/build-clients/SKILL.md`
-- API docs / Swagger → `skills/coding/build-api-documentation/SKILL.md`, `skills/coding/generate-swagger-documentation/SKILL.md`
-- ClickHouse features → `skills/coding/build-clickhouse-features/SKILL.md`
-- Alembic setup → `skills/coding/setup-alembic/SKILL.md`
-- dependencies / tests → `skills/coding/setup-dependencies-and-tests/SKILL.md`
-- always-on style → `skills/coding/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/coding/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/coding/application-structure/SKILL.md`
+- application services → `skills/languages/python/build-application-services/SKILL.md`
+- domain features → `skills/languages/python/build-domain-features/SKILL.md`
+- FastAPI routers → `skills/languages/python/build-routers/SKILL.md`
+- middleware → `skills/languages/python/build-middleware/SKILL.md`
+- event handlers → `skills/languages/python/build-event-handlers/SKILL.md`
+- partitioned events → `skills/languages/python/build-partitioned-events/SKILL.md`
+- Celery workers → `skills/languages/python/build-celery-workers/SKILL.md`
+- DBOS workflows → `skills/languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md`
+- DBOS schedulers / tasks → `skills/languages/python/build-schedulers-tasks-with-dbos/SKILL.md`
+- LangGraph agents → `skills/languages/python/build-react-agent-with-langgraph/SKILL.md`
+- agent tools → `skills/languages/python/build-agent-tools/SKILL.md`
+- graph / gateway invoke convention → `skills/languages/python/graph-gateway-invoke-convention/SKILL.md`
+- API clients → `skills/languages/python/build-clients/SKILL.md`
+- API docs / Swagger → `skills/languages/python/build-api-documentation/SKILL.md`, `skills/languages/python/generate-swagger-documentation/SKILL.md`
+- ClickHouse features → `skills/languages/python/build-clickhouse-features/SKILL.md`
+- Alembic setup → `skills/languages/python/setup-alembic/SKILL.md`
+- dependencies / tests → `skills/languages/python/setup-dependencies-and-tests/SKILL.md`
+- always-on style → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/languages/python/declarative-method-structure/SKILL.md`, `skills/languages/python/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/languages/python/application-structure/SKILL.md`
 
 For Vue / TS work, also read the relevant `skills/frontend-vue/` convention files.
 

@@ -28,6 +28,14 @@ source_prompt: code-test-loop.md
 
 ## Guidance
 
+**Authority and applicability:** Shared incremental cadence only. Read
+`skills/engineering/engineering-testing/SKILL.md` for coverage/evidence and
+`skills/engineering/engineering-routing/SKILL.md` for language selection.
+**Go uses test-first** via `skills/languages/go/go-recipe-code-test-loop/SKILL.md`;
+implementation-first examples below apply to the retained Python/TypeScript
+cadence, not Go. Tooling examples apply only to their named stack. This cadence
+never substitutes for the full workflow.
+
 ### ⚠ Disambiguation — Are You Looking for the Code-Test-Review Workflow?
 
 **If the user's request contained any of these phrases or intents:**
@@ -69,10 +77,8 @@ those tests run during development.
 
 For every coding task that produces more than ~50 lines of new code:
 
-1. **Write a small unit.** A function, a class, a route handler, a
-   single Vue component, a migration. Bounded scope, single purpose.
-2. **Write the test(s) for that unit.** One per decision point, per the
-   verification policy.
+1. **Select a small unit and its decision-path tests.** Bounded scope, single purpose.
+2. **Follow the language ordering.** Go writes the failing test first; the retained Python/TypeScript examples implement and test the same small unit.
 3. **Run the test.** Make it pass.
 4. **Run the surrounding suite** (the file's whole test module, or the
    module's containing folder). Confirm no regressions.
@@ -206,9 +212,9 @@ surface in PR review.
 
 - [skills/coding/test-verification-policy/SKILL.md](../test-verification-policy/SKILL.md) — what
   decision points must be tested.
-- [skills/coding/declarative-method-structure/SKILL.md](../declarative-method-structure/SKILL.md) —
+- [skills/languages/python/declarative-method-structure/SKILL.md](../declarative-method-structure/SKILL.md) —
   why methods should be small enough to test in isolation.
-- [skills/coding/build-application-services/SKILL.md](../build-application-services/SKILL.md) — the
+- [skills/languages/python/build-application-services/SKILL.md](../build-application-services/SKILL.md) — the
   `invoke()` + named private methods pattern that maps 1-to-1 with
   loop iterations.
 

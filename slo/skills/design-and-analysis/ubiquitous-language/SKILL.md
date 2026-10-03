@@ -89,7 +89,7 @@ a registration and routes them).
 Every function carries a rich doc comment stating WHAT it does, WHO
 calls it, the DATA FLOW it participates in, and its LIFETIME/teardown.
 Clarity over cleverness, always. The doc-comment richness rule lives in
-`skills/coding/method-docstrings/SKILL.md`.
+`skills/languages/python/method-docstrings/SKILL.md`.
 
 ---
 
@@ -97,8 +97,8 @@ Clarity over cleverness, always. The doc-comment richness rule lives in
 
 - CLI construction rules → `skills/cli/build-cli-commands/SKILL.md`
 - CLI module layout rules → `skills/cli/build-cli-modules/SKILL.md`
-- Type hints and named args → `skills/coding/named-arguments-and-type-hints/SKILL.md`
-- Declarative structure → `skills/coding/declarative-method-structure/SKILL.md`
+- Type hints and named args → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`
+- Declarative structure → `skills/languages/python/declarative-method-structure/SKILL.md`
 
 ---
 
@@ -959,5 +959,5 @@ each for what it reads and at what scope:
 A self-describing name is only half the contract. Every function
 carries a rich doc comment stating **WHAT** it does, **WHO** calls it,
 the **DATA FLOW** it participates in, and its **LIFETIME/teardown**.
-See `skills/coding/method-docstrings/SKILL.md` for the doc-comment
+See `skills/languages/python/method-docstrings/SKILL.md` for the doc-comment
 format. Clarity over cleverness, always.

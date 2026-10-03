@@ -2,6 +2,31 @@
 
 This concise index points maintainers to the runtime owners most relevant to Feature 75 plugin extensions and the adjacent agent/TUI seams.
 
+## Skills maintenance
+
+- Edit the authored `skills/**/SKILL.md` tree directly. `make refresh-skills` and
+  `make build-skill-index` both rebuild only `skills/INDEX.md` through
+  `scripts/build_skill_index.py` and `SkillRegistry`.
+- `scripts/refresh_skills.py` no longer imports or regenerates upstream prompt
+  content. It preserves all skill bodies, workflows, samples and assets, including
+  non-code families such as presentation. No `SLO_CODE_PROMPTS_DIR` is needed.
+- This is development-time maintenance only; runtime discovery and user override
+  behavior remain unchanged. Regression coverage: `tests/agents/skills/test_refresh_skills.py`.
+
+## Orchestrator limits
+
+`config/cfg.py` defaults `SLO_SUBAGENT_MAX_CONCURRENCY` to 6; the pool uses it
+for its shared semaphore. The prompt in `orchestrator/spawn_tool.py` separately
+allows eight workflow turns started per task (including partial turns), six
+dispatch calls per turn, and three retries per failed task after the initial
+attempt. Aborted tasks are never retried. These are prompt rules, not new runtime
+counters. A new revision turn resets only its dispatch count; retries and turns
+remain task-wide across resume and takeover. Use single dispatches at review
+gates: chain checks execution status, not READY/REVISE. Process completion is not
+workflow acceptance. Stream, child-output and Bash defaults remain 10800, 7200
+and 1800 seconds. Shell exports must precede process launch; a Bash tool export
+cannot modify an already running parent process.
+
 ## Runtime path
 
 ```text

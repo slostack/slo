@@ -3,17 +3,49 @@
 **Type:** Pipeline
 **Governs:** All feature implementation work in this repository
 
+## Scoped guidance and phase handoff contract
+
+**Workflow-turn accounting:** Follow
+`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+Count a full pass through the workflow, not individual phases or agent calls.
+Report partial passes and separate harness limits explicitly; never skip review
+or treat repeated authoring dispatches as completed workflow turns.
+
+
+Before Step 1 read `skills/engineering/engineering-routing/SKILL.md` and
+`skills/engineering/engineering-testing/SKILL.md`. Record affected languages,
+frameworks, test categories, project contracts, selected skill paths/source tiers,
+and actual project verification commands. Pass this record to every phase.
+Load language/component recipes on demand; do not impose Python syntax or tooling
+on Go, TypeScript or an unsupported language. For Go use the test-first cadence.
+
+Each phase returns a terminal verdict (READY/COMPLETE, REVISE, or FAILED), concrete
+artifact paths, requirement-to-evidence mapping, exact commands/results, deviations
+and unresolved blockers. Verify artifacts exist before advancing; a success exit
+code without the required evidence is not READY. Revision changes invalidate later
+review/completion evidence: return to the responsible implementation/spec phase,
+retest and re-review. Preserve the workflow's original manual/auto confirmations.
+An execution failure stops progression; a recoverable failed task may be retried
+up to three times after the initial attempt, with its cause addressed and within
+the current workflow turn's dispatch budget. Never retry an aborted task, even when
+the reported cause is a timeout. User cancellation is not permission to restart work.
+Do not claim another agent independently reviewed work that was reviewed solo.
+
+For dynamic workflows use in-session spawn_sub_agents unless explicitly detached;
+ordinary workflow execution does not itself grant permission to spawn. A detached
+orchestrator never launches another detached workflow. A missing optional knowledge
+base is non-blocking; follow `skills/design-and-analysis/locate-knowledge-base/SKILL.md`.
+
 ## Skills used in this workflow
 
-Load these on demand as each step calls for them — you do not need to read any
-other skill file to run this workflow:
+Load these on demand as each step calls for them — also load the scoped language/component companions selected by the routing record:
 
 | Step | Skill |
 |---|---|
 | 1 — Code + Test Loop | `skills/coding/code-test-loop/SKILL.md` |
 | 2 — Code Review | `skills/design-and-analysis/review-feature-code/SKILL.md` |
 | 3 — Completion Check | `skills/design-and-analysis/is-the-feature-completed/SKILL.md` |
-| Always-on conventions | `skills/coding/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/coding/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md` |
+| Always-on conventions | `skills/engineering/engineering-ownership/SKILL.md`, `skills/engineering/engineering-testing/SKILL.md`, plus selected language roots |
 | Manual vs. auto mode | `skills/design-and-analysis/workflows/SKILL.md#confirmation-behavior` |
 
 ---
@@ -40,7 +72,7 @@ Before the first step begins, confirm:
 - A specification document, JIRA task, or clear feature description is available. The agent must have something to implement against — a task without a spec is not ready for this workflow.
 - `AGENTS.md` and `docs/RESEARCH.md` have been read (or are already in context).
 - The relevant KB folders have been consulted for the feature's surface area.
-- The always-on rules are loaded: `named-arguments-and-type-hints.md`, `declarative-method-structure.md`, `method-docstrings.md`, `test-verification-policy.md`.
+- Shared policies and only the affected language conventions are loaded through the routing record.
 - All applicable `build-*.md` files for the layers this task touches have been read. Do not write a single line of code for a layer whose build rules have not been loaded.
 
 If any pre-condition is not met, satisfy it before entering Step 1.
@@ -62,39 +94,35 @@ If any pre-condition is not met, satisfy it before entering Step 1.
 
 Implement the feature by working through each implementation unit in dependency order (migrations → domain models/DAOs → domain services → application services → routers → workers → frontend). For each unit:
 
-1. Write the implementation unit (one function, class, route handler, migration, or component — bounded scope, single purpose).
-2. Write the tests for that unit (one test per decision point, per `test-verification-policy.md`).
+1. Identify a bounded implementation unit and its observable decision-path tests.
+2. Follow the selected language cadence: Go writes the failing test first; other languages retain their approved cadence. Implement and test only that unit.
 3. Run the tests and confirm green.
 4. Run the surrounding suite (the file's whole test module or the containing folder) to confirm no regressions.
 5. Only then start the next unit.
 
 The agent must not write more than ~50 lines without running the corresponding tests. Writing all code first and testing at the end is a violation of this step.
 
-**Coding conventions that apply within this step (all of them, always):**
+**Coding conventions within this step:**
 
-- Named arguments on every call with 2+ arguments — `named-arguments-and-type-hints.md`
-- Type hints on every function signature and return type — `named-arguments-and-type-hints.md`
-- Google-style docstrings on all public methods — `method-docstrings.md`
-- Declarative method structure — no nested if-else, one decision per method, guard clauses at the top — `declarative-method-structure.md`
-- Service namespace prefixes on every `app.include_router(...)` — `/la/api/v1`, `/v/api/v1`, etc.
-- Ubiquitous language — one concept, one name across every layer — `ubiquitous-language.md`
-- Three-file domain pattern — `model.py`, `dao.py`, `service.py` — `build-domain-features.md`
-- `invoke()` orchestration pattern for application services — `build-application-services.md`
-- New models registered in `src/models/model.py` for Alembic — `build-domain-features.md`
+Apply shared ownership/testing and the selected language/component contracts.
+Python retains its keyword arguments, typed signatures, Google docstrings,
+model/DAO/service and invoke patterns, FastAPI namespace/envelope and Alembic
+registration where applicable. Go uses named construction/input DAOs,
+consumer-owned interfaces, Execute, sentinel errors and supervised lifecycles.
+TypeScript/Vue retains its typed boundaries, component/composable and API contracts.
+These are scoped translations, not rules copied across languages.
 
 **When running tests:**
 
-```bash
-loadenv environments/test.env
-PYTHONPATH=${PWD} poetry run pytest -sv tests/path/to/test_file.py::TestClass
-```
+Use the exact targeted/package/full-suite commands from the project routing
+record, with its test environment and build variants. Include build/static/race
+checks where applicable; report blocked or baseline failures, never invent green.
 
 After all individual units pass, run the full suite before moving to Step 2:
 
-```bash
-loadenv environments/test.env
-PYTHONPATH=${PWD} poetry run pytest -sv tests/
-```
+Use the exact targeted/package/full-suite commands from the project routing
+record, with its test environment and build variants. Include build/static/race
+checks where applicable; report blocked or baseline failures, never invent green.
 
 **Output produced:**
 
@@ -243,7 +271,7 @@ The Code-Test-Review Workflow is complete when:
 
 The following rules remain in effect throughout this workflow:
 
-- The code+test cadence is non-negotiable. Write a unit, test it, run it green, then proceed. No bulk writes.
+- The code+test cadence is non-negotiable. Follow the selected language test ordering, verify each unit green, then proceed. No bulk writes.
 - All always-on coding conventions from `CLAUDE.md` apply to every line of code written.
 - Secret scanning before commit — eye-scan all staged content for API keys, tokens, bcrypt hashes, and private keys before any `git commit`.
 - Confirmation before commit, push, or PR — `ALWAYS SEEK CONFIRMATION BEFORE COMMITTING CODE, PUSHING CODE TO REMOTE REPOSITORIES OR MERGING CODE`.
@@ -260,7 +288,7 @@ Trigger: "implement [feature spec / task]"
 Pre-conditions: spec available, AGENTS.md and docs/RESEARCH.md loaded,
                 all build-*.md for the task's layers loaded
 
-Step 1: Code + Test Loop (write unit → test → green → repeat until done)
+Step 1: Code + Test Loop (language cadence → verify green → next bounded unit)
         └─ Output: all files written, full suite green
 
 Step 2: Code Review (spec completeness, flow wiring, test coverage, conventions)

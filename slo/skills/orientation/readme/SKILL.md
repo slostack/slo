@@ -28,6 +28,12 @@ source_prompt: README.md
 
 ## Guidance
 
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+
 The skill library is a set of coding instruction files that teach any agent —
 Claude, Codex, Slo, Kimi, or another — how to build features in a codebase:
 folder structure, naming conventions, patterns for services, workers, routers,

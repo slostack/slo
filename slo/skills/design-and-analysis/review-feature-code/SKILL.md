@@ -25,12 +25,18 @@ source_prompt: review-feature-code.md
 
 ## Guidance
 
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+
 Guide for conducting AI-assisted feature code reviews against a specification document.
 
 Covers all stacks in the Orders platform monorepo: **FastAPI/Python**, **Vue 3/TypeScript**, **Typer CLI**, and **Textual TUI**.
 
 > **POST-HOOK — mandatory:** After completing Steps 1–8 below, run
-> [`skills/coding/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md) as a hard-rules pass
+> [`skills/languages/python/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md) as a hard-rules pass
 > against the same diff. That prompt is the enforcement checklist;
 > this prompt is the completeness and flow analysis. Both must complete
 > before the review is done. Findings from the hard-rules pass are
@@ -174,9 +180,9 @@ Apply the checks for every stack the feature touches.
 
 | Convention | What To Check |
 |---|---|
-| `skills/coding/declarative-method-structure/SKILL.md` | Flat code, early returns, single decision per method, orchestrator body ≤ ~8 lines of logic |
-| `skills/coding/named-arguments-and-type-hints/SKILL.md` | Named args for 2+ params; type hints on all params and return values |
-| `skills/coding/method-docstrings/SKILL.md` | Google-style docstrings on all public methods |
+| `skills/languages/python/declarative-method-structure/SKILL.md` | Flat code, early returns, single decision per method, orchestrator body ≤ ~8 lines of logic |
+| `skills/languages/python/named-arguments-and-type-hints/SKILL.md` | Named args for 2+ params; type hints on all params and return values |
+| `skills/languages/python/method-docstrings/SKILL.md` | Google-style docstrings on all public methods |
 | `skills/design-and-analysis/ubiquitous-language/SKILL.md` | One concept, one canonical name across every layer — no synonyms anywhere in the diff |
 | `skills/coding/code-test-loop/SKILL.md` | Evidence that tests were written per unit during development, not after a 500-line dump |
 
@@ -184,13 +190,13 @@ Apply the checks for every stack the feature touches.
 
 | Convention | What To Check |
 |---|---|
-| `skills/coding/application-structure/SKILL.md` | File layout, `app.py` / `main.py` patterns, lifespan wiring |
-| `skills/coding/build-domain-features/SKILL.md` | `dao.py` / `service.py` / `model.py` three-file structure; DAO field names identical to model column names (no aliasing) |
-| `skills/coding/build-application-services/SKILL.md` | `invoke()` pattern; orchestration only in `invoke()`; private `_step_*` methods; no business logic inline |
-| `skills/coding/build-routers/SKILL.md` | Service namespace prefix `<ns>/api/v1` mandatory; `SuccessResponseDAO` wrapper on all responses; permissions wired |
-| `skills/coding/build-dbos-workflow-orchestration-pattern/SKILL.md` | Queue/workflow naming; enqueuer pattern; dedup IDs; queue registered in config |
-| `skills/coding/build-schedulers-tasks-with-dbos/SKILL.md` | Cron schedule, worker concurrency, queue definitions |
-| `skills/coding/build-vscode-launch-configurations/SKILL.md` | Every new long-lived process has a matching VSCode launch config |
+| `skills/languages/python/application-structure/SKILL.md` | File layout, `app.py` / `main.py` patterns, lifespan wiring |
+| `skills/languages/python/build-domain-features/SKILL.md` | `dao.py` / `service.py` / `model.py` three-file structure; DAO field names identical to model column names (no aliasing) |
+| `skills/languages/python/build-application-services/SKILL.md` | `invoke()` pattern; orchestration only in `invoke()`; private `_step_*` methods; no business logic inline |
+| `skills/languages/python/build-routers/SKILL.md` | Service namespace prefix `<ns>/api/v1` mandatory; `SuccessResponseDAO` wrapper on all responses; permissions wired |
+| `skills/languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md` | Queue/workflow naming; enqueuer pattern; dedup IDs; queue registered in config |
+| `skills/languages/python/build-schedulers-tasks-with-dbos/SKILL.md` | Cron schedule, worker concurrency, queue definitions |
+| `skills/languages/python/build-vscode-launch-configurations/SKILL.md` | Every new long-lived process has a matching VSCode launch config |
 
 #### Vue / TypeScript Conventions
 
@@ -227,7 +233,7 @@ Apply the checks for every stack the feature touches.
 
 | Convention | What To Check |
 |---|---|
-| `skills/coding/graph-gateway-invoke-convention/SKILL.md` | `invoke()` is the gateway; `invoke_streaming()` exists if streaming needed |
+| `skills/languages/python/graph-gateway-invoke-convention/SKILL.md` | `invoke()` is the gateway; `invoke_streaming()` exists if streaming needed |
 | Execution flow diagram | Module-level `#` comment block above class definition showing all nodes, conditional edges, loops |
 | `@staticmethod` | Routing functions, phase helpers, parsers are `@staticmethod` |
 | State isolation | `_build_initial_state()` extracted and shared between `invoke` and `invoke_streaming` |
@@ -304,6 +310,6 @@ Produce a markdown document with these sections:
 ## Post-Hook: Hard Rules Pass
 
 When the flow analysis (Steps 1–8) is complete, immediately run the hard-rules
-checklist in [`skills/coding/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md). Work through every
+checklist in [`skills/languages/python/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md). Work through every
 section that matches the stacks identified in Step 0. Merge those findings into
 the Step 8 output before delivering the review.

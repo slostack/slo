@@ -218,6 +218,11 @@ alone cannot repair import-bound paths or config reloads from earlier tests.
 AST guards cover the SLO_HOME import registry and path-shaped state overrides.
 Resolve HOME-dependent parametrized paths inside test bodies, not at collection.
 Installer test wrappers execute pytest's interpreter, never system Python.
+Capture-test launchers and their exact-argv containment guards also use
+`sys.executable`, including nested writer/reporter children. A fixed developer
+virtualenv path can both fail to launch in CI and mask negative tests behind an
+unrelated interpreter assertion. Exercise the capture suites with `python -m pytest`
+as well as the normal Poetry entrypoint; do not relax their containment checks.
 
 ## Catalog cache namespace (86.b.2)
 

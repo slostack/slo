@@ -22,7 +22,8 @@ import pytest
 _CAPTURE_WRITER_SCRIPT: Path = (
     Path(__file__).resolve().parents[4] / "src/agents/slo_agent/orchestrator/capture_writer.py"
 )
-_HARNESS_PYTHON: str = "/root/.pyenv/versions/slo-harness/bin/python"
+# Match production child argv without depending on one developer's virtualenv path.
+_HARNESS_PYTHON: str = sys.executable
 
 
 class CleanDrainScenario:

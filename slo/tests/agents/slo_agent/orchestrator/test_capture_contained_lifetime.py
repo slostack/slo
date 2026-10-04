@@ -11,6 +11,7 @@ import ctypes
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -23,6 +24,13 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowStatusTool,
 )
 from tests.agents.slo_agent.orchestrator.capture_test_safety import CaptureLaunchContainment
+
+
+def test_capture_interpreter_when_running_in_current_environment() -> None:
+    """Keep capture child launches on pytest's interpreter on local and CI hosts."""
+    from tests.agents.slo_agent.orchestrator.capture_test_safety import _HARNESS_PYTHON
+
+    assert _HARNESS_PYTHON == sys.executable
 
 
 @pytest.mark.parametrize("failure_stage", ["second_pipe", "script"])
@@ -227,7 +235,7 @@ def test_script_rejects_unregistered_fds(
     guard.allow_script(path=script)
     with pytest.raises(AssertionError):
         guard._validate_spawn(
-            args=(["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],),
+            args=([sys.executable, "-I", "-B", str(script)],),
             kwargs=_script_spawn_kwargs(root=root, inherited=inherited),
         )
 
@@ -282,7 +290,7 @@ def test_script_rejects_wrong_pipe_direction_before_spawn(
         guard.allow_script(path=script, pass_fds=(write_fd,))
         with pytest.raises(AssertionError, match="registered inherited FD tuple"):
             guard._validate_spawn(
-                args=(["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],),
+                args=([sys.executable, "-I", "-B", str(script)],),
                 kwargs=_script_spawn_kwargs(root=root, inherited=(read_fd,)),
             )
     finally:
@@ -301,7 +309,7 @@ def test_script_accepts_exact_registered_pipe_tuple_before_spawn(
         guard = CaptureLaunchContainment(root=root, monkeypatch=monkeypatch)
         guard.allow_script(path=script, pass_fds=(write_fd,))
         guard._validate_spawn(
-            args=(["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],),
+            args=([sys.executable, "-I", "-B", str(script)],),
             kwargs=_script_spawn_kwargs(root=root, inherited=(write_fd,)),
         )
     finally:
@@ -322,7 +330,7 @@ def test_child_local_guard_rejects_extra_inherited_fd_before_write(
         guard.allow_script(path=script, pass_fds=(expected_write, extra_write))
         (root / "expected-fds.json").write_text(json.dumps(sorted((expected_write,))), encoding="utf-8")
         process = guard.real_popen(
-            ["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],
+            [sys.executable, "-I", "-B", str(script)],
             **_script_spawn_kwargs(root=root, inherited=(expected_write, extra_write)),
         )
         output, error = process.communicate(timeout=5)
@@ -349,7 +357,7 @@ def test_child_local_guard_rejects_wrong_inherited_endpoint_before_write(
         guard.allow_script(path=script, pass_fds=(read_fd,))
         (root / "expected-fds.json").write_text(json.dumps(sorted((write_fd,))), encoding="utf-8")
         process = guard.real_popen(
-            ["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],
+            [sys.executable, "-I", "-B", str(script)],
             **_script_spawn_kwargs(root=root, inherited=(read_fd,)),
         )
         output, error = process.communicate(timeout=5)
@@ -374,7 +382,7 @@ def test_child_local_guard_allows_exact_inherited_tuple_and_observes_real_spawn(
         guard.allow_script(path=script, pass_fds=(write_fd,))
         (root / "expected-fds.json").write_text(json.dumps(sorted((write_fd,))), encoding="utf-8")
         process = guard.real_popen(
-            ["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],
+            [sys.executable, "-I", "-B", str(script)],
             **_script_spawn_kwargs(root=root, inherited=(write_fd,)),
         )
         output, error = process.communicate(timeout=5)
@@ -401,7 +409,7 @@ def test_clean_writer_does_not_spawn_reporter(tmp_path: Path, monkeypatch: pytes
     guard = CaptureLaunchContainment(root=root, monkeypatch=monkeypatch)
     guard.allow_script(path=script)
     process = guard.real_popen(
-        ["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],
+        [sys.executable, "-I", "-B", str(script)],
         cwd=root,
         env={"HOME": str(root), "SLO_HOME": str(root)},
         close_fds=True,
@@ -424,7 +432,7 @@ def test_child_local_default_deny_blocks_process_network_and_outside_write(
     guard.allow_script(path=script)
     for mode in ("process", "network", "outside-write"):
         process = guard.real_popen(
-            ["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(script)],
+            [sys.executable, "-I", "-B", str(script)],
             cwd=root,
             env={"HOME": str(root), "SLO_HOME": str(root), "SLO_TEST_MODE": mode},
             close_fds=True,
@@ -518,7 +526,7 @@ def test_production_writer_body_and_native_io_are_preserved_by_containment(
     lock_read, lock_write = os.pipe()
     destination = root / "capture"
     assert destination.resolve().is_relative_to(root)
-    expected = ["/root/.pyenv/versions/slo-harness/bin/python", "-I", "-B", str(_CAPTURE_WRITER_SCRIPT)]
+    expected = [sys.executable, "-I", "-B", str(_CAPTURE_WRITER_SCRIPT)]
     try:
         with destination.open("xb") as output:
             guard._guarded_popen(
@@ -607,7 +615,7 @@ def test_production_writer_requires_child_local_registration(
                 guard._validate_spawn(
                     args=(
                         [
-                            "/root/.pyenv/versions/slo-harness/bin/python",
+                            sys.executable,
                             "-I",
                             "-B",
                             str(_CAPTURE_WRITER_SCRIPT),

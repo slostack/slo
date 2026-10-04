@@ -12,6 +12,7 @@ $auth-selection-foreground: #d8d8d8;
     border: round $auth-border;
     padding: 1 2;
     width: 76;
+    max-width: 100%;
     height: auto;
     /* Cap at the screen height so the body, not the screen, overflows. Otherwise a tall
        step (browser authorization at 80x24) is cropped and scroll_visible has nothing to
@@ -53,7 +54,10 @@ AuthenticationScreen .screen--selection {
     text-style: bold underline;
 }
 .auth-device-code { color: $auth-code; text-style: bold; margin-bottom: 1; }
-.auth-error { color: $error; margin-top: 1; }
+.auth-error { color: $error; margin-top: 1; height: auto; }
+#auth-modal-body ApiKeyInputWidget {
+    height: auto;
+}
 #auth-modal-body Button.-primary {
     background: $auth-action-background;
     color: $auth-action-foreground;

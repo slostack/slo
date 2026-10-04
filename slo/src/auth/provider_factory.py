@@ -101,6 +101,8 @@ class OAuthFlowFactory:
             the MethodSelectWidget capability list (78.a.3 §7.2).
         WHEN: Before method selection renders; no flow is constructed.
         """
+        if provider in {ProviderName.KIMI_FOR_CODING, ProviderName.OPENROUTER}:
+            return frozenset()
         return cls._concrete_for(provider=provider).supported_login_methods()
 
     @classmethod

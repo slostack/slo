@@ -94,6 +94,9 @@ class TestSlashSuggestionEngine:
             "src.tui.model_catalog.CredentialResolver.resolve",
             return_value=None,
         ):
+            from src.tui.model_catalog import ModelSuggestionProjection
+
+            ModelSuggestionProjection.refresh_authentication()
             state = engine.evaluate(
                 buffer_text="/model claude",
                 active_model_name="gpt-5.4",
@@ -116,7 +119,7 @@ class TestSlashSuggestionEngine:
                 side_effect=lambda *, provider: object(),
             ),
             patch(
-                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                "src.agents.model_catalog.discovery.ProviderModelDiscoveryService.refresh",
                 forbidden_discovery,
             ),
         ):

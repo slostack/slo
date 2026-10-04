@@ -91,6 +91,16 @@ class RecoveryPolicy:
                     "by LLM recovery or session-layer compaction."
                 ),
             )
+        if terminal_rejection in {
+            ProviderErrorKind.AUTHENTICATION_FAILED,
+            ProviderErrorKind.POLICY_REJECTED,
+            ProviderErrorKind.MODEL_UNAVAILABLE,
+            ProviderErrorKind.INVALID_PROVIDER_REQUEST,
+        }:
+            return RecoveryDecisionDAO(
+                recovery_class=RecoveryClass.FATAL,
+                reason="Provider rejected this request; correct the configuration or request before retrying.",
+            )
         if provider is not None and should_switch(
             kind=ProviderErrorClassifier.classify(error=exc, provider=provider)
         ):
@@ -125,15 +135,15 @@ class RecoveryPolicy:
         exc: BaseException,
         provider: Optional[ProviderName],
     ) -> ProviderErrorKind | None:
-        """Return the terminal size-rejection kind, when the inspector confirms one.
+        """Return the terminal provider-rejection kind when the inspector confirms one.
 
         Args:
             exc (BaseException): Escaped provider exception.
             provider (Optional[ProviderName]): Active provider when known.
 
         Returns:
-            ProviderErrorKind | None: Context overflow or request-body-too-large;
-                otherwise ``None``.
+            ProviderErrorKind | None: A terminal provider rejection; otherwise
+                ``None``.
         """
         inspected_provider: ProviderName = provider or ProviderName.OPENAI
         kind: ProviderErrorKind = ProviderErrorClassifier.inspect(
@@ -143,6 +153,10 @@ class RecoveryPolicy:
         if kind in {
             ProviderErrorKind.CONTEXT_OVERFLOW,
             ProviderErrorKind.REQUEST_BODY_TOO_LARGE,
+            ProviderErrorKind.AUTHENTICATION_FAILED,
+            ProviderErrorKind.POLICY_REJECTED,
+            ProviderErrorKind.MODEL_UNAVAILABLE,
+            ProviderErrorKind.INVALID_PROVIDER_REQUEST,
         }:
             return kind
         return None

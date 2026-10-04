@@ -10,6 +10,7 @@ import pytest
 
 import typer
 
+from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.cli.typer_dispatch import TyperDispatch
 
 
@@ -137,7 +138,7 @@ class TestTyperDispatchTui:
             "src.cli.typer_dispatch.FilesystemSessionHistoryStore",
             return_value=fake_store,
         ):
-            resolved_session_id: str = TyperDispatch._resolve_resume_reference(
+            resolved_session_id: str | None = TyperDispatch._resolve_resume_reference(
                 resume_session_reference="release prep",
             )
 
@@ -356,11 +357,13 @@ class TestRunHeadlessReasoningOverride:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(prompt="test prompt", **kwargs)
 
-        return captured_config[0] if captured_config else None
+        assert captured_config
+        return captured_config[0]
 
     def test_reasoning_is_applied_to_config_when_provided(self, tmp_path: Path) -> None:
         """``--reasoning high`` sets ``SessionConfigDAO.reasoning_level`` to ``high``."""
@@ -375,6 +378,7 @@ class TestRunHeadlessReasoningOverride:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(prompt="do it", reasoning="high")
@@ -399,6 +403,7 @@ class TestRunHeadlessReasoningOverride:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(prompt="do it", reasoning=None)
@@ -426,6 +431,7 @@ class TestRunHeadlessResumeImpliesHistory:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
             patch(
                 "src.cli.typer_dispatch.TyperDispatch._resolve_resume_reference",
@@ -454,6 +460,7 @@ class TestRunHeadlessResumeImpliesHistory:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(
@@ -483,6 +490,7 @@ class TestRunHeadlessSessionIdResolution:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(prompt="task", **kwargs)
@@ -503,10 +511,11 @@ class TestRunHeadlessSessionIdResolution:
         config = self._run_headless_capture_config()
         assert config.session_id == env_id.lower()
 
-    def test_none_when_no_session_id_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_materializes_identity_when_no_session_id_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Headless preparation receives a concrete identity before construction."""
         monkeypatch.delenv("SLO_SESSION_ID", raising=False)
         config = self._run_headless_capture_config()
-        assert config.session_id is None
+        assert config.session_id is not None
 
 
 class TestRunHeadlessSystemPromptOverrides:
@@ -526,6 +535,7 @@ class TestRunHeadlessSystemPromptOverrides:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(prompt="task", **kwargs)
@@ -582,6 +592,7 @@ class TestApplySystemPromptB64Override:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(prompt="task", **kwargs)
@@ -646,6 +657,7 @@ class TestRunHeadlessNotifySession:
         with (
             patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
             patch("src.cli.typer_dispatch.HeadlessRunner", side_effect=_capture_runner),
+            patch.object(TyperDispatch, "_resolve_resumed_model_name", return_value=None),
             patch("src.cli.typer_dispatch.asyncio.run", return_value=0),
         ):
             TyperDispatch.run_headless(

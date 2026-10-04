@@ -43,10 +43,13 @@ from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from config.ai_model_config import MODEL_DEFAULTS
+from config.ai_model_config import MODEL_DEFAULTS, defaults_for_model
 from config.cfg import cfg
 from config.logger import log_error, log_info, log_warning
 from config.timeout_resolver import positive_int_env
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
+from src.agents.model_catalog.service import ModelCatalogService, ModelPreparationRequiredError
+from src.agents.slo_agent.preferences.service import UserPreferencesStore
 from src.agents.providers.stream_recovery.dao import (
     ProviderStreamFailure,
     StreamRecoveryAction,
@@ -121,7 +124,8 @@ from src.agents.reasoning_capabilities import (
     resolve_reasoning_config,
 )
 from src.agents.tools.bundles import create_extended_tools
-from src.auth.credential_dao import ProviderName
+from src.auth.credential_dao import CredentialDAO, ProviderName
+from src.integrations.openrouter.dao import credential_fingerprint
 from src.auth.credential_refresher import refresh_if_stale
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.credential_store import CredentialStore
@@ -460,6 +464,10 @@ class PromptAttemptResultDAO(BaseModel):
         default=None,
         description="Successful local preflight decision for this provider attempt.",
     )
+    originating_provider: Optional[ProviderName] = Field(
+        default=None,
+        description="Provider that owned the failed attempt before any later route selection.",
+    )
 
 
 class SloAgentSession:
@@ -477,10 +485,17 @@ class SloAgentSession:
         enable_history: Optional[bool] = None,
         plugin_paths: Optional[list[Path]] = None,
         plugin_loader_kwargs: Optional[dict[str, Path]] = None,
+        catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+        pending_preparation: bool = False,
     ) -> None:
         """Compose a session around a config (lazy) or a pre-built agent.
 
         Args:
+            pending_preparation (bool): Defer capabilities and expose unknown usage
+                until the mounted TUI completes catalog preparation.
+            catalog_snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied
+                initialization/build view. Configured OpenRouter prompts revalidate
+                through the catalog gateway and pin its result until run exit.
             workdir (Path): Absolute workdir the agent operates in.
             session_id (str): Stable session identifier (UUID4 or
                 caller-supplied for resume).
@@ -511,7 +526,17 @@ class SloAgentSession:
         self._workdir: Path = workdir.resolve()
         self._session_id: str = session_id
         self._config: Optional[SessionConfigDAO] = config
+        self._preparation_status: Literal["pending", "ready", "failed"] = (
+            "pending" if pending_preparation else "ready"
+        )
+        self._preparation_lock: asyncio.Lock = asyncio.Lock()
+        self._catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = catalog_snapshot
+        self._admitted_run_snapshot: Optional[ModelCatalogSnapshotDAO] = None
+        self._admitted_openrouter_credential: Optional[CredentialDAO] = None
+        self._agent_openrouter_fingerprint: Optional[str] = None
         self._agent: Optional[SloAgent] = agent
+        self._agent_is_injected: bool = agent is not None
+        self._agent_catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = catalog_snapshot
         configured_plugin_paths: list[Path] = list(config.plugin_paths) if config is not None else []
         self._plugin_paths: list[Path] = list(plugin_paths or configured_plugin_paths)
         self._plugin_loader_kwargs: dict[str, Path] = dict(plugin_loader_kwargs or {})
@@ -580,25 +605,182 @@ class SloAgentSession:
         log_info(msg=f"SloAgentSession built session_id={session_id[:8]} workdir={self._workdir}")
 
     @classmethod
-    def build(cls, *, config: SessionConfigDAO) -> "SloAgentSession":
-        """Stash ``config`` for lazy agent construction on first invoke.
+    def build(
+        cls,
+        *,
+        config: SessionConfigDAO,
+        catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+        allow_pending_preparation: bool = False,
+    ) -> "SloAgentSession":
+        """Build a lazily initialized session from an already prepared config.
 
-        Honours ``config.session_id`` for resume and ``config.enable_history``
-        for the persistence opt-out.
+        WHAT: Refuses an unprepared direct OpenRouter route before synchronous
+            reasoning or usage initialization can construct/invoke it.
+        WHO: Cached/direct callers use this; headless callers use ``prepare``.
+        WHEN: Runs before the first prompt and never performs catalog HTTP.
 
         Args:
-            config (SessionConfigDAO): Validated session config.
+            config (SessionConfigDAO): Validated session configuration.
+            allow_pending_preparation (bool): TUI-only opt-in to deferred startup;
+                strict programmatic and headless construction remains the default.
+            catalog_snapshot (Optional[ModelCatalogSnapshotDAO]): Prepared immutable
+                catalog generation, if the configured route needs one.
 
         Returns:
-            SloAgentSession: A fresh session ready to ``invoke``.
+            SloAgentSession: A fresh session ready for lazy agent construction.
+
+        Raises:
+            ModelPreparationRequiredError: The direct OpenRouter route lacks a
+                prepared catalog generation.
         """
+        pending_preparation: bool = False
+        try:
+            cls._require_prepared_openrouter_route(config=config, snapshot=catalog_snapshot)
+        except ModelPreparationRequiredError:
+            if not allow_pending_preparation:
+                raise
+            pending_preparation = True
         session_id: str = config.session_id or str(uuid4())
         return cls(
             workdir=config.workdir,
             session_id=session_id,
             config=config,
             enable_history=config.enable_history,
+            catalog_snapshot=catalog_snapshot,
+            pending_preparation=pending_preparation,
         )
+
+    @property
+    def preparation_status(self) -> Literal["pending", "ready", "failed"]:
+        """Return transient startup readiness, never persisted to history or preferences."""
+        return self._preparation_status
+
+    async def prepare_startup(self) -> None:
+        """Adopt one prepared catalog on the mounted session without replacing its identity.
+
+        The TUI owns task cancellation; this session serializes duplicate callers.
+        All fallible capability/usage derivation completes before the no-await commit.
+        Failure retains the route and unknown limits for explicit retry or authentication.
+
+        Raises:
+            ModelPreparationRequiredError: Preparation failed with safe recovery guidance.
+            asyncio.CancelledError: The owning TUI was closed.
+        """
+        async with self._preparation_lock:
+            if self._preparation_status == "ready":
+                return
+            self._preparation_status = "pending"
+            assert self._config is not None
+            startup_config = self._config
+            try:
+                snapshot = await ModelCatalogService.prepare_models(
+                    model_names=self._configured_model_names(config=self._config)
+                )
+                if self._config is not startup_config:
+                    return
+                self._require_prepared_openrouter_route(config=self._config, snapshot=snapshot)
+                reasoning = clamp_reasoning_level(
+                    model_name=self.active_model_name,
+                    requested_level=self.active_reasoning_level,
+                    snapshot=snapshot,
+                )
+                usage = self._build_usage_snapshot(snapshot=snapshot, reasoning_level=reasoning)
+            except BaseException as error:
+                if self._config is not startup_config:
+                    if isinstance(error, asyncio.CancelledError):
+                        raise
+                    return
+                self._preparation_status = "failed"
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+                if not isinstance(error, Exception):
+                    raise
+                raise ModelPreparationRequiredError(
+                    "Model preparation failed; use /auth or /model refresh to retry."
+                ) from None
+            self._catalog_snapshot = snapshot
+            self._active_reasoning_level = reasoning
+            self._usage_snapshot = usage
+            self._preparation_status = "ready"
+
+    @classmethod
+    async def prepare(cls, *, config: SessionConfigDAO) -> "SloAgentSession":
+        """Prepare configured routes before constructing a strict runtime session.
+
+        WHAT: Captures one catalog generation through the existing preparation
+            seam, then constructs the lazy session from that exact snapshot.
+        WHO: Headless and programmatic dynamic-route callers use this gateway.
+        WHEN: Before inference; construction itself remains network-free.
+
+        Args:
+            config (SessionConfigDAO): Resolved direct route or configured pool.
+
+        Returns:
+            SloAgentSession: Session initialized from the prepared generation.
+
+        Raises:
+            ModelPreparationRequiredError: A configured route remains unavailable.
+        """
+        model_names: tuple[str, ...] = cls._configured_model_names(config=config)
+        snapshot: ModelCatalogSnapshotDAO = await ModelCatalogService.prepare_models(model_names=model_names)
+        return cls.build(config=config, catalog_snapshot=snapshot)
+
+    @staticmethod
+    def _configured_model_names(*, config: SessionConfigDAO) -> tuple[str, ...]:
+        """Return every exact configured route requiring one admission decision.
+
+        WHAT: Projects the direct selection or ordered pool without rereading
+            defaults or environment configuration.
+        WHO: ``prepare`` calls this before the catalog gateway.
+        WHEN: Once for each explicit async session preparation.
+
+        Args:
+            config (SessionConfigDAO): Session selection and optional pool.
+
+        Returns:
+            tuple[str, ...]: Direct configured name or all ordered pool names.
+        """
+        if config.model_pool_dao is not None:
+            return tuple(entry.model_name for entry in config.model_pool_dao.entries)
+        if config.model_name is not None:
+            return (config.model_name,)
+        return (str(cfg("DEFAULT_MODEL_NAME")),)
+
+    @staticmethod
+    def _require_prepared_openrouter_route(
+        *,
+        config: SessionConfigDAO,
+        snapshot: Optional[ModelCatalogSnapshotDAO],
+    ) -> None:
+        """Reject a direct qualified route that lacks prepared snapshot evidence.
+
+        WHAT: Prevents synchronous session initialization from resolving unknown
+            OpenRouter reasoning/usage or reaching a lazy factory.
+        WHO: ``build`` calls this before constructing a configured session.
+        WHEN: Only at strict construction; injected prebuilt agents bypass it.
+
+        Args:
+            config (SessionConfigDAO): Requested model selection.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Candidate prepared view.
+
+        Raises:
+            ModelPreparationRequiredError: A qualified route is missing or invalid.
+        """
+        model_names: tuple[str, ...] = SloAgentSession._configured_model_names(config=config)
+        if not any(model_name.startswith("openrouter:") for model_name in model_names):
+            return
+        if snapshot is None:
+            raise ModelPreparationRequiredError("Catalog preparation required for OpenRouter routes.")
+        for model_name in model_names:
+            if not model_name.startswith("openrouter:"):
+                continue
+            try:
+                entry = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
+                ModelCatalogService._validate_admission(entry=entry, now=datetime.now(tz=timezone.utc))
+            except ValueError as error:
+                raise ModelPreparationRequiredError(
+                    f"Catalog preparation required for '{model_name}'; refresh OpenRouter models."
+                ) from error
 
     async def hydrate_transcript_entries(self) -> list["TranscriptEntryDAO"]:
         """Load replay transcript entries for the session (sub-spec 05.e; feature 15).
@@ -646,6 +828,7 @@ class SloAgentSession:
             tools=all_tools,
             append_system_prompt=self._config.append_system_prompt,
             plugin_dispatcher=self._plugin_dispatcher,
+            snapshot=self.catalog_snapshot,
         )
 
     def _load_plugins(self) -> None:
@@ -909,34 +1092,62 @@ class SloAgentSession:
         Returns:
             ReasoningLevel: Seeded canonical reasoning level.
         """
+        if self._preparation_status != "ready":
+            return config.reasoning_level or "off" if config is not None else "off"
         if config is not None and config.reasoning_level is not None:
             return clamp_reasoning_level(
                 model_name=self.active_model_name,
                 requested_level=config.reasoning_level,
+                snapshot=self.catalog_snapshot,
             )
-        return default_reasoning_level_for_model(model_name=self.active_model_name)
+        return default_reasoning_level_for_model(
+            model_name=self.active_model_name, snapshot=self.catalog_snapshot
+        )
 
-    def _build_usage_snapshot(self) -> SessionUsageSnapshotDAO:
+    def _build_usage_snapshot(
+        self,
+        *,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+        reasoning_level: Optional[ReasoningLevel] = None,
+    ) -> SessionUsageSnapshotDAO:
         """Build the current TUI-facing usage snapshot.
 
         Reads the **routed** model name (the pool member currently active, or the
         configured name when single-model / not yet built) so usage, reasoning,
         defaults, and the rate policy all track the model that actually ran.
 
+        Args:
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Candidate startup view;
+                defaults to the current admitted view.
+            reasoning_level (Optional[ReasoningLevel]): Candidate clamped level;
+                defaults to the active level.
+
         Returns:
             SessionUsageSnapshotDAO: Current runtime usage snapshot.
         """
+        if self._preparation_status != "ready" and snapshot is None:
+            return SessionUsageSnapshotDAO(
+                active_model_name=self.active_model_name,
+                active_reasoning_level=self.active_reasoning_level,
+            )
+        snapshot = snapshot or self.catalog_snapshot
+        reasoning_level = reasoning_level or self.active_reasoning_level
         routed_model_name: str = self._resolve_active_model_name() or self.active_model_name
         resolved_reasoning = resolve_reasoning_config(
             model_name=routed_model_name,
-            requested_level=self.active_reasoning_level,
+            requested_level=reasoning_level,
+            snapshot=snapshot,
         )
-        model_defaults: dict[str, object] = dict(MODEL_DEFAULTS.get(routed_model_name, {}))
-        policy: ModelRateLimitPolicyDAO = policy_for_model(model_name=routed_model_name)
+        model_defaults: dict[str, object] = dict(
+            defaults_for_model(model_name=routed_model_name, snapshot=snapshot)
+            if snapshot is not None
+            else MODEL_DEFAULTS.get(routed_model_name, {})
+        )
+        policy: ModelRateLimitPolicyDAO = policy_for_model(model_name=routed_model_name, snapshot=snapshot)
         latest_turn: TokenUsageTotalsDAO = self._latest_turn_usage_totals()
         return SessionUsageSnapshotDAO(
             active_model_name=routed_model_name,
-            active_reasoning_level=self.active_reasoning_level,
+            active_reasoning_level=reasoning_level,
             provider_effort=resolved_reasoning.provider_effort,
             provider_budget_tokens=resolved_reasoning.provider_budget_tokens,
             output_cap_tokens=int_or_none(value=model_defaults.get("max_tokens")),
@@ -968,6 +1179,7 @@ class SloAgentSession:
             return None
         routed_identity: str = ContextWindowSnapshotService.resolve_model_identity(
             model_name=routed_model_name,
+            snapshot=self.catalog_snapshot,
         )
         if self._context_window_snapshot.model_name != routed_identity:
             return None
@@ -1155,6 +1367,15 @@ class SloAgentSession:
     # ---- Public surface ---------------------------------------------------
 
     @property
+    def catalog_snapshot(self) -> Optional[ModelCatalogSnapshotDAO]:
+        """Return the session's prepared catalog generation without exposing mutation.
+
+        Returns:
+            Optional[ModelCatalogSnapshotDAO]: Prepared session generation, if any.
+        """
+        return self._admitted_run_snapshot or self._catalog_snapshot
+
+    @property
     def agent(self) -> SloAgent:
         """Return the underlying ``SloAgent``, building it on first access."""
         if self._agent is None:
@@ -1328,8 +1549,12 @@ class SloAgentSession:
         model_name: str = self.routed_model_name
         events: Optional[list[SessionHistoryEventDAO]] = await self._existing_history_events()
         if events is None:
-            return ContextWindowSnapshotService.without_history(model_name=model_name)
-        return ContextWindowSnapshotService.build(events=events, model_name=model_name)
+            return ContextWindowSnapshotService.without_history(
+                model_name=model_name, snapshot=self.catalog_snapshot
+            )
+        return ContextWindowSnapshotService.build(
+            events=events, model_name=model_name, snapshot=self.catalog_snapshot
+        )
 
     async def refresh_context_window_snapshot(self) -> SessionUsageSnapshotDAO:
         """Cache a newly measured Context Window Snapshot for the footer.
@@ -1337,6 +1562,8 @@ class SloAgentSession:
         Returns:
             SessionUsageSnapshotDAO: Republished usage snapshot with the cached value.
         """
+        if self._preparation_status != "ready":
+            return self._rebuild_usage_snapshot().model_copy(deep=True)
         self._context_window_snapshot = await self.context_window_snapshot()
         await self._maybe_emit_compaction_advisory(snapshot=self._context_window_snapshot)
         self._sync_usage_snapshot_commit()
@@ -1693,11 +1920,17 @@ class SloAgentSession:
         return result.model_copy(update={"context_window_snapshot": self._context_window_snapshot})
 
     async def should_show_startup_notice(self) -> bool:
-        """Return True when the one-time startup notice should be shown.
+        """Tell the mounted TUI whether to show the existing startup block.
+
+        New sessions show the block once. A launch carrying a model fallback
+        notice shows it again, even on resume, so the explanation is visible
+        and the following tip names the model actually used.
 
         Returns:
-            bool: True for a new session that has not yet recorded the marker.
+            bool: True for a fallback launch or a session without a startup marker.
         """
+        if self._startup_fallback_notice:
+            return True
         if not self._enable_history or self._history_store is None:
             return not self._startup_notice_shown_in_memory
         if not await self._history_store.session_exists(session_id=self._session_id):
@@ -1957,6 +2190,129 @@ class SloAgentSession:
         if self._sub_agent_pool is not None:
             asyncio.ensure_future(self._sub_agent_pool.abort_and_drain())
 
+    async def refresh_model_catalog(self) -> str:
+        """Refresh OpenRouter catalog state through the session admission owner.
+
+        WHAT: Delegates manual catalog refresh to the existing catalog service
+            and adopts its published snapshot only for future submissions.
+        WHO: ``SlashRouter`` calls this for the exact ``/model refresh`` action.
+        WHEN: It may run while a prompt is active because admitted prompts retain
+            their existing snapshot.
+
+        Returns:
+            str: Fixed safe catalog outcome suitable for transcript rendering.
+        """
+        result = await ModelCatalogService.refresh(provider=ProviderName.OPENROUTER, force=True)
+        snapshot = ModelCatalogService.load()
+        if result.status in {"fresh", "refreshed"}:
+            self._catalog_snapshot = snapshot
+        count = sum(
+            entry.provider is ProviderName.OPENROUTER
+            and entry.visible_in_picker
+            and entry.availability == "available"
+            for entry in snapshot.entries.values()
+        )
+        checked_at = ModelCatalogService.lifecycle_status().catalog_checked_at
+        checked = checked_at.isoformat(timespec="seconds") if checked_at is not None else "unknown"
+        return f"{result.safe_message[:140]} {count} models; last complete check: {checked}."
+
+    async def prepare_model_selection(self, *, model_name: str) -> str:
+        """Prepare and atomically commit one operator-selected route.
+
+        WHAT: Validates the effective provider credential and requested route,
+            then commits the complete selection only while the prompt lock is idle.
+        WHO: ``SlashRouter`` invokes it for ``/model <canonical-route>``.
+        WHEN: Runs outside a prompt; preparation may await catalog work before the
+            method reacquires the lock for its final commit.
+
+        Args:
+            model_name (str): Exact canonical route selected by the operator.
+
+        Returns:
+            str: Safe success or actionable preparation outcome.
+        """
+        if self._preparation_status == "pending" and model_name.startswith("openrouter:"):
+            return "model preparation is pending; wait before selecting a model"
+        if self.is_running:
+            return "cannot switch models while a prompt is in flight"
+        try:
+            self._validate_model_selection_credential(model_name=model_name)
+            snapshot: ModelCatalogSnapshotDAO = await ModelCatalogService.prepare_models(
+                model_names=(model_name,)
+            )
+        except ModelPreparationRequiredError:
+            return f"model '{model_name}' is unavailable; run /model refresh or /auth"
+        except ValueError as error:
+            return str(error)
+        async with self._lock:
+            if self._preparation_status == "pending" and model_name.startswith("openrouter:"):
+                return "model preparation is pending; wait before selecting a model"
+            if self.is_running:
+                return "cannot switch models while a prompt is in flight"
+            self._commit_model_selection(model_name=model_name, snapshot=snapshot)
+        try:
+            UserPreferencesStore.upsert(model_name=model_name)
+        except OSError:
+            return f"active model switched to {model_name}. Preference was not saved."
+        return f"active model switched to {model_name}. Preference saved."
+
+    def _validate_model_selection_credential(self, *, model_name: str) -> None:
+        """Require credentials for the exact provider selected by the operator.
+
+        WHAT: Restores provider authentication validation at the session boundary
+            before catalog preparation or preference mutation.
+        WHO: ``prepare_model_selection`` calls this for every direct selection.
+        WHEN: Before an asynchronous catalog operation begins.
+
+        Args:
+            model_name (str): Canonical direct or OpenRouter route.
+
+        Raises:
+            ValueError: If the provider has no effective credential.
+        """
+        provider: ProviderName = provider_for_model(model_name=model_name)
+        CredentialResolver.require(provider=provider)
+
+    def _commit_model_selection(
+        self,
+        *,
+        model_name: str,
+        snapshot: ModelCatalogSnapshotDAO,
+    ) -> None:
+        """Commit a prepared selection after every fallible local value is resolved.
+
+        WHAT: Derives the new reasoning level before replacing session route,
+            pool, snapshot, and lazy-agent state together.
+        WHO: ``prepare_model_selection`` calls this while holding the prompt lock.
+        WHEN: After route membership and credential validation have succeeded.
+
+        Args:
+            model_name (str): Prepared route to activate.
+            snapshot (ModelCatalogSnapshotDAO): Exact prepared catalog generation.
+        """
+        if not self._allows_model_switching:
+            raise RuntimeError(
+                "Cannot switch models on a pre-built SloAgentSession. "
+                "Build the session from SessionConfigDAO instead."
+            )
+        resolved_reasoning_level: ReasoningLevel = clamp_reasoning_level(
+            model_name=model_name,
+            requested_level=self.active_reasoning_level,
+            snapshot=snapshot,
+        )
+        assert self._config is not None
+        self._config = self._config.model_copy(
+            update={"model_name": model_name, "model_pool_dao": None, "fallback_notice": None}
+        )
+        self._active_model_name = model_name
+        self._catalog_snapshot = snapshot
+        self._preparation_status = "ready"
+        self._active_reasoning_level = resolved_reasoning_level
+        self._agent = None
+        self._context_window_dirty = True
+        self._context_window_snapshot = None
+        self._rebuild_usage_snapshot()
+
     def switch_model(self, *, model_name: str) -> None:
         """Switch the active model and invalidate lazy-built agent state.
 
@@ -1976,20 +2332,26 @@ class SloAgentSession:
             RuntimeError: If this session wraps a pre-built agent and
                 therefore cannot safely rebind models.
         """
+        if self._preparation_status != "ready":
+            raise RuntimeError("Model preparation required; use the asynchronous selection gateway.")
         if not self._allows_model_switching:
             raise RuntimeError(
                 "Cannot switch models on a pre-built SloAgentSession. "
                 "Build the session from SessionConfigDAO instead."
             )
-        self._active_model_name = model_name
+        resolved_reasoning_level: ReasoningLevel = clamp_reasoning_level(
+            model_name=model_name,
+            requested_level=self.active_reasoning_level,
+            snapshot=self.catalog_snapshot,
+        )
         if self._config is not None and self._config.model_pool_dao is not None:
             log_info(msg="model_switch_clears_pool", model_name=model_name)
-            self._config.model_pool_dao = None
-            self._config.model_name = model_name
-        self._active_reasoning_level = clamp_reasoning_level(
-            model_name=self.active_model_name,
-            requested_level=self.active_reasoning_level,
-        )
+        if self._config is not None:
+            self._config = self._config.model_copy(
+                update={"model_name": model_name, "model_pool_dao": None, "fallback_notice": None}
+            )
+        self._active_model_name = model_name
+        self._active_reasoning_level = resolved_reasoning_level
         self._agent = None
         # The new model may have a smaller context window than the one the
         # post-turn check last validated against; flag a one-shot pre-flight
@@ -2082,6 +2444,8 @@ class SloAgentSession:
             BaseException: The terminal provider or runtime failure when the
                 attempt failed and no retry plan is available.
         """
+        if self._preparation_status != "ready":
+            raise ModelPreparationRequiredError("Model preparation required; use /auth or /model refresh.")
         self._assert_no_prompt_in_flight()
         async with self._session_run_scope():
             plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
@@ -2171,8 +2535,14 @@ class SloAgentSession:
         async with self._lock:
             self._is_running = True
             try:
-                yield
+                await self._prepare_run_snapshot()
+                with CredentialResolver.bind_operation_credential(
+                    credential=self._admitted_openrouter_credential
+                ):
+                    yield
             finally:
+                self._admitted_run_snapshot = None
+                self._admitted_openrouter_credential = None
                 self._is_running = False
 
     def _build_initial_attempt_plan(
@@ -2237,6 +2607,7 @@ class SloAgentSession:
         """
         turn_id: str = self._allocate_turn_id()
         await self._ensure_history_session()
+        self._admit_run_snapshot()
         await self._ensure_agent_ready()
         await self._run_plan_preflight_compaction(
             plan=plan,
@@ -2331,6 +2702,7 @@ class SloAgentSession:
         """
         return policy_for_model(
             model_name=self._resolve_active_model_name() or self.active_model_name,
+            snapshot=self.catalog_snapshot,
         )
 
     def _build_attempt_tracker(
@@ -2848,6 +3220,7 @@ class SloAgentSession:
             stream_failure=tracker.stream_failure,
             provider_signal=tracker.provider_signal,
             preflight_decision=tracker.preflight_decision,
+            originating_provider=self._resolve_active_provider(),
         )
 
     async def _derive_next_attempt_plan(
@@ -3004,6 +3377,8 @@ class SloAgentSession:
     ) -> bool:
         """Return whether a committed stream interruption may continue safely."""
         failure: ProviderStreamFailure | None = result.stream_failure
+        if result.originating_provider is ProviderName.OPENROUTER:
+            return False
         if failure is None:
             return False
         if failure.decision.action is not StreamRecoveryAction.DO_NOT_REPLAY:
@@ -3375,10 +3750,8 @@ class SloAgentSession:
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(
-                        anext(stream),
-                        timeout=stream_timeout_seconds,
-                    )
+                    async with asyncio.timeout(stream_timeout_seconds):
+                        event = await anext(stream)
                 except StopAsyncIteration:
                     break
                 except asyncio.TimeoutError as exc:
@@ -3707,6 +4080,80 @@ class SloAgentSession:
 
     # ---- Agent readiness + history orchestration helpers ------------------
 
+    async def _prepare_run_snapshot(self) -> None:
+        """Validate configured OpenRouter routes once under the submission lock.
+
+        Invoke calls this before history or agent setup. Every retry shares the
+        returned generation; failure leaves selection and the previous agent intact.
+        Injected agents and direct-only sessions retain their existing behavior.
+
+        Raises:
+            ModelPreparationRequiredError: A configured OpenRouter route is unavailable.
+            ValueError: Another configured pool member is invalid.
+        """
+        if self._config is None or self._agent_is_injected:
+            return
+        model_names = self._configured_model_names(config=self._config)
+        if not any(name.startswith("openrouter:") for name in model_names):
+            return
+        credential = CredentialResolver.resolve(provider=ProviderName.OPENROUTER)
+        snapshot = await ModelCatalogService.prepare_models(model_names=model_names)
+        current = CredentialResolver.resolve(provider=ProviderName.OPENROUTER)
+        if credential is None or current is None or credential.access_token != current.access_token:
+            raise ModelPreparationRequiredError("OpenRouter credential changed; run /auth.")
+        self._adopt_prepared_snapshot(snapshot=snapshot, model_names=model_names)
+        self._admitted_openrouter_credential = credential
+        if self._agent_openrouter_fingerprint != credential_fingerprint(access_token=credential.access_token):
+            self._agent = None
+
+    def _adopt_prepared_snapshot(
+        self, *, snapshot: ModelCatalogSnapshotDAO, model_names: tuple[str, ...]
+    ) -> None:
+        """Pin validated metadata and invalidate a stale lazy agent before this run.
+
+        Args:
+            snapshot: Generation returned by the catalog admission gateway.
+            model_names: Complete configured route set, never a filtered pool.
+        """
+        previous = self._agent_catalog_snapshot
+        changed = previous is None or any(
+            previous.entries.get(name) != snapshot.entries.get(name) for name in model_names
+        )
+        reasoning_level = clamp_reasoning_level(
+            model_name=self.active_model_name,
+            requested_level=self.active_reasoning_level,
+            snapshot=snapshot,
+        )
+        self._catalog_snapshot = snapshot
+        self._admitted_run_snapshot = snapshot
+        self._active_reasoning_level = reasoning_level
+        if changed:
+            self._agent = None
+            self._context_window_dirty = True
+            self._context_window_snapshot = None
+        self._rebuild_usage_snapshot()
+
+    def _admit_run_snapshot(self) -> None:
+        """Freeze this submission's prepared generation before lazy agent construction.
+
+        WHAT: Copies the session-prepared snapshot to the admitted-run slot so
+            later global publication cannot affect the current prompt.
+        WHO: ``_prepare_attempt_context`` calls this inside the prompt lock.
+        WHEN: Once at initial-attempt admission, before any factory invocation.
+
+        Raises:
+            ModelPreparationRequiredError: A direct OpenRouter route has no
+                prepared catalog generation.
+        """
+        if self._admitted_run_snapshot is not None:
+            return
+        if self._config is not None:
+            self._require_prepared_openrouter_route(
+                config=self._config,
+                snapshot=self._catalog_snapshot,
+            )
+        self._admitted_run_snapshot = self._catalog_snapshot
+
     async def _ensure_agent_ready(self) -> None:
         """Refresh OAuth creds if needed, then lazy-build the agent.
 
@@ -3722,7 +4169,13 @@ class SloAgentSession:
         if self._agent is not None:
             return
         await self._refresh_oauth_credential_if_needed()
-        self._agent = self._build_agent()
+        with CredentialResolver.bind_build_credential(credential=self._admitted_openrouter_credential):
+            self._agent = self._build_agent()
+        self._agent_catalog_snapshot = self.catalog_snapshot
+        credential = self._admitted_openrouter_credential
+        self._agent_openrouter_fingerprint = (
+            credential_fingerprint(access_token=credential.access_token) if credential is not None else None
+        )
 
     def _pool_providers(self) -> list[ProviderName]:
         """Return the distinct providers the session must keep credential-ready.
@@ -3944,7 +4397,7 @@ class SloAgentSession:
                     turn_id=turn_id,
                     payload=SessionHistoryEventPayloadDAO(
                         model_name=record.to_model_name,
-                        error_message=record.error_text,
+                        error_message=record.safe_error_code,
                         metadata={
                             "from_model": record.from_model_name,
                             "to_model": record.to_model_name,
@@ -4203,6 +4656,7 @@ class SloAgentSession:
             should_compact: bool = await CompactionChecker.should_compact(
                 events=compaction_events,
                 model_name=model_name,
+                snapshot=self.catalog_snapshot,
             )
             if not should_compact:
                 return False
@@ -4219,6 +4673,7 @@ class SloAgentSession:
             events=compaction_events,
             model_name=model_name,
             llm=self._agent.llm,
+            snapshot=self.catalog_snapshot,
         )
         await self._history_store.compact_to_boundary(
             session_id=self._session_id,
@@ -4357,6 +4812,7 @@ class SloAgentSession:
                         tool_input=event.payload.tool_input,
                         tool_output=event.payload.tool_output,
                         error_message=event.payload.error_message,
+                        provider_message_extension=event.payload.provider_message_extension,
                         metadata=dict(event.payload.metadata or {}),
                     ),
                 ),

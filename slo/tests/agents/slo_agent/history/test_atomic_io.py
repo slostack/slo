@@ -66,6 +66,31 @@ def test_write_json_round_trip(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == '{\n  "name": "slo"\n}'
 
 
+def test_write_text_with_outcome_when_directory_sync_fails_reports_committed_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-replace directory-sync failure does not falsely report rollback."""
+    path: Path = tmp_path / "state.txt"
+    original_fsync = os.fsync
+    fsync_calls: int = 0
+
+    def fail_directory_sync(file_descriptor: int) -> None:
+        """Fail only the directory fsync after a successful file fsync."""
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("directory sync failed")
+        original_fsync(file_descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_sync)
+
+    outcome = AtomicFileWriter.write_text_with_outcome(path=path, text="state")
+
+    assert outcome.committed is True
+    assert outcome.durability_warning is True
+    assert path.read_text(encoding="utf-8") == "state"
+
+
 def test_write_text_raises_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Filesystem failures propagate to the durable-state owner."""
     path: Path = tmp_path / "state.txt"

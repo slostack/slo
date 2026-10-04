@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Callable, Optional, Sequence
 
 from langchain_core.messages import BaseMessage
 
-from config.ai_model_config import MODEL_DEFAULTS
+from config.ai_model_config import defaults_for_model
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 from src.agents.slo_agent.rate_limit.dao import ModelRateLimitPolicyDAO, RateLimitRetryPlanDAO
 
 __all__ = [
@@ -27,7 +29,9 @@ Defined here (next to ``RateLimitRetryPlanDAO``) so both ``agent.py`` and
 """
 
 
-def policy_for_model(*, model_name: str) -> ModelRateLimitPolicyDAO:
+def policy_for_model(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> ModelRateLimitPolicyDAO:
     """Return the configured local rate policy for one model.
 
     Args:
@@ -36,7 +40,10 @@ def policy_for_model(*, model_name: str) -> ModelRateLimitPolicyDAO:
     Returns:
         ModelRateLimitPolicyDAO: Local request-window and retry policy.
     """
-    defaults: dict[str, object] = dict(MODEL_DEFAULTS.get(model_name, {}))
+    try:
+        defaults: dict[str, object] = dict(defaults_for_model(model_name=model_name, snapshot=snapshot))
+    except ValueError:
+        defaults = {}
     return ModelRateLimitPolicyDAO(
         model_name=model_name,
         requests_per_minute=int_or_none(value=defaults.get("requests_per_minute")),
@@ -90,11 +97,47 @@ def _message_char_length(*, message: BaseMessage) -> int:
         int: Character count used by the chars/4 estimate.
     """
     content = getattr(message, "content", "")
+    content_length: int = _content_char_length(content=content)
+    extension_length: int = _provider_extension_char_length(message=message)
+    return content_length + extension_length
+
+
+def _content_char_length(*, content: object) -> int:
+    """Count the visible content portion of one replayed LangChain message.
+
+    Args:
+        content (object): String, content blocks, or another LangChain-supported value.
+
+    Returns:
+        int: Visible content character count.
+    """
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
         return sum(len(part) if isinstance(part, str) else len(str(part)) for part in content)
     return len(str(content))
+
+
+def _provider_extension_char_length(*, message: BaseMessage) -> int:
+    """Count private replay metadata exactly once for the request estimate.
+
+    Args:
+        message (BaseMessage): One replayed message that may carry a typed provider extension.
+
+    Returns:
+        int: Serialized extension length, or zero when absent or malformed.
+    """
+    from src.agents.providers.message_extension import (
+        PROVIDER_MESSAGE_EXTENSION_KEY,
+        ProviderMessageExtensionDAO,
+    )
+
+    extension_data: object | None = message.additional_kwargs.get(PROVIDER_MESSAGE_EXTENSION_KEY)
+    try:
+        extension: ProviderMessageExtensionDAO = ProviderMessageExtensionDAO.model_validate(extension_data)
+    except ValueError:
+        return 0
+    return len(json.dumps(extension.model_dump(mode="json"), ensure_ascii=False))
 
 
 def retry_plan_from_error(

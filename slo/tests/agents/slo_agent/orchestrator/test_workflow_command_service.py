@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import signal
 from pathlib import Path
 from typing import Callable, Optional
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -659,7 +662,7 @@ class TestResume:
             tmp_path (Path): Test-scoped history root.
             monkeypatch (pytest.MonkeyPatch): Pytest store-transition replacement fixture.
         """
-        from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO, WorkflowRelauncher
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
 
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
         await _write_handle(store=store, state="failed")
@@ -672,51 +675,286 @@ class TestResume:
             AsyncMock(side_effect=WorkflowStateTransitionError("workflow wf-1 is running")),
         )
 
-        with patch.object(
-            WorkflowRelauncher,
-            "invoke",
-            new=AsyncMock(return_value=RelaunchOutcomeDAO(pid=5678)),
-        ):
+        @asynccontextmanager
+        async def rejected_adoption(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Yield a synthetic owned workload without launching a CLI child."""
+            del handle, history_root
+            yield SimpleNamespace(process=SimpleNamespace(pid=5678), activate=lambda *, expected_pid: None)
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=rejected_adoption):
             result: str = await service.resume(workflow_id="wf-1")
 
         assert result == "could not relaunch workflow wf-1: workflow wf-1 is running"
         assert kill.calls == [(5678, signal.SIGTERM)]
         assert len(schedule.scheduled) == 1
+        assert schedule.scheduled[0][0] == 5.0
 
     @pytest.mark.asyncio
+    async def test_resume_retains_adopted_pid_when_capture_activation_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An activated capture failure preserves the durable workload identity.
+
+        The fake ownership represents only the current command-owned workload;
+        it cannot execute ``src.cli run``. Its activation raises after the
+        store has adopted the PID, proving the error path does not roll the
+        handle back to its terminal reservation state.
+        """
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        kill: _KillRecorder = _KillRecorder()
+        service: WorkflowCommandService = _build_service(store=store, kill=kill)
+
+        @asynccontextmanager
+        async def activation_fails(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Yield a fake owned workload and fail only at post-adoption activation."""
+            del handle, history_root
+
+            def activate(*, expected_pid: int) -> None:
+                """Fail after verifying the current test-owned workload PID."""
+                assert expected_pid == 5678
+                raise OSError("controlled capture activation failure")
+
+            yield SimpleNamespace(process=SimpleNamespace(pid=5678), activate=activate)
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=activation_fails):
+            result: str = await service.resume(workflow_id="wf-1")
+
+        handle = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-1")
+        assert result == "workflow wf-1 resume failed"
+        assert handle is not None
+        assert handle.state == "launching"
+        assert handle.pid == 5678
+        assert handle.capture_health is not None
+        assert handle.capture_health.failure_code == "capture_writer_failed"
+        assert kill.calls == []
+
+    @pytest.mark.asyncio
+    async def test_resume_cancellation_before_durable_adoption_stops_owned_workload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancellation before relaunch adoption stops only the owned replacement.
+
+        WHAT: Holds the store adoption await after the context manager yields, then
+            cancels the command and verifies its private replacement process is
+            cooperatively stopped and the reservation is restored.
+        WHO: The workflow command-service lifecycle suite exercises this boundary.
+        WHEN: Whenever resume cancellation or ownership transfer changes.
+
+        Args:
+            tmp_path (Path): Test-scoped durable history root.
+            monkeypatch (pytest.MonkeyPatch): Controlled store-adoption fixture.
+        """
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        kill: _KillRecorder = _KillRecorder()
+        service: WorkflowCommandService = _build_service(store=store, kill=kill)
+        adoption_started: asyncio.Event = asyncio.Event()
+        release_adoption: asyncio.Event = asyncio.Event()
+
+        async def blocked_relaunch(**_: object) -> WorkflowHandleDAO:
+            """Block the durable adoption boundary until the test cancels it."""
+            adoption_started.set()
+            await release_adoption.wait()
+            raise AssertionError("cancelled adoption must not complete")
+
+        monkeypatch.setattr(store, "relaunch", blocked_relaunch)
+
+        @asynccontextmanager
+        async def owned_replacement(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Yield only the synthetic replacement owned by this command."""
+            del handle, history_root
+            yield SimpleNamespace(process=SimpleNamespace(pid=5678), activate=lambda *, expected_pid: None)
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=owned_replacement):
+            resume_task: asyncio.Task[str] = asyncio.create_task(service.resume(workflow_id="wf-1"))
+            await adoption_started.wait()
+            resume_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await resume_task
+
+        handle: WorkflowHandleDAO | None = await store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-1",
+        )
+        assert kill.calls == [(5678, signal.SIGTERM)]
+        assert handle is not None
+        assert handle.state == "failed"
+
+    @pytest.mark.asyncio
+    async def test_resume_cancellation_after_durable_adoption_preserves_workload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancellation after adoption leaves the durably retained workload unsignalled.
+
+        WHAT: Cancels the activation await only after the store persists the
+            actual replacement PID, preserving its lifecycle and identity.
+        WHO: The workflow command-service lifecycle suite exercises this boundary.
+        WHEN: Whenever post-adoption cancellation handling changes.
+
+        Args:
+            tmp_path (Path): Test-scoped durable history root.
+            monkeypatch (pytest.MonkeyPatch): Post-adoption activation fixture.
+        """
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        kill: _KillRecorder = _KillRecorder()
+        service: WorkflowCommandService = _build_service(store=store, kill=kill)
+        activation_started: asyncio.Event = asyncio.Event()
+
+        @asynccontextmanager
+        async def adopted_replacement(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Yield a synthetic retained workload with a cancellable activation seam."""
+            del handle, history_root
+
+            async def activate(*, expected_pid: int) -> None:
+                """Block after asserting the durable workload identity."""
+                assert expected_pid == 5678
+                activation_started.set()
+                await asyncio.Event().wait()
+
+            yield SimpleNamespace(process=SimpleNamespace(pid=5678), activate=activate)
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=adopted_replacement):
+            resume_task: asyncio.Task[str] = asyncio.create_task(service.resume(workflow_id="wf-1"))
+            await activation_started.wait()
+            resume_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await resume_task
+
+        handle: WorkflowHandleDAO | None = await store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-1",
+        )
+        assert kill.calls == []
+        assert handle is not None
+        assert handle.state == "launching"
+        assert handle.pid == 5678
+
     async def test_resume_reports_spawn_failure_without_state_change(self, tmp_path: Path) -> None:
         """A failed relaunch leaves the durable terminal handle unchanged."""
-        from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
 
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
         await _write_handle(store=store, state="stalled")
         service: WorkflowCommandService = _build_service(store=store)
-        with patch(
-            "src.agents.slo_agent.orchestrator.relaunch.WorkflowRelauncher.invoke",
-            new=AsyncMock(return_value=RelaunchOutcomeDAO(error="workflow resume failed: unavailable")),
-        ):
+
+        @asynccontextmanager
+        async def failed_adoption(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Raise before yielding so no workload can be launched by this test."""
+            del handle, history_root
+            raise OSError("workflow resume failed: unavailable")
+            yield
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=failed_adoption):
             result: str = await service.resume(workflow_id="wf-1")
 
         handle: Optional[WorkflowHandleDAO] = await store.read(
             owner_session_id=_OWNER_SESSION_ID,
             workflow_id="wf-1",
         )
-        assert result == "workflow resume failed: unavailable"
+        assert result == "workflow wf-1 resume failed"
         assert handle is not None
         assert handle.state == "stalled"
 
     @pytest.mark.asyncio
-    async def test_resume_confirms_with_new_pid(self, tmp_path: Path) -> None:
-        """A successful relaunch moves the handle to launching and names its pid."""
-        from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO
+    async def test_resume_admits_one_spawn_across_distinct_service_instances(self, tmp_path: Path) -> None:
+        """A durable reservation prevents a second service instance from spawning.
+
+        WHAT: Holds the first controlled relaunch at its workload-execution
+            boundary, then proves a second command service sharing the same
+            store returns without reaching that boundary.
+        WHO: The workflow command-service concurrency regression suite invokes
+            this test.
+        WHEN: Whenever durable resume admission or its locking changes.
+
+        Args:
+            tmp_path (Path): Test-scoped durable history root.
+        """
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        first_service: WorkflowCommandService = _build_service(store=store)
+        second_service: WorkflowCommandService = _build_service(store=store)
+        first_spawn_entered: asyncio.Event = asyncio.Event()
+        release_first_spawn: asyncio.Event = asyncio.Event()
+        workload_execution_count: int = 0
+
+        @asynccontextmanager
+        async def controlled_adoption(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Record ownership entry and yield a synthetic workload only."""
+            del handle, history_root
+            nonlocal workload_execution_count
+            workload_execution_count += 1
+            if workload_execution_count == 1:
+                first_spawn_entered.set()
+                await release_first_spawn.wait()
+            pid: int = 5678 if workload_execution_count == 1 else 9876
+            yield SimpleNamespace(process=SimpleNamespace(pid=pid), activate=lambda *, expected_pid: None)
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=controlled_adoption):
+            first_resume: asyncio.Task[str] = asyncio.create_task(first_service.resume(workflow_id="wf-1"))
+            await first_spawn_entered.wait()
+            second_result: str = await second_service.resume(workflow_id="wf-1")
+            release_first_spawn.set()
+            first_result: str = await first_resume
+
+        assert workload_execution_count == 1
+        assert second_result == "workflow wf-1 is launching — only stalled or failed workflows can be resumed"
+        assert first_result == (
+            "workflow wf-1 resumed (pid 5678); history replaying — state advances to running on the first heartbeat"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resume_restores_reservation_when_spawn_fails(self, tmp_path: Path) -> None:
+        """Spawn failure rolls the durable reservation back to its resumable state."""
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
 
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
         await _write_handle(store=store, state="failed")
         service: WorkflowCommandService = _build_service(store=store)
-        with patch(
-            "src.agents.slo_agent.orchestrator.relaunch.WorkflowRelauncher.invoke",
-            new=AsyncMock(return_value=RelaunchOutcomeDAO(pid=5678)),
-        ):
+
+        @asynccontextmanager
+        async def failed_adoption(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Fail before workload ownership becomes available."""
+            del handle, history_root
+            raise OSError("workflow resume failed: unavailable")
+            yield
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=failed_adoption):
+            result: str = await service.resume(workflow_id="wf-1")
+
+        handle: Optional[WorkflowHandleDAO] = await store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id="wf-1",
+        )
+        assert result == "workflow wf-1 resume failed"
+        assert handle is not None
+        assert handle.state == "failed"
+
+    @pytest.mark.asyncio
+    async def test_resume_confirms_with_new_pid(self, tmp_path: Path) -> None:
+        """A successful relaunch moves the handle to launching and names its pid."""
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        service: WorkflowCommandService = _build_service(store=store)
+
+        @asynccontextmanager
+        async def successful_adoption(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Yield a controlled process-shaped object without spawning a child."""
+            del handle, history_root
+            yield SimpleNamespace(process=SimpleNamespace(pid=5678), activate=lambda *, expected_pid: None)
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=successful_adoption):
             result: str = await service.resume(workflow_id="wf-1")
 
         handle: Optional[WorkflowHandleDAO] = await store.read(

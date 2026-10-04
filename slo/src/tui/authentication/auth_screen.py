@@ -15,6 +15,7 @@ from config.logger import log_error, log_info
 from src.auth.credential_dao import (
     AuthenticationFileDAO,
     AuthType,
+    OpenRouterAuthenticationResultDAO,
     CredentialDAO,
     ProviderName,
 )
@@ -29,6 +30,7 @@ from src.auth.oauth_errors import (
     OAuthTimeoutError,
     OAuthTokenError,
 )
+from src.auth.openrouter_authentication import OpenRouterAuthenticationService
 from src.auth.oauth_provider import OAuthLoginMethod
 from src.auth.provider_factory import OAuthAuthenticationFlow, OAuthFactory, OAuthFlowFactory
 from src.tui.authentication.auth_state import ScreenState
@@ -65,6 +67,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         *,
         store: Optional[CredentialStore] = None,
         oauth_factory: Optional[OAuthFactory] = None,
+        openrouter_factory: Optional[Callable[[], OpenRouterAuthenticationService]] = None,
     ) -> None:
         """Wire up dependencies with production defaults.
 
@@ -75,10 +78,17 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
                 ``ProviderName`` and login method to a fresh flow. Defaults to
                 an ``OAuthFlowFactory()`` instance, whose ``__call__`` builds the
                 selected browser or device flow.
+            openrouter_factory: Builds one candidate-verification service per submission.
         """
         super().__init__()
         self._store: CredentialStore = store or CredentialStore()
         self._oauth_factory: OAuthFactory = oauth_factory or OAuthFlowFactory()
+        self._openrouter_factory = openrouter_factory or (
+            lambda: OpenRouterAuthenticationService(store=self._store)
+        )
+        self._openrouter_service: Optional[OpenRouterAuthenticationService] = None
+        self._api_key_task: Optional[asyncio.Task[None]] = None
+        self._api_key_attempt = 0
         self._state: ScreenState = ScreenState.PROVIDER
         self._chosen_provider: Optional[ProviderName] = None
         self._active_login_methods: frozenset[OAuthLoginMethod] = frozenset()
@@ -96,6 +106,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
 
     async def action_cancel(self) -> None:
         """Dismiss with ``None``; cancel the OAuth task if it is in flight."""
+        await self._cancel_api_key_attempt()
         await self._cancel_oauth_if_running()
         self._discard_authorization_response_queue()
         self.dismiss(None)
@@ -105,18 +116,19 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
     async def on_provider_select_widget_chosen(self, event: ProviderSelectWidget.Chosen) -> None:
         """Move to method step, or directly to API-key for API-key-only providers.
 
-        Kimi For Coding only supports API-key authentication, so the
-        ``MethodSelectWidget`` step is skipped for that provider.
+        The factory's empty OAuth capability set skips method selection for
+        API-key-only providers.
 
         Args:
             event (ProviderSelectWidget.Chosen): Carries ``provider``.
         """
+        self._openrouter_service = None
         self._chosen_provider = event.provider
-        if event.provider is ProviderName.KIMI_FOR_CODING:
+        self._active_login_methods = self._login_methods_for(provider=event.provider)
+        if not self._active_login_methods:
             await self._swap_step(widget=ApiKeyInputWidget(provider=event.provider))
             self._state = ScreenState.API_KEY
             return
-        self._active_login_methods = self._login_methods_for(provider=event.provider)
         await self._swap_step(
             widget=MethodSelectWidget(
                 provider=event.provider,
@@ -190,12 +202,15 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
     # ---- API-key handlers ----
 
     async def on_api_key_input_widget_submitted(self, event: ApiKeyInputWidget.Submitted) -> None:
-        """Persist the pasted key and move to success.
+        """Delegate OpenRouter verification or persist an existing direct-provider key.
 
         Args:
             event (ApiKeyInputWidget.Submitted): Carries the raw key.
         """
         assert self._chosen_provider is not None
+        if self._chosen_provider is ProviderName.OPENROUTER:
+            self._start_openrouter_attempt(submitted_key=event.api_key)
+            return
         cred: CredentialDAO = CredentialDAO(
             provider=self._chosen_provider,
             auth_type=AuthType.API_KEY,
@@ -209,13 +224,13 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
     async def on_api_key_input_widget_back_requested(self, event: ApiKeyInputWidget.BackRequested) -> None:
         """Re-show method-select, or provider-select for API-key-only providers.
 
-        Kimi For Coding has no method-selection step, so Back from the API-key
-        widget returns directly to provider selection.
+        Providers with no OAuth capabilities return directly to provider selection
+        after any verification attempt has been cancelled and awaited.
         """
         assert self._chosen_provider is not None
-        if self._chosen_provider is ProviderName.KIMI_FOR_CODING:
-            await self._swap_step(widget=ProviderSelectWidget())
-            self._state = ScreenState.PROVIDER
+        await self._cancel_api_key_attempt()
+        if not self._active_login_methods:
+            await self._show_provider_select()
             return
         await self._show_method_select()
 
@@ -227,8 +242,126 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
 
     async def on_success_widget_closed(self, event: SuccessWidget.Closed) -> None:
         """Final dismiss returns the persisted credential."""
+        if self._openrouter_service is not None:
+            self.dismiss(self._openrouter_service.verified_credential())
+            return
         cred: Optional[CredentialDAO] = self._oauth_result() or self._last_persisted()
         self.dismiss(cred)
+
+    def _start_openrouter_attempt(self, *, submitted_key: str) -> None:
+        """Start one tracked service attempt; repeated submissions do nothing.
+
+        Args:
+            submitted_key: Private candidate forwarded only to the service.
+        """
+        if self._api_key_task is not None and not self._api_key_task.done():
+            return
+        self._api_key_attempt += 1
+        self._openrouter_service = self._openrouter_factory()
+        self.query_one(ApiKeyInputWidget).show_status(message="Verifying OpenRouter key…", busy=True)
+        self._api_key_task = asyncio.create_task(
+            self._run_openrouter_attempt(
+                service=self._openrouter_service, submitted_key=submitted_key, attempt=self._api_key_attempt
+            )
+        )
+
+    async def _run_openrouter_attempt(
+        self, *, service: OpenRouterAuthenticationService, submitted_key: str, attempt: int
+    ) -> None:
+        """Apply the current OpenRouter authentication outcome to the API-key step.
+
+        WHAT: Invokes one private candidate verification and paints only its safe,
+            current result.
+        WHO: The tracked task created by ``_start_openrouter_attempt`` calls this.
+        WHEN: Runs after the API-key widget disables duplicate submission and ends
+            when the result is painted, cancelled, or superseded by navigation.
+
+        Args:
+            service (OpenRouterAuthenticationService): Single-use authentication owner.
+            submitted_key (str): Private candidate, never rendered.
+            attempt (int): Token invalidated before navigation cancellation.
+        """
+        result = await self._invoke_openrouter_attempt(service=service, submitted_key=submitted_key)
+        if not self._is_current_openrouter_attempt(attempt=attempt):
+            return
+        await self._paint_openrouter_attempt_result(result=result)
+
+    @staticmethod
+    async def _invoke_openrouter_attempt(
+        *, service: OpenRouterAuthenticationService, submitted_key: str
+    ) -> OpenRouterAuthenticationResultDAO:
+        """Invoke one service attempt while preserving cancellation semantics.
+
+        WHAT: Delegates private candidate verification to the authentication owner.
+        WHO: ``_run_openrouter_attempt`` uses this narrow await boundary.
+        WHEN: Runs once per enabled API-key Save action before presentation logic.
+
+        Args:
+            service (OpenRouterAuthenticationService): Single-use authentication owner.
+            submitted_key (str): Private candidate forwarded only to the service.
+
+        Returns:
+            OpenRouterAuthenticationResultDAO: The service's safe authentication result.
+        """
+        return await service.invoke(submitted_key=submitted_key)
+
+    def _is_current_openrouter_attempt(self, *, attempt: int) -> bool:
+        """Return whether an authentication result still belongs to the mounted step.
+
+        WHAT: Rejects outcomes invalidated by Back, Cancel, unmount, or a newer save.
+        WHO: ``_run_openrouter_attempt`` checks this after its service await.
+        WHEN: Runs immediately before any result can change the visible modal state.
+
+        Args:
+            attempt (int): Task token captured when the attempt started.
+
+        Returns:
+            bool: True when the task still owns the current API-key presentation.
+        """
+        return attempt == self._api_key_attempt
+
+    async def _paint_openrouter_attempt_result(
+        self, *, result: OpenRouterAuthenticationResultDAO
+    ) -> None:
+        """Paint the safe result from the current OpenRouter authentication attempt.
+
+        WHAT: Routes verified results to success and non-verified results to the
+            still-mounted API-key widget.
+        WHO: ``_run_openrouter_attempt`` calls this after validating the task token.
+        WHEN: Runs once after a service attempt completes without cancellation.
+
+        Args:
+            result (OpenRouterAuthenticationResultDAO): Safe result returned by the authentication service.
+        """
+        if result.key_verified:
+            await self._swap_step(widget=SuccessWidget(subject=None, message=result.safe_message))
+            self._state = ScreenState.SUCCESS
+            return
+        self.query_one(ApiKeyInputWidget).show_status(message=result.safe_message, busy=False)
+
+    async def _cancel_api_key_attempt(self) -> None:
+        """Invalidate late results, cancel and await work before modal navigation."""
+        self._api_key_attempt += 1
+        task = self._api_key_task
+        self._api_key_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        if self._openrouter_service is not None and self._openrouter_service.result.replacement_saved:
+            self.notify("Authentication cancelled; verified key was saved.")
+
+    async def _show_provider_select(self) -> None:
+        """Replace the current step with the ordinary provider selector."""
+        await self._swap_step(widget=ProviderSelectWidget())
+        self._state = ScreenState.PROVIDER
+
+    async def on_unmount(self) -> None:
+        """Await authentication teardown when the modal is removed externally."""
+        await self._cancel_api_key_attempt()
 
     # ---- Internal helpers ----
 

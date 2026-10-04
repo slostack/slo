@@ -152,7 +152,7 @@ class TestPilotVisibleSelection:
                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
             await pilot.pause(delay=0.1)
             block.scroll_visible(animate=False)
-            await pilot.pause(delay=0.1)
+            await pilot.pause(delay=1.0)  # Wait for the queued mount's follow pin and layout refresh.
             if kind == "user":
                 block.scroll_visible(top=True, animate=False)
                 await pilot.pause(delay=0.1)

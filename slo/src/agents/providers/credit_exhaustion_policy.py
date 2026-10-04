@@ -41,6 +41,10 @@ class ProviderErrorKind(Enum):
     STREAM_DISCONNECTED = auto()
     CONTEXT_OVERFLOW = auto()
     REQUEST_BODY_TOO_LARGE = auto()
+    AUTHENTICATION_FAILED = auto()
+    POLICY_REJECTED = auto()
+    MODEL_UNAVAILABLE = auto()
+    INVALID_PROVIDER_REQUEST = auto()
     OTHER = auto()
 
 
@@ -203,10 +207,15 @@ class ProviderErrorClassifier:
         """
         status_code: int | None = _extract_status_code(error=error)
         headers: Mapping[str, str] = _extract_headers(error=error)
+        retry_after_seconds = _positive_retry_after(headers=headers)
+        if provider == ProviderName.OPENROUTER:
+            retained = getattr(error, "retry_after_seconds", None)
+            if type(retained) is int and retained > 0:
+                retry_after_seconds = retained
         return ProviderErrorSignalDAO(
             kind=cls._inspect_kind(error=error, provider=provider, status_code=status_code),
             status_code=status_code,
-            retry_after_seconds=_positive_retry_after(headers=headers),
+            retry_after_seconds=retry_after_seconds,
             request_limit=_positive_header_value(headers=headers, key="x-ratelimit-limit-requests"),
             token_limit=_positive_header_value(headers=headers, key="x-ratelimit-limit-tokens"),
         )
@@ -229,6 +238,10 @@ class ProviderErrorClassifier:
         Returns:
             ProviderErrorKind: Provider-authoritative rejection category.
         """
+        if provider == ProviderName.OPENROUTER:
+            if status_code == 413:
+                return ProviderErrorKind.REQUEST_BODY_TOO_LARGE
+            return cls._classify_openrouter(error=error, status_code=status_code)
         if StreamRecoveryService.is_stream_disconnection(exc=error):
             return ProviderErrorKind.STREAM_DISCONNECTED
         if status_code == 413:
@@ -263,6 +276,92 @@ class ProviderErrorClassifier:
     # ------------------------------------------------------------------
     # Per-provider classifiers
     # ------------------------------------------------------------------
+
+    @classmethod
+    def _classify_openrouter(
+        cls,
+        *,
+        error: BaseException,
+        status_code: int | None,
+    ) -> ProviderErrorKind:
+        """Classify safe OpenRouter signals without parsing raw upstream text."""
+        from src.integrations.openrouter.exceptions import (
+            OpenRouterAuthenticationError,
+            OpenRouterProtocolError,
+        )
+
+        error_type = getattr(error, "error_type", None)
+        if (
+            error_type == "authentication"
+            or isinstance(error, OpenRouterAuthenticationError)
+            or status_code == 401
+        ):
+            return ProviderErrorKind.AUTHENTICATION_FAILED
+        if status_code == 403 or error_type in {"permission_denied", "content_policy_violation", "refusal"}:
+            return ProviderErrorKind.POLICY_REJECTED
+        if status_code is None and StreamRecoveryService.is_stream_disconnection(exc=error):
+            return ProviderErrorKind.STREAM_DISCONNECTED
+        if status_code == 404 or error_type in {"model_not_found", "not_found"}:
+            return ProviderErrorKind.MODEL_UNAVAILABLE
+        if status_code == 402:
+            return cls._openrouter_402_kind(error=error)
+        if status_code == 429 or (status_code in {None, 200} and error_type == "rate_limit_exceeded"):
+            return ProviderErrorKind.RATE_LIMITED
+        if (
+            status_code in {408, 500, 502, 503, 504}
+            or cls._openrouter_error_type_is(
+                error=error,
+                expected="provider_unavailable",
+            )
+            or cls._openrouter_error_type_is(error=error, expected="provider_overloaded")
+            or cls._openrouter_error_type_is(error=error, expected="server_error")
+            or cls._openrouter_error_type_is(
+                error=error,
+                expected="timeout",
+            )
+        ):
+            return ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE
+        if error_type == "context_length_exceeded":
+            return ProviderErrorKind.CONTEXT_OVERFLOW
+        if isinstance(error, OpenRouterProtocolError) or cls._openrouter_error_type_is(
+            error=error,
+            expected="invalid_request",
+        ):
+            return ProviderErrorKind.INVALID_PROVIDER_REQUEST
+        return ProviderErrorKind.INVALID_PROVIDER_REQUEST
+
+    @staticmethod
+    def _openrouter_error_type_is(*, error: BaseException, expected: str) -> bool:
+        """Compare one normalized OpenRouter type without inspecting raw exception text.
+
+        Args:
+            error (BaseException): Sanitized OpenRouter failure.
+            expected (str): Allowlisted gateway error type.
+
+        Returns:
+            bool: Whether the normalized type exactly equals ``expected``.
+        """
+        return getattr(error, "error_type", None) == expected
+
+    @staticmethod
+    def _openrouter_402_kind(*, error: BaseException) -> ProviderErrorKind:
+        """Classify a gateway budget rejection without inferring account quota state.
+
+        Args:
+            error (BaseException): Sanitized OpenRouter exception carrying validated facts.
+
+        Returns:
+            ProviderErrorKind: Rate-limited only for the documented temporary budget signal.
+        """
+        limit_source: object | None = getattr(error, "limit_source", None)
+        retry_after_seconds: object | None = getattr(error, "retry_after_seconds", None)
+        if limit_source != "openrouter_in_flight_budget":
+            return ProviderErrorKind.CREDIT_EXHAUSTED
+        if not isinstance(retry_after_seconds, int) or isinstance(retry_after_seconds, bool):
+            return ProviderErrorKind.CREDIT_EXHAUSTED
+        return (
+            ProviderErrorKind.RATE_LIMITED if retry_after_seconds > 0 else ProviderErrorKind.CREDIT_EXHAUSTED
+        )
 
     @classmethod
     def _classify_kimi_for_coding(cls, *, error: BaseException) -> ProviderErrorKind:

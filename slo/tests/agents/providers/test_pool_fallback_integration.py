@@ -373,6 +373,37 @@ def _compaction_direction_pool(*, primary: object, secondary: object) -> ModelPo
     )
 
 
+class _OpenRouterSummaryMember(_CapturingMember):
+    """Capturing member that owns a fixed prepared summary cap like the real adapter."""
+
+    def __init__(self, *, ceiling: int, error: Exception | None = None) -> None:
+        """Store the selected member's immutable cap and optional pre-output error."""
+        super().__init__(error=error)
+        self.ceiling = ceiling
+
+    def cap_compaction_summary_kwargs(self, *, kwargs: dict[str, object]) -> dict[str, object]:
+        """Return a detached request mapping bounded by this member's cap."""
+        requested = kwargs.get("max_tokens")
+        assert type(requested) is int
+        return {**kwargs, "max_tokens": min(requested, self.ceiling)}
+
+
+def _openrouter_summary_pool(*, primary: object, secondary: object) -> ModelPool:
+    """Build a pool whose fallback's concrete member owns a smaller summary cap."""
+    primary_name = "openrouter:vendor/primary"
+    secondary_name = "openrouter:vendor/secondary"
+    return ModelPool(
+        pool_dao=ModelPoolDAO(
+            entries=[
+                ModelPoolEntryDAO(model_name=primary_name, provider=ProviderName.OPENROUTER, priority=0),
+                ModelPoolEntryDAO(model_name=secondary_name, provider=ProviderName.OPENROUTER, priority=1),
+            ]
+        ),
+        models={primary_name: cast(BaseChatModel, primary), secondary_name: cast(BaseChatModel, secondary)},
+        request_adapter=adapt_chatgpt_backend_request,
+    )
+
+
 class TestPoolCompactionFallbackDirections:
     """85.a.4 §2 R2 — a pre-output fallback re-derives the correct lane shape."""
 
@@ -405,6 +436,23 @@ class TestPoolCompactionFallbackDirections:
         assert secondary.received_kwargs == {"instructions": "You are a conversation compactor"}
         assert secondary.received_messages is not None
         assert all(not isinstance(m, SystemMessage) for m in secondary.received_messages)
+
+    async def test_openrouter_fallback_uses_smaller_selected_member_cap_for_summary(self) -> None:
+        """A pre-output fallback recomputes the summary cap from its selected OpenRouter entry."""
+        secondary = _OpenRouterSummaryMember(ceiling=500)
+        pool = _openrouter_summary_pool(
+            primary=_OpenRouterSummaryMember(ceiling=3000, error=_RateLimitError()),
+            secondary=secondary,
+        )
+
+        result = await pool._agenerate(
+            messages=_SUMMARY_MESSAGES,
+            max_tokens=3000,
+            _slo_compaction_summary=True,
+        )
+
+        assert result.generations[0].message.content == "ok"
+        assert secondary.received_kwargs == {"max_tokens": 500}
 
 
 class TestPoolBindToolsPreservesCooldowns:

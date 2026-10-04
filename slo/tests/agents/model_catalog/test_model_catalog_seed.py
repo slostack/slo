@@ -55,7 +55,7 @@ class TestSeedCatalog:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries["kimi-k3"].reasoning_profile
-        assert profile.supported_levels == ["low", "high", "xhigh"]
+        assert list(profile.supported_levels) == ["low", "high", "xhigh"]
         assert profile.default_level == "xhigh"
         assert profile.provider_effort_map == {
             "low": "low",
@@ -69,7 +69,7 @@ class TestSeedCatalog:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries[model_name].reasoning_profile
-        assert profile.supported_levels == ["off"]
+        assert list(profile.supported_levels) == ["off"]
         assert profile.default_level == "off"
         assert profile.provider_effort_map == {}
 
@@ -299,7 +299,7 @@ class TestAstraSeedEntry:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries["gpt-6-astra"].reasoning_profile
-        assert profile.supported_levels == [
+        assert list(profile.supported_levels) == [
             "off",
             "minimal",
             "low",
@@ -327,7 +327,7 @@ class TestAstraSeedEntry:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries["kimi-k3"].reasoning_profile
-        assert profile.supported_levels == ["low", "high", "xhigh"]
+        assert list(profile.supported_levels) == ["low", "high", "xhigh"]
         assert profile.default_level == "xhigh"
         assert profile.provider_effort_map == {
             "low": "low",

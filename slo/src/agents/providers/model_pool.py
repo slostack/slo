@@ -21,7 +21,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables import RunnableBinding
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
@@ -59,6 +59,22 @@ class ModelPoolEntryDAO(BaseModel):
     cooldown_seconds: int = 300
     rate_limit_cooldown_seconds: int = 60
 
+    @model_validator(mode="after")
+    def _validate_provider_matches_model_name(self) -> "ModelPoolEntryDAO":
+        """Reject an entry whose declared provider disagrees with its route.
+
+        Returns:
+            ModelPoolEntryDAO: This validated entry.
+
+        Raises:
+            ValueError: The provider does not own ``model_name``.
+        """
+        from src.auth.provider_for_model import provider_for_model
+
+        if provider_for_model(model_name=self.model_name) is not self.provider:
+            raise ValueError("Model pool provider does not match model_name.")
+        return self
+
 
 class ModelPoolDAO(BaseModel):
     """Validated list of pool entries; requires at least two entries.
@@ -78,13 +94,13 @@ class RouteSwitchRecordDAO(BaseModel):
         to_model_name (str): Member selected for the replayed request, or the
             empty string when the switch exhausted the pool.
         kind (str): ``ProviderErrorKind`` name that triggered the switch.
-        error_text (str): Truncated stringified provider exception.
+        safe_error_code (str): Fixed safe classification code for route audit.
     """
 
     from_model_name: str
     to_model_name: str
     kind: str
-    error_text: str
+    safe_error_code: str
     provider: ProviderName
     signal: ProviderErrorSignalDAO
 
@@ -120,6 +136,9 @@ def _identity_request_adapter(
     return messages, kwargs
 
 
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
+
+
 class ModelPool(BaseChatModel):
     """Priority-ordered, cooldown-aware, switchable LLM router.
 
@@ -152,6 +171,7 @@ class ModelPool(BaseChatModel):
         models: dict[str, BaseChatModel],
         cooldowns: Optional[dict[str, float]] = None,
         request_adapter: Optional[RequestAdapter] = None,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> None:
         """Initialise the pool.
 
@@ -164,8 +184,11 @@ class ModelPool(BaseChatModel):
                 bound-tools clone so active cooldowns are preserved.
             request_adapter (Optional[RequestAdapter]): Per-member request shaper.
                 Defaults to the identity adapter.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Pinned build-time rate policy;
+                retained by tool-bound clones for cooldown decisions.
         """
         super().__init__()
+        self._snapshot = snapshot
         self._pool_dao: ModelPoolDAO = pool_dao
         self._entries: List[ModelPoolEntryDAO] = sorted(pool_dao.entries, key=lambda e: e.priority)
         self._models: dict[str, BaseChatModel] = models
@@ -319,7 +342,8 @@ class ModelPool(BaseChatModel):
         while True:
             _name, model, entry = self._select_model()
             shaped_messages, shaped_kwargs = self._request_adapter(model, messages, dict(kwargs))
-            underlying, merged_kwargs = self._unwrap_member(model=model, kwargs=shaped_kwargs)
+            member_kwargs = self._cap_openrouter_summary_request(model=model, kwargs=shaped_kwargs)
+            underlying, merged_kwargs = self._unwrap_member(model=model, kwargs=member_kwargs)
             try:
                 return await underlying._agenerate(
                     messages=shaped_messages,
@@ -402,6 +426,32 @@ class ModelPool(BaseChatModel):
                 return entry.model_name, self._models[entry.model_name], entry
         raise AllModelsExhaustedError(cooled_models=[e.model_name for e in self._entries])
 
+    @staticmethod
+    def _cap_openrouter_summary_request(
+        *,
+        model: BaseChatModel,
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Delegate internal summary capping to the selected OpenRouter adapter.
+
+        WHAT: Removes the compacter-only marker and lets the selected concrete
+            adapter enforce its own pinned cap before this pool invokes it.
+        WHO: ``_agenerate`` calls it after ModelPool has selected a member.
+        WHEN: Once for every attempted pool lane, including a pre-output fallback.
+
+        Args:
+            model (BaseChatModel): Selected pool member before low-level unwrapping.
+            kwargs (dict[str, Any]): Adapter-shaped request kwargs.
+
+        Returns:
+            dict[str, Any]: Marker-free kwargs capped by the selected member when supported.
+        """
+        is_summary = kwargs.pop("_slo_compaction_summary", False)
+        cap_summary = getattr(model, "cap_compaction_summary_kwargs", None)
+        if not is_summary or not callable(cap_summary):
+            return kwargs
+        return cap_summary(kwargs=kwargs)
+
     def _unwrap_member(
         self,
         *,
@@ -457,11 +507,11 @@ class ModelPool(BaseChatModel):
         )
         if not should_switch(kind=signal.kind):
             return False
-        self._cool_entry(entry=entry, kind=signal.kind)
+        self._cool_entry(entry=entry, signal=signal)
         self._record_route_switch(from_entry=entry, signal=signal, error=exc)
         return True
 
-    def _cool_entry(self, *, entry: ModelPoolEntryDAO, kind: ProviderErrorKind) -> None:
+    def _cool_entry(self, *, entry: ModelPoolEntryDAO, signal: ProviderErrorSignalDAO) -> None:
         """Record a cooldown for a switched-away member.
 
         Credit exhaustion uses the long ``entry.cooldown_seconds`` (default 300s);
@@ -471,8 +521,9 @@ class ModelPool(BaseChatModel):
 
         Args:
             entry (ModelPoolEntryDAO): The member to cool.
-            kind (ProviderErrorKind): Determines which cooldown duration applies.
+            signal (ProviderErrorSignalDAO): Classification and validated retry advice.
         """
+        kind: ProviderErrorKind = signal.kind
         short_cooldown_kinds = (
             ProviderErrorKind.RATE_LIMITED,
             ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE,
@@ -481,7 +532,26 @@ class ModelPool(BaseChatModel):
         seconds: int = (
             entry.rate_limit_cooldown_seconds if kind in short_cooldown_kinds else entry.cooldown_seconds
         )
+        retry_after_seconds: int | None = signal.retry_after_seconds
+        if retry_after_seconds is not None and kind is ProviderErrorKind.RATE_LIMITED:
+            seconds = self._retry_advice_seconds(entry=entry, seconds=retry_after_seconds)
         self._cooldowns[entry.model_name] = time.monotonic() + seconds
+
+    def _retry_advice_seconds(self, *, entry: ModelPoolEntryDAO, seconds: int) -> int:
+        """Cap gateway advice using the failed lane's pinned policy before cooling.
+
+        Direct-provider cooldown behavior is unchanged. Factory-built OpenRouter
+        pools carry the same snapshot as their members; synthetic pools without
+        a snapshot retain their configured short cooldown as a conservative cap.
+        """
+        if entry.provider is not ProviderName.OPENROUTER:
+            return seconds
+        if self._snapshot is None:
+            return min(seconds, entry.rate_limit_cooldown_seconds)
+        from src.agents.slo_agent.rate_limit.service import policy_for_model
+
+        policy = policy_for_model(model_name=entry.model_name, snapshot=self._snapshot)
+        return min(seconds, policy.local_retry_wait_cap_seconds)
 
     def _record_route_switch(
         self,
@@ -511,25 +581,58 @@ class ModelPool(BaseChatModel):
                 from_model_name=from_entry.model_name,
                 to_model_name=to_model_name,
                 kind=signal.kind.name,
-                error_text=self._safe_route_switch_error_text(kind=signal.kind, error=error),
+                safe_error_code=self._safe_route_switch_error_code(
+                    kind=signal.kind,
+                    provider=from_entry.provider,
+                    error=error,
+                ),
                 provider=from_entry.provider,
                 signal=signal,
             )
         )
 
-    def _safe_route_switch_error_text(self, *, kind: ProviderErrorKind, error: Exception) -> str:
-        """Return a route-switch audit value safe for the classified failure kind.
+    def _safe_route_switch_error_code(
+        self,
+        *,
+        kind: ProviderErrorKind,
+        provider: ProviderName,
+        error: Exception,
+    ) -> str:
+        """Return the audit value for one route switch without changing direct providers.
+
+        WHAT: Generates an allowlisted code only for OpenRouter, whose gateway bodies
+            are unsafe to persist; direct-provider records retain their established
+            diagnostic text and stream-disconnection code.
+        WHO: ``_record_route_switch`` calls this while constructing the session-drained
+            route audit record.
+        WHEN: Once for every pre-commit pool fallback.
 
         Args:
-            kind (ProviderErrorKind): Shared classification that caused the route switch.
-            error (Exception): Original exception retained only for existing failure kinds.
+            kind (ProviderErrorKind): Shared classification that caused the switch.
+            provider (ProviderName): Provider that raised the normalized error.
+            error (Exception): Original direct-provider exception, never used for
+                OpenRouter audit values.
 
         Returns:
-            str: Stable stream-disconnection code or the legacy bounded error text.
+            str: An allowlisted OpenRouter code, established direct-provider text, or
+                the fixed stream-disconnection code.
         """
         if kind is ProviderErrorKind.STREAM_DISCONNECTED:
             return "provider_stream_disconnected"
+        if provider is ProviderName.OPENROUTER:
+            return self._openrouter_route_switch_code(kind=kind)
         return str(error)[:500]
+
+    @staticmethod
+    def _openrouter_route_switch_code(*, kind: ProviderErrorKind) -> str:
+        """Map switchable OpenRouter classifications to stable audit codes."""
+        codes: dict[ProviderErrorKind, str] = {
+            ProviderErrorKind.CREDIT_EXHAUSTED: "openrouter_credit_exhausted",
+            ProviderErrorKind.RATE_LIMITED: "openrouter_rate_limited",
+            ProviderErrorKind.TRANSIENT_PROVIDER_FAILURE: "openrouter_transient_failure",
+            ProviderErrorKind.STREAM_DISCONNECTED: "provider_stream_disconnected",
+        }
+        return codes.get(kind, "openrouter_request_failed")
 
     def drain_route_switch_log(self) -> list[RouteSwitchRecordDAO]:
         """Return and clear the accumulated route-switch records.
@@ -577,6 +680,7 @@ class ModelPool(BaseChatModel):
             models=bound_models,
             cooldowns=dict(self._cooldowns),
             request_adapter=self._request_adapter,
+            snapshot=self._snapshot,
         )
 
     # ------------------------------------------------------------------

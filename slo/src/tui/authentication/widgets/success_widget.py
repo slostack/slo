@@ -18,20 +18,22 @@ class SuccessWidget(Vertical):
     class Closed(Message):
         """Posted when the user clicks Close."""
 
-    def __init__(self, *, subject: Optional[str]) -> None:
+    def __init__(self, *, subject: Optional[str], message: Optional[str] = None) -> None:
         """Capture the subject for the banner line.
 
         Args:
             subject (Optional[str]): "Signed in as <subject>." or just
                 "Signed in." when ``None``.
+            message: Optional fixed authentication status replacing the default banner.
         """
         super().__init__()
         self._subject: Optional[str] = subject
+        self._message = message
 
     def compose(self) -> ComposeResult:
         """Render the banner and the Close button."""
         banner: str = f"Signed in as {self._subject}." if self._subject else "Signed in."
-        yield Static(banner, classes="auth-title")
+        yield Static(self._message or banner, classes="auth-title", markup=False)
         yield Button(label="Close", id="success-close", variant="primary")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:

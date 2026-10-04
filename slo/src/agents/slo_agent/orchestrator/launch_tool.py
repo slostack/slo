@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 import config.cfg as cfg_module
 from config.logger import log_info
 from src.agents.slo_agent.history.filesystem_store import default_history_root
+from src.agents.slo_agent.orchestrator.capture_writer import WorkflowCaptureCompletionContext
 from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env, open_capture_file_append
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
@@ -282,45 +283,65 @@ class LaunchWorkflowTool:
             str: Patched handle JSON, or an error JSON string on any failure —
                 this method never raises into the agent graph.
         """
-        with contextlib.ExitStack() as capture_files:
-            try:
-                stdout_file: IO[bytes] = capture_files.enter_context(
-                    open_capture_file_append(
+        child_env: dict[str, str] = build_headless_child_env(workflow_id=handle.workflow_id)
+        proc: Optional[_ProcessLike] = None
+        capture_warning: Optional[str] = None
+        capture_files = contextlib.ExitStack()
+        capture_endpoints: list[IO[bytes]] = []
+        try:
+            stdout_file: IO[bytes] = capture_files.enter_context(
+                open_capture_file_append(
+                    history_root=history_root,
+                    session_id=handle.orchestrator_session_id,
+                    name="stdout.jsonl",
+                    credential=child_env.get("SLO_OPENROUTER_API_KEY", ""),
+                    completion_context=WorkflowCaptureCompletionContext(
                         history_root=history_root,
-                        session_id=handle.orchestrator_session_id,
-                        name="stdout.jsonl",
-                    )
-                )
-                stderr_file: IO[bytes] = capture_files.enter_context(
-                    open_capture_file_append(
-                        history_root=history_root,
-                        session_id=handle.orchestrator_session_id,
-                        name="stderr.log",
-                    )
-                )
-            except OSError as exc:
-                await cls._mark_failed_best_effort(store=store, handle=handle)
-                return json.dumps({"error": f"workflow launch failed: {exc}"})
-            try:
-                proc: _ProcessLike = await spawn(
-                    *_build_argv(
-                        brief=handle.brief,
-                        orchestrator_session_id=handle.orchestrator_session_id,
                         owner_session_id=handle.owner_session_id,
-                        model=model,
-                        cwd=handle.cwd,
+                        workflow_id=handle.workflow_id,
+                        expected_pid=0,
                     ),
-                    start_new_session=True,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    env=build_headless_child_env(workflow_id=handle.workflow_id),
                 )
-            except OSError as exc:
+            )
+            stderr_file: IO[bytes] = capture_files.enter_context(
+                open_capture_file_append(
+                    history_root=history_root,
+                    session_id=handle.orchestrator_session_id,
+                    name="stderr.log",
+                    credential=child_env.get("SLO_OPENROUTER_API_KEY", ""),
+                    completion_context=WorkflowCaptureCompletionContext(
+                        history_root=history_root,
+                        owner_session_id=handle.owner_session_id,
+                        workflow_id=handle.workflow_id,
+                        expected_pid=0,
+                    ),
+                )
+            )
+            capture_endpoints.extend([stdout_file, stderr_file])
+            proc = await spawn(
+                *_build_argv(
+                    brief=handle.brief,
+                    orchestrator_session_id=handle.orchestrator_session_id,
+                    owner_session_id=handle.owner_session_id,
+                    model=model,
+                    cwd=handle.cwd,
+                ),
+                start_new_session=True,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                env=child_env,
+            )
+        except OSError:
+            if proc is None:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(capture_files.close)
                 await cls._mark_failed_best_effort(store=store, handle=handle)
-                return json.dumps({"error": f"workflow launch failed: {exc}"})
+                return json.dumps({"error": "workflow launch failed"})
+            capture_warning = "capture writer failed"
         patched: WorkflowHandleDAO = handle.model_copy(update={"pid": proc.pid})
         try:
             await store.write(handle=patched)
+            cls._activate_capture_files(capture_endpoints=capture_endpoints, handle=patched)
         except (OSError, WorkflowStateTransitionError) as exc:
             # The orchestrator process IS running; only the handle bookkeeping
             # failed (e.g. /workflows abort or a reconcile pass flipped the
@@ -335,10 +356,35 @@ class LaunchWorkflowTool:
                     )
                 }
             )
+        finally:
+            # Writer drain waits must not stall the parent event loop.
+            try:
+                await asyncio.to_thread(capture_files.close)
+            except OSError:
+                capture_warning = "capture writer failed"
         payload: dict[str, object] = patched.model_dump(mode="json")
-        if history_warning is not None:
+        if capture_warning is not None:
+            payload["warning"] = capture_warning
+        elif history_warning is not None:
             payload["warning"] = history_warning
         return json.dumps(payload)
+
+    @staticmethod
+    def _activate_capture_files(
+        *,
+        capture_endpoints: list[IO[bytes]],
+        handle: WorkflowHandleDAO,
+    ) -> None:
+        """Activate capture writers only after their workload PID is durable.
+
+        Args:
+            capture_endpoints (list[IO[bytes]]): Capture endpoints that own writers.
+            handle (WorkflowHandleDAO): Persisted workload identity.
+        """
+        for capture in capture_endpoints:
+            activate = getattr(capture, "activate", None)
+            if activate is not None:
+                activate(expected_pid=handle.pid)
 
     @staticmethod
     def _history_backing_warning(*, history_root: Path, owner_session_id: str) -> Optional[str]:

@@ -49,7 +49,7 @@ class ApiKeyInputWidget(Vertical):
             classes="auth-title",
         )
         yield Input(password=True, placeholder="sk-...", id="api-key-input")
-        yield Static("", id="api-key-error", classes="auth-error")
+        yield Static("", id="api-key-error", classes="auth-error", markup=False, expand=True)
         with Horizontal(classes="auth-actions"):
             yield Button(label="Back", id="api-key-back")
             yield Button(label="Save", id="api-key-save", variant="primary")
@@ -72,8 +72,21 @@ class ApiKeyInputWidget(Vertical):
 
     async def _handle_save(self) -> None:
         """Validate the key is non-empty; emit ``Submitted`` or update error."""
-        raw: str = self.query_one("#api-key-input", Input).value.strip()
-        if not raw:
+        if self.query_one("#api-key-save", Button).disabled:
+            return
+        raw: str = self.query_one("#api-key-input", Input).value
+        if not raw.strip():
             self.query_one("#api-key-error", Static).update("API key is required.")
             return
+        self.query_one("#api-key-input", Input).value = ""
         self.post_message(self.Submitted(api_key=raw))
+
+    def show_status(self, *, message: str, busy: bool) -> None:
+        """Paint fixed service copy and gate duplicate submission during verification.
+
+        Args:
+            message: Safe authentication status, rendered literally.
+            busy: Whether the tracked attempt is still running.
+        """
+        self.query_one("#api-key-error", Static).update(message)
+        self.query_one("#api-key-save", Button).disabled = busy

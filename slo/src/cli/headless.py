@@ -22,11 +22,15 @@ import signal
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 from types import FrameType
 from typing import TYPE_CHECKING, Callable, Optional, cast
 
+from src.auth.credential_dao import CredentialDAO
+from src.auth.credential_resolver import CredentialResolver
 from config.logger import log_warning
 from config.timeout_resolver import positive_float_env
+from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -105,7 +109,8 @@ class HeadlessRunner:
             notifier (Optional[WorkflowNotifier]): Injectable notifier for
                 tests. Ignored when ``notify_session_id`` is ``None``.
         """
-        self._config: SessionConfigDAO = config
+        self._session_id: str = config.session_id or str(uuid4())
+        self._config: SessionConfigDAO = config.model_copy(update={"session_id": self._session_id})
         self._orchestrator_mode: bool = orchestrator_mode
         self._notify_session_id: Optional[str] = notify_session_id
         self._injected_notifier: Optional[WorkflowNotifier] = notifier
@@ -115,7 +120,9 @@ class HeadlessRunner:
         self._started_sent: bool = False
         self._last_spawn_result_json: str = "{}"
         self._terminal_kind: str = "run_failed"
+        self._terminal_received: bool = False
         self._terminal_content: str = ""
+        self._operation_credential: Optional[CredentialDAO] = None
         self._last_event_at: float = time.monotonic()
         self._heartbeat_phase: str = "awaiting_provider_stream"
         self._heartbeat_attempt: int = 1
@@ -125,6 +132,20 @@ class HeadlessRunner:
         self._abort_requested: Optional[asyncio.Event] = None
 
     async def invoke(self, *, prompt: str) -> int:
+        """Run one prompt, releasing its private capture after terminal cleanup.
+
+        Args:
+            prompt (str): Task to run through the prepared session.
+
+        Returns:
+            int: Existing terminal-kind exit code.
+        """
+        try:
+            return await self._invoke(prompt=prompt)
+        finally:
+            self._operation_credential = None
+
+    async def _invoke(self, *, prompt: str) -> int:
         """Run one prompt to completion and return the POSIX exit code.
 
         Builds the session, optionally promotes it to orchestrator mode when
@@ -140,11 +161,9 @@ class HeadlessRunner:
             int: ``0`` when the run completed normally, ``2`` when aborted,
                 ``1`` on any failure or unexpected terminal kind.
         """
-        session: SloAgentSession = SloAgentSession.build(config=self._config)
-        self._session = session
         emit_lifecycle_event(
             kind="headless_session_started",
-            session_id=session.session_id,
+            session_id=self._session_id,
             message="headless runner starting",
             payload={
                 "workdir": str(self._config.workdir),
@@ -153,9 +172,30 @@ class HeadlessRunner:
         )
         emit_lifecycle_event(
             kind="headless_session_resolved",
-            session_id=session.session_id,
+            session_id=self._session_id,
             message="session id resolved",
         )
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        self._abort_requested = asyncio.Event()
+        previous_sigterm: Callable[[int, Optional[FrameType]], None] | int | None = (
+            self._install_sigterm_handler(loop=loop)
+        )
+        preparation_task: asyncio.Task[Optional[SloAgentSession]] = asyncio.create_task(
+            self._prepare_session()
+        )
+        try:
+            session: Optional[SloAgentSession] = await self._await_preparation_or_abort(
+                preparation_task=preparation_task,
+            )
+            if session is None:
+                return await self._complete_preparation_failure()
+            self._session = session
+        except asyncio.CancelledError:
+            return await self._complete_preparation_abort()
+        finally:
+            await self._cancel_preparation_task_if_needed(preparation_task=preparation_task)
+            if self._session is None:
+                self._restore_sigterm_handler(previous=previous_sigterm)
         if self._orchestrator_mode:
             from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
                 OrchestratorSessionBootstrap,
@@ -173,8 +213,6 @@ class HeadlessRunner:
         self._status_store = self._build_status_store(session_id=session.session_id)
         self._notifier = self._resolve_notifier(orchestrator_session_id=session.session_id)
         await self._notify_started(prompt=prompt)
-        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-        self._abort_requested = asyncio.Event()
 
         def request_abort_from_watchdog(reason: str) -> None:
             """Schedule the watchdog's cooperative abort request on the runner loop."""
@@ -188,17 +226,16 @@ class HeadlessRunner:
             parent_pid=self._parent_pid_from_env(),
             on_abort=request_abort_from_watchdog,
         )
-        previous_sigterm: Callable[[int, Optional[FrameType]], None] | int | None = (
-            self._install_sigterm_handler(loop=loop)
-        )
         watchdog.start()
         try:
             await self._drain_session_stream_until_abort(session=session, prompt=prompt)
         except Exception as exc:
-            await self._emit(AgentStreamEventDAO(kind="run_failed", content=str(exc)))
+            if not self._terminal_received:
+                await self._emit(AgentStreamEventDAO(kind="run_failed", content=str(exc)))
         finally:
             watchdog.stop()
             self._restore_sigterm_handler(previous=previous_sigterm)
+            await self._shutdown_model_catalog()
         self._write_orphan_status_if_needed(session_id=session.session_id)
         await self._write_terminal_status()
         await self._notify_terminal()
@@ -214,6 +251,152 @@ class HeadlessRunner:
         )
         return exit_code_for_terminal_kind(kind=self._terminal_kind)
 
+    async def _await_preparation_or_abort(
+        self,
+        *,
+        preparation_task: asyncio.Task[Optional[SloAgentSession]],
+    ) -> Optional[SloAgentSession]:
+        """Await preparation unless the SIGTERM controller requests its cancellation.
+
+        WHAT: Races the one preparation task against the preparation abort event.
+        WHO: ``invoke`` calls this immediately after installing its SIGTERM handler.
+        WHEN: Before session construction, subscribers, watchdog, or inference.
+
+        Args:
+            preparation_task (asyncio.Task[Optional[SloAgentSession]]): The active
+                session-preparation task.
+
+        Returns:
+            Optional[SloAgentSession]: The prepared session or ``None`` on safe preparation failure.
+
+        Raises:
+            asyncio.CancelledError: If SIGTERM requests preparation cancellation.
+        """
+        if self._abort_requested is None:
+            raise RuntimeError("abort controller was not initialized")
+        abort_task: asyncio.Task[bool] = asyncio.create_task(self._abort_requested.wait())
+        try:
+            completed, _pending = await asyncio.wait(
+                {preparation_task, abort_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if preparation_task in completed:
+                return await preparation_task
+            preparation_task.cancel()
+            await asyncio.gather(preparation_task, return_exceptions=True)
+            raise asyncio.CancelledError()
+        finally:
+            abort_task.cancel()
+            await asyncio.gather(abort_task, return_exceptions=True)
+
+    @staticmethod
+    async def _cancel_preparation_task_if_needed(
+        *,
+        preparation_task: asyncio.Task[Optional[SloAgentSession]],
+    ) -> None:
+        """Cancel and join an unfinished preparation task during early runner exit.
+
+        WHAT: Prevents a cancelled or failed preparation path from leaving gateway work behind.
+        WHO: ``invoke`` executes this from its pre-session ``finally`` block.
+        WHEN: After preparation returns, fails, or receives SIGTERM and before signal restoration.
+
+        Args:
+            preparation_task (asyncio.Task[Optional[SloAgentSession]]): The task that owns preparation.
+        """
+        if preparation_task.done():
+            return
+        preparation_task.cancel()
+        await asyncio.gather(preparation_task, return_exceptions=True)
+
+    async def _prepare_session(self) -> Optional[SloAgentSession]:
+        """Prepare dynamic routes before invocation; preserve direct construction.
+
+        Called once by invoke before any subscriber, watchdog, or inference exists.
+        Failure uses the existing terminal status and notification owners.
+
+        Returns:
+            Optional[SloAgentSession]: Prepared session, or None after safe failure.
+        """
+        routes: tuple[str, ...] = SloAgentSession._configured_model_names(config=self._config)
+        if not any(route.startswith("openrouter:") for route in routes):
+            return SloAgentSession.build(config=self._config)
+        try:
+            return await SloAgentSession.prepare(config=self._config)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+
+    async def _complete_preparation_failure(self) -> int:
+        """Emit one terminal failure after preparation has failed safely.
+
+        WHAT: Reuses the ordinary terminal owners with the materialized session ID.
+        WHO: ``invoke`` calls this after its preparation controller catches failure.
+        WHEN: Before session construction, subscription, or provider inference.
+
+        Returns:
+            int: The failure exit code.
+        """
+        await self._report_preparation_terminal(kind="run_failed")
+        return 1
+
+    async def _complete_preparation_abort(self) -> int:
+        """Emit one terminal abort when preparation is cancelled by the operator.
+
+        WHAT: Preserves cancellation semantics while ensuring durable terminal state.
+        WHO: ``invoke`` calls this when preparation raises ``CancelledError``.
+        WHEN: Before a prepared session reaches normal watchdog setup.
+
+        Returns:
+            int: The standard abort exit code.
+        """
+        await self._report_preparation_terminal(kind="run_aborted")
+        return exit_code_for_terminal_kind(kind="run_aborted")
+
+    async def _report_preparation_terminal(self, *, kind: str) -> None:
+        """Publish one safe preparation terminal state through existing owners.
+
+        WHAT: Emits terminal output, status, notification, and lifecycle records
+            without exposing preparation exception text.
+        WHO: Preparation failure and cancellation paths share this method.
+        WHEN: Before a session can be subscribed or invoked.
+
+        Args:
+            kind (str): ``run_failed`` or ``run_aborted`` terminal kind.
+        """
+        session_id: str = self._session_id
+        await self._shutdown_model_catalog()
+        self._status_store = self._build_status_store(session_id=session_id)
+        self._notifier = self._resolve_notifier(orchestrator_session_id=session_id)
+        await self._emit(
+            AgentStreamEventDAO(
+                kind=kind,  # type: ignore[arg-type]
+                content=(
+                    "Model preparation failed; refresh OpenRouter models or select a direct model."
+                    if kind == "run_failed"
+                    else "Model preparation aborted."
+                ),
+                metadata={"session_id": session_id, "failure_scope": "model_preparation"},
+            )
+        )
+        await self._write_terminal_status()
+        await self._notify_terminal()
+        emit_lifecycle_event(
+            kind=TERMINAL_KIND_TO_HEADLESS_LIFECYCLE.get(kind, "headless_run_failed"),  # type: ignore[arg-type]
+            session_id=session_id,
+            message=f"run ended with {kind}",
+            payload={"terminal_kind": kind},
+        )
+
+    async def _shutdown_model_catalog(self) -> None:
+        """Drain process-owned catalog refresh work when the headless application exits.
+
+        WHAT: Delegates global catalog task ownership to its explicit shutdown seam.
+        WHO: Called only by ``invoke()`` after its session/watchdog lifecycle ends.
+        WHEN: Once per headless process, never from an individual session teardown.
+        """
+        await ModelCatalogService.shutdown()
+
     async def _emit(self, event: AgentStreamEventDAO) -> None:
         """Write one event to stdout as a single newline-terminated JSON line.
 
@@ -227,12 +410,21 @@ class HeadlessRunner:
         Args:
             event (AgentStreamEventDAO): The event to serialise and emit.
         """
+        captured = CredentialResolver.operation_credential()
+        if captured is not None:
+            self._operation_credential = captured
+        if self._operation_credential is not None:
+            with CredentialResolver.bind_operation_credential(credential=self._operation_credential):
+                event = AgentStreamEventDAO.model_validate_json(
+                    CredentialResolver.redact_openrouter_text(text=event.model_dump_json())
+                )
         self._last_event_at = time.monotonic()
         self._heartbeat_phase = self._phase_for_event(event=event)
         self._heartbeat_attempt = self._attempt_for_event(event=event)
         if event.is_terminal:
             self._terminal_kind = event.kind
             if not event.is_sub_agent_event:
+                self._terminal_received = True
                 self._terminal_content = event.content or ""
         sys.stdout.write(event.model_dump_json() + "\n")
         sys.stdout.flush()
@@ -658,6 +850,11 @@ class HeadlessRunner:
         return lambda: project_fleet_entries(entries=supplier())
 
     async def _notify_terminal(self) -> None:
+        """Protect delayed terminal persistence with the admitted stream capture."""
+        with CredentialResolver.bind_operation_credential(credential=self._operation_credential):
+            await self._notify_terminal_with_capture()
+
+    async def _notify_terminal_with_capture(self) -> None:
         """Send the terminal workflow message with final fleet cleanup accounting."""
         if self._notifier is None:
             return

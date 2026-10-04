@@ -7,6 +7,11 @@ from typing import Any, Optional
 
 from langchain_core.messages import AIMessage
 
+from src.agents.providers.message_extension import (
+    PROVIDER_MESSAGE_EXTENSION_KEY,
+    ProviderMessageExtensionDAO,
+)
+
 __all__ = ["assistant_message_reasoning_text", "assistant_message_text"]
 
 
@@ -43,6 +48,9 @@ def assistant_message_reasoning_text(*, message: AIMessage) -> str:
         str: Visible reasoning summary text, or ``""`` when the message
             carries no visible reasoning blocks.
     """
+    extension_text: str = _provider_extension_reasoning_text(message=message)
+    if extension_text:
+        return extension_text
     if not isinstance(message.content, list):
         return ""
 
@@ -57,6 +65,33 @@ def assistant_message_reasoning_text(*, message: AIMessage) -> str:
             visible_blocks.append(visible_text.strip())
 
     return "\n\n".join(block for block in visible_blocks if block).strip()
+
+
+def _provider_extension_reasoning_text(*, message: AIMessage) -> str:
+    """Return plaintext reasoning or summaries from private provider metadata only.
+
+    Args:
+        message (AIMessage): Assistant message carrying optional replay metadata.
+
+    Returns:
+        str: Plaintext reasoning and summary fragments safe for the existing thinking normalizer.
+    """
+    try:
+        extension: ProviderMessageExtensionDAO = ProviderMessageExtensionDAO.model_validate(
+            message.additional_kwargs.get(PROVIDER_MESSAGE_EXTENSION_KEY)
+        )
+    except ValueError:
+        return ""
+    visible_parts: list[str] = []
+    if extension.reasoning:
+        visible_parts.append(extension.reasoning)
+    for detail in extension.reasoning_details:
+        if not isinstance(detail, dict):
+            continue
+        summary: object | None = detail.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            visible_parts.append(summary)
+    return "\n\n".join(part.strip() for part in visible_parts if part.strip())
 
 
 def _visible_reasoning_text(*, block: dict[str, Any]) -> Optional[str]:

@@ -25,12 +25,14 @@ are deferred into the function body to avoid an import cycle: ``provider_for_mod
 imports ``src.agents.base``, which imports ``config.ai_model_config`` — pulling
 those names in at module load would close that loop through the config layer.
 """
+
 from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from config.cfg import cfg
+from src.auth.credential_dao import ProviderName
 from config.logger import log_info
 
 if TYPE_CHECKING:
@@ -71,9 +73,7 @@ def parse_model_pool_config(
     from src.auth.provider_for_model import provider_for_model
 
     source: str = (
-        (raw_value if raw_value is not None else cfg(key="SLO_MODEL_POOL"))
-        or preference_value
-        or ""
+        (raw_value if raw_value is not None else cfg(key="SLO_MODEL_POOL")) or preference_value or ""
     ).strip()
 
     if not source:
@@ -103,7 +103,7 @@ def _parse_source(
     *,
     source: str,
     ModelPoolEntryDAO: type["ModelPoolEntryDAO"],
-    provider_for_model: Callable[..., str],
+    provider_for_model: Callable[..., ProviderName],
 ) -> list["ModelPoolEntryDAO"]:
     """Dispatch to JSON or comma-list parser based on the leading character.
 
@@ -137,7 +137,7 @@ def _parse_json_array(
     *,
     source: str,
     ModelPoolEntryDAO: type["ModelPoolEntryDAO"],
-    provider_for_model: Callable[..., str],
+    provider_for_model: Callable[..., ProviderName],
 ) -> list["ModelPoolEntryDAO"]:
     """Parse a JSON-array model pool source.
 
@@ -161,14 +161,10 @@ def _parse_json_array(
     try:
         raw: list = json.loads(source)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"SLO_MODEL_POOL looks like JSON but could not be parsed: {source!r}"
-        ) from exc
+        raise ValueError(f"SLO_MODEL_POOL looks like JSON but could not be parsed: {source!r}") from exc
 
     if not isinstance(raw, list):
-        raise ValueError(
-            f"SLO_MODEL_POOL JSON must be an array, got {type(raw).__name__}: {source!r}"
-        )
+        raise ValueError(f"SLO_MODEL_POOL JSON must be an array, got {type(raw).__name__}: {source!r}")
 
     return [
         _entry_from_json_element(
@@ -186,7 +182,7 @@ def _entry_from_json_element(
     element: Any,
     index: int,
     ModelPoolEntryDAO: type["ModelPoolEntryDAO"],
-    provider_for_model: Callable[..., str],
+    provider_for_model: Callable[..., ProviderName],
 ) -> "ModelPoolEntryDAO":
     """Coerce one JSON array element into a ``ModelPoolEntryDAO``.
 
@@ -227,7 +223,7 @@ def _entry_from_dict(
     data: dict,
     index: int,
     ModelPoolEntryDAO: type["ModelPoolEntryDAO"],
-    provider_for_model: Callable[..., str],
+    provider_for_model: Callable[..., ProviderName],
 ) -> "ModelPoolEntryDAO":
     """Build a ``ModelPoolEntryDAO`` from a dict, inferring missing fields.
 
@@ -246,12 +242,14 @@ def _entry_from_dict(
     """
     model_name: Optional[str] = data.get("model_name")
     if not model_name:
-        raise ValueError(
-            f"SLO_MODEL_POOL JSON object at index {index} is missing 'model_name': {data!r}"
-        )
+        raise ValueError(f"SLO_MODEL_POOL JSON object at index {index} is missing 'model_name': {data!r}")
     kwargs: dict = dict(data)
-    if "provider" not in kwargs:
-        kwargs["provider"] = provider_for_model(model_name=model_name)
+    canonical_provider = provider_for_model(model_name=model_name)
+    supplied_provider = kwargs.get("provider")
+    if supplied_provider is not None and supplied_provider != canonical_provider.value:
+        raise ValueError("SLO_MODEL_POOL provider does not match model_name.")
+    if supplied_provider is None:
+        kwargs["provider"] = canonical_provider
     if "priority" not in kwargs:
         kwargs["priority"] = index
     return ModelPoolEntryDAO(**kwargs)
@@ -261,7 +259,7 @@ def _parse_comma_list(
     *,
     source: str,
     ModelPoolEntryDAO: type["ModelPoolEntryDAO"],
-    provider_for_model: Callable[..., str],
+    provider_for_model: Callable[..., ProviderName],
 ) -> list["ModelPoolEntryDAO"]:
     """Parse a comma-separated model name list into pool entries.
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,8 +29,44 @@ def _build_session_stub(*, workdir: Path = Path("/tmp/slo-fake")) -> MagicMock:
     session.abort = MagicMock()
     session.steer = MagicMock()
     session.switch_model = MagicMock()
+    session.prepare_model_selection = AsyncMock()
+    session.refresh_model_catalog = AsyncMock()
     session.switch_reasoning_level = MagicMock(return_value="high")
     return session
+
+
+class TestSlashRouterModelPreparation:
+    """Router delegation for session-owned catalog refresh and selection."""
+
+    @pytest.mark.asyncio
+    async def test_model_refresh_delegates_only_to_session_gateway(self) -> None:
+        """``/model refresh`` invokes the one session-owned refresh owner once."""
+        session: MagicMock = _build_session_stub()
+        session.refresh_model_catalog = AsyncMock(return_value="OpenRouter catalog refreshed.")
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(line="/model refresh", session=session)
+
+        session.refresh_model_catalog.assert_awaited_once_with()
+        session.prepare_model_selection.assert_not_awaited()
+        assert result.rendered == "OpenRouter catalog refreshed."
+
+    @pytest.mark.asyncio
+    async def test_model_selection_delegates_only_to_session_gateway(self) -> None:
+        """``/model <id>`` leaves membership, credentials, and atomic commit to the session."""
+        session: MagicMock = _build_session_stub()
+        session.prepare_model_selection = AsyncMock(
+            return_value="active model switched to openrouter:vendor/model. Preference saved."
+        )
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/model openrouter:vendor/model",
+            session=session,
+        )
+
+        session.prepare_model_selection.assert_awaited_once_with(model_name="openrouter:vendor/model")
+        session.refresh_model_catalog.assert_not_awaited()
+        session.switch_model.assert_not_called()
+        assert result.refresh_title is True
 
 
 class TestSlashRouterDispatch:
@@ -275,35 +311,29 @@ class TestSlashModelHandler:
                 session=session,
             )
 
-        assert "Anthropic" in (result.rendered or "")
-        assert "Openai" in (result.rendered or "")
         assert "gpt-5.4" in (result.rendered or "")
-        assert "gpt-5-codex" in (result.rendered or "")
-        assert "gpt-5.3-codex" in (result.rendered or "")
-        assert "gpt-5.2-codex" in (result.rendered or "")
-        assert "gpt-5.3-codex-spark" in (result.rendered or "")
+        assert "type /model <search> to narrow" in (result.rendered or "")
+        assert len((result.rendered or "").splitlines()) <= 7
 
     @pytest.mark.asyncio
     async def test_model_supported_name_switches_session_model(
-        self, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`/model claude-sonnet-4-6` switches when credentials exist and saves preference."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
         session: MagicMock = _build_session_stub()
         session.active_model_name = "gpt-5.4"
         session.is_running = False
-        session.switch_model = MagicMock()
+        session.prepare_model_selection = AsyncMock(
+            return_value="active model switched to claude-sonnet-4-6. Preference saved."
+        )
 
-        with patch(
-            "src.tui.slash_router.CredentialResolver.resolve",
-            side_effect=lambda *, provider: object(),
-        ):
-            result: SlashCommandResultDAO = await SlashRouter.dispatch(
-                line="/model claude-sonnet-4-6",
-                session=session,
-            )
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/model claude-sonnet-4-6",
+            session=session,
+        )
 
-        session.switch_model.assert_called_once_with(model_name="claude-sonnet-4-6")
+        session.prepare_model_selection.assert_awaited_once_with(model_name="claude-sonnet-4-6")
         assert "claude-sonnet-4-6" in (result.rendered or "")
         assert "Preference saved" in (result.rendered or "")
 
@@ -313,6 +343,8 @@ class TestSlashModelHandler:
         session: MagicMock = _build_session_stub()
         session.active_model_name = "gpt-5.4"
         session.is_running = False
+
+        session.prepare_model_selection = AsyncMock(return_value="unknown model: mistral-large")
 
         result: SlashCommandResultDAO = await SlashRouter.dispatch(
             line="/model mistral-large",
@@ -328,14 +360,14 @@ class TestSlashModelHandler:
         session.active_model_name = "gpt-5.4"
         session.is_running = False
 
-        with patch(
-            "src.tui.slash_router.CredentialResolver.resolve",
-            return_value=None,
-        ):
-            result: SlashCommandResultDAO = await SlashRouter.dispatch(
-                line="/model claude-sonnet-4-6",
-                session=session,
-            )
+        session.prepare_model_selection = AsyncMock(
+            return_value="model 'claude-sonnet-4-6' requires /auth for anthropic"
+        )
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/model claude-sonnet-4-6",
+            session=session,
+        )
 
         assert result.rendered == "model 'claude-sonnet-4-6' requires /auth for anthropic"
 
@@ -346,14 +378,14 @@ class TestSlashModelHandler:
         session.active_model_name = "gpt-5.4"
         session.is_running = True
 
-        with patch(
-            "src.tui.slash_router.CredentialResolver.resolve",
-            side_effect=lambda *, provider: object(),
-        ):
-            result: SlashCommandResultDAO = await SlashRouter.dispatch(
-                line="/model claude-sonnet-4-6",
-                session=session,
-            )
+        session.prepare_model_selection = AsyncMock(
+            return_value="cannot switch models while a prompt is in flight"
+        )
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/model claude-sonnet-4-6",
+            session=session,
+        )
 
         assert result.rendered == "cannot switch models while a prompt is in flight"
 
@@ -503,6 +535,82 @@ class TestSlashReasoningHandler:
         )
 
         assert result.rendered == "reasoning unsupported for gpt-4o"
+        session.switch_reasoning_level.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "reasoning,supported,off_result",
+        [
+            ({"supported_efforts": ["none"], "mandatory": False},
+             "off (reasoning disable supported)", "reasoning changed low -> off"),
+            ({"supported_efforts": ["low", "high"]},
+             "low, high (provider default; disable unavailable)",
+             "reasoning disable unavailable for openrouter:vendor/model; provider default applies"),
+        ],
+    )
+    async def test_reasoning_state_and_off_follow_converted_controls(
+        self, reasoning: dict[str, object], supported: str, off_result: str,
+    ) -> None:
+        """Expose only real controls through both public router commands."""
+        from src.agents.model_catalog.seed import SeedModelCatalog
+        from src.agents.model_catalog.service import ModelCatalogService
+        from tests.agents.model_catalog.test_openrouter_converter_metadata import _entry
+
+        entry = _entry(reasoning=reasoning)
+        snapshot = SeedModelCatalog.load().model_copy(update={"entries": {entry.model_name: entry}})
+        session = _build_session_stub()
+        session.active_model_name = entry.model_name
+        session.active_reasoning_level = "low"
+        session.switch_reasoning_level = MagicMock(return_value="off")
+        with patch.object(ModelCatalogService, "load", return_value=snapshot):
+            state = await SlashRouter.dispatch(line="/reasoning", session=session)
+            off = await SlashRouter.dispatch(line="/reasoning off", session=session)
+        assert state.rendered == f"model: {entry.model_name}\nreasoning: low\nsupported: {supported}"
+        assert off.rendered == off_result
+        assert session.switch_reasoning_level.call_count == int("mandatory" in reasoning)
+
+    @pytest.mark.asyncio
+    async def test_reasoning_off_switches_disable_only_openrouter_route(self) -> None:
+        """Accept explicit off when canonical metadata permits only gateway disable."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "openrouter:vendor/model"
+        session.active_reasoning_level = "low"
+        session.switch_reasoning_level = MagicMock(return_value="off")
+
+        with patch(
+            "src.tui.slash_router.capability_for_model",
+            return_value=MagicMock(
+                supported_levels=["off"],
+                reasoning_disable_available=True,
+            ),
+        ):
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(
+                line="/reasoning off",
+                session=session,
+            )
+
+        session.switch_reasoning_level.assert_called_once_with(reasoning_level="off")
+        assert result.rendered == "reasoning changed low -> off"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_off_rejects_unknown_openrouter_disable_permission(self) -> None:
+        """Reject internal compatibility off when the provider did not permit disable."""
+        session: MagicMock = _build_session_stub()
+        session.active_model_name = "openrouter:vendor/model"
+        session.active_reasoning_level = "low"
+
+        with patch(
+            "src.tui.slash_router.capability_for_model",
+            return_value=MagicMock(
+                supported_levels=["off", "low", "high"],
+                reasoning_disable_available=False,
+            ),
+        ):
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(
+                line="/reasoning off",
+                session=session,
+            )
+
+        assert result.rendered == "reasoning disable unavailable for openrouter:vendor/model; provider default applies"
         session.switch_reasoning_level.assert_not_called()
 
     @pytest.mark.asyncio
@@ -714,18 +822,13 @@ class TestSlashModelPreferencePersistence:
         session: MagicMock = _build_session_stub()
         session.active_model_name = "gpt-5.4"
         session.is_running = False
-        session.switch_model = MagicMock()
+        session.prepare_model_selection = AsyncMock(
+            return_value="active model switched to claude-sonnet-4-6. Preference saved."
+        )
 
-        with patch(
-            "src.tui.slash_router.CredentialResolver.resolve",
-            side_effect=lambda *, provider: object(),
-        ):
-            await SlashRouter.dispatch(line="/model claude-sonnet-4-6", session=session)
+        await SlashRouter.dispatch(line="/model claude-sonnet-4-6", session=session)
 
-        from src.agents.slo_agent.preferences.service import UserPreferencesStore
-
-        prefs = UserPreferencesStore.load()
-        assert prefs.default_model_name == "claude-sonnet-4-6"
+        session.prepare_model_selection.assert_awaited_once_with(model_name="claude-sonnet-4-6")
 
     @pytest.mark.asyncio
     async def test_switch_reasoning_writes_preferences(

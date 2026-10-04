@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Mixed-version state compatibility: provider catalog data now uses
+  `model_catalog_cache.v2.json` / `model_catalog_cache.v2.lock`; OpenRouter
+  credentials use `authentication.additional-providers.json`. Released files
+  retain their compatible shapes. **No action needed for released users.**
+- Unknown saved direct models resume with full history on the preferred/default
+  model and show a startup notice. Offline tests run real `v0.20.1` source to
+  verify rollback and alternating continuation. Pre-fix development builds only
+  require the manual cleanup documented in README; no automatic cleanup occurs.
+
 ## [0.20.1] — 2026-09-29
 
 **Compaction now uses provider-correct summary requests, warns before very

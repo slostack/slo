@@ -56,6 +56,31 @@ class TestProviderForModel:
         """``moonshot-for-coding`` resolves to the canonical Kimi provider."""
         assert provider_for_model(model_name="moonshot-for-coding") is ProviderName.KIMI_FOR_CODING
 
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "openrouter:anthropic/claude-sonnet-5.5",
+            "openrouter:openai/gpt-5.2",
+        ],
+    )
+    def test_qualified_openrouter_models_map_to_openrouter(self, model_name: str) -> None:
+        """Qualified OpenRouter routes retain the gateway credential owner."""
+        assert provider_for_model(model_name=model_name) is ProviderName.OPENROUTER
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "openrouter:",
+            "openrouter:contains whitespace",
+            "openrouter:https://example.test/model",
+            "openrouter:" + ("a" * 513),
+        ],
+    )
+    def test_qualified_openrouter_models_reject_invalid_route_syntax(self, model_name: str) -> None:
+        """Invalid qualified OpenRouter routes fail before catalog membership checks."""
+        with pytest.raises(ValueError, match="Invalid OpenRouter model route"):
+            provider_for_model(model_name=model_name)
+
     def test_unknown_prefix_raises_value_error(self) -> None:
         """Unknown prefix → ``ValueError`` naming both prefix tables."""
         with pytest.raises(ValueError, match="Unsupported model_name"):

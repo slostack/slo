@@ -23,7 +23,8 @@ from langchain_openai import ChatOpenAI
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPool, ModelPoolDAO
 
-from config.ai_model_config import MODEL_DEFAULTS
+from config.ai_model_config import MODEL_DEFAULTS, defaults_for_model
+from src.agents.model_catalog.dao import ModelCatalogEntryDAO, ModelCatalogSnapshotDAO
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.anthropic_claude_code import (
     _ThinkingPatchedChatAnthropic,
@@ -34,6 +35,7 @@ from src.agents.providers.openai_codex import (
     build_chatgpt_backed_chat_openai,
     openai_reasoning_payload,
 )
+from src.agents.providers.openrouter import OpenRouterChatOpenAI, OpenRouterRequestPolicy
 from src.agents.reasoning_capabilities import (
     ModelReasoningCapabilityDAO,
     ReasoningLevel,
@@ -43,6 +45,12 @@ from src.agents.reasoning_capabilities import (
 )
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
+from src.auth.provider_for_model import (
+    ANTHROPIC_PREFIXES,
+    KIMI_FOR_CODING_PREFIXES,
+    OPENAI_PREFIXES,
+    provider_for_model,
+)
 
 __all__ = [
     "ANTHROPIC_PREFIXES",
@@ -102,29 +110,7 @@ class LLMBuildResult:
     supports_explicit_caching: bool
 
 
-ANTHROPIC_PREFIXES: tuple[str, ...] = ("claude-",)
-"""Public re-export of the Anthropic model prefixes.
-
-``src.auth.provider_for_model`` imports this so the auth layer never
-duplicates the prefix table.
-"""
-
-# OpenAI prefixes match both the bare reasoning model names ("o1", "o3") and
-# their hyphenated variants ("o1-pro", "o3-pro", "o3-mini") in one rule.
-OPENAI_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3")
-"""Public re-export of the OpenAI model prefixes.
-
-``src.auth.provider_for_model`` imports this so the auth layer never
-duplicates the prefix table.
-"""
-
-KIMI_FOR_CODING_PREFIXES: tuple[str, ...] = ("kimi-", "moonshot-")
-"""Public re-export of the Kimi For Coding model prefixes.
-
-``src.auth.provider_for_model`` imports this alongside the other prefix tables.
-``moonshot-`` is kept for backward compatibility with any persisted session
-references to older model aliases.
-"""
+# Compatibility re-exports. Route ownership lives in ``provider_for_model``.
 
 KIMI_FOR_CODING_API_URL: str = "https://api.kimi.com/coding/v1"
 """Base URL for the Kimi For Coding REST API (OpenAI-compatible)."""
@@ -157,6 +143,7 @@ class LLMFactory:
         session_id: Optional[str] = None,
         reasoning_level: ReasoningLevel = "off",
         http_async_client: Optional[httpx.AsyncClient] = None,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> LLMBuildResult:
         """Create a LangChain chat model from a model name.
 
@@ -190,6 +177,24 @@ class LLMFactory:
             ValueError: When ``model_name`` matches no supported prefix, or
                 when ``CredentialResolver.require`` cannot resolve a credential.
         """
+        provider: ProviderName = (
+            ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot).provider
+            if snapshot is not None
+            else cls._provider_for(model_name=model_name)
+        )
+        if provider is ProviderName.OPENROUTER:
+            return cls._create_openrouter(
+                model_name=model_name,
+                temperature=temperature,
+                streaming=streaming,
+                max_retries=max_retries,
+                max_tokens=max_tokens,
+                model_kwargs=model_kwargs,
+                session_id=session_id,
+                reasoning_level=reasoning_level,
+                http_async_client=http_async_client,
+                snapshot=snapshot,
+            )
         resolved: dict[str, Any] = cls._resolved_defaults(
             model_name=model_name,
             temperature=temperature,
@@ -200,20 +205,121 @@ class LLMFactory:
             session_id=session_id,
             reasoning_level=reasoning_level,
             http_async_client=http_async_client,
+            snapshot=snapshot,
         )
-        if model_name.startswith(cls._ANTHROPIC_PREFIXES):
+        provider = (
+            ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot).provider
+            if snapshot is not None
+            else cls._provider_for(model_name=model_name)
+        )
+        if provider is ProviderName.ANTHROPIC:
             llm: LLM = cls._build_anthropic(model_name=model_name, resolved=resolved)
             return LLMBuildResult(llm=llm, supports_explicit_caching=True)
-        if model_name.startswith(cls._OPENAI_PREFIXES):
+        if provider is ProviderName.OPENAI:
             llm = cls._build_openai(model_name=model_name, resolved=resolved)
             return LLMBuildResult(llm=llm, supports_explicit_caching=False)
-        if model_name.startswith(cls._KIMI_FOR_CODING_PREFIXES):
+        if provider is ProviderName.KIMI_FOR_CODING:
             llm = cls._build_kimi_for_coding_chat_openai(model_name=model_name, resolved=resolved)
             return LLMBuildResult(llm=llm, supports_explicit_caching=False)
-        raise ValueError(
-            f"Unsupported model_name '{model_name}'. Supported prefixes: "
-            f"{cls._ANTHROPIC_PREFIXES + cls._OPENAI_PREFIXES + cls._KIMI_FOR_CODING_PREFIXES}"
+        raise ValueError(f"Provider '{provider.value}' has no configured LLM builder.")
+
+    @classmethod
+    def _create_openrouter(
+        cls,
+        *,
+        model_name: str,
+        temperature: Optional[float],
+        streaming: Optional[bool],
+        max_retries: int,
+        max_tokens: Optional[int],
+        model_kwargs: Optional[dict[str, Any]],
+        session_id: Optional[str],
+        reasoning_level: ReasoningLevel,
+        http_async_client: Optional[httpx.AsyncClient],
+        snapshot: Optional[ModelCatalogSnapshotDAO],
+    ) -> LLMBuildResult:
+        """Build one OpenRouter adapter from an exact prepared catalog route.
+
+        Called by :meth:`create` before generic default resolution because an
+        unknown dynamic route must fail as missing preparation, rather than
+        attempting global/default direct-provider policy.
+
+        Args:
+            model_name (str): Exact canonical OpenRouter route.
+            temperature (Optional[float]): Caller sampling override.
+            streaming (Optional[bool]): Caller streaming override.
+            max_retries (int): SDK retry input; OpenRouter overrides it to zero.
+            max_tokens (Optional[int]): Caller output-cap override.
+            model_kwargs (Optional[dict[str, Any]]): Caller extras.
+            session_id (Optional[str]): Session identity, unused by this adapter.
+            reasoning_level (ReasoningLevel): Canonical requested reasoning level.
+            http_async_client (Optional[httpx.AsyncClient]): Injected local test transport.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Required prepared route view.
+
+        Returns:
+            LLMBuildResult: OpenRouter adapter with explicit caching disabled.
+        """
+        entry = cls._prepared_openrouter_entry(model_name=model_name, snapshot=snapshot)
+        resolved: dict[str, Any] = cls._resolved_defaults_from_entry(
+            entry=entry,
+            temperature=temperature,
+            streaming=streaming,
+            max_retries=max_retries,
+            max_tokens=max_tokens,
+            model_kwargs=model_kwargs,
+            session_id=session_id,
+            reasoning_level=reasoning_level,
+            http_async_client=http_async_client,
+            snapshot=snapshot,
         )
+        llm = cls._build_openrouter(model_name=model_name, resolved=resolved, entry=entry)
+        return LLMBuildResult(llm=llm, supports_explicit_caching=False)
+
+    @classmethod
+    def _resolved_defaults_from_entry(
+        cls,
+        *,
+        entry: "ModelCatalogEntryDAO",
+        temperature: Optional[float],
+        streaming: Optional[bool],
+        max_retries: int,
+        max_tokens: Optional[int],
+        model_kwargs: Optional[dict[str, Any]],
+        session_id: Optional[str],
+        reasoning_level: ReasoningLevel,
+        http_async_client: Optional[httpx.AsyncClient],
+        snapshot: Optional[ModelCatalogSnapshotDAO],
+    ) -> dict[str, Any]:
+        """Resolve OpenRouter construction defaults from one prepared entry.
+
+        Args:
+            entry (ModelCatalogEntryDAO): Exact prepared route profile.
+            temperature (Optional[float]): Caller sampling override.
+            streaming (Optional[bool]): Caller streaming override.
+            max_retries (int): Caller retry setting retained for diagnostic parity.
+            max_tokens (Optional[int]): Caller output-cap override.
+            model_kwargs (Optional[dict[str, Any]]): Caller extras.
+            session_id (Optional[str): Active session identifier.
+            reasoning_level (ReasoningLevel): Requested canonical reasoning level.
+            http_async_client (Optional[httpx.AsyncClient]): Injected local test transport.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Exact catalog generation.
+
+        Returns:
+            dict[str, Any]: Builder inputs resolved without a global catalog read.
+        """
+        profile = entry.runtime_profile
+        output_ceiling: int = cls._openrouter_output_ceiling(entry=entry)
+        return {
+            "temperature": temperature if temperature is not None else None,
+            "streaming": streaming if streaming is not None else profile.streaming,
+            "max_retries": max_retries,
+            "max_tokens": max_tokens if max_tokens is not None else min(profile.max_tokens, output_ceiling),
+            "model_kwargs": model_kwargs or {},
+            "session_id": session_id,
+            "reasoning_level": reasoning_level,
+            "http_async_client": http_async_client,
+            "snapshot": snapshot,
+        }
 
     @classmethod
     def _resolved_defaults(
@@ -228,6 +334,7 @@ class LLMFactory:
         session_id: Optional[str] = None,
         reasoning_level: ReasoningLevel = "off",
         http_async_client: Optional[httpx.AsyncClient] = None,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> dict[str, Any]:
         """Resolve constructor kwargs by layering callers over MODEL_DEFAULTS.
 
@@ -250,7 +357,11 @@ class LLMFactory:
             dict[str, Any]: Keys ``temperature``, ``streaming``, ``max_retries``,
                 ``max_tokens``, ``model_kwargs``, ``session_id``, ``reasoning_level``.
         """
-        defaults = MODEL_DEFAULTS.get(model_name, {})
+        defaults = (
+            defaults_for_model(model_name=model_name, snapshot=snapshot)
+            if snapshot is not None
+            else MODEL_DEFAULTS.get(model_name, {})
+        )
         return {
             "temperature": (temperature if temperature is not None else defaults.get("temperature", 0.1)),
             "streaming": (streaming if streaming is not None else defaults.get("streaming", True)),
@@ -260,6 +371,7 @@ class LLMFactory:
             "session_id": session_id,
             "reasoning_level": reasoning_level,
             "http_async_client": http_async_client,
+            "snapshot": snapshot,
         }
 
     @classmethod
@@ -321,10 +433,14 @@ class LLMFactory:
             ChatAnthropic: Configured chat model with the resolver's credential.
         """
         cred: CredentialDAO = CredentialResolver.require(provider=ProviderName.ANTHROPIC)
-        api_model_name: str = ModelCatalogService.api_model_name_for(model_name=model_name)
+        api_model_name: str = ModelCatalogService.api_model_name_for(
+            model_name=model_name,
+            **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
+        )
         resolved_reasoning: ResolvedReasoningConfigDAO = resolve_reasoning_config(
             model_name=model_name,
             requested_level=resolved["reasoning_level"],
+            **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
         )
         thinking: Optional[dict[str, Any]] = anthropic_thinking_payload(
             reasoning=resolved_reasoning,
@@ -392,16 +508,21 @@ class LLMFactory:
             ChatOpenAI: Configured chat model on the appropriate lane.
         """
         cred: CredentialDAO = CredentialResolver.require(provider=ProviderName.OPENAI)
-        api_model_name: str = ModelCatalogService.api_model_name_for(model_name=model_name)
+        api_model_name: str = ModelCatalogService.api_model_name_for(
+            model_name=model_name,
+            **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
+        )
         resolved_reasoning: ResolvedReasoningConfigDAO = resolve_reasoning_config(
             model_name=model_name,
             requested_level=resolved["reasoning_level"],
+            **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
         )
         sanitized_temperature, sanitized_model_kwargs = cls._resolve_openai_request_policy(
             model_name=model_name,
             resolved_reasoning=resolved_reasoning,
             temperature=resolved["temperature"],
             model_kwargs=resolved["model_kwargs"],
+            **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
         )
         if cred.auth_type == AuthType.OAUTH:
             return build_chatgpt_backed_chat_openai(
@@ -442,6 +563,7 @@ class LLMFactory:
         resolved_reasoning: ResolvedReasoningConfigDAO,
         temperature: Optional[float],
         model_kwargs: dict[str, Any],
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> tuple[Optional[float], dict[str, Any]]:
         """Return copied OpenAI constructor inputs permitted by the catalog profile.
 
@@ -464,12 +586,138 @@ class LLMFactory:
                 newly copied extras mapping.
         """
         sanitized_model_kwargs: dict[str, Any] = dict(model_kwargs)
-        capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name)
+        capability: ModelReasoningCapabilityDAO = capability_for_model(
+            model_name=model_name, snapshot=snapshot
+        )
         if not (resolved_reasoning.enabled and capability.forbid_sampling_parameters_when_enabled):
             return temperature, sanitized_model_kwargs
         for forbidden_key in ("temperature", "top_p", "top_logprobs", "logprobs"):
             sanitized_model_kwargs.pop(forbidden_key, None)
         return None, sanitized_model_kwargs
+
+    @classmethod
+    def _build_openrouter(
+        cls,
+        *,
+        model_name: str,
+        resolved: dict[str, Any],
+        entry: "ModelCatalogEntryDAO",
+    ) -> OpenRouterChatOpenAI:
+        """Build the fixed OpenRouter Chat Completions adapter for one exact route.
+
+        Called by :meth:`create` after canonical provider dispatch. The route
+        prefix remains Slo-only; the outbound model is its exact remote suffix.
+        This bounded construction path intentionally avoids catalog lifecycle
+        decisions until the a.2 prepared-snapshot integration is available.
+
+        Args:
+            model_name (str): Canonical ``openrouter:<remote-id>`` route.
+            resolved (dict[str, Any]): Factory defaults and injected local test transport.
+
+        Returns:
+            OpenRouterChatOpenAI: No-SDK-retry gateway Chat Completions adapter.
+        """
+        OpenRouterRequestPolicy.validate_output_cap(
+            max_tokens=resolved["max_tokens"],
+            ceiling=cls._openrouter_output_ceiling(entry=entry),
+        )
+        capabilities = entry.capabilities
+        if capabilities is None:
+            raise ValueError("OpenRouter prepared catalog entry has no capability evidence.")
+        sampling = dict(resolved["model_kwargs"])
+        if resolved["temperature"] is not None:
+            sampling["temperature"] = resolved["temperature"]
+        OpenRouterRequestPolicy.validate_controls(
+            options=sampling, supported=capabilities.supported_parameters
+        )
+        credential: CredentialDAO = CredentialResolver.require(provider=ProviderName.OPENROUTER)
+        resolved_reasoning: ResolvedReasoningConfigDAO = resolve_reasoning_config(
+            model_name=model_name,
+            requested_level=resolved["reasoning_level"],
+            **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
+        )
+        capabilities = entry.capabilities
+        if capabilities is None:
+            raise ValueError("OpenRouter prepared catalog entry has no capability evidence.")
+        request_policy: dict[str, object] = OpenRouterRequestPolicy.build(
+            max_tokens=resolved["max_tokens"],
+            reasoning_effort=resolved_reasoning.provider_effort if resolved_reasoning.enabled else None,
+            controls_available=(
+                capabilities.reasoning_controls_available or capabilities.reasoning_disable_available
+            ),
+            disable_available=capabilities.reasoning_disable_available,
+        )
+        return OpenRouterChatOpenAI(
+            slo_model_name=model_name,
+            slo_capabilities=capabilities,
+            slo_output_ceiling=cls._openrouter_output_ceiling(entry=entry),
+            model=entry.api_model_name or entry.model_name.removeprefix("openrouter:"),
+            base_url="https://openrouter.ai/api/v1",
+            api_key=credential.access_token,
+            streaming=resolved["streaming"],
+            max_retries=0,
+            use_responses_api=False,
+            stream_usage=True,
+            **sampling,
+            default_headers={
+                "X-OpenRouter-Title": "Slo",
+                "X-OpenRouter-Categories": "cli-agent",
+            },
+            http_async_client=resolved["http_async_client"],
+            **request_policy,
+        )
+
+    @staticmethod
+    def _openrouter_output_ceiling(*, entry: "ModelCatalogEntryDAO") -> int:
+        """Return the immutable OpenRouter ceiling for construction and invocation.
+
+        Args:
+            entry (ModelCatalogEntryDAO): Prepared OpenRouter catalog record.
+
+        Returns:
+            int: The lesser reported-or-local output bound and half the effective context window.
+        """
+        capabilities = entry.capabilities
+        reported_or_local: int = (
+            capabilities.reported_output_ceiling
+            if capabilities is not None and capabilities.reported_output_ceiling is not None
+            else 4096
+        )
+        return min(reported_or_local, entry.runtime_profile.context_window // 2)
+
+    @classmethod
+    def _prepared_openrouter_entry(
+        cls,
+        *,
+        model_name: str,
+        snapshot: Optional[ModelCatalogSnapshotDAO],
+    ) -> "ModelCatalogEntryDAO":
+        """Require the supplied immutable catalog snapshot for an OpenRouter build.
+
+        Called only by :meth:`_build_openrouter` after structural provider dispatch.
+        OpenRouter routes are dynamically discovered, so the factory must reject a
+        missing snapshot or an absent/ineligible entry before resolving credentials
+        or constructing a direct-family fallback.
+
+        Args:
+            model_name (str): Exact canonical OpenRouter route.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Immutable prepared catalog view.
+
+        Returns:
+            ModelCatalogEntryDAO: The prepared exact-route entry.
+
+        Raises:
+            ValueError: The route lacks a prepared eligible OpenRouter catalog entry.
+        """
+        if snapshot is None:
+            raise ValueError("OpenRouter model construction requires a prepared catalog entry and snapshot.")
+        entry: ModelCatalogEntryDAO = ModelCatalogService.entry_for_model(
+            model_name=model_name,
+            snapshot=snapshot,
+        )
+        if entry.provider is not ProviderName.OPENROUTER or entry.availability != "available":
+            raise ValueError("OpenRouter model construction requires an eligible prepared catalog entry.")
+        return entry
 
     @classmethod
     def _build_kimi_for_coding_chat_openai(
@@ -497,6 +745,7 @@ class LLMFactory:
         resolved_reasoning: ResolvedReasoningConfigDAO = cls._resolve_kimi_reasoning_config(
             model_name=model_name,
             requested_level=resolved["reasoning_level"],
+            **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
         )
         kimi_kwargs: dict[str, Any] = {
             "base_url": KIMI_FOR_CODING_API_URL,
@@ -520,6 +769,7 @@ class LLMFactory:
         *,
         model_name: str,
         requested_level: ReasoningLevel,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> ResolvedReasoningConfigDAO:
         """Resolve catalog reasoning only for known Kimi models.
 
@@ -538,10 +788,11 @@ class LLMFactory:
             return resolve_reasoning_config(
                 model_name=model_name,
                 requested_level=requested_level,
+                snapshot=snapshot,
             )
         except ValueError:
             try:
-                entry = ModelCatalogService.entry_for_model(model_name=model_name)
+                entry = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
             except ValueError:
                 return ResolvedReasoningConfigDAO(
                     enabled=False,
@@ -594,16 +845,7 @@ class LLMFactory:
         Raises:
             ValueError: When ``model_name`` matches no known prefix.
         """
-        if model_name.startswith(cls._ANTHROPIC_PREFIXES):
-            return ProviderName.ANTHROPIC
-        if model_name.startswith(cls._OPENAI_PREFIXES):
-            return ProviderName.OPENAI
-        if model_name.startswith(cls._KIMI_FOR_CODING_PREFIXES):
-            return ProviderName.KIMI_FOR_CODING
-        raise ValueError(
-            f"Unsupported model_name '{model_name}'. Supported prefixes: "
-            f"{cls._ANTHROPIC_PREFIXES + cls._OPENAI_PREFIXES + cls._KIMI_FOR_CODING_PREFIXES}"
-        )
+        return provider_for_model(model_name=model_name)
 
     @classmethod
     def create_pool(
@@ -617,6 +859,7 @@ class LLMFactory:
         model_kwargs: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
         reasoning_level: ReasoningLevel = "off",
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> "ModelPool":
         """Build a ModelPool, forwarding every build knob to every member.
 
@@ -641,6 +884,9 @@ class LLMFactory:
             model_kwargs (Optional[dict[str, Any]]): Provider extras per member.
             session_id (Optional[str]): Active session id for ChatGPT-backend headers.
             reasoning_level (ReasoningLevel): Canonical reasoning level per member.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied immutable
+                view for every member; None preserves global catalog reads. This
+                constructor does not capture or prepare a runtime generation.
 
         Returns:
             ModelPool: Ready-to-use pool with all members constructed.
@@ -662,10 +908,12 @@ class LLMFactory:
                 model_kwargs=model_kwargs,
                 session_id=session_id,
                 reasoning_level=reasoning_level,
+                snapshot=snapshot,
             )
             models[entry.model_name] = build_result.llm
         return ModelPool(
             pool_dao=pool_dao,
             models=models,
             request_adapter=adapt_chatgpt_backend_request,
+            snapshot=snapshot,
         )

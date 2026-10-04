@@ -1,5 +1,22 @@
 # Slo Headless Cookbook
 
+## Latest recovery receipt — 2026-10-03 final authorized Call 4: REVISE
+
+Fresh complete post-edit non-E2E gate: **5136 passed, 18 deselected, 196 warnings
+in 327.78s; exit 0**, `.f86-final-recovery-O3ZPKA/full-non-e2e.log`.
+This supersedes earlier receipts as the latest execution, not as approval.
+Budget evidence persistence, nullable-rate override restoration, actual default-effort
+SDK wire assertion and bounded picker detail fixes landed. Remaining: unexplained
+Call3 selection offset failure (passes isolated/full now, no causal repair), `/reasoning`
+presentation and mounted two-size proof, prepared/no-budget evidence, and stronger
+real-store admission proof (new removal test injects refresh outcome).
+See `docs/implementation/86-openrouter/final-recovery-evidence-2026-10-03.md`.
+**STEP1READY withheld.** Independent Step2/3 remain pending. Offline synthetic tests
+are not live authorization/availability/inference evidence; 18 E2E/default-disabled
+live/fixture cases were deselected. Black/mypy waived, not green. Earlier receipts
+below remain historical; no final workflow approval.
+
+
 *A practical guide to running Slo without the TUI — for pipelines, scripts, orchestration, and the kind of engineer who thinks a blinking cursor is a moral failing.*
 
 ---
@@ -71,6 +88,48 @@ This is the full settings surface. Every flag, every environment variable, every
 | `--orchestrator` / `--no-orchestrator` | | `False` | Attach a sub-agent pool before running. Enables the `spawn_sub_agents` tool. Also injects the default orchestrator system prompt when no custom `--system-prompt-file` is set. |
 | `--system-prompt-b64` | | `None` | Base64-encoded system prompt override. Equivalent to `--system-prompt-file` but safe for multi-line text passed across a subprocess boundary. Decodes and replaces the session system prompt. |
 | `--notify-session` | | `None` | Session id whose durable inbox receives workflow lifecycle notifications (`workflow_started`, per-phase updates, terminal synthesis). Set by `launch_workflow` when a TUI session detaches an orchestrator; without it, headless behaviour is byte-identical to before (no notifier, no inbox writes). |
+
+### OpenRouter model routes (Feature 86 — partial delivery)
+
+Headless runs accept the ordinary model override syntax, including an exact prepared
+OpenRouter route:
+
+```bash
+slo run -p "summarize the working tree" --model 'openrouter:<exact-remote-id>'
+```
+
+`openrouter:` identifies the credential and transport provider even when the remote
+ID contains an upstream vendor name. The headless path materializes one session
+identity and uses the normal strict preparation gateway before inference. A route
+that is absent from the authenticated catalog fails with the existing safe
+preparation guidance; it is not silently replaced by a default model. `--resume`
+uses persisted routed-model metadata as one route unless an explicit `--model`
+override is supplied. Selection precedence is exactly: explicit model → configured
+pool → resumed route → saved default → cfg default. An explicit override clears any
+configured model pool.
+
+OpenRouter credentials follow normal resolver precedence: `SLO_OPENROUTER_API_KEY`
+then the stored OpenRouter credential. The command should never receive a key in its
+arguments. Detached trusted children have one deliberate environment exception for
+that exact variable; other secret-shaped environment names remain filtered. Public
+stdout JSONL and stderr lifecycle records must not contain private OpenRouter
+reasoning/continuation metadata or raw provider errors.
+
+This section describes implemented routing/preparation behavior, not live-provider
+availability or authorization. The retained **pre-correction** Step 1 gate is
+**5115 passed, 18 E2E-marked deselected, 196 warnings in 373.69s; exit 0** at
+`.f86-integration-retry-ucwY1o/full-non-e2e.log`. The 18 deselections include
+default-disabled live/fixture harness tests; executed OpenRouter coverage is offline
+local/mock transport testing, not live credentials, network, paid inference, or
+provider authorization. Black/mypy are waived only as static gates, not green.
+Independent review remains **REVISE** while source corrections are concurrent; do
+not treat this as a final post-correction gate or approval. Bounded capture evidence
+includes append ordering/refusal, independent OS-process resume admission,
+cancellation during append-lease wait, and a reaped-launcher kernel EBADF case
+through instrumented shipped bodies/native I/O. It is not native interpreter-startup
+equivalence and does not add an argv-equality product requirement. See
+`implementation/86-openrouter/independent-full-rereview-2026-10-03.md` for current
+findings; dated reports remain historical.
 
 ### `slo visualize` — all flags
 

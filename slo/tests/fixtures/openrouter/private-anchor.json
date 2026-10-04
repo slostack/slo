@@ -1,0 +1,7 @@
+{
+  "provider": "openrouter",
+  "source_model_name": "openrouter:vendor/fixture-coder",
+  "reasoning_details": [
+    {"type": "encrypted", "data": "fixture-private-anchor"}
+  ]
+}

@@ -30,6 +30,72 @@ from src.agents.slo_agent.graph import adapt_chatgpt_backend_request
 from src.auth.credential_dao import ProviderName
 
 
+class TestRouteSwitchRecordDAO:
+    def test_record_when_direct_provider_error_contains_diagnostic_preserves_prior_audit_text(self) -> None:
+        """Direct-provider route audits retain the existing diagnostic text contract."""
+        pool: ModelPool = _switch_pool(
+            primary=_RaisingChatModel(error=_StatusError(status_code=429)),
+            secondary=FauxChatModel(responses=[AIMessage(content="fallback")]),
+        )
+        diagnostic: str = "direct-provider diagnostic remains visible"
+
+        assert (
+            pool._safe_route_switch_error_code(
+                kind=ProviderErrorKind.RATE_LIMITED,
+                provider=ProviderName.OPENAI,
+                error=RuntimeError(diagnostic),
+            )
+            == diagnostic
+        )
+
+    def test_record_when_openrouter_error_contains_secret_stores_safe_code_only(self) -> None:
+        """Keep an OpenRouter route-switch audit independent of upstream exception text."""
+        from src.agents.providers.credit_exhaustion_policy import ProviderErrorKind
+        from src.agents.providers.model_pool import ModelPool
+
+        pool: ModelPool = ModelPool(
+            pool_dao=ModelPoolDAO(
+                entries=[
+                    ModelPoolEntryDAO(
+                        model_name="openrouter:vendor/first",
+                        provider=ProviderName.OPENROUTER,
+                        priority=0,
+                    ),
+                    ModelPoolEntryDAO(
+                        model_name="openrouter:vendor/second",
+                        provider=ProviderName.OPENROUTER,
+                        priority=1,
+                    ),
+                ]
+            ),
+            models={
+                "openrouter:vendor/first": FauxChatModel(responses=[]),
+                "openrouter:vendor/second": FauxChatModel(responses=[]),
+            },
+        )
+
+        safe_code: str = pool._safe_route_switch_error_code(
+            kind=ProviderErrorKind.RATE_LIMITED,
+            provider=ProviderName.OPENROUTER,
+            error=RuntimeError("openrouter-sentinel-secret"),
+        )
+
+        assert safe_code == "openrouter_rate_limited"
+        assert "openrouter-sentinel-secret" not in safe_code
+
+
+class TestModelPoolEntryDAO:
+    """Programmatic pool entries must obey canonical provider ownership."""
+
+    def test_rejects_provider_that_does_not_match_openrouter_route(self) -> None:
+        """A qualified gateway route cannot be declared as a direct provider."""
+        with pytest.raises(ValueError, match="provider does not match"):
+            ModelPoolEntryDAO(
+                model_name="openrouter:anthropic/claude-sonnet-5.5",
+                provider=ProviderName.ANTHROPIC,
+            )
+
+
 class _FakeCreditError(Exception):
     """Minimal exception with status_code for mock credit-exhaustion scenarios."""
 
@@ -491,7 +557,7 @@ class TestModelPoolAgenerateSwitching:
         pool: ModelPool = _switch_pool(
             primary=_RaisingChatModel(error=_StatusError(status_code=429)),
             secondary=_RaisingChatModel(error=_StatusError(status_code=429)),
-            secondary_provider=ProviderName.OPENAI,
+            secondary_provider=ProviderName.ANTHROPIC,
         )
         with pytest.raises(AllModelsExhaustedError):
             await pool._agenerate(messages=_HI_MSGS)
@@ -536,7 +602,7 @@ class TestModelPoolAstreamSwitching:
         assert "".join(str(chunk.message.content) for chunk in chunks) == "from-secondary"
         assert primary.calls == 1
         assert len(records) == 1
-        assert records[0].error_text == "provider_stream_disconnected"
+        assert records[0].safe_error_code == "provider_stream_disconnected"
         assert pool._cooldowns["gpt-5.4"] > time.monotonic()
 
     async def test_does_not_switch_after_first_chunk(self) -> None:

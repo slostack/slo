@@ -343,7 +343,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="canonical order"):
             ModelReasoningProfileDAO(
-                supported_levels=["high", "low"],
+                supported_levels=("high", "low"),
                 default_level="low",
                 provider_effort_map={"low": "low", "high": "high"},
             )
@@ -354,7 +354,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="duplicate"):
             ModelReasoningProfileDAO(
-                supported_levels=["low", "low", "high"],
+                supported_levels=("low", "low", "high"),
                 default_level="low",
                 provider_effort_map={"low": "low", "high": "high"},
             )
@@ -365,7 +365,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="default_level"):
             ModelReasoningProfileDAO(
-                supported_levels=["off", "low"],
+                supported_levels=("off", "low"),
                 default_level="high",
                 provider_effort_map={"low": "low"},
             )
@@ -376,7 +376,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="provider_effort_map"):
             ModelReasoningProfileDAO(
-                supported_levels=["off", "low"],
+                supported_levels=("off", "low"),
                 default_level="low",
                 provider_effort_map={"low": "low", "high": "high"},
             )
@@ -387,7 +387,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="translation"):
             ModelReasoningProfileDAO(
-                supported_levels=["off", "low", "high"],
+                supported_levels=("off", "low", "high"),
                 default_level="high",
                 provider_effort_map={"low": "low"},
             )
@@ -398,7 +398,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="exactly one"):
             ModelReasoningProfileDAO(
-                supported_levels=["off", "low"],
+                supported_levels=("off", "low"),
                 default_level="low",
                 provider_effort_map={"low": "low"},
                 provider_budget_map={"low": 2048},
@@ -410,7 +410,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="provider_reasoning_required"):
             ModelReasoningProfileDAO(
-                supported_levels=["low", "high"],
+                supported_levels=("low", "high"),
                 default_level="high",
                 provider_effort_map={"low": "low", "high": "high"},
                 provider_reasoning_required=True,
@@ -422,7 +422,7 @@ class TestReasoningProfileValidation:
 
         with pytest.raises(ValueError, match="off"):
             ModelReasoningProfileDAO(
-                supported_levels=["off", "low"],
+                supported_levels=("off", "low"),
                 default_level="low",
                 provider_effort_map={"low": "low"},
                 provider_reasoning_required=True,
@@ -433,7 +433,7 @@ class TestReasoningProfileValidation:
         from src.agents.model_catalog.dao import ModelReasoningProfileDAO
 
         profile = ModelReasoningProfileDAO(
-            supported_levels=["off"],
+            supported_levels=("off",),
             default_level="off",
         )
 
@@ -445,7 +445,7 @@ class TestReasoningProfileValidation:
         from src.agents.model_catalog.dao import ModelReasoningProfileDAO
 
         profile = ModelReasoningProfileDAO(
-            supported_levels=["off", "low"],
+            supported_levels=("off", "low"),
             default_level="low",
             provider_budget_map={"low": 2048},
         )

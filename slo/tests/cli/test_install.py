@@ -14,6 +14,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -129,9 +130,30 @@ class FakeBin:
         self._log.write_text("")
         self._os_release: Path | None = None
         for tool in (
-            "mkdir", "grep", "python3", "uname", "sync", "touch", "cp", "rm",
-            "cmp", "echo", "printf", "sed", "head", "tail", "cut", "wc", "tr",
-            "dirname", "readlink", "od", "cat", "chmod", "mktemp", "mv",
+            "mkdir",
+            "grep",
+            "python3",
+            "uname",
+            "sync",
+            "touch",
+            "cp",
+            "rm",
+            "cmp",
+            "echo",
+            "printf",
+            "sed",
+            "head",
+            "tail",
+            "cut",
+            "wc",
+            "tr",
+            "dirname",
+            "readlink",
+            "od",
+            "cat",
+            "chmod",
+            "mktemp",
+            "mv",
         ):
             self._add_passthrough_wrapper(name=tool)
 
@@ -281,9 +303,9 @@ class FakeBin:
         """
         resolved_path: Path = path.resolve(strict=False)
         resolved_root: Path = self._root.resolve(strict=True)
-        assert resolved_path.is_relative_to(resolved_root), (
-            f"unsafe fake-bin path {resolved_path}; expected below {resolved_root}"
-        )
+        assert resolved_path.is_relative_to(
+            resolved_root
+        ), f"unsafe fake-bin path {resolved_path}; expected below {resolved_root}"
 
     def write_regular_executable(self, *, path: Path, content: str) -> None:
         """Replace a fixed-root fake command with a new regular executable.
@@ -311,10 +333,11 @@ class FakeBin:
             name: Host executable name to resolve and expose through the wrapper.
         """
         system_path: str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        real: str | None = shutil.which(name, path=system_path)
+        # Python helpers must use the approved test environment, not system Python.
+        real: str | None = sys.executable if name == "python3" else shutil.which(cmd=name, path=system_path)
         assert real is not None, f"{name} must exist on the host for the harness"
         self.write_regular_executable(
-            content=f"#!/bin/sh\nexec {shlex.quote(real)} \"$@\"\n",
+            content=f'#!/bin/sh\nexec {shlex.quote(real)} "$@"\n',
             path=self._bin / name,
         )
 

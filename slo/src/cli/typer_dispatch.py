@@ -33,7 +33,7 @@ from typing import Optional
 import typer
 
 from config.cfg import SLO_HOME as _CFG_SLO_HOME, cfg
-from config.logger import configure_app_file_logging, interactive_logging, log_info
+from config.logger import configure_app_file_logging, interactive_logging, log_info, log_warning
 from config.model_pool_config import parse_model_pool_config
 from src.agents.reasoning_capabilities import ReasoningLevel
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
@@ -41,9 +41,13 @@ from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPrefere
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+from src.agents.model_catalog.service import ModelCatalogService
+from src.auth.provider_for_model import OPENROUTER_PREFIX
 from src.agents.slo_agent.plugins.installer import PluginInstallerService
 from src.cli.headless import HeadlessRunner
 from src.cli.headless_logging import headless_logging
+from uuid import uuid4
+
 from src.cli.headless_request import resolve_session_id, validate_session_id
 from src.cli.update import Updater
 from src.tui.app import SloTUI
@@ -95,9 +99,10 @@ class TyperDispatch:
                 workdir=resolved_workdir,
                 workspace_file=resolved_workspace_file,
                 resume_session_id=resolved_session_id,
+                resumed_model_name=cls._resolve_resumed_model_name(session_id=resolved_session_id),
                 plugin_paths=plugin_paths,
             )
-            session: SloAgentSession = SloAgentSession.build(config=config)
+            session: SloAgentSession = SloAgentSession.build(config=config, allow_pending_preparation=True)
             SloTUI(session=session).run(mouse=True)
 
     @classmethod
@@ -180,18 +185,22 @@ class TyperDispatch:
         validated_explicit_id: Optional[str] = (
             validate_session_id(value=explicit_session_id) if explicit_session_id else None
         )
-        canonical_session_id: Optional[str] = resolve_session_id(
+        canonical_session_id: str = resolve_session_id(
             resume_session_id=resume_session_id,
             explicit_session_id=validated_explicit_id,
-        )
+        ) or str(uuid4())
         effective_enable_history: bool = enable_history or (resume is not None)
+        resumed_model_name: Optional[str] = cls._resolve_resumed_model_name(
+            session_id=canonical_session_id if resume is not None else None,
+        )
         config: SessionConfigDAO = cls._build_session_config(
             workdir=resolved_workdir,
             workspace_file=resolved_workspace_file,
             resume_session_id=canonical_session_id,
+            resumed_model_name=resumed_model_name,
             plugin_paths=plugin_paths,
+            model=model,
         )
-        config = cls._apply_model_override(config=config, model=model)
         config = cls._apply_reasoning_override(config=config, reasoning=reasoning)
         config = cls._apply_history_override(
             config=config,
@@ -401,13 +410,14 @@ class TyperDispatch:
         workdir: Path,
         workspace_file: Optional[Path] = None,
         resume_session_id: Optional[str] = None,
+        resumed_model_name: Optional[str] = None,
         plugin_paths: Optional[list[Path]] = None,
+        model: Optional[str] = None,
     ) -> SessionConfigDAO:
         """Assemble session config from preferences, then env, then cfg defaults.
 
-        Resolution order for model name:
-            1. ``UserPreferencesStore`` saved value.
-            2. ``cfg("DEFAULT_MODEL_NAME")`` (env or cfg.py literal).
+        An explicit model bypasses configured pool parsing and default fallback.
+        Otherwise configured pools precede saved and cfg model defaults.
 
         Resolution order for reasoning level:
             1. ``UserPreferencesStore`` saved value.
@@ -418,9 +428,12 @@ class TyperDispatch:
 
         Args:
             workdir (Path): Resolved absolute workdir.
+            model (Optional[str]): Explicit route, resolved before configured pools.
             workspace_file (Optional[Path]): Optional resolved workspace file.
             resume_session_id (Optional[str]): Optional explicit session
                 id to reopen.
+            resumed_model_name (Optional[str]): Persisted route read at the
+                caller's async boundary. ``None`` denotes no resumed metadata.
 
         Returns:
             SessionConfigDAO: A validated session-config DAO.
@@ -432,15 +445,40 @@ class TyperDispatch:
             log_info(msg="preferences_file_corrupt_falling_back_to_defaults")
             prefs = UserPreferencesDAO()
 
+        if model is not None:
+            return cls._apply_model_override(
+                config=SessionConfigDAO(
+                    workdir=workdir,
+                    workspace_file=workspace_file,
+                    reasoning_level=prefs.default_reasoning_level,
+                    session_id=resume_session_id,
+                    plugin_paths=list(plugin_paths or []),
+                ),
+                model=model,
+            )
+
         from config.ai_model_config import resolve_model_name_with_fallback
 
-        model_name: str = prefs.default_model_name or cfg("DEFAULT_MODEL_NAME") or "gpt-5.4"
+        model_pool_dao = parse_model_pool_config(preference_value=prefs.default_model_pool)
+        default_model_name: str = prefs.default_model_name or cfg("DEFAULT_MODEL_NAME") or "gpt-5.4"
+        resumable_model_name: Optional[str] = cls._resumable_model_name(resumed_model_name=resumed_model_name)
         resolved_model_name: str
         fallback_notice: Optional[str]
-        resolved_model_name, fallback_notice = resolve_model_name_with_fallback(
-            model_name=model_name,
-        )
-        model_pool_dao = parse_model_pool_config(preference_value=prefs.default_model_pool)
+        if resumable_model_name is not None:
+            resolved_model_name, fallback_notice = resumable_model_name, None
+        elif resumed_model_name is not None:
+            default_notice: Optional[str]
+            resolved_model_name, default_notice = resolve_model_name_with_fallback(
+                model_name=default_model_name
+            )
+            log_warning(msg="session_resume_model_unavailable", resumed_model=resumed_model_name)
+            fallback_notice = cls._resume_fallback_notice(
+                resumed_model_name=resumed_model_name, default_notice=default_notice
+            )
+        else:
+            resolved_model_name, fallback_notice = resolve_model_name_with_fallback(
+                model_name=default_model_name
+            )
 
         return SessionConfigDAO(
             workdir=workdir,
@@ -452,6 +490,94 @@ class TyperDispatch:
             fallback_notice=fallback_notice,
             plugin_paths=list(plugin_paths or []),
         )
+
+    @classmethod
+    def _resumable_model_name(cls, *, resumed_model_name: Optional[str]) -> Optional[str]:
+        """Keep a saved route that this version can build or prepare.
+
+        The CLI config builder calls this before TUI or headless construction.
+        OpenRouter routes keep their existing deferred preparation path; direct
+        models need a catalog entry, not merely a compatible provider prefix.
+
+        Args:
+            resumed_model_name (Optional[str]): Saved model, or None without metadata.
+
+        Returns:
+            Optional[str]: Saved route to keep, or None to use the default.
+        """
+        if resumed_model_name is None or resumed_model_name.startswith(OPENROUTER_PREFIX):
+            return resumed_model_name
+        if cls._is_catalog_model(model_name=resumed_model_name):
+            return resumed_model_name
+        return None
+
+    @staticmethod
+    def _is_catalog_model(*, model_name: str) -> bool:
+        """Check the published catalog during direct-model resume selection.
+
+        Args:
+            model_name (str): Saved name or alias checked by _resumable_model_name.
+
+        Returns:
+            bool: True when the catalog resolves the saved name.
+        """
+        try:
+            ModelCatalogService.entry_for_model(model_name=model_name)
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _resume_fallback_notice(*, resumed_model_name: str, default_notice: Optional[str]) -> str:
+        """Compose the resume explanation without logging or changing state.
+
+        The CLI config builder calls this after logging the fallback warning.
+        Keep any default-model explanation on the same line for the startup block.
+
+        Args:
+            resumed_model_name (str): Saved model this version cannot use.
+            default_notice (Optional[str]): Existing default fallback explanation.
+
+        Returns:
+            str: Startup notice; the following tip names the active pool or model.
+        """
+        notice: str = (
+            f"Model '{resumed_model_name}' from the resumed session is not available in this "
+            "version; using the default model instead."
+        )
+        if default_notice is None:
+            return notice
+        return f"{notice} {default_notice}"
+
+    @classmethod
+    def _resolve_resumed_model_name(cls, *, session_id: Optional[str]) -> Optional[str]:
+        """Resolve resumed metadata through the CLI's dedicated async boundary.
+
+        Args:
+            session_id (Optional[str]): Canonical resumed session identity, if any.
+
+        Returns:
+            Optional[str]: Persisted exact route, or ``None`` without a resume.
+        """
+        if session_id is None:
+            return None
+        return asyncio.run(cls._read_resumed_model(session_id=session_id))
+
+    @classmethod
+    async def _read_resumed_model(cls, *, session_id: str) -> Optional[str]:
+        """Read the shared tree/flat metadata contract without creating history.
+
+        Args:
+            session_id (str): Materialized session identity, possibly new.
+
+        Returns:
+            Optional[str]: Persisted exact route, or None for a new identity.
+        """
+        store = FilesystemSessionHistoryStore()
+        if not await store.session_exists(session_id=session_id):
+            return None
+        metadata = await store.read_metadata(session_id=session_id)
+        return metadata.model_name
 
     @classmethod
     def _apply_model_override(
@@ -472,7 +598,9 @@ class TyperDispatch:
         """
         if model is None:
             return config
-        return config.model_copy(update={"model_name": model})
+        return config.model_copy(
+            update={"model_name": model, "model_pool_dao": None, "fallback_notice": None}
+        )
 
     @classmethod
     def _apply_reasoning_override(

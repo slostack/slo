@@ -351,8 +351,193 @@ class TestScheduleExecutor:
         assert runner.calls == []
         assert len(inbox_store.messages) == 1
         assert inbox_store.messages[0].run_id == records[0].run_id
+        assert inbox_store.messages[0].payload == {"cwd": "/tmp/project", "model": "gpt-5.4"}
         assert records[0].delivery_path == "session_inbox"
         assert records[0].delivery_state == "queued"
+
+    @pytest.mark.asyncio
+    async def test_continuous_active_target_queues_exact_openrouter_route_without_subprocess(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Active session inbox delivery retains the schedule's canonical OpenRouter route."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-openrouter-inbox", session_mode="continuous"
+        ).model_copy(update={"model": "openrouter:vendor/scheduled"})
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        runner = _FakeRunner(
+            result=ScheduleSubprocessResultDAO(status="completed", exit_code=0, summary="unused"),
+        )
+        inbox_store = _FakeInboxStore(result="queued")
+        target_resolver = _FakeTargetResolver(
+            target=ResolvedSessionTargetDAO(
+                resolved_reference="release-prep",
+                target_session_id="session-123",
+                explicit_session_id=None,
+            ),
+        )
+        executor: ScheduleExecutor = ScheduleExecutor(
+            subprocess_runner=cast(Any, runner),
+            target_resolver=cast(Any, target_resolver),
+            session_lease_store=cast(Any, _FakeLeaseStore(active=True)),
+            session_inbox_store=cast(Any, inbox_store),
+            report_writer=ScheduleReportWriter(),
+        )
+
+        exit_code: int = await executor.execute(reference=definition.schedule_id)
+
+        assert exit_code == 0
+        assert runner.calls == []
+        assert inbox_store.messages[0].payload["model"] == "openrouter:vendor/scheduled"
+
+    @pytest.mark.asyncio
+    async def test_continuous_inactive_openrouter_target_persists_completed_headless_report(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An inactive route reaches the existing headless runner and persists its completion report."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-openrouter-inactive",
+            session_mode="continuous",
+        ).model_copy(update={"model": "openrouter:vendor/scheduled"})
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        runner = _FakeRunner(
+            result=ScheduleSubprocessResultDAO(
+                status="completed",
+                exit_code=0,
+                session_id="session-123",
+                summary="prepared exact route",
+                stdout_summary="ordinary output",
+                stderr_summary="",
+            ),
+        )
+        target_resolver = _FakeTargetResolver(
+            target=ResolvedSessionTargetDAO(
+                resolved_reference="release-prep",
+                target_session_id="session-123",
+                explicit_session_id=None,
+            ),
+        )
+        executor: ScheduleExecutor = ScheduleExecutor(
+            subprocess_runner=cast(Any, runner),
+            target_resolver=cast(Any, target_resolver),
+            session_lease_store=cast(Any, _FakeLeaseStore(active=False)),
+            report_writer=ScheduleReportWriter(),
+        )
+
+        exit_code: int = await executor.execute(reference=definition.schedule_id)
+        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+
+        assert exit_code == 0
+        assert runner.calls == [
+            (
+                "resume",
+                {
+                    "definition": definition,
+                    "session_reference": "release-prep",
+                    "target_session_id": "session-123",
+                },
+            )
+        ]
+        assert len(records) == 1
+        assert records[0].status == "completed"
+        assert records[0].delivery_path == "resume_headless"
+        assert records[0].summary == "prepared exact route"
+
+    @pytest.mark.asyncio
+    async def test_continuous_inactive_openrouter_target_persists_failed_headless_report(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed inactive preparation persists a failed report without entering the inbox."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-openrouter-inactive-failed",
+            session_mode="continuous",
+        ).model_copy(update={"model": "openrouter:vendor/scheduled"})
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        runner = _FakeRunner(
+            result=ScheduleSubprocessResultDAO(
+                status="failed",
+                exit_code=1,
+                session_id="session-123",
+                summary="Model preparation failed",
+                stdout_summary="",
+                stderr_summary="ordinary safe diagnostic",
+            ),
+        )
+        target_resolver = _FakeTargetResolver(
+            target=ResolvedSessionTargetDAO(
+                resolved_reference="release-prep",
+                target_session_id="session-123",
+                explicit_session_id=None,
+            ),
+        )
+        executor: ScheduleExecutor = ScheduleExecutor(
+            subprocess_runner=cast(Any, runner),
+            target_resolver=cast(Any, target_resolver),
+            session_lease_store=cast(Any, _FakeLeaseStore(active=False)),
+            report_writer=ScheduleReportWriter(),
+        )
+
+        exit_code: int = await executor.execute(reference=definition.schedule_id)
+        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+
+        assert exit_code == 1
+        assert len(records) == 1
+        assert records[0].status == "failed"
+        assert records[0].delivery_path == "resume_headless"
+        assert records[0].summary == "Model preparation failed"
+        assert records[0].stderr_summary == "ordinary safe diagnostic"
+
+    @pytest.mark.asyncio
+    async def test_continuous_active_target_persists_openrouter_inbox_and_report(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A real inbox store preserves the route and a populated delivery report."""
+        from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        history_root: Path = (tmp_path / "history").resolve()
+        assert history_root.is_relative_to(tmp_path.resolve())
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-openrouter-persisted-inbox",
+            session_mode="continuous",
+        ).model_copy(update={"model": "openrouter:vendor/scheduled"})
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        inbox_store = SessionInboxStore(history_root=history_root)
+        target_resolver = _FakeTargetResolver(
+            target=ResolvedSessionTargetDAO(
+                resolved_reference="release-prep",
+                target_session_id="session-123",
+                explicit_session_id=None,
+            ),
+        )
+        executor: ScheduleExecutor = ScheduleExecutor(
+            target_resolver=cast(Any, target_resolver),
+            session_lease_store=cast(Any, _FakeLeaseStore(active=True)),
+            session_inbox_store=inbox_store,
+            report_writer=ScheduleReportWriter(),
+        )
+
+        exit_code: int = await executor.execute(reference=definition.schedule_id)
+        pending: list[SessionInboxMessageDAO] = await inbox_store.list_pending(session_id="session-123")
+        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+
+        assert exit_code == 0
+        assert len(pending) == 1
+        assert pending[0].payload == {"cwd": "/tmp/project", "model": "openrouter:vendor/scheduled"}
+        assert len(records) == 1
+        assert records[0].delivery_path == "session_inbox"
+        assert records[0].delivery_state == "queued"
+        assert records[0].summary == definition.prompt[:200]
 
     @pytest.mark.asyncio
     async def test_coalesced_enqueue_records_coalesced_delivery_state(

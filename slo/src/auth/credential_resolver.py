@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
-from config.cfg import cfg
+from config.cfg import cfg, openrouter_api_key
 from config.logger import log_error
 from src.auth.credential_dao import (
     AuthenticationFileDAO,
     AuthType,
     CredentialDAO,
+    CredentialSource,
     ProviderName,
+    ResolvedCredentialDAO,
 )
 from src.auth.credential_store import CredentialStore
 
@@ -24,7 +30,8 @@ class CredentialResolver:
 
     Order of precedence:
         1. Environment variable for the requested provider.
-        2. ``~/.slo/global/authentication.json`` via ``CredentialStore``.
+        2. ``CredentialStore``: ``~/.slo/global/authentication.json`` merged with
+           ``authentication.additional-providers.json`` beside it.
         3. ``~/.claude/.credentials.json`` (Anthropic only).
 
     ``resolve`` returns ``Optional[CredentialDAO]`` and never raises.
@@ -37,6 +44,112 @@ class CredentialResolver:
     """
 
     _CLAUDE_CREDENTIALS_PATH: Path = Path.home() / ".claude" / ".credentials.json"
+    _build_credential: ContextVar[Optional[CredentialDAO]] = ContextVar("build_credential", default=None)
+
+    @classmethod
+    @contextmanager
+    def bind_build_credential(cls, *, credential: Optional[CredentialDAO]) -> Iterator[None]:
+        """Bind a session's private capture during synchronous lazy factory construction.
+
+        Catalog/source reads remain live for publication race checks. Only require()
+        consumes this task-local binding; nested construction restores its predecessor.
+
+        Args:
+            credential: Admitted credential, or None for the ordinary factory path.
+
+        Yields:
+            None: Scope in which matching factory requests reuse the capture.
+        """
+        with cls.bind_operation_credential(credential=credential):
+            yield
+
+    @classmethod
+    @contextmanager
+    def bind_operation_credential(cls, *, credential: Optional[CredentialDAO]) -> Iterator[None]:
+        """Bind one admitted credential for all protected writes in a session operation.
+
+        WHAT: Makes an already admitted OpenRouter credential available to the
+            task-local history redactor after lazy agent construction has returned.
+        WHO: ``SloAgentSession`` owns this scope around one accepted prompt.
+        WHEN: From admission through terminal persistence and cleanup; nested
+            task scopes restore their predecessor on success, error, or cancellation.
+
+        Args:
+            credential: Admitted credential, or None for a non-OpenRouter operation.
+
+        Yields:
+            None: Scope in which protected serializers redact the operation capture.
+        """
+        token = cls._build_credential.set(credential)
+        try:
+            yield
+        finally:
+            cls._build_credential.reset(token)
+
+    @classmethod
+    def operation_credential(cls) -> Optional[CredentialDAO]:
+        """Return the private admitted capture for a delayed operation owner.
+
+        Headless event subscribers retain this capture only until terminal cleanup.
+        This does not resolve a new credential or expose it in a public DTO.
+
+        Returns:
+            Optional[CredentialDAO]: Current task's admitted credential.
+        """
+        return cls._build_credential.get()
+
+    @classmethod
+    def redact_openrouter_text(cls, *, text: str) -> str:
+        """Remove known credential representations from text before persistence.
+
+        Args:
+            text: Serialized history or diagnostic text, never a request body.
+
+        Returns:
+            str: Text with the effective and task-bound credentials replaced.
+                Unrelated opaque continuation metadata remains unchanged.
+        """
+        captured = cls._build_credential.get()
+        effective = cls._resolve_openrouter_credential_for_redaction()
+        for credential in (effective, captured):
+            if credential is None or credential.provider != ProviderName.OPENROUTER:
+                continue
+            token = credential.access_token
+            if not token:
+                continue
+            variants = {token, json.dumps(token)[1:-1], quote(token, safe="")}
+            for variant in sorted(variants, key=len, reverse=True):
+                text = text.replace(variant, "[REDACTED]")
+        return text
+
+    @classmethod
+    def _resolve_openrouter_credential_for_redaction(cls) -> Optional[CredentialDAO]:
+        """Resolve an output-redaction credential without allowing resolver faults to expose text.
+
+        WHAT: Refuses unchecked serialization on a resolution failure without
+            an admitted capture; a captured operation retains its literal redaction.
+        WHO: ``redact_openrouter_text`` calls this before history and diagnostic
+            persistence.
+        WHEN: Every protected serialization boundary; resolution failure never
+            propagates raw serialized content to the filesystem.
+
+        Returns:
+            Optional[CredentialDAO]: The live OpenRouter credential, or ``None``
+                when resolution is unavailable but an admitted capture exists.
+
+        Raises:
+            ValueError: Resolution failed without an admitted OpenRouter capture.
+                The fixed message suppresses potentially secret-bearing context.
+        """
+        try:
+            return cls.resolve(provider=ProviderName.OPENROUTER)
+        except Exception:  # noqa: BLE001 -- persistence must fail closed on resolver faults.
+            captured = cls._build_credential.get()
+            if captured is None or captured.provider != ProviderName.OPENROUTER or not captured.access_token:
+                raise ValueError(
+                    "OpenRouter credential resolution unavailable; serialization refused."
+                ) from None
+            return None
 
     @classmethod
     def resolve(cls, *, provider: ProviderName) -> Optional[CredentialDAO]:
@@ -46,21 +159,33 @@ class CredentialResolver:
             provider (ProviderName): Provider to look up.
 
         Returns:
-            Optional[CredentialDAO]: ``None`` when no source has a usable
-                non-expired token. Otherwise the first source that
-                resolves wins.
+            Optional[CredentialDAO]: The effective credential without its source.
+        """
+        resolved: Optional[ResolvedCredentialDAO] = cls.resolve_with_source(provider=provider)
+        return resolved.credential if resolved is not None else None
+
+    @classmethod
+    def resolve_with_source(cls, *, provider: ProviderName) -> Optional[ResolvedCredentialDAO]:
+        """Return one effective credential together with its precedence source.
+
+        Args:
+            provider (ProviderName): Provider whose credential should be resolved.
+
+        Returns:
+            Optional[ResolvedCredentialDAO]: The first usable credential and its
+                source, or ``None`` when every source is unavailable.
         """
         env_cred: Optional[CredentialDAO] = cls._from_env(provider=provider)
         if env_cred is not None:
-            return env_cred
+            return ResolvedCredentialDAO(credential=env_cred, source=CredentialSource.ENVIRONMENT)
 
         stored_cred: Optional[CredentialDAO] = cls._from_store(provider=provider)
         if stored_cred is not None:
-            return stored_cred
+            return ResolvedCredentialDAO(credential=stored_cred, source=CredentialSource.STORE)
 
         legacy_cred: Optional[CredentialDAO] = cls._from_legacy_claude(provider=provider)
         if legacy_cred is not None:
-            return legacy_cred
+            return ResolvedCredentialDAO(credential=legacy_cred, source=CredentialSource.LEGACY)
 
         return None
 
@@ -81,6 +206,9 @@ class CredentialResolver:
             ValueError: Provider-specific, user-facing message naming the
                 ``/auth`` slash command and the env-var fallback.
         """
+        captured = cls._build_credential.get()
+        if captured is not None and captured.provider == provider:
+            return captured
         cred: Optional[CredentialDAO] = cls.resolve(provider=provider)
         if cred is None:
             raise ValueError(cls._missing_message(provider=provider))
@@ -100,6 +228,8 @@ class CredentialResolver:
         env_value: Optional[str] = cls._env_var_for(provider=provider)
         if not env_value:
             return None
+        if provider is ProviderName.OPENROUTER and not env_value.strip():
+            raise ValueError("SLO_OPENROUTER_API_KEY must not contain only whitespace.")
         return CredentialDAO(
             provider=provider,
             auth_type=AuthType.API_KEY,
@@ -195,6 +325,8 @@ class CredentialResolver:
             return cfg(key="OPENAI_API_KEY")
         if provider is ProviderName.KIMI_FOR_CODING:
             return cfg(key="KIMI_FOR_CODING_API_KEY")
+        if provider is ProviderName.OPENROUTER:
+            return openrouter_api_key()
         return None
 
     @staticmethod
@@ -216,4 +348,6 @@ class CredentialResolver:
                 "No Kimi For Coding credentials found. Set SLO_KIMI_FOR_CODING_API_KEY "
                 "or store the API key via /auth in the TUI."
             )
+        if provider is ProviderName.OPENROUTER:
+            return "No OpenRouter credentials found. Run /auth in the TUI or set SLO_OPENROUTER_API_KEY."
         return f"No credentials found for provider '{provider.value}'."

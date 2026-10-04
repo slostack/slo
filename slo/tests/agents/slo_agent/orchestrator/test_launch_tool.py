@@ -534,7 +534,15 @@ class TestLaunchNeverRaisesIntoGraph:
     ) -> None:
         """An unwritable capture path fails the launch as error JSON, no spawn."""
 
-        def _unwritable(*, history_root: Path, session_id: str, name: str) -> None:
+        def _unwritable(
+            *,
+            history_root: Path,
+            session_id: str,
+            name: str,
+            credential: str = "",
+            completion_context: object = None,
+        ) -> None:
+            del completion_context
             raise OSError("read-only history root")
 
         monkeypatch.setattr(
@@ -615,10 +623,23 @@ class TestLaunchNeverRaisesIntoGraph:
             fromlist=["open_capture_file_append"],
         ).open_capture_file_append
 
-        def _stderr_fails(*, history_root: Path, session_id: str, name: str) -> Any:
+        def _stderr_fails(
+            *,
+            history_root: Path,
+            session_id: str,
+            name: str,
+            credential: str = "",
+            completion_context: object = None,
+        ) -> Any:
             if name == "stderr.log":
                 raise OSError("disk full")
-            handle = real_open(history_root=history_root, session_id=session_id, name=name)
+            handle = real_open(
+                history_root=history_root,
+                session_id=session_id,
+                name=name,
+                credential=credential,
+                completion_context=completion_context,
+            )
             opened.append(handle)
             return handle
 

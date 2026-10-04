@@ -26,6 +26,7 @@ from langgraph.graph import END, START, StateGraph
 
 from config.cfg import cfg
 from src.agents.base import LLM, LLMBuildProduct, LLMBuildResult, LLMFactory
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPoolDAO
@@ -422,6 +423,7 @@ def build_slo_agent(
     session_id: Optional[str] = None,
     tool_execution_mode: ToolExecutionMode = ToolExecutionMode.CONCURRENT_READS,
     plugin_dispatcher: "PluginDispatcher | None" = None,
+    snapshot: Optional[ModelCatalogSnapshotDAO] = None,
 ) -> SloAgentBuildResult:
     """Build a compiled Slo one-shot-turn graph (single model or pool).
 
@@ -458,6 +460,9 @@ def build_slo_agent(
         session_id (Optional[str]): Active session id for ChatGPT-backend headers.
         tool_execution_mode (ToolExecutionMode): Batch execution policy
             for the custom Slo tool node.
+        snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied immutable
+            construction view. None preserves existing global reads; no capture
+            or runtime admission happens here.
 
     Returns:
         SloAgentBuildResult: Named tuple with the compiled ``graph``, resolved
@@ -478,6 +483,7 @@ def build_slo_agent(
                 max_tokens=max_tokens,
                 session_id=session_id,
                 reasoning_level=reasoning_level,
+                snapshot=snapshot,
             )
         else:
             resolved_model: str = model_name or (cfg(key="DEFAULT_MODEL_NAME") or "gpt-5.4")
@@ -489,6 +495,7 @@ def build_slo_agent(
                 max_tokens=max_tokens,
                 reasoning_level=reasoning_level,
                 session_id=session_id,
+                snapshot=snapshot,
             )
         llm = build_product.llm
         explicit_caching = build_product.supports_explicit_caching
@@ -523,4 +530,5 @@ def build_slo_agent(
         llm=llm_with_tools,
         output_update_queue=output_update_queue,
         supports_explicit_caching=explicit_caching,
+        snapshot=snapshot,
     )

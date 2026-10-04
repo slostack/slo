@@ -10,6 +10,23 @@ __all__ = ["cfg", "__cfg__", "is_dev", "is_test", "is_staging", "USER_SKILLS_DIR
 env = os.environ.get("SLO_ENV", "development")
 
 
+def openrouter_api_key() -> Optional[str]:
+    """Read the OpenRouter key at operation time without changing nonempty secrets.
+
+    Returns:
+        Optional[str]: The current key, ``None`` for an empty variable.
+
+    Raises:
+        ValueError: The variable contains whitespace only.
+    """
+    value: Optional[str] = os.environ.get("SLO_OPENROUTER_API_KEY")
+    if not value:
+        return None
+    if not value.strip():
+        raise ValueError("SLO_OPENROUTER_API_KEY must not contain only whitespace.")
+    return value
+
+
 def is_dev() -> bool:
     return env == "development"
 
@@ -30,6 +47,7 @@ LOG_FORMAT = os.environ.get("SLO_LOG_FORMAT", "json")
 ANTHROPIC_API_KEY = os.environ.get("SLO_ANTHROPIC_API_KEY", None)
 OPENAI_API_KEY = os.environ.get("SLO_OPENAI_API_KEY", None)
 KIMI_FOR_CODING_API_KEY = os.environ.get("SLO_KIMI_FOR_CODING_API_KEY", None)
+OPENROUTER_API_KEY = os.environ.get("SLO_OPENROUTER_API_KEY", None)
 DEFAULT_MODEL_NAME = os.environ.get("SLO_DEFAULT_MODEL_NAME", "gpt-5.4")
 
 # Atlassian / Jira / Confluence integration
@@ -336,6 +354,7 @@ __cfg__: dict[str, str | None] = {
     "LOG_FORMAT": LOG_FORMAT,
     "OAUTH_CALLBACK_HOST": OAUTH_CALLBACK_HOST,
     "OPENAI_API_KEY": OPENAI_API_KEY,
+    "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
     "PREFERENCES_FILE": PREFERENCES_FILE,
     "PYENV_ROOT": PYENV_ROOT,
     "PYTHON_VERSION": PYTHON_VERSION,

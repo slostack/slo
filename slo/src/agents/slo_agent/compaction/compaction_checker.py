@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from config.ai_model_config import MODEL_DEFAULTS, ModelDefaults
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
+from config.ai_model_config import defaults_for_model
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.slo_agent.compaction.constants import DEFAULT_CONTEXT_WINDOW
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
@@ -22,7 +23,7 @@ from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 __all__ = ["CompactionChecker"]
 
 
-def _get_context_window(*, model_name: str) -> int:
+def _get_context_window(*, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None) -> int:
     """Return the input context-window token limit for ``model_name``.
 
     Resolved from ``ModelCatalogService`` first, including aliases and
@@ -39,15 +40,9 @@ def _get_context_window(*, model_name: str) -> int:
             or carries no explicit ``context_window``.
     """
     try:
-        entry = ModelCatalogService.entry_for_model(model_name=model_name)
+        return defaults_for_model(model_name=model_name, snapshot=snapshot)["context_window"]
     except ValueError:
-        entry = None
-    if entry is not None:
-        return entry.runtime_profile.context_window
-    defaults: Optional[ModelDefaults] = MODEL_DEFAULTS.get(model_name)
-    if defaults is None:
         return DEFAULT_CONTEXT_WINDOW
-    return defaults.get("context_window", DEFAULT_CONTEXT_WINDOW)
 
 
 class CompactionChecker:
@@ -64,6 +59,7 @@ class CompactionChecker:
         events: list[SessionHistoryEventDAO],
         model_name: str,
         context_window: Optional[int] = None,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> bool:
         """Return ``True`` when the event log has crossed the compaction threshold.
 
@@ -88,7 +84,9 @@ class CompactionChecker:
         total_tokens: int = sum(event.payload.token_usage or 0 for event in events)
 
         effective_window: int = (
-            context_window if context_window is not None else _get_context_window(model_name=model_name)
+            context_window
+            if context_window is not None
+            else _get_context_window(model_name=model_name, snapshot=snapshot)
         )
 
         threshold: int = int(effective_window * 0.70)

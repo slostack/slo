@@ -34,6 +34,9 @@ pytest:
   # which the slim image does not ship. slo/pyproject.toml pins python >=3.11,<3.12.
   image: python:3.11
   variables:
+    # tests/compat extracts frozen v0.20.1 with git archive; missing tags fail the suite.
+    GIT_DEPTH: '0'
+    GIT_FETCH_EXTRA_FLAGS: '--tags'
     PYTHONPATH: "$CI_PROJECT_DIR/slo"
     SLO_ENV: test
     SLO_ROOT_DIR: "$CI_PROJECT_DIR/slo"

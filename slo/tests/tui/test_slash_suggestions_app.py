@@ -13,6 +13,7 @@ from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI, PromptInput
+from textual.widgets import Static
 
 
 def _build_session() -> SloAgentSession:
@@ -63,8 +64,8 @@ class TestSloTUISlashSuggestions:
             assert any(row.label == "/rename" for row in app._slash_suggestion_state.rows)
 
     @pytest.mark.asyncio
-    async def test_bare_slash_menu_renders_all_registered_commands(self) -> None:
-        """The visible menu surface includes every registered slash command."""
+    async def test_bare_slash_menu_renders_bounded_registered_command_window(self) -> None:
+        """The visible menu paints its bounded command window and total footer."""
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test() as pilot:
@@ -75,11 +76,14 @@ class TestSloTUISlashSuggestions:
             await pilot.pause()
 
             assert app._suggestion_menu is not None
-            rendered_text: str = app._suggestion_menu.query_one(".slash-suggestion-lines").content
-            assert "/help" in rendered_text
-            assert "/reasoning" in rendered_text
-            assert "/new" in rendered_text
-            assert "/rename" in rendered_text
+            rendered_text: str = str(
+                app._suggestion_menu.query_one(".slash-suggestion-lines", Static).content
+            )
+            rendered_labels: list[str] = [row.label for row in app._slash_suggestion_state.rows[:8]]
+            hidden_labels: list[str] = [row.label for row in app._slash_suggestion_state.rows[8:]]
+            assert all(label in rendered_text for label in rendered_labels)
+            assert all(label not in rendered_text for label in hidden_labels)
+            assert f"Showing 8 of {len(app._slash_suggestion_state.rows)}" in rendered_text
 
     @pytest.mark.asyncio
     async def test_tab_accepts_highlighted_command(self) -> None:
@@ -135,8 +139,8 @@ class TestSloTUISlashSuggestions:
                 assert all(not row.label.startswith("/") for row in app._slash_suggestion_state.rows)
 
     @pytest.mark.asyncio
-    async def test_model_menu_renders_all_codex_variants(self) -> None:
-        """The visible ``/model`` autocomplete menu includes every Codex variant."""
+    async def test_model_menu_renders_bounded_window_and_total_match_count(self) -> None:
+        """The visible ``/model`` menu paints only its bounded initial window."""
         app: SloTUI = SloTUI(session=_build_session())
 
         with patch(
@@ -151,11 +155,38 @@ class TestSloTUISlashSuggestions:
                 await pilot.pause()
 
                 assert app._suggestion_menu is not None
-                rendered_text: str = app._suggestion_menu.query_one(".slash-suggestion-lines").content
-                assert "gpt-5-codex" in rendered_text
-                assert "gpt-5.3-codex" in rendered_text
-                assert "gpt-5.2-codex" in rendered_text
-                assert "gpt-5.3-codex-spark" in rendered_text
+                rendered_text: str = str(
+                    app._suggestion_menu.query_one(".slash-suggestion-lines", Static).content
+                )
+                rendered_labels: list[str] = [row.label for row in app._slash_suggestion_state.rows[:8]]
+                assert all(
+                    "; provider default" not in (row.detail or "")
+                    for row in app._slash_suggestion_state.rows[:8]
+                ), [(row.label, row.detail) for row in app._slash_suggestion_state.rows[:8]]
+                assert all(label in rendered_text for label in rendered_labels), (
+                    rendered_text,
+                    [(row.label, row.detail) for row in app._slash_suggestion_state.rows],
+                    app._suggestion_menu.window_start,
+                )
+                assert (
+                    f"Showing {len(rendered_labels)} of {app._slash_suggestion_state.total_matches}"
+                    in rendered_text
+                )
+                assert "gpt-5.4" in rendered_labels
+                assert "gpt-5-codex" not in rendered_labels
+                assert "gpt-5.3-codex" not in rendered_labels
+                assert "gpt-5.2-codex" not in rendered_labels
+                assert "gpt-5.3-codex-spark" not in rendered_labels
+                from tests.tui.authentication._painted_output import assert_widget_painted
+
+                widget = app._suggestion_menu.query_one(".slash-suggestion-lines", Static)
+                for label in rendered_labels:
+                    assert_widget_painted(app=app, widget=widget, text=label)
+                assert_widget_painted(
+                    app=app,
+                    widget=widget,
+                    text=f"Showing 8 of {app._slash_suggestion_state.total_matches}",
+                )
 
     @pytest.mark.asyncio
     async def test_down_moves_highlight_within_model_rows(self) -> None:

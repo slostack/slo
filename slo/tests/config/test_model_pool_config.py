@@ -114,6 +114,16 @@ class TestParseModelPoolConfigJsonArrayForm:
         assert dao.entries[0].priority == 0
         assert dao.entries[1].priority == 1
 
+    def test_json_object_array_rejects_mismatched_provider(self) -> None:
+        """An explicit provider cannot contradict canonical route ownership."""
+        with pytest.raises(ValueError, match="provider does not match"):
+            parse_model_pool_config(
+                raw_value=(
+                    '[{"model_name":"openrouter:anthropic/claude-sonnet-5.5",'
+                    '"provider":"anthropic"},{"model_name":"gpt-5.4"}]'
+                )
+            )
+
     def test_json_single_element_returns_none(self) -> None:
         """A JSON array with one element is treated as a single-model path (None)."""
         result = parse_model_pool_config(raw_value='["gpt-5.4"]')

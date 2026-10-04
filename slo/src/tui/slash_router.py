@@ -16,6 +16,8 @@ from src.agents.slo_agent.sessions.dao import (
 )
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
+from src.auth.credential_resolver import CredentialResolver
+from src.auth.provider_for_model import provider_for_model
 from src.agents.reasoning_capabilities import (
     ModelReasoningCapabilityDAO,
     ReasoningLevel,
@@ -24,8 +26,6 @@ from src.agents.reasoning_capabilities import (
     highest_supported_reasoning_level,
     parse_reasoning_level,
 )
-from src.auth.credential_resolver import CredentialResolver
-from src.auth.provider_for_model import provider_for_model
 from src.tui.model_catalog import (
     ModelSuggestionEntryDAO,
     model_suggestion_entries,
@@ -710,10 +710,9 @@ class SlashRouter:
         requested_model_name: str = rest.strip()
         if not requested_model_name:
             return SlashCommandResultDAO(rendered=cls._render_model_catalog(session=session))
-        return await cls._switch_model(
-            requested_model_name=requested_model_name,
-            session=session,
-        )
+        if requested_model_name == "refresh":
+            return await cls._refresh_model_catalog(session=session)
+        return await cls._switch_model(requested_model_name=requested_model_name, session=session)
 
     @classmethod
     async def _switch_model(
@@ -731,42 +730,23 @@ class SlashRouter:
         Returns:
             SlashCommandResultDAO: Confirmation or actionable error.
         """
-        if not cls._is_supported_model(requested_model_name=requested_model_name):
-            return SlashCommandResultDAO(rendered=f"unknown model: {requested_model_name}")
-
-        provider = provider_for_model(model_name=requested_model_name)
-        if CredentialResolver.resolve(provider=provider) is None:
-            return SlashCommandResultDAO(
-                rendered=f"model '{requested_model_name}' requires /auth for {provider.value}",
-            )
-        if session.is_running:
-            return SlashCommandResultDAO(
-                rendered="cannot switch models while a prompt is in flight",
-            )
-
-        session.switch_model(model_name=requested_model_name)
-
-        UserPreferencesStore.upsert(model_name=requested_model_name)
-
+        result: str = await session.prepare_model_selection(model_name=requested_model_name)
         return SlashCommandResultDAO(
-            rendered=f"active model switched to {requested_model_name}. Preference saved.",
-            refresh_title=True,
+            rendered=result,
+            refresh_title=result.startswith("active model switched"),
         )
 
     @classmethod
-    def _is_supported_model(cls, *, requested_model_name: str) -> bool:
-        """Return True when ``requested_model_name`` is in Slo's catalog.
+    async def _refresh_model_catalog(cls, *, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Delegate one manual catalog refresh to the session preparation owner.
 
         Args:
-            requested_model_name (str): Candidate model name.
+            session (SloAgentSession): Session that owns catalog adoption state.
 
         Returns:
-            bool: True when the model is supported.
+            SlashCommandResultDAO: Safe refresh outcome for the transcript.
         """
-        for model_names in supported_models_by_provider().values():
-            if requested_model_name in model_names:
-                return True
-        return False
+        return SlashCommandResultDAO(rendered=await session.refresh_model_catalog())
 
     @classmethod
     def _render_model_catalog(cls, *, session: SloAgentSession) -> str:
@@ -782,19 +762,14 @@ class SlashRouter:
         entries: list[ModelSuggestionEntryDAO] = model_suggestion_entries(
             active_model_name=session.active_model_name,
         )
-        grouped: dict = {}
-        for entry in entries:
-            grouped.setdefault(entry.provider, []).append(entry)
-        for provider, provider_entries in grouped.items():
-            lines.append(f"  {provider.value.title()}")
-            for entry in provider_entries:
-                marker: str = "*" if entry.is_active else " "
-                status: str = cls._provider_availability_status(
-                    provider_available=(not entry.requires_auth),
-                )
-                label: str = entry.support_tier_label
-                suffix: str = f" ({label})" if label else ""
-                lines.append(f"    {marker} {entry.model_name}   ({status}){suffix}")
+        entries.sort(
+            key=lambda entry: (not entry.is_active, bool(entry.support_tier_label), entry.model_name)
+        )
+        for entry in entries[:5]:
+            marker = "*" if entry.is_active else " "
+            status = entry.status_summary or "authentication not checked"
+            lines.append(f"{marker} {entry.model_name} ({status})")
+        lines.append(f"Showing {min(5, len(entries))} of {len(entries)} — type /model <search> to narrow")
         return "\n".join(lines)
 
     @staticmethod
@@ -857,9 +832,19 @@ class SlashRouter:
         capability: ModelReasoningCapabilityDAO = capability_for_model(
             model_name=session.active_model_name,
         )
-        if capability.supported_levels == ["off"]:
+        if cls._is_reasoning_unsupported(capability=capability):
             return SlashCommandResultDAO(
                 rendered=f"reasoning unsupported for {session.active_model_name}",
+            )
+        if cls._is_unpermitted_openrouter_disable(
+            requested_token=requested_token,
+            capability=capability,
+        ):
+            return SlashCommandResultDAO(
+                rendered=(
+                    f"reasoning disable unavailable for {session.active_model_name}; "
+                    "provider default applies"
+                ),
             )
 
         try:
@@ -884,6 +869,37 @@ class SlashRouter:
             active_level=active_level,
             requested_token=requested_token,
             model_name=session.active_model_name,
+        )
+
+    @staticmethod
+    def _is_reasoning_unsupported(*, capability: ModelReasoningCapabilityDAO) -> bool:
+        """Identify profiles with neither an enabled control nor explicit disable permission.
+
+        Args:
+            capability (ModelReasoningCapabilityDAO): Canonical capability for the active route.
+
+        Returns:
+            bool: Whether the route cannot accept a reasoning slash command.
+        """
+        return capability.supported_levels == ["off"] and not capability.reasoning_disable_available
+
+    @staticmethod
+    def _is_unpermitted_openrouter_disable(
+        *, requested_token: str, capability: ModelReasoningCapabilityDAO
+    ) -> bool:
+        """Reject compatibility off where OpenRouter did not advertise explicit disable control.
+
+        Args:
+            requested_token (str): User-entered canonical reasoning token.
+            capability (ModelReasoningCapabilityDAO): Canonical capability for the active route.
+
+        Returns:
+            bool: Whether the request would falsely promise provider-side disable.
+        """
+        return (
+            requested_token == "off"
+            and not capability.reasoning_disable_available
+            and capability.reasoning_controls_available
         )
 
     @classmethod
@@ -981,6 +997,11 @@ class SlashRouter:
         Returns:
             str: Human-readable supported-levels value.
         """
+        if capability.reasoning_disable_available and capability.supported_levels == ["off"]:
+            return "off (reasoning disable supported)"
+        if capability.reasoning_controls_available and not capability.reasoning_disable_available:
+            levels = ", ".join(level for level in capability.supported_levels if level != "off")
+            return f"{levels} (provider default; disable unavailable)"
         if capability.supported_levels == ["off"]:
             return "off (reasoning unsupported for this model)"
         return ", ".join(capability.supported_levels)

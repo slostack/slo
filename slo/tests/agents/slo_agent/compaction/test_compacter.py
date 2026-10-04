@@ -744,6 +744,100 @@ class TestInvokeLlmSummaryShaping:
         assert any(isinstance(m, HumanMessage) for m in llm.captured_input)
 
     @pytest.mark.asyncio
+    async def test_openrouter_summary_uses_prepared_output_ceiling(self) -> None:
+        """An admitted OpenRouter route caps compaction below the generic reserve."""
+        from src.agents.model_catalog.dao import ModelCapabilitiesDAO
+        from src.agents.model_catalog.seed import SeedModelCatalog
+        from src.auth.credential_dao import ProviderName
+
+        seed = SeedModelCatalog.load()
+        template = seed.entries["gpt-5.4"]
+        entry = template.model_copy(
+            update={
+                "model_name": "openrouter:vendor/summary",
+                "provider": ProviderName.OPENROUTER,
+                "runtime_profile": template.runtime_profile.model_copy(update={"context_window": 6_000}),
+                "capabilities": ModelCapabilitiesDAO(
+                    input_modalities=("text",),
+                    output_modalities=("text",),
+                    supported_parameters=("tools",),
+                    reported_output_ceiling=3_000,
+                ),
+            }
+        )
+        snapshot = seed.model_copy(update={"entries": {**seed.entries, entry.model_name: entry}})
+        llm = _mock_llm(summary="s")
+
+        await Compacter._invoke_llm_summary(
+            compaction_input="input",
+            model_name=entry.model_name,
+            llm=llm,
+            snapshot=snapshot,
+        )
+
+        assert llm.ainvoke.call_args.kwargs["max_tokens"] == 3_000
+
+    @pytest.mark.asyncio
+    async def test_openrouter_summary_uses_local_sdk_cap_when_reported_ceiling_is_absent(self) -> None:
+        """A real local SDK summary request uses the conservative absent-ceiling cap."""
+        from src.agents.model_catalog.dao import ModelCapabilitiesDAO
+        from src.agents.model_catalog.seed import SeedModelCatalog
+        from src.auth.credential_dao import ProviderName
+        from src.agents.providers.openrouter import OpenRouterChatOpenAI
+
+        captured: dict[str, object] = {}
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            """Capture one local Chat Completions summary request."""
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "summary"}, "finish_reason": "stop"}
+                    ]
+                },
+            )
+
+        seed = SeedModelCatalog.load()
+        template = seed.entries["gpt-5.4"]
+        entry = template.model_copy(
+            update={
+                "model_name": "openrouter:vendor/absent-summary-cap",
+                "api_model_name": "vendor/absent-summary-cap",
+                "provider": ProviderName.OPENROUTER,
+                "runtime_profile": template.runtime_profile.model_copy(update={"context_window": 20_000}),
+                "capabilities": ModelCapabilitiesDAO(
+                    input_modalities=("text",),
+                    output_modalities=("text",),
+                    supported_parameters=("tools",),
+                ),
+            }
+        )
+        snapshot = seed.model_copy(update={"entries": {entry.model_name: entry}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            llm = OpenRouterChatOpenAI(
+                slo_model_name=entry.model_name,
+                slo_capabilities=entry.capabilities,
+                slo_output_ceiling=4096,
+                model=entry.api_model_name,
+                api_key="synthetic-only",
+                base_url="https://openrouter.ai/api/v1",
+                max_retries=0,
+                http_async_client=client,
+            )
+            summary = await Compacter._invoke_llm_summary(
+                compaction_input="input",
+                model_name=entry.model_name,
+                llm=llm,
+                snapshot=snapshot,
+            )
+
+        assert summary == "summary"
+        body = captured["body"]
+        assert isinstance(body, dict)
+        assert body["max_completion_tokens"] == 4096
+
     async def test_pool_summary_is_not_pre_shaped(self) -> None:
         """A pool-bound LLM receives the raw system message and raw ``max_tokens``."""
         llm = _PoolShapedLane()
@@ -756,7 +850,10 @@ class TestInvokeLlmSummaryShaping:
             )
 
         adapter.assert_not_called()
-        assert llm.captured_kwargs == {"max_tokens": RESERVED_TOKEN_LIMIT}
+        assert llm.captured_kwargs == {
+            "max_tokens": RESERVED_TOKEN_LIMIT,
+            "_slo_compaction_summary": True,
+        }
         assert llm.captured_input is not None
         assert any(isinstance(m, SystemMessage) for m in llm.captured_input)
 

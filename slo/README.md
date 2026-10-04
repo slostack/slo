@@ -1,5 +1,119 @@
 # Slo — A Reader's Guide to the Code
 
+## Mixed-version state and rollback (86.b)
+
+No action needed for released users. New Slo puts provider cache data in
+`$SLO_HOME/global/model_catalog_cache.v2.json` (lease `.v2.lock`) and OpenRouter
+credentials in `authentication.additional-providers.json`. Released
+`authentication.json` keeps only Anthropic, OpenAI and Kimi credentials.
+Rollback ignores the new files; sessions remain shared. Unknown saved direct
+models fall back to the preferred/default model with a startup notice, without
+losing history. Released compaction can drop private provider continuation fields
+from rewritten events; its pre-compaction archive retains them.
+
+`CredentialStore` owns both files. A future version adding providers unknown to
+this version must use another sibling filename: the additional-provider file has
+a closed enum and unknown values would break rollback credential lookups and
+fail-closed history writes. There is no automatic migration or cleanup.
+
+### Only for machines that ran an unreleased pre-fix Feature 86 build
+
+These are manual operator steps, **not performed by this feature or its tests**.
+With no Slo process running:
+
+1. Stop using every pre-fix build first; a later run would recreate incompatible files.
+2. Back up `$SLO_HOME/global/authentication.json`, preserving permissions.
+3. Move non-released provider rows (OpenRouter today) into the sibling
+   `authentication.additional-providers.json`, preserving the envelope
+   `{"schema_version": 1, "providers": {...}}`. Keep both files mode `0600`.
+   Alternatively remove the misplaced row and save the key again through `/auth`.
+   Do this **before running new Slo**: an ignored misplaced key is not known to
+   history redaction. New Slo warns on every lookup and preserves misplaced rows;
+   it does not repair them. Released Slo keeps rejecting them until manual cleanup.
+4. If the released `model_catalog_cache.json` contains schema `"2"`, rename it
+   aside. Do not remove a valid released schema-1 cache. New refresh rebuilds its
+   own `.v2.json` file.
+5. Check released `slo --version` and `slo visualize --help` print no catalog ERROR.
+
+The executable offline proof is `tests/compat` against frozen tag `v0.20.1`, plus
+the real CLI visualize audit test. Current 86.b evidence and remaining gate
+limitations are in [b5 implementation](docs/implementation/86b-model-catalog/b5-implementation.md);
+historical Feature 86.a reports below are not 86.b waivers or release approval.
+
+## Latest Step-1 bounded window correction — 2026-10-03
+
+The prior final gate is retained unchanged: `.f86-final-remediation-hldebc_g/full-final.log`
+reports **1 failed, 5155 passed, 18 deselected, 196 warnings**, exit 1. The exact
+bounded-model-window failure reproduced in isolation. Direct-provider summaries
+incorrectly acquired the gateway `; provider default` suffix, expanding the normal
+rows from two to three lines (five rather than eight rows). The existing suggestion
+projection now preserves direct-provider summaries; OpenRouter evidence is unchanged.
+A stronger eight-label/footer compositor assertion then exposed detail width exceeding
+the inner menu width by four cells. The menu now uses the same inner width for both.
+No count/window expectation was relaxed, no sleeps/skips added, and no R1/R3 changes.
+
+Focused partition: 38 passed; intermediate strengthened-paint run: 1 failed/173 passed;
+paint correction: 30 passed; final affected: **174 passed, 5 warnings**; additional
+surrounding picker/status regressions: **48 passed, 2 warnings**. Full expanded
+commands/logs/exits: `.f86-window-correction-tPhyAzET/`. The fresh complete gate
+is `full.log`, `full-command.txt`, `full.exit` there, generated AFTER these final
+documentation edits. Its actual exit/summary controls readiness; no anticipated pass.
+Final source/test/current-doc manifest: `source-test-manifest.sha256`, digest in
+`manifest.sha256`, generated after full gate and read-only checks; no edits thereafter.
+
+R1 router truth, R2 two-size compositor/hidden-paint sensitivity and R3 real schema-2
+public preparation/valid SDK no-budget proof remain retained. R4 points to this new
+receipt, not a reconstructed missing directory. E1 removal still injects refresh
+outcome (not all-real zero-HTTP removal). Historical selection offset has no claimed
+causal repair. Auth sensitivity remains retained. Black/mypy waived, not green;
+provider evidence remains offline synthetic, not live authorization or paid inference.
+Independent sequential Step2/Step3 remain pending; readiness is not feature approval.
+Earlier current/latest headings below are preserved historical receipts.
+
+## Current sequential remediation — 2026-10-03 (R1–R4)
+
+R1 control-aware `/reasoning`, R2 genuine two-size picker/router compositor proof,
+and R3 real schema-2 public admission → valid SDK no-budget completion are corrected
+with focused red/green evidence; affected partition: **460 passed, 5 warnings**.
+Initial full gate found five picker status/context clipping regressions (5151 passed,
+18 deselected); its full.log is retained. Corrected menu uses a separate reasoning
+line only for explicit disable semantics, preserving status/context; two-line rows
+retain original capacity and three-line rows use bounded capacity. This is a
+narrow viewport adjustment to the original two-line plan, not weakened assertions.
+Picker regressions now pass 32 tests. The new final gate receipt is `.f86-final-remediation-hldebc_g/full-final.log`, with exact
+command in `full-final-command.txt` and result in `full-final.exit`. These artifacts are produced
+**after this documentation is finalized**; consult their actual result, not an
+anticipated pass. The missing `.f86-step1-1791030546-full` claim is not relied on.
+See `docs/implementation/86-openrouter/sequential-r1-r4-remediation-2026-10-03.md`
+for the finite matrix and source/test freeze contract. Prior headings below are
+historical, not outstanding G1/G2 assertions or current gate pointers.
+
+E1 remains qualified real-loader/stale-delivery/rotation proof: removal injects a
+refresh outcome, not all-real zero-HTTP removal. Historical selection offset has
+no claimed causal repair. Auth compositor/sensitivity evidence is retained.
+Black/mypy remain waived, not green; 18 normal E2E/default-disabled exclusions
+are expected (actual gate log controls). All provider evidence is offline synthetic,
+not live authorization, availability or paid inference. Independent Step2/Step3
+remain pending; no feature-completion or approval claim.
+
+
+## Latest recovery receipt — 2026-10-03 final authorized Call 4: REVISE
+
+Fresh complete post-edit non-E2E gate: **5136 passed, 18 deselected, 196 warnings
+in 327.78s; exit 0**, `.f86-final-recovery-O3ZPKA/full-non-e2e.log`.
+This supersedes earlier receipts as the latest execution, not as approval.
+Budget evidence persistence, nullable-rate override restoration, actual default-effort
+SDK wire assertion and bounded picker detail fixes landed. Remaining: unexplained
+Call3 selection offset failure (passes isolated/full now, no causal repair), `/reasoning`
+presentation and mounted two-size proof, prepared/no-budget evidence, and stronger
+real-store admission proof (new removal test injects refresh outcome).
+See `docs/implementation/86-openrouter/final-recovery-evidence-2026-10-03.md`.
+**STEP1READY withheld.** Independent Step2/3 remain pending. Offline synthetic tests
+are not live authorization/availability/inference evidence; 18 E2E/default-disabled
+live/fixture cases were deselected. Black/mypy waived, not green. Earlier receipts
+below remain historical; no final workflow approval.
+
+
 > *An end-to-end walkthrough of an in-process Textual coding agent, from the
 > keystroke that lands in your terminal to the streaming response that paints
 > back at you. Read this once and you can navigate every file in the
@@ -66,6 +180,39 @@
 > `[image attached: …]` reference in durable history instead of base64.
 
 ---
+
+## OpenRouter (Feature 86 — partial, not complete)
+
+Feature 86 supports the canonical route syntax `'openrouter:<exact-remote-id>'`;
+OpenRouter owns that route even when its remote ID begins `anthropic/` or `openai/`.
+The effective credential precedence is `SLO_OPENROUTER_API_KEY` then the OpenRouter
+credential stored in `$SLO_HOME/global/authentication.additional-providers.json`;
+there is no legacy OpenRouter credential source. `/auth` provides API-key-only candidate verification,
+authenticated `/key` and `/models/user` discovery feed the canonical catalog, and
+`/model refresh` plus bounded `/model <query>` selection are wired. An explicit
+`--model` or `/model <exact-route>` clears a configured pool; otherwise the existing
+pool/default/resume rules apply.
+
+These are offline-tested implementation paths, not an entitlement or live-inference
+claim. Private reasoning continuation data stays in private runtime/history data and
+must not appear in public stream/headless output. Headless `--model openrouter:<id>`
+and schedules reuse ordinary preparation; they do not have a separate discovery path.
+The retained pre-correction Step 1 gate is **5115 passed, 18 E2E-marked
+deselected, 196 warnings in 373.69s; exit 0**
+(`.f86-integration-retry-ucwY1o/full-non-e2e.log`). The 18 deselections include
+default-disabled live/fixture harness tests; the executed OpenRouter evidence is
+offline, using local/mock transports. It does **not** verify live credentials,
+network access, provider availability, paid inference, or authorization. Black/mypy
+are waived only as static gates, not green. Independent review and feature-completion
+status remain **REVISE** while concurrent source corrections address the current
+findings; this receipt is not a post-correction final gate or approval. Bounded tests
+also cover append ordering/refusal, independent resume admission, append-wait
+cancellation, and an instrumented native-I/O late-writer failure. That qualification
+is not native interpreter-startup equivalence and creates no argv-equality product
+requirement. See
+[`independent-full-rereview-2026-10-03.md`](docs/implementation/86-openrouter/independent-full-rereview-2026-10-03.md)
+and the historical/current record
+[`docs/implementation/86-openrouter/current-status-2026-10-02.md`](docs/implementation/86-openrouter/current-status-2026-10-02.md).
 
 ## Reviewing a Git Diff
 

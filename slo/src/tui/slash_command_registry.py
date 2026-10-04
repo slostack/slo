@@ -207,9 +207,9 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
     ),
     SlashCommandSpecDAO(
         name="model",
-        description="list or switch supported models",
+        description="list, refresh, or switch supported models",
         argument_mode="enumerated",
-        usage="/model [name]",
+        usage="/model [refresh|name]",
         argument_hint="model name",
         display_order=80,
     ),

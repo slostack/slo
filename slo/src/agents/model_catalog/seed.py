@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from src.agents.model_catalog.dao import (
     ModelAliasDAO,
@@ -19,7 +20,7 @@ from src.auth.credential_dao import ProviderName
 def _openai_flagship_reasoning_profile() -> ModelReasoningProfileDAO:
     """Return the OpenAI flagship reasoning profile with xhigh support."""
     return ModelReasoningProfileDAO(
-        supported_levels=["off", "minimal", "low", "medium", "high", "xhigh"],
+        supported_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
         default_level="high",
         provider_effort_map={
             "minimal": "low",
@@ -56,7 +57,7 @@ def _openai_astra_reasoning_profile() -> ModelReasoningProfileDAO:
         ModelReasoningProfileDAO: Seven-level Astra reasoning profile.
     """
     return ModelReasoningProfileDAO(
-        supported_levels=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        supported_levels=("off", "minimal", "low", "medium", "high", "xhigh", "max"),
         default_level="high",
         provider_effort_map={
             "off": "low",
@@ -122,7 +123,7 @@ def _anthropic_adaptive_reasoning_profile(
         supported_levels.append("xhigh")
         provider_effort_map["xhigh"] = "high"
     return ModelReasoningProfileDAO(
-        supported_levels=supported_levels,
+        supported_levels=tuple(supported_levels),
         default_level="high",
         provider_effort_map=provider_effort_map,
     )
@@ -152,7 +153,7 @@ def _kimi_family_reasoning_profile() -> ModelReasoningProfileDAO:
         ModelReasoningProfileDAO: Off-only reasoning configuration.
     """
     return ModelReasoningProfileDAO(
-        supported_levels=["off"],
+        supported_levels=("off",),
         default_level="off",
     )
 
@@ -168,7 +169,7 @@ def _kimi_k3_reasoning_profile() -> ModelReasoningProfileDAO:
         ModelReasoningProfileDAO: K3 canonical levels and provider-effort map.
     """
     return ModelReasoningProfileDAO(
-        supported_levels=["low", "high", "xhigh"],
+        supported_levels=("low", "high", "xhigh"),
         default_level="xhigh",
         provider_effort_map={
             "low": "low",
@@ -217,7 +218,7 @@ class SeedModelCatalog:
             generated_at=datetime.now(tz=timezone.utc).isoformat(),
             entries=cls._build_entries(),
             aliases=cls._build_aliases(),
-            templates=cls._build_templates(),
+            templates=tuple(cls._build_templates()),
         )
 
     @classmethod
@@ -495,7 +496,7 @@ class SeedModelCatalog:
                     local_retry_wait_cap_seconds=30,
                 ),
                 reasoning_profile=ModelReasoningProfileDAO(
-                    supported_levels=["off", "minimal", "low", "medium", "high"],
+                    supported_levels=("off", "minimal", "low", "medium", "high"),
                     default_level="high",
                     provider_effort_map={
                         "minimal": "low",
@@ -530,7 +531,7 @@ class SeedModelCatalog:
                     local_retry_wait_cap_seconds=30,
                 ),
                 reasoning_profile=ModelReasoningProfileDAO(
-                    supported_levels=["off", "minimal", "low", "medium", "high"],
+                    supported_levels=("off", "minimal", "low", "medium", "high"),
                     default_level="high",
                     provider_effort_map={
                         "minimal": "minimal",
@@ -556,7 +557,7 @@ class SeedModelCatalog:
                     local_retry_wait_cap_seconds=30,
                 ),
                 reasoning_profile=ModelReasoningProfileDAO(
-                    supported_levels=["off"],
+                    supported_levels=("off",),
                     default_level="off",
                 ),
             ),
@@ -576,7 +577,7 @@ class SeedModelCatalog:
                     local_retry_wait_cap_seconds=30,
                 ),
                 reasoning_profile=ModelReasoningProfileDAO(
-                    supported_levels=["off"],
+                    supported_levels=("off",),
                     default_level="off",
                 ),
             ),
@@ -596,7 +597,7 @@ class SeedModelCatalog:
                     local_retry_wait_cap_seconds=30,
                 ),
                 reasoning_profile=ModelReasoningProfileDAO(
-                    supported_levels=["off", "minimal", "low", "medium", "high"],
+                    supported_levels=("off", "minimal", "low", "medium", "high"),
                     default_level="high",
                     provider_effort_map={
                         "minimal": "minimal",
@@ -622,7 +623,7 @@ class SeedModelCatalog:
                     local_retry_wait_cap_seconds=30,
                 ),
                 reasoning_profile=ModelReasoningProfileDAO(
-                    supported_levels=["off", "minimal", "low", "medium", "high"],
+                    supported_levels=("off", "minimal", "low", "medium", "high"),
                     default_level="high",
                     provider_effort_map={
                         "minimal": "minimal",
@@ -648,10 +649,10 @@ class SeedModelCatalog:
                     local_retry_wait_cap_seconds=30,
                 ),
                 reasoning_profile=ModelReasoningProfileDAO(
-                    supported_levels=["off"],
+                    supported_levels=("off",),
                     default_level="off",
                 ),
-                aliases=["kimi-k2", "moonshot-k2"],
+                aliases=("kimi-k2", "moonshot-k2"),
             ),
         ]
         return {entry.model_name: entry for entry in entries}
@@ -679,7 +680,7 @@ class SeedModelCatalog:
         return {alias.alias: alias for alias in aliases}
 
     @classmethod
-    def provider_default_models(cls) -> dict[ProviderName, str]:
+    def provider_default_models(cls) -> dict[ProviderName, Optional[str]]:
         """Return committed provider landing models.
 
         These are intentionally stable. New first-class models do not
@@ -687,12 +688,13 @@ class SeedModelCatalog:
         decision.
 
         Returns:
-            dict[ProviderName, str]: Provider → canonical default model name.
+            dict[ProviderName, Optional[str]]: Stable landing models; OpenRouter requires explicit choice.
         """
         return {
             ProviderName.ANTHROPIC: "claude-opus-4-8-1m-context",
             ProviderName.OPENAI: "gpt-5.4",
             ProviderName.KIMI_FOR_CODING: "kimi-for-coding",
+            ProviderName.OPENROUTER: None,
         }
 
     @classmethod
@@ -700,7 +702,7 @@ class SeedModelCatalog:
         """Return family templates for future or discovered models."""
         return [
             ProviderModelTemplateDAO(
-                family_patterns=["gpt-5."],
+                family_patterns=("gpt-5.",),
                 provider=ProviderName.OPENAI,
                 display_name_template="{model_name}",
                 runtime_profile=_openai_flagship_runtime_profile(),
@@ -708,7 +710,7 @@ class SeedModelCatalog:
                 default_visible=True,
             ),
             ProviderModelTemplateDAO(
-                family_patterns=["claude-"],
+                family_patterns=("claude-",),
                 provider=ProviderName.ANTHROPIC,
                 display_name_template="{model_name}",
                 runtime_profile=_anthropic_adaptive_runtime_profile(),
@@ -718,7 +720,7 @@ class SeedModelCatalog:
                 default_visible=True,
             ),
             ProviderModelTemplateDAO(
-                family_patterns=["kimi-"],
+                family_patterns=("kimi-",),
                 provider=ProviderName.KIMI_FOR_CODING,
                 display_name_template="{model_name}",
                 runtime_profile=_kimi_family_runtime_profile(

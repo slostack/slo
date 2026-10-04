@@ -7,6 +7,7 @@ import fcntl
 import json
 import multiprocessing
 import queue
+from multiprocessing.context import BaseContext
 from multiprocessing.synchronize import Event
 import stat
 import time
@@ -28,6 +29,16 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
 )
 
 _OWNER_SESSION_ID: str = "tui-session-1"
+
+
+def _assert_within_tmp_path(*, tmp_path: Path, path: Path) -> None:
+    """Assert a prospective test write remains below pytest's resolved root.
+
+    Args:
+        tmp_path (Path): Pytest-owned temporary root.
+        path (Path): Prospective write path.
+    """
+    assert path.resolve(strict=False).is_relative_to(tmp_path.resolve())
 
 
 def _build_store(
@@ -181,11 +192,11 @@ def _reconcile_in_child(
     else:
         original_flock = fcntl.flock
 
-        def signal_lock_attempt(lock_file: object, operation: int) -> object:
+        def signal_lock_attempt(lock_file: int, operation: int) -> None:
             """Signal immediately before the correction path invokes ``flock``."""
             if operation == fcntl.LOCK_EX:
                 lock_attempt_queue.put("attempt")
-            return original_flock(lock_file, operation)
+            original_flock(lock_file, operation)
 
         with patch(
             "src.agents.slo_agent.orchestrator.workflow_registry.fcntl.flock",
@@ -308,6 +319,103 @@ class TestWriteAndRead:
 
         assert loaded is not None
         assert loaded.pid == 7777
+
+
+class TestCaptureHealth:
+    """Durable fixed-safe detached capture-health projection."""
+
+    async def test_record_capture_failure_persists_safe_degradation_without_changing_workload_identity(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A capture failure survives reload while preserving live workflow fields."""
+        history_root: Path = tmp_path / "history"
+        _assert_within_tmp_path(tmp_path=tmp_path, path=history_root)
+        store: WorkflowHandleStore = WorkflowHandleStore(
+            history_root=history_root,
+            pid_alive=lambda pid: True,
+        )
+        handle: WorkflowHandleDAO = _build_handle(state="running", pid=4242)
+        await _seed_handle(store=store, handle=handle)
+
+        degraded: WorkflowHandleDAO = await store.record_capture_failure(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id=handle.workflow_id,
+            expected_pid=4242,
+        )
+        reloaded_store: WorkflowHandleStore = WorkflowHandleStore(
+            history_root=history_root,
+            pid_alive=lambda pid: True,
+        )
+        reloaded: WorkflowHandleDAO | None = await reloaded_store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id=handle.workflow_id,
+        )
+        status_tool = WorkflowStatusTool.build(owner_session_id=_OWNER_SESSION_ID, store=reloaded_store)
+        public_status: str = await status_tool.ainvoke({"workflow_id": handle.workflow_id})
+
+        assert degraded.pid == handle.pid
+        assert degraded.orchestrator_session_id == handle.orchestrator_session_id
+        assert degraded.state == handle.state
+        assert degraded.capture_health is not None
+        assert degraded.capture_health.status == "degraded"
+        assert degraded.capture_health.failure_code == "capture_writer_failed"
+        assert reloaded == degraded
+        assert "Capture writer failed; workflow output may be incomplete." in public_status
+        assert "synthetic-capture-secret" not in public_status
+        assert "OSError" not in public_status
+
+    async def test_record_capture_failure_rejects_stale_workload_pid(self, tmp_path: Path) -> None:
+        """A prior workload cannot degrade a replacement run's capture health."""
+        history_root: Path = tmp_path / "history"
+        _assert_within_tmp_path(tmp_path=tmp_path, path=history_root)
+        store: WorkflowHandleStore = WorkflowHandleStore(
+            history_root=history_root,
+            pid_alive=lambda pid: True,
+        )
+        handle: WorkflowHandleDAO = _build_handle(state="launching", pid=4242)
+        await _seed_handle(store=store, handle=handle)
+        await store.write(handle=handle.model_copy(update={"pid": 5252}))
+
+        with pytest.raises(WorkflowStateTransitionError, match="newer workload identity"):
+            await store.record_capture_failure(
+                owner_session_id=_OWNER_SESSION_ID,
+                workflow_id=handle.workflow_id,
+                expected_pid=4242,
+            )
+
+        current: WorkflowHandleDAO | None = await store.read(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id=handle.workflow_id,
+        )
+        assert current is not None
+        assert current.pid == 5252
+        assert current.capture_health is None
+
+    async def test_relaunch_clears_capture_failure_from_prior_workload(self, tmp_path: Path) -> None:
+        """A replacement workload begins without the prior capture degradation."""
+        history_root: Path = tmp_path / "history"
+        _assert_within_tmp_path(tmp_path=tmp_path, path=history_root)
+        store: WorkflowHandleStore = WorkflowHandleStore(
+            history_root=history_root,
+            pid_alive=lambda pid: False,
+        )
+        handle: WorkflowHandleDAO = _build_handle(state="failed", pid=4242)
+        await _seed_handle(store=store, handle=handle)
+        await store.record_capture_failure(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id=handle.workflow_id,
+            expected_pid=4242,
+        )
+
+        relaunched: WorkflowHandleDAO = await store.relaunch(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id=handle.workflow_id,
+            new_pid=5252,
+        )
+
+        assert relaunched.pid == 5252
+        assert relaunched.capture_health is None
 
 
 class TestList:
@@ -797,12 +905,12 @@ class TestReconcile:
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
         await _seed_handle(store=store, handle=_build_handle(state="stalled"))
         _write_status(tmp_path=tmp_path, status=_build_status(state="completed"))
-        process_context: multiprocessing.context.BaseContext = multiprocessing.get_context("fork")
+        process_context: BaseContext = multiprocessing.get_context("fork")
         ready_queue: multiprocessing.Queue[str] = process_context.Queue()
         result_queue: multiprocessing.Queue[str] = process_context.Queue()
         start_event: Event = process_context.Event()
-        processes: list[multiprocessing.Process] = [
-            process_context.Process(
+        processes: list[multiprocessing.process.BaseProcess] = [
+            multiprocessing.Process(
                 target=_reconcile_in_child,
                 kwargs={
                     "history_root": str(tmp_path / "history"),
@@ -852,7 +960,7 @@ class TestReconcile:
         _write_status(tmp_path=tmp_path, status=_build_status(state="completed"))
         handle_path: Path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / "wf-3f2a.json"
         lock_path: Path = handle_path.with_suffix(handle_path.suffix + ".lock")
-        process_context: multiprocessing.context.BaseContext = multiprocessing.get_context("fork")
+        process_context: BaseContext = multiprocessing.get_context("fork")
         ready_queue: multiprocessing.Queue[str] = process_context.Queue()
         result_queue: multiprocessing.Queue[str] = process_context.Queue()
         lock_attempt_queue: multiprocessing.Queue[str] = process_context.Queue()
@@ -860,7 +968,7 @@ class TestReconcile:
 
         with lock_path.open("w") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
-            process: multiprocessing.Process = process_context.Process(
+            process: multiprocessing.process.BaseProcess = multiprocessing.Process(
                 target=_reconcile_in_child,
                 kwargs={
                     "history_root": str(tmp_path / "history"),
@@ -895,12 +1003,12 @@ class TestReconcile:
         await _seed_handle(store=store, handle=_build_handle(state="launching"))
         handle_path: Path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / "wf-3f2a.json"
         lock_path: Path = handle_path.with_suffix(handle_path.suffix + ".lock")
-        process_context: multiprocessing.context.BaseContext = multiprocessing.get_context("fork")
+        process_context: BaseContext = multiprocessing.get_context("fork")
         result_queue: multiprocessing.Queue[str] = process_context.Queue()
 
         with lock_path.open("w") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
-            process: multiprocessing.Process = process_context.Process(
+            process: multiprocessing.process.BaseProcess = multiprocessing.Process(
                 target=_update_state_in_child,
                 kwargs={
                     "history_root": str(tmp_path / "history"),

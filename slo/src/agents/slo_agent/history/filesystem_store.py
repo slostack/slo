@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from config.cfg import SLO_HOME as _CFG_SLO_HOME
+from src.auth.credential_resolver import CredentialResolver
 
 from src.agents.slo_agent.compaction.compacter import CompactionResult
 from src.agents.slo_agent.history.dao import (
@@ -617,7 +618,7 @@ class FilesystemSessionHistoryStore:
         path: Path = self._transcript_path(session_id=session_id)
         path.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
         tmp: Path = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(markdown, encoding="utf-8")
+        tmp.write_text(CredentialResolver.redact_openrouter_text(text=markdown), encoding="utf-8")
         tmp.chmod(_FILE_MODE)
         tmp.replace(path)
         return path
@@ -775,7 +776,7 @@ class FilesystemSessionHistoryStore:
         path.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
         path.parent.chmod(_DIR_MODE)
         tmp: Path = path.with_suffix(path.suffix + ".tmp")
-        payload: str = metadata.model_dump_json(indent=2)
+        payload: str = CredentialResolver.redact_openrouter_text(text=metadata.model_dump_json(indent=2))
         with tmp.open("w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
@@ -787,7 +788,7 @@ class FilesystemSessionHistoryStore:
         """Append one JSONL line to ``events.jsonl`` and fsync."""
         path: Path = self._events_path(session_id=event.session_id)
         is_new: bool = not path.exists()
-        line: str = event.model_dump_json()
+        line: str = CredentialResolver.redact_openrouter_text(text=event.model_dump_json())
         with path.open("a", encoding="utf-8") as handle:
             handle.write(line)
             handle.write("\n")
@@ -1133,7 +1134,9 @@ class FilesystemSessionHistoryStore:
             path (Path): Destination file path (will be created or overwritten).
             events (list[SessionHistoryEventDAO]): Events to write, one per line.
         """
-        lines: str = "\n".join(e.model_dump_json() for e in events) + "\n"
+        lines: str = CredentialResolver.redact_openrouter_text(
+            text="\n".join(e.model_dump_json() for e in events) + "\n"
+        )
         with path.open("w", encoding="utf-8") as handle:
             handle.write(lines)
             handle.flush()

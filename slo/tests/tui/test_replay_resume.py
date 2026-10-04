@@ -398,7 +398,7 @@ class TestTUIStreamReconnectAstra:
             with (
                 patch.object(session.agent, "invoke", _scripted_invoke),
                 patch(
-                    "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                    "src.agents.model_catalog.discovery.ProviderModelDiscoveryService.refresh",
                     MagicMock(side_effect=AssertionError("discovery forbidden")),
                 ) as mock_refresh,
             ):
@@ -416,8 +416,7 @@ class TestTUIStreamReconnectAstra:
         # no raw exception message text is rendered.
         assert reconnect_lines[0].startswith("(reconnecting after provider_stream_disconnected:")
         assert not any(
-            "RemoteProtocolError(" in content or "Server disconnected" in content
-            for content in transcript
+            "RemoteProtocolError(" in content or "Server disconnected" in content for content in transcript
         )
         mock_refresh.assert_not_called()
         assert session.active_model_name == "gpt-6-astra"

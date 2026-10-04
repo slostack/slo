@@ -38,6 +38,7 @@ from src.auth.provider_for_model import provider_for_model
 from src.tui.authentication import AuthenticationScreen
 from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
+from src.tui.model_catalog import ModelSuggestionProjection
 from src.tui.slash_suggestion_engine import (
     SlashSuggestionEngine,
     SlashSuggestionStateDAO,
@@ -447,6 +448,7 @@ class SloTUI(App):
         self.register_theme(SLO_DARK_THEME)
         self.theme = self.DEFAULT_THEME
         self._session: SloAgentSession = session
+        self._preparation_task: Optional[asyncio.Task[None]] = None
         self._attach_pool_to_session(session=self._session)
         self._transcript_scroll: Optional[TranscriptScroll] = None
         self._transcript_content: Optional[Vertical] = None
@@ -483,6 +485,7 @@ class SloTUI(App):
         # drain order.
         self._pending_steer_blocks: list[SteeringPendingBlock] = []
         self._slash_suggestion_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
+        self._picker_catalog_revision: tuple[int, int] = ModelSuggestionProjection.current_revision()
         self._suggestion_engine: SlashSuggestionEngine = SlashSuggestionEngine(
             registry=SlashRouter.registry(),
         )
@@ -579,6 +582,7 @@ class SloTUI(App):
         so live events from a new prompt cannot interleave with the
         replay tail.
         """
+        ModelSuggestionProjection.refresh_authentication()
         await self._hydrate_transcript_from_history()
         await self._maybe_render_startup_notice()
         self._session.subscribe(handler=self._render_event)
@@ -588,8 +592,39 @@ class SloTUI(App):
         self._refresh_usage_status_bar()
         if self._input is not None:
             self._input.focus()
+        if self._session.preparation_status != "ready":
+            self._start_session_preparation()
         if not self._has_credential_for_active_model():
             self._push_auth_modal()
+
+    def _start_session_preparation(self) -> None:
+        """Start one tracked catalog worker after mount or explicit recovery.
+
+        The session owns discovery and atomic adoption; the app owns task lifetime
+        and safe status rendering. Repeated retry requests join the active worker.
+        """
+        if self._preparation_task is not None and not self._preparation_task.done():
+            return
+        if self._session.preparation_status == "ready":
+            return
+        self._write_adapter_line(content="Preparing model catalog; limits unknown.", classes="tool-result")
+        self._preparation_task = asyncio.create_task(self._prepare_mounted_session())
+
+    async def _prepare_mounted_session(self) -> None:
+        """Render the session gateway outcome; unmount cancels and awaits this task."""
+        try:
+            await self._session.prepare_startup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._write_adapter_line(
+                content="Model preparation failed; use /auth or /model refresh to retry.",
+                classes="tool-result",
+            )
+        else:
+            self._write_adapter_line(content="Model catalog ready.", classes="tool-result")
+        self._refresh_title_bar()
+        self._refresh_usage_status_bar()
 
     async def _hydrate_transcript_from_history(self) -> None:
         """Replay-derived transcript bootstrap for resumed sessions (05.e).
@@ -641,6 +676,8 @@ class SloTUI(App):
 
     async def _maybe_render_startup_notice(self) -> None:
         """Render the one-time startup notice for new sessions only."""
+        if self._session.preparation_status != "ready":
+            return
         if not await self._session.should_show_startup_notice():
             return
         fallback_notice: Optional[str] = self._session.startup_fallback_notice
@@ -735,13 +772,24 @@ class SloTUI(App):
             value (Optional[CredentialDAO]): ``CredentialDAO`` on success,
                 ``None`` on cancel.
         """
+        ModelSuggestionProjection.refresh_authentication(verified_credential=value)
+        self._refresh_slash_suggestions()
         if value is None:
+            return
+        if self._session.preparation_status != "ready":
+            self._start_session_preparation()
             return
         current_provider: ProviderName = provider_for_model(
             model_name=self._session.active_model_name,
         )
         if value.provider is not current_provider:
-            new_model_name: str = default_model_for_provider(provider=value.provider)
+            new_model_name: Optional[str] = default_model_for_provider(provider=value.provider)
+            if new_model_name is None:
+                self._write_adapter_line(
+                    content="Key verified; choose a model with /model.", classes="tool-result"
+                )
+                self._prime_model_picker_after_auth()
+                return
             try:
                 self._session.switch_model(model_name=new_model_name)
             except RuntimeError:
@@ -754,6 +802,22 @@ class SloTUI(App):
         self._refresh_title_bar(subject=value.subject)
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
+
+    def _prime_model_picker_after_auth(self) -> None:
+        """Focus and seed the local model picker after authentication has no landing route.
+
+        WHAT: Gives API-key-only providers a direct path to cached ``/model``
+            search without selecting an arbitrary remote route.
+        WHO: ``_on_auth_dismissed`` calls it after a verified provider has no
+            configured default model.
+        WHEN: Only after the authentication modal returns a successful credential.
+        """
+        if self._input is None:
+            return
+        self._input.load_text("/model ")
+        self._move_prompt_cursor_to_end()
+        self._refresh_slash_suggestions()
+        self._input.focus()
 
     @staticmethod
     def _collapse_home_in_path(*, path: Path) -> str:
@@ -807,6 +871,9 @@ class SloTUI(App):
 
     async def on_unmount(self) -> None:
         """Detach the renderer. No subprocess to tear down."""
+        if self._preparation_task is not None:
+            self._preparation_task.cancel()
+            await asyncio.gather(self._preparation_task, return_exceptions=True)
         self._session.unsubscribe(handler=self._render_event)
         await self._release_session_lease()
 
@@ -1279,6 +1346,11 @@ class SloTUI(App):
         Args:
             text (str): Normalized ordinary prompt text.
         """
+        if self._session.preparation_status != "ready":
+            self._write_adapter_line(
+                content="Model preparation required; use /auth or /model refresh.", classes="tool-result"
+            )
+            return
         async with self._prompt_submission_lock:
             if self._in_flight_task is not None:
                 await self._queue_prompt(text=text)
@@ -1724,12 +1796,38 @@ class SloTUI(App):
         """Recompute slash suggestions from the current prompt buffer."""
         if self._input is None:
             return
+        self._picker_catalog_revision = ModelSuggestionProjection.current_revision()
         state: SlashSuggestionStateDAO = self._suggestion_engine.evaluate(
             buffer_text=self._input.text,
             active_model_name=self._session.active_model_name,
         )
+        previous = self._slash_suggestion_state.highlighted_row
+        if previous is not None:
+            index = next(
+                (index for index, row in enumerate(state.rows) if row.insert_text == previous.insert_text), 0
+            )
+            state = state.model_copy(update={"highlighted_index": index})
         self._slash_suggestion_state = state
         self._render_slash_suggestion_state(state=state)
+
+    def _refresh_visible_slash_suggestions_when_catalog_changed(self) -> None:
+        """Refresh an open picker after a public catalog-status publication.
+
+        WHAT: Observes the presentation revision and reuses the normal engine
+            evaluation path without invoking credential, client, or catalog I/O.
+        WHO: The mounted app calls this from Textual's idle loop.
+        WHEN: Only while a visible ``/model`` suggestion menu is on screen.
+        """
+        if not self._slash_suggestion_state.visible:
+            return
+        revision = ModelSuggestionProjection.current_revision()
+        if revision == self._picker_catalog_revision:
+            return
+        self._refresh_slash_suggestions()
+
+    def on_idle(self) -> None:
+        """Adopt a published picker status revision without waiting for a keystroke."""
+        self._refresh_visible_slash_suggestions_when_catalog_changed()
 
     def _render_slash_suggestion_state(self, *, state: SlashSuggestionStateDAO) -> None:
         """Render one suggestion state into the prompt-adjacent menu.
@@ -1803,9 +1901,22 @@ class SloTUI(App):
             line (str): The full input line including the leading slash.
         """
         self._hide_slash_suggestions()
+        if self._session.preparation_status != "ready":
+            command = line.strip().split(maxsplit=1)[0]
+            if line.strip() == "/model refresh":
+                self._start_session_preparation()
+                return
+            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model"}:
+                self._write_adapter_line(content="Model preparation required.", classes="tool-result")
+                return
         mounted_activity: bool = await self._mount_slash_activity(line=line)
+        previous_model = self._session.active_model_name
         try:
             result = await SlashRouter.dispatch(line=line, session=self._session)
+            if self._session.active_model_name != previous_model:
+                self._suggestion_engine.record_selection(model_name=self._session.active_model_name)
+            if line.strip() == "/model refresh":
+                ModelSuggestionProjection.refresh_authentication()
         finally:
             if mounted_activity:
                 await self._unmount_spinner()

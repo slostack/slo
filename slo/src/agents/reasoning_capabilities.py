@@ -9,6 +9,8 @@ in ``src.agents.model_catalog``. It preserves the historical public helpers
 from __future__ import annotations
 
 from typing import Optional
+from collections.abc import Iterator, Mapping
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,6 +76,8 @@ class ModelReasoningCapabilityDAO(BaseModel):
     provider_summary_mode: Optional[str] = None
     provider_reasoning_required: bool = False
     forbid_sampling_parameters_when_enabled: bool = False
+    reasoning_controls_available: bool = False
+    reasoning_disable_available: bool = False
 
 
 class ResolvedReasoningConfigDAO(BaseModel):
@@ -99,11 +103,31 @@ class ResolvedReasoningConfigDAO(BaseModel):
     provider_summary_mode: Optional[str] = None
 
 
-MODEL_REASONING_CAPABILITIES: dict[str, ModelReasoningCapabilityDAO] = {}
-"""Compatibility projection from the canonical model catalog."""
+class ReasoningCapabilitiesView(Mapping[str, ModelReasoningCapabilityDAO]):
+    """Read-only live capabilities with detached nested values."""
+
+    def __getitem__(self, model_name: str) -> ModelReasoningCapabilityDAO:
+        """Project a fresh capability from the current catalog."""
+        try:
+            return _catalog_entry_to_capability(model_name=model_name)
+        except ValueError as error:
+            raise KeyError(model_name) from error
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate canonical keys from one generation."""
+        return iter(ModelCatalogService.load().entries)
+
+    def __len__(self) -> int:
+        """Return the current canonical count."""
+        return len(ModelCatalogService.load().entries)
 
 
-def _provider_summary_mode_for_model(*, model_name: str) -> Optional[str]:
+MODEL_REASONING_CAPABILITIES: Mapping[str, ModelReasoningCapabilityDAO] = ReasoningCapabilitiesView()
+
+
+def _provider_summary_mode_for_model(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> Optional[str]:
     """Derive the provider-native summary mode for a model.
 
     OpenAI reasoning models use ``responses`` API with ``auto`` summary mode.
@@ -115,7 +139,7 @@ def _provider_summary_mode_for_model(*, model_name: str) -> Optional[str]:
     Returns:
         Optional[str]: Provider summary mode, or ``None`` when not applicable.
     """
-    provider = ModelCatalogService.entry_for_model(model_name=model_name).provider
+    provider = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot).provider
     if provider is ProviderName.OPENAI:
         return "auto"
     return None
@@ -124,6 +148,7 @@ def _provider_summary_mode_for_model(*, model_name: str) -> Optional[str]:
 def _catalog_entry_to_capability(
     *,
     model_name: str,
+    snapshot: Optional[ModelCatalogSnapshotDAO] = None,
 ) -> ModelReasoningCapabilityDAO:
     """Project one catalog entry into the legacy capability shape.
 
@@ -133,35 +158,36 @@ def _catalog_entry_to_capability(
     Returns:
         ModelReasoningCapabilityDAO: Legacy capability record.
     """
-    entry = ModelCatalogService.entry_for_model(model_name=model_name)
+    snapshot = snapshot if snapshot is not None else ModelCatalogService.load()
+    entry = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
     profile = entry.reasoning_profile
-    reasoning_supported = profile.supported_levels != ["off"]
+    capabilities = entry.capabilities
+    reasoning_controls_available: bool = capabilities.reasoning_controls_available if capabilities else False
+    reasoning_disable_available: bool = capabilities.reasoning_disable_available if capabilities else False
+    reasoning_supported = profile.supported_levels != ("off",) or reasoning_disable_available
     return ModelReasoningCapabilityDAO(
         reasoning_supported=reasoning_supported,
         supported_levels=list(profile.supported_levels),
         default_level=profile.default_level,
         provider_effort_map=dict(profile.provider_effort_map),
         provider_budget_map=dict(profile.provider_budget_map),
-        provider_summary_mode=_provider_summary_mode_for_model(model_name=entry.model_name),
+        provider_summary_mode=_provider_summary_mode_for_model(
+            model_name=entry.model_name, snapshot=snapshot
+        ),
         provider_reasoning_required=profile.provider_reasoning_required,
         forbid_sampling_parameters_when_enabled=profile.forbid_sampling_parameters_when_enabled,
+        reasoning_controls_available=reasoning_controls_available,
+        reasoning_disable_available=reasoning_disable_available,
     )
 
 
 def rebuild_reasoning_capabilities_projection() -> None:
-    """Rebuild the legacy capability map in place from the canonical catalog."""
-    snapshot = ModelCatalogService.load()
-    projected: dict[str, ModelReasoningCapabilityDAO] = {}
-    for model_name in snapshot.entries:
-        projected[model_name] = _catalog_entry_to_capability(model_name=model_name)
-    MODEL_REASONING_CAPABILITIES.clear()
-    MODEL_REASONING_CAPABILITIES.update(projected)
+    """Deprecated no-op: capabilities follow catalog publication automatically."""
 
 
-rebuild_reasoning_capabilities_projection()
-
-
-def capability_for_model(*, model_name: str) -> ModelReasoningCapabilityDAO:
+def capability_for_model(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> ModelReasoningCapabilityDAO:
     """Return the reasoning capability record for one supported model.
 
     Args:
@@ -174,16 +200,15 @@ def capability_for_model(*, model_name: str) -> ModelReasoningCapabilityDAO:
         ValueError: If ``model_name`` is outside Slo's supported
             interactive catalog.
     """
-    capability: Optional[ModelReasoningCapabilityDAO] = MODEL_REASONING_CAPABILITIES.get(
-        model_name,
-    )
-    if capability is None:
-        supported_models: str = ", ".join(sorted(MODEL_REASONING_CAPABILITIES))
-        raise ValueError(f"Unsupported reasoning model '{model_name}'. Supported models: {supported_models}")
-    return capability
+    try:
+        return _catalog_entry_to_capability(model_name=model_name, snapshot=snapshot)
+    except ValueError as error:
+        raise ValueError(f"Unsupported reasoning model '{model_name}'.") from error
 
 
-def supported_reasoning_levels_for_model(*, model_name: str) -> list[ReasoningLevel]:
+def supported_reasoning_levels_for_model(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> list[ReasoningLevel]:
     """Return the ordered supported reasoning levels for one model.
 
     Args:
@@ -192,11 +217,14 @@ def supported_reasoning_levels_for_model(*, model_name: str) -> list[ReasoningLe
     Returns:
         list[ReasoningLevel]: Ordered supported levels.
     """
-    capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name)
+    snapshot = snapshot if snapshot is not None else ModelCatalogService.load()
+    capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name, snapshot=snapshot)
     return list(capability.supported_levels)
 
 
-def default_reasoning_level_for_model(*, model_name: str) -> ReasoningLevel:
+def default_reasoning_level_for_model(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> ReasoningLevel:
     """Return the default seeded reasoning level for one model.
 
     Args:
@@ -205,16 +233,20 @@ def default_reasoning_level_for_model(*, model_name: str) -> ReasoningLevel:
     Returns:
         ReasoningLevel: The seeded canonical level.
     """
-    capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name)
+    snapshot = snapshot if snapshot is not None else ModelCatalogService.load()
+    capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name, snapshot=snapshot)
     if not capability.reasoning_supported:
         return "off"
     return clamp_reasoning_level(
         model_name=model_name,
+        snapshot=snapshot,
         requested_level=capability.default_level,
     )
 
 
-def highest_supported_reasoning_level(*, model_name: str) -> ReasoningLevel:
+def highest_supported_reasoning_level(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> ReasoningLevel:
     """Return the strongest supported reasoning level for one model.
 
     Args:
@@ -226,6 +258,7 @@ def highest_supported_reasoning_level(*, model_name: str) -> ReasoningLevel:
     """
     supported_levels: list[ReasoningLevel] = supported_reasoning_levels_for_model(
         model_name=model_name,
+        snapshot=snapshot,
     )
     for reasoning_level in reversed(REASONING_LEVELS):
         if reasoning_level in supported_levels:
@@ -256,6 +289,7 @@ def clamp_reasoning_level(
     *,
     model_name: str,
     requested_level: ReasoningLevel,
+    snapshot: Optional[ModelCatalogSnapshotDAO] = None,
 ) -> ReasoningLevel:
     """Clamp one requested level to the model's supported range.
 
@@ -275,6 +309,7 @@ def clamp_reasoning_level(
     """
     supported_levels: list[ReasoningLevel] = supported_reasoning_levels_for_model(
         model_name=model_name,
+        snapshot=snapshot,
     )
     if requested_level in supported_levels:
         return requested_level
@@ -295,6 +330,7 @@ def resolve_reasoning_config(
     *,
     model_name: str,
     requested_level: ReasoningLevel,
+    snapshot: Optional[ModelCatalogSnapshotDAO] = None,
 ) -> ResolvedReasoningConfigDAO:
     """Resolve one provider-ready reasoning configuration.
 
@@ -309,9 +345,11 @@ def resolve_reasoning_config(
         ValueError: If the capability record is inconsistent with the
             requested model.
     """
-    capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name)
+    snapshot = snapshot if snapshot is not None else ModelCatalogService.load()
+    capability: ModelReasoningCapabilityDAO = capability_for_model(model_name=model_name, snapshot=snapshot)
     active_level: ReasoningLevel = clamp_reasoning_level(
         model_name=model_name,
+        snapshot=snapshot,
         requested_level=requested_level,
     )
     if not capability.reasoning_supported:
@@ -321,9 +359,7 @@ def resolve_reasoning_config(
             active_level="off",
         )
 
-    provider_reasoning_enabled: bool = (
-        active_level != "off" or capability.provider_reasoning_required
-    )
+    provider_reasoning_enabled: bool = active_level != "off" or capability.provider_reasoning_required
     if not provider_reasoning_enabled:
         return ResolvedReasoningConfigDAO(
             enabled=False,

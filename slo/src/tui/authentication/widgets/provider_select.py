@@ -15,6 +15,13 @@ __all__ = ["ProviderSelectWidget"]
 class ProviderSelectWidget(Vertical):
     """Pick Anthropic or OpenAI; emit ``Chosen`` when Continue is clicked."""
 
+    PROVIDERS: tuple[tuple[ProviderName, str], ...] = (
+        (ProviderName.ANTHROPIC, "Anthropic (Claude / Claude Code)"),
+        (ProviderName.OPENAI, "OpenAI (ChatGPT)"),
+        (ProviderName.KIMI_FOR_CODING, "Kimi For Coding"),
+        (ProviderName.OPENROUTER, "OpenRouter"),
+    )
+
     class Chosen(Message):
         """Posted when the user clicks Continue with a provider selected."""
 
@@ -34,9 +41,8 @@ class ProviderSelectWidget(Vertical):
         """Render the radio set, Continue, and Cancel buttons."""
         yield Static("Sign in to a model provider", classes="auth-title")
         with RadioSet(id="provider-radio"):
-            yield RadioButton(label="Anthropic (Claude / Claude Code)", value=True)
-            yield RadioButton(label="OpenAI (ChatGPT)")
-            yield RadioButton(label="Kimi For Coding")
+            for index, (_, label) in enumerate(self.PROVIDERS):
+                yield RadioButton(label=label, value=index == 0)
         with Horizontal(classes="auth-actions"):
             yield Button(label="Continue", id="provider-continue", variant="primary")
             yield Button(label="Cancel", id="provider-cancel", variant="default")
@@ -61,8 +67,4 @@ class ProviderSelectWidget(Vertical):
                 no radio has been touched (matches the default state).
         """
         radio_set: RadioSet = self.query_one("#provider-radio", RadioSet)
-        if radio_set.pressed_index == 1:
-            return ProviderName.OPENAI
-        if radio_set.pressed_index == 2:
-            return ProviderName.KIMI_FOR_CODING
-        return ProviderName.ANTHROPIC
+        return self.PROVIDERS[max(0, radio_set.pressed_index)][0]

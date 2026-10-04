@@ -261,6 +261,45 @@ class TestSubAgentProcessInactivityTimeout:
         assert "TimeoutError" not in result.answer
 
 
+class TestSubAgentProcessChildCredentialRedaction:
+    """Child pipe redaction protects the literal forwarded OpenRouter credential."""
+
+    def test_redacts_literal_credential_when_output_uses_percent_escaped_bytes(self) -> None:
+        """Pipe capture must redact literal and percent-escaped credential representations."""
+        process, _ = _make_process()
+        process._child_credential = b"openrouter+secret/with?characters"
+
+        redacted: bytes = process._redact_child_output(
+            raw=(
+                b"literal=openrouter+secret/with?characters "
+                b"escaped=openrouter%2Bsecret%2Fwith%3Fcharacters\n"
+            )
+        )
+
+        assert b"openrouter+secret/with?characters" not in redacted
+        assert b"openrouter%2Bsecret%2Fwith%3Fcharacters" not in redacted
+        assert redacted.count(b"[REDACTED]") == 2
+
+    def test_redacts_literal_credential_when_output_uses_json_escaped_bytes(self) -> None:
+        """Pipe capture must redact literal and JSON-escaped credential representations."""
+        process, _ = _make_process()
+        process._child_credential = b"line\nbreak"
+
+        redacted: bytes = process._redact_child_output(raw=b"raw=line\nbreak json=line\\nbreak\n")
+
+        assert b"line\nbreak" not in redacted
+        assert b"line\\nbreak" not in redacted
+        assert redacted.count(b"[REDACTED]") == 2
+
+    def test_leaves_opaque_replay_metadata_unchanged(self) -> None:
+        """Opaque non-credential continuation metadata remains available to private replay."""
+        process, _ = _make_process()
+        process._child_credential = b"literal-credential"
+        metadata: bytes = b'{"reasoning_details":"opaque-replay-anchor"}\n'
+
+        assert process._redact_child_output(raw=metadata) == metadata
+
+
 class TestSubAgentProcessHandleLine:
     """``_handle_line`` re-hydrates, tags, and relays events correctly."""
 
@@ -893,10 +932,8 @@ class TestSubAgentProcessPumpStderr:
         assert len(process._stderr_tail) == STDERR_TAIL_MAX_LINES
         assert process._stderr_tail[-1] == f"line {overflow - 1}"
 
-    async def test_writes_lines_to_capture_file_when_configured(self, tmp_path: pytest.MonkeyPatch) -> None:
+    async def test_writes_lines_to_capture_file_when_configured(self, tmp_path: Path) -> None:
         """Stderr lines are written to ``stderr.jsonl`` in the capture directory."""
-        from pathlib import Path
-
         slo_home: Path = tmp_path / "slo_home"
         process, _ = _make_process(
             session_id="child-sess",
@@ -999,7 +1036,9 @@ class TestSubAgentProcessSpawnEnvironment:
         ):
             await process.run()
 
-        child_env: dict[str, str] = create_process.await_args.kwargs["env"]
+        create_process_await_args = create_process.await_args
+        assert create_process_await_args is not None
+        child_env: dict[str, str] = create_process_await_args.kwargs["env"]
         assert child_env["SLO_TEST_TIMEOUT"] == "12"
         assert "SLO_TEST_API_KEY" not in child_env
 
@@ -1024,7 +1063,9 @@ class TestSubAgentProcessSpawnEnvironment:
         ):
             await process.run()
 
-        child_env: dict[str, str] = create_process.await_args.kwargs["env"]
+        create_process_await_args = create_process.await_args
+        assert create_process_await_args is not None
+        child_env: dict[str, str] = create_process_await_args.kwargs["env"]
         assert child_env["SLO_PARENT_PID"] == str(os.getpid())
         assert child_env["SLO_CAPTURE_DIR"].endswith("parent-session/children/child-session")
 

@@ -12,7 +12,10 @@ __all__ = [
     "AuthType",
     "AuthenticationFileDAO",
     "CredentialDAO",
+    "CredentialSource",
     "ProviderName",
+    "RELEASED_CREDENTIAL_PROVIDERS",
+    "ResolvedCredentialDAO",
 ]
 
 
@@ -28,6 +31,25 @@ class ProviderName(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     KIMI_FOR_CODING = "kimi_for_coding"
+    OPENROUTER = "openrouter"
+
+
+RELEASED_CREDENTIAL_PROVIDERS: frozenset[ProviderName] = frozenset(
+    {ProviderName.ANTHROPIC, ProviderName.OPENAI, ProviderName.KIMI_FOR_CODING}
+)
+"""Providers released Slo v0.20.1 accepts in authentication.json. Never extend this set.
+
+CredentialStore keeps other providers in the additional-provider file so released Slo
+can still validate its closed provider enum.
+"""
+
+
+class CredentialSource(str, Enum):
+    """Origin from which ``CredentialResolver`` resolved one credential."""
+
+    ENVIRONMENT = "environment"
+    STORE = "store"
+    LEGACY = "legacy"
 
 
 class AuthType(str, Enum):
@@ -66,8 +88,8 @@ class CredentialDAO(BaseModel):
 
     provider: ProviderName
     auth_type: AuthType
-    access_token: str
-    refresh_token: Optional[str] = None
+    access_token: str = Field(repr=False)
+    refresh_token: Optional[str] = Field(default=None, repr=False)
     expires_at: Optional[datetime] = None
     subject: Optional[str] = None
     scope: Optional[str] = None
@@ -88,11 +110,33 @@ class CredentialDAO(BaseModel):
         return self.expires_at <= datetime.now(timezone.utc)
 
 
-class AuthenticationFileDAO(BaseModel):
-    """On-disk envelope for ``~/.slo/global/authentication.json``.
+class ResolvedCredentialDAO(BaseModel):
+    """Private effective credential and the precedence source that supplied it."""
 
-    Owned exclusively by ``CredentialStore``. Carries a ``schema_version``
-    so future migrations can fork on it without breaking existing files.
+    model_config = ConfigDict(frozen=True)
+
+    credential: CredentialDAO = Field(repr=False)
+    source: CredentialSource
+
+
+class OpenRouterAuthenticationResultDAO(BaseModel):
+    """Public authentication outcome containing no credential or wire payload."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    effective_source: Optional[CredentialSource] = Field(default=None, description="Captured source.")
+    key_verified: bool = Field(default=False, description="Whether verification succeeded.")
+    replacement_saved: bool = Field(default=False, description="Whether the candidate was persisted.")
+    catalog_checked: bool = Field(default=False, description="Whether refresh reported success.")
+    safe_message: str = Field(description="Fixed operator notice, never upstream text.")
+
+
+class AuthenticationFileDAO(BaseModel):
+    """On-disk envelope shared by both credential files owned by CredentialStore.
+
+    ``authentication.json`` holds only RELEASED_CREDENTIAL_PROVIDERS for released Slo.
+    ``authentication.additional-providers.json`` holds other providers this version knows.
+    Both use the same shape and schema_version; unknown future providers need another file.
 
     Fields:
         schema_version (int): Bumped on incompatible changes.

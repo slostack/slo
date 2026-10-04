@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
-from src.agents.model_catalog.dao import ModelCatalogEntryDAO
+from src.agents.model_catalog.dao import ModelCatalogEntryDAO, ModelCatalogSnapshotDAO
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.slo_agent.compaction.constants import DEFAULT_CONTEXT_WINDOW
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
@@ -44,6 +46,7 @@ class ContextWindowSnapshotService:
         *,
         events: list[SessionHistoryEventDAO],
         model_name: str,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> ContextWindowSnapshotDAO:
         """Build an available estimate from one loaded durable event list.
 
@@ -54,7 +57,9 @@ class ContextWindowSnapshotService:
         Returns:
             ContextWindowSnapshotDAO: Projector-faithful replay estimate.
         """
-        resolved: ResolvedContextWindowDAO = cls._resolve_context_window(model_name=model_name)
+        resolved: ResolvedContextWindowDAO = cls._resolve_context_window(
+            model_name=model_name, snapshot=snapshot
+        )
         context_events: list[SessionHistoryEventDAO] = SessionHistoryProjector.context_events(events=events)
         return cls._snapshot(
             model_name=resolved.model_name,
@@ -64,7 +69,9 @@ class ContextWindowSnapshotService:
         )
 
     @classmethod
-    def without_history(cls, *, model_name: str) -> ContextWindowSnapshotDAO:
+    def without_history(
+        cls, *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+    ) -> ContextWindowSnapshotDAO:
         """Build a capacity-only snapshot when durable history cannot be read.
 
         Args:
@@ -73,7 +80,9 @@ class ContextWindowSnapshotService:
         Returns:
             ContextWindowSnapshotDAO: Capacity with an unavailable estimate.
         """
-        resolved: ResolvedContextWindowDAO = cls._resolve_context_window(model_name=model_name)
+        resolved: ResolvedContextWindowDAO = cls._resolve_context_window(
+            model_name=model_name, snapshot=snapshot
+        )
         return cls._snapshot(
             model_name=resolved.model_name,
             context_window_tokens=resolved.context_window_tokens,
@@ -82,7 +91,9 @@ class ContextWindowSnapshotService:
         )
 
     @classmethod
-    def resolve_model_identity(cls, *, model_name: str) -> str:
+    def resolve_model_identity(
+        cls, *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+    ) -> str:
         """Resolve a routed identifier to its canonical cache identity.
 
         Args:
@@ -91,10 +102,12 @@ class ContextWindowSnapshotService:
         Returns:
             str: Canonical catalog name when known, otherwise the supplied name.
         """
-        return cls._resolve_context_window(model_name=model_name).model_name
+        return cls._resolve_context_window(model_name=model_name, snapshot=snapshot).model_name
 
     @staticmethod
-    def _resolve_context_window(*, model_name: str) -> ResolvedContextWindowDAO:
+    def _resolve_context_window(
+        *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+    ) -> ResolvedContextWindowDAO:
         """Resolve catalog capacity and canonical identity in one lookup.
 
         Args:
@@ -104,7 +117,9 @@ class ContextWindowSnapshotService:
             ResolvedContextWindowDAO: Catalog-backed or conservative fallback capacity.
         """
         try:
-            entry: ModelCatalogEntryDAO = ModelCatalogService.entry_for_model(model_name=model_name)
+            entry: ModelCatalogEntryDAO = ModelCatalogService.entry_for_model(
+                model_name=model_name, snapshot=snapshot
+            )
         except ValueError:
             return ResolvedContextWindowDAO(
                 model_name=model_name,

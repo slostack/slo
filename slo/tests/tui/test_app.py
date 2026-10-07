@@ -879,10 +879,12 @@ class TestSloTUISessionInbox:
             app._write_adapter_line(content="existing line", classes="tool-result")
             await pilot.pause()
 
-            with patch("src.tui.app.SloAgentSession.build", return_value=new_session):
+            with patch("src.tui.app.SloAgentSession.build", return_value=new_session) as build:
                 await app._start_new_session(requested_name="fresh thread")
                 await pilot.pause()
 
+            build.assert_called_once()
+            assert build.call_args.kwargs["allow_pending_preparation"] is True
             assert app._session is new_session
             old_session.unsubscribe.assert_called_once_with(handler=app._render_event)
             new_session.subscribe.assert_called_once_with(handler=app._render_event)

@@ -607,24 +607,41 @@ class SloTUI(App):
             return
         if self._session.preparation_status == "ready":
             return
+        session: SloAgentSession = self._session
         self._write_adapter_line(content="Preparing model catalog; limits unknown.", classes="tool-result")
-        self._preparation_task = asyncio.create_task(self._prepare_mounted_session())
+        self._preparation_task = asyncio.create_task(self._prepare_mounted_session(session=session))
 
-    async def _prepare_mounted_session(self) -> None:
-        """Render the session gateway outcome; unmount cancels and awaits this task."""
+    async def _prepare_mounted_session(self, *, session: SloAgentSession) -> None:
+        """Prepare ``session`` and render only while it remains the mounted session.
+
+        Capturing the target session prevents a worker superseded by ``/new`` from
+        preparing or repainting the replacement session after its cancellation.
+        """
         try:
-            await self._session.prepare_startup()
+            await session.prepare_startup()
         except asyncio.CancelledError:
             raise
         except Exception:
-            self._write_adapter_line(
-                content="Model preparation failed; use /auth or /model refresh to retry.",
-                classes="tool-result",
-            )
+            if self._session is session:
+                self._write_adapter_line(
+                    content="Model preparation failed; use /auth or /model refresh to retry.",
+                    classes="tool-result",
+                )
         else:
-            self._write_adapter_line(content="Model catalog ready.", classes="tool-result")
-        self._refresh_title_bar()
-        self._refresh_usage_status_bar()
+            if self._session is session:
+                self._write_adapter_line(content="Model catalog ready.", classes="tool-result")
+        if self._session is session:
+            self._refresh_title_bar()
+            self._refresh_usage_status_bar()
+
+    async def _cancel_session_preparation(self) -> None:
+        """Cancel and await the tracked worker before replacing its session."""
+        task: Optional[asyncio.Task[None]] = self._preparation_task
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def _hydrate_transcript_from_history(self) -> None:
         """Replay-derived transcript bootstrap for resumed sessions (05.e).
@@ -871,9 +888,7 @@ class SloTUI(App):
 
     async def on_unmount(self) -> None:
         """Detach the renderer. No subprocess to tear down."""
-        if self._preparation_task is not None:
-            self._preparation_task.cancel()
-            await asyncio.gather(self._preparation_task, return_exceptions=True)
+        await self._cancel_session_preparation()
         self._session.unsubscribe(handler=self._render_event)
         await self._release_session_lease()
 
@@ -2022,9 +2037,11 @@ class SloTUI(App):
             requested_name (Optional[str]): Optional initial human-readable session name.
         """
         old_session: SloAgentSession = self._session
+        await self._cancel_session_preparation()
         old_session.unsubscribe(handler=self._render_event)
         new_session: SloAgentSession = SloAgentSession.build(
             config=self._build_replacement_session_config(old_session=old_session),
+            allow_pending_preparation=True,
         )
         self._attach_pool_to_session(session=new_session)
         if requested_name is not None:
@@ -2041,6 +2058,8 @@ class SloTUI(App):
         self._refresh_title_bar()
         await self._session.refresh_context_window_snapshot()
         self._refresh_usage_status_bar()
+        if self._session.preparation_status != "ready":
+            self._start_session_preparation()
 
     async def _rename_current_session(self, *, session_name: str) -> None:
         """Rename the active session and refresh visible title state.

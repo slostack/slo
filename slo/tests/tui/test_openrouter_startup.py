@@ -67,6 +67,106 @@ async def test_unmount_cancels_pending_worker(tmp_path: Path) -> None:
         assert session.preparation_status == "failed"
 
 
+async def test_new_openrouter_session_is_pending_and_starts_its_own_worker(tmp_path: Path) -> None:
+    """`/new` defers a cold OpenRouter route and starts preparation for its replacement."""
+    route = "openrouter:author/cold"
+    snapshot = SeedModelCatalog.load()
+    entry = snapshot.entries["gpt-5.4"].model_copy(update={"model_name": route})
+    snapshot = snapshot.model_copy(update={"entries": {**snapshot.entries, route: entry}})
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def prepare_models(*, model_names: tuple[str, ...]) -> ModelCatalogSnapshotDAO:
+        assert model_names == (route,)
+        started.set()
+        await release.wait()
+        return snapshot
+
+    with (
+        patch.object(ModelCatalogService, "load", return_value=snapshot),
+        patch.object(ModelCatalogService, "prepare_models", side_effect=prepare_models),
+        patch("src.tui.app.ModelSuggestionProjection.refresh_authentication"),
+        patch.object(SloTUI, "_has_credential_for_active_model", return_value=True),
+        patch.object(SloAgentSession, "_load_plugins"),
+    ):
+        session = SloAgentSession.build(
+            config=SessionConfigDAO(workdir=tmp_path, model_name=route, enable_history=False),
+            catalog_snapshot=snapshot,
+        )
+        app = SloTUI(session=session)
+        async with app.run_test(size=(100, 28)) as pilot:
+            await pilot.pause()
+            with patch.object(SloAgentSession, "build", wraps=SloAgentSession.build) as build:
+                await app._start_new_session(requested_name=None)
+            build.assert_called_once()
+            assert build.call_args.kwargs["allow_pending_preparation"] is True
+            replacement = app._session
+            assert replacement is not session
+            assert replacement.active_model_name == route
+            assert replacement.preparation_status == "pending"
+            await asyncio.wait_for(started.wait(), timeout=2)
+            assert app._preparation_task is not None
+            release.set()
+            await app._preparation_task
+            await pilot.pause()
+            assert replacement.preparation_status == "ready"
+            assert app._session is replacement
+
+
+async def test_new_cancels_old_preparation_worker_before_replacement(tmp_path: Path) -> None:
+    """An old pending worker cannot adopt or render into the replacement session."""
+    route = "openrouter:author/cold"
+    snapshot = SeedModelCatalog.load()
+    entry = snapshot.entries["gpt-5.4"].model_copy(update={"model_name": route})
+    snapshot = snapshot.model_copy(update={"entries": {**snapshot.entries, route: entry}})
+    old_started = asyncio.Event()
+    old_cancelled = asyncio.Event()
+    replacement_started = asyncio.Event()
+    replacement_release = asyncio.Event()
+    calls = 0
+
+    async def prepare_models(*, model_names: tuple[str, ...]) -> ModelCatalogSnapshotDAO:
+        nonlocal calls
+        assert model_names == (route,)
+        calls += 1
+        if calls == 1:
+            old_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                old_cancelled.set()
+        replacement_started.set()
+        await replacement_release.wait()
+        return snapshot
+
+    with (
+        patch.object(ModelCatalogService, "load", return_value=snapshot),
+        patch.object(ModelCatalogService, "prepare_models", side_effect=prepare_models),
+        patch("src.tui.app.ModelSuggestionProjection.refresh_authentication"),
+        patch.object(SloTUI, "_has_credential_for_active_model", return_value=True),
+        patch.object(SloAgentSession, "_load_plugins"),
+    ):
+        session = SloAgentSession.build(
+            config=SessionConfigDAO(workdir=tmp_path, model_name=route, enable_history=False),
+            allow_pending_preparation=True,
+        )
+        app = SloTUI(session=session)
+        async with app.run_test(size=(100, 28)):
+            await asyncio.wait_for(old_started.wait(), timeout=2)
+            await app._start_new_session(requested_name=None)
+            replacement = app._session
+            assert replacement is not session
+            assert old_cancelled.is_set()
+            assert session.preparation_status == "failed"
+            await asyncio.wait_for(replacement_started.wait(), timeout=2)
+            assert replacement.preparation_status == "pending"
+            replacement_release.set()
+            assert app._preparation_task is not None
+            await app._preparation_task
+            assert replacement.preparation_status == "ready"
+            assert app._session is replacement
+
+
 async def test_pending_session_gates_without_resolving_unknown_capabilities(tmp_path: Path) -> None:
     """A cold route retains identity and unknown limits until preparation succeeds."""
     config = SessionConfigDAO(workdir=tmp_path, model_name="openrouter:author/cold", enable_history=False)
@@ -82,13 +182,17 @@ async def test_pending_session_gates_without_resolving_unknown_capabilities(tmp_
     with pytest.raises(RuntimeError, match="preparation"):
         session.switch_model(model_name="gpt-5.4")
     direct_snapshot = SeedModelCatalog.load()
-    with patch.object(ModelCatalogService, "prepare_models", new=AsyncMock(return_value=direct_snapshot)) as prepare:
+    with patch.object(
+        ModelCatalogService, "prepare_models", new=AsyncMock(return_value=direct_snapshot)
+    ) as prepare:
         result = await session.prepare_model_selection(model_name="openrouter:author/other")
     assert "preparation" in result
     prepare.assert_not_awaited()
 
 
-async def test_mounted_pending_startup_allows_direct_selection_and_ignores_cancelled_old_worker(tmp_path: Path) -> None:
+async def test_mounted_pending_startup_allows_direct_selection_and_ignores_cancelled_old_worker(
+    tmp_path: Path,
+) -> None:
     """A mounted direct recovery cancels the old pending worker without restoring its route."""
     snapshot = SeedModelCatalog.load()
     route = "openrouter:author/cold"

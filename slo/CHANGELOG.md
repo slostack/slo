@@ -2,16 +2,108 @@
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-10-08
+
+**OpenRouter is now available as a first-class provider, with authenticated
+catalog discovery, safe interactive preparation, resilient session recovery,
+and compatibility-preserving local state. This release also fixes `/new` for
+OpenRouter-backed TUI sessions.**
+
+### Added
+
+- **OpenRouter provider integration.** Authenticate an OpenRouter API key,
+  select canonical `openrouter:<remote-model-id>` routes, discover accessible
+  models through the gateway, and use the discovered capability data for model
+  selection, reasoning controls, context limits, streaming, and provider error
+  handling. The TUI model picker and authentication screens expose the provider
+  through the existing `/auth` and `/model` workflows; headless and scheduled
+  execution use the same preparation boundary.
+- **Credential-scoped catalog preparation.** OpenRouter catalog discovery is
+  authenticated, paginated, bounded, and published atomically. Interactive
+  sessions can display a pending state while the mounted TUI prepares a cold
+  route; prompts remain gated until preparation finishes, and `/model refresh`
+  provides an explicit retry path.
+- **Safe OpenRouter continuation handling.** Provider-specific continuation and
+  reasoning metadata is retained privately for compatible replay and token
+  accounting without being emitted as public transcript content. Error handling
+  classifies gateway failures into safe actionable outcomes rather than exposing
+  upstream response bodies.
+- **OpenRouter-aware model-pool and session behavior.** Dynamic routes and
+  prepared catalog snapshots are honored across direct sessions, pools,
+  headless execution, scheduled prompts, credential rotation, cancellation,
+  and concurrent-session boundaries.
+- **Offline compatibility coverage against the prior release.** The test suite
+  runs real `v0.20.1` source against synthetic shared state to exercise catalog
+  cache reads, split credential writes, history continuation, and rollback
+  behavior in both released-to-new and new-to-released directions.
+
 ### Fixed
 
-- Mixed-version state compatibility: provider catalog data now uses
-  `model_catalog_cache.v2.json` / `model_catalog_cache.v2.lock`; OpenRouter
-  credentials use `authentication.additional-providers.json`. Released files
-  retain their compatible shapes. **No action needed for released users.**
-- Unknown saved direct models resume with full history on the preferred/default
-  model and show a startup notice. Offline tests run real `v0.20.1` source to
-  verify rollback and alternating continuation. Pre-fix development builds only
-  require the manual cleanup documented in README; no automatic cleanup occurs.
+- **`/new` no longer crashes for an OpenRouter model.** The interactive TUI
+  replacement path now creates a pending replacement session when its selected
+  route needs catalog preparation, then starts the normal preparation worker.
+  Strict `SloAgentSession.build()` behavior is unchanged for programmatic and
+  headless callers.
+- **Stale preparation workers cannot update a replacement session.** `/new`
+  cancels and awaits any old preparation task before the swap. Preparation work
+  is bound to its target session and only updates transcript status, title, and
+  usage while that same session is still mounted.
+- **Persistence remains compatible with `v0.20.1`.** Provider catalog data now
+  uses `model_catalog_cache.v2.json` and `model_catalog_cache.v2.lock`; OpenRouter
+  credentials use `authentication.additional-providers.json`. The released
+  catalog and credential file shapes remain untouched. **No action is required
+  for released users.**
+- **Saved direct sessions recover from unavailable routes.** When a persisted
+  direct model is unknown, Slo retains the session history, selects the
+  preferred/default available model, and renders a startup notice. Explicit
+  model selection, configured pools, and OpenRouter routes retain their normal
+  precedence.
+- **CI capture tests use the active interpreter.** Detached-workflow capture
+  tests no longer hard-code a developer virtualenv path that is absent on
+  GitLab runners; their containment, descriptor, environment, and output-root
+  guards remain unchanged.
+
+### Changed
+
+- **OpenRouter state has explicit ownership boundaries.** Existing Anthropic,
+  OpenAI, and Kimi credentials remain in `authentication.json`; OpenRouter rows
+  are stored separately. Reads merge owned records while writes preserve
+  misplaced sibling rows and warn instead of silently migrating or deleting
+  user state. Invalid provider catalog caches are treated as rebuildable state
+  and produce concise content-free diagnostics.
+- **The catalog/session lifecycle has stronger preparation semantics.** A
+  catalog generation is prepared before strict dynamic-route construction;
+  mounted interactive sessions may opt into deferred preparation only where the
+  UI can safely represent and recover from pending state. The API preserves
+  strict defaults outside that TUI lifecycle.
+- **Release verification coverage expanded.** Added offline fixtures and tests
+  for catalog integrity/publication, key rotation, provider error normalization,
+  streaming fragments, model-pool fallback, history secrecy, scheduler and
+  headless preparation, picker behavior, and detached workflow capture.
+
+### Upgrade notes
+
+- OpenRouter requires an OpenRouter API key configured through the normal
+  interactive authentication flow.
+- Existing local `authentication.json`, history, and released catalog state are
+  retained. Do not manually migrate files.
+- Users who ran pre-release/development OpenRouter builds may need the manual
+  cleanup documented in the README; this release intentionally does not perform
+  automatic cleanup of those experimental artifacts.
+
+### Verification
+
+- The version-bump merge-request pipeline passed its non-E2E `pytest` and
+  secret-detection jobs.
+- Focused local release-automation and version tests: **32 passed**.
+- The `v0.21.0` tagged pipeline successfully ran the non-E2E suite and published
+  the Cloudflare hosted installer pinned to `v0.21.0`.
+- The tagged pipeline's post-publication installer verification jobs failed due
+  to CI environment setup (`poetry env use` could not access Poetry's configured
+  `envs.toml`, and the Docker matrix lacked a `docker` executable). Consequently,
+  GitLab did not create a release record automatically. This changelog documents
+  the shipped tag and installer publication; it does not claim those release
+  verification jobs passed.
 
 ## [0.20.1] — 2026-09-29
 

@@ -25,28 +25,12 @@ source_prompt: analyze/breakdown-feature-spec-to-tasks.md
 - The user asks for an end-to-end workflow that fits: Decomposing an approved Confluence/feature spec into JIRA sub-tasks with dependencies.
 - Use when a spec is signed off and you need to slice it into actionable, ordered tasks.
 
-## Slo defaults for request and specification artifacts
+## Artifact paths and authoring contract
 
-Unless the user explicitly overrides these paths, use:
-
-```text
-<feature-requests-root> = ${SLO_FEATURE_REQUESTS_DIR:-~/.slo/projects/<project_name>/feature-requests}
-<feature-specifications-root> = ${SLO_FEATURE_SPECIFICATIONS_DIR:-~/.slo/projects/<project_name>/feature-specifications}
-```
-
-Use one folder per feature:
-
-```text
-<feature-requests-root>/
-└── 01-example-feature/
-    └── request.md
-
-<feature-specifications-root>/
-└── 01-example-feature/
-    ├── overview.md
-    ├── 01.a-sub-step.md
-    └── plan.md
-```
+Use [the canonical authoring artifact paths and skill discovery](../feature-specifications/SKILL.md#artifact-paths-and-skill-discovery).
+Repository overrides win over generic defaults. Every family requires overview.md
+with product framing and separate standalone engineering sub-specs. Neither part
+can substitute for the other, even for small features.
 
 ## Guidance
 
@@ -54,7 +38,7 @@ Use one folder per feature:
 
 Split a feature specification into cohesive, dependency-ordered JIRA sub-tasks that engineers can pick up independently without stepping on each other's work. Each task includes full context, relevant code samples from the source spec, and clear acceptance criteria.
 
-This prompt is **mode-aware** per [`feature-specifications.md`](../feature-specifications/SKILL.md): the parent spec may be a broad **Business / product feature spec**, while the child technical slices should often be **Engineering implementation sub-specs**.
+Follow the single-family contract in [`feature-specifications.md`](../feature-specifications/SKILL.md): the product overview and standalone engineering sub-specs are always required together.
 
 ---
 
@@ -91,20 +75,20 @@ Read **all** code-prompt files from `skills/coding/` before proceeding. Build a 
 
 Use `getJiraIssue` to get the parent issue details.
 
-### 1.4 Determine the spec-mode split
+### 1.4 Inventory the complete specification family
 
-Decide which of these patterns applies:
-
-- **Pattern A:** parent spec is already one narrow engineering slice → subtasks may remain lightweight task tickets.
-- **Pattern B:** parent spec is a broad business/product overview → child technical specs should usually become **Engineering implementation sub-specs**.
-
-Default to **Pattern B** when the parent doc spans multiple layers, multiple runtime seams, or several dependency-ordered phases.
+Locate overview.md and all standalone engineering sub-specs. If the source is one
+narrow slice, locate its overview and sibling specs before task breakdown. If a
+required artifact is missing, return to authoring; do not replace it with a ticket.
+A complete narrow sub-spec may be divided into lightweight execution tickets,
+provided each ticket links to that implementation-ready contract. Broad features
+need multiple cohesive sub-specs, split at layer and runtime dependency boundaries.
 
 ---
 
 ### 1.5 Catalog the consolidation work
 
-The parent spec's POST hook ran a DRY consolidation pass, so the spec may commit to deleting existing functionality, encapsulating new behavior inside an existing component, or re-designing a component so it absorbs the new work instead of a redundant parallel implementation.
+The parent spec's author self-check ran a DRY consolidation pass, so the spec may commit to deleting existing functionality, encapsulating new behavior inside an existing component, or re-designing a component so it absorbs the new work instead of a redundant parallel implementation.
 
 That work is not optional cleanup — it is what keeps responsibilities single, isolated, and clean. Catalog every consolidation the spec commits to and carry it into the task list:
 
@@ -142,27 +126,24 @@ Typical chain:
 - prefer single-person tasks,
 - when a child task is a real technical slice, write it as an **Engineering implementation sub-spec**, not a vague ticket summary.
 
-### Mode-aware breakdown rule
+### Required family breakdown
 
-When the parent is a **Business / product feature spec**, use this shape by default:
+- **Product overview:** journey, scope, rollout and stakeholder framing.
+- **Standalone engineering sub-specs:** narrow, independently implementable slices.
+- **Execution tickets:** dependency-ordered work linked to the corresponding sub-spec.
 
-- **Parent spec:** broad overview, journey, scope, rollout, stakeholder framing
-- **Child specs / subtasks:** narrow engineering slices, each independently implementable, usually Mode B
-
-Do not keep all children in business-spec mode if the actual work is technical and dependency-ordered.
+Never substitute a broad product summary for an engineering sub-spec.
 
 ---
 
 ## Step 3 — Write Each Sub-Task
 
-## Step 3.1 Decide the child-spec mode
+## Step 3.1 Map each task to its engineering sub-spec
 
-For each child task, decide whether it should be written as:
-
-- a lightweight execution task, or
-- a full **Engineering implementation sub-spec**.
-
-If the child task introduces or changes real code, control flow, runtime behavior, or a technical ownership boundary, default to **Engineering implementation sub-spec**.
+For each task, identify the standalone engineering sub-spec that owns its code,
+control flow, runtime behavior or technical boundary. Create or refine that
+sub-spec if needed. Lightweight execution tickets link to the full contract;
+they do not create an alternative specification shape.
 
 ## Step 3.2 Title format
 
@@ -178,11 +159,12 @@ If the repository already uses numbered engineering sub-specs, preserve that num
 
 ## Step 3.3 Required body structure
 
-Every child spec must open with the human-readable narrative sections required by [`feature-specifications.md`](../feature-specifications/SKILL.md). The exact structure depends on the chosen mode.
+Every standalone engineering sub-spec must open with the human-readable narrative sections required by [`feature-specifications.md`](../feature-specifications/SKILL.md). Retain the product framing in its overview as well.
 
-### Child Mode A — Business / product feature spec
+### Product framing retained in the overview
 
-Use this only when the child is still a broad feature slice rather than a narrow engineering seam.
+Keep the following product context in the family overview. For broad slices, carry
+relevant context into the engineering sub-spec without replacing its engineering structure.
 
 Required opening:
 
@@ -199,9 +181,9 @@ Required opening:
 - `## Dependencies`
 - `## Repo`
 
-### Child Mode B — Engineering implementation sub-spec
+### Required standalone engineering sub-spec
 
-This is the default for technical child tasks. Follow the `02.a.1` onward pattern.
+Every technical child slice requires this structure. Follow the `02.a.1` onward pattern.
 
 Required structure:
 
@@ -217,7 +199,7 @@ Required structure:
 - `## 9. Acceptance Criteria`
 - `## 10. Dependencies`
 
-Additional rules for child Mode B specs:
+Additional rules for standalone engineering sub-specs:
 
 - the sub-spec must be readable on its own,
 - it must restate current-state truths relevant to the slice,
@@ -294,9 +276,9 @@ Create foundational tasks first.
 
 After all tasks are created, produce a summary table:
 
-| # | Key | Summary | Dependencies | Repo | Mode |
+| # | Key | Summary | Dependencies | Repo | Engineering sub-spec |
 |---|---|---|---|---|---|
-| 1 | AGI-XXXX | ... | None | repo-name | Mode B |
+| 1 | AGI-XXXX | ... | None | repo-name | <numbered sub-spec path> |
 
 Include the dependency graph with actual issue keys.
 
@@ -319,8 +301,8 @@ Before pushing to JIRA, verify:
 - [ ] context paragraphs explain why, not just what
 - [ ] code-prompt conventions are referenced where applicable
 - [ ] every child spec carries the human-readable narrative opening required by `feature-specifications.md`
-- [ ] every technical child slice that needs standalone implementability is written as a **Mode B engineering implementation sub-spec**
-- [ ] child Mode B specs include current-state truths, end-to-end flow, implementation details, tests, and dependencies
+- [ ] every technical child slice is written as a **standalone engineering sub-spec**
+- [ ] standalone engineering sub-specs include current-state truths, end-to-end flow, implementation details, tests, and dependencies
 
 ---
 

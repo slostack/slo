@@ -46,7 +46,7 @@ roster is here:
 
 | Workflow file | Type | Sub-skills it sequences |
 |---|---|---|
-| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications-pre-hook`, `feature-specifications`, `feature-specifications-post-hook`, `feature-specification-verification`, `breakdown-feature-spec-to-tasks` |
+| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications` (Gather context → Draft → Self-check → Revise), `feature-specification-verification`, `breakdown-feature-spec-to-tasks` |
 | [code-test-review.md](code-test-review.md) | Pipeline | `code-test-loop`, `review-feature-code`, `is-the-feature-completed` (+ always-on `named-arguments-and-type-hints`, `declarative-method-structure`, `method-docstrings`, `test-verification-policy`) |
 | [gitlab-code-test-review.md](gitlab-code-test-review.md) | Pipeline | Code-Test-Review sub-skills + `git-ops/gitlab-issues`, `git-ops/ship-feature` |
 
@@ -153,7 +153,7 @@ In auto mode (when the user has explicitly asked the agent to run to completion,
 - The agent runs all steps to completion without pausing for per-step confirmation.
 - The agent **logs a brief progress marker** at the start and end of each step (e.g., "Starting Step 2 — Verification…", "Step 2 complete.").
 - The agent **pauses and seeks confirmation at the end of the full workflow** before any committing, publishing, or externally-visible actions (pushing code, posting to JIRA, publishing to the wiki).
-- If any step produces a verdict of REVISE (e.g. the POST hook), the agent resolves the revision inline and re-runs that step before continuing, rather than pausing to ask.
+- If any step produces a verdict of REVISE (e.g. the author self-check), the agent resolves the revision inline and re-runs that step before continuing, rather than pausing to ask.
 
 ---
 

@@ -3,7 +3,7 @@ name: feature-specification-verification
 description: Reviewing a draft spec for gaps, ambiguities, and redundant
   functionality that duplicates code the system already has, before implementation
   begins.
-when_to_use: Use as a post-hook after writing a spec — surfaces missing decisions,
+when_to_use: Use for independent adversarial review after author self-check, or standalone review of an existing spec — surfaces missing decisions,
   underspecified edge cases, and inconsistent acceptance criteria.
 group: design-and-analysis
 kind: workflow
@@ -16,7 +16,7 @@ source_prompt: analyze/feature-specification-verification.md
 
 - **Name:** `feature-specification-verification`
 - **Description:** Reviewing a draft spec for gaps, ambiguities, and redundant functionality that duplicates code the system already has, before implementation begins.
-- **When to use:** Use as a post-hook after writing a spec — surfaces missing decisions, underspecified edge cases, and inconsistent acceptance criteria.
+- **When to use:** Use for independent adversarial review after author self-check, or standalone review of an existing spec — surfaces missing decisions, underspecified edge cases, and inconsistent acceptance criteria.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
 - **Source prompt:** `analyze/feature-specification-verification.md`
@@ -24,30 +24,14 @@ source_prompt: analyze/feature-specification-verification.md
 ## Examples
 
 - The user asks for an end-to-end workflow that fits: Reviewing a draft spec for gaps, ambiguities, and redundant functionality that duplicates code the system already has, before implementation begins.
-- Use as a post-hook after writing a spec — surfaces missing decisions, underspecified edge cases, and inconsistent acceptance criteria.
+- Use for independent adversarial review after author self-check, or standalone review of an existing spec — surfaces missing decisions, underspecified edge cases, and inconsistent acceptance criteria.
 
-## Slo defaults for request and specification artifacts
+## Artifact paths and authoring contract
 
-Unless the user explicitly overrides these paths, use:
-
-```text
-<feature-requests-root> = ${SLO_FEATURE_REQUESTS_DIR:-~/.slo/projects/<project_name>/feature-requests}
-<feature-specifications-root> = ${SLO_FEATURE_SPECIFICATIONS_DIR:-~/.slo/projects/<project_name>/feature-specifications}
-```
-
-Use one folder per feature:
-
-```text
-<feature-requests-root>/
-└── 01-example-feature/
-    └── request.md
-
-<feature-specifications-root>/
-└── 01-example-feature/
-    ├── overview.md
-    ├── 01.a-sub-step.md
-    └── plan.md
-```
+Use [the canonical authoring artifact paths and skill discovery](../feature-specifications/SKILL.md#artifact-paths-and-skill-discovery).
+Repository overrides win over generic defaults. Every family requires overview.md
+with product framing and separate standalone engineering sub-specs. Neither part
+can substitute for the other, even for small features.
 
 ## Guidance
 
@@ -61,6 +45,13 @@ Act as a verification layer for specifications generated using [`feature-specifi
 
 ---
 
+This is separate independent verification, not the author self-audit. Run the full
+procedure even when the author report says READY. Return findings to
+[authoring](../feature-specifications/SKILL.md#revise-and-hand-off). READY requires a
+complete report and no outstanding CRITICAL gaps. Standalone reviews do not require
+a previous author report; gather missing context and use the source ask when no JIRA
+story exists. Do not recursively invoke author self-check during independent review.
+
 ## Inputs
 
 The operator must provide:
@@ -72,7 +63,7 @@ Optional:
 
 3. **Confluence page URL(s)** — if the JIRA ticket links to Confluence specs
 4. **Scope constraints** — specific areas to focus the review on
-5. **Expected artefact** (overview or technical sub-spec) — if already known from the PRE hook
+5. **Expected artefact** (overview or technical sub-spec) — if already known from the Context Bundle
 
 ---
 
@@ -88,6 +79,12 @@ Before judging structure, identify which artefact of the single specification fa
 - **a technical sub-spec** (`NN.a.n`) — one standalone engineering slice.
 
 If the expected artefact was supplied and the document clearly uses the wrong structure for what it is, record a structure mismatch immediately.
+
+Require both family artifacts even when reviewing a single revised file: locate
+its overview.md and standalone engineering sub-specs and verify they remain
+consistent. A missing overview or separate engineering sub-spec is a CRITICAL
+STRUCTURE GAP; return it to authoring. No combined-document or partial-family
+exception is permitted.
 
 ### 1.2 Fetch the Source JIRA Story
 

@@ -1,0 +1,57 @@
+Skipping virtualenv creation, as specified in config file.
+..FFF                                                                    [100%]
+=================================== FAILURES ===================================
+______ test_legacy_hooks_redirect_without_duplicate_authoring_procedures _______
+
+    def test_legacy_hooks_redirect_without_duplicate_authoring_procedures() -> None:
+        """Keep installed callers working without retaining competing owners."""
+        for hook, anchor in (("pre", "gather-context"), ("post", "self-check")):
+            path = SKILLS_DIR / f"design-and-analysis/feature-specifications-{hook}-hook/SKILL.md"
+            text = path.read_text(encoding="utf-8")
+>           assert f"../feature-specifications/SKILL.md#{anchor}" in text
+E           AssertionError: assert '../feature-specifications/SKILL.md#gather-context' in '---\nname: feature-specifications-pre-hook\ndescription: Context-gathering pass that runs before drafting or revising...ore bullets in the bundle. Anything not covered by the bundle must be flagged in the spec as an explicit assumption.\n'
+
+tests/agents/skills/test_specification_authoring.py:39: AssertionError
+___________ test_workflow_sequences_author_review_and_breakdown_only ___________
+
+    def test_workflow_sequences_author_review_and_breakdown_only() -> None:
+        """Preserve formal routing and independent gates without nested hook calls."""
+        path = SKILLS_DIR / "design-and-analysis/workflows/specification-development.md"
+        text = path.read_text(encoding="utf-8")
+>       assert "feature-specifications-pre-hook/SKILL.md" not in text
+E       AssertionError: assert 'feature-spe...ook/SKILL.md' not in '# Workflow:...tting\n```\n'
+E
+E         'feature-specifications-pre-hook/SKILL.md' is contained here:
+E           -analysis/feature-specifications-pre-hook/SKILL.md` |
+E           | 1 — Spec (style guide) | `skills/design-and-analysis/feature-specifications/SKILL.md` |
+E           | 1 — Spec (POST hook) | `skills/design-and-analysis/feature-specifications-post-hook/SKILL.md` |
+E           | 2 — Verification | `skills/design-and-analysis/feature-specification-verification/SKILL.md` |
+E           | 3 — Task breakdown | `skills/design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md` |...
+E
+E         ...Full output truncated (229 lines hidden), use '-vv' to show
+
+tests/agents/skills/test_specification_authoring.py:48: AssertionError
+_______________ test_code_review_links_canonical_depth_guidance ________________
+
+    def test_code_review_links_canonical_depth_guidance() -> None:
+        """Make caller burden an evidence-based review concern in all languages."""
+        text = (SKILLS_DIR / "design-and-analysis/review-feature-code/SKILL.md").read_text(encoding="utf-8")
+>       assert "#module-depth-design-guidance" in text
+E       AssertionError: assert '#module-depth-design-guidance' in '---\nname: review-feature-code\ndescription: Reviewing a feature implementation against its spec.\nwhen_to_use: Use a... matches the stacks identified in Step 0. Merge those findings into\nthe Step 8 output before delivering the review.\n'
+
+tests/agents/skills/test_specification_authoring.py:59: AssertionError
+=============================== warnings summary ===============================
+tests/agents/skills/test_specification_authoring.py::test_module_depth_guidance_preserves_hard_rules_and_language_boundaries
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+tests/agents/skills/test_specification_authoring.py::test_module_depth_guidance_preserves_hard_rules_and_language_boundaries
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agents/skills/test_specification_authoring.py::test_legacy_hooks_redirect_without_duplicate_authoring_procedures
+FAILED tests/agents/skills/test_specification_authoring.py::test_workflow_sequences_author_review_and_breakdown_only
+FAILED tests/agents/skills/test_specification_authoring.py::test_code_review_links_canonical_depth_guidance
+3 failed, 2 passed, 2 warnings in 1.25s

@@ -15,7 +15,7 @@ introduce these exact modules into another application.
 ## Overview Sample
 
 > **Path**
-> /root/Code/specifications/projects/slo/specifications/20-system-prompt-analysis-and-pi-parity/00-overview.md
+> <feature-specifications-root>/20-system-prompt-analysis-and-pi-parity/00-overview.md
 
 # 19.a — System Prompt Pi Parity: Parent Overview
 
@@ -26,7 +26,7 @@ introduce these exact modules into another application.
 **Branch:** `feature-system-prompt-pi-parity`
 **Repo:** `slo/`
 **Approx. size:** L
-**Spec mode:** Mode B — Engineering implementation sub-spec (parent overview)
+**Artifact:** Standalone engineering sub-spec, accompanied by its required product overview
 
 ---
 
@@ -716,7 +716,7 @@ All criteria must be verifiable by a reviewer running the harness locally with t
 # Sub Step Sample
 
 > **Path**
-> /root/Code/specifications/projects/slo/specifications/20-system-prompt-analysis-and-pi-parity/01-fix-tools-passthrough.md
+> <feature-specifications-root>/20-system-prompt-analysis-and-pi-parity/01-fix-tools-passthrough.md
 
 
 ---
@@ -725,7 +725,7 @@ Owner: ragequilt
 Last updated: 2026-06-13
 Parent spec: specifications/18-system-prompt-analysis-and-pi-parity.md
 Branch: feature-fix_system_prompt_tool_wiring
-Repo: /Users/sidravic/Code/slo-harness
+Repo: <repository-root>
 Approx. size: XS — 2 files changed, ~15 lines net diff, 4 new tests
 ---
 
@@ -1247,7 +1247,7 @@ Similarly for line 86 and any other direct call sites in that file. The `test_bu
 
 ```bash
 # From the repo root, with the project virtualenv active:
-cd /Users/sidravic/Code/slo-harness
+cd "$SLO_ROOT_DIR"
 
 # Run only the directly affected tests first:
 python -m pytest -sv slo/tests/agents/slo_agent/test_graph.py
@@ -1437,7 +1437,7 @@ def test_build_slo_agent_result_carries_nine_tools_when_tools_is_none() -> None:
 
 > **Path**
 >
-> /root/Code/specifications/projects/slo/specifications/20-system-prompt-analysis-and-pi-parity/02-skills-xml-inline.md
+> <feature-specifications-root>/20-system-prompt-analysis-and-pi-parity/02-skills-xml-inline.md
 
 ---
 Status: Draft
@@ -1445,7 +1445,7 @@ Owner: ragequilt
 Last updated: 2026-06-13
 Parent spec: specifications/18-system-prompt-analysis-and-pi-parity.md
 Branch: feature-skills_xml_inline_injection
-Repo: /Users/sidravic/Code/slo-harness
+Repo: <repository-root>
 Approx. size: ~350 LOC (new: ~200, modified: ~150)
 ---
 
@@ -1626,14 +1626,14 @@ When a skill file references a relative path, resolve it against the skill direc
 The runtime slice for a normal session startup with `skills/` present:
 
 ```
-SloAgent.__init__(model_name="claude-sonnet-4-6", cwd="/Users/user/myrepo")
+SloAgent.__init__(model_name="claude-sonnet-4-6", cwd="<project-root>")
   │
   ├─ build_slo_agent(...)                          # graph compiled, tools wired
   │
   ├─ self._cwd = cwd or os.getcwd()
   │
   ├─ ProjectContextDiscovery.invoke(cwd=self._cwd)
-  │    └─ returns [("/Users/user/myrepo/AGENTS.md", "...content...")]
+  │    └─ returns [("<project-root>/AGENTS.md", "...content...")]
   │
   ├─ SkillsLoader.load(skills_dir=SKILLS_DIR)      # NEW
   │    ├─ Path(SKILLS_DIR).rglob("SKILL.md")
@@ -2849,7 +2849,7 @@ def test_xml_escaping_applied_to_special_characters_in_skill_fields(
 Run only the new + affected tests first to get fast feedback:
 
 ```bash
-cd /Users/sidravic/Code/slo-harness/slo
+cd "$SLO_APP_DIR"
 PYTHONPATH=${PWD} python -m pytest -sv tests/agents/slo_agent/test_skills_loader.py
 PYTHONPATH=${PWD} python -m pytest -sv tests/agents/slo_agent/test_prompts.py
 ```
@@ -2863,7 +2863,7 @@ PYTHONPATH=${PWD} python -m pytest -sv tests/
 ### Manual smoke check
 
 ```bash
-cd /Users/sidravic/Code/slo-harness/slo
+cd "$SLO_APP_DIR"
 python -c "
 from src.agents.slo_agent.prompts import SystemPromptBuilder
 from src.agents.slo_agent.skills_loader import SkillsLoader

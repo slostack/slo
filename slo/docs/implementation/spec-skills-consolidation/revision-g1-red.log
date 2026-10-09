@@ -1,0 +1,61 @@
+Skipping virtualenv creation, as specified in config file.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______ test_refresh_manifest_preserves_local_policy_and_updates_upstream _______
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-334/test_refresh_manifest_preserve0')
+
+    def test_refresh_manifest_preserves_local_policy_and_updates_upstream(tmp_path: Path) -> None:
+        """Exercise actual manifest collisions without writing outside the fixture root."""
+        skills_dir = tmp_path / "skills"
+        upstream = tmp_path / "upstream"
+        slugs = (
+            "code-test-review", "specification-development", "feature-specifications",
+            "feature-specifications-pre-hook", "feature-specifications-post-hook",
+            "declarative-method-structure", "review-feature-code", "code-test-loop",
+            "headless-orchestration", "locate-knowledge-base", "update-knowledge-base",
+            "development-reviews", "code-review-rules", "10-cardinal-rules-and-anti-patterns",
+        )
+        originals = [next(SKILLS_DIR.glob(f"*/{slug}/SKILL.md")) for slug in slugs]
+        originals += list((SKILLS_DIR / "design-and-analysis/workflows").glob("*.md"))
+        originals.append(SKILLS_DIR / "samples/implementation-details-granularity.md")
+        originals.append(SKILLS_DIR / "coding/named-arguments-and-type-hints/SKILL.md")
+        before: dict[Path, bytes] = {}
+        for original in originals:
+            destination = skills_dir / original.relative_to(SKILLS_DIR)
+            assert destination.resolve().is_relative_to(tmp_path.resolve())
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            before[destination] = original.read_bytes()
+            destination.write_bytes(before[destination])
+        for slug in (*slugs, "named-arguments-and-type-hints"):
+            source = upstream / (f"{slug}.md" if slug == "named-arguments-and-type-hints" else f"workflows/{slug}.md")
+            assert source.resolve().is_relative_to(tmp_path.resolve())
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(f"# {slug}\n\nUpstream replacement procedure.\n", encoding="utf-8")
+        specs = _build_skill_specs(prompts_root=upstream, skills_dir=skills_dir)
+        selected = {slug: specs[slug] for slug in (*slugs, "named-arguments-and-type-hints")}
+        assert selected["code-test-review"].source_rel == "workflows/code-test-review.md"
+        _write_skills(specs=selected, prompts_root=upstream, skills_dir=skills_dir)
+        for destination, content in before.items():
+            if destination.parent.name != "named-arguments-and-type-hints":
+>               assert destination.read_bytes() == content, destination
+E               AssertionError: PosixPath('/tmp/pytest-of-root/pytest-334/test_refresh_manifest_preserve0/skills/design-and-analysis/code-test-review/SKILL.md')
+E               assert b'---\nname: ... procedure.\n' == b'---\nname: ...s/coding/`)\n'
+E
+E                 At index 111 diff: b'\n' != b' '
+E                 Use -v to get more diff
+
+tests/agents/skills/test_specification_authoring.py:144: AssertionError
+=============================== warnings summary ===============================
+tests/agents/skills/test_specification_authoring.py::test_refresh_manifest_preserves_local_policy_and_updates_upstream
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+tests/agents/skills/test_specification_authoring.py::test_refresh_manifest_preserves_local_policy_and_updates_upstream
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agents/skills/test_specification_authoring.py::test_refresh_manifest_preserves_local_policy_and_updates_upstream
+1 failed, 9 deselected, 2 warnings in 1.35s

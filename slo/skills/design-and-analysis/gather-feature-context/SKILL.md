@@ -1,10 +1,7 @@
 ---
 name: gather-feature-context
-description: 'Pre-hook for feature-specifications: pulls together domain, business,
-  current-state, and implementation context (JIRA, Confluence RFCs/PRDs, Google Drive,
-  KB, memory, external sources) into a sign-off briefing before spec writing starts.'
-when_to_use: Use before drafting a feature specification when you need a sign-off-ready
-  bundle of business, architecture, code, and KB context.
+description: 'On-request extended context companion feeding feature-specifications mandatory Gather context stage; retains business, architecture, code and source evidence in a sign-off briefing, not a default pre-hook.'
+when_to_use: 'Use on-request for an extended sign-off briefing feeding the mandatory Gather context stage, not as a default pre-hook.'
 group: design-and-analysis
 kind: workflow
 source_prompt: analyze/gather-feature-context.md
@@ -15,45 +12,27 @@ source_prompt: analyze/gather-feature-context.md
 ## Skill summary
 
 - **Name:** `gather-feature-context`
-- **Description:** Pre-hook for feature-specifications: pulls together domain, business, current-state, and implementation context (JIRA, Confluence RFCs/PRDs, Google Drive, KB, memory, external sources) into a sign-off briefing before spec writing starts.
-- **When to use:** Use before drafting a feature specification when you need a sign-off-ready bundle of business, architecture, code, and KB context.
+- **Description:** On-request extended context companion feeding the mandatory Gather context stage with business, architecture, code and source evidence; not a default pre-hook.
+- **When to use:** On-request when an extended sign-off briefing is needed before drafting.
 - **Group:** `design-and-analysis`
 - **Kind:** `workflow`
 - **Source prompt:** `analyze/gather-feature-context.md`
 
 ## Examples
 
-- The user asks for an end-to-end workflow that fits: Pre-hook for feature-specifications: pulls together domain, business, current-state, and implementation context (JIRA, Confluence RFCs/PRDs, Google Drive, KB, memory, external sources) into a sign-off briefing before spec writing starts.
-- Use before drafting a feature specification when you need a sign-off-ready bundle of business, architecture, code, and KB context.
+- “Gather an extended business and technical context briefing for this feature before drafting.”
+- “Prepare a source-backed briefing for my sign-off, then feed the mandatory Gather context stage.”
+- This companion runs on-request; ordinary specification authoring starts directly with the canonical author's mandatory Gather context stage.
 
-## Slo defaults for request and specification artifacts
+## Request and specification artifact paths
 
-Unless the user explicitly overrides these paths, use:
-
-```text
-<feature-requests-root> = ${SLO_FEATURE_REQUESTS_DIR:-~/.slo/projects/<project_name>/feature-requests}
-<feature-specifications-root> = ${SLO_FEATURE_SPECIFICATIONS_DIR:-~/.slo/projects/<project_name>/feature-specifications}
-```
-
-Use one folder per feature:
-
-```text
-<feature-requests-root>/
-└── 01-example-feature/
-    └── request.md
-
-<feature-specifications-root>/
-└── 01-example-feature/
-    ├── overview.md
-    ├── 01.a-sub-step.md
-    └── plan.md
-```
+Use the canonical [artifact paths and compatibility vocabulary](../feature-specifications/SKILL.md#artifact-paths-and-skill-discovery), including project-local precedence and its request/specification folder examples. This companion defines no competing environment or home defaults.
 
 ## Guidance
 
-> **Hook role:** PRE-hook for [`feature-specifications.md`](../feature-specifications/SKILL.md). Runs by default before any feature specification is generated.
+> **Companion role:** On-request extended context briefing for [`feature-specifications`](../feature-specifications/SKILL.md). Its output feeds the canonical Gather context stage; it is not a second default pre-hook.
 >
-> **Opt-out:** The user can skip this step by explicitly saying so (e.g., "skip the pre-hook", "don't gather context", "I already have the context"). When opted out, proceed directly to `feature-specifications.md`.
+> **Opt-out:** The user can skip this extended briefing (e.g., "skip the pre-hook", "don't gather context", "I already have the context"). Continue with the canonical authoring skill, reusing supplied context; skipping this companion does not silently waive its mandatory context bundle.
 >
 > **Context check:** Before doing anything else, decide whether the existing conversation already supplies the business + application + implementation context. If it does, summarise what you have and ask the user whether to skip the gather. If it does not, ask the user for what is missing (ticket ID, Confluence URL, subject area, owning service) before running the heavy steps. **Never invent context.**
 
@@ -63,7 +42,7 @@ Use one folder per feature:
 
 Gather the complete context — business rationale, current application/technical state, and implementation details — that a feature specification needs in order to be useful. Feed that context back to the user for sign-off **before** generating the spec.
 
-A feature specification without business context becomes a checklist. A feature specification without current-state context becomes wishful thinking. This pre-hook prevents both.
+A feature specification without business context becomes a checklist. A feature specification without current-state context becomes wishful thinking. This on-request companion prevents both and feeds the mandatory Gather context stage; it does not replace that stage.
 
 The gather can also run in the background while the user is still brainstorming — the output is a "context briefing" the user reviews before we commit to writing the spec.
 
@@ -167,7 +146,7 @@ Lead the briefing with the domain explanation. Engineers and reviewers rarely sh
 
 ### Capture
 
-For every source touched, retain enough that the next step (`feature-specifications.md`) can read it without re-querying:
+For every source touched, retain enough that the next step ([canonical author](../feature-specifications/SKILL.md#gather-context)) can read it without re-querying:
 
 - **Domain glossary** — every acronym or industry term that appears, with a one-line plain-English definition and the source it came from.
 - **The overarching goal** — what outcome the feature unlocks. Not necessarily monetary; could be compliance, operator UX, scale, risk reduction.
@@ -178,7 +157,7 @@ For every source touched, retain enough that the next step (`feature-specificati
 
 ### Carry-forward and confirmation
 
-- **Keep everything you gathered alive for Step 6.** Don't discard sources after summarising — the briefing surfaces summaries, but the full notes (or paths to them) must be available so `feature-specifications.md` can pull verbatim quotes for the spec.
+- **Keep everything you gathered alive for Step 6.** Don't discard sources after summarising — the briefing surfaces summaries, but the full notes (or paths to them) must be available so [canonical author](../feature-specifications/SKILL.md#gather-context) can pull verbatim quotes for the spec.
 - **Confirm the domain framing with the user before moving on.** A 30-second check ("Here's how I'm reading partial shipment — does this match your team's working definition?") catches misunderstandings before they propagate into the spec. If the user corrects you, update the glossary and re-confirm.
 - **Confirm the business goal with the user.** Phrase it back in one sentence and ask for thumbs up. This avoids spending the rest of the gather pointed at the wrong problem.
 
@@ -277,7 +256,7 @@ If you can verify neither the model file nor the live data (e.g. behind a firewa
 
 ## Step 6 — Briefing (deliverable to the user)
 
-Produce a single, scannable briefing **before** invoking `feature-specifications.md`. Structure:
+Produce a single, scannable briefing **before** invoking [canonical author](../feature-specifications/SKILL.md#gather-context). Structure:
 
 ```
 # Context Briefing — <Subject>
@@ -312,7 +291,7 @@ Produce a single, scannable briefing **before** invoking `feature-specifications
 - <questions that must be answered before the spec is generated>
 ```
 
-Stop here and wait for user sign-off (or explicit "go ahead") before calling `feature-specifications.md`. If the user wants to skip the sign-off, that's fine — they will say so.
+Stop here and wait for user sign-off (or explicit "go ahead") before calling [canonical author](../feature-specifications/SKILL.md#gather-context). If the user wants to skip the sign-off, that's fine — they will say so.
 
 ---
 
@@ -335,4 +314,4 @@ After the user signs off (or after the spec is generated, depending on the flow)
 5. **Business first.** The briefing leads with *why*, not *what files*.
 6. **Surface the gaps.** Tell the user what is missing, not just what was found.
 7. **Surface the duplicates too.** Say what already exists that the feature would otherwise rebuild, so the spec consolidates instead of adding a second owner for the same responsibility.
-8. **Hand off cleanly.** The output is a briefing the user can paste forward — `feature-specifications.md` should be able to consume it directly.
+8. **Hand off cleanly.** The output is a briefing the user can paste forward — [canonical author](../feature-specifications/SKILL.md#gather-context) should be able to consume it directly.

@@ -69,8 +69,8 @@ routing hints below.
    - If the request references a JIRA story, feature request, or `request.md`,
      route into `implement-feature-request` first.
    - Default storage roots:
-     - Feature requests: `${SLO_FEATURE_REQUESTS_DIR:-~/.slo/projects/<project_name>/feature-requests}`
-     - Feature specifications: `${SLO_FEATURE_SPECIFICATIONS_DIR:-~/.slo/projects/<project_name>/feature-specifications}`
+     - Feature requests: `<SLO_FEATURE_REQUESTS_DIR or resolved-Slo-home/projects/<project_name>/feature-requests>`
+     - Feature specifications: `<SLO_FEATURE_SPECIFICATIONS_DIR or resolved-Slo-home/projects/<project_name>/feature-specifications>`
 3. **Choose the category.**
    - `design-and-analysis` for specs, tracing, debugging narratives, docs, KB, and review workflows.
    - `coding` for backend conventions and test conventions.
@@ -80,7 +80,7 @@ routing hints below.
    - `integration-tests` for cross-service scenarios and flaky-test debugging.
    - `frontend-vue` for Vue conventions and tutorials.
 4. **Load companion skills only when the main skill calls for them.**
-   - Example: `feature-specifications` pairs with its PRE and POST hooks.
+   - Example: `feature-specifications` owns context gathering and self-check; independent verification is separate.
    - Example: integration-test authoring starts with `10-cardinal-rules-and-anti-patterns` before scenario-specific prompts.
 5. **Return only the next best skills.**
    Prefer a short ordered list over a long exhaustive catalog.
@@ -90,7 +90,7 @@ routing hints below.
 ### Feature work
 
 - Implementation request for a feature or story → `implement-feature-request`
-- Need to draft a spec only → `feature-specifications-pre-hook`, `feature-specifications`, `feature-specifications-post-hook`
+- Need to draft a spec only → `feature-specifications` (Gather context → Draft → Self-check → Revise)
 - Need to break an approved spec into tasks → `breakdown-feature-spec-to-tasks`
 - Need to review shipped code against a spec → `review-feature-code`
 

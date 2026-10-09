@@ -1,0 +1,7 @@
+Skipping virtualenv creation, as specified in config file.
+review-feature-code: removing the new depth subsection yields byte-identical baseline (including hard-rules post-hook).
+skills/design-and-analysis/workflows/code-test-review.md: byte-identical baseline.
+skills/design-and-analysis/code-test-review/SKILL.md: byte-identical baseline.
+Independent verification: full Steps 1–7, all templates/checklists/conventions byte-identical baseline.
+Breakdown: full procedure below Guidance byte-identical after report-terminology replacement.
+Author trio: full baseline bodies manually read; all P1–P12/A1–A10/S1–S6 mapping destinations manually audited, not inferred from these identity checks.

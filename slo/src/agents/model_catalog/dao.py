@@ -11,7 +11,7 @@ from pydantic import AfterValidator, PlainSerializer
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.auth.credential_dao import ProviderName
+from src.auth.credential_dao import AuthType, ProviderName
 
 ReasoningLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 """Slo's canonical provider-neutral reasoning vocabulary."""
@@ -205,7 +205,9 @@ class ModelCapabilitiesDAO(FrozenCatalogDAO):
         default=None, description="Reported provider output ceiling."
     )
     supports_max_tokens: Optional[bool] = Field(
-        default=None, strict=True, description="Reported reasoning-budget support; evidence only, not a control."
+        default=None,
+        strict=True,
+        description="Reported reasoning-budget support; evidence only, not a control.",
     )
     expires_at: Optional[str] = Field(default=None, description="UTC expiry evidence, when supplied.")
     reasoning_disable_available: bool = Field(
@@ -214,6 +216,10 @@ class ModelCapabilitiesDAO(FrozenCatalogDAO):
     reasoning_controls_available: bool = Field(
         default=False, description="Whether configurable reasoning controls are truthfully known."
     )
+
+
+class ModelBackendEligibilityError(ValueError):
+    """Report a static model/backend mismatch without credential material."""
 
 
 class ModelCatalogEntryDAO(FrozenCatalogDAO):
@@ -250,6 +256,63 @@ class ModelCatalogEntryDAO(FrozenCatalogDAO):
     api_model_name: Optional[str] = None
     availability: str = "available"
     capabilities: Optional[ModelCapabilitiesDAO] = None
+    supports_chatgpt_codex: bool = Field(
+        default=True, strict=True, description="Static permission to use the ChatGPT/Codex backend."
+    )
+    requires_responses_api: bool = Field(
+        default=False,
+        strict=True,
+        description="Requires Responses transport; credential type independently selects Platform or Codex.",
+    )
+
+    def require_reasoning_override_compatibility(
+        self, *, reasoning_profile: ModelReasoningProfileDAO
+    ) -> None:
+        """Preserve transport controls before the override service assigns a profile.
+
+        Args:
+            reasoning_profile: Candidate profile; default-level changes are allowed.
+
+        Raises:
+            ValueError: A required Responses record's fixed controls would change.
+        """
+        if not self.requires_responses_api:
+            return
+        expected = self.reasoning_profile.model_dump(exclude={"default_level"})
+        proposed = reasoning_profile.model_dump(exclude={"default_level"})
+        if expected != proposed:
+            raise ValueError("Model catalog overrides cannot change required Responses reasoning controls.")
+
+    def backend_eligibility_message(self, *, auth_type: Optional[AuthType] = None) -> Optional[str]:
+        """Describe static compatibility for selection, factory and picker callers.
+
+        Args:
+            auth_type: Effective local auth type, or None when unauthenticated.
+
+        Returns:
+            Fixed safe guidance, or None when the lane is not rejected.
+        """
+        rejected: bool = (
+            self.provider is ProviderName.OPENAI
+            and auth_type is AuthType.OAUTH
+            and not self.supports_chatgpt_codex
+        )
+        if not rejected:
+            return None
+        return "This model requires an OpenAI Platform API key; unavailable for ChatGPT/Codex. Run /auth."
+
+    def require_backend_eligibility(self, *, auth_type: Optional[AuthType] = None) -> None:
+        """Reject an incompatible lane before selection mutation or client build.
+
+        Args:
+            auth_type: Type from the caller's effective credential.
+
+        Raises:
+            ModelBackendEligibilityError: OpenAI OAuth is statically disallowed.
+        """
+        message: Optional[str] = self.backend_eligibility_message(auth_type=auth_type)
+        if message is not None:
+            raise ModelBackendEligibilityError(message)
 
 
 class ModelAliasDAO(FrozenCatalogDAO):

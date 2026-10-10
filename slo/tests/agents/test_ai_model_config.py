@@ -17,6 +17,39 @@ from src.auth.credential_dao import ProviderName
 import pytest
 
 
+@pytest.mark.parametrize("model_name", ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-sol"])
+def test_gpt6_defaults_are_catalog_projection(model_name: str) -> None:
+    """Pinned projection includes every runtime field and restores seed after removal."""
+    from unittest.mock import patch
+    from config.ai_model_config import defaults_for_model
+    from src.agents.model_catalog.dao import ModelCatalogOverrideDAO
+    from src.agents.model_catalog.discovery import ModelCatalogOverrideService
+    from src.agents.model_catalog.seed import SeedModelCatalog
+    from src.agents.model_catalog.service import ModelCatalogService
+
+    seed = SeedModelCatalog.load()
+    expected = dict(
+        max_tokens=128000,
+        context_window=1050000,
+        streaming=True,
+        requests_per_minute=500,
+        tokens_per_minute=500000,
+        automatic_retry_attempts=2,
+        local_retry_wait_cap_seconds=30,
+        temperature=0.1,
+    )
+    override = ModelCatalogOverrideDAO(
+        model_name=model_name,
+        runtime_profile=seed.entries[model_name].runtime_profile.model_copy(update={"max_tokens": 1234}),
+    )
+    changed = ModelCatalogOverrideService.apply_overrides(snapshot=seed, overrides=[override])
+    removed = ModelCatalogOverrideService.apply_overrides(snapshot=seed, overrides=[])
+    with patch.object(ModelCatalogService, "load", side_effect=AssertionError("global load")):
+        assert defaults_for_model(model_name=model_name, snapshot=seed) == expected
+        assert defaults_for_model(model_name=model_name, snapshot=changed) == {**expected, "max_tokens": 1234}
+        assert defaults_for_model(model_name=model_name, snapshot=removed) == expected
+
+
 def test_sonnet_4_6_default_max_tokens_is_64000() -> None:
     """``claude-sonnet-4-6`` uses its real 64K output ceiling, not the old 8192."""
     assert MODEL_DEFAULTS["claude-sonnet-4-6"]["max_tokens"] == 64_000

@@ -1,5 +1,40 @@
 # Slo — A Reader's Guide to the Code
 
+## Dual-lane GPT-6 models and Jev Router (Feature 89)
+
+This worktree implements the following routes; release approval remains pending.
+Offline tests do not establish account entitlement or live provider availability.
+
+| Exact selection | Credential lane | Fresh reasoning default | Selected `off` |
+|---|---|---|---|
+| `gpt-6-luna` | OpenAI API key or ChatGPT OAuth | medium | explicit provider `none`, disabled |
+| `gpt-6.1-sol` | OpenAI API key or ChatGPT OAuth | medium | effective `low`, reasoning required |
+| `gpt-6-sol` | OpenAI API key or ChatGPT OAuth | medium | explicit provider `none`, disabled |
+| `openrouter:typesafe/jev-router` | Authenticated OpenRouter discovery | provider default | controls unavailable unless advertised |
+
+Use `/model <exact selection>` or `slo --model <exact selection>`. The three
+direct routes use Responses at every level in both credential lanes. API keys
+use api.openai.com; ChatGPT OAuth uses the existing chatgpt.com Codex backend,
+subscription headers, instructions adaptation and cap removal. Strict Platform
+option protection never intercepts OAuth. `/auth` configures either lane; an
+environment API key still wins over stored OAuth. No automatic lane fallback occurs. Explicit/saved reasoning survives normal selection and resume;
+medium is a fresh default, not a reset on every switch. The global/provider
+OpenAI default remains `gpt-5.4`.
+
+Direct context is **1,050,000 total tokens**, with a default output cap of
+128,000 on Platform (Codex omits output caps). The 500 RPM / 500,000 TPM values are conservative local policy, not
+account rate-tier entitlements. Published pricing and rate tiers are metadata
+only; usage accounting is not an exact invoice calculator and pricing thresholds
+do not change compaction policy.
+
+Jev is never seeded: `/model refresh` must obtain eligible authenticated
+`/models/user` membership. An old cached ineligible Jev row needs a successful
+authenticated refresh; merely opening the picker does not repair or authorize it.
+Unknown output capacity uses a conservative local cap (normally 4,096), not an
+invented provider maximum. Unknown reasoning is shown as
+`provider default; controls unavailable`, not disabled. OpenRouter credentials
+and Chat Completions remain separate from the Platform lane.
+
 ## Mixed-version state and rollback (86.b)
 
 No action needed for released users. New Slo puts provider cache data in

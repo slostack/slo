@@ -1,0 +1,43 @@
+# Final owner dispatch4/4 — REVISE: containment safety stop
+
+No production/test edits or test executions this dispatch. No shell commands, installs, subprocess launches, nested agents, external operations, shared KB/spec changes or state access. HIGH plan retained; no administrative replan. Owner cap exhausted after return; no successor launched.
+
+## Concrete blocker and operator decision
+
+Read-only inspection found `tests/tui/test_git_diff_content_service.py:263–264`, `test_invoke_when_symlink_escapes_workdir_raises_error`, assigns `outside_path = tmp_path.parent / "outside.txt"` then writes it. This is outside that test's own resolved temporary directory, violating the explicit per-test containment requirement. It is a shared pytest-parent write, not evidence that a system binary was modified. The test was NOT executed. Full suite must not run as-is under the requested policy.
+
+Operator question: authorize a narrow fixture correction that keeps the escape target inside `tmp_path` but outside `git_repo` (with resolved containment assertions), then resume the unfinished safety inspection and functional acceptance? No skip or exclusion is proposed. Complete safety of other fixtures is NOT established by this finding.
+
+## Inspection actually performed
+
+Read supplied headless-code-test-review.md in full; current successor checkpoint first240 lines, handoff opening, discovery receipt, recovery9 checkpoint and recovery8 acceptance map. Read final e.1 contract in full. Read `tests/compat/conftest.py`, `released_runner.py`, `test_session_resume_mixed_versions.py`, and `tests/cli/test_visualize_state_independence.py` in full. Compatibility extraction rejects links/devices; released runner uses minimal environment and contained state directories; observer fixture checks its writes and audits catalog/auth access. These are source inspections, not passing executions. Grep of test symlink creation led to the concrete violating test, whose containing source was read. Stopped before implementation/execution.
+
+The other six specs, resolved workflow/conventions and KB were not freshly read in this dispatch before the safety stop. Prior full discovery/read receipt remains historical evidence, not a claim that this dispatch completed the requested reread. AGENTS/docs RESEARCH supplied in context. No fresh branch/version/static/integrity validation performed.
+
+## All15 AC mapping and exact remaining boundaries
+
+Paths below are under tests/. Prior executions remain recovery9 and earlier receipts, not new gates.
+
+|AC|Existing exact anchors / current boundary|
+|---|---|
+|1|agents/model_catalog/test_model_catalog_seed.py::test_gpt6_exact_seed_contract; test_backend_eligibility.py::test_policy_survives_copy_merge_override_and_alias; test_feature89_frozen_reader.py::test_pre_feature_reader_accepts_actual_writer_bytes. Four-route disk/identity composition audit unperformed.|
+|2|agents/test_feature89_reasoning.py::{test_all_selected_levels_resolve,test_default_and_highest_are_pinned,test_invalid_reasoning_and_unknown_model_reject}, per prior ledger. Frozen-reader test compares archived legacy seeds × seven levels; recovery9 closes that prior residual.|
+|3|agents/providers/test_openai_platform.py::test_factory_stream_parses_complete_tool_response (21 SDK cycles); integration/test_feature89_model_flows.py::test_mounted_gpt6_tool_cycle_and_resume (six mounted flows). Complete CLI command/reference resume parsing remains distinct from proved CLI-owner composition.|
+|4|agents/providers/test_openai_platform.py::{test_public_factory_rejects_protected_merge_surfaces,test_public_call_invalid_options_make_zero_requests,test_factory_luna_off_completes_locked_sdk_response,test_optional_off_sampling_survives_actual_late_merge,test_custom_endpoint_and_enabled_temperature_remain_record_scoped}. Finite strict/legacy positive merge audit still pending.|
+|5|test_feature89_credentials.py::test_environment_key_beats_real_stored_oauth; test_feature89_selection.py::{test_selection_rechecks_credential_after_preparation,test_public_invoke_local_rejection_releases_lock_and_recovers,test_lazy_allowed_credentials_preserve_build_binding_and_fingerprint}; integration/test_feature89_model_flows.py::{test_feature89_headless_routes_use_shared_admission,test_feature89_headless_rejection_precedes_inference}; integration/test_feature89_entry_paths.py::test_feature89_child_model_selection. No new residual invented.|
+|6|integration/test_feature89_entry_paths.py::{test_feature89_cli_fresh_saved_explicit_precedence,test_feature89_cli_pool_resume_and_explicit_model_precedence}; mounted resume tests consume CLI metadata/config owners. Full command/reference parser proof remains unclaimed.|
+|7|tui/test_feature89_presentation.py::{test_picker_auth_policy_is_lifecycle_bound,test_direct_picker_cropped_auth_context_and_footer,test_direct_picker_keyboard_paints_and_selects_exact_route,test_admitted_jev_picker_keyboard_and_cropped_paint}. Picker invalidation branch audit pending.|
+|8|agents/providers/test_openai_platform.py::test_factory_clients_keep_their_pinned_generation; tui/test_feature89_presentation.py::test_startup_uses_admitted_snapshot_across_global_publication; test_model_catalog_overrides.py::test_invalid_refresh_override_preserves_publication_and_cache. Lifecycle/snapshot-generation audit pending.|
+|9|integration/test_feature89_capacity.py::{test_gpt6_summary_uses_reserved_cap_and_total_context,test_gpt6_large_estimate_is_advisory}; recovery9 actual transactions/SDK reserved cap/1050000 context/500001 advisory retained.|
+|10|integration/test_feature89_model_flows.py::{test_committed_pool_failure_boundaries,test_prepared_pool_cancellation_closes_stream_without_fallback}. Preserve Luna distinct continuation2direct/0gateway attempt2/5, Jev terminal1gateway/0direct, agent no raw replay/fallback and bounded read cancellation.|
+|11|agents/model_catalog/test_feature89_frozen_reader.py::test_pre_feature_reader_accepts_actual_writer_bytes retained. Actual v0.20.1 Feature89 alternating-history extension NOT added/run; observer fixture inspected NOT run. Existing tests/compat assertions do not substitute for new-route acceptance.|
+|12|No fresh gate. Prior affected206passed45warnings, Black4 clean; prior mypy296errors59files RED UNWAIVED and canonicalBlack14 RED UNWAIVED. Full non-E2E blocked by concrete fixture containment plus unfinished safety audit/functional closure.|
+|13|agents/model_catalog/test_feature89_jev_lifecycle.py::test_jev_authenticated_admission and retained converter matrix complete per prior ledger; no repeat/new policy.|
+|14|integration/test_feature89_model_flows.py::test_prepared_mixed_pool_tool_fallback retains independent finite4direct429/1gateway ledgers, native tool IDs, routed identity/latest10/4/14 usage/public scans. No cumulative-billing claim.|
+|15|integration/test_feature89_model_flows.py::test_mounted_prepared_jev_tool_cycle_and_resume plus headless tests and entry-path forwarding; test_feature89_jev_lifecycle.py::{test_jev_new_admission_rejects_changed_credentials,test_jev_listing_refresh_preserves_admission_boundaries,test_jev_stale_listing_requires_fresh_same_key_verification}. Full CLI command/reference parsing remains unclaimed.|
+
+## Receipts and exact next operation
+
+No command/log/exit or version receipt was generated this dispatch because no commands/tests were run. Prior commands/logs/exits: `.f89-evidence/recovery9-final-postedit.command/.log/.exit` (206 passed45warnings exit0, affected only); static commands in recovery9-checks.py and versions in recovery9-versions.log. Counts151/159/206 are separate partitions, never full or cumulative. Existing87-distribution lock match and OpenAI2.38.0/Pydantic2.13.4 are retained prior observations, not fresh verification. Requested10800/7200/1800 settings were not runtime exercised here. No stub suite ran; no new dpkg result is claimed.
+
+Next exact operation requires the operator answer above. After authorized containment correction, finish the safety audit (not just this one test), implement the actual released Feature89 alternating-history acceptance, close finite AC1/4/7/8 and CLI parsing audit, run focused/surrounding tests and then the actual safe locked full non-E2E gate and fresh Black/mypy/integrity/version receipts. Support-document changes outside the allowed output paths still require scope authorization if needed. Baseline static failures independently require fix authorization or explicit waiver; none granted. No review or completion approval. Reviewer remains reserved kimi-k3 max, permitted fallback only on token exhaustion; assessor unassigned and phase not reached.

@@ -1805,6 +1805,22 @@ class TestRecordWorkflowUpdate:
 class TestAstraSessionReasoningState:
     """Feature 83.a.1: Astra sessions seed, persist, and switch canonical levels."""
 
+    @pytest.fixture(autouse=True)
+    def authenticated_selection(self, isolated_slo_home: Path) -> None:
+        """Supply real contained auth now required by synchronous model selection."""
+        from src.auth.credential_store import CredentialStore
+        from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
+
+        store = CredentialStore()
+        assert store.path.resolve().is_relative_to(isolated_slo_home.resolve())
+        store.persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENAI,
+                auth_type=AuthType.API_KEY,
+                access_token="fixture-astra-selection",
+            )
+        )
+
     def test_astra_session_seeds_high_reasoning_default(self, tmp_path: Path) -> None:
         """An Astra session with no override seeds to ``high``."""
         session: SloAgentSession = SloAgentSession.build(
@@ -2155,9 +2171,9 @@ class TestAstraBoundedSessionContracts:
                     events.append(event)
 
         assert [event.kind for event in events] == []
-        # One OAuth warm plus one lazy build — both resolve the OPENAI OAuth
-        # credential; the API-key constructor never runs.
-        assert mock_require.call_count == 2
+        # Local eligibility precheck, OAuth warm and factory build each resolve
+        # their own credential; the API-key constructor never runs.
+        assert mock_require.call_count == 3
         assert all(call.kwargs["provider"] is ProviderName.OPENAI for call in mock_require.call_args_list)
         mock_oauth_builder.assert_called_once()
         mock_api_key_constructor.assert_not_called()

@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from textual.app import App, ComposeResult
-from src.auth.credential_dao import ProviderName
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 
 from src.agents.model_catalog.seed import SeedModelCatalog
 from src.agents.model_catalog.service import ModelCatalogService
@@ -97,7 +97,13 @@ def test_empty_order_cache_and_revision() -> None:
             state = engine.evaluate(buffer_text="/model ", active_model_name="kimi-k3")
             assert [row.insert_text for row in state.rows[:2]] == ["kimi-k3", "kimi-for-coding"]
             assert "requires /auth" in (state.rows[0].detail or "")
-        with patch.object(CredentialResolver, "resolve", return_value=object()):
+        with patch.object(
+            CredentialResolver,
+            "resolve",
+            side_effect=lambda *, provider: CredentialDAO(
+                provider=provider, auth_type=AuthType.API_KEY, access_token="fixture-picker"
+            ),
+        ):
             ModelSuggestionProjection.refresh_authentication()
         assert model_suggestion_entries(active_model_name="kimi-k3")[0] is not first[0]
 

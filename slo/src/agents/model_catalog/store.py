@@ -289,7 +289,16 @@ class ModelCatalogStore:
 
         return AtomicFileWriter.write_text_with_outcome(
             path=cache_path,
-            text=cache.model_dump_json(indent=2),
+            text=cache.model_dump_json(
+                indent=2,
+                exclude={
+                    "provider_slices": {
+                        "__all__": {
+                            "entries": {"__all__": {"supports_chatgpt_codex", "requires_responses_api"}}
+                        }
+                    }
+                },
+            ),
             private=True,
         )
 

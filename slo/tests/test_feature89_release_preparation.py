@@ -1,0 +1,38 @@
+"""Offline guards for the bounded Feature 89 release candidate configuration."""
+
+from pathlib import Path
+import tomllib
+
+import yaml  # type: ignore[import-untyped]
+
+APP_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_release_candidate_version_and_notes_agree() -> None:
+    """Keep candidate metadata and unreleased notes aligned without installing it."""
+    project = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())
+    assert project["project"]["version"] == "0.21.1"
+    notes = (APP_ROOT / "CHANGELOG.md").read_text()
+    assert "## [0.21.1] — Unreleased" in notes
+    for identity in ("gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "openrouter:typesafe/jev-router"):
+        assert identity in notes
+    assert "subscription OAuth" in notes
+    assert "not live entitlement" in notes
+
+
+def test_runner_defaults_cover_inherited_jobs_and_preserve_macos() -> None:
+    """Require both runner tags, including jobs supplied by GitLab's include."""
+    pipeline = yaml.safe_load((APP_ROOT.parent / ".gitlab-ci.yml").read_text())
+    required = {"mgr-01", "shared"}
+    assert set(pipeline["default"]["tags"]) == required
+    assert set(pipeline["macos-installer-smoke"]["tags"]) == required | {"macos"}
+    assert pipeline["include"] == [{"template": "Security/Secret-Detection.gitlab-ci.yml"}]
+    for name, job in pipeline.items():
+        if not isinstance(job, dict) or name in {"default", "variables"}:
+            continue
+        if "trigger" in job:
+            assert "tags" not in job, name
+            continue
+        if "tags" in job:
+            assert required <= set(job["tags"]), name
+        assert job.get("inherit", {}).get("default", True) is not False, name

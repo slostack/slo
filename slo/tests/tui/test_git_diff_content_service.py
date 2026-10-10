@@ -17,17 +17,23 @@ from src.tui.slodiff.model import FileStateKind
 def git_repo(tmp_path: Path) -> Path:
     """Create a temporary repository with one committed UTF-8 text file."""
 
+    repository_path = tmp_path / "repository"
+    assert repository_path.resolve().is_relative_to(tmp_path.resolve())
+    repository_path.mkdir()
+    readme_path = repository_path / "README.md"
+    assert readme_path.resolve().is_relative_to(tmp_path.resolve())
+
     def run_git(*arguments: str) -> None:
         """Run one local git command while constructing the temporary repository."""
-        subprocess.run(["git", *arguments], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(["git", *arguments], cwd=repository_path, check=True, capture_output=True)
 
     run_git("init")
     run_git("config", "user.email", "test@example.invalid")
     run_git("config", "user.name", "Slo Test")
-    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    readme_path.write_text("hello\n", encoding="utf-8")
     run_git("add", "README.md")
     run_git("commit", "-m", "initial")
-    return tmp_path
+    return repository_path
 
 
 class TestGitDiffContentService:
@@ -260,8 +266,14 @@ class TestGitDiffContentService:
         self, git_repo: Path, tmp_path: Path
     ) -> None:
         """A symlink cannot make the service read outside its repository."""
-        outside_path = tmp_path.parent / "outside.txt"
+        outside_path = tmp_path / "outside.txt"
+        escape_path = git_repo / "escape.txt"
+        assert outside_path.resolve().is_relative_to(tmp_path.resolve())
+        assert not outside_path.resolve().is_relative_to(git_repo.resolve())
+        assert escape_path.resolve().is_relative_to(tmp_path.resolve())
         outside_path.write_text("secret\n", encoding="utf-8")
-        (git_repo / "escape.txt").symlink_to(outside_path)
+        escape_path.symlink_to(outside_path)
+        assert escape_path.resolve() == outside_path.resolve()
+        assert not escape_path.resolve().is_relative_to(git_repo.resolve())
         with pytest.raises(GitDiffContentError, match="Path must be relative to the repository root."):
             await GitDiffContentService.invoke(requested_path="escape.txt", workdir=git_repo)

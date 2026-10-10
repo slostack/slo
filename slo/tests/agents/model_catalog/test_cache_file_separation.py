@@ -1,5 +1,6 @@
 """New Slo never takes ownership of released Slo's catalog cache names."""
 
+import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -40,6 +41,33 @@ def _global_path(*, slo_home: Path, name: str) -> Path:
     path: Path = slo_home / "global" / name
     assert path.resolve().is_relative_to(slo_home.resolve())
     return path
+
+
+def test_backend_policy_is_excluded_only_at_disk_boundary(isolated_slo_home: Path) -> None:
+    """Every provider slice omits seed policy only when the real writer serializes it."""
+    from src.agents.model_catalog.dao import ModelCatalogCacheDAO, ProviderCatalogCacheDAO
+
+    entry = (
+        SeedModelCatalog.load()
+        .entries["gpt-5.4"]
+        .model_copy(update={"supports_chatgpt_codex": False, "requires_responses_api": True})
+    )
+    assert entry.model_dump()["supports_chatgpt_codex"] is False
+    assert entry.model_copy().requires_responses_api is True
+    cache = ModelCatalogCacheDAO(
+        provider_slices=[
+            ProviderCatalogCacheDAO(provider=provider, entries=[entry]) for provider in ProviderName
+        ]
+    )
+    path = _global_path(slo_home=isolated_slo_home, name="model_catalog_cache.v2.json")
+    assert ModelCatalogStore.write_provider_cache(cache=cache).committed
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["schema_version"] == "2"
+    for provider_slice in raw["provider_slices"]:
+        assert "supports_chatgpt_codex" not in provider_slice["entries"][0]
+        assert "requires_responses_api" not in provider_slice["entries"][0]
+    assert not (path.parent / "model_catalog_cache.json").exists()
+    assert not (path.parent / "model_catalog_cache.lock").exists()
 
 
 def test_write_provider_cache_when_path_is_default_writes_provider_cache_file_only(

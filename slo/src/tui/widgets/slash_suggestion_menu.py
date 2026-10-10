@@ -76,8 +76,11 @@ class SlashSuggestionMenu(Vertical):
     def _paint_window(self) -> None:
         """Paint only height-bounded candidates, keeping the selected identity visible."""
         row_height = max(
-            (1 + max(1, len(self._detail_for_terminal(row_detail=row.detail or "").splitlines()))
-             for row in self._state.rows), default=2,
+            (
+                1 + max(1, len(self._detail_for_terminal(row_detail=row.detail or "").splitlines()))
+                for row in self._state.rows
+            ),
+            default=2,
         )
         capacity = max(1, min(25, (self.app.size.height - 8) // row_height))
         highlight = self._state.highlighted_index
@@ -93,7 +96,9 @@ class SlashSuggestionMenu(Vertical):
         for index in range(self.window_start, window_end):
             row = self._state.rows[index]
             prefix = "›" if index == highlight else " "
-            lines.extend([f"{prefix} {row.label}", f"  {self._detail_for_terminal(row_detail=row.detail or '')}"])
+            lines.extend(
+                [f"{prefix} {row.label}", f"  {self._detail_for_terminal(row_detail=row.detail or '')}"]
+            )
         if not lines:
             lines.append("No models match — change search or /model refresh")
         else:
@@ -102,7 +107,8 @@ class SlashSuggestionMenu(Vertical):
             lines.append(f"Showing {visible_count} of {total} — type to narrow")
         content = Content("\n").join(
             Content(line).truncate(detail_width if line.startswith("  ") else width)
-            for entry in lines for line in entry.splitlines()
+            for entry in lines
+            for line in entry.splitlines()
         )
         self.query_one(".slash-suggestion-lines", Static).update(content)
 
@@ -116,6 +122,12 @@ class SlashSuggestionMenu(Vertical):
         Returns:
             str: Original detail or status/context followed by a reasoning line.
         """
+        if "unavailable for ChatGPT/Codex" in row_detail:
+            return "\n  ".join(row_detail.replace("; Platform", " · Platform").split(" · "))
+        if "provider default; controls unavailable" in row_detail:
+            return "\n  ".join(row_detail.split(" · "))
+        if "subscription configured; not checked" in row_detail:
+            return "\n  ".join(row_detail.split(" · ", maxsplit=1))
         marker: str = " · reasoning "
         if marker not in row_detail:
             return row_detail

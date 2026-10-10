@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from typing import Optional, overload
+from src.agents.model_catalog import dao as catalog_dao
 from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 
 from pydantic import BaseModel, ConfigDict
 
 from src.agents.model_catalog.service import ModelCatalogService
-from src.auth.credential_dao import CredentialDAO, ProviderName
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 
 __all__ = [
@@ -137,47 +138,29 @@ def model_suggestion_entries(
 
 
 def _project_rows(
-    *, snapshot: ModelCatalogSnapshotDAO, active_model_name: str, statuses: dict[ProviderName, str]
+    *,
+    snapshot: ModelCatalogSnapshotDAO,
+    active_model_name: str,
+    statuses: dict[ProviderName, str],
+    auth_types: Optional[dict[ProviderName, AuthType]] = None,
 ) -> list[ModelSuggestionEntryDAO]:
-    """Build detached presentation rows from bounded lifecycle evidence only."""
-    entries: list[ModelSuggestionEntryDAO] = []
-    for entry in sorted(snapshot.entries.values(), key=lambda item: (item.provider.value, item.model_name)):
-        if not entry.visible_in_picker:
-            continue
-        support_tier_label: str = ""
-        if entry.support_tier == "auto_discovered":
-            support_tier_label = "auto-discovered"
-        entries.append(
-            ModelSuggestionEntryDAO(
-                model_name=entry.model_name,
-                display_name=entry.display_name,
-                provider=entry.provider,
-                is_active=(entry.model_name == active_model_name),
-                requires_auth=(statuses.get(entry.provider) == "requires /auth"),
-                status_summary=statuses.get(entry.provider, "authentication not checked"),
-                context_window=entry.runtime_profile.context_window,
-                catalog_generation=snapshot.generation,
-                reasoning_summary=", ".join(
-                    level for level in entry.reasoning_profile.supported_levels
-                    if level != "off" or entry.capabilities is None
-                    or entry.capabilities.reasoning_disable_available
-                    or entry.provider is not ProviderName.OPENROUTER
-                ),
-                support_tier_label=support_tier_label,
-                reasoning_controls_available=(
-                    (entry.capabilities.reasoning_controls_available
-                     or entry.capabilities.reasoning_disable_available)
-                    if entry.capabilities is not None
-                    else True
-                ),
-                reasoning_disable_available=(
-                    entry.capabilities.reasoning_disable_available
-                    if entry.capabilities is not None
-                    else False
-                ),
-            )
-        )
-    return entries
+    """Delegate the existing compatibility entry point to its lifecycle projection owner.
+
+    Args:
+        snapshot: Immutable row view.
+        active_model_name: Selected route.
+        statuses: Cached safe statuses.
+        auth_types: Cached types; absent means unchecked.
+
+    Returns:
+        Ordered detached rows with no credential or network access.
+    """
+    return ModelSuggestionProjection._build_rows(
+        snapshot=snapshot,
+        active_model_name=active_model_name,
+        statuses=statuses,
+        auth_types=auth_types or {},
+    )
 
 
 class ModelSuggestionProjection:
@@ -185,6 +168,7 @@ class ModelSuggestionProjection:
 
     _revision: int = 0
     _statuses: dict[ProviderName, str] = {}
+    _auth_types: dict[ProviderName, AuthType] = {}
     _key: tuple[int, int, int, str] | None = None
     _snapshot: Optional[ModelCatalogSnapshotDAO] = None
     _rows: list[ModelSuggestionEntryDAO] = []
@@ -194,6 +178,7 @@ class ModelSuggestionProjection:
         """Clear process-local picker projection state between independent app lifecycles."""
         cls._revision = 0
         cls._statuses = {}
+        cls._auth_types = {}
         cls._key = None
         cls._snapshot = None
         cls._rows = []
@@ -207,15 +192,194 @@ class ModelSuggestionProjection:
                 OpenRouter's dismissal contract proves key verification. The
                 capture is compared at this lifecycle boundary, never on typing.
         """
-        cls._statuses = {
-            provider: cls._authentication_status(
-                provider=provider,
-                current=CredentialResolver.resolve(provider=provider),
-                verified_credential=verified_credential,
+        statuses: dict[ProviderName, str] = {}
+        auth_types: dict[ProviderName, AuthType] = {}
+        for provider in ProviderName:
+            current = CredentialResolver.resolve(provider=provider)
+            statuses[provider] = cls._authentication_status(
+                provider=provider, current=current, verified_credential=verified_credential
             )
-            for provider in ProviderName
-        }
+            if current is not None:
+                auth_types[provider] = current.auth_type
+        cls._statuses = statuses
+        cls._auth_types = auth_types
         cls._revision += 1
+
+    @classmethod
+    def _build_rows(
+        cls,
+        *,
+        snapshot: ModelCatalogSnapshotDAO,
+        active_model_name: str,
+        statuses: dict[ProviderName, str],
+        auth_types: dict[ProviderName, AuthType],
+    ) -> list[ModelSuggestionEntryDAO]:
+        """Project visible entries for the compatibility bridge on cache invalidation.
+
+        Args:
+            snapshot: Immutable source view.
+            active_model_name: Selected identity.
+            statuses: Safe lifecycle evidence.
+            auth_types: Effective types captured at refresh only.
+
+        Returns:
+            Deterministically ordered visible rows.
+        """
+        return [
+            cls._build_row(
+                entry=entry,
+                generation=snapshot.generation,
+                active_model_name=active_model_name,
+                statuses=statuses,
+                auth_types=auth_types,
+            )
+            for entry in cls._visible_entries(snapshot=snapshot)
+        ]
+
+    @staticmethod
+    def _visible_entries(*, snapshot: ModelCatalogSnapshotDAO) -> list[catalog_dao.ModelCatalogEntryDAO]:
+        """Filter and order catalog membership for _build_rows before formatting.
+
+        Args:
+            snapshot: Immutable catalog view.
+
+        Returns:
+            Visible entries ordered by provider then canonical name.
+        """
+        return sorted(
+            (entry for entry in snapshot.entries.values() if entry.visible_in_picker),
+            key=lambda entry: (entry.provider.value, entry.model_name),
+        )
+
+    @classmethod
+    def _build_row(
+        cls,
+        *,
+        entry: catalog_dao.ModelCatalogEntryDAO,
+        generation: int,
+        active_model_name: str,
+        statuses: dict[ProviderName, str],
+        auth_types: dict[ProviderName, AuthType],
+    ) -> ModelSuggestionEntryDAO:
+        """Assemble one presentation row for _build_rows without resolving credentials.
+
+        Args:
+            entry: Canonical record, never mutated.
+            generation: Source generation.
+            active_model_name: Selected identity.
+            statuses: Cached status evidence.
+            auth_types: Cached types only, never tokens.
+
+        Returns:
+            Presentation-only row.
+        """
+        return ModelSuggestionEntryDAO(
+            model_name=entry.model_name,
+            display_name=entry.display_name,
+            provider=entry.provider,
+            is_active=entry.model_name == active_model_name,
+            requires_auth=statuses.get(entry.provider) == "requires /auth",
+            status_summary=cls._row_status(entry=entry, statuses=statuses, auth_types=auth_types),
+            context_window=entry.runtime_profile.context_window,
+            catalog_generation=generation,
+            reasoning_summary=cls._row_reasoning_summary(entry=entry),
+            support_tier_label=cls._row_support_tier(entry=entry),
+            reasoning_controls_available=cls._row_controls_available(entry=entry),
+            reasoning_disable_available=cls._row_disable_available(entry=entry),
+        )
+
+    @classmethod
+    def _row_reasoning_summary(cls, *, entry: catalog_dao.ModelCatalogEntryDAO) -> str:
+        """Format advertised levels for _build_row, excluding unadvertised gateway off.
+
+        Args:
+            entry: Pinned profile and capability evidence.
+
+        Returns:
+            Comma-separated levels, preserving direct-row layout.
+        """
+        return ", ".join(
+            level
+            for level in entry.reasoning_profile.supported_levels
+            if level != "off" or cls._row_shows_off(entry=entry)
+        )
+
+    @staticmethod
+    def _row_shows_off(*, entry: catalog_dao.ModelCatalogEntryDAO) -> bool:
+        """Decide off visibility for row summary without inventing gateway disable permission.
+
+        Args:
+            entry: Pinned capability evidence.
+
+        Returns:
+            Whether the compatibility off level belongs in the summary.
+        """
+        return (
+            entry.capabilities is None
+            or entry.provider is not ProviderName.OPENROUTER
+            or entry.capabilities.reasoning_disable_available
+        )
+
+    @staticmethod
+    def _row_support_tier(*, entry: catalog_dao.ModelCatalogEntryDAO) -> str:
+        """Format the existing tier badge during one-row construction.
+
+        Args:
+            entry: Canonical support classification.
+
+        Returns:
+            Existing auto-discovered label or empty text.
+        """
+        return "auto-discovered" if entry.support_tier == "auto_discovered" else ""
+
+    @staticmethod
+    def _row_controls_available(*, entry: catalog_dao.ModelCatalogEntryDAO) -> bool:
+        """Project control-or-disable evidence during one-row construction.
+
+        Args:
+            entry: Canonical capability evidence.
+
+        Returns:
+            Existing default True for absent capabilities, otherwise advertised control.
+        """
+        if entry.capabilities is None:
+            return True
+        return (
+            entry.capabilities.reasoning_controls_available or entry.capabilities.reasoning_disable_available
+        )
+
+    @staticmethod
+    def _row_disable_available(*, entry: catalog_dao.ModelCatalogEntryDAO) -> bool:
+        """Project explicit disable evidence during one-row construction.
+
+        Args:
+            entry: Canonical capability evidence.
+
+        Returns:
+            False when capabilities are absent, otherwise advertised disable permission.
+        """
+        return entry.capabilities.reasoning_disable_available if entry.capabilities is not None else False
+
+    @staticmethod
+    def _row_status(
+        *,
+        entry: catalog_dao.ModelCatalogEntryDAO,
+        statuses: dict[ProviderName, str],
+        auth_types: dict[ProviderName, AuthType],
+    ) -> str:
+        """Apply record-owned compatibility using lifecycle evidence, never live auth.
+
+        Args:
+            entry: Pinned policy owner.
+            statuses: Safe cached status strings.
+            auth_types: Cached types, not credential objects.
+
+        Returns:
+            Local incompatibility guidance or the existing authentication status.
+        """
+        if entry.backend_eligibility_message(auth_type=auth_types.get(entry.provider)) is not None:
+            return "unavailable for ChatGPT/Codex; Platform API key required"
+        return statuses.get(entry.provider, "authentication not checked")
 
     @staticmethod
     def _authentication_status(
@@ -227,6 +391,8 @@ class ModelSuggestionProjection:
         """Project only matching OpenRouter dismissal evidence; never infer timestamps."""
         if current is None:
             return "requires /auth"
+        if provider is ProviderName.OPENAI and current.auth_type is AuthType.OAUTH:
+            return "subscription configured; not checked"
         if provider is not ProviderName.OPENROUTER or verified_credential is None:
             return "key configured; not checked"
         if verified_credential.provider is not provider:
@@ -279,7 +445,10 @@ class ModelSuggestionProjection:
             if summary is not None:
                 statuses[ProviderName.OPENROUTER] = summary
             cls._rows = _project_rows(
-                snapshot=snapshot, active_model_name=active_model_name, statuses=statuses
+                snapshot=snapshot,
+                active_model_name=active_model_name,
+                statuses=statuses,
+                auth_types=cls._auth_types,
             )
             cls._key, cls._snapshot = key, snapshot
         return list(cls._rows)

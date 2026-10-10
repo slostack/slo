@@ -706,6 +706,7 @@ class SloTUI(App):
         resolved_reasoning = resolve_reasoning_config(
             model_name=self._session.active_model_name,
             requested_level=self._session.active_reasoning_level,
+            snapshot=self._session.catalog_snapshot,
         )
         reasoning_detail: str = self._reasoning_detail_text(
             provider_effort=resolved_reasoning.provider_effort,

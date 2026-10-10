@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from src.agents.model_catalog.dao import (
+    ModelCatalogEntryDAO,
     ModelCatalogOverrideDAO,
     ModelReasoningProfileDAO,
     ModelRuntimeProfileDAO,
@@ -15,6 +17,133 @@ from src.auth.credential_dao import ProviderName
 from src.agents.model_catalog.discovery import ModelCatalogOverrideService
 from src.agents.model_catalog.seed import SeedModelCatalog
 from src.agents.model_catalog.service import ModelCatalogService
+
+
+@pytest.mark.parametrize("control", ["effort", "budget", "required", "sampling", "levels"])
+def test_required_responses_override_controls(control: str) -> None:
+    """Schema-valid control changes reach the record guard and fail before adoption."""
+    snapshot = SeedModelCatalog.load()
+    data = snapshot.entries["gpt-6-luna"].reasoning_profile.model_dump()
+    if control == "effort":
+        data["provider_effort_map"]["medium"] = "high"
+    if control == "budget":
+        data["provider_budget_map"] = {"off": 1}
+    if control == "required":
+        data["provider_reasoning_required"] = True
+    if control == "sampling":
+        data["forbid_sampling_parameters_when_enabled"] = False
+    if control == "levels":
+        data["supported_levels"] = data["supported_levels"][:-1]
+        del data["provider_effort_map"]["max"]
+    candidate = ModelReasoningProfileDAO.model_validate(data)
+    override = ModelCatalogOverrideDAO(model_name="gpt-6-luna", reasoning_profile=candidate)
+    original = ModelCatalogEntryDAO.require_reasoning_override_compatibility
+    with patch.object(
+        target=ModelCatalogEntryDAO,
+        attribute="require_reasoning_override_compatibility",
+        autospec=True,
+        side_effect=original,
+    ) as guard:
+        with pytest.raises(
+            ValueError,
+            match=r"^Model catalog overrides cannot change required Responses reasoning controls\.$",
+        ):
+            ModelCatalogOverrideService.apply_overrides(snapshot=snapshot, overrides=[override])
+    assert guard.call_count == 1
+    assert guard.call_args.kwargs["reasoning_profile"] == candidate
+
+
+@pytest.mark.parametrize("level", ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_required_responses_default_only_override_passes(level: str) -> None:
+    """Operators may choose any supported default without changing fixed controls."""
+    snapshot = SeedModelCatalog.load()
+    profile = snapshot.entries["gpt-6-luna"].reasoning_profile.model_copy(update={"default_level": level})
+    result = ModelCatalogOverrideService.apply_overrides(
+        snapshot=snapshot,
+        overrides=[ModelCatalogOverrideDAO(model_name="gpt-6-luna", reasoning_profile=profile)],
+    )
+    assert result.entries["gpt-6-luna"].reasoning_profile.default_level == level
+    assert result.entries["gpt-6-luna"].requires_responses_api is True
+    assert result.entries["gpt-6-luna"].supports_chatgpt_codex is True
+
+
+@pytest.mark.parametrize("invalid", ["missing", "outside", "both"])
+def test_invalid_reasoning_schema_never_reaches_record_guard(invalid: str) -> None:
+    """Schema errors must not masquerade as fixed-control guard coverage."""
+    from pydantic import ValidationError
+
+    data = SeedModelCatalog.load().entries["gpt-6-luna"].reasoning_profile.model_dump()
+    if invalid == "missing":
+        del data["provider_effort_map"]["medium"]
+    if invalid == "outside":
+        data["provider_effort_map"]["bogus"] = "low"
+    if invalid == "both":
+        data["provider_budget_map"] = {"medium": 1}
+    with patch.object(ModelCatalogEntryDAO, "require_reasoning_override_compatibility") as guard:
+        with pytest.raises(ValidationError):
+            ModelCatalogOverrideDAO.model_validate({"model_name": "gpt-6-luna", "reasoning_profile": data})
+    guard.assert_not_called()
+
+
+def test_invalid_cold_override_does_not_publish_snapshot() -> None:
+    """A schema-valid but incompatible cold override fails before publication."""
+    from src.agents.model_catalog.store import ModelCatalogStore
+
+    profile = (
+        SeedModelCatalog.load()
+        .entries["gpt-6-luna"]
+        .reasoning_profile.model_copy(update={"provider_reasoning_required": True})
+    )
+    override = ModelCatalogOverrideDAO(model_name="gpt-6-luna", reasoning_profile=profile)
+    ModelCatalogService.reset()
+    try:
+        with patch.object(ModelCatalogStore, "load_overrides", return_value=[override]):
+            with pytest.raises(ValueError, match="cannot change required Responses reasoning controls"):
+                ModelCatalogService.load()
+        assert ModelCatalogService._snapshot is None
+    finally:
+        ModelCatalogService.reset()
+
+
+async def test_invalid_refresh_override_preserves_publication_and_cache(isolated_slo_home: "Path") -> None:
+    """Reject an incompatible refresh candidate without replacing last-good state."""
+    from src.agents.model_catalog.store import ModelCatalogStore
+    from src.auth.credential_dao import AuthType, CredentialDAO, CredentialSource, ResolvedCredentialDAO
+    from tests.agents.model_catalog.test_openrouter_lifecycle import FakeOpenRouterClient
+
+    credential = CredentialDAO(
+        provider=ProviderName.OPENROUTER, auth_type=AuthType.API_KEY, access_token="fixture-89"
+    )
+    client = FakeOpenRouterClient(credential=credential)
+    resolved = ResolvedCredentialDAO(credential=credential, source=CredentialSource.ENVIRONMENT)
+    cache_path = isolated_slo_home / "global/model_catalog_cache.v2.json"
+    assert cache_path.resolve().is_relative_to(isolated_slo_home.resolve())
+    ModelCatalogService.reset()
+    try:
+        first = await ModelCatalogService.refresh(
+            provider=ProviderName.OPENROUTER,
+            resolved_credential=resolved,
+            client_factory=lambda credential: client,
+        )
+        assert first.status == "refreshed"
+        snapshot = ModelCatalogService.load()
+        before = cache_path.read_bytes()
+        profile = snapshot.entries["gpt-6-luna"].reasoning_profile.model_copy(
+            update={"provider_reasoning_required": True}
+        )
+        override = ModelCatalogOverrideDAO(model_name="gpt-6-luna", reasoning_profile=profile)
+        with patch.object(ModelCatalogStore, "load_overrides", return_value=[override]):
+            result = await ModelCatalogService.refresh(
+                provider=ProviderName.OPENROUTER,
+                resolved_credential=resolved,
+                client_factory=lambda credential: client,
+                force=True,
+            )
+        assert result.status == "failed"
+        assert ModelCatalogService._snapshot is snapshot
+        assert cache_path.read_bytes() == before
+    finally:
+        ModelCatalogService.reset()
 
 
 class TestOverrideApplication:

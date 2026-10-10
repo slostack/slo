@@ -1,5 +1,22 @@
 # Slo — Agent Reference
 
+## Feature 89 worktree — implementation wired, approval pending
+
+`providers/openai_platform.py` owns `OpenAIRequestPolicy` and the lifetime-pinned
+`OpenAIPlatformChatOpenAI`. `LLMFactory` selects the adapter only for captured API-key credentials on
+seed-owned `requires_responses_api` records. All three GPT-6 entries also support
+the existing Codex OAuth builder, without Platform constructor/final sanitation; session validation precedes adoption and lazy OAuth refresh. Picker
+auth types are captured only at lifecycle boundaries, and reasoning/startup use
+the session snapshot. Both seed-owned policy flags remain in memory and are
+excluded only by the existing schema-2 provider-cache writer. Jev null output
+metadata uses the existing conservative cap and authenticated admission.
+
+Real locked-SDK offline tools, mounted resume, mixed lanes and frozen readers
+have executable coverage. This is not live entitlement or release evidence.
+See `docs/implementation/89-gpt-6-support/recovery13-closure.md` for actual gates
+and the AC map. Static baseline gates remain unwaived; independent review and
+assessment remain pending. Earlier continuation receipts are historical.
+
 ## Latest Step-1 bounded window correction — 2026-10-03
 
 The prior final gate is retained unchanged: `.f86-final-remediation-hldebc_g/full-final.log`

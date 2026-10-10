@@ -222,6 +222,78 @@ class SeedModelCatalog:
         )
 
     @classmethod
+    def _gpt6_reasoning_profile(cls, *, provider_reasoning_required: bool) -> ModelReasoningProfileDAO:
+        """Build the seven-level seed policy with explicit off semantics.
+
+        Args:
+            provider_reasoning_required: Whether selected off must still enable low.
+
+        Returns:
+            Immutable reasoning profile consumed by the shared resolver.
+        """
+        return ModelReasoningProfileDAO(
+            supported_levels=("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+            default_level="medium",
+            provider_effort_map={
+                "off": "low" if provider_reasoning_required else "none",
+                "minimal": "low",
+                "low": "low",
+                "medium": "medium",
+                "high": "high",
+                "xhigh": "xhigh",
+                "max": "max",
+            },
+            provider_budget_map={},
+            provider_reasoning_required=provider_reasoning_required,
+            forbid_sampling_parameters_when_enabled=True,
+        )
+
+    @classmethod
+    def _gpt6_runtime_profile(cls) -> ModelRuntimeProfileDAO:
+        """Build local GPT defaults during seed construction, not account entitlements."""
+        return ModelRuntimeProfileDAO(
+            max_tokens=128_000,
+            context_window=1_050_000,
+            streaming=True,
+            requests_per_minute=500,
+            tokens_per_minute=500_000,
+            automatic_retry_attempts=2,
+            local_retry_wait_cap_seconds=30,
+        )
+
+    @classmethod
+    def _gpt6_entry(
+        cls, *, model_name: str, display_name: str, provider_reasoning_required: bool
+    ) -> ModelCatalogEntryDAO:
+        """Build an explicitly registered dual-lane entry, never a discovery template.
+
+        Args:
+            model_name: Exact canonical and remote identifier.
+            display_name: Picker label.
+            provider_reasoning_required: Whether selected off still enables low.
+
+        Returns:
+            First-class dual-lane OpenAI record with required Responses transport.
+        """
+        return ModelCatalogEntryDAO(
+            model_name=model_name,
+            display_name=display_name,
+            provider=ProviderName.OPENAI,
+            support_tier="first_class",
+            visible_in_picker=True,
+            runtime_profile=cls._gpt6_runtime_profile(),
+            reasoning_profile=cls._gpt6_reasoning_profile(
+                provider_reasoning_required=provider_reasoning_required
+            ),
+            aliases=(),
+            api_model_name=None,
+            availability="available",
+            capabilities=None,
+            supports_chatgpt_codex=True,
+            requires_responses_api=True,
+        )
+
+    @classmethod
     def _build_entries(cls) -> dict[str, ModelCatalogEntryDAO]:
         """Return the canonical first-class model entries."""
         entries: list[ModelCatalogEntryDAO] = [
@@ -261,6 +333,15 @@ class SeedModelCatalog:
                 visible_in_picker=True,
                 runtime_profile=_openai_flagship_runtime_profile(),
                 reasoning_profile=_openai_flagship_reasoning_profile(),
+            ),
+            cls._gpt6_entry(
+                model_name="gpt-6-luna", display_name="GPT-6 Luna", provider_reasoning_required=False
+            ),
+            cls._gpt6_entry(
+                model_name="gpt-6.1-sol", display_name="GPT-6.1 Sol", provider_reasoning_required=True
+            ),
+            cls._gpt6_entry(
+                model_name="gpt-6-sol", display_name="GPT-6 Sol", provider_reasoning_required=False
             ),
             # OpenAI gpt-6-astra (feature 83): canonical identity equals API ID
             ModelCatalogEntryDAO(

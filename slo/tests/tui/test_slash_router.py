@@ -22,6 +22,7 @@ def _build_session_stub(*, workdir: Path = Path("/tmp/slo-fake")) -> MagicMock:
             and runtime-state properties the router reads.
     """
     session: MagicMock = MagicMock()
+    session.catalog_snapshot = None
     session.workdir = workdir
     session.active_model_name = "claude-sonnet-4-6"
     session.active_reasoning_level = "high"
@@ -540,15 +541,23 @@ class TestSlashReasoningHandler:
     @pytest.mark.parametrize(
         "reasoning,supported,off_result",
         [
-            ({"supported_efforts": ["none"], "mandatory": False},
-             "off (reasoning disable supported)", "reasoning changed low -> off"),
-            ({"supported_efforts": ["low", "high"]},
-             "low, high (provider default; disable unavailable)",
-             "reasoning disable unavailable for openrouter:vendor/model; provider default applies"),
+            (
+                {"supported_efforts": ["none"], "mandatory": False},
+                "off (reasoning disable supported)",
+                "reasoning changed low -> off",
+            ),
+            (
+                {"supported_efforts": ["low", "high"]},
+                "low, high (provider default; disable unavailable)",
+                "reasoning disable unavailable for openrouter:vendor/model; provider default applies",
+            ),
         ],
     )
     async def test_reasoning_state_and_off_follow_converted_controls(
-        self, reasoning: dict[str, object], supported: str, off_result: str,
+        self,
+        reasoning: dict[str, object],
+        supported: str,
+        off_result: str,
     ) -> None:
         """Expose only real controls through both public router commands."""
         from src.agents.model_catalog.seed import SeedModelCatalog
@@ -576,11 +585,22 @@ class TestSlashReasoningHandler:
         session.active_reasoning_level = "low"
         session.switch_reasoning_level = MagicMock(return_value="off")
 
-        with patch(
-            "src.tui.slash_router.capability_for_model",
-            return_value=MagicMock(
-                supported_levels=["off"],
-                reasoning_disable_available=True,
+        from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
+
+        with (
+            patch.object(SlashRouter, "_provider_default_reasoning_note", return_value=""),
+            patch(
+                "src.tui.slash_router.resolve_reasoning_config",
+                return_value=ResolvedReasoningConfigDAO(
+                    enabled=False, requested_level="off", active_level="off"
+                ),
+            ),
+            patch(
+                "src.tui.slash_router.capability_for_model",
+                return_value=MagicMock(
+                    supported_levels=["off"],
+                    reasoning_disable_available=True,
+                ),
             ),
         ):
             result: SlashCommandResultDAO = await SlashRouter.dispatch(
@@ -598,11 +618,14 @@ class TestSlashReasoningHandler:
         session.active_model_name = "openrouter:vendor/model"
         session.active_reasoning_level = "low"
 
-        with patch(
-            "src.tui.slash_router.capability_for_model",
-            return_value=MagicMock(
-                supported_levels=["off", "low", "high"],
-                reasoning_disable_available=False,
+        with (
+            patch.object(SlashRouter, "_provider_default_reasoning_note", return_value=""),
+            patch(
+                "src.tui.slash_router.capability_for_model",
+                return_value=MagicMock(
+                    supported_levels=["off", "low", "high"],
+                    reasoning_disable_available=False,
+                ),
             ),
         ):
             result: SlashCommandResultDAO = await SlashRouter.dispatch(
@@ -610,7 +633,10 @@ class TestSlashReasoningHandler:
                 session=session,
             )
 
-        assert result.rendered == "reasoning disable unavailable for openrouter:vendor/model; provider default applies"
+        assert (
+            result.rendered
+            == "reasoning disable unavailable for openrouter:vendor/model; provider default applies"
+        )
         session.switch_reasoning_level.assert_not_called()
 
     @pytest.mark.asyncio

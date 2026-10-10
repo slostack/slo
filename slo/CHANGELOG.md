@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [0.21.1] — Unreleased
+
+Local release candidate only: static gates remain unwaived, independent review
+and completion assessment are pending. No tag, release or deployment is claimed.
+
+### Added
+
+- `gpt-6-luna`, `gpt-6-sol` and `gpt-6.1-sol` support both OpenAI Platform
+  API keys and the existing ChatGPT subscription OAuth lane. Default reasoning
+  is medium; Luna/Sol off sends none, while 6.1 Sol off retains required low
+  effort. The default model remains gpt-5.4.
+- `openrouter:typesafe/jev-router` uses authenticated OpenRouter discovery, not
+  a static seed or OpenAI credentials. Unknown output limits retain the local
+  conservative cap; unknown reasoning controls mean provider default, not off.
+  Refresh previously ineligible cached rows with `/model refresh`.
+
+### Changed
+
+- All CI runnable jobs require both `mgr-01` and `shared` runner tags; macOS
+  retains its additional `macos` requirement. Docker privileged-service and
+  release dependency gates are unchanged. Runner availability must be verified
+  before release; tags alone do not prove execution capability.
+
+### Fixed
+
+- Pin request policy and transport to the captured model/auth lane. Platform
+  Responses option validation and sampling/cap sanitation do not overwrite
+  subscription headers, instructions adaptation or output-cap removal.
+- Keep selection, startup, reasoning and picker presentation on the session
+  snapshot; validate eligibility before adoption and lazy credential refresh.
+- Preserve seed-owned policy flags in memory while excluding them at the
+  schema-2 cache writer boundary. Frozen readers and ordered history replay
+  retain their existing persistence contracts.
+
+### Verification boundary
+
+- SDK, tool/resume, mixed-lane and compatibility evidence is offline synthetic,
+  not live entitlement, subscription availability or paid-inference evidence.
+  Current local preparation gates are recorded in
+  `docs/implementation/89-gpt-6-support/release-prep-dispatch3-20261010.md`.
+
 ### Fixed
 
 - Mixed-version state compatibility: provider catalog data now uses

@@ -9,6 +9,34 @@ from src.agents.model_catalog.dao import ModelCapabilitiesDAO, ModelCatalogSnaps
 from src.agents.model_catalog.seed import SeedModelCatalog
 
 
+def test_gpt6_source_registration_once() -> None:
+    """Count explicit registrations before dictionary collapse can hide duplicates."""
+    import ast
+    import inspect
+
+    source = inspect.getsource(SeedModelCatalog)
+    tree = ast.parse(source)
+    names = [
+        keyword.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "model_name" and isinstance(keyword.value, ast.Constant)
+    ]
+    for name in ("gpt-6-luna", "gpt-6.1-sol", "gpt-6-sol"):
+        assert names.count(name) == 1
+    assert "jev-router" not in source
+    from src.agents.model_catalog.discovery import ProviderModelDiscoveryService
+
+    for name in ("gpt-6-future", "gpt-6-luna-2099", "openrouter:typesafe/jev-router"):
+        assert (
+            ProviderModelDiscoveryService._matching_template(
+                model_name=name, templates=SeedModelCatalog.load().templates
+            )
+            is None
+        )
+
+
 def test_published_snapshot_rejects_nested_mutation_and_round_trips() -> None:
     """Every public container and nested model is immutable, including copied snapshots."""
     snapshot = SeedModelCatalog.load()

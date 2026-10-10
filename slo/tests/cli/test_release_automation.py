@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
@@ -186,10 +187,12 @@ class TestReleaseAutomation:
             "COLUMNS": "120",
             "LINES": "40",
         }
+        # CI's Poetry command is asserted above. Collect with this test run's
+        # interpreter so isolated locked environments need no Poetry executable.
         collection: subprocess.CompletedProcess[str] = subprocess.run(
-            [
-                "poetry",
-                "run",
+            args=[
+                sys.executable,
+                "-m",
                 "pytest",
                 "-o",
                 "addopts=",
@@ -336,7 +339,7 @@ class TestReleaseAutomation:
         pytest_start: int = content.index("pytest:")
         publish_start: int = content.index("publish-installer:")
         pytest_job: str = content[pytest_start:publish_start]
-        publish_job: str = content[publish_start:content.index("secret_detection:")]
+        publish_job: str = content[publish_start : content.index("secret_detection:")]
 
         assert "- if: $CI_COMMIT_TAG" in pytest_job
         assert "format-and-lint:" not in content

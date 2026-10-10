@@ -13,7 +13,7 @@ from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.auth.credential_dao import ProviderName
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.tui.app import SloTUI
 from src.tui.model_catalog import model_suggestion_entries
@@ -49,7 +49,13 @@ async def test_equal_entries_status_revision_paints(size: tuple[int, int]) -> No
     app = SloTUI(session=session)
     with (
         patch.object(ModelCatalogService, "load", return_value=snapshot),
-        patch.object(CredentialResolver, "resolve", return_value=object()),
+        patch.object(
+            CredentialResolver,
+            "resolve",
+            side_effect=lambda *, provider: CredentialDAO(
+                provider=provider, auth_type=AuthType.API_KEY, access_token="fixture-picker"
+            ),
+        ),
     ):
         async with app.run_test(size=size) as pilot:
             await pilot.pause()

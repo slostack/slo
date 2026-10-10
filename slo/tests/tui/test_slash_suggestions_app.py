@@ -12,8 +12,14 @@ from langchain_core.messages import AIMessage
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.faux import FauxChatModel
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import SloTUI, PromptInput
 from textual.widgets import Static
+
+
+def _picker_credential(*, provider: ProviderName) -> CredentialDAO:
+    """Supply typed synthetic auth evidence to the mounted picker lifecycle."""
+    return CredentialDAO(provider=provider, auth_type=AuthType.API_KEY, access_token="fixture-picker")
 
 
 def _build_session() -> SloAgentSession:
@@ -126,7 +132,7 @@ class TestSloTUISlashSuggestions:
 
         with patch(
             "src.tui.model_catalog.CredentialResolver.resolve",
-            side_effect=lambda *, provider: object(),
+            side_effect=_picker_credential,
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -145,7 +151,7 @@ class TestSloTUISlashSuggestions:
 
         with patch(
             "src.tui.model_catalog.CredentialResolver.resolve",
-            side_effect=lambda *, provider: object(),
+            side_effect=_picker_credential,
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -195,7 +201,7 @@ class TestSloTUISlashSuggestions:
 
         with patch(
             "src.tui.model_catalog.CredentialResolver.resolve",
-            side_effect=lambda *, provider: object(),
+            side_effect=_picker_credential,
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()

@@ -5,6 +5,13 @@
 # Container Scanning customization: https://docs.gitlab.com/user/application_security/container_scanning/#customizing-analyzer-behavior
 # Note that environment variables can be set in several places
 # See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
+# Runner tags are conjunctive. Included runnable jobs inherit this requirement;
+# explicit capability tags must repeat both tags (GitLab does not merge arrays).
+default:
+  tags:
+  - mgr-01
+  - shared
+
 stages:
 - test
 - publish
@@ -233,6 +240,8 @@ macos-installer-smoke:
   - job: publish-installer
   image: null
   tags:
+  - mgr-01
+  - shared
   - macos
   variables:
     SLO_HOSTED_INSTALL_E2E: '1'

@@ -110,18 +110,20 @@ def openai_reasoning_payload(
 
     Returns:
         Optional[dict[str, str]]: OpenAI ``reasoning`` payload, or
-            ``None`` when reasoning is disabled.
+            ``None`` when disabled reasoning has no explicit effort mapping.
 
     Raises:
         ValueError: If reasoning is enabled but no provider effort is
             available.
     """
-    if reasoning is None or not reasoning.enabled:
+    if reasoning is None:
         return None
     if reasoning.provider_effort is None:
-        raise ValueError("Resolved OpenAI reasoning config is missing provider_effort.")
+        if reasoning.enabled:
+            raise ValueError("Resolved OpenAI reasoning config is missing provider_effort.")
+        return None
     payload: dict[str, str] = {"effort": reasoning.provider_effort}
-    if reasoning.provider_summary_mode is not None:
+    if reasoning.enabled and reasoning.provider_summary_mode is not None:
         payload["summary"] = reasoning.provider_summary_mode
     return payload
 

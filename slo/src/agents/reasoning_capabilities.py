@@ -365,6 +365,7 @@ def resolve_reasoning_config(
             enabled=False,
             requested_level=requested_level,
             active_level="off",
+            provider_effort=capability.provider_effort_map.get("off"),
         )
 
     return _resolved_provider_reasoning_config(

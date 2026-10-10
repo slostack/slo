@@ -1,5 +1,25 @@
 # Slo Codebase Index
 
+## Feature 89 runtime boundary — approval pending
+
+The catalog owns `supports_chatgpt_codex` and `requires_responses_api`. Both
+survive Python dumps/copies/merges; only `ModelCatalogStore.write_provider_cache`
+excludes them for strict pre-feature schema-2 readers. Required-Responses
+reasoning overrides may change the default, not the fixed controls.
+
+`LLMFactory` validates its captured credential and selects the configured
+`OpenAIPlatformChatOpenAI` for API-key required-Responses records; OAuth uses
+the existing Codex builder. The three GPT-6 seeds support both lanes. `OpenAIRequestPolicy`
+owns constructor and final SDK merge protection, preserving legacy shallow
+semantics. Session final selection checks precede adoption; lazy checks precede
+OAuth refresh. Startup/router use the session snapshot; picker auth types are
+lifecycle-only presentation evidence. Jev null output metadata reaches the
+existing conservative cap without weakening authenticated admission.
+
+Locked offline SDK/tool/resume and distinct frozen-reader proofs now exist;
+no live authorization or release claim follows. Current receipts and remaining
+static/review/assessment gates: `docs/implementation/89-gpt-6-support/recovery13-closure.md`.
+
 ## Shared-state compatibility contract — 86.b (2026-10-04)
 
 This supersedes Feature 86 `../overview.md:654` (“new code ignores schema 1;

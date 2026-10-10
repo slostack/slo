@@ -85,8 +85,18 @@ async def test_build_session_config_when_released_slo_wrote_session_new_slo_cont
 
 
 @pytest.mark.parametrize(argnames="store_kind", argvalues=["tree", "flat"])
+@pytest.mark.parametrize(
+    argnames="model_name",
+    argvalues=[
+        "openrouter:vendor/compat",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "openrouter:typesafe/jev-router",
+    ],
+)
 async def test_hydrate_transcript_entries_when_new_slo_wrote_session_released_slo_loads_all_turns(
-    released_slo_source: Path, isolated_slo_home: Path, store_kind: str
+    released_slo_source: Path, isolated_slo_home: Path, store_kind: str, model_name: str
 ) -> None:
     """New OpenRouter history with an extension is readable and writable on rollback."""
     store_type: dict[str, Callable[[], SessionHistoryStoreProtocol]] = {
@@ -95,9 +105,7 @@ async def test_hydrate_transcript_entries_when_new_slo_wrote_session_released_sl
     }
     store = store_type[store_kind]()
     assert store.root.resolve().is_relative_to(isolated_slo_home)
-    await store.ensure_session(
-        session_id="new-session", workdir=isolated_slo_home, model_name="openrouter:vendor/compat"
-    )
+    await store.ensure_session(session_id="new-session", workdir=isolated_slo_home, model_name=model_name)
     extension = ProviderMessageExtensionDAO(
         provider=ProviderName.OPENROUTER, source_model_name="openrouter:vendor/compat"
     )

@@ -2249,6 +2249,10 @@ class SloAgentSession:
                 return "model preparation is pending; wait before selecting a model"
             if self.is_running:
                 return "cannot switch models while a prompt is in flight"
+            try:
+                self._validate_model_selection_credential(model_name=model_name, snapshot=snapshot)
+            except ValueError as error:
+                return str(error)
             self._commit_model_selection(model_name=model_name, snapshot=snapshot)
         try:
             UserPreferencesStore.upsert(model_name=model_name)
@@ -2256,22 +2260,30 @@ class SloAgentSession:
             return f"active model switched to {model_name}. Preference was not saved."
         return f"active model switched to {model_name}. Preference saved."
 
-    def _validate_model_selection_credential(self, *, model_name: str) -> None:
+    def _validate_model_selection_credential(
+        self, *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+    ) -> None:
         """Require credentials for the exact provider selected by the operator.
 
         WHAT: Restores provider authentication validation at the session boundary
             before catalog preparation or preference mutation.
         WHO: ``prepare_model_selection`` calls this for every direct selection.
-        WHEN: Before an asynchronous catalog operation begins.
+        WHEN: Before preparation and again under the lock immediately before commit.
 
         Args:
             model_name (str): Canonical direct or OpenRouter route.
+            snapshot: Prepared view for final validation; None for preliminary validation.
 
         Raises:
-            ValueError: If the provider has no effective credential.
+            ValueError: Missing credentials or an incompatible OpenAI backend.
         """
         provider: ProviderName = provider_for_model(model_name=model_name)
-        CredentialResolver.require(provider=provider)
+        credential = CredentialResolver.require(provider=provider)
+        if provider is not ProviderName.OPENAI:
+            return
+        ModelCatalogService.entry_for_model(
+            model_name=model_name, snapshot=snapshot
+        ).require_backend_eligibility(auth_type=credential.auth_type)
 
     def _commit_model_selection(
         self,
@@ -2339,6 +2351,7 @@ class SloAgentSession:
                 "Cannot switch models on a pre-built SloAgentSession. "
                 "Build the session from SessionConfigDAO instead."
             )
+        self._validate_model_selection_credential(model_name=model_name, snapshot=self.catalog_snapshot)
         resolved_reasoning_level: ReasoningLevel = clamp_reasoning_level(
             model_name=model_name,
             requested_level=self.active_reasoning_level,
@@ -2386,6 +2399,7 @@ class SloAgentSession:
         clamped_level: ReasoningLevel = clamp_reasoning_level(
             model_name=self.active_model_name,
             requested_level=reasoning_level,
+            snapshot=self.catalog_snapshot,
         )
         if clamped_level == self._active_reasoning_level:
             return clamped_level
@@ -4154,6 +4168,31 @@ class SloAgentSession:
             )
         self._admitted_run_snapshot = self._catalog_snapshot
 
+    def _validate_configured_backend_eligibility(self) -> None:
+        """Reject incompatible OpenAI lanes before lazy readiness refreshes OAuth.
+
+        Readiness checks the session view once per build; the factory separately
+        checks its actual credential afterward. No credential is retained here.
+
+        Raises:
+            ValueError: Missing OpenAI auth or a configured record rejects its type.
+        """
+        if self._config is None:
+            return
+        names = tuple(
+            name
+            for name in self._configured_model_names(config=self._config)
+            if provider_for_model(model_name=name) is ProviderName.OPENAI
+        )
+        if not names:
+            return
+        credential = CredentialResolver.require(provider=ProviderName.OPENAI)
+        snapshot = self.catalog_snapshot
+        for name in names:
+            ModelCatalogService.entry_for_model(
+                model_name=name, snapshot=snapshot
+            ).require_backend_eligibility(auth_type=credential.auth_type)
+
     async def _ensure_agent_ready(self) -> None:
         """Refresh OAuth creds if needed, then lazy-build the agent.
 
@@ -4168,6 +4207,7 @@ class SloAgentSession:
         """
         if self._agent is not None:
             return
+        self._validate_configured_backend_eligibility()
         await self._refresh_oauth_credential_if_needed()
         with CredentialResolver.bind_build_credential(credential=self._admitted_openrouter_credential):
             self._agent = self._build_agent()

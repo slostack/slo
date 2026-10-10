@@ -12,7 +12,7 @@ dispatch and the ``MODEL_DEFAULTS`` fallback chain.
 """
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeAlias, cast, runtime_checkable
 
 import httpx
 
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 from config.ai_model_config import MODEL_DEFAULTS, defaults_for_model
 from src.agents.model_catalog.dao import ModelCatalogEntryDAO, ModelCatalogSnapshotDAO
 from src.agents.model_catalog.service import ModelCatalogService
+from src.agents.providers.openai_platform import OpenAIPlatformChatOpenAI, OpenAIRequestPolicy
 from src.agents.providers.anthropic_claude_code import (
     _ThinkingPatchedChatAnthropic,
     anthropic_thinking_payload,
@@ -507,7 +508,7 @@ class LLMFactory:
         Returns:
             ChatOpenAI: Configured chat model on the appropriate lane.
         """
-        cred: CredentialDAO = CredentialResolver.require(provider=ProviderName.OPENAI)
+        cred, entry = cls._capture_openai_build_credential(model_name=model_name, resolved=resolved)
         api_model_name: str = ModelCatalogService.api_model_name_for(
             model_name=model_name,
             **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
@@ -519,11 +520,72 @@ class LLMFactory:
         )
         sanitized_temperature, sanitized_model_kwargs = cls._resolve_openai_request_policy(
             model_name=model_name,
+            auth_type=cred.auth_type,
             resolved_reasoning=resolved_reasoning,
             temperature=resolved["temperature"],
             model_kwargs=resolved["model_kwargs"],
             **({"snapshot": resolved["snapshot"]} if resolved.get("snapshot") is not None else {}),
         )
+        return cls._build_openai_lane(
+            model_name=model_name,
+            api_model_name=api_model_name,
+            resolved=resolved,
+            cred=cred,
+            entry=entry,
+            resolved_reasoning=resolved_reasoning,
+            sanitized_temperature=sanitized_temperature,
+            sanitized_model_kwargs=sanitized_model_kwargs,
+        )
+
+    @classmethod
+    def _capture_openai_build_credential(
+        cls, *, model_name: str, resolved: dict[str, Any]
+    ) -> tuple[CredentialDAO, ModelCatalogEntryDAO]:
+        """Capture and validate the exact credential before the builder chooses a lane.
+
+        Args:
+            model_name: Selected canonical identity.
+            resolved: Factory inputs carrying the pinned catalog view.
+
+        Returns:
+            The checked credential and record, retained only for this construction.
+
+        Raises:
+            ValueError: Missing credentials or record-owned backend rejection.
+        """
+        credential = CredentialResolver.require(provider=ProviderName.OPENAI)
+        entry = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=resolved.get("snapshot"))
+        entry.require_backend_eligibility(auth_type=credential.auth_type)
+        return credential, entry
+
+    @classmethod
+    def _build_openai_lane(
+        cls,
+        *,
+        model_name: str,
+        api_model_name: str,
+        resolved: dict[str, Any],
+        cred: CredentialDAO,
+        entry: ModelCatalogEntryDAO,
+        resolved_reasoning: ResolvedReasoningConfigDAO,
+        sanitized_temperature: Optional[float],
+        sanitized_model_kwargs: dict[str, Any],
+    ) -> ChatOpenAI:
+        """Dispatch the checked credential without another resolver or catalog read.
+
+        Args:
+            model_name: Canonical identity for the legacy session fallback.
+            api_model_name: Pinned wire identity already resolved by the builder.
+            resolved: Factory defaults and trusted HTTP injection.
+            cred: Exact credential checked by the builder.
+            entry: Pinned transport policy.
+            resolved_reasoning: Pinned reasoning translation.
+            sanitized_temperature: Single constructor value after policy sanitation.
+            sanitized_model_kwargs: Detached caller extras.
+
+        Returns:
+            Configured stock, Codex or protected Platform client.
+        """
         if cred.auth_type == AuthType.OAUTH:
             return build_chatgpt_backed_chat_openai(
                 model_name=api_model_name,
@@ -535,31 +597,162 @@ class LLMFactory:
                 streaming=resolved["streaming"],
                 http_async_client=resolved["http_async_client"],
             )
+        openai_kwargs = cls._openai_api_key_kwargs(
+            api_model_name=api_model_name,
+            resolved=resolved,
+            cred=cred,
+            entry=entry,
+            reasoning=resolved_reasoning,
+            temperature=sanitized_temperature,
+            extras=sanitized_model_kwargs,
+        )
+        return cls._construct_openai_api_key_model(
+            kwargs=openai_kwargs, entry=entry, api_model_name=api_model_name, reasoning=resolved_reasoning
+        )
+
+    @classmethod
+    def _openai_api_key_kwargs(
+        cls,
+        *,
+        api_model_name: str,
+        resolved: dict[str, Any],
+        cred: CredentialDAO,
+        entry: ModelCatalogEntryDAO,
+        reasoning: ResolvedReasoningConfigDAO,
+        temperature: Optional[float],
+        extras: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Assemble checked API-key inputs for lane construction before SDK validation.
+
+        Args:
+            api_model_name: Pinned wire identity.
+            resolved: Defaults and trusted HTTP injection.
+            cred: Already checked credential, never resolved here.
+            entry: Pinned endpoint policy.
+            reasoning: Effective reasoning translation.
+            temperature: Single sanitized constructor value.
+            extras: Detached caller options.
+
+        Returns:
+            Constructor fields without logging credentials.
+        """
         openai_kwargs: dict[str, Any] = {
             "model": api_model_name,
             "streaming": resolved["streaming"],
             "max_retries": resolved["max_retries"],
             "max_tokens": resolved["max_tokens"],
             "api_key": cred.access_token,
-            "model_kwargs": sanitized_model_kwargs,
+            "model_kwargs": extras,
             "http_async_client": resolved["http_async_client"],
         }
-        openai_reasoning: Optional[dict[str, str]] = openai_reasoning_payload(
-            reasoning=resolved_reasoning,
+        payload = openai_reasoning_payload(reasoning=reasoning)
+        openai_kwargs.update(cls._openai_reasoning_constructor_fields(payload=payload))
+        openai_kwargs.update(
+            cls._openai_temperature_constructor_fields(
+                temperature=temperature, has_payload=payload is not None, entry=entry
+            )
         )
-        if openai_reasoning is not None:
-            openai_kwargs["reasoning"] = openai_reasoning
-            openai_kwargs["use_responses_api"] = True
-            openai_kwargs["output_version"] = "responses/v1"
-        elif sanitized_temperature is not None:
-            openai_kwargs["temperature"] = sanitized_temperature
-        return ChatOpenAI(**openai_kwargs)
+        return openai_kwargs
+
+    @staticmethod
+    def _openai_reasoning_constructor_fields(*, payload: Optional[dict[str, str]]) -> dict[str, object]:
+        """Project reasoning during API-key assembly without changing legacy omission.
+
+        Args:
+            payload: Shared translation or None for the legacy endpoint.
+
+        Returns:
+            Responses constructor fields only when reasoning is present.
+        """
+        if payload is None:
+            return {}
+        return {"reasoning": payload, "use_responses_api": True, "output_version": "responses/v1"}
+
+    @staticmethod
+    def _openai_temperature_constructor_fields(
+        *, temperature: Optional[float], has_payload: bool, entry: ModelCatalogEntryDAO
+    ) -> dict[str, object]:
+        """Select temperature during API-key assembly, retaining legacy elif semantics.
+
+        Args:
+            temperature: Sanitized value; None omits the field.
+            has_payload: Whether reasoning was translated.
+            entry: Pinned transport policy.
+
+        Returns:
+            At most one temperature constructor field.
+        """
+        if temperature is None or (has_payload and not entry.requires_responses_api):
+            return {}
+        return {"temperature": temperature}
+
+    @classmethod
+    def _construct_openai_api_key_model(
+        cls,
+        *,
+        kwargs: dict[str, Any],
+        entry: ModelCatalogEntryDAO,
+        api_model_name: str,
+        reasoning: ResolvedReasoningConfigDAO,
+    ) -> ChatOpenAI:
+        """Select the SDK lane after factory credential and policy validation.
+
+        Args:
+            kwargs: Detached factory-owned constructor inputs.
+            entry: Pinned transport and sampling policy.
+            api_model_name: Exact admitted wire identity.
+            reasoning: Effective configuration copied for the client lifetime.
+
+        Returns:
+            Stock legacy model or configured protected Platform adapter.
+        """
+        if not entry.requires_responses_api:
+            return ChatOpenAI(**kwargs)
+        return cls._build_protected_openai_model(
+            kwargs=kwargs, entry=entry, api_model_name=api_model_name, reasoning=reasoning
+        )
+
+    @staticmethod
+    def _build_protected_openai_model(
+        *,
+        kwargs: dict[str, Any],
+        entry: ModelCatalogEntryDAO,
+        api_model_name: str,
+        reasoning: ResolvedReasoningConfigDAO,
+    ) -> OpenAIPlatformChatOpenAI:
+        """Build and pin the Platform adapter before the API-key lane returns it.
+
+        Args:
+            kwargs: Detached SDK constructor inputs.
+            entry: Pinned sampling policy.
+            api_model_name: Exact wire identity.
+            reasoning: Effective configuration copied for the client lifetime.
+
+        Returns:
+            Configured adapter ready for inherited tool binding.
+        """
+        model = OpenAIPlatformChatOpenAI(
+            **{
+                **kwargs,
+                "base_url": "https://api.openai.com/v1",
+                "use_responses_api": True,
+                "output_version": "responses/v1",
+            }
+        )
+        model.configure_request_policy(
+            model_name=api_model_name,
+            reasoning=reasoning,
+            forbid_sampling=reasoning.enabled
+            and entry.reasoning_profile.forbid_sampling_parameters_when_enabled,
+        )
+        return model
 
     @classmethod
     def _resolve_openai_request_policy(
         cls,
         *,
         model_name: str,
+        auth_type: AuthType,
         resolved_reasoning: ResolvedReasoningConfigDAO,
         temperature: Optional[float],
         model_kwargs: dict[str, Any],
@@ -576,6 +769,7 @@ class LLMFactory:
 
         Args:
             model_name (str): Canonical model name used for capability lookup.
+            auth_type (AuthType): Captured effective credential; strict protection is API-key-only.
             resolved_reasoning (ResolvedReasoningConfigDAO): Resolved reasoning
                 config for the active model.
             temperature (Optional[float]): Resolved caller temperature.
@@ -585,15 +779,40 @@ class LLMFactory:
             tuple[Optional[float], dict[str, Any]]: Sanitized temperature and a
                 newly copied extras mapping.
         """
-        sanitized_model_kwargs: dict[str, Any] = dict(model_kwargs)
-        capability: ModelReasoningCapabilityDAO = capability_for_model(
-            model_name=model_name, snapshot=snapshot
+        entry = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
+        forbid_sampling = (
+            resolved_reasoning.enabled and entry.reasoning_profile.forbid_sampling_parameters_when_enabled
         )
-        if not (resolved_reasoning.enabled and capability.forbid_sampling_parameters_when_enabled):
-            return temperature, sanitized_model_kwargs
-        for forbidden_key in ("temperature", "top_p", "top_logprobs", "logprobs"):
-            sanitized_model_kwargs.pop(forbidden_key, None)
-        return None, sanitized_model_kwargs
+        effective_temperature = None if forbid_sampling else temperature
+        if auth_type is not AuthType.API_KEY or not entry.requires_responses_api:
+            return effective_temperature, OpenAIRequestPolicy.sanitize_sampling_fields(
+                options=model_kwargs, forbid_sampling=forbid_sampling
+            )
+        return cls._resolve_protected_openai_constructor_inputs(
+            temperature=effective_temperature, model_kwargs=model_kwargs, forbid_sampling=forbid_sampling
+        )
+
+    @staticmethod
+    def _resolve_protected_openai_constructor_inputs(
+        *, temperature: Optional[float], model_kwargs: dict[str, Any], forbid_sampling: bool
+    ) -> tuple[Optional[float], dict[str, Any]]:
+        """Validate and consume strict extras before SDK field hoisting.
+
+        Args:
+            temperature: Factory fallback after enabled sampling protection.
+            model_kwargs: Caller-owned constructor options, never mutated.
+            forbid_sampling: Effective enabled profile restriction.
+
+        Returns:
+            One temperature (explicit null suppresses fallback) and detached extras.
+
+        Raises:
+            ValueError: Protected keys or invalid nested option shapes.
+        """
+        OpenAIRequestPolicy.validate_caller_options(options=model_kwargs, constructor=True)
+        extras = OpenAIRequestPolicy.sanitize(options=model_kwargs, forbid_sampling=forbid_sampling)
+        selected = extras.pop("temperature", temperature)
+        return cast(Optional[float], selected), extras
 
     @classmethod
     def _build_openrouter(

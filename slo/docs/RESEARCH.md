@@ -1,5 +1,27 @@
 # Slo Codebase Index
 
+## Feature 89 runtime owners and offline acceptance
+
+`src/agents/providers/openai_platform.py` owns strict nonmutating caller-option
+validation, sampling/include sanitation, cap normalization and the lifetime-pinned
+SDK subclass selected by `LLMFactory` only for API-key required-Responses records.
+All three GPT-6 seeds also support OAuth through the unchanged Codex builder,
+including subscription headers, instructions adaptation and cap removal. Legacy
+models keep stock/Codex SDK paths and shallow sanitation. Session final eligibility
+checks run before adoption and lazy OAuth refresh; startup/router consume the
+session snapshot. Picker cache identity includes generation, snapshot identity,
+auth revision, lifecycle revision and active model; row reads do no credential I/O.
+
+`test_openai_platform.py` covers all 21 locked-SDK tool cycles and constructor/wire
+policy; `test_feature89_model_flows.py` covers mounted tools/resume, isolated mixed
+lanes and committed failures. `test_feature89_frozen_reader.py` extracts the exact
+pre-feature commit and validates real v2 writer bytes plus legacy seed/temperature
+oracles. Separate v0.20.1 tree/flat history tests exercise all four saved route IDs;
+these are readability/append proofs, not old-version inference on new models.
+Both seed policy flags are excluded only at the v2 writer. No schema migration.
+See `implementation/89-gpt-6-support/recovery13-closure.md` for actual gates;
+static baseline failures are unwaived, independent review/assessment pending.
+
 ## Shared-state compatibility contract — 86.b (2026-10-04)
 
 This supersedes Feature 86 `../overview.md:654` (“new code ignores schema 1;

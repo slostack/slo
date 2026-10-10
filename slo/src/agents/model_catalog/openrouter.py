@@ -232,13 +232,21 @@ class OpenRouterCatalogConverter:
 
     @staticmethod
     def _output_metadata_valid(*, record: dict[str, object]) -> bool:
-        """Exclude malformed supplied output limits rather than treating them as missing."""
-        provider = record.get("top_provider")
+        """Accept unknown capacity during conversion without inventing provider limits.
+
+        Args:
+            record: Authenticated model metadata before eligibility projection.
+
+        Returns:
+            Whether output evidence is absent, null or a positive strict integer.
+                Independent text, tool and context gates still apply.
+        """
+        provider: object = record.get("top_provider")
         if not isinstance(provider, dict):
             return provider is None
-        if "max_completion_tokens" not in provider:
+        value: object = provider.get("max_completion_tokens")
+        if value is None:
             return True
-        value = provider["max_completion_tokens"]
         return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
     @staticmethod

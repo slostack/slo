@@ -328,6 +328,7 @@ class ModelCatalogOverrideService:
                 )
             data["runtime_profile"] = runtime_profile.model_dump()
         if override.reasoning_profile is not None:
+            entry.require_reasoning_override_compatibility(reasoning_profile=override.reasoning_profile)
             reasoning_profile: ModelReasoningProfileDAO = override.reasoning_profile
             if entry.provider is ProviderName.OPENROUTER:
                 reasoning_profile = cls._restricted_reasoning_profile(

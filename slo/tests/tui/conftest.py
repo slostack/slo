@@ -9,11 +9,58 @@ re-monkeypatch the resolver to return ``None``.
 from __future__ import annotations
 
 from typing import Iterator
+import hashlib
+import os
+import sys
+
+from tests.tui.selection_observer import SelectionObserver
 
 import pytest
 
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.event_renderer import EventRenderer
+
+
+@pytest.fixture(autouse=True)
+def _observe_mr116_selection(request: pytest.FixtureRequest) -> Iterator[None]:
+    """TEMP: capture the exact case only when opted in; preserve all natural scheduling.
+
+    JUnit user properties carry bounded sanitized evidence on pass and failure.
+    No file writes, application text, credentials, or environment dump occurs here.
+    """
+    target = (
+        "tests/tui/test_selection_scroll_highlight.py::TestPilotVisibleSelection::"
+        "test_selection_paint_and_scroll_remain_native_for_every_visible_body_and_theme[slo-dark-answer]"
+    )
+    if os.environ.get("SLO_TEST_SELECTION_OBSERVER") != "1" or request.node.nodeid != target:
+        yield
+        return
+    observer = SelectionObserver()
+    order = "\n".join(item.nodeid for item in request.session.items)
+    observer.append(
+        event="collection",
+        fields={
+            "count": len(request.session.items),
+            "sha256": hashlib.sha256(order.encode()).hexdigest(),
+            "target_index": request.session.items.index(request.node),
+            "preceding": [
+                item.nodeid[:256]
+                for item in request.session.items[
+                    max(0, request.session.items.index(request.node) - 8) : request.session.items.index(
+                        request.node
+                    )
+                ]
+            ],
+        },
+    )
+    previous = sys.getprofile()
+    assert previous is None, "TEMP observer must not replace another profiler"
+    sys.setprofile(observer.profile)
+    try:
+        yield
+    finally:
+        sys.setprofile(previous)
+        request.node.user_properties.append(("selection_observer", observer.serialize()))
 
 
 @pytest.fixture(autouse=True)

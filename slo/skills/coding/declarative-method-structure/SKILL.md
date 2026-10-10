@@ -515,6 +515,50 @@ The test for "too much" is simple: can you describe what the method does in one 
 
 ---
 
+## Module-depth design guidance
+
+Prefer interfaces that let callers request a meaningful outcome without coordinating
+implementation steps. Keep sequencing, resource handling, and shared policy in their
+existing responsible owner. Use cohesive private helpers to preserve declarative
+structure. Preserve required architectural boundaries, public compatibility, security
+rules, and testing requirements. Do not add wrappers merely to appear modular, merge
+unrelated responsibilities, or hide necessary caller choices. Depth is a design
+consideration, not a method-length exemption and not an automatic review blocker.
+
+Ask for evidence at actual call sites:
+
+- What must callers know: constructors and collaborators, ordering, flags, errors?
+- What complexity does this owner actually own rather than merely forward?
+- Can its internals change without changing callers? Having one `invoke` is not
+  automatically deep if callers still assemble and coordinate the whole operation.
+- Do private helpers express cohesive boundaries, rather than arbitrary line chunks?
+- Are retry limits, cancellation, durability guarantees and meaningful errors still
+  documented as caller contracts, rather than hidden behind an easy-looking method?
+
+Keep intentional thin routers, CLI adapters, agent-tool bridges and required layers.
+Do not consolidate unrelated responsibilities into god objects or weaken security.
+The hard extraction rule above (~8 lines of logic) still applies; depth does not
+excuse long methods. Keep naming, typing, gateway and branch-testing requirements.
+
+### Language-specific application
+
+These are interface sketches, not new runtime architectures. Keep the existing owner
+and its documented failure/cleanup contract; do not create a wrapper for these names.
+
+| Language | Meaningful outcome at the caller | Implementation discipline |
+|---|---|---|
+| Python | `await service.invoke(order_id=order_id)` | Explicit types, keyword arguments, Google-style behavior/error docs; cohesive `_step` helpers inside the existing owner. |
+| Go | `result, err := service.Execute(ctx, PlaceOrderParams{OrderID: orderID})` | Context first, named struct fields, typed results and wrapped/sentinel errors; unexported camelCase helpers, consumer-local interfaces, no request state on reused services. |
+| TypeScript | `await service.placeOrder({ orderId, signal })` | Named readonly options interface, explicit `Promise<PlaceOrderResult>`, JSDoc errors/cancellation, cohesive `private` helpers. |
+
+Go application services own cross-domain ordering/transactions; domain services keep
+single-domain responsibilities. TypeScript uses options objects, not Python keyword
+arguments. Neither Go nor TypeScript is required to adopt Python private underscores.
+Consult the applicable `golang-coding-conventions`, `build-go-application-services`,
+`build-go-domain-features`, `typescript-declarative-method-structure` and
+`typescript-named-arguments-and-type-hints` skills when those languages are in scope.
+Their language-specific hard rules still govern; this guidance grants no exemption.
+
 ## Quick Reference: When to Refactor
 
 ### Refactor When You See:

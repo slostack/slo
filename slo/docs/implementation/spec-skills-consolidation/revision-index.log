@@ -1,0 +1,3 @@
+PYTHONPATH=/root/Code/slo/.worktrees/slo-spec-skills/slo poetry run python scripts/build_skill_index.py
+Skipping virtualenv creation, as specified in config file.
+wrote /root/Code/slo/.worktrees/slo-spec-skills/slo/skills/INDEX.md (117 skills)

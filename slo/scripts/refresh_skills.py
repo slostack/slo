@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import dedent
@@ -33,6 +32,34 @@ FEATURE_SPECIFICATIONS_ROOT = (
 FRONTMATTER_RE = re.compile(r"\A[ \t]*---\s*\n(?P<body>.*?)\n[ \t]*---\s*\n", re.DOTALL)
 FIRST_HEADING_RE = re.compile(r"\A#\s+(?P<title>.+?)\n+(?P<body>.*)\Z", re.DOTALL)
 MARKDOWN_LINK_RE = re.compile(r"\[(?P<label>[^\]]+)\]\((?P<target>[^)]+)\)")
+
+# These policies are maintained in this repository, not regenerated from upstream.
+REPOSITORY_OWNED_SKILLS: frozenset[str] = frozenset(
+    {
+        "feature-specifications",
+        "feature-specifications-pre-hook",
+        "feature-specifications-post-hook",
+        "feature-specification-verification",
+        "breakdown-feature-spec-to-tasks",
+        "specification-development",
+        "declarative-method-structure",
+        "review-feature-code",
+        "orchestrator",
+        "implement-feature-request",
+        "workflows",
+        "readme",
+        "gather-feature-context",
+        # Formal-workflow pointers and independently maintained routing/safety policy.
+        "code-test-review",
+        "code-test-loop",
+        "headless-orchestration",
+        "locate-knowledge-base",
+        "update-knowledge-base",
+        "development-reviews",
+        "code-review-rules",
+        "10-cardinal-rules-and-anti-patterns",
+    }
+)
 
 WORKFLOW_SLUGS: set[str] = {
     "orchestrator",
@@ -582,7 +609,7 @@ def _orchestrator_body() -> str:
            - `integration-tests` for cross-service scenarios and flaky-test debugging.
            - `frontend-vue` for Vue conventions and tutorials.
         4. **Load companion skills only when the main skill calls for them.**
-           - Example: `feature-specifications` pairs with its PRE and POST hooks.
+           - Example: `feature-specifications` owns context gathering and self-check; independent verification is separate.
            - Example: integration-test authoring starts with `10-cardinal-rules-and-anti-patterns` before scenario-specific prompts.
         5. **Return only the next best skills.**
            Prefer a short ordered list over a long exhaustive catalog.
@@ -592,7 +619,7 @@ def _orchestrator_body() -> str:
         ### Feature work
 
         - Implementation request for a feature or story → `implement-feature-request`
-        - Need to draft a spec only → `feature-specifications-pre-hook`, `feature-specifications`, `feature-specifications-post-hook`
+        - Need to draft a spec only → `feature-specifications` (Gather context → Draft → Self-check → Revise)
         - Need to break an approved spec into tasks → `breakdown-feature-spec-to-tasks`
         - Need to review shipped code against a spec → `review-feature-code`
 
@@ -690,9 +717,8 @@ def _implement_feature_request_body() -> str:
            - Read project guardrails (`CLAUDE.md`, `AGENTS.md`, `docs/RESEARCH.md`).
            - Read the Knowledge Base before inferring architecture or domain rules.
         2. **Produce or validate the implementation spec.**
-           - Use `feature-specifications-pre-hook`.
-           - Use `feature-specifications`.
-           - Use `feature-specifications-post-hook`.
+           - Use `feature-specifications` for gather, draft, self-check and revise.
+           - Hand author READY to independent `feature-specification-verification` once.
            - If a draft spec already exists, run `feature-specification-verification` instead of rewriting blindly.
         3. **Break the spec into executable tasks.**
            - Use `breakdown-feature-spec-to-tasks`.
@@ -1399,6 +1425,8 @@ def _tui_scheduled_operations_body() -> str:
         4. how the user can inspect it,
         5. how it will be stopped and cleaned up.
         """).strip() + "\n"
+
+
 def _git_ops_specs() -> dict[str, SkillSpec]:
     """Return the manually-authored git workflow skills."""
     return {
@@ -2379,13 +2407,12 @@ def _write_skills(*, specs: dict[str, SkillSpec], prompts_root: Path, skills_dir
         if spec.source_rel is not None
     }
 
-    for entry in skills_dir.iterdir():
-        if entry.is_dir():
-            shutil.rmtree(entry)
-
+    # Refresh only upstream-owned files; retain local workflows, samples and policy.
     for spec in specs.values():
         current_output_path = _skill_repo_relpath(spec=spec)
         destination = skills_dir.parent / current_output_path
+        if spec.slug in REPOSITORY_OWNED_SKILLS:
+            continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         rendered = _render_skill(
             spec=spec,

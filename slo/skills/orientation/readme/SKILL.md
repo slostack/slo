@@ -92,7 +92,7 @@ documentation.
 
 **Purpose:** the current, mutable state of the project — what is happening now
 and recent context — as opposed to `RESEARCH.md`'s durable, decision-level
-knowledge. The spec pre-hook loads it in Step 1 and labels it
+knowledge. The authoring context stage loads it and labels it
 `<project-memory>/MEMORY.md — point-in-time project memory`.
 
 Every project must have one. If it is missing, create it when you first do
@@ -110,8 +110,8 @@ meaningful work in the project, and keep it current as state changes.
 Roughly: **`RESEARCH.md` = "what is permanently true and why"; `MEMORY.md` =
 "what is true right now."** Skills that draft specs — notably
 [`feature-specifications`](../../design-and-analysis/feature-specifications/SKILL.md)
-and its
-[pre-hook](../../design-and-analysis/feature-specifications-pre-hook/SKILL.md) —
+in its
+[Gather context stage](../../design-and-analysis/feature-specifications/SKILL.md#gather-context) —
 read **both**: the stable design context and the live state, before a spec is
 drafted.
 
@@ -199,7 +199,13 @@ skills/
 └── user-content/               # Authoring personal skills and workflows
 ```
 
-Personal overrides live at `~/.slo/user_skills/` and `~/.slo/user_workflows/`.
+Resolve personal overrides through `config.cfg.USER_SKILLS_DIR` and
+`USER_WORKFLOWS_DIR`: `SLO_USER_SKILLS_DIR` / `SLO_USER_WORKFLOWS_DIR` override
+the `user_skills` / `user_workflows` directories under Slo’s resolved home.
+Use the active catalog’s file paths; do not assume an installation layout.
+Vendored discovery honors `SLO_SKILLS_DIR`, then a populated skills tree under
+`SLO_HOME`, then the package-adjacent skills tree. See
+[skill discovery](../../design-and-analysis/feature-specifications/SKILL.md#artifact-paths-and-skill-discovery).
 
 **Adding or editing a skill:** edit the `skills/<group>/<slug>/SKILL.md` file,
 then run `make build-skill-index` to regenerate `INDEX.md`. Never hand-edit
@@ -241,8 +247,8 @@ drops the review and completion-check steps.
 | Skill | What it covers |
 |---|---|
 | [`feature-specifications`](../../design-and-analysis/feature-specifications/SKILL.md) | Style guide for writing technical feature specifications |
-| [`feature-specifications-pre-hook`](../../design-and-analysis/feature-specifications-pre-hook/SKILL.md) | Mandatory context-gathering pass before drafting a spec — KB, `MEMORY.md`, repo guardrails, conventions, affected surface |
-| [`feature-specifications-post-hook`](../../design-and-analysis/feature-specifications-post-hook/SKILL.md) | Mandatory self-review after drafting — DRY consolidation, convention drift, scope, examples, test coverage |
+| [`feature-specifications-pre-hook`](../../design-and-analysis/feature-specifications-pre-hook/SKILL.md) | Compatibility redirect to feature-specifications / Gather context |
+| [`feature-specifications-post-hook`](../../design-and-analysis/feature-specifications-post-hook/SKILL.md) | Compatibility redirect to feature-specifications / Self-check and Revise |
 | [`feature-specification-verification`](../../design-and-analysis/feature-specification-verification/SKILL.md) | Reviewing a draft spec for gaps, ambiguities, and redundant functionality |
 | [`gather-feature-context`](../../design-and-analysis/gather-feature-context/SKILL.md) | Pulls domain, business, current-state, and implementation context into a sign-off briefing |
 | [`breakdown-feature-spec-to-tasks`](../../design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md) | Decomposing an approved spec into dependency-ordered sub-tasks |
@@ -449,8 +455,8 @@ drops the review and completion-check steps.
 
 | Skill | What it covers |
 |---|---|
-| [`create-user-skill`](../../user-content/create-user-skill/SKILL.md) | Create a personal skill at `~/.slo/user_skills` |
-| [`create-user-workflow`](../../user-content/create-user-workflow/SKILL.md) | Create a personal pipeline workflow at `~/.slo/user_workflows` |
+| [`create-user-skill`](../../user-content/create-user-skill/SKILL.md) | Create a personal skill at the runtime-resolved `USER_SKILLS_DIR` |
+| [`create-user-workflow`](../../user-content/create-user-workflow/SKILL.md) | Create a personal pipeline workflow at the runtime-resolved `USER_WORKFLOWS_DIR` |
 
 ---
 

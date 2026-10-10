@@ -1,0 +1,47 @@
+Skipping virtualenv creation, as specified in config file.
+FF.                                                                      [100%]
+=================================== FAILURES ===================================
+________ test_context_companion_metadata_and_paths_use_canonical_author ________
+
+    def test_context_companion_metadata_and_paths_use_canonical_author() -> None:
+        """Discovery must describe an on-request companion, not a mandatory pre-hook."""
+        registry = next(skill for skill in SkillRegistry.load(skills_dir=SKILLS_DIR) if skill.name == "gather-feature-context")
+        runtime = next(skill for skill in SkillsLoader.load(skills_dir=str(SKILLS_DIR)) if skill.name == registry.name)
+        assert runtime.description == registry.description
+        for description in (runtime.description, registry.when_to_use):
+>           assert "on-request" in description.lower()
+E           AssertionError: assert 'on-request' in 'pre-hook for feature-specifications: pulls together domain, business, current-state, and implementation context (jira, confluence rfcs/prds, google drive, kb, memory, external sources) into a sign-off briefing before spec writing starts.'
+E            +  where 'pre-hook for feature-specifications: pulls together domain, business, current-state, and implementation context (jira, confluence rfcs/prds, google drive, kb, memory, external sources) into a sign-off briefing before spec writing starts.' = <built-in method lower of str object at 0x7258a21f5110>()
+E            +    where <built-in method lower of str object at 0x7258a21f5110> = 'Pre-hook for feature-specifications: pulls together domain, business, current-state, and implementation context (JIRA, Confluence RFCs/PRDs, Google Drive, KB, memory, external sources) into a sign-off briefing before spec writing starts.'.lower
+
+tests/agents/skills/test_specification_authoring.py:175: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"asctime": "2026-10-09 14:11:19", "levelname": "INFO", "name": "slo", "filename": "service.py", "funcName": "load", "lineno": 56, "message": "SkillsLoader: loaded skills", "count": 117, "skills_dir": "/root/Code/slo/.worktrees/slo-spec-skills/slo/skills"}
+------------------------------ Captured log call -------------------------------
+INFO     slo:service.py:56 SkillsLoader: loaded skills
+______ test_shared_authoring_documentation_uses_language_specific_styles _______
+
+    def test_shared_authoring_documentation_uses_language_specific_styles() -> None:
+        """Shared example and audit rules must not impose Python docs on Go or TS."""
+        text = (SKILLS_DIR / "design-and-analysis/feature-specifications/SKILL.md").read_text(encoding="utf-8")
+        for heading in ("### `## Code Reference` Rules", "### Check 2 —", "### Shared example expectations"):
+            section = text.split(heading, 1)[1].split("\n### ", 1)[0]
+            for style in ("Python Google-style", "Go godoc", "TypeScript JSDoc"):
+>               assert style in section
+E               assert 'Python Google-style' in "\n\nEvery code block in `## Code Reference` (and in a sub-spec's `## 7. Implementation Details`) must be preceded by ...mbed the **full corrected example locally** rather than assuming the reader will consult the parent overview.\n\n---\n"
+
+tests/agents/skills/test_specification_authoring.py:192: AssertionError
+=============================== warnings summary ===============================
+../../../../../.pyenv/versions/3.11.7/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+tests/agents/skills/test_specification_authoring.py::test_context_companion_metadata_and_paths_use_canonical_author
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agents/skills/test_specification_authoring.py::test_context_companion_metadata_and_paths_use_canonical_author
+FAILED tests/agents/skills/test_specification_authoring.py::test_shared_authoring_documentation_uses_language_specific_styles
+2 failed, 1 passed, 9 deselected, 2 warnings in 1.34s

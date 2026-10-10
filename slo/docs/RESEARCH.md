@@ -565,3 +565,28 @@ See `docs/implementation/86-openrouter/remediation-r2-r3-r4-2026-10-03.md` for
 historical 5045-pass non-E2E evidence and limitations. The later independent Step 2
 rereview is **REVISE**; see
 `docs/implementation/86-openrouter/independent-full-rereview-2026-10-03.md`.
+
+
+## Specification authoring ownership
+
+`skills/design-and-analysis/feature-specifications/SKILL.md` is the canonical
+Gather context → Draft → Self-check → Revise authoring skill. The former hooks
+are compatibility redirects; independent verification and task breakdown remain
+separate, sequenced by `workflows/specification-development.md`. Every feature
+requires product framing in overview.md and separate standalone engineering
+sub-specs; there is no mode selection or combined-document exception. Skill paths
+follow runtime discovery and supported environment overrides. Project artifact
+paths override generic home defaults. Author self-check is not independent approval.
+Module-depth design guidance lives in `coding/declarative-method-structure` and is
+advisory, not a hard extraction-rule exemption. Refresh tooling overlays upstream
+skills without deleting locally maintained policy/workflows/samples. See
+`docs/implementation/spec-skills-consolidation/` for preservation and gate evidence.
+
+Refresh preservation requires testing real manifest selection plus writer collisions,
+not only a manually constructed protected author record. The protected-owner set
+also includes Code-Test-Review's entry pointer and audited local routing/KB/review
+safety policy; unknown historical customizations still need explicit ownership
+audit before upstream refresh. Runtime descriptions must match body routing: the
+extended context companion is on-request and shares canonical artifact precedence.
+See `revision-evidence.md` in the consolidation evidence directory; independent
+re-review and completion remain pending.

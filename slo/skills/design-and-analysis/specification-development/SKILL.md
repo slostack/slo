@@ -32,7 +32,7 @@ place to avoid drift:
 > **Load and follow `skills/design-and-analysis/workflows/specification-development.md`.**
 
 That file lists the sub-skills it sequences at the top, then defines the three
-pipeline steps (Spec with PRE/POST hooks → Verification → Task breakdown), the
+pipeline steps (Authoring (gather/draft/self-check/revise) → Verification → Task breakdown), the
 spec-file naming rule (`specifications/<number>-<title>/overview.md`; never
 `request.md`), the manual vs. auto confirmation behavior, and the exit
 condition. Do not re-derive the steps from this entry — read the workflow file
@@ -41,7 +41,7 @@ and execute it.
 One rule is worth stating here because it governs every step: the design must
 stay **DRY**. A generated specification frequently proposes functionality that
 already exists in the code — wholly, partially, or as the responsibility an
-existing component already owns. The POST hook always runs a consolidation pass
+existing component already owns. The author self-check always runs a consolidation pass
 over the entities and data structures the spec introduces, consolidating by
 deleting and replacing, encapsulating within our conventions, or re-designing
 the existing component to absorb the new functionality. Responsibilities stay
@@ -50,7 +50,6 @@ comments and explicit interfaces to adjacent responsibilities.
 
 Sub-skills the workflow sequences (loaded on demand per step):
 
-- Step 1 — `feature-specifications-pre-hook`, `feature-specifications`,
-  `feature-specifications-post-hook` (all under `skills/design-and-analysis/`)
+- Step 1 — `skills/design-and-analysis/feature-specifications/SKILL.md` (gather/draft/self-check/revise)
 - Step 2 — `skills/design-and-analysis/feature-specification-verification/SKILL.md`
 - Step 3 — `skills/design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md`

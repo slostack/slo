@@ -1,0 +1,5 @@
+{
+  "authentication": {"status": 401, "error": {"code": "authentication_error"}},
+  "rate_limit": {"status": 429, "error": {"code": "rate_limit_exceeded"}},
+  "protocol": {"status": 200, "error": {"code": "invalid_response"}}
+}

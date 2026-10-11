@@ -176,6 +176,22 @@ For each production file:
 
 Apply the checks for every stack the feature touches.
 
+#### Module-depth design review
+
+Apply [Module-depth design guidance](../../coding/declarative-method-structure/SKILL.md#module-depth-design-guidance)
+with actual call-site evidence in Python, Go and TypeScript. What must callers know
+about constructors, ordering, flags and errors? What complexity is actually owned,
+and can internals change without callers? A single invoke/Execute gateway is not
+proof of depth. Prefer meaningful outcomes and cohesive private helpers in existing
+owners, not wrapper proliferation or god objects. Preserve required thin routers,
+CLI adapters and agent-tool bridges, public compatibility, security and gateway rules.
+Verify documented retry limits, cancellation, durability and meaningful errors.
+Depth is advisory, not an automatic blocker or an exemption from the hard ~8-line
+extraction rule. Rank any finding by demonstrated impact, not interface size alone.
+Use Go context-first/named-field structs and TypeScript named options/explicit types;
+do not impose Python keyword arguments or private underscores on those languages.
+Load their applicable language, application/domain, documentation and testing skills.
+
 #### Universal Conventions (all stacks)
 
 | Convention | What To Check |

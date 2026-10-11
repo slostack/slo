@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from textual import events
+from textual.content import Content
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static
@@ -37,6 +39,7 @@ class SlashSuggestionMenu(Vertical):
         """Seed the menu hidden with an empty suggestion state."""
         super().__init__()
         self._state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
+        self.window_start: int = 0
         self.add_class("-hidden")
 
     def compose(self) -> ComposeResult:
@@ -45,7 +48,7 @@ class SlashSuggestionMenu(Vertical):
         Yields:
             ComposeResult: Single ``Static`` render target.
         """
-        yield Static("", classes="slash-suggestion-lines")
+        yield Static("", classes="slash-suggestion-lines", markup=False)
 
     def update_state(self, *, state: SlashSuggestionStateDAO) -> None:
         """Render the provided suggestion state, skipping unchanged updates.
@@ -64,7 +67,74 @@ class SlashSuggestionMenu(Vertical):
             return
         self._state = state
         self.set_class(not state.visible, "-hidden")
-        self.query_one(".slash-suggestion-lines", Static).update(self._render_lines(state=state))
+        self._paint_window()
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Recompute the viewport after terminal layout changes without resetting selection."""
+        self._paint_window()
+
+    def _paint_window(self) -> None:
+        """Paint only height-bounded candidates, keeping the selected identity visible."""
+        row_height = max(
+            (
+                1 + max(1, len(self._detail_for_terminal(row_detail=row.detail or "").splitlines()))
+                for row in self._state.rows
+            ),
+            default=2,
+        )
+        capacity = max(1, min(25, (self.app.size.height - 8) // row_height))
+        highlight = self._state.highlighted_index
+        self.window_start = max(0, min(self.window_start, max(0, len(self._state.rows) - capacity)))
+        if highlight < self.window_start:
+            self.window_start = highlight
+        if highlight >= self.window_start + capacity:
+            self.window_start = highlight - capacity + 1
+        width = max(1, self.app.size.width - 6)
+        detail_width = width
+        lines: list[str] = []
+        window_end = min(len(self._state.rows), self.window_start + capacity)
+        for index in range(self.window_start, window_end):
+            row = self._state.rows[index]
+            prefix = "›" if index == highlight else " "
+            lines.extend(
+                [f"{prefix} {row.label}", f"  {self._detail_for_terminal(row_detail=row.detail or '')}"]
+            )
+        if not lines:
+            lines.append("No models match — change search or /model refresh")
+        else:
+            total = self._state.total_matches or len(self._state.rows)
+            visible_count = window_end - self.window_start
+            lines.append(f"Showing {visible_count} of {total} — type to narrow")
+        content = Content("\n").join(
+            Content(line).truncate(detail_width if line.startswith("  ") else width)
+            for entry in lines
+            for line in entry.splitlines()
+        )
+        self.query_one(".slash-suggestion-lines", Static).update(content)
+
+    @staticmethod
+    def _detail_for_terminal(*, row_detail: str) -> str:
+        """Give explicit disable semantics a separate line without clipping status/context.
+
+        Args:
+            row_detail (str): Full one-line picker detail.
+
+        Returns:
+            str: Original detail or status/context followed by a reasoning line.
+        """
+        if "unavailable for ChatGPT/Codex" in row_detail:
+            return "\n  ".join(row_detail.replace("; Platform", " · Platform").split(" · "))
+        if "provider default; controls unavailable" in row_detail:
+            return "\n  ".join(row_detail.split(" · "))
+        if "subscription configured; not checked" in row_detail:
+            return "\n  ".join(row_detail.split(" · ", maxsplit=1))
+        marker: str = " · reasoning "
+        if marker not in row_detail:
+            return row_detail
+        prefix, reasoning = row_detail.rsplit(marker, maxsplit=1)
+        if reasoning != "disable supported" and not reasoning.endswith("; provider default"):
+            return row_detail
+        return f"{prefix}\n  reasoning {reasoning}"
 
     @staticmethod
     def _render_lines(*, state: SlashSuggestionStateDAO) -> str:
@@ -83,4 +153,6 @@ class SlashSuggestionMenu(Vertical):
             prefix: str = "›" if index == state.highlighted_index else " "
             detail: str = f" — {row.detail}" if row.detail else ""
             lines.append(f"{prefix} {row.label}{detail}")
+        if state.total_matches > len(state.rows):
+            lines.append(f"Showing {len(state.rows)} of {state.total_matches} — type to narrow")
         return "\n".join(lines)

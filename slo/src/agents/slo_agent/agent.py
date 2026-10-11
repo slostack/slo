@@ -49,7 +49,12 @@ from src.agents.slo_agent.graph_stream_parser import parse_graph_stream_item
 from src.agents.slo_agent.message_text import assistant_message_text
 from src.agents.slo_agent.watchdog_timer import WatchDogTimer
 from src.agents.slo_agent.rate_limit.service import int_or_none, IterationRetryPolicy
+from src.agents.providers.message_extension import (
+    PROVIDER_MESSAGE_EXTENSION_KEY,
+    ProviderMessageExtensionDAO,
+)
 from src.agents.providers.stream_recovery.dao import ProviderStreamFailure
+from src.integrations.openrouter.exceptions import OpenRouterAPIError
 from src.agents.providers.stream_recovery.service import (
     StreamRecoveryService,
     provider_stream_first_progress_timeout_seconds,
@@ -86,6 +91,7 @@ from src.agents.slo_agent.events.runtime import (
     AgentRuntimePayloadDAO,
 )
 from src.agents.reasoning_capabilities import ReasoningLevel
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 
 __all__ = ["SloAgent"]
 
@@ -120,6 +126,7 @@ class SloAgent:
         custom_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         plugin_dispatcher: Optional["PluginDispatcher"] = None,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> None:
         """Build the agent.
 
@@ -166,6 +173,9 @@ class SloAgent:
                 directly.
             plugin_dispatcher (Optional[PluginDispatcher]): Session-owned typed
                 plugin interceptor bridge, or ``None`` for legacy behavior.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied immutable
+                construction view; None keeps global reads. Admission and capture
+                remain the session caller's responsibility.
         """
         self._llm: Optional[LLM] = llm
         self._plugin_dispatcher: Optional["PluginDispatcher"] = plugin_dispatcher
@@ -177,7 +187,9 @@ class SloAgent:
             reasoning_level=reasoning_level,
             session_id=session_id,
             plugin_dispatcher=plugin_dispatcher,
+            snapshot=snapshot,
         )
+        self._catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = _build_result.snapshot
         self._graph: CompiledStateGraph = _build_result.graph
         self._tools: list[BaseTool] = list(_build_result.tools)
         self._output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] = (
@@ -891,6 +903,10 @@ class SloAgent:
                 self._active_turn = turn
                 break
             except Exception as exc:
+                # SDK role/usage chunks commit the gateway stream even when the
+                # transcript normalizer emits no visible event for them.
+                if isinstance(exc, OpenRouterAPIError) and exc.partial_output_committed:
+                    raise
                 stream_decision = StreamRecoveryService.classify(
                     exc=exc,
                     partial_output_committed=partial_output_committed,
@@ -1072,6 +1088,11 @@ class SloAgent:
         Returns:
             RecoveryDecisionDAO: The recovery classification for ``exc``.
         """
+        if isinstance(exc, OpenRouterAPIError) and exc.partial_output_committed:
+            return RecoveryDecisionDAO(
+                recovery_class=RecoveryClass.FATAL,
+                reason="OpenRouter stream already committed; automatic replay is disabled.",
+            )
         if iteration_recovery_policy is None:
             return RecoveryDecisionDAO(
                 recovery_class=RecoveryClass.FATAL,
@@ -1737,9 +1758,12 @@ class SloAgent:
                 that message. Empty for messages we do not represent.
         """
         if isinstance(message, AIMessage):
+            provider_message_extension: ProviderMessageExtensionDAO | None = self._provider_message_extension(
+                message=message
+            )
             if message.tool_calls:
                 events: list[AgentRuntimeEventDAO] = []
-                for tool_call in message.tool_calls:
+                for tool_call_index, tool_call in enumerate(message.tool_calls):
                     events.append(
                         AgentRuntimeEventDAO(
                             kind="tool_call",
@@ -1750,6 +1774,9 @@ class SloAgent:
                                 tool_call_id=tool_call.get("id"),
                                 tool_input=dict(tool_call.get("args") or {}),
                                 tool_calls=list(message.tool_calls),  # type: ignore[arg-type]  # ToolCall is a TypedDict
+                                provider_message_extension=(
+                                    provider_message_extension if tool_call_index == 0 else None
+                                ),
                             ),
                         )
                     )
@@ -1759,7 +1786,10 @@ class SloAgent:
                 AgentRuntimeEventDAO(
                     kind="assistant_message",
                     iteration=self._current_iteration,
-                    payload=AgentRuntimePayloadDAO(content=content_text),
+                    payload=AgentRuntimePayloadDAO(
+                        content=content_text,
+                        provider_message_extension=provider_message_extension,
+                    ),
                 )
             ]
         if isinstance(message, ToolMessage):
@@ -1781,6 +1811,26 @@ class SloAgent:
                 )
             ]
         return []
+
+    @staticmethod
+    def _provider_message_extension(*, message: AIMessage) -> ProviderMessageExtensionDAO | None:
+        """Read one validated private provider extension from an assistant message.
+
+        Called while the graph's completed assistant message becomes durable
+        runtime trace data. Invalid legacy or foreign metadata remains absent,
+        preserving history compatibility without exposing opaque values.
+
+        Args:
+            message (AIMessage): Completed assistant message from LangChain.
+
+        Returns:
+            ProviderMessageExtensionDAO | None: Typed continuation metadata when valid.
+        """
+        extension_data: object | None = message.additional_kwargs.get(PROVIDER_MESSAGE_EXTENSION_KEY)
+        try:
+            return ProviderMessageExtensionDAO.model_validate(extension_data)
+        except ValueError:
+            return None
 
     @classmethod
     def _history_to_messages(cls, *, history: list[dict]) -> list[BaseMessage]:

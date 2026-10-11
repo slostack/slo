@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import sys
 import time
 from collections import deque
 from pathlib import Path
 from typing import IO, Optional
+from urllib.parse import quote_from_bytes
 
 _STDOUT_STREAM_LIMIT: int = 16 * 1024 * 1024  # 16 MB
 """Per-line read buffer limit for child process stdout.
@@ -50,6 +52,8 @@ from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTas
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
+from src.auth.credential_dao import ProviderName
+from src.auth.credential_resolver import CredentialResolver
 from src.agents.slo_agent.orchestrator.reaper import (
     FleetReaper,
     IdentityVerificationOutcome,
@@ -202,6 +206,7 @@ class SubAgentProcess:
         self._spawn_ready: asyncio.Event = asyncio.Event()
         self._forwarded_bytes: int = 0
         self._answer: str = ""
+        self._child_credential: bytes = b""
         self._stderr_tail: deque[str] = deque(maxlen=STDERR_TAIL_MAX_LINES)
         self._last_heartbeat_at: Optional[float] = None
         self._last_stdout_at: Optional[float] = None
@@ -361,6 +366,9 @@ class SubAgentProcess:
             SubAgentResultDAO: Terminal result for this sub-agent task.
         """
         try:
+            child_env = self._build_child_spawn_env()
+            credential = CredentialResolver.resolve(provider=ProviderName.OPENROUTER)
+            self._child_credential = credential.access_token.encode("utf-8") if credential else b""
             self._write_spawn_context()
             self._spawn_in_progress = True
             try:
@@ -370,7 +378,7 @@ class SubAgentProcess:
                     stderr=asyncio.subprocess.PIPE,
                     limit=_STDOUT_STREAM_LIMIT,
                     cwd=self._task.cwd,
-                    env=self._build_child_spawn_env(),
+                    env=child_env,
                 )
                 self._registry.mark_running(
                     session_id=self._session_id,
@@ -390,8 +398,7 @@ class SubAgentProcess:
                 msg="sub_agent_process_crashed",
                 task_id=self._task.task_id,
                 session_id=self._session_id,
-                e=exc,
-                stack_trace=True,
+                error=self._redact_child_output(raw=str(exc).encode("utf-8")).decode("utf-8"),
             )
             return self._failed_result_from_exception(error=exc)
 
@@ -411,7 +418,9 @@ class SubAgentProcess:
         """
         answer: str = self._stderr_fallback_answer()
         if not answer:
-            answer = f"{type(error).__name__}: {error}"
+            answer = self._redact_child_output(raw=f"{type(error).__name__}: {error}".encode("utf-8")).decode(
+                "utf-8"
+            )
         result: SubAgentResultDAO = SubAgentResultDAO(
             task_id=self._task.task_id,
             session_id=self._session_id,
@@ -454,6 +463,7 @@ class SubAgentProcess:
                     raise TimeoutError(self._inactivity_timeout_message()) from exc
                 if not raw:
                     return
+                raw = self._redact_child_output(raw=raw)
                 self._last_stdout_at = asyncio.get_running_loop().time()
                 self._registry.record_stdout(
                     session_id=self._session_id,
@@ -495,6 +505,7 @@ class SubAgentProcess:
                 raw: bytes = await stream.readline()
                 if not raw:
                     return
+                raw = self._redact_child_output(raw=raw)
                 if capture is not None:
                     try:
                         capture.write(raw)
@@ -520,6 +531,50 @@ class SubAgentProcess:
         finally:
             if capture is not None:
                 capture.close()
+
+    def _redact_child_output(self, *, raw: bytes) -> bytes:
+        """Remove literal OpenRouter credential encodings before every child-output sink.
+
+        WHAT: Replaces the forwarded environment credential in literal, percent-escaped,
+            and JSON-escaped forms before capture, relay, logging, lifecycle, or fallback
+            diagnostics consume pipe bytes.
+        WHO: Both child pipe pumps call this before their first output side effect.
+        WHEN: For each stdout or stderr line after the trusted spawn environment is built.
+
+        Args:
+            raw (bytes): Complete child pipe line.
+
+        Returns:
+            bytes: Pipe bytes with only known representations of the forwarded credential
+                replaced. Opaque replay metadata is not interpreted or removed.
+        """
+        credential: bytes = self._child_credential
+        if not credential:
+            return raw
+        redacted: bytes = raw.replace(credential, b"[REDACTED]")
+        return self._redact_escaped_child_credential(raw=redacted, credential=credential)
+
+    @staticmethod
+    def _redact_escaped_child_credential(*, raw: bytes, credential: bytes) -> bytes:
+        """Replace standard escaped renderings of one literal child credential.
+
+        WHAT: Derives percent and JSON string encodings from the one environment value
+            the parent forwarded to its child, without decoding arbitrary pipe content.
+        WHO: ``_redact_child_output`` calls it after literal replacement.
+        WHEN: Before each pipe line reaches any capture, diagnostic, or relay sink.
+
+        Args:
+            raw (bytes): Output after literal replacement.
+            credential (bytes): Exact UTF-8 credential forwarded at child spawn.
+
+        Returns:
+            bytes: Output with the derived escaped credential forms replaced.
+        """
+        credential_text: str = credential.decode("utf-8", errors="surrogateescape")
+        percent_encoded: bytes = quote_from_bytes(credential, safe="").encode("ascii")
+        json_escaped: bytes = json.dumps(credential_text)[1:-1].encode("utf-8", errors="surrogateescape")
+        redacted: bytes = raw.replace(percent_encoded, b"[REDACTED]")
+        return redacted.replace(json_escaped, b"[REDACTED]")
 
     async def _handle_line(self, *, raw: bytes) -> None:
         """Parse one stdout line, accumulate state, and relay the tagged event.

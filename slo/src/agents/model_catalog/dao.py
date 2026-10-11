@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from collections.abc import Mapping
+from datetime import datetime
+from types import MappingProxyType
+from typing import Annotated, Literal, Optional, Self
+
+from pydantic import AfterValidator, PlainSerializer
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.auth.credential_dao import ProviderName
+from src.auth.credential_dao import AuthType, ProviderName
 
 ReasoningLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 """Slo's canonical provider-neutral reasoning vocabulary."""
@@ -27,7 +32,27 @@ module re-declares the order.
 """
 
 
-class ModelRuntimeProfileDAO(BaseModel):
+class FrozenCatalogDAO(BaseModel):
+    """Immutable catalog value whose copy updates are validated, not trusted."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    def model_copy(self, *, update: Optional[Mapping[str, object]] = None, deep: bool = False) -> Self:
+        """Build a validated immutable replacement, retaining JSON compatibility.
+
+        Args:
+            update: Fields to replace on the detached value.
+            deep: Compatibility flag; reconstruction always detaches containers.
+
+        Returns:
+            Self: Validated replacement with immutable nested containers.
+        """
+        data = self.model_dump()
+        data.update(update or {})
+        return type(self).model_validate(data)
+
+
+class ModelRuntimeProfileDAO(FrozenCatalogDAO):
     """Runtime defaults for one model.
 
     Attributes:
@@ -46,12 +71,12 @@ class ModelRuntimeProfileDAO(BaseModel):
     context_window: int
     streaming: bool
     requests_per_minute: int
-    tokens_per_minute: int
+    tokens_per_minute: Optional[int]
     automatic_retry_attempts: int
     local_retry_wait_cap_seconds: int
 
 
-class ModelReasoningProfileDAO(BaseModel):
+class ModelReasoningProfileDAO(FrozenCatalogDAO):
     """Normalized reasoning support for one model.
 
     Attributes:
@@ -74,10 +99,18 @@ class ModelReasoningProfileDAO(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    supported_levels: list[ReasoningLevel]
+    supported_levels: tuple[ReasoningLevel, ...]
     default_level: ReasoningLevel
-    provider_effort_map: dict[ReasoningLevel, str] = Field(default_factory=dict)
-    provider_budget_map: dict[ReasoningLevel, int] = Field(default_factory=dict)
+    provider_effort_map: Annotated[
+        Mapping[ReasoningLevel, str],
+        AfterValidator(lambda value: MappingProxyType(dict(value))),
+        PlainSerializer(lambda value: dict(value)),
+    ] = Field(default_factory=lambda: MappingProxyType({}))
+    provider_budget_map: Annotated[
+        Mapping[ReasoningLevel, int],
+        AfterValidator(lambda value: MappingProxyType(dict(value))),
+        PlainSerializer(lambda value: dict(value)),
+    ] = Field(default_factory=lambda: MappingProxyType({}))
     provider_reasoning_required: bool = False
     forbid_sampling_parameters_when_enabled: bool = False
 
@@ -115,22 +148,16 @@ class ModelReasoningProfileDAO(BaseModel):
     def _validate_default_level_membership(self) -> None:
         """Reject a default level outside the supported levels."""
         if self.default_level not in self.supported_levels:
-            raise ValueError(
-                f"default_level '{self.default_level}' must be one of supported_levels."
-            )
+            raise ValueError(f"default_level '{self.default_level}' must be one of supported_levels.")
 
     def _validate_translation_key_membership(self) -> None:
         """Reject provider translation keys outside the supported levels."""
         for key in self.provider_effort_map:
             if key not in self.supported_levels:
-                raise ValueError(
-                    f"provider_effort_map key '{key}' must be one of supported_levels."
-                )
+                raise ValueError(f"provider_effort_map key '{key}' must be one of supported_levels.")
         for key in self.provider_budget_map:
             if key not in self.supported_levels:
-                raise ValueError(
-                    f"provider_budget_map key '{key}' must be one of supported_levels."
-                )
+                raise ValueError(f"provider_budget_map key '{key}' must be one of supported_levels.")
 
     def _validate_enabled_level_translations(self) -> None:
         """Require exactly one translation for each reasoning-enabled level."""
@@ -155,16 +182,47 @@ class ModelReasoningProfileDAO(BaseModel):
         if not self.provider_reasoning_required:
             return
         if "off" not in self.supported_levels:
-            raise ValueError(
-                "provider_reasoning_required=True requires 'off' in supported_levels."
-            )
+            raise ValueError("provider_reasoning_required=True requires 'off' in supported_levels.")
         if "off" not in self.provider_effort_map:
-            raise ValueError(
-                "provider_reasoning_required=True requires an 'off' provider_effort_map entry."
-            )
+            raise ValueError("provider_reasoning_required=True requires an 'off' provider_effort_map entry.")
 
 
-class ModelCatalogEntryDAO(BaseModel):
+class ModelCapabilitiesDAO(FrozenCatalogDAO):
+    """Reported provider capabilities attached to one canonical catalog entry."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    input_modalities: tuple[str, ...] = Field(
+        default_factory=tuple, description="Advertised input modalities."
+    )
+    output_modalities: tuple[str, ...] = Field(
+        default_factory=tuple, description="Advertised output modalities."
+    )
+    supported_parameters: tuple[str, ...] = Field(
+        default_factory=tuple, description="Advertised request parameters."
+    )
+    reported_output_ceiling: Optional[int] = Field(
+        default=None, description="Reported provider output ceiling."
+    )
+    supports_max_tokens: Optional[bool] = Field(
+        default=None,
+        strict=True,
+        description="Reported reasoning-budget support; evidence only, not a control.",
+    )
+    expires_at: Optional[str] = Field(default=None, description="UTC expiry evidence, when supplied.")
+    reasoning_disable_available: bool = Field(
+        default=False, description="Whether explicit non-mandatory metadata permits disabling reasoning."
+    )
+    reasoning_controls_available: bool = Field(
+        default=False, description="Whether configurable reasoning controls are truthfully known."
+    )
+
+
+class ModelBackendEligibilityError(ValueError):
+    """Report a static model/backend mismatch without credential material."""
+
+
+class ModelCatalogEntryDAO(FrozenCatalogDAO):
     """One canonical model-support record.
 
     Attributes:
@@ -194,11 +252,70 @@ class ModelCatalogEntryDAO(BaseModel):
     visible_in_picker: bool
     runtime_profile: ModelRuntimeProfileDAO
     reasoning_profile: ModelReasoningProfileDAO
-    aliases: list[str] = Field(default_factory=list)
+    aliases: tuple[str, ...] = Field(default_factory=tuple)
     api_model_name: Optional[str] = None
+    availability: str = "available"
+    capabilities: Optional[ModelCapabilitiesDAO] = None
+    supports_chatgpt_codex: bool = Field(
+        default=True, strict=True, description="Static permission to use the ChatGPT/Codex backend."
+    )
+    requires_responses_api: bool = Field(
+        default=False,
+        strict=True,
+        description="Requires Responses transport; credential type independently selects Platform or Codex.",
+    )
+
+    def require_reasoning_override_compatibility(
+        self, *, reasoning_profile: ModelReasoningProfileDAO
+    ) -> None:
+        """Preserve transport controls before the override service assigns a profile.
+
+        Args:
+            reasoning_profile: Candidate profile; default-level changes are allowed.
+
+        Raises:
+            ValueError: A required Responses record's fixed controls would change.
+        """
+        if not self.requires_responses_api:
+            return
+        expected = self.reasoning_profile.model_dump(exclude={"default_level"})
+        proposed = reasoning_profile.model_dump(exclude={"default_level"})
+        if expected != proposed:
+            raise ValueError("Model catalog overrides cannot change required Responses reasoning controls.")
+
+    def backend_eligibility_message(self, *, auth_type: Optional[AuthType] = None) -> Optional[str]:
+        """Describe static compatibility for selection, factory and picker callers.
+
+        Args:
+            auth_type: Effective local auth type, or None when unauthenticated.
+
+        Returns:
+            Fixed safe guidance, or None when the lane is not rejected.
+        """
+        rejected: bool = (
+            self.provider is ProviderName.OPENAI
+            and auth_type is AuthType.OAUTH
+            and not self.supports_chatgpt_codex
+        )
+        if not rejected:
+            return None
+        return "This model requires an OpenAI Platform API key; unavailable for ChatGPT/Codex. Run /auth."
+
+    def require_backend_eligibility(self, *, auth_type: Optional[AuthType] = None) -> None:
+        """Reject an incompatible lane before selection mutation or client build.
+
+        Args:
+            auth_type: Type from the caller's effective credential.
+
+        Raises:
+            ModelBackendEligibilityError: OpenAI OAuth is statically disallowed.
+        """
+        message: Optional[str] = self.backend_eligibility_message(auth_type=auth_type)
+        if message is not None:
+            raise ModelBackendEligibilityError(message)
 
 
-class ModelAliasDAO(BaseModel):
+class ModelAliasDAO(FrozenCatalogDAO):
     """One backward-compatible alias mapping.
 
     Attributes:
@@ -216,7 +333,7 @@ class ModelAliasDAO(BaseModel):
     support_tier: str
 
 
-class ProviderModelTemplateDAO(BaseModel):
+class ProviderModelTemplateDAO(FrozenCatalogDAO):
     """Family-level fallback policy for future or discovered models.
 
     A template matches a discovered model name by exact prefix or regex family
@@ -238,7 +355,7 @@ class ProviderModelTemplateDAO(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    family_patterns: list[str]
+    family_patterns: tuple[str, ...]
     provider: ProviderName
     display_name_template: Optional[str] = None
     runtime_profile: ModelRuntimeProfileDAO
@@ -246,7 +363,7 @@ class ProviderModelTemplateDAO(BaseModel):
     default_visible: bool = False
 
 
-class ModelCatalogSnapshotDAO(BaseModel):
+class ModelCatalogSnapshotDAO(FrozenCatalogDAO):
     """One merged catalog snapshot.
 
     Attributes:
@@ -264,9 +381,18 @@ class ModelCatalogSnapshotDAO(BaseModel):
 
     schema_version: str = "1"
     generated_at: str
-    entries: dict[str, ModelCatalogEntryDAO]
-    aliases: dict[str, ModelAliasDAO]
-    templates: list[ProviderModelTemplateDAO]
+    entries: Annotated[
+        Mapping[str, ModelCatalogEntryDAO],
+        AfterValidator(lambda value: MappingProxyType(dict(value))),
+        PlainSerializer(lambda value: dict(value)),
+    ]
+    aliases: Annotated[
+        Mapping[str, ModelAliasDAO],
+        AfterValidator(lambda value: MappingProxyType(dict(value))),
+        PlainSerializer(lambda value: dict(value)),
+    ]
+    templates: tuple[ProviderModelTemplateDAO, ...]
+    generation: int = Field(default=0, ge=0, description="Immutable in-process catalog generation.")
 
 
 class ProviderModelMetadataDAO(BaseModel):
@@ -300,9 +426,111 @@ class ProviderDiscoveryResultDAO(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: ProviderName
-    available_model_names: list[str]
-    metadata: dict[str, ProviderModelMetadataDAO] = Field(default_factory=dict)
+    provider: ProviderName = Field(description="Provider whose authenticated discovery produced this result.")
+    available_model_names: list[str] = Field(
+        description="Legacy direct-provider names retained for compatibility."
+    )
+    metadata: dict[str, ProviderModelMetadataDAO] = Field(
+        default_factory=dict,
+        description="Legacy safe metadata keyed by canonical model name.",
+    )
+    entries: list[ModelCatalogEntryDAO] = Field(
+        default_factory=list,
+        description="Converted canonical entries from the complete provider response.",
+    )
+    complete: bool = Field(
+        default=True, description="Whether the provider list passed completeness validation."
+    )
+    exclusion_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Counts of conservatively excluded records grouped by safe reason.",
+    )
+
+
+class ProviderCatalogTombstoneDAO(BaseModel):
+    """Bounded evidence that a previously listed provider route is unavailable."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    model_name: str = Field(description="Canonical route that is no longer selectable.")
+    api_model_name: str = Field(description="Exact remote identifier retained for readable history.")
+    reason: Literal["removed", "expired", "ineligible"] = Field(
+        description="Safe unavailable classification from complete provider reconciliation."
+    )
+    last_seen_at: str = Field(description="UTC timestamp when the route was last present or evaluated.")
+
+
+class ProviderCatalogCacheDAO(BaseModel):
+    """One private raw provider slice persisted independently from overrides."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: ProviderName = Field(description="Provider that owns this raw discovered slice.")
+    credential_fingerprint: Optional[str] = Field(
+        default=None,
+        repr=False,
+        description="Private effective-credential provenance for OpenRouter membership.",
+    )
+    key_verified_at: Optional[str] = Field(default=None, description="UTC successful key-verification time.")
+    last_success_at: Optional[str] = Field(default=None, description="UTC completed-list publication time.")
+    entries: list[ModelCatalogEntryDAO] = Field(
+        default_factory=list,
+        description="Raw converted provider entries before operator overrides.",
+    )
+    tombstones: list[ProviderCatalogTombstoneDAO] = Field(
+        default_factory=list,
+        description="Bounded unavailable-route evidence retained across successful refreshes.",
+    )
+
+
+class ModelCatalogCacheDAO(BaseModel):
+    """Schema-two raw provider-slice cache envelope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["2"] = Field(
+        default="2", description="On-disk raw provider-slice schema version."
+    )
+    provider_slices: list[ProviderCatalogCacheDAO] = Field(
+        default_factory=list,
+        description="Independent raw discovery slices merged into the in-memory catalog.",
+    )
+
+
+class CatalogLifecycleStatusDAO(BaseModel):
+    """Secret-free process-local facts; timestamps never come from snapshot generation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    revision: int = Field(default=0, ge=0, description="Monotonic process-local lifecycle-status revision.")
+    state: Literal[
+        "unknown",
+        "historical",
+        "stale",
+        "requires_auth",
+        "verified",
+        "checked",
+        "failed",
+        "credential_changed",
+    ] = Field(default="unknown", description="Safe lifecycle state for catalog status presentation.")
+    key_verified_at: Optional[datetime] = Field(
+        default=None, description="Latest successful effective-key verification time."
+    )
+    catalog_checked_at: Optional[datetime] = Field(
+        default=None, description="Latest complete catalog-list check time."
+    )
+
+
+class CatalogRefreshResultDAO(BaseModel):
+    """Safe result of one catalog refresh operation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: Literal["refreshed", "fresh", "failed", "credential_changed"] = Field(
+        description="Safe terminal outcome of the coalesced refresh operation."
+    )
+    catalog_generation: int = Field(ge=0, description="Published in-process generation after this outcome.")
+    safe_message: str = Field(description="Fixed non-secret operator-facing refresh result.")
 
 
 class ModelCatalogOverrideDAO(BaseModel):

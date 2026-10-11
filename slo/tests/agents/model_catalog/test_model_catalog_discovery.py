@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
-import pytest
-
 from src.agents.model_catalog.dao import (
     ModelCatalogSnapshotDAO,
     ProviderDiscoveryResultDAO,
@@ -28,19 +24,13 @@ class TestDiscoveryMerge:
             available_model_names=["claude-mythos"],
         )
 
-        with (
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_providers_with_credentials",
-                return_value=[ProviderName.ANTHROPIC],
-            ),
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_discover_provider",
-                return_value=result,
-            ),
-        ):
-            refreshed = ProviderModelDiscoveryService.refresh(base_snapshot=base)
+        refreshed = base.model_copy(
+            update={
+                "entries": ProviderModelDiscoveryService._merge_provider_result(
+                    entries=dict(base.entries), templates=base.templates, result=result
+                )
+            }
+        )
 
         entry = refreshed.entries["claude-mythos"]
         assert entry.visible_in_picker is True
@@ -53,19 +43,13 @@ class TestDiscoveryMerge:
             available_model_names=["gpt-5.7-nebula"],
         )
 
-        with (
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_providers_with_credentials",
-                return_value=[ProviderName.OPENAI],
-            ),
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_discover_provider",
-                return_value=result,
-            ),
-        ):
-            refreshed = ProviderModelDiscoveryService.refresh(base_snapshot=base)
+        refreshed = base.model_copy(
+            update={
+                "entries": ProviderModelDiscoveryService._merge_provider_result(
+                    entries=dict(base.entries), templates=base.templates, result=result
+                )
+            }
+        )
 
         entry = refreshed.entries["gpt-5.7-nebula"]
         assert entry.support_tier == "auto_discovered"
@@ -79,34 +63,15 @@ class TestDiscoveryMerge:
             available_model_names=["custom-llama-7b"],
         )
 
-        with (
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_providers_with_credentials",
-                return_value=[ProviderName.OPENAI],
-            ),
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_discover_provider",
-                return_value=result,
-            ),
-        ):
-            refreshed = ProviderModelDiscoveryService.refresh(base_snapshot=base)
+        refreshed = base.model_copy(
+            update={
+                "entries": ProviderModelDiscoveryService._merge_provider_result(
+                    entries=dict(base.entries), templates=base.templates, result=result
+                )
+            }
+        )
 
         assert "custom-llama-7b" not in refreshed.entries
-
-    def test_discovery_without_credentials_returns_base_snapshot(self) -> None:
-        """When no provider credentials exist, discovery returns the base snapshot."""
-        base = SeedModelCatalog.load()
-
-        with patch.object(
-            ProviderModelDiscoveryService,
-            "_providers_with_credentials",
-            return_value=[],
-        ):
-            refreshed = ProviderModelDiscoveryService.refresh(base_snapshot=base)
-
-        assert refreshed.entries == base.entries
 
 
 class TestTemplateMatching:
@@ -115,7 +80,7 @@ class TestTemplateMatching:
     def test_regex_pattern_matches(self) -> None:
         """Regex patterns anchored with ^ match discovered names."""
         template = ProviderModelTemplateDAO(
-            family_patterns=["^gpt-5\\.7-"],
+            family_patterns=("^gpt-5\\.7-",),
             provider=ProviderName.OPENAI,
             runtime_profile=SeedModelCatalog.load().templates[0].runtime_profile,
             reasoning_profile=SeedModelCatalog.load().templates[0].reasoning_profile,
@@ -126,33 +91,27 @@ class TestTemplateMatching:
             generated_at="2026-01-01T00:00:00+00:00",
             entries={},
             aliases={},
-            templates=[template],
+            templates=(template,),
         )
         result = ProviderDiscoveryResultDAO(
             provider=ProviderName.OPENAI,
             available_model_names=["gpt-5.7-nebula"],
         )
 
-        with (
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_providers_with_credentials",
-                return_value=[ProviderName.OPENAI],
-            ),
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_discover_provider",
-                return_value=result,
-            ),
-        ):
-            refreshed = ProviderModelDiscoveryService.refresh(base_snapshot=base)
+        refreshed = base.model_copy(
+            update={
+                "entries": ProviderModelDiscoveryService._merge_provider_result(
+                    entries=dict(base.entries), templates=base.templates, result=result
+                )
+            }
+        )
 
         assert "gpt-5.7-nebula" in refreshed.entries
 
     def test_prefix_pattern_matches(self) -> None:
         """Plain prefix patterns match discovered names."""
         template = ProviderModelTemplateDAO(
-            family_patterns=["kimi-"],
+            family_patterns=("kimi-",),
             provider=ProviderName.KIMI_FOR_CODING,
             runtime_profile=SeedModelCatalog.load().templates[2].runtime_profile,
             reasoning_profile=SeedModelCatalog.load().templates[2].reasoning_profile,
@@ -163,26 +122,20 @@ class TestTemplateMatching:
             generated_at="2026-01-01T00:00:00+00:00",
             entries={},
             aliases={},
-            templates=[template],
+            templates=(template,),
         )
         result = ProviderDiscoveryResultDAO(
             provider=ProviderName.KIMI_FOR_CODING,
             available_model_names=["kimi-foo"],
         )
 
-        with (
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_providers_with_credentials",
-                return_value=[ProviderName.KIMI_FOR_CODING],
-            ),
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_discover_provider",
-                return_value=result,
-            ),
-        ):
-            refreshed = ProviderModelDiscoveryService.refresh(base_snapshot=base)
+        refreshed = base.model_copy(
+            update={
+                "entries": ProviderModelDiscoveryService._merge_provider_result(
+                    entries=dict(base.entries), templates=base.templates, result=result
+                )
+            }
+        )
 
         assert "kimi-foo" in refreshed.entries
 
@@ -204,19 +157,13 @@ class TestMetadataPatching:
             },
         )
 
-        with (
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_providers_with_credentials",
-                return_value=[ProviderName.OPENAI],
-            ),
-            patch.object(
-                ProviderModelDiscoveryService,
-                "_discover_provider",
-                return_value=result,
-            ),
-        ):
-            refreshed = ProviderModelDiscoveryService.refresh(base_snapshot=base)
+        refreshed = base.model_copy(
+            update={
+                "entries": ProviderModelDiscoveryService._merge_provider_result(
+                    entries=dict(base.entries), templates=base.templates, result=result
+                )
+            }
+        )
 
         entry = refreshed.entries["gpt-5.7-nebula"]
         assert entry.runtime_profile.max_tokens == 16_384

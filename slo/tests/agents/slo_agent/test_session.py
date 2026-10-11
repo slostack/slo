@@ -23,6 +23,34 @@ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.provider_for_model import provider_for_model
 
 
+def _uses_responses_api(*, llm: object) -> bool | None:
+    """Return the optional Responses API flag from an OpenAI-compatible test model.
+
+    Args:
+        llm (object): Built model observed by the Astra request-policy contract.
+
+    Returns:
+        bool | None: The model's explicit flag when exposed, otherwise None.
+    """
+    use_responses_api: object = getattr(llm, "use_responses_api", None)
+    return use_responses_api if isinstance(use_responses_api, bool) else None
+
+
+def _omits_astra_sampling_parameters(*, llm: object) -> bool:
+    """Check that Astra's built model omits unsupported sampling parameters.
+
+    Args:
+        llm (object): Built model observed by the Astra request-policy contract.
+
+    Returns:
+        bool: Whether the model exposes mapping-shaped kwargs without sampling keys.
+    """
+    model_kwargs: object = getattr(llm, "model_kwargs", None)
+    if not isinstance(model_kwargs, dict):
+        return False
+    return all(key not in model_kwargs for key in ("temperature", "top_p", "top_logprobs", "logprobs"))
+
+
 def _build_faux_session(
     *,
     workdir: Path,
@@ -351,11 +379,16 @@ class TestSloAgentSessionPromptStreaming:
             order.append(f"load_history:{sorted(excluded_turn_ids or set())}")
             return []
 
+        def _allocate_turn_id() -> str:
+            """Record turn allocation before returning the deterministic test id."""
+            order.append("allocate_turn")
+            return "turn-123"
+
         with (
             patch.object(
                 session,
                 "_allocate_turn_id",
-                side_effect=lambda: order.append("allocate_turn") or "turn-123",
+                side_effect=_allocate_turn_id,
             ),
             patch.object(
                 session, "_ensure_history_session", new=AsyncMock(side_effect=_ensure_history_session)
@@ -530,7 +563,9 @@ class TestSloAgentSessionWorkspaceFile:
         original_session: SloAgentSession = SloAgentSession.build(config=original_config)
 
         await original_session._ensure_history_session()
-        persisted_metadata: SessionHistoryMetadataDAO = await original_session.history_store.read_metadata(
+        original_history_store = original_session.history_store
+        assert original_history_store is not None
+        persisted_metadata: SessionHistoryMetadataDAO = await original_history_store.read_metadata(
             session_id=original_session.session_id,
         )
         assert persisted_metadata.workspace_file == workspace_file
@@ -982,8 +1017,10 @@ class TestSloAgentSessionAttachSubAgentPool:
 
         session.attach_sub_agent_pool(pool=pool, spawn_tool=mock_tool)
 
-        assert session._config.extra_tools is not None
-        tool_names: list[str] = [t.name for t in session._config.extra_tools]
+        config = session._config
+        assert config is not None
+        assert config.extra_tools is not None
+        tool_names: list[str] = [tool.name for tool in config.extra_tools]
         assert "spawn_sub_agents" in tool_names
 
     def test_attach_pool_sets_append_system_prompt(self, tmp_path: Path) -> None:
@@ -1003,8 +1040,10 @@ class TestSloAgentSessionAttachSubAgentPool:
 
         session.attach_sub_agent_pool(pool=_build_pool_mock(), spawn_tool=mock_tool)
 
-        assert session._config.append_system_prompt is not None
-        assert "spawn_sub_agents" in session._config.append_system_prompt
+        config = session._config
+        assert config is not None
+        assert config.append_system_prompt is not None
+        assert "spawn_sub_agents" in config.append_system_prompt
 
     def test_attach_pool_stores_pool_reference(self, tmp_path: Path) -> None:
         """After attach, ``_sub_agent_pool`` is the supplied pool."""
@@ -1532,6 +1571,28 @@ class TestIterationRetryPolicy:
 
 
 class TestSwitchModelClearsPool:
+    def test_switch_model_when_reasoning_clamp_fails_preserves_existing_state(self, tmp_path: Path) -> None:
+        """A failed synchronous selection derives values before mutating session state."""
+        session = _session_with_pool(_two_member_dao(), workdir=tmp_path)
+        before_config = session._config
+        before_model: str = session.active_model_name
+        before_pool = session.model_pool_dao
+        before_agent = session._agent
+        before_usage = session.usage_snapshot()
+
+        with patch(
+            "src.agents.slo_agent.sessions.service.clamp_reasoning_level",
+            side_effect=ValueError("unsupported reasoning"),
+        ):
+            with pytest.raises(ValueError, match="unsupported reasoning"):
+                session.switch_model(model_name="claude-sonnet-4-6")
+
+        assert session._config is before_config
+        assert session.active_model_name == before_model
+        assert session.model_pool_dao is before_pool
+        assert session._agent is before_agent
+        assert session.usage_snapshot() == before_usage
+
     def test_switch_model_on_pooled_session_clears_pool(self, tmp_path: Path) -> None:
         """/model on a pooled session drops to single-model mode with the chosen model."""
         session = _session_with_pool(_two_member_dao(), workdir=tmp_path)
@@ -1744,6 +1805,22 @@ class TestRecordWorkflowUpdate:
 class TestAstraSessionReasoningState:
     """Feature 83.a.1: Astra sessions seed, persist, and switch canonical levels."""
 
+    @pytest.fixture(autouse=True)
+    def authenticated_selection(self, isolated_slo_home: Path) -> None:
+        """Supply real contained auth now required by synchronous model selection."""
+        from src.auth.credential_store import CredentialStore
+        from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
+
+        store = CredentialStore()
+        assert store.path.resolve().is_relative_to(isolated_slo_home.resolve())
+        store.persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENAI,
+                auth_type=AuthType.API_KEY,
+                access_token="fixture-astra-selection",
+            )
+        )
+
     def test_astra_session_seeds_high_reasoning_default(self, tmp_path: Path) -> None:
         """An Astra session with no override seeds to ``high``."""
         session: SloAgentSession = SloAgentSession.build(
@@ -1820,7 +1897,6 @@ class TestAstraSessionReasoningState:
         assert session.active_reasoning_level == "xhigh"
 
 
-
 class TestAstraBoundedSessionContracts:
     """Feature 83.c.1: Astra-configured sessions preserve policy through recovery."""
 
@@ -1890,6 +1966,8 @@ class TestAstraBoundedSessionContracts:
 
         def _observing_build_agent() -> SloAgent:
             agent: SloAgent = real_build_agent()
+            llm = agent.llm
+            assert llm is not None
             resolved = resolve_reasoning_config(
                 model_name=session.active_model_name,
                 requested_level=session.active_reasoning_level,
@@ -1900,11 +1978,8 @@ class TestAstraBoundedSessionContracts:
                     "api_key",
                     resolved.active_level,
                     resolved.provider_effort,
-                    agent.llm.use_responses_api,
-                    all(
-                        key not in agent.llm.model_kwargs
-                        for key in ("temperature", "top_p", "top_logprobs", "logprobs")
-                    ),
+                    _uses_responses_api(llm=llm),
+                    _omits_astra_sampling_parameters(llm=llm),
                 )
             )
             agent._llm = FauxChatModel(responses=[])
@@ -1954,7 +2029,7 @@ class TestAstraBoundedSessionContracts:
                 self._observing_build_agent(session=session, captured=captured),
             ),
             patch(
-                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                "src.agents.model_catalog.discovery.ProviderModelDiscoveryService.refresh",
                 self._forbid_discovery(),
             ) as mock_refresh,
         ):
@@ -2025,7 +2100,7 @@ class TestAstraBoundedSessionContracts:
                 self._observing_build_agent(session=session, captured=captured),
             ),
             patch(
-                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                "src.agents.model_catalog.discovery.ProviderModelDiscoveryService.refresh",
                 self._forbid_discovery(),
             ) as mock_refresh,
         ):
@@ -2086,7 +2161,7 @@ class TestAstraBoundedSessionContracts:
                 "src.agents.base.ChatOpenAI",
             ) as mock_api_key_constructor,
             patch(
-                "src.agents.model_catalog.service.ProviderModelDiscoveryService.refresh",
+                "src.agents.model_catalog.discovery.ProviderModelDiscoveryService.refresh",
                 self._forbid_discovery(),
             ) as mock_refresh,
         ):
@@ -2096,12 +2171,10 @@ class TestAstraBoundedSessionContracts:
                     events.append(event)
 
         assert [event.kind for event in events] == []
-        # One OAuth warm plus one lazy build — both resolve the OPENAI OAuth
-        # credential; the API-key constructor never runs.
-        assert mock_require.call_count == 2
-        assert all(
-            call.kwargs["provider"] is ProviderName.OPENAI for call in mock_require.call_args_list
-        )
+        # Local eligibility precheck, OAuth warm and factory build each resolve
+        # their own credential; the API-key constructor never runs.
+        assert mock_require.call_count == 3
+        assert all(call.kwargs["provider"] is ProviderName.OPENAI for call in mock_require.call_args_list)
         mock_oauth_builder.assert_called_once()
         mock_api_key_constructor.assert_not_called()
         mock_refresh.assert_not_called()

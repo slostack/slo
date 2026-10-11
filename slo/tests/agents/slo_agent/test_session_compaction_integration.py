@@ -1347,7 +1347,7 @@ async def test_pool_failed_lane_observation_persists_once_and_uses_decision_esti
         from_model_name="gpt-5.4",
         to_model_name="gpt-5.6-terra",
         kind="RATE_LIMITED",
-        error_text="rate limited",
+        safe_error_code="openai_rate_limited",
         provider=ProviderName.OPENAI,
         signal=ProviderErrorSignalDAO(kind=ProviderErrorKind.RATE_LIMITED),
     )

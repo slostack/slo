@@ -25,11 +25,13 @@ kind: workflow
 
 ## Slo defaults for request and specification artifacts
 
+Resolve Slo home and artifact roots using [the authoring path contract](../feature-specifications/SKILL.md#artifact-paths-and-skill-discovery).
+
 Unless the user explicitly overrides these paths, use:
 
 ```text
-<feature-requests-root> = ${SLO_FEATURE_REQUESTS_DIR:-~/.slo/projects/<project_name>/feature-requests}
-<feature-specifications-root> = ${SLO_FEATURE_SPECIFICATIONS_DIR:-~/.slo/projects/<project_name>/feature-specifications}
+<feature-requests-root> = <SLO_FEATURE_REQUESTS_DIR or resolved-Slo-home/projects/<project_name>/feature-requests>
+<feature-specifications-root> = <SLO_FEATURE_SPECIFICATIONS_DIR or resolved-Slo-home/projects/<project_name>/feature-specifications>
 ```
 
 Use one folder per feature:
@@ -58,11 +60,11 @@ implementation without skipping the intermediate workflow steps.
 Unless the user explicitly overrides these paths, use:
 
 ```text
-${SLO_FEATURE_REQUESTS_DIR:-~/.slo/projects/<project_name>/feature-requests}
+<SLO_FEATURE_REQUESTS_DIR or resolved-Slo-home/projects/<project_name>/feature-requests>
 └── <feature_slug>/
     └── request.md
 
-${SLO_FEATURE_SPECIFICATIONS_DIR:-~/.slo/projects/<project_name>/feature-specifications}
+<SLO_FEATURE_SPECIFICATIONS_DIR or resolved-Slo-home/projects/<project_name>/feature-specifications>
 └── <feature_slug>/
     ├── overview.md
     ├── 01.a-sub-step.md
@@ -82,8 +84,8 @@ they are present. Otherwise, derive the roots above under the active
 2. **Produce or validate the implementation spec, then break it into tasks.**
    - Run the **Specification Development** workflow — load and follow
      `skills/design-and-analysis/workflows/specification-development.md`. It
-     sequences `feature-specifications-pre-hook` → `feature-specifications` →
-     `feature-specifications-post-hook` → `feature-specification-verification`
+     sequences `feature-specifications` (gather/draft/self-check/revise) →
+     `feature-specification-verification`
      → `breakdown-feature-spec-to-tasks` (and lists those sub-skills at its top).
    - If a draft spec already exists, that workflow runs
      `feature-specification-verification` rather than rewriting blindly.

@@ -11,6 +11,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.graph import (
@@ -85,6 +86,7 @@ def test_build_slo_agent_threads_reasoning_level_into_llm_factory() -> None:
         max_tokens=None,
         reasoning_level="xhigh",
         session_id=None,
+        snapshot=None,
     )
 
 
@@ -232,12 +234,12 @@ async def test_agent_node_passes_instructions_for_chatgpt_backend() -> None:
         def __init__(self) -> None:
             self.bound = ChatOpenAI(
                 model="gpt-5",
-                api_key="sk-test",
-                openai_api_base="https://chatgpt.com/backend-api/codex",
+                api_key=SecretStr("sk-test"),
+                base_url="https://chatgpt.com/backend-api/codex",
                 use_responses_api=True,
             )
-            self.captured_messages = None
-            self.captured_kwargs = None
+            self.captured_messages: list[BaseMessage] | None = None
+            self.captured_kwargs: dict[str, object] | None = None
 
         async def ainvoke(self, messages: list[BaseMessage], **kwargs: object) -> AIMessage:
             self.captured_messages = messages
@@ -258,6 +260,7 @@ async def test_agent_node_passes_instructions_for_chatgpt_backend() -> None:
 
     assert _uses_chatgpt_backend_responses(llm=stub) is True
     assert stub.captured_kwargs == {"instructions": "sys prompt"}
+    assert stub.captured_messages is not None
     assert [type(m).__name__ for m in stub.captured_messages] == ["HumanMessage"]
     assert result["messages"][0].content == "ok"
 
@@ -271,11 +274,11 @@ def test_backend_detector_unwraps_runnable_binding_shape() -> None:
 
     backend = ChatOpenAI(
         model="gpt-5",
-        api_key="sk-test",
-        openai_api_base="https://chatgpt.com/backend-api/codex",
+        api_key=SecretStr("sk-test"),
+        base_url="https://chatgpt.com/backend-api/codex",
         use_responses_api=True,
     )
-    platform = ChatOpenAI(model="gpt-5", api_key="sk-test")
+    platform = ChatOpenAI(model="gpt-5", api_key=SecretStr("sk-test"))
 
     assert _uses_chatgpt_backend_responses(llm=_Wrapper(bound=backend)) is True
     assert _uses_chatgpt_backend_responses(llm=_Wrapper(bound=platform)) is False
@@ -461,8 +464,8 @@ def _chatgpt_backed_openai() -> ChatOpenAI:
     """
     return ChatOpenAI(
         model="gpt-5.4",
-        api_key="sk-test",  # type: ignore[arg-type]
-        openai_api_base="https://chatgpt.com/backend-api/codex",  # type: ignore[call-arg]
+        api_key=SecretStr("sk-test"),
+        base_url="https://chatgpt.com/backend-api/codex",
         use_responses_api=True,
     )
 
@@ -473,7 +476,7 @@ def _platform_openai() -> ChatOpenAI:
     Returns:
         ChatOpenAI: A model the backend detector classifies as non-ChatGPT.
     """
-    return ChatOpenAI(model="gpt-5.4", api_key="sk-test")  # type: ignore[arg-type]
+    return ChatOpenAI(model="gpt-5.4", api_key=SecretStr("sk-test"))
 
 
 def _two_member_dao() -> ModelPoolDAO:

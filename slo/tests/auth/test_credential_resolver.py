@@ -11,6 +11,7 @@ import config.cfg as cfg_module
 from src.auth.credential_dao import (
     AuthType,
     CredentialDAO,
+    CredentialSource,
     ProviderName,
 )
 from src.auth.credential_resolver import CredentialResolver
@@ -78,6 +79,70 @@ class TestResolveEnvPath:
 
         assert cred is not None
         assert cred.access_token == "sk-from-env"
+
+
+class TestResolveWithSource:
+    """Effective credentials retain their precedence source."""
+
+    def test_returns_environment_source_for_openrouter(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An OpenRouter environment key wins and records its source."""
+        _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        monkeypatch.setenv("SLO_OPENROUTER_API_KEY", "router-secret")
+        _reload_cfg()
+
+        resolved = CredentialResolver.resolve_with_source(provider=ProviderName.OPENROUTER)
+
+        assert resolved is not None
+        assert resolved.source is CredentialSource.ENVIRONMENT
+        assert resolved.credential.access_token == "router-secret"
+
+    def test_returns_store_source_for_openrouter(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A stored OpenRouter key is used when no environment key exists."""
+        store_path: Path = _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        monkeypatch.delenv("SLO_OPENROUTER_API_KEY", raising=False)
+        _reload_cfg()
+        CredentialStore(path=store_path).persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENROUTER,
+                auth_type=AuthType.API_KEY,
+                access_token="router-secret",
+            )
+        )
+
+        resolved = CredentialResolver.resolve_with_source(provider=ProviderName.OPENROUTER)
+
+        assert resolved is not None
+        assert resolved.source is CredentialSource.STORE
+        assert resolved.credential.access_token == "router-secret"
+
+    def test_returns_none_for_openrouter_when_no_legacy_credential_exists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """OpenRouter does not consult the legacy Claude credential file."""
+        _patch_store_path(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        monkeypatch.delenv("SLO_OPENROUTER_API_KEY", raising=False)
+        _reload_cfg()
+        legacy_path: Path = tmp_path / "credentials.json"
+        legacy_path.write_text(json.dumps({"claudeAiOauth": {"accessToken": "legacy-secret"}}))
+        monkeypatch.setattr(CredentialResolver, "_CLAUDE_CREDENTIALS_PATH", legacy_path)
+
+        resolved = CredentialResolver.resolve_with_source(provider=ProviderName.OPENROUTER)
+
+        assert resolved is None
+
+    def test_repr_hides_openrouter_secret(self) -> None:
+        """Credential and source-bearing DTO reprs exclude access tokens."""
+        credential = CredentialDAO(
+            provider=ProviderName.OPENROUTER,
+            auth_type=AuthType.API_KEY,
+            access_token="router-secret",
+        )
+
+        assert "router-secret" not in repr(credential)
 
 
 class TestResolveStorePath:

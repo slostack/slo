@@ -10,6 +10,7 @@ import asyncio
 from typing import (
     Annotated,
     NamedTuple,
+    Optional,
     Sequence,
 )
 
@@ -20,6 +21,7 @@ from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 from src.agents.tools.tool_output import ToolOutputUpdateDAO
 
 __all__ = [
@@ -45,6 +47,8 @@ class SloAgentBuildResult(NamedTuple):
         supports_explicit_caching (bool): Build-time provider caching capability
             (``True`` for Anthropic). The pool path resolves this dynamically
             per route at request time.
+        snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied construction
+            view, retained without capture, preparation, or admission semantics.
     """
 
     graph: CompiledStateGraph
@@ -52,6 +56,7 @@ class SloAgentBuildResult(NamedTuple):
     llm: BaseChatModel
     output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] | None = None
     supports_explicit_caching: bool = False
+    snapshot: Optional[ModelCatalogSnapshotDAO] = None
 
 
 class SloAgentStateDAO(BaseModel):

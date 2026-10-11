@@ -120,13 +120,13 @@ class TestGetContextWindow:
             support_tier="auto_discovered",
             visible_in_picker=False,
             runtime_profile=profile,
-            reasoning_profile=ModelReasoningProfileDAO(supported_levels=["off"], default_level="off"),
+            reasoning_profile=ModelReasoningProfileDAO(supported_levels=("off",), default_level="off"),
         )
         snapshot = ModelCatalogSnapshotDAO(
             generated_at="2026-09-14T00:00:00+00:00",
             entries={"discovered-model": entry},
             aliases={},
-            templates=[],
+            templates=(),
         )
         monkeypatch.setattr(ModelCatalogService, "_snapshot", snapshot)
 

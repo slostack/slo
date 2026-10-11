@@ -16,6 +16,7 @@ from src.agents.model_catalog.service import ModelCatalogService
 from src.auth.credential_dao import ProviderName
 from src.tui.model_catalog import (
     MODEL_CATALOG,
+    ModelPickerRowDAO,
     ModelSuggestionEntryDAO,
     model_suggestion_entries,
     supported_models_by_provider,
@@ -27,8 +28,8 @@ class TestModelCatalog:
 
     def test_catalog_contains_kimi_for_coding_entries(self) -> None:
         """MODEL_CATALOG has at least one entry with provider=='kimi_for_coding'."""
-        kfc_entries: list[ModelCatalogEntryDAO] = [
-            e for e in MODEL_CATALOG if e.provider == "kimi_for_coding"
+        kfc_entries: list[ModelPickerRowDAO] = [
+            entry for entry in MODEL_CATALOG if entry.provider == "kimi_for_coding"
         ]
         assert len(kfc_entries) >= 1
 
@@ -44,14 +45,16 @@ class TestModelCatalog:
 
     def test_catalog_has_anthropic_entries(self) -> None:
         """MODEL_CATALOG has at least one Anthropic entry."""
-        anthropic_entries: list[ModelCatalogEntryDAO] = [
-            e for e in MODEL_CATALOG if e.provider == "anthropic"
+        anthropic_entries: list[ModelPickerRowDAO] = [
+            entry for entry in MODEL_CATALOG if entry.provider == "anthropic"
         ]
         assert len(anthropic_entries) >= 1
 
     def test_catalog_has_openai_entries(self) -> None:
         """MODEL_CATALOG has at least one OpenAI entry."""
-        openai_entries: list[ModelCatalogEntryDAO] = [e for e in MODEL_CATALOG if e.provider == "openai"]
+        openai_entries: list[ModelPickerRowDAO] = [
+            entry for entry in MODEL_CATALOG if entry.provider == "openai"
+        ]
         assert len(openai_entries) >= 1
 
     @pytest.mark.parametrize(
@@ -70,8 +73,10 @@ class TestModelCatalog:
 
     def test_codex_models_are_openai_entries(self) -> None:
         """Codex catalog entries carry the openai provider label."""
-        codex_entries: list[ModelCatalogEntryDAO] = [
-            e for e in MODEL_CATALOG if e.model_name.startswith("gpt-5") and "codex" in e.model_name
+        codex_entries: list[ModelPickerRowDAO] = [
+            entry
+            for entry in MODEL_CATALOG
+            if entry.model_name.startswith("gpt-5") and "codex" in entry.model_name
         ]
         assert len(codex_entries) >= 4
         for entry in codex_entries:
@@ -161,7 +166,7 @@ class TestModelSuggestionEntries:
                 local_retry_wait_cap_seconds=30,
             ),
             reasoning_profile=ModelReasoningProfileDAO(
-                supported_levels=["off", "minimal", "low", "medium", "high", "xhigh"],
+                supported_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
                 default_level="high",
                 provider_effort_map={
                     "minimal": "low",

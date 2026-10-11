@@ -2,7 +2,10 @@
 
 import asyncio
 import os
+import shlex
+import sys
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,7 +19,41 @@ from src.agents.tools.bash import (
     _bash_teardown_grace_seconds,
     _default_bash_timeout_seconds,
 )
-from pathlib import Path
+
+
+def _assert_resolved_tmp_path_descendant(*, candidate: Path, tmp_path: Path) -> Path:
+    """Return ``candidate`` only when resolving it cannot escape ``tmp_path``.
+
+    Args:
+        candidate (Path): Fixture path to validate before a test writes to it.
+        tmp_path (Path): Pytest-owned root that contains every fixture write.
+
+    Returns:
+        Path: The resolved candidate when it is safely contained by ``tmp_path``.
+
+    Raises:
+        AssertionError: If resolving the candidate follows a symlink outside the
+            pytest-owned root.
+    """
+    resolved_tmp_path: Path = tmp_path.resolve(strict=True)
+    resolved_candidate: Path = candidate.resolve(strict=False)
+    assert resolved_candidate.is_relative_to(
+        resolved_tmp_path
+    ), f"unsafe fixture path {resolved_candidate} escapes {resolved_tmp_path}"
+    return resolved_candidate
+
+
+def test_resolved_tmp_path_descendant_rejects_symlink_escape(tmp_path: Path) -> None:
+    """Reject a fixture path whose symlink target escapes its pytest root."""
+    escape_link: Path = tmp_path / "escape"
+    _assert_resolved_tmp_path_descendant(candidate=escape_link, tmp_path=tmp_path)
+    escape_link.symlink_to(tmp_path.parent, target_is_directory=True)
+
+    with pytest.raises(AssertionError, match="escapes"):
+        _assert_resolved_tmp_path_descendant(
+            candidate=escape_link / "spill.txt",
+            tmp_path=tmp_path,
+        )
 
 
 @pytest.mark.asyncio
@@ -45,14 +82,59 @@ async def test_bash_timeout() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bash_truncates_and_spills() -> None:
-    """Produce more than DEFAULT_MAX_LINES lines so truncation + spill kick in."""
-    cmd = f"python -c 'import sys\nfor i in range({DEFAULT_MAX_LINES + 100}): print(i)'"
-    result = await bash_tool.ainvoke({"command": cmd})
+async def test_bash_truncates_and_spills(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Spill truncated Bash output into an ancestry-checked pytest-owned root.
+
+    The test replaces only the tempfile allocator while retaining production
+    formatting, truncation, and full-output writing through ``os.fdopen``.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Scopes the tempfile allocator seam to this test.
+        tmp_path (Path): Pytest-owned root for the spill file.
+    """
+    spill_root: Path = _assert_resolved_tmp_path_descendant(
+        candidate=tmp_path / "bash-spills",
+        tmp_path=tmp_path,
+    )
+    spill_root.mkdir()
+
+    def allocate_owned_spill(
+        suffix: str | None = None,
+        prefix: str | None = None,
+        dir: str | None = None,
+        text: bool = False,
+    ) -> tuple[int, str]:
+        """Allocate one real spill file after proving its resolved ancestry."""
+        assert dir is None
+        assert text is True
+        target: Path = _assert_resolved_tmp_path_descendant(
+            candidate=spill_root / f"{prefix}full-output{suffix}",
+            tmp_path=tmp_path,
+        )
+        file_descriptor: int = os.open(
+            target,
+            os.O_CREAT | os.O_EXCL | os.O_RDWR,
+            0o600,
+        )
+        return file_descriptor, str(target)
+
+    monkeypatch.setattr(bash_module.tempfile, "mkstemp", allocate_owned_spill)
+    command: str = (
+        f"{shlex.quote(sys.executable)} -c "
+        f"{shlex.quote(f'for i in range({DEFAULT_MAX_LINES + 100}): print(i)')}"
+    )
+
+    result: str = await bash_tool.ainvoke({"command": command})
+
     assert "[output truncated" in result
     assert "[full output spilled to:" in result
-    spill = result.split("spilled to: ")[1].rstrip("]\n ")
-    assert os.path.exists(spill)
+    spill_path: Path = Path(result.split("spilled to: ")[1].rstrip("]\n "))
+    assert _assert_resolved_tmp_path_descendant(candidate=spill_path, tmp_path=tmp_path) == spill_path
+    assert spill_path.exists()
+    assert spill_path.read_text(encoding="utf-8").startswith("exit_code: 0\n0\n")
 
 
 def test_bash_tool_metadata() -> None:

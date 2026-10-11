@@ -1,0 +1,4 @@
+data: {"id":"fixture-tool","object":"chat.completion.chunk","created":1,"model":"vendor/fixture-coder","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_fixture","type":"function","function":{"name":"fixture_echo","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: [DONE]
+

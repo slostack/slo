@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
+from src.auth.credential_resolver import CredentialResolver
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
@@ -206,6 +210,105 @@ class TestTerminal:
         assert message.kind == "workflow_failed"
         assert message.delivery_mode == "chat_turn"
         assert "run_failed: model exhausted" in message.text
+
+
+class TestTerminalCredentialRedaction:
+    """Terminal notifier artifacts must not expose the effective OpenRouter credential."""
+
+    async def test_failed_redacts_effective_openrouter_credential_from_pending_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A failure sentinel is redacted before the real inbox store persists it."""
+        sentinel: str = "openrouter-notifier-sentinel"
+        credential: CredentialDAO = CredentialDAO(
+            provider=ProviderName.OPENROUTER,
+            auth_type=AuthType.API_KEY,
+            access_token=sentinel,
+        )
+        monkeypatch.setattr(CredentialResolver, "resolve", lambda *, provider: credential)
+        notifier, store = _build_notifier(tmp_path=tmp_path)
+
+        await notifier.failed(error=f"upstream failed: {sentinel}")
+
+        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+        persisted_paths: list[Path] = list((tmp_path / "history").rglob("*.json"))
+        persisted_text: str = "\n".join(path.read_text(encoding="utf-8") for path in persisted_paths)
+        assert all(path.resolve().is_relative_to(tmp_path.resolve()) for path in persisted_paths)
+        assert len(pending) == 1
+        assert "[REDACTED]" in pending[0].text
+        assert sentinel not in pending[0].text
+        assert sentinel not in persisted_text
+
+
+class TestTerminalCredentialRotation:
+    """Notifier output protection during an admitted-key rotation."""
+
+    @pytest.mark.parametrize("terminal", ["completed", "failed"])
+    async def test_terminal_redacts_admitted_key_after_effective_key_rotates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        terminal: str,
+    ) -> None:
+        """Completed and failed notifications retain no old or newly effective credential."""
+        admitted_key: str = "openrouter-notifier-admitted-key-a"
+        rotated_key: str = "openrouter-notifier-effective-key-b"
+        credential_a: CredentialDAO = CredentialDAO(
+            provider=ProviderName.OPENROUTER,
+            auth_type=AuthType.API_KEY,
+            access_token=admitted_key,
+        )
+        credential_b: CredentialDAO = credential_a.model_copy(update={"access_token": rotated_key})
+        notifier, store = _build_notifier(tmp_path=tmp_path)
+
+        with CredentialResolver.bind_build_credential(credential=credential_a):
+            monkeypatch.setattr(CredentialResolver, "resolve", lambda *, provider: credential_b)
+            if terminal == "completed":
+                await notifier.completed(
+                    synthesis=f"completed after {admitted_key}",
+                    result_json=f'{{"next":"{admitted_key}"}}',
+                )
+            else:
+                await notifier.failed(error=f"failed after {admitted_key}")
+
+        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+        artifact_text: str = "\n".join(
+            path.read_text(encoding="utf-8") for path in (tmp_path / "history").rglob("*") if path.is_file()
+        )
+        assert len(pending) == 1
+        assert "[REDACTED]" in pending[0].text
+        assert admitted_key not in artifact_text
+        assert rotated_key not in artifact_text
+
+    async def test_failed_notifier_fails_closed_when_resolution_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """An unavailable live resolver still redacts the operation-bound credential."""
+        admitted_key: str = "openrouter-notifier-resolver-failure-key"
+        credential: CredentialDAO = CredentialDAO(
+            provider=ProviderName.OPENROUTER,
+            auth_type=AuthType.API_KEY,
+            access_token=admitted_key,
+        )
+        notifier, store = _build_notifier(tmp_path=tmp_path)
+
+        def fail_resolution(*, provider: ProviderName) -> CredentialDAO:
+            """Raise the controlled resolver failure during notifier persistence."""
+            del provider
+            raise OSError("controlled resolver failure")
+
+        with CredentialResolver.bind_build_credential(credential=credential):
+            monkeypatch.setattr(CredentialResolver, "resolve", fail_resolution)
+            await notifier.failed(error=f"upstream failed: {admitted_key}")
+
+        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+        assert len(pending) == 1
+        assert pending[0].text.count("[REDACTED]") == 1
+        assert admitted_key not in pending[0].text
 
 
 class TestFailureSwallowing:

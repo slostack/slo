@@ -1,5 +1,156 @@
 # Slo Codebase Index
 
+## Feature 89 runtime owners and offline acceptance
+
+`src/agents/providers/openai_platform.py` owns strict nonmutating caller-option
+validation, sampling/include sanitation, cap normalization and the lifetime-pinned
+SDK subclass selected by `LLMFactory` only for API-key required-Responses records.
+All three GPT-6 seeds also support OAuth through the unchanged Codex builder,
+including subscription headers, instructions adaptation and cap removal. Legacy
+models keep stock/Codex SDK paths and shallow sanitation. Session final eligibility
+checks run before adoption and lazy OAuth refresh; startup/router consume the
+session snapshot. Picker cache identity includes generation, snapshot identity,
+auth revision, lifecycle revision and active model; row reads do no credential I/O.
+
+`test_openai_platform.py` covers all 21 locked-SDK tool cycles and constructor/wire
+policy; `test_feature89_model_flows.py` covers mounted tools/resume, isolated mixed
+lanes and committed failures. `test_feature89_frozen_reader.py` extracts the exact
+pre-feature commit and validates real v2 writer bytes plus legacy seed/temperature
+oracles. Separate v0.20.1 tree/flat history tests exercise all four saved route IDs;
+these are readability/append proofs, not old-version inference on new models.
+Both seed policy flags are excluded only at the v2 writer. No schema migration.
+See `implementation/89-gpt-6-support/recovery13-closure.md` for actual gates;
+static baseline failures are unwaived, independent review/assessment pending.
+
+## Shared-state compatibility contract — 86.b (2026-10-04)
+
+This supersedes Feature 86 `../overview.md:654` (“new code ignores schema 1;
+old code may ignore schema 2”). Released validation happens before version
+rejection, so incompatible formats must have different filenames.
+
+| File under SLO_HOME | Released reads / writes | New reads / writes | Compatibility boundary |
+|---|---|---|---|
+| global/model_catalog_cache.json | import / explicit discovery only | never / never | Released schema 1 |
+| global/model_catalog_cache.lock | no / no | never / never | Reserved name |
+| global/model_catalog_cache.v2.json + .v2.lock | no / no | load / refresh + flock | Provider schema 2 |
+| global/authentication.json | lookup / auth + refresh | lookup / released rows | anthropic, openai, kimi_for_coding only |
+| global/authentication.additional-providers.json | no / no | lookup / additional rows | OpenRouter; future unknown providers need another sibling |
+| .credentials.lock | flock / create | flock / create | Existing OAuth coordination |
+| global/model_catalog_overrides.json | yes / no | yes / no | Operator-owned |
+| sessions/history/** | yes / yes, including compaction | yes / yes, including resume metadata | Shared extra-ignore schema; rewrite limitation below |
+| preferences | yes / yes | yes / yes | Released defaults fall back to gpt-5.4 when unsupported |
+
+| Provider cache state | Cold load | Refresh | Log |
+|---|---|---|---|
+| missing | seed | write | none |
+| valid schema 2 | seed + slices | replace | none |
+| other schema (1, 3) | seed | replace | model_catalog_cache_schema_ignored info |
+| corrupt / unreadable / invalid | seed | replace | one model_catalog_cache_load_failed warning, no traceback |
+| any released cache state | never open | never write | none |
+
+| Credential operation / edge | Result |
+|---|---|
+| load | Read both (absent means empty), merge owned rows |
+| persist / remove | Atomically rewrite owning file only, preserve other rows |
+| misfiled row | Ignore with warning every lookup, preserve on writes, never migrate |
+| either file unreadable / invalid | CredentialStoreCorruptError for that path, history writes fail closed |
+| later unknown provider in additional file | Same error; future versions must use another filename |
+| SLO_AUTH_FILE override | Additional file follows beside override |
+| modes | Files 0600, parent 0700 |
+
+The sole owners remain ModelCatalogStore and CredentialStore. No lock, DAO,
+resolver, migration or catalog owner was added. Concurrent released/new writes
+of the same credential file retain the pre-existing lost-update risk. A misfiled
+OpenRouter key is unavailable to redaction; README's manual pre-fix cleanup must
+move it before new Slo runs. No cleanup is automated.
+
+Unknown saved direct models use the preferred/default model and existing startup
+block; explicit models, pool primary and OpenRouter pending preparation remain
+unchanged. Both production tree and explicit flat stores use events.jsonl; tree
+links live in payload.metadata. Released compaction drops provider_message_extension
+from rewritten events, but preserves it in the pre-compaction archive.
+
+Executable proof: tests/compat uses actual git-archived v0.20.1 with minimal env
+on per-test state shared with current code. Both directions continue and assert
+all ordered user/assistant contents. The real visualize CLI mounts headlessly
+and audits both source/destination auth/catalog paths. A missing release tag fails
+rather than skips. Current gates: implementation/86b-model-catalog/b5-implementation.md;
+historical Feature 86.a waivers are not permission to waive 86.b gates.
+
+## Latest Step-1 bounded window correction — 2026-10-03
+
+The prior final gate is retained unchanged: `.f86-final-remediation-hldebc_g/full-final.log`
+reports **1 failed, 5155 passed, 18 deselected, 196 warnings**, exit 1. The exact
+bounded-model-window failure reproduced in isolation. Direct-provider summaries
+incorrectly acquired the gateway `; provider default` suffix, expanding the normal
+rows from two to three lines (five rather than eight rows). The existing suggestion
+projection now preserves direct-provider summaries; OpenRouter evidence is unchanged.
+A stronger eight-label/footer compositor assertion then exposed detail width exceeding
+the inner menu width by four cells. The menu now uses the same inner width for both.
+No count/window expectation was relaxed, no sleeps/skips added, and no R1/R3 changes.
+
+Focused partition: 38 passed; intermediate strengthened-paint run: 1 failed/173 passed;
+paint correction: 30 passed; final affected: **174 passed, 5 warnings**; additional
+surrounding picker/status regressions: **48 passed, 2 warnings**. Full expanded
+commands/logs/exits: `.f86-window-correction-tPhyAzET/`. The fresh complete gate
+is `full.log`, `full-command.txt`, `full.exit` there, generated AFTER these final
+documentation edits. Its actual exit/summary controls readiness; no anticipated pass.
+Final source/test/current-doc manifest: `source-test-manifest.sha256`, digest in
+`manifest.sha256`, generated after full gate and read-only checks; no edits thereafter.
+
+R1 router truth, R2 two-size compositor/hidden-paint sensitivity and R3 real schema-2
+public preparation/valid SDK no-budget proof remain retained. R4 points to this new
+receipt, not a reconstructed missing directory. E1 removal still injects refresh
+outcome (not all-real zero-HTTP removal). Historical selection offset has no claimed
+causal repair. Auth sensitivity remains retained. Black/mypy waived, not green;
+provider evidence remains offline synthetic, not live authorization or paid inference.
+Independent sequential Step2/Step3 remain pending; readiness is not feature approval.
+Earlier current/latest headings below are preserved historical receipts.
+
+## Current sequential remediation — 2026-10-03 (R1–R4)
+
+R1 control-aware `/reasoning`, R2 genuine two-size picker/router compositor proof,
+and R3 real schema-2 public admission → valid SDK no-budget completion are corrected
+with focused red/green evidence; affected partition: **460 passed, 5 warnings**.
+Initial full gate found five picker status/context clipping regressions (5151 passed,
+18 deselected); its full.log is retained. Corrected menu uses a separate reasoning
+line only for explicit disable semantics, preserving status/context; two-line rows
+retain original capacity and three-line rows use bounded capacity. This is a
+narrow viewport adjustment to the original two-line plan, not weakened assertions.
+Picker regressions now pass 32 tests. The new final gate receipt is `.f86-final-remediation-hldebc_g/full-final.log`, with exact
+command in `full-final-command.txt` and result in `full-final.exit`. These artifacts are produced
+**after this documentation is finalized**; consult their actual result, not an
+anticipated pass. The missing `.f86-step1-1791030546-full` claim is not relied on.
+See `docs/implementation/86-openrouter/sequential-r1-r4-remediation-2026-10-03.md`
+for the finite matrix and source/test freeze contract. Prior headings below are
+historical, not outstanding G1/G2 assertions or current gate pointers.
+
+E1 remains qualified real-loader/stale-delivery/rotation proof: removal injects a
+refresh outcome, not all-real zero-HTTP removal. Historical selection offset has
+no claimed causal repair. Auth compositor/sensitivity evidence is retained.
+Black/mypy remain waived, not green; 18 normal E2E/default-disabled exclusions
+are expected (actual gate log controls). All provider evidence is offline synthetic,
+not live authorization, availability or paid inference. Independent Step2/Step3
+remain pending; no feature-completion or approval claim.
+
+
+## Latest recovery receipt — 2026-10-03 final authorized Call 4: REVISE
+
+Fresh complete post-edit non-E2E gate: **5136 passed, 18 deselected, 196 warnings
+in 327.78s; exit 0**, `.f86-final-recovery-O3ZPKA/full-non-e2e.log`.
+This supersedes earlier receipts as the latest execution, not as approval.
+Budget evidence persistence, nullable-rate override restoration, actual default-effort
+SDK wire assertion and bounded picker detail fixes landed. Remaining: unexplained
+Call3 selection offset failure (passes isolated/full now, no causal repair), `/reasoning`
+presentation and mounted two-size proof, prepared/no-budget evidence, and stronger
+real-store admission proof (new removal test injects refresh outcome).
+See `docs/implementation/86-openrouter/final-recovery-evidence-2026-10-03.md`.
+**STEP1READY withheld.** Independent Step2/3 remain pending. Offline synthetic tests
+are not live authorization/availability/inference evidence; 18 E2E/default-disabled
+live/fixture cases were deselected. Black/mypy waived, not green. Earlier receipts
+below remain historical; no final workflow approval.
+
+
 This concise index points maintainers to the runtime owners most relevant to Feature 75 plugin extensions and the adjacent agent/TUI seams.
 
 ## Skills maintenance
@@ -151,6 +302,118 @@ slo --plugin plugins/bash_live_output/plugin.py
   older `classify`), so pool tests must use error shapes the real classifier treats as switchable
   (e.g. 429 on any lane, 402 only on Anthropic).
 
+## OpenRouter mounted full-flow acceptance (Feature 86, incomplete)
+
+`tests/integration/test_openrouter_full_flow.py::test_mounted_openrouter_auth_picker_router_session_and_resume_flow`
+uses real production composition with a mounted `AuthenticationScreen` and `SloTUI`, rather than helper-only selector calls: candidate `/key` precedes persistence, discovery publishes an unseeded route, the mounted picker/router selects its canonical identity, a harmless bound tool runs through local SDK SSE, and a newly prepared session sends the next prompt with its private same-route reasoning anchor. The fixture is deterministic `MockTransport` only; it does not prove stale/removal, pool, committed-error, child/schedule, or full feature acceptance.
+
+## OpenRouter bounded composed verification (Feature 86, incomplete)
+
+`tests/integration/test_openrouter_full_flow.py` exercises real candidate
+verification, credential persistence/resolution, authenticated discovery, catalog
+publication, display-name search/canonical selection, session selection, and the
+prepared factory's local SSE request. The mounted flow additionally covers auth,
+picker/router interaction, a bound tool, and a newly prepared same-process session
+resume with the private anchor. It proves no duplicate `/key` during auth handoff and
+reloads the persisted catalog after service reset. Default sync/async HTTP transports
+are blocked; synthetic key absence is checked in public results, logs, model chunks
+and catalog bytes. This does **not** prove OS-process restart, complete private-history
+artifact scanning, stale/removal/cancellation matrices, mixed-pool fallback, or
+complete committed-failure/cross-channel acceptance. Fixtures are synthetic, not live
+provider observations.
+
+## OpenRouter (Feature 86 — current partial delivery)
+
+- Canonical exact route identity is `'openrouter:<exact-remote-id>'` in
+  `src/auth/provider_for_model.py`; the provider is always `OPENROUTER`, never
+  inferred from the remote ID's author segment. `CredentialResolver` resolves
+  `SLO_OPENROUTER_API_KEY` at operation time before the OpenRouter store row;
+  empty is absent and whitespace-only values are rejected. There is no OpenRouter
+  legacy fallback.
+- `src/integrations/openrouter/` is a fixed-origin injected-`httpx` GET boundary
+  for `/api/v1/key` and `/api/v1/models/user`. It captures one credential, does
+  no inference/retry/logging of wire bodies, and exposes only safe exceptions.
+  `OpenRouterAuthenticationService` verifies a candidate before persistence and
+  carries private verification evidence to catalog refresh; public result state is
+  secret-free and an environment key wins over a pasted replacement.
+- `OpenRouterCatalogConverter` produces conservative exact discovered entries;
+  `ModelCatalogService` owns authenticated publication/admission while `load()`
+  stays offline. `OpenRouterRequestPolicy` and `OpenRouterChatOpenAI` provide the
+  existing Chat-Completions/SDK lane; private route/reasoning continuation is kept
+  only for same-route runtime/history replay. `/model refresh`, bounded cached
+  picker search, exact selection, pending interactive startup, prompt-generation
+  preparation, headless preparation, and explicit-model-clears-pool semantics are
+  implemented with targeted local tests. This is not a live availability claim.
+- Schedules pass their stored model to `slo run`; trusted headless children forward
+  the exact `SLO_OPENROUTER_API_KEY` exception while other secret-shaped names remain
+  filtered. Complete scheduled/inbox/populated-artifact acceptance is not proved.
+
+Feature 86 remains **REVISE**. The retained **pre-correction** Step 1 gate is
+**5115 passed, 18 E2E-marked deselected, 196 warnings in 373.69s; exit 0** at
+`.f86-integration-retry-ucwY1o/full-non-e2e.log`. The 18 deselections include
+default-disabled live/fixture harness tests; executed OpenRouter testing is offline
+local/mock transport evidence, not live credential, network, availability, paid
+inference, or authorization verification. Black/mypy are waived only as static gates,
+not green. Independent review remains **REVISE** while concurrent source corrections
+address current findings; the receipt is not a final post-correction gate or approval.
+Bounded later evidence supersedes the older statement that Plan B and OS-process
+admission had not been exercised: append ordering/refusal, independent OS-process
+resume admission, append-wait cancellation, and a reaped-launcher native-I/O EBADF
+case are covered. The exact-entry qualification uses instrumented shipped
+writer/reporter bodies and is not native interpreter-startup equivalence; it does not
+create an argv-equality product requirement. See
+`docs/implementation/86-openrouter/independent-full-rereview-2026-10-03.md` for
+current review findings; dated reports remain historical.
+
+### OpenRouter pending interactive startup (bounded 86.a.4)
+
+`TyperDispatch.tui` alone opts into `build(allow_pending_preparation=True)`.
+Session-owned transient readiness defers reasoning and usage capability resolution;
+the welcome notice must also defer or genuinely cold routes still fail at mount.
+The app owns one tracked worker calling `prepare_startup()` and awaits cancellation
+on unmount. That gateway derives snapshot/reasoning/usage before a no-await adoption
+on the same session identity. Failed startup retains unknown limits and safe
+`/auth` / `/model refresh` recovery. Public invoke and pending model selection are
+gated independently of the UI. This is bounded local startup proof, not full
+credential freshness or complete Feature 86 readiness.
+
+### OpenRouter per-prompt catalog adoption (bounded 86.a.4)
+
+- Config-backed OpenRouter single/pool submissions now call the existing
+  `ModelCatalogService.prepare_models()` once under the session prompt lock,
+  before history/agent setup. The returned snapshot lasts through the complete
+  submission and is cleared in the run-scope finalizer. Injected agents and
+  direct-only sessions retain the existing path.
+- Session adoption compares configured entries against the lazy agent's build
+  snapshot, not the manual-refresh read view. Changed entries invalidate the
+  agent, reclamp reasoning, and invalidate cached context capacity; unrelated
+  generation changes may reuse the agent. Selection also updates config identity
+  so next admission validates the selected route rather than its predecessor.
+- Context measurement, attempt rate policy, and compaction calls receive the
+  session snapshot. `test_prompt_catalog_admission.py` exercises full Faux-backed
+  submissions with an event barrier, next-run metadata changes/removal, and pool
+  rejection without member subtraction.
+- This is offline catalog admission, not credential verification: the catalog
+  gateway still lacks credential-aware refresh. TUI pending startup and the
+  full cross-context integration contract remain incomplete.
+
+### OpenRouter candidate authentication (bounded 86.a.5 continuation)
+
+- `src/auth/openrouter_authentication.py` now verifies an environment capture or
+  private submitted candidate before `CredentialStore.persist`. Candidate commit
+  rechecks the source through the existing resolver. Verification failure or
+  cancellation before commit preserves the previous credential bytes.
+- The service forwards matching verification evidence to the existing catalog
+  refresh API. Public results carry fixed safe copy only; cancellation after
+  commit records that the verified key was saved. Catalog failure does not undo it.
+- The existing modal exposes OpenRouter via API-key-only factory capabilities,
+  tracks/awaits verification tasks and paints literal safe results. Its body now
+  caps width at the terminal width, preventing Cancel clipping at 60 columns.
+- This does not finish the catalog's supplied-capture race checks, picker,
+  refresh command, or full auth-to-inference integration. Current catalog refresh
+  bypasses effective-fingerprint checks for supplied captures; auth evidence
+  forwarding is not a claim that this remaining catalog race has been resolved.
+
 ## Kimi K3 reasoning
 
 - The model catalog owns K3's canonical `low`, `high`, and `xhigh` reasoning
@@ -270,3 +533,85 @@ async-generator single-flight gateway, generic history activation is only
 fixture-only capture API for conformance. Before implementation, treat that
 report and `tasks.md` as the dependency order and rerun the named executable
 gates; do not infer that Slotui modules already exist in this repository.
+
+### OpenRouter streamed continuation assembly (bounded 86.a.3)
+
+`OpenRouterChatOpenAI` now owns one ContextVar-scoped `OpenRouterMessageCodec`
+per stream and resets it in `finally`. Complete private metadata appears once
+on a final metadata-only chunk: attaching it repeatedly lets LangChain concatenate
+route/provider strings and corrupt replay. Indexed details merge by index with
+stable-field checks; non-JSON and >8 MiB metadata fail safely. Local factory/SDK
+coverage in `test_openrouter_fragments.py` crosses trace/history JSON projection
+and the second tool-result HTTP request, including different-route stripping.
+SDK DEBUG request options are now hidden in an adapter-local ContextVar scope;
+each nested/concurrent sync/async scope owns a distinct filter. Known SDK transport
+exception records keep their fixed labels but not raw traceback data (the SDK logs
+before adapter normalization). `test_openrouter_channels.py` proves a real local
+factory/SDK bound-tool agent/session run, one private durable anchor extension,
+same-route second request, clean public stream/headless `_emit` JSONL, clean
+non-event history files, TUI replay compositor paint, and safe HTTP/transport
+exception str/repr/formatted traceback. Runtime traces and replay-bearing history
+are intentionally private metadata carriers, not public diagnostic channels.
+Full sentinel-bearing pool fallback/audit and headless status/fleet/subprocess
+capture proof remain unverified; this is not complete Feature 86 security proof.
+
+### OpenRouter catalog takeover — bounded lifecycle/consolidation
+
+`ProviderModelDiscoveryService.refresh` is now an async provider-scoped compatibility
+delegate to `ModelCatalogService.refresh`; its all-provider credential loop and empty
+success placeholder are removed. Pure direct-template merge helpers remain. The merged
+`ModelCatalogStore.write_cache` writer is removed; raw provider persistence is unchanged.
+Store read paths do not mkdir/chmod. Catalog refresh counts task subscribers so cancelling
+one default-client waiter cannot close a client still used by another waiter.
+
+Call 4/4 repairs the subsequent Call 3 provenance regression: lifecycle capture must
+not clear the last committed `_snapshot` or reset its generation. Cold load reads
+seed/cache/overrides without resolver/client/network/cache-write I/O; warm mismatch
+filtering is a pure projection over committed state. `_publish_candidate` binds private
+fingerprint provenance only with successful publication and increments generation.
+Admission captures lifecycle identity and rereads the filtered view. A cold process
+without lifecycle capture may browse persisted rows; that is not authorization to run.
+The exact eight publication regressions and one added rotation/failure/next-admission
+barrier pass locally. Cross-process and full feature acceptance remain Pending; see
+the Call 4/4 implementation ledger. No second catalog/state owner was introduced.
+
+## Feature 86 R2/R3/R4 remediation boundary
+
+The headless stream task's ContextVar does not propagate back to its parent.
+`HeadlessRunner` retains only the admitted operation capture observed at the event
+subscriber, sanitizes public events before retaining/emitting them, binds the capture
+around post-stream terminal notifier persistence, and releases it in `invoke` finally.
+No capture is persisted or attached to a public DTO; private continuation is unchanged.
+The fixed GET client rejects full pages adding no unique records before catalog
+publication. Failed refresh retains the last-good provider slice.
+`src/tui/model_catalog.py::ModelPickerRowDAO` is presentation-only;
+`src/agents/model_catalog/dao.py::ModelCatalogEntryDAO` remains canonical.
+See `docs/implementation/86-openrouter/remediation-r2-r3-r4-2026-10-03.md` for
+historical 5045-pass non-E2E evidence and limitations. The later independent Step 2
+rereview is **REVISE**; see
+`docs/implementation/86-openrouter/independent-full-rereview-2026-10-03.md`.
+
+
+## Specification authoring ownership
+
+`skills/design-and-analysis/feature-specifications/SKILL.md` is the canonical
+Gather context → Draft → Self-check → Revise authoring skill. The former hooks
+are compatibility redirects; independent verification and task breakdown remain
+separate, sequenced by `workflows/specification-development.md`. Every feature
+requires product framing in overview.md and separate standalone engineering
+sub-specs; there is no mode selection or combined-document exception. Skill paths
+follow runtime discovery and supported environment overrides. Project artifact
+paths override generic home defaults. Author self-check is not independent approval.
+Module-depth design guidance lives in `coding/declarative-method-structure` and is
+advisory, not a hard extraction-rule exemption. Refresh tooling overlays upstream
+skills without deleting locally maintained policy/workflows/samples. See
+`docs/implementation/spec-skills-consolidation/` for preservation and gate evidence.
+
+Refresh preservation requires testing real manifest selection plus writer collisions,
+not only a manually constructed protected author record. The protected-owner set
+also includes Code-Test-Review's entry pointer and audited local routing/KB/review
+safety policy; unknown historical customizations still need explicit ownership
+audit before upstream refresh. Runtime descriptions must match body routing: the
+extended context companion is on-request and shares canonical artifact precedence.
+See `revision-evidence.md` in the consolidation evidence directory; independent
+re-review and completion remain pending.

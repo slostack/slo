@@ -26,7 +26,8 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
+from src.agents.providers.message_extension import PROVIDER_MESSAGE_EXTENSION_KEY
+from src.agents.slo_agent.history.dao import SessionHistoryEventDAO, SessionHistoryEventPayloadDAO
 from src.agents.slo_agent.history.message_contract_reconciler import (
     MessageContractReconciler,
 )
@@ -376,7 +377,10 @@ class SessionHistoryProjector:
         if event.kind == "workflow_update":
             return HumanMessage(content=f"[workflow update] {payload.content or ''}")
         if event.kind == "assistant_message":
-            return AIMessage(content=payload.content or "")
+            return AIMessage(
+                content=payload.content or "",
+                additional_kwargs=cls._provider_extension_kwargs(payload=payload),
+            )
         if event.kind == "tool_call":
             tool_calls: list[dict[str, Any]] = payload.tool_calls or cls._tool_calls_fallback(
                 payload=payload,
@@ -386,6 +390,7 @@ class SessionHistoryProjector:
             return AIMessage(
                 content=payload.content or "",
                 tool_calls=tool_calls,
+                additional_kwargs=cls._provider_extension_kwargs(payload=payload),
             )
         if event.kind == "tool_result":
             return ToolMessage(
@@ -400,6 +405,22 @@ class SessionHistoryProjector:
                 content=f"[Previous conversation summary]\n\n{payload.content or ''}",
             )
         return None
+
+    @staticmethod
+    def _provider_extension_kwargs(*, payload: SessionHistoryEventPayloadDAO) -> dict[str, object]:
+        """Rehydrate private continuation metadata into a replayed assistant anchor.
+
+        Args:
+            payload (SessionHistoryEventPayloadDAO): Persisted assistant or anchor tool-call payload.
+
+        Returns:
+            dict[str, object]: Empty metadata for legacy events or one private extension mapping.
+        """
+        if payload.provider_message_extension is None:
+            return {}
+        return {
+            PROVIDER_MESSAGE_EXTENSION_KEY: payload.provider_message_extension.model_dump(mode="json"),
+        }
 
     @classmethod
     def _tool_calls_fallback(

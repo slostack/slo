@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import inspect
 import json
 import os
 import signal
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterator, List, Literal, Optional, Protocol, TextIO, TypeAlias
+from typing import TYPE_CHECKING, Callable, Iterator, List, Literal, Optional, Protocol, TextIO, TypeAlias
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,6 +34,9 @@ from src.agents.slo_agent.orchestrator.reaper import (
     ReapOutcome,
 )
 from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+if TYPE_CHECKING:
+    from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO
 
 __all__ = [
     "WorkflowCommandService",
@@ -119,9 +123,22 @@ Workflow ids reach the store from inbox payloads and user-typed
 ``/workflows abort <id>`` arguments; they are used as file names and must
 never be able to escape the per-session ``workflows/`` directory."""
 
+_CAPTURE_WRITER_FAILURE_CODE: Literal["capture_writer_failed"] = "capture_writer_failed"
+_CAPTURE_WRITER_FAILURE_MESSAGE: str = "Capture writer failed; workflow output may be incomplete."
+
 
 class WorkflowStateTransitionError(RuntimeError):
     """Raised when a workflow state transition is illegal."""
+
+
+class WorkflowCaptureHealthDAO(BaseModel):
+    """Fixed-safe capture-health projection stored with one workflow handle."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["degraded"] = Field(description="Capture health classification.")
+    failure_code: Literal["capture_writer_failed"] = Field(description="Allowlisted capture failure code.")
+    safe_message: str = Field(description="Fixed operator-facing capture failure message.")
 
 
 class WorkflowHandleDAO(BaseModel):
@@ -139,6 +156,10 @@ class WorkflowHandleDAO(BaseModel):
     started_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC launch timestamp.",
+    )
+    capture_health: Optional[WorkflowCaptureHealthDAO] = Field(
+        default=None,
+        description="Fixed-safe capture health for the active orchestrator run.",
     )
 
 
@@ -247,6 +268,74 @@ class WorkflowHandleStore:
                 state=state,
             )
 
+    async def record_capture_failure(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        expected_pid: int,
+    ) -> WorkflowHandleDAO:
+        """Record fixed-safe capture degradation for the current workload identity.
+
+        WHAT: Persists only the allowlisted capture-writer failure projection
+            without changing workflow state, pid, or stable run identity.
+        WHO: A future detached capture owner calls this after observing its
+            fixed writer failure signal.
+        WHEN: Once a capture failure is known for a specific workload run.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow identifier.
+            expected_pid (int): Workload pid that observed the failure.
+
+        Returns:
+            WorkflowHandleDAO: The unchanged workload handle with degradation.
+
+        Raises:
+            FileNotFoundError: If the handle is missing or unsafe.
+            WorkflowStateTransitionError: If the supplied pid belongs to a stale run.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(
+                self.record_capture_failure_sync,
+                owner_session_id=owner_session_id,
+                workflow_id=workflow_id,
+                expected_pid=expected_pid,
+            )
+
+    async def reserve_relaunch(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+    ) -> WorkflowHandleDAO:
+        """Reserve one dead workflow for relaunch before workload spawning.
+
+        WHAT: Moves a resumable handle to ``launching`` with its existing pid
+            while holding its durable flock, making admission visible to every
+            command-service instance before the workload can execute.
+        WHO: ``WorkflowCommandService.resume`` calls this before
+            ``WorkflowRelauncher.invoke``.
+        WHEN: Once at the beginning of an operator-requested resume attempt.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow handle identifier.
+
+        Returns:
+            WorkflowHandleDAO: Reserved launching handle with its prior pid.
+
+        Raises:
+            FileNotFoundError: If the handle is missing or its id is unsafe.
+            WorkflowStateTransitionError: If the handle cannot be relaunched.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._reserve_relaunch_sync,
+                owner_session_id=owner_session_id,
+                workflow_id=workflow_id,
+            )
+
     async def relaunch(
         self,
         *,
@@ -254,12 +343,13 @@ class WorkflowHandleStore:
         workflow_id: str,
         new_pid: int,
     ) -> WorkflowHandleDAO:
-        """Move one dead workflow handle back to launching with its fresh pid.
+        """Patch a reserved relaunch handle with its fresh workload pid.
 
-        WHAT: Validates the relaunch-only state edge and atomically patches the
-            orchestrator process id while holding the durable handle flock.
-        WHO: WorkflowCommandService.resume calls this after WorkflowRelauncher spawns.
-        WHEN: Once per successful operator-requested workflow resume.
+        WHAT: Atomically patches the actual spawned workload pid while the
+            handle remains in its durable ``launching`` reservation state.
+        WHO: ``WorkflowCommandService.resume`` calls this after a successful
+            ``WorkflowRelauncher`` invocation.
+        WHEN: Once a reserved resume workload has spawned successfully.
 
         Args:
             owner_session_id (str): TUI session that owns the workflow handle.
@@ -271,7 +361,7 @@ class WorkflowHandleStore:
 
         Raises:
             FileNotFoundError: If the handle is missing or its id is unsafe.
-            WorkflowStateTransitionError: If the handle cannot be relaunched.
+            WorkflowStateTransitionError: If the handle was not reserved.
         """
         async with self._lock:
             return await asyncio.to_thread(
@@ -279,6 +369,40 @@ class WorkflowHandleStore:
                 owner_session_id=owner_session_id,
                 workflow_id=workflow_id,
                 new_pid=new_pid,
+            )
+
+    async def rollback_relaunch(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        state: WorkflowState,
+    ) -> WorkflowHandleDAO:
+        """Restore a failed relaunch reservation to its prior recoverable state.
+
+        WHAT: Changes an unpatched launching reservation back to its original
+            stalled or failed state under the durable handle flock.
+        WHO: ``WorkflowCommandService.resume`` calls this when spawning fails.
+        WHEN: Immediately after a reserved workload fails to return a pid.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow handle identifier.
+            state (WorkflowState): Original resumable state to restore.
+
+        Returns:
+            WorkflowHandleDAO: Recovered resumable workflow handle.
+
+        Raises:
+            FileNotFoundError: If the handle is missing or its id is unsafe.
+            WorkflowStateTransitionError: If the reservation cannot be rolled back.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._rollback_relaunch_sync,
+                owner_session_id=owner_session_id,
+                workflow_id=workflow_id,
+                state=state,
             )
 
     async def correct_from_evidence(
@@ -465,8 +589,88 @@ class WorkflowHandleStore:
         )
         if status is not None and self._status_matches_handle(handle=handle, status=status):
             self._reject_relaunch_status(status=status)
+        if handle.state == "launching":
+            return
         if handle.pid > 0 and self._pid_alive(handle.pid):
             raise WorkflowStateTransitionError(f"workflow {handle.workflow_id} still has a live pid")
+
+    def record_capture_failure_sync(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        expected_pid: int,
+    ) -> WorkflowHandleDAO:
+        """Persist capture degradation while validating the current workload pid.
+
+        The independent capture reporter uses this synchronous owner boundary
+        after its launcher has gone. The async API delegates here too; the
+        existing cross-process flock and atomic writer serialize both paths.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow identifier.
+            expected_pid (int): Workload pid whose capture failed.
+
+        Returns:
+            WorkflowHandleDAO: Updated handle preserving the workload identity.
+
+        Raises:
+            FileNotFoundError: If the handle is missing or unsafe.
+            WorkflowStateTransitionError: If a newer workload owns the handle.
+        """
+        if not self._is_path_safe_workflow_id(workflow_id=workflow_id):
+            raise FileNotFoundError(workflow_id)
+        path: Path = self._handle_path(owner_session_id=owner_session_id, workflow_id=workflow_id)
+        with self._locked_handle(path=path) as lock_file:
+            existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
+            if existing is None:
+                raise FileNotFoundError(path)
+            if existing.pid != expected_pid:
+                raise WorkflowStateTransitionError(f"workflow {workflow_id} has a newer workload identity")
+            health = WorkflowCaptureHealthDAO(
+                status="degraded",
+                failure_code=_CAPTURE_WRITER_FAILURE_CODE,
+                safe_message=_CAPTURE_WRITER_FAILURE_MESSAGE,
+            )
+            updated: WorkflowHandleDAO = existing.model_copy(update={"capture_health": health})
+            self._write_handle_locked(path=path, handle=updated, lock_file=lock_file)
+            return updated
+
+    def _reserve_relaunch_sync(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+    ) -> WorkflowHandleDAO:
+        """Persist one relaunch reservation while the handle flock is held.
+
+        WHAT: Checks durable evidence and moves one terminal resumable handle
+            to launching before workload spawn admission.
+        WHO: ``reserve_relaunch`` reaches this sync filesystem boundary.
+        WHEN: Immediately before ``WorkflowRelauncher`` is permitted to spawn.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow handle identifier.
+
+        Returns:
+            WorkflowHandleDAO: The reserved launching handle.
+        """
+        if not self._is_path_safe_workflow_id(workflow_id=workflow_id):
+            raise FileNotFoundError(workflow_id)
+        path: Path = self._handle_path(owner_session_id=owner_session_id, workflow_id=workflow_id)
+        with self._locked_handle(path=path) as lock_file:
+            existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
+            if existing is None:
+                raise FileNotFoundError(path)
+            if "launching" not in _RELAUNCH_TRANSITIONS.get(existing.state, frozenset()):
+                raise WorkflowStateTransitionError(
+                    f"illegal workflow relaunch for {workflow_id}: {existing.state} -> launching"
+                )
+            reserved: WorkflowHandleDAO = existing.model_copy(update={"state": "launching", "pid": 0})
+            self._write_handle_locked(path=path, handle=reserved, lock_file=lock_file)
+            return reserved
 
     def _relaunch_sync(
         self,
@@ -475,24 +679,19 @@ class WorkflowHandleStore:
         workflow_id: str,
         new_pid: int,
     ) -> WorkflowHandleDAO:
-        """Persist one evidence-safe relaunch transition while the flock is held.
+        """Patch one durable relaunch reservation with the spawned workload pid.
 
-        WHAT: Rechecks durable liveness evidence, validates the relaunch edge,
-            and atomically records the replacement orchestrator pid.
-        WHO: WorkflowHandleStore.relaunch invokes this in its worker thread.
-        WHEN: After WorkflowCommandService.resume successfully spawns a child.
+        WHAT: Records the actual replacement pid without reopening admission.
+        WHO: ``relaunch`` reaches this sync filesystem boundary after spawn.
+        WHEN: Once a reserved relaunch workload returns a positive pid.
 
         Args:
             owner_session_id (str): TUI session that owns the workflow handle.
             workflow_id (str): Workflow handle identifier.
-            new_pid (int): Positive pid of the newly spawned orchestrator.
+            new_pid (int): Positive spawned workload pid.
 
         Returns:
-            WorkflowHandleDAO: Relaunched handle with state launching and new_pid.
-
-        Raises:
-            FileNotFoundError: If the handle is missing or its id is unsafe.
-            WorkflowStateTransitionError: If evidence or state makes relaunch unsafe.
+            WorkflowHandleDAO: The patched launching handle.
         """
         if not self._is_path_safe_workflow_id(workflow_id=workflow_id):
             raise FileNotFoundError(workflow_id)
@@ -503,14 +702,58 @@ class WorkflowHandleStore:
             existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
             if existing is None:
                 raise FileNotFoundError(path)
-            self._reject_live_relaunch_locked(handle=existing)
-            if "launching" not in _RELAUNCH_TRANSITIONS.get(existing.state, frozenset()):
-                raise WorkflowStateTransitionError(
-                    f"illegal workflow relaunch for {workflow_id}: {existing.state} -> launching"
+            if existing.state in {"stalled", "failed"}:
+                self._reject_live_relaunch_locked(handle=existing)
+                relaunched: WorkflowHandleDAO = existing.model_copy(
+                    update={"state": "launching", "pid": new_pid, "capture_health": None}
                 )
-            updated: WorkflowHandleDAO = existing.model_copy(update={"state": "launching", "pid": new_pid})
+                self._write_handle_locked(path=path, handle=relaunched, lock_file=lock_file)
+                return relaunched
+            if existing.state != "launching":
+                raise WorkflowStateTransitionError(
+                    f"workflow {workflow_id} is {existing.state} — relaunch reservation is not active"
+                )
+            updated: WorkflowHandleDAO = existing.model_copy(update={"pid": new_pid, "capture_health": None})
             self._write_handle_locked(path=path, handle=updated, lock_file=lock_file)
             return updated
+
+    def _rollback_relaunch_sync(
+        self,
+        *,
+        owner_session_id: str,
+        workflow_id: str,
+        state: WorkflowState,
+    ) -> WorkflowHandleDAO:
+        """Restore one unpatched reservation under the durable handle flock.
+
+        WHAT: Returns a failed spawn reservation to its prior resumable state.
+        WHO: ``rollback_relaunch`` reaches this sync filesystem boundary.
+        WHEN: ``WorkflowRelauncher`` cannot provide a workload pid.
+
+        Args:
+            owner_session_id (str): TUI session that owns the workflow handle.
+            workflow_id (str): Workflow handle identifier.
+            state (WorkflowState): Original stalled or failed state.
+
+        Returns:
+            WorkflowHandleDAO: The restored workflow handle.
+        """
+        if state not in {"stalled", "failed"}:
+            raise WorkflowStateTransitionError(f"invalid relaunch rollback state for {workflow_id}")
+        if not self._is_path_safe_workflow_id(workflow_id=workflow_id):
+            raise FileNotFoundError(workflow_id)
+        path: Path = self._handle_path(owner_session_id=owner_session_id, workflow_id=workflow_id)
+        with self._locked_handle(path=path) as lock_file:
+            existing: Optional[WorkflowHandleDAO] = self._read_path(path=path)
+            if existing is None:
+                raise FileNotFoundError(path)
+            if existing.state != "launching":
+                raise WorkflowStateTransitionError(
+                    f"workflow {workflow_id} is {existing.state} — relaunch reservation is not active"
+                )
+            restored: WorkflowHandleDAO = existing.model_copy(update={"state": state})
+            self._write_handle_locked(path=path, handle=restored, lock_file=lock_file)
+            return restored
 
     def _correct_from_evidence_sync(
         self,
@@ -599,7 +842,7 @@ class WorkflowHandleStore:
             )
         )
         if status is None or not self._status_matches_handle(handle=handle, status=status):
-            return self._reconcile_by_pid(handle=handle)
+            return self._reconcile_launching_without_status(handle=handle)
         if status.state != "running":
             return self._correct_to_terminal(handle=handle, status=status)
         if self._status_is_fresh(status=status):
@@ -664,6 +907,26 @@ class WorkflowHandleStore:
             state="running",
             evidence=status,
         )
+
+    def _reconcile_launching_without_status(self, *, handle: WorkflowHandleDAO) -> WorkflowHandleDAO:
+        """Keep a fresh reservation but reap an aged pid-less launch handle.
+
+        WHAT: Distinguishes a current resume reservation from an abandoned
+            pre-spawn launch record when no matching self-report exists.
+        WHO: ``_reconcile_one`` calls this for absent or mismatched status.
+        WHEN: Before generic PID reconciliation can classify a handle dead.
+
+        Args:
+            handle (WorkflowHandleDAO): Launching or non-launching handle.
+
+        Returns:
+            WorkflowHandleDAO: Existing handle or a failed stale launch handle.
+        """
+        if handle.state != "launching":
+            return self._reconcile_by_pid(handle=handle)
+        if handle.pid == 0 and self._is_within_launch_grace(handle=handle):
+            return handle
+        return self._reconcile_by_pid(handle=handle)
 
     def _reconcile_by_pid(self, *, handle: WorkflowHandleDAO) -> WorkflowHandleDAO:
         """Apply legacy PID reconciliation when self-report evidence is absent or stale."""
@@ -940,6 +1203,7 @@ class WorkflowCommandService:
         self._store: WorkflowHandleStore = store
         self._history_root: Path = store._history_root
         self._owner_session_id: str = owner_session_id
+        self._resume_lock: asyncio.Lock = asyncio.Lock()
         self._kill: ProcessGroupKiller = kill or _default_kill_process_group
         self._pid_alive: PidAliveProbe = pid_alive or WorkflowHandleStore._default_pid_alive
         self._schedule: EscalationScheduler = schedule or self._default_schedule
@@ -1034,6 +1298,23 @@ class WorkflowCommandService:
         Returns:
             str: One-line transcript confirmation or safe refusal text.
         """
+        async with self._resume_lock:
+            return await self._resume_locked(workflow_id=workflow_id)
+
+    async def _resume_locked(self, *, workflow_id: str) -> str:
+        """Spawn and atomically admit one relaunch while this service owns resume admission.
+
+        WHAT: Serializes resume requests so an old capture drain completes before
+        a replacement workload can append its first byte.
+        WHO: ``resume`` delegates after taking the per-service admission lock.
+        WHEN: Once for each operator-requested resume attempt.
+
+        Args:
+            workflow_id (str): Identifier of the terminal workflow to relaunch.
+
+        Returns:
+            str: Safe confirmation, warning, or refusal for the slash transcript.
+        """
         from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO, WorkflowRelauncher
 
         handles: List[WorkflowHandleDAO] = await self._store.reconcile(
@@ -1046,28 +1327,141 @@ class WorkflowCommandService:
         if handle is None:
             return f"no workflow {workflow_id}"
         if handle.state not in ("stalled", "failed"):
-            return (
-                f"workflow {workflow_id} is {handle.state} — only stalled or failed workflows can be resumed"
-            )
-        outcome: RelaunchOutcomeDAO = await WorkflowRelauncher.invoke(
-            handle=handle,
-            history_root=self._history_root,
-        )
-        if outcome.error is not None or outcome.pid is None:
-            return outcome.error or f"workflow {workflow_id} resume failed: no pid returned"
+            return self._resume_state_refusal(workflow_id=workflow_id, state=handle.state)
         try:
-            await self._store.relaunch(
+            reserved_handle: WorkflowHandleDAO = await self._store.reserve_relaunch(
                 owner_session_id=self._owner_session_id,
                 workflow_id=workflow_id,
-                new_pid=outcome.pid,
             )
         except (FileNotFoundError, WorkflowStateTransitionError) as exc:
-            self._request_group_shutdowns(pids=[outcome.pid])
             return f"could not relaunch workflow {workflow_id}: {exc}"
-        return (
+        ownership: object | None = None
+        adopted_pid: int | None = None
+        adoption_committed: bool = False
+        try:
+            async with WorkflowRelauncher.spawn_for_adoption(
+                handle=reserved_handle,
+                history_root=self._history_root,
+            ) as ownership:
+                adopted_pid = ownership.process.pid
+                outcome: RelaunchOutcomeDAO = RelaunchOutcomeDAO(pid=adopted_pid)
+                await self._store.relaunch(
+                    owner_session_id=self._owner_session_id,
+                    workflow_id=workflow_id,
+                    new_pid=adopted_pid,
+                )
+                adoption_committed = True
+                activation_result = ownership.activate(expected_pid=adopted_pid)
+                if inspect.isawaitable(activation_result):
+                    await activation_result
+        except asyncio.CancelledError:
+            if adoption_committed:
+                raise
+            if ownership is not None:
+                self._shutdown_rejected_relaunch(ownership=ownership)
+            await self._rollback_failed_relaunch(workflow_id=workflow_id, state=handle.state)
+            raise
+        except OSError:
+            if adoption_committed and adopted_pid is not None:
+                await self._record_adopted_capture_failure(workflow_id=workflow_id, expected_pid=adopted_pid)
+                return f"workflow {workflow_id} resume failed"
+            if ownership is not None:
+                self._shutdown_rejected_relaunch(ownership=ownership)
+                return f"workflow {workflow_id} resume failed"
+            await self._rollback_failed_relaunch(workflow_id=workflow_id, state=handle.state)
+            return f"workflow {workflow_id} resume failed"
+        except (FileNotFoundError, WorkflowStateTransitionError) as exc:
+            if ownership is not None:
+                self._shutdown_rejected_relaunch(ownership=ownership)
+            return f"could not relaunch workflow {workflow_id}: {exc}"
+        return self._resume_confirmation(workflow_id=workflow_id, outcome=outcome)
+
+    async def _record_adopted_capture_failure(self, *, workflow_id: str, expected_pid: int) -> None:
+        """Persist fixed-safe capture degradation without changing an adopted workload.
+
+        WHAT: Records the existing safe capture-health projection after durable
+            relaunch adoption succeeds but activation or capture closing fails.
+        WHO: ``_resume_locked`` calls this only for its retained replacement.
+        WHEN: After the real workload PID is durable, before the safe failure
+            result returns to the slash-command caller.
+
+        Args:
+            workflow_id (str): Identifier of the already-adopted workflow.
+            expected_pid (int): Durable PID of its retained workload.
+        """
+        try:
+            await self._store.record_capture_failure(
+                owner_session_id=self._owner_session_id,
+                workflow_id=workflow_id,
+                expected_pid=expected_pid,
+            )
+        except (FileNotFoundError, WorkflowStateTransitionError):
+            return
+
+    def _shutdown_rejected_relaunch(self, *, ownership: object) -> None:
+        """Stop the owned workload when durable resume adoption rejects its PID.
+
+        WHAT: Sends the existing cooperative group shutdown only to the process
+            created by the current command-owned relaunch context.
+        WHO: ``_resume_locked`` calls this after ``store.relaunch`` rejects the
+            just-spawned workload's durable adoption.
+        WHEN: Before the private capture lifetime closes, so rejected workloads
+            cannot continue without a durable handle identity.
+
+        Args:
+            ownership (object): Private relaunch ownership with the spawned
+                process; the concrete type remains private to ``relaunch.py``.
+        """
+        process = getattr(ownership, "process", None)
+        pid = getattr(process, "pid", 0)
+        if not isinstance(pid, int):
+            return
+        self._request_group_shutdowns(pids=[pid])
+
+    @staticmethod
+    def _resume_state_refusal(*, workflow_id: str, state: WorkflowState) -> str:
+        """Render the existing refusal for a locally observed non-resumable state."""
+        return f"workflow {workflow_id} is {state} — only stalled or failed workflows can be resumed"
+
+    async def _rollback_failed_relaunch(self, *, workflow_id: str, state: WorkflowState) -> None:
+        """Best-effort restore of a spawn-failed durable relaunch reservation.
+
+        WHAT: Returns the exclusive launching reservation to its prior
+            resumable state so a later explicit resume can retry.
+        WHO: ``_resume_locked`` calls this after a spawn outcome has no pid.
+        WHEN: Before the original safe spawn-failure message is returned.
+
+        Args:
+            workflow_id (str): Reserved workflow identifier.
+            state (WorkflowState): Original stalled or failed state.
+        """
+        try:
+            await self._store.rollback_relaunch(
+                owner_session_id=self._owner_session_id,
+                workflow_id=workflow_id,
+                state=state,
+            )
+        except (FileNotFoundError, WorkflowStateTransitionError):
+            return
+
+    @staticmethod
+    def _resume_confirmation(*, workflow_id: str, outcome: "RelaunchOutcomeDAO") -> str:
+        """Render a safe resume result while preserving capture failure evidence.
+
+        Args:
+            workflow_id (str): Durable workflow identifier.
+            outcome (RelaunchOutcomeDAO): Successfully admitted relaunch outcome.
+
+        Returns:
+            str: Operator-facing resume confirmation with an optional safe warning.
+        """
+        confirmation = (
             f"workflow {workflow_id} resumed (pid {outcome.pid}); "
             "history replaying — state advances to running on the first heartbeat"
         )
+        if outcome.warning is None:
+            return confirmation
+        return f"{confirmation}; warning: {outcome.warning}"
 
     def _format_row(self, *, handle: WorkflowHandleDAO) -> str:
         """Render one listing row for a workflow handle.

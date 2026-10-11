@@ -20,6 +20,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.agents.providers.message_extension import ProviderMessageExtensionDAO
+
 __all__ = [
     "TraceEventKind",
     "AgentRuntimePayloadDAO",
@@ -63,6 +65,7 @@ class AgentRuntimePayloadDAO(BaseModel):
     delta: Optional[str] = None
     redacted: Optional[bool] = None
     tool_arguments_delta: Optional[str] = None
+    provider_message_extension: Optional[ProviderMessageExtensionDAO] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

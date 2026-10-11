@@ -1,0 +1,13 @@
+Skipping virtualenv creation, as specified in config file.
+..................................................                                                               [100%]
+=================================================== warnings summary ===================================================
+../../../../../.pyenv/versions/3.11.7/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+tests/agents/skills/test_committed_skills.py::TestCommittedSkills::test_every_committed_skill_loads
+  /root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+50 passed, 2 warnings in 1.46s

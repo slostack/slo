@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "id": "vendor/fixture-coder",
+      "name": "Fixture Coder",
+      "context_length": 64000,
+      "supported_parameters": ["tools"],
+      "architecture": {
+        "input_modalities": ["text"],
+        "output_modalities": ["text"]
+      }
+    }
+  ]
+}

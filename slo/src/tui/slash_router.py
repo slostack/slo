@@ -16,6 +16,11 @@ from src.agents.slo_agent.sessions.dao import (
 )
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
+from src.auth.credential_resolver import CredentialResolver
+from src.auth.provider_for_model import provider_for_model
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
+from src.agents.model_catalog.service import ModelCatalogService
+from src.auth.credential_dao import ProviderName
 from src.agents.reasoning_capabilities import (
     ModelReasoningCapabilityDAO,
     ReasoningLevel,
@@ -23,9 +28,8 @@ from src.agents.reasoning_capabilities import (
     default_reasoning_level_for_model,
     highest_supported_reasoning_level,
     parse_reasoning_level,
+    resolve_reasoning_config,
 )
-from src.auth.credential_resolver import CredentialResolver
-from src.auth.provider_for_model import provider_for_model
 from src.tui.model_catalog import (
     ModelSuggestionEntryDAO,
     model_suggestion_entries,
@@ -710,10 +714,9 @@ class SlashRouter:
         requested_model_name: str = rest.strip()
         if not requested_model_name:
             return SlashCommandResultDAO(rendered=cls._render_model_catalog(session=session))
-        return await cls._switch_model(
-            requested_model_name=requested_model_name,
-            session=session,
-        )
+        if requested_model_name == "refresh":
+            return await cls._refresh_model_catalog(session=session)
+        return await cls._switch_model(requested_model_name=requested_model_name, session=session)
 
     @classmethod
     async def _switch_model(
@@ -731,42 +734,23 @@ class SlashRouter:
         Returns:
             SlashCommandResultDAO: Confirmation or actionable error.
         """
-        if not cls._is_supported_model(requested_model_name=requested_model_name):
-            return SlashCommandResultDAO(rendered=f"unknown model: {requested_model_name}")
-
-        provider = provider_for_model(model_name=requested_model_name)
-        if CredentialResolver.resolve(provider=provider) is None:
-            return SlashCommandResultDAO(
-                rendered=f"model '{requested_model_name}' requires /auth for {provider.value}",
-            )
-        if session.is_running:
-            return SlashCommandResultDAO(
-                rendered="cannot switch models while a prompt is in flight",
-            )
-
-        session.switch_model(model_name=requested_model_name)
-
-        UserPreferencesStore.upsert(model_name=requested_model_name)
-
+        result: str = await session.prepare_model_selection(model_name=requested_model_name)
         return SlashCommandResultDAO(
-            rendered=f"active model switched to {requested_model_name}. Preference saved.",
-            refresh_title=True,
+            rendered=result,
+            refresh_title=result.startswith("active model switched"),
         )
 
     @classmethod
-    def _is_supported_model(cls, *, requested_model_name: str) -> bool:
-        """Return True when ``requested_model_name`` is in Slo's catalog.
+    async def _refresh_model_catalog(cls, *, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Delegate one manual catalog refresh to the session preparation owner.
 
         Args:
-            requested_model_name (str): Candidate model name.
+            session (SloAgentSession): Session that owns catalog adoption state.
 
         Returns:
-            bool: True when the model is supported.
+            SlashCommandResultDAO: Safe refresh outcome for the transcript.
         """
-        for model_names in supported_models_by_provider().values():
-            if requested_model_name in model_names:
-                return True
-        return False
+        return SlashCommandResultDAO(rendered=await session.refresh_model_catalog())
 
     @classmethod
     def _render_model_catalog(cls, *, session: SloAgentSession) -> str:
@@ -782,19 +766,14 @@ class SlashRouter:
         entries: list[ModelSuggestionEntryDAO] = model_suggestion_entries(
             active_model_name=session.active_model_name,
         )
-        grouped: dict = {}
-        for entry in entries:
-            grouped.setdefault(entry.provider, []).append(entry)
-        for provider, provider_entries in grouped.items():
-            lines.append(f"  {provider.value.title()}")
-            for entry in provider_entries:
-                marker: str = "*" if entry.is_active else " "
-                status: str = cls._provider_availability_status(
-                    provider_available=(not entry.requires_auth),
-                )
-                label: str = entry.support_tier_label
-                suffix: str = f" ({label})" if label else ""
-                lines.append(f"    {marker} {entry.model_name}   ({status}){suffix}")
+        entries.sort(
+            key=lambda entry: (not entry.is_active, bool(entry.support_tier_label), entry.model_name)
+        )
+        for entry in entries[:5]:
+            marker = "*" if entry.is_active else " "
+            status = entry.status_summary or "authentication not checked"
+            lines.append(f"{marker} {entry.model_name} ({status})")
+        lines.append(f"Showing {min(5, len(entries))} of {len(entries)} — type /model <search> to narrow")
         return "\n".join(lines)
 
     @staticmethod
@@ -854,15 +833,58 @@ class SlashRouter:
         if session.is_running:
             return SlashCommandResultDAO(rendered="cannot switch reasoning while a prompt is in flight")
 
-        capability: ModelReasoningCapabilityDAO = capability_for_model(
-            model_name=session.active_model_name,
-        )
-        if capability.supported_levels == ["off"]:
-            return SlashCommandResultDAO(
-                rendered=f"reasoning unsupported for {session.active_model_name}",
-            )
+        return cls._switch_idle_reasoning(requested_token=requested_token, session=session)
 
+    @classmethod
+    def _require_reasoning_change_controls(
+        cls,
+        *,
+        requested_token: str,
+        model_name: str,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+    ) -> None:
+        """Validate advertised controls before idle parsing or mutation.
+
+        Args:
+            requested_token: Operator's token, including explicit off.
+            model_name: Selected route.
+            snapshot: Session-owned catalog view.
+
+        Raises:
+            ValueError: Unknown, unsupported or unpermitted disable controls.
+        """
+        unknown = cls._provider_default_reasoning_note(model_name=model_name, snapshot=snapshot)
+        if unknown:
+            raise ValueError(f"{model_name}: {unknown}")
+        capability = capability_for_model(model_name=model_name, snapshot=snapshot)
+        if cls._is_reasoning_unsupported(capability=capability):
+            raise ValueError(f"reasoning unsupported for {model_name}")
+        if cls._is_unpermitted_openrouter_disable(requested_token=requested_token, capability=capability):
+            raise ValueError(f"reasoning disable unavailable for {model_name}; provider default applies")
+
+    @classmethod
+    def _switch_idle_reasoning(
+        cls,
+        *,
+        requested_token: str,
+        session: SloAgentSession,
+    ) -> SlashCommandResultDAO:
+        """Validate idle input before committing outside the validation catch.
+
+        Args:
+            requested_token: Operator token.
+            session: Idle session owning the policy and selected state.
+
+        Returns:
+            Safe validation feedback or the committed selection result.
+        """
+        snapshot = session.catalog_snapshot
         try:
+            cls._require_reasoning_change_controls(
+                requested_token=requested_token,
+                model_name=session.active_model_name,
+                snapshot=snapshot,
+            )
             requested_level: ReasoningLevel = cls._requested_reasoning_level(
                 requested_token=requested_token,
                 session=session,
@@ -870,20 +892,136 @@ class SlashRouter:
         except ValueError as exc:
             return SlashCommandResultDAO(rendered=str(exc))
 
-        previous_level: ReasoningLevel = session.active_reasoning_level
-        if requested_level == previous_level:
-            return SlashCommandResultDAO(rendered=f"reasoning already {previous_level}")
+        return cls._apply_reasoning_selection(
+            requested=requested_level,
+            requested_token=requested_token,
+            session=session,
+            snapshot=snapshot,
+        )
 
-        active_level: ReasoningLevel = session.switch_reasoning_level(reasoning_level=requested_level)
+    @classmethod
+    def _apply_reasoning_selection(
+        cls,
+        *,
+        requested: ReasoningLevel,
+        requested_token: str,
+        session: SloAgentSession,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+    ) -> SlashCommandResultDAO:
+        """Choose no-op or mutation after validation without catching commit errors.
 
+        Args:
+            requested: Valid canonical level.
+            requested_token: Original feedback token.
+            session: Idle state owner.
+            snapshot: View captured for validation.
+
+        Returns:
+            No-op feedback or changed result.
+        """
+        previous_level = session.active_reasoning_level
+        if requested == previous_level:
+            return cls._unchanged_reasoning_result(session=session, snapshot=snapshot)
+
+        return cls._commit_reasoning_selection(
+            previous=previous_level,
+            requested=requested,
+            requested_token=requested_token,
+            session=session,
+            snapshot=snapshot,
+        )
+
+    @classmethod
+    def _unchanged_reasoning_result(
+        cls,
+        *,
+        session: SloAgentSession,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+    ) -> SlashCommandResultDAO:
+        """Render unchanged selection without writing preferences or refreshing title.
+
+        Args:
+            session: Unchanged state owner.
+            snapshot: Pinned rendering view.
+
+        Returns:
+            No-op feedback including effective provider semantics.
+        """
+        note = cls._effective_reasoning_note(
+            model_name=session.active_model_name,
+            active_level=session.active_reasoning_level,
+            snapshot=snapshot,
+        )
+        return SlashCommandResultDAO(
+            rendered="\n".join(filter(None, (f"reasoning already {session.active_reasoning_level}", note)))
+        )
+
+    @classmethod
+    def _commit_reasoning_selection(
+        cls,
+        *,
+        previous: ReasoningLevel,
+        requested: ReasoningLevel,
+        requested_token: str,
+        session: SloAgentSession,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+    ) -> SlashCommandResultDAO:
+        """Mutate, persist and render an idle selection outside the validation catch.
+
+        Args:
+            previous: Prior canonical level.
+            requested: Valid canonical level.
+            requested_token: Original token for feedback.
+            session: Mutation owner.
+            snapshot: Pinned rendering view.
+
+        Returns:
+            Changed result requesting title refresh.
+
+        Raises:
+            RuntimeError: Session mutation rejected.
+            OSError: Preference persistence failed after mutation.
+        """
+        active_level = session.switch_reasoning_level(reasoning_level=requested)
         UserPreferencesStore.upsert(reasoning_level=active_level)
-
         return cls._reasoning_change_result(
-            previous_level=previous_level,
-            requested_level=requested_level,
+            previous_level=previous,
+            requested_level=requested,
             active_level=active_level,
             requested_token=requested_token,
             model_name=session.active_model_name,
+            snapshot=snapshot,
+        )
+
+    @staticmethod
+    def _is_reasoning_unsupported(*, capability: ModelReasoningCapabilityDAO) -> bool:
+        """Identify profiles with neither an enabled control nor explicit disable permission.
+
+        Args:
+            capability (ModelReasoningCapabilityDAO): Canonical capability for the active route.
+
+        Returns:
+            bool: Whether the route cannot accept a reasoning slash command.
+        """
+        return capability.supported_levels == ["off"] and not capability.reasoning_disable_available
+
+    @staticmethod
+    def _is_unpermitted_openrouter_disable(
+        *, requested_token: str, capability: ModelReasoningCapabilityDAO
+    ) -> bool:
+        """Reject compatibility off where OpenRouter did not advertise explicit disable control.
+
+        Args:
+            requested_token (str): User-entered canonical reasoning token.
+            capability (ModelReasoningCapabilityDAO): Canonical capability for the active route.
+
+        Returns:
+            bool: Whether the request would falsely promise provider-side disable.
+        """
+        return (
+            requested_token == "off"
+            and not capability.reasoning_disable_available
+            and capability.reasoning_controls_available
         )
 
     @classmethod
@@ -895,6 +1033,7 @@ class SlashRouter:
         active_level: ReasoningLevel,
         requested_token: str,
         model_name: str,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> SlashCommandResultDAO:
         """Build the result for a reasoning-level change.
 
@@ -904,22 +1043,18 @@ class SlashRouter:
             active_level (ReasoningLevel): Final active level after clamping.
             requested_token (str): User-facing requested token.
             model_name (str): Active model name.
+            snapshot: Session view used for validation and mutation.
 
         Returns:
             SlashCommandResultDAO: Render-ready reasoning change result.
         """
+        text = f"reasoning changed {previous_level} -> {active_level}"
         if active_level != requested_level:
-            return SlashCommandResultDAO(
-                rendered=(
-                    f"reasoning changed {previous_level} -> {active_level} "
-                    f"(requested {requested_token}; clamped for {model_name})"
-                ),
-                refresh_title=True,
-            )
-        return SlashCommandResultDAO(
-            rendered=f"reasoning changed {previous_level} -> {active_level}",
-            refresh_title=True,
+            text += f" (requested {requested_token}; clamped for {model_name})"
+        note = cls._effective_reasoning_note(
+            model_name=model_name, active_level=active_level, snapshot=snapshot
         )
+        return SlashCommandResultDAO(rendered="\n".join(filter(None, (text, note))), refresh_title=True)
 
     @classmethod
     def _requested_reasoning_level(
@@ -942,14 +1077,65 @@ class SlashRouter:
             ValueError: If the token is not supported by the parser.
         """
         if requested_token == "on":
-            return default_reasoning_level_for_model(model_name=session.active_model_name)
+            return default_reasoning_level_for_model(
+                model_name=session.active_model_name, snapshot=session.catalog_snapshot
+            )
         if requested_token == "max":
-            return highest_supported_reasoning_level(model_name=session.active_model_name)
+            return highest_supported_reasoning_level(
+                model_name=session.active_model_name, snapshot=session.catalog_snapshot
+            )
         try:
             return parse_reasoning_level(token=requested_token)
         except ValueError as exc:
             usage: str = "usage: /reasoning <on|off|minimal|low|medium|high|xhigh|max>"
             raise ValueError(f"{exc}\n{usage}") from exc
+
+    @staticmethod
+    def _provider_default_reasoning_note(
+        *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+    ) -> str:
+        """Describe unknown gateway controls from the pinned record.
+
+        Args:
+            model_name: Selected canonical route.
+            snapshot: Session-owned view.
+
+        Returns:
+            Provider-default guidance only when both control kinds are unavailable.
+        """
+        entry = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
+        if entry.provider is not ProviderName.OPENROUTER or entry.capabilities is None:
+            return ""
+        if entry.capabilities.reasoning_controls_available or entry.capabilities.reasoning_disable_available:
+            return ""
+        return "provider default; controls unavailable"
+
+    @staticmethod
+    def _effective_reasoning_note(
+        *,
+        model_name: str,
+        active_level: ReasoningLevel,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+    ) -> str:
+        """Explain explicit off using session policy, not a newer publication.
+
+        Args:
+            model_name: Active canonical model.
+            active_level: Operator-selected level.
+            snapshot: Pinned session view.
+
+        Returns:
+            Effective effort note, or empty for ordinary enabled/legacy states.
+        """
+        if active_level != "off":
+            return ""
+        resolved = resolve_reasoning_config(
+            model_name=model_name, requested_level=active_level, snapshot=snapshot
+        )
+        if resolved.provider_effort is None:
+            return ""
+        label = "reasoning required" if resolved.enabled else "disabled"
+        return f"effective provider effort: {resolved.provider_effort} ({label})"
 
     @classmethod
     def _render_reasoning_state(cls, *, session: SloAgentSession) -> str:
@@ -963,13 +1149,22 @@ class SlashRouter:
         """
         capability: ModelReasoningCapabilityDAO = capability_for_model(
             model_name=session.active_model_name,
+            snapshot=session.catalog_snapshot,
         )
-        supported_levels: str = cls._render_supported_reasoning_levels(capability=capability)
-        return (
+        supported_levels = cls._provider_default_reasoning_note(
+            model_name=session.active_model_name, snapshot=session.catalog_snapshot
+        ) or cls._render_supported_reasoning_levels(capability=capability)
+        note = cls._effective_reasoning_note(
+            model_name=session.active_model_name,
+            active_level=session.active_reasoning_level,
+            snapshot=session.catalog_snapshot,
+        )
+        text = (
             f"model: {session.active_model_name}\n"
             f"reasoning: {session.active_reasoning_level}\n"
             f"supported: {supported_levels}"
         )
+        return "\n".join(filter(None, (text, note)))
 
     @staticmethod
     def _render_supported_reasoning_levels(*, capability: ModelReasoningCapabilityDAO) -> str:
@@ -981,6 +1176,11 @@ class SlashRouter:
         Returns:
             str: Human-readable supported-levels value.
         """
+        if capability.reasoning_disable_available and capability.supported_levels == ["off"]:
+            return "off (reasoning disable supported)"
+        if capability.reasoning_controls_available and not capability.reasoning_disable_available:
+            levels = ", ".join(level for level in capability.supported_levels if level != "off")
+            return f"{levels} (provider default; disable unavailable)"
         if capability.supported_levels == ["off"]:
             return "off (reasoning unsupported for this model)"
         return ", ".join(capability.supported_levels)

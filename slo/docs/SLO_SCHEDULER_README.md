@@ -1,5 +1,22 @@
 # Slo Scheduler Guide
 
+## Latest recovery receipt — 2026-10-03 final authorized Call 4: REVISE
+
+Fresh complete post-edit non-E2E gate: **5136 passed, 18 deselected, 196 warnings
+in 327.78s; exit 0**, `.f86-final-recovery-O3ZPKA/full-non-e2e.log`.
+This supersedes earlier receipts as the latest execution, not as approval.
+Budget evidence persistence, nullable-rate override restoration, actual default-effort
+SDK wire assertion and bounded picker detail fixes landed. Remaining: unexplained
+Call3 selection offset failure (passes isolated/full now, no causal repair), `/reasoning`
+presentation and mounted two-size proof, prepared/no-budget evidence, and stronger
+real-store admission proof (new removal test injects refresh outcome).
+See `docs/implementation/86-openrouter/final-recovery-evidence-2026-10-03.md`.
+**STEP1READY withheld.** Independent Step2/3 remain pending. Offline synthetic tests
+are not live authorization/availability/inference evidence; 18 E2E/default-disabled
+live/fixture cases were deselected. Black/mypy waived, not green. Earlier receipts
+below remain historical; no final workflow approval.
+
+
 Detailed reference for the scheduled-tasks system in `slo/`.
 
 This document covers:
@@ -58,6 +75,49 @@ slo schedule execute --name <schedule-id>
 That CLI command loads the persisted schedule and runs the scheduling runtime.
 
 ---
+
+## OpenRouter model routes (Feature 86 — partial delivery)
+
+A schedule's optional `--model` is persisted in its definition and the existing
+subprocess runner passes it to the normal `slo run --model` path. Therefore a
+prepared exact route can be scheduled using ordinary syntax:
+
+```bash
+slo schedule add \
+  --name "OpenRouter review" \
+  --prompt "Review the current repository state." \
+  --cron "0 9 * * 1-5" \
+  --model 'openrouter:<exact-remote-id>' \
+  --session-mode fresh
+```
+
+`openrouter:` remains the OpenRouter credential/transport owner regardless of the
+remote ID's vendor segment. The scheduled child does not receive a scheduler-specific
+discovery service: it follows ordinary headless preparation and safely fails if the
+route cannot be prepared from authenticated catalog evidence. Selection precedence is exactly: explicit model → configured pool → resumed route
+→ saved default → cfg default. An explicit scheduled model is a single selection
+and clears a configured pool. Continuous delivery preserves its existing
+inbox versus headless-resume decision; it does not itself prove a selected route is
+currently available.
+
+Credentials follow normal resolution (`SLO_OPENROUTER_API_KEY`, then the stored
+OpenRouter credential) and must not be embedded in definitions or command arguments.
+Current source and targeted tests establish argument forwarding and headless
+preparation ownership, but do **not** establish every populated schedule/status/notifier
+artifact secrecy path end to end. Feature 86 remains **REVISE**. Its retained
+**pre-correction** Step 1 gate is **5115 passed, 18 E2E-marked deselected, 196 warnings
+in 373.69s; exit 0** at `.f86-integration-retry-ucwY1o/full-non-e2e.log`. The 18
+deselections include default-disabled live/fixture harness tests; executed OpenRouter
+evidence is offline local/mock transport testing, not live credentials, network,
+provider availability, paid inference, or authorization. Black/mypy are waived only
+as static gates, not green. Independent review remains **REVISE** while source
+corrections are concurrent; this is not a final post-correction gate or approval.
+Bounded append ordering/refusal, independent resume admission, append-wait cancellation,
+and a native-I/O late-writer case do not replace the current review findings. The
+late-writer qualification is instrumented shipped-body coverage, not native
+interpreter-startup equivalence, and imposes no argv-equality product requirement. See
+`implementation/86-openrouter/independent-full-rereview-2026-10-03.md`; dated reports
+remain historical.
 
 ## Core concepts
 

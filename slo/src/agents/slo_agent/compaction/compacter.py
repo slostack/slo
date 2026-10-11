@@ -16,7 +16,9 @@ from pydantic import BaseModel, Field
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from config.ai_model_config import MODEL_DEFAULTS, ModelDefaults
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
+from src.auth.credential_dao import ProviderName
+from config.ai_model_config import defaults_for_model
 from src.agents.slo_agent.compaction.constants import (
     COMPACTION_INPUT_SAFETY_DIVISOR,
     DEFAULT_CONTEXT_WINDOW,
@@ -29,7 +31,7 @@ from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 __all__ = ["CompactionResult", "Compacter"]
 
 
-def _get_context_window(*, model_name: str) -> int:
+def _get_context_window(*, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None) -> int:
     """Return the input context-window token limit for ``model_name``.
 
     Args:
@@ -38,10 +40,10 @@ def _get_context_window(*, model_name: str) -> int:
     Returns:
         int: Context window in tokens; falls back to ``DEFAULT_CONTEXT_WINDOW``.
     """
-    defaults: Optional[ModelDefaults] = MODEL_DEFAULTS.get(model_name)
-    if defaults is None:
+    try:
+        return defaults_for_model(model_name=model_name, snapshot=snapshot)["context_window"]
+    except ValueError:
         return DEFAULT_CONTEXT_WINDOW
-    return defaults.get("context_window", DEFAULT_CONTEXT_WINDOW)
 
 
 def _max_compaction_input_token_units(*, context_window: int) -> int:
@@ -122,6 +124,7 @@ class Compacter:
         model_name: str,
         llm: BaseChatModel,
         context_window: Optional[int] = None,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> CompactionResult:
         """Compact old events into an LLM summary, returning bookkeeping metadata.
 
@@ -166,7 +169,9 @@ class Compacter:
         # overflow the model. Overflow events (too-recent-to-summarise-now) move
         # to retained_events and are handled on the next compaction pass.
         effective_context_window: int = (
-            context_window if context_window is not None else _get_context_window(model_name=model_name)
+            context_window
+            if context_window is not None
+            else _get_context_window(model_name=model_name, snapshot=snapshot)
         )
         max_input_units: int = _max_compaction_input_token_units(
             context_window=effective_context_window,
@@ -182,6 +187,7 @@ class Compacter:
             compaction_input=compaction_input,
             model_name=model_name,
             llm=llm,
+            snapshot=snapshot,
         )
 
         tokens_before: int = sum(e.payload.token_usage or 0 for e in compacted_events)
@@ -507,6 +513,7 @@ class Compacter:
         compaction_input: str,
         model_name: str,
         llm: BaseChatModel,
+        snapshot: Optional[ModelCatalogSnapshotDAO] = None,
     ) -> str:
         """Call the LLM to produce a summary of the compacted event block.
 
@@ -528,6 +535,8 @@ class Compacter:
             model_name (str): Active model name, included in the system
                 prompt for context.
             llm (BaseChatModel): Bound LangChain chat model to invoke.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Pinned catalog evidence
+                for the admitted route. Defaults to None.
 
         Returns:
             str: The LLM's summary text.
@@ -544,8 +553,14 @@ class Compacter:
         # given the raw request so its per-member adapter can shape the
         # selected lane; every direct model goes through the shared adapter,
         # which strips the cap only on the ChatGPT backend.
-        request_kwargs: dict[str, object] = {"max_tokens": RESERVED_TOKEN_LIMIT}
+        request_kwargs: dict[str, object] = {
+            "max_tokens": cls._summary_output_token_limit(
+                model_name=model_name,
+                snapshot=snapshot,
+            )
+        }
         if _is_pool_bound(llm=llm):
+            request_kwargs["_slo_compaction_summary"] = True
             response = await llm.ainvoke(input=messages, **request_kwargs)  # type: ignore[arg-type]
         else:
             shaped_messages, shaped_kwargs = adapt_chatgpt_backend_request(
@@ -566,3 +581,28 @@ class Compacter:
             return "".join(text_parts)
 
         return str(content)
+
+    @staticmethod
+    def _summary_output_token_limit(
+        *,
+        model_name: str,
+        snapshot: Optional[ModelCatalogSnapshotDAO],
+    ) -> int:
+        """Limit an OpenRouter summary request to its admitted output ceiling.
+
+        Args:
+            model_name (str): Active route for this compaction attempt.
+            snapshot (Optional[ModelCatalogSnapshotDAO]): Pinned catalog evidence.
+
+        Returns:
+            int: The generic reserve or the lower prepared OpenRouter ceiling.
+        """
+        if snapshot is None:
+            return RESERVED_TOKEN_LIMIT
+        entry = snapshot.entries.get(model_name)
+        if entry is None or entry.provider is not ProviderName.OPENROUTER:
+            return RESERVED_TOKEN_LIMIT
+        capabilities = entry.capabilities
+        reported_ceiling = capabilities.reported_output_ceiling if capabilities is not None else None
+        ceiling = reported_ceiling if reported_ceiling is not None else 4096
+        return min(RESERVED_TOKEN_LIMIT, ceiling, entry.runtime_profile.context_window // 2)

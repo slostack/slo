@@ -236,6 +236,39 @@ class TestScheduleSubprocessRunner:
         assert result.status == "completed"
         assert '"foreign_present": false' in result.stdout_summary
 
+    @pytest.mark.asyncio
+    async def test_run_resume_passes_exact_openrouter_route_to_headless_preparation(
+        self, tmp_path: Path
+    ) -> None:
+        """Inactive schedules preserve their exact OpenRouter route in the real CLI argv."""
+        definition: ScheduleDefinitionDAO = _build_definition(schedule_id="schedule-openrouter").model_copy(
+            update={"model": "openrouter:vendor/scheduled", "cwd": str(tmp_path)}
+        )
+        process = _FakeProcess(returncode=0, stdout=b"done\n", stderr=b"")
+        create_subprocess_exec: AsyncMock = AsyncMock(return_value=process)
+
+        with (
+            patch(
+                "src.scheduling.runtime.subprocess_runner.ScheduleExecutableLocator.locate",
+                return_value=Path("/tmp/slo"),
+            ),
+            patch(
+                "src.scheduling.runtime.subprocess_runner.asyncio.create_subprocess_exec",
+                create_subprocess_exec,
+            ),
+        ):
+            result = await ScheduleSubprocessRunner().run_resume(
+                definition=definition,
+                session_reference="scheduled-session",
+                target_session_id="scheduled-session",
+            )
+
+        assert result.status == "completed"
+        assert create_subprocess_exec.await_args is not None
+        argv = create_subprocess_exec.await_args.args
+        assert argv[argv.index("--model") + 1] == "openrouter:vendor/scheduled"
+        assert argv[argv.index("--resume") + 1] == "scheduled-session"
+
 
 class TestScheduleReportWriter:
     """Run-record and state snapshot persistence."""

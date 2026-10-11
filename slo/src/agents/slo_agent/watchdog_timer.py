@@ -129,10 +129,11 @@ class WatchDogTimer:
     ) -> object | None:
         """Read one provider-pending item and translate only deadline expiry."""
         try:
-            return await asyncio.wait_for(
-                anext(graph_stream),
-                timeout=self._provider_read_timeout_seconds(),
-            )
+            # Keep graph iteration in the caller task. wait_for's separate
+            # reader can outlive cancellation racing with a completed chunk,
+            # leaving aclose() to collide with an active async generator.
+            async with asyncio.timeout(self._provider_read_timeout_seconds()):
+                return await anext(graph_stream)
         except StopAsyncIteration:
             return None
         except asyncio.TimeoutError as exc:

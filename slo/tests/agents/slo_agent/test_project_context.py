@@ -16,6 +16,28 @@ from src.agents.slo_agent.workspace.dao import WorkspaceFolderDAO
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def isolate_instruction_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep checkout basetemp ancestors outside the fixture's simulated filesystem.
+
+    Production still walks past Git boundaries to root. Only instruction-file
+    existence outside this test's resolved root is hidden; all fixture ancestors
+    and the global-context tests remain real filesystem discoveries.
+    """
+    root = tmp_path.resolve()
+    real_is_file = Path.is_file
+    instruction_paths = ProjectContextDiscovery._PROJECT_CONTEXT_PATHS
+
+    def fixture_is_file(path: Path) -> bool:
+        """Hide host instructions without hiding unrelated files or fixture ancestors."""
+        if any(path.as_posix().endswith("/" + name) for name in instruction_paths):
+            if not path.resolve().is_relative_to(root):
+                return False
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", fixture_is_file)
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> tuple[Path, Path]:
     """A fake repo with a ``.git`` root, an AGENTS.md at the root, and a SLO.md deeper."""

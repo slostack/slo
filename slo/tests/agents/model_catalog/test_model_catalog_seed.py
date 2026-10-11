@@ -8,6 +8,58 @@ from src.agents.model_catalog.seed import SeedModelCatalog
 from src.auth.credential_dao import ProviderName
 
 
+@pytest.mark.parametrize(
+    "model_name,label,required",
+    [
+        ("gpt-6-luna", "GPT-6 Luna", False),
+        ("gpt-6.1-sol", "GPT-6.1 Sol", True),
+        ("gpt-6-sol", "GPT-6 Sol", False),
+    ],
+)
+def test_gpt6_exact_seed_contract(model_name: str, label: str, required: bool) -> None:
+    """Three distinct dual-lane OpenAI entries carry exact local policy."""
+    snapshot = SeedModelCatalog.load()
+    entry = snapshot.entries[model_name]
+    assert entry.display_name == label
+    assert entry.provider is ProviderName.OPENAI
+    assert entry.support_tier == "first_class"
+    assert entry.visible_in_picker is True
+    assert entry.aliases == ()
+    assert entry.api_model_name is None
+    assert entry.availability == "available"
+    assert entry.capabilities is None
+    assert entry.supports_chatgpt_codex is True
+    assert entry.requires_responses_api is True
+    assert entry.runtime_profile.model_dump() == {
+        "max_tokens": 128000,
+        "context_window": 1050000,
+        "streaming": True,
+        "requests_per_minute": 500,
+        "tokens_per_minute": 500000,
+        "automatic_retry_attempts": 2,
+        "local_retry_wait_cap_seconds": 30,
+    }
+    assert entry.reasoning_profile.model_dump() == {
+        "supported_levels": ("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+        "default_level": "medium",
+        "provider_effort_map": {
+            "off": "low" if required else "none",
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max",
+        },
+        "provider_budget_map": {},
+        "provider_reasoning_required": required,
+        "forbid_sampling_parameters_when_enabled": True,
+    }
+    assert "openrouter:typesafe/jev-router" not in snapshot.entries
+    assert snapshot.entries["gpt-6-astra"].supports_chatgpt_codex is True
+    assert snapshot.entries["gpt-6-astra"].requires_responses_api is False
+
+
 class TestSeedCatalog:
     """First-class entries and snapshot invariants."""
 
@@ -55,7 +107,7 @@ class TestSeedCatalog:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries["kimi-k3"].reasoning_profile
-        assert profile.supported_levels == ["low", "high", "xhigh"]
+        assert list(profile.supported_levels) == ["low", "high", "xhigh"]
         assert profile.default_level == "xhigh"
         assert profile.provider_effort_map == {
             "low": "low",
@@ -69,7 +121,7 @@ class TestSeedCatalog:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries[model_name].reasoning_profile
-        assert profile.supported_levels == ["off"]
+        assert list(profile.supported_levels) == ["off"]
         assert profile.default_level == "off"
         assert profile.provider_effort_map == {}
 
@@ -299,7 +351,7 @@ class TestAstraSeedEntry:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries["gpt-6-astra"].reasoning_profile
-        assert profile.supported_levels == [
+        assert list(profile.supported_levels) == [
             "off",
             "minimal",
             "low",
@@ -327,7 +379,7 @@ class TestAstraSeedEntry:
         snapshot = SeedModelCatalog.load()
 
         profile = snapshot.entries["kimi-k3"].reasoning_profile
-        assert profile.supported_levels == ["low", "high", "xhigh"]
+        assert list(profile.supported_levels) == ["low", "high", "xhigh"]
         assert profile.default_level == "xhigh"
         assert profile.provider_effort_map == {
             "low": "low",
@@ -342,7 +394,7 @@ class TestAstraSeedEntry:
         snapshot = SeedModelCatalog.load()
 
         for model_name, entry in snapshot.entries.items():
-            if model_name == "gpt-6-astra":
+            if model_name in {"gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-sol"}:
                 continue
             assert entry.reasoning_profile.provider_reasoning_required is False, model_name
             assert entry.reasoning_profile.forbid_sampling_parameters_when_enabled is False, model_name

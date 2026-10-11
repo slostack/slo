@@ -105,6 +105,7 @@ class TokenEstimator:
         thinking_text: object = event.payload.metadata.get("thinking")
         if isinstance(thinking_text, str):
             total += len(thinking_text)
+        total += cls._provider_extension_char_count(event=event)
         tool_calls: list[dict] = event.payload.tool_calls or []
         for call in tool_calls:
             args: object = call.get("args") or call.get("arguments") or {}
@@ -125,6 +126,7 @@ class TokenEstimator:
             int: Total char count.
         """
         total: int = len(event.payload.content or "")
+        total += cls._provider_extension_char_count(event=event)
         tool_calls: list[dict] = event.payload.tool_calls or []
         for call in tool_calls:
             args: object = call.get("args") or call.get("arguments") or {}
@@ -132,3 +134,18 @@ class TokenEstimator:
         if not tool_calls and event.payload.tool_input:
             total += len(json.dumps(event.payload.tool_input, ensure_ascii=False))
         return total
+
+    @staticmethod
+    def _provider_extension_char_count(*, event: SessionHistoryEventDAO) -> int:
+        """Count one serialized private continuation extension when its anchor owns it.
+
+        Args:
+            event (SessionHistoryEventDAO): Assistant or anchor tool-call history event.
+
+        Returns:
+            int: Serialized extension length, or zero for legacy/non-anchor events.
+        """
+        extension = event.payload.provider_message_extension
+        if extension is None:
+            return 0
+        return len(json.dumps(extension.model_dump(mode="json"), ensure_ascii=False))

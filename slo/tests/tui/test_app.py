@@ -301,7 +301,7 @@ class TestDiffSlashCommand:
             ):
                 await app._dispatch_slash_command(line="/diff example.py")
                 await pilot.pause()
-            assert ("No changes detected for example.py.", "tool-result") in app._adapter.lines
+            assert ("No changes detected for example.py.", "tool-result") in _require_adapter_lines(app=app)
             assert not isinstance(app.screen, GitDiffScreen)
 
     async def test_diff_command_when_service_io_fails_writes_safe_message_without_screen(
@@ -324,7 +324,7 @@ class TestDiffSlashCommand:
             ):
                 await app._dispatch_slash_command(line="/diff example.py")
                 await pilot.pause()
-            assert ("Could not read HEAD version of file.", "tool-result") in app._adapter.lines
+            assert ("Could not read HEAD version of file.", "tool-result") in _require_adapter_lines(app=app)
             assert not isinstance(app.screen, GitDiffScreen)
 
 
@@ -335,6 +335,7 @@ class TestSloTUIActiveModelState:
     async def test_title_uses_session_active_model_and_reasoning_state(self) -> None:
         """Mount-time title reflects the session active model and reasoning level."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -358,6 +359,7 @@ class TestSloTUIActiveModelState:
     async def test_auth_dismissed_switches_to_provider_default_model(self) -> None:
         """Anthropic auth success switches away from an OpenAI active model."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -393,12 +395,13 @@ class TestSloTUIActiveModelState:
             assert (
                 "active model switched to claude-opus-4-8-1m-context",
                 "tool-result",
-            ) in app._adapter.lines
+            ) in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_dispatch_slash_command_refreshes_title_when_requested(self) -> None:
         """Slash-command results with ``refresh_title=True`` update the top bar immediately."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -433,7 +436,7 @@ class TestSloTUIActiveModelState:
                     await pilot.pause()
 
             mock_refresh_title_bar.assert_called_once_with()
-            assert ("reasoning changed high -> off", "tool-result") in app._adapter.lines
+            assert ("reasoning changed high -> off", "tool-result") in _require_adapter_lines(app=app)
 
 
 class TestTurnSeparatorRestyle:
@@ -477,26 +480,27 @@ class TestCollapseHomeInPath:
         assert SloTUI._collapse_home_in_path(path=lookalike) == str(lookalike)
 
     @pytest.mark.parametrize(
-        ("workdir", "expected_workdir"),
-        [
-            (Path.home(), "~"),
-            (Path.home() / "Code" / "project", "~/Code/project"),
-            (Path("/tmp/slo-outside-home"), "/tmp/slo-outside-home"),
-            (
-                Path(f"{Path.home()}-other") / "project",
-                str(Path(f"{Path.home()}-other") / "project"),
-            ),
+        argnames=("workdir_template", "expected_template"),
+        argvalues=[
+            ("{home}", "~"),
+            ("{home}/Code/project", "~/Code/project"),
+            ("/tmp/slo-outside-home", "/tmp/slo-outside-home"),
+            ("{home}-other/project", "{home}-other/project"),
         ],
     )
     async def test_title_bar_renders_only_home_descendants_with_tilde(
         self,
-        workdir: Path,
-        expected_workdir: str,
+        workdir_template: str,
+        expected_template: str,
     ) -> None:
         """Verify title cwd abbreviation preserves real path ancestry.
 
-        WHO: The spec-72.a.5 title-bar regression suite mounts the live TUI.
+        WHO: The title-bar regression suite mounts the live TUI after the
+        per-test HOME fixture runs, not under the collection-time suite HOME.
         """
+        home: str = str(Path.home())
+        workdir: Path = Path(workdir_template.format(home=home))
+        expected_workdir: str = expected_template.format(home=home)
         session: SloAgentSession = SloAgentSession(
             agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
             workdir=workdir,
@@ -517,6 +521,7 @@ class TestSloTUI:
     async def test_subtitle_uses_session_name_when_present(self) -> None:
         """The subtitle shows the session name and full (untruncated) id."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = "customer import regression"
@@ -539,6 +544,7 @@ class TestSloTUI:
         """A full UUID session id is shown verbatim — never sliced to a prefix."""
         full_id: str = "a166b82b-617e-45c6-9ada-a36f1c589fb6"
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = full_id
         session.session_name = None
@@ -560,6 +566,7 @@ class TestSloTUI:
     async def test_rename_session_updates_subtitle_immediately(self) -> None:
         """Renaming the active session refreshes the subtitle right away."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -584,7 +591,7 @@ class TestSloTUI:
             await pilot.pause()
 
             assert app.sub_title.startswith("session release prep · session-")
-            assert ("session renamed to release prep", "tool-result") in app._adapter.lines
+            assert ("session renamed to release prep", "tool-result") in _require_adapter_lines(app=app)
 
 
 class TestSloTUISessionInbox:
@@ -596,6 +603,7 @@ class TestSloTUISessionInbox:
         history_root: Path = tmp_path / "history"
         lease_store: SessionOwnershipLeaseStore = SessionOwnershipLeaseStore(history_root=history_root)
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -624,6 +632,7 @@ class TestSloTUISessionInbox:
         history_root: Path = tmp_path / "history"
         inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -657,7 +666,8 @@ class TestSloTUISessionInbox:
             await pilot.pause()
 
             assert any(
-                "[scheduled notice] CI monitor: CI still running." in line[0] for line in app._adapter.lines
+                "[scheduled notice] CI monitor: CI still running." in line[0]
+                for line in _require_adapter_lines(app=app)
             )
             assert await inbox_store.list_pending(session_id="session-1234") == []
             assert await inbox_store.list_done(session_id="session-1234") == [message]
@@ -673,6 +683,7 @@ class TestSloTUISessionInbox:
         history_root: Path = tmp_path / "history"
         inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -724,6 +735,7 @@ class TestSloTUISessionInbox:
         history_root: Path = tmp_path / "history"
         inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -771,9 +783,59 @@ class TestSloTUISessionInbox:
             ) not in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
+    async def test_active_openrouter_schedule_inbox_consumption_keeps_target_session_route(
+        self, tmp_path: Path
+    ) -> None:
+        """A scheduled route is consumed by the active target without changing its selected route."""
+        history_root: Path = (tmp_path / "history").resolve()
+        assert history_root.is_relative_to(tmp_path.resolve())
+        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
+        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
+        session.workdir = tmp_path
+        session.session_id = "session-openrouter-target"
+        session.session_name = None
+        session.active_model_name = "openrouter:vendor/target"
+        session.routed_model_name = "openrouter:vendor/target"
+        session.active_reasoning_level = "medium"
+        session.history_enabled = True
+        session.history_root = history_root
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=[])
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
+        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
+            message_id="message-openrouter",
+            session_id="session-openrouter-target",
+            schedule_id="schedule-openrouter",
+            run_id="run-openrouter",
+            kind="scheduled_prompt",
+            delivery_mode="chat_turn",
+            title="OpenRouter schedule",
+            text="Check the scheduled OpenRouter route.",
+            payload={"cwd": str(tmp_path), "model": "openrouter:vendor/scheduled"},
+        )
+        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await inbox_store.enqueue(message=message)
+            with patch.object(app, "_run_prompt", new=AsyncMock()) as mock_run_prompt:
+                await app._poll_session_inbox()
+                assert app._in_flight_task is not None
+                await app._in_flight_task
+                app._in_flight_task = None
+
+        mock_run_prompt.assert_awaited_once_with(text="Check the scheduled OpenRouter route.")
+        assert session.active_model_name == "openrouter:vendor/target"
+        assert await inbox_store.list_done(session_id="session-openrouter-target") == [message]
+
+    @pytest.mark.asyncio
     async def test_new_session_replaces_active_session_and_clears_transcript(self) -> None:
         """`/new` swaps in a fresh session and clears the visible transcript."""
         old_session: MagicMock = MagicMock(spec=SloAgentSession)
+        old_session.preparation_status = "ready"
         old_session.workdir = Path(".").resolve()
         old_session.session_id = "old-session-1234"
         old_session.session_name = None
@@ -791,6 +853,7 @@ class TestSloTUISessionInbox:
         old_session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
 
         new_session: MagicMock = MagicMock(spec=SloAgentSession)
+        new_session.preparation_status = "ready"
         new_session.workdir = Path(".").resolve()
         new_session.session_id = "new-session-5678"
         new_session.session_name = "fresh thread"
@@ -816,20 +879,23 @@ class TestSloTUISessionInbox:
             app._write_adapter_line(content="existing line", classes="tool-result")
             await pilot.pause()
 
-            with patch("src.tui.app.SloAgentSession.build", return_value=new_session):
+            with patch("src.tui.app.SloAgentSession.build", return_value=new_session) as build:
                 await app._start_new_session(requested_name="fresh thread")
                 await pilot.pause()
 
+            build.assert_called_once()
+            assert build.call_args.kwargs["allow_pending_preparation"] is True
             assert app._session is new_session
             old_session.unsubscribe.assert_called_once_with(handler=app._render_event)
             new_session.subscribe.assert_called_once_with(handler=app._render_event)
-            assert ("existing line", "tool-result") not in app._adapter.lines
+            assert ("existing line", "tool-result") not in _require_adapter_lines(app=app)
             assert app.sub_title.startswith("session fresh thread · new-sess")
 
     @pytest.mark.asyncio
     async def test_new_session_rejection_while_run_active_preserves_existing_behavior(self) -> None:
         """`/new` stays rejected during an active run; no second session is built."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -858,7 +924,7 @@ class TestSloTUISessionInbox:
             assert (
                 "cannot start a new session while a prompt is in flight; run /abort first",
                 "tool-result",
-            ) in app._adapter.lines
+            ) in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_new_session_rejection_when_app_task_is_tracked(self) -> None:
@@ -871,6 +937,7 @@ class TestSloTUISessionInbox:
             finishes, so `/new` must not slip through the session guard alone.
         """
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -914,6 +981,7 @@ class TestSloTUISessionInbox:
     async def test_dispatch_slash_command_handles_new_and_rename_intents(self) -> None:
         """Slash dispatch routes naming lifecycle intents through app-owned helpers."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -995,7 +1063,7 @@ class TestSloTUISessionInbox:
             await pilot.press("enter")
             await _await_idle(app=app, pilot=pilot)
 
-            assert ("hi", "assistant-final") in app._adapter.lines
+            assert ("hi", "assistant-final") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_up_recalls_latest_submitted_prompt_and_down_restores_blank_draft(self) -> None:
@@ -1100,7 +1168,7 @@ class TestSloTUISessionInbox:
             await pilot.press("enter")
             await _await_idle(app=app, pilot=pilot)
 
-            assert ("─" * 18, "turn-separator") in app._adapter.lines
+            assert ("─" * 18, "turn-separator") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_ctrl_c_while_idle_quits(self) -> None:
@@ -1124,6 +1192,7 @@ class TestSloTUISessionInbox:
         """Quitting prints a ``slo --resume <id>`` line so the session can be reopened."""
         full_id: str = "a166b82b-617e-45c6-9ada-a36f1c589fb6"
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = full_id
         session.session_name = None
@@ -1180,7 +1249,7 @@ class TestSloTUISessionInbox:
                 await _await_idle(app=app, pilot=pilot)
 
                 assert mock_abort.call_count == 1
-                assert app._adapter.lines[-1] == (
+                assert _require_adapter_lines(app=app)[-1] == (
                     "(aborted)",
                     "assistant-aborted",
                 )
@@ -1218,7 +1287,7 @@ class TestSloTUISessionInbox:
                 await _await_idle(app=app, pilot=pilot)
 
                 assert app._in_flight_task is None
-                assert ("(aborted)", "assistant-aborted") in app._adapter.lines
+                assert ("(aborted)", "assistant-aborted") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_hard_cancel_only_cancels_the_task_it_was_armed_for(self) -> None:
@@ -1253,6 +1322,7 @@ class TestSloTUISessionInbox:
     async def test_slash_abort_escalates_to_hard_cancel(self) -> None:
         """``/abort`` arms the hard-cancel escalation, not just the cooperative flag."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -1279,6 +1349,7 @@ class TestSloTUISessionInbox:
     def _steering_session_stub(self) -> MagicMock:
         """Build a session stub with the steering-facing runtime surface."""
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -1318,7 +1389,7 @@ class TestSloTUISessionInbox:
 
             # Pending block is consumed and replaced by a normal user message.
             assert list(app.query(SteeringPendingBlock)) == []
-            assert ("> be terse", "user-line") in app._adapter.lines
+            assert ("> be terse", "user-line") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_compact_while_a_prompt_is_in_flight_renders_the_session_guard(self) -> None:
@@ -1342,7 +1413,7 @@ class TestSloTUISessionInbox:
             assert (
                 "cannot compact while a prompt is in flight; run /abort first",
                 "tool-result",
-            ) in app._adapter.lines
+            ) in _require_adapter_lines(app=app)
             session.compact_context.assert_awaited_once()
             assert not active_task.done()
             assert app._in_flight_task is active_task
@@ -1432,7 +1503,7 @@ class TestSloTUISessionInbox:
 
                 error_entries: list[tuple[str, str]] = [
                     entry
-                    for entry in app._adapter.lines
+                    for entry in _require_adapter_lines(app=app)
                     if entry[0].startswith("(configuration error:") and entry[1] == "tool-result"
                 ]
                 assert len(error_entries) == 1
@@ -1473,7 +1544,7 @@ class TestSloTUISessionInbox:
 
                 error_entries: list[tuple[str, str]] = [
                     entry
-                    for entry in app._adapter.lines
+                    for entry in _require_adapter_lines(app=app)
                     if entry[0].startswith("(error:") and entry[1] == "assistant-aborted"
                 ]
                 assert len(error_entries) == 1
@@ -1526,7 +1597,7 @@ class TestSloTUISessionInbox:
 
                 error_entries: list[tuple[str, str]] = [
                     entry
-                    for entry in app._adapter.lines
+                    for entry in _require_adapter_lines(app=app)
                     if entry[0].startswith("(error:") and entry[1] == "assistant-aborted"
                 ]
                 assert len(error_entries) == 1
@@ -1554,7 +1625,9 @@ class TestSloTUISessionInbox:
             await pilot.pause()
 
             assert app._in_flight_task is None
-            help_content: list[str] = [entry[0] for entry in app._adapter.lines if "help" in entry[0].lower()]
+            help_content: list[str] = [
+                entry[0] for entry in _require_adapter_lines(app=app) if "help" in entry[0].lower()
+            ]
             assert len(help_content) >= 1
 
 
@@ -1573,6 +1646,7 @@ class TestQueuedPromptGating:
             MagicMock: ``SloAgentSession``-specced stub for queue/abort tests.
         """
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
         session.session_name = None
@@ -2507,7 +2581,7 @@ class TestPromptInputAutoResize:
 
             assert prompt_input.text == ""
             assert _visible_prompt_lines(app=app) == baseline_lines
-            assert ("ok", "assistant-final") in app._adapter.lines
+            assert ("ok", "assistant-final") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_meta_enter_inserts_newline_without_submitting(self) -> None:
@@ -2528,7 +2602,7 @@ class TestPromptInputAutoResize:
 
             assert prompt_input.text == "first\n"
             assert app._in_flight_task is None
-            assert ("> first", "user-line") not in app._adapter.lines
+            assert ("> first", "user-line") not in _require_adapter_lines(app=app)
 
 
 class TestSloTUICopy:
@@ -2700,7 +2774,7 @@ class TestSloTUISpinner:
                 release.set()
                 await _await_idle(app=app, pilot=pilot)
 
-                assert any(line[1] == "assistant-final" for line in app._adapter.lines)
+                assert any(line[1] == "assistant-final" for line in _require_adapter_lines(app=app))
 
     @pytest.mark.asyncio
     async def test_thinking_spinner_mounts_during_prompt_and_unmounts_after(
@@ -2788,8 +2862,8 @@ class TestSloTUISpinner:
                 await asyncio.wait_for(saw_tool_result.wait(), timeout=5)
                 await pilot.pause()
 
-                assert any(line[1] == "tool-line" for line in app._adapter.lines)
-                assert any(line[1] == "tool-result" for line in app._adapter.lines)
+                assert any(line[1] == "tool-line" for line in _require_adapter_lines(app=app))
+                assert any(line[1] == "tool-result" for line in _require_adapter_lines(app=app))
                 assert list(app.query(selector=ToolExecutionBlock))
                 assert app._spinner is not None
                 assert list(app.query(selector=ThinkingSpinner))
@@ -2798,7 +2872,7 @@ class TestSloTUISpinner:
                 await _await_idle(app=app, pilot=pilot)
 
                 assert list(app.query(selector=ThinkingSpinner)) == []
-                assert ("done", "assistant-final") in app._adapter.lines
+                assert ("done", "assistant-final") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_second_assistant_iteration_mounts_a_new_transcript_block(self) -> None:
@@ -2890,7 +2964,7 @@ class TestSloTUISpinner:
                 release.set()
                 await _await_idle(app=app, pilot=pilot)
 
-                assert any(line[1] == "assistant-final" for line in app._adapter.lines)
+                assert any(line[1] == "assistant-final" for line in _require_adapter_lines(app=app))
 
 
 class TestSloTUILogIsolation:
@@ -3150,8 +3224,10 @@ class TestSloTUIPoolAttachment:
 
         SloTUI._attach_pool_to_session(session=session)
 
-        assert session._config.extra_tools is not None
-        tool_names: list[str] = [t.name for t in session._config.extra_tools]
+        config: SessionConfigDAO | None = session._config
+        assert config is not None
+        assert config.extra_tools is not None
+        tool_names: list[str] = [tool.name for tool in config.extra_tools]
         assert "spawn_sub_agents" in tool_names
 
     def test_attach_pool_to_session_sets_append_system_prompt(self, tmp_path: Path) -> None:
@@ -3168,8 +3244,10 @@ class TestSloTUIPoolAttachment:
 
         SloTUI._attach_pool_to_session(session=session)
 
-        assert session._config.append_system_prompt is not None
-        assert "spawn_sub_agents" in session._config.append_system_prompt
+        config: SessionConfigDAO | None = session._config
+        assert config is not None
+        assert config.append_system_prompt is not None
+        assert "spawn_sub_agents" in config.append_system_prompt
 
     def test_headless_session_does_not_have_spawn_tool(self, tmp_path: Path) -> None:
         """``HeadlessRunner``-built sessions have no ``spawn_sub_agents`` tool."""
@@ -3184,7 +3262,9 @@ class TestSloTUIPoolAttachment:
             )
         )
 
-        tool_names: list[str] = [t.name for t in (session._config.extra_tools or [])]
+        config: SessionConfigDAO | None = session._config
+        assert config is not None
+        tool_names: list[str] = [tool.name for tool in (config.extra_tools or [])]
         assert "spawn_sub_agents" not in tool_names
 
     def test_pre_built_agent_session_is_skipped_gracefully(self, tmp_path: Path) -> None:
@@ -3553,7 +3633,7 @@ class TestCopyVisibleTextResolutionChain:
             app.set_focus(None)
             # Clear adapter lines so the transcript fallback has nothing to offer.
             if app._adapter is not None:
-                app._adapter.lines.clear()
+                _require_adapter_lines(app=app).clear()
             await pilot.pause()
 
             await app.action_copy_visible_text()
@@ -4334,6 +4414,7 @@ class TestLoadOlderEntries:
             SloTUI: App under test.
         """
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-history-1234"
         session.session_name = None
@@ -4488,10 +4569,11 @@ class TestLoadOlderEntries:
         app: SloTUI = self._build_history_app(entries=self._assistant_entries(count=3))
         app._load_older_cursor = 0
 
-        batch: list[TranscriptEntryDAO] = await app._fetch_older_batch()
+        with patch.object(app._session, "hydrate_transcript_entries", new=AsyncMock()) as mock_hydrate:
+            batch: list[TranscriptEntryDAO] = await app._fetch_older_batch()
 
         assert batch == []
-        app._session.hydrate_transcript_entries.assert_not_awaited()
+        mock_hydrate.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_fetch_older_batch_returns_chronological_slice(self) -> None:
@@ -4510,9 +4592,12 @@ class TestLoadOlderEntries:
         """An error-safe history read does not advance the cursor or arm back-scroll mode."""
         app: SloTUI = self._build_history_app(entries=self._assistant_entries(count=4))
         app._load_older_cursor = 4
-        app._session.hydrate_transcript_entries = AsyncMock(side_effect=OSError("history unavailable"))
-
-        await app._load_older_entries()
+        with patch.object(
+            app._session,
+            "hydrate_transcript_entries",
+            new=AsyncMock(side_effect=OSError("history unavailable")),
+        ):
+            await app._load_older_entries()
 
         assert app._load_older_cursor == 4
         assert app._back_scroll_mode is False
@@ -4625,18 +4710,27 @@ class TestLoadOlderEntries:
                 await pump_until(pilot=pilot, predicate=lambda: app._transcript_is_at_bottom())
 
                 assert app._transcript_is_at_bottom() is True
+                transcript_content = app._transcript_content
+                assert transcript_content is not None
                 assert any(
                     isinstance(child, UserMessageBlock) and child.text == "visible new prompt"
-                    for child in app._transcript_content.children
+                    for child in transcript_content.children
                 )
 
     def test_transcript_scroll_posts_reached_top_only_on_threshold_crossing(self) -> None:
         """The scroll widget emits a top-reached message on downward crossing only."""
         scroll: TranscriptScroll = TranscriptScroll()
         posted: list[Message] = []
-        scroll.post_message = lambda message: posted.append(message)  # type: ignore[method-assign]
 
-        with patch("textual.containers.VerticalScroll.watch_scroll_y", autospec=True) as mock_super_watch:
+        def _record_message(message: Message) -> bool:
+            """Record the message instead of dispatching it during the unit test."""
+            posted.append(message)
+            return True
+
+        with (
+            patch.object(scroll, "post_message", new=_record_message),
+            patch("textual.containers.VerticalScroll.watch_scroll_y", autospec=True) as mock_super_watch,
+        ):
             scroll.watch_scroll_y(old_value=5.0, new_value=1.0)
             scroll.watch_scroll_y(old_value=1.0, new_value=0.0)
 
@@ -4892,7 +4986,7 @@ class TestAstraTerminalOAuthRejection:
 
         assert invocation_count == 1
         assert app._adapter is not None
-        transcript: list[str] = [content for content, _classes in app._adapter.lines]
+        transcript: list[str] = [content for content, _classes in _require_adapter_lines(app=app)]
         error_lines: list[str] = [content for content in transcript if "unsupported model" in content]
         assert len(error_lines) == 1
         assert session.is_running is False

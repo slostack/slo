@@ -250,4 +250,4 @@ Before saving, check all of the following:
 
 Report the exact saved path and a short summary of the design. Report verification
 checks and any unresolved decision. Do not claim implementation, approval, independent
-review, or test execution merely because a design document was saved. 
+review, or test execution merely because a design document was saved.

@@ -14,6 +14,7 @@ from typing import Optional
 from uuid import uuid4
 
 from config.logger import log_info
+from src.auth.credential_resolver import CredentialResolver
 from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.history.inbox.dao import (
     InboxDeliveryMode,
@@ -213,6 +214,7 @@ class WorkflowNotifier:
             text (str): Primary display or prompt text.
         """
         try:
+            safe_text: str = CredentialResolver.redact_openrouter_text(text=text)
             await self._store.enqueue(
                 message=SessionInboxMessageDAO(
                     session_id=self._target_session_id,
@@ -222,7 +224,7 @@ class WorkflowNotifier:
                     delivery_mode=delivery_mode,
                     priority="normal",
                     title=title,
-                    text=text,
+                    text=safe_text,
                     payload={
                         "workflow_id": self._workflow_id,
                         "orchestrator_session_id": self._orchestrator_session_id,

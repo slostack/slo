@@ -1,14 +1,14 @@
 """Per-model default options for the LLM factory.
 
 ``MODEL_DEFAULTS`` and provider landing-model helpers are now projections over
-``ModelCatalogService``. Existing imports continue to work; the values are rebuilt
-in place whenever the catalog snapshot changes so callers holding a reference see
-updated values.
+``ModelCatalogService``. Existing imports continue to work; the read-only views follow catalog publication without rebuild callbacks.
 """
 
 from __future__ import annotations
 
 from typing import Optional, TypedDict
+from collections.abc import Iterator, Mapping
+from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 
 from config.cfg import cfg
 from config.logger import log_warning
@@ -23,65 +23,79 @@ class ModelDefaults(TypedDict, total=False):
     context_window: int
     streaming: bool
     requests_per_minute: int
-    tokens_per_minute: int
+    tokens_per_minute: Optional[int]
     automatic_retry_attempts: int
     local_retry_wait_cap_seconds: int
 
 
 __all__ = [
     "MODEL_DEFAULTS",
+    "defaults_for_model",
     "default_model_for_provider",
     "rebuild_model_defaults_projection",
     "resolve_model_name_with_fallback",
 ]
 
 
-MODEL_DEFAULTS: dict[str, ModelDefaults] = {}
-_PROVIDER_DEFAULT_MODELS: dict[ProviderName, str] = SeedModelCatalog.provider_default_models()
+class ModelDefaultsView(Mapping[str, ModelDefaults]):
+    """Read-only live compatibility mapping; values are detached projections."""
+
+    def __getitem__(self, model_name: str) -> ModelDefaults:
+        """Read defaults from the currently published catalog."""
+        try:
+            return defaults_for_model(model_name=model_name)
+        except ValueError as error:
+            raise KeyError(model_name) from error
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate canonical keys from one generation."""
+        return iter(ModelCatalogService.load().entries)
+
+    def __len__(self) -> int:
+        """Return the current canonical entry count."""
+        return len(ModelCatalogService.load().entries)
+
+
+def defaults_for_model(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> ModelDefaults:
+    """Project detached defaults, using only snapshot when supplied."""
+    entry = ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
+    profile = entry.runtime_profile
+    return ModelDefaults(
+        max_tokens=profile.max_tokens,
+        context_window=profile.context_window,
+        streaming=profile.streaming,
+        requests_per_minute=profile.requests_per_minute,
+        tokens_per_minute=profile.tokens_per_minute,
+        automatic_retry_attempts=profile.automatic_retry_attempts,
+        local_retry_wait_cap_seconds=profile.local_retry_wait_cap_seconds,
+        temperature=1.0 if entry.provider is ProviderName.KIMI_FOR_CODING else 0.1,
+    )
+
+
+MODEL_DEFAULTS: Mapping[str, ModelDefaults] = ModelDefaultsView()
 
 
 def rebuild_model_defaults_projection() -> None:
-    """Rebuild legacy config maps from the canonical catalog in place."""
-    snapshot = ModelCatalogService.load()
-    projected_defaults: dict[str, ModelDefaults] = {}
-    for entry in snapshot.entries.values():
-        projected_defaults[entry.model_name] = {
-            "max_tokens": entry.runtime_profile.max_tokens,
-            "context_window": entry.runtime_profile.context_window,
-            "streaming": entry.runtime_profile.streaming,
-            "requests_per_minute": entry.runtime_profile.requests_per_minute,
-            "tokens_per_minute": entry.runtime_profile.tokens_per_minute,
-            "automatic_retry_attempts": entry.runtime_profile.automatic_retry_attempts,
-            "local_retry_wait_cap_seconds": entry.runtime_profile.local_retry_wait_cap_seconds,
-        }
-        # Kimi For Coding family models require ``temperature=1``. Preserve
-        # that provider-level constraint for every canonical Kimi entry,
-        # including newer variants such as ``kimi-k3`` and
-        # ``kimi-for-coding-highspeed``.
-        if entry.provider is ProviderName.KIMI_FOR_CODING:
-            projected_defaults[entry.model_name]["temperature"] = 1.0
-        else:
-            projected_defaults[entry.model_name]["temperature"] = 0.1
-    MODEL_DEFAULTS.clear()
-    MODEL_DEFAULTS.update(projected_defaults)
+    """Deprecated no-op: compatibility reads now follow catalog publication."""
 
 
-rebuild_model_defaults_projection()
-
-
-def default_model_for_provider(*, provider: ProviderName) -> str:
+def default_model_for_provider(*, provider: ProviderName) -> Optional[str]:
     """Return the recommended landing model for one provider.
 
     Args:
         provider (ProviderName): Provider whose default model is needed.
 
     Returns:
-        str: The recommended default model name.
+        Optional[str]: Stable landing model, or None when explicit selection is required.
     """
-    return _PROVIDER_DEFAULT_MODELS[provider]
+    return SeedModelCatalog.provider_default_models()[provider]
 
 
-def resolve_model_name_with_fallback(*, model_name: str) -> tuple[str, Optional[str]]:
+def resolve_model_name_with_fallback(
+    *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
+) -> tuple[str, Optional[str]]:
     """Resolve a model name, falling back to defaults when it is invalid.
 
     Resolution order:
@@ -101,7 +115,7 @@ def resolve_model_name_with_fallback(*, model_name: str) -> tuple[str, Optional[
     from src.auth.provider_for_model import provider_for_model
 
     try:
-        ModelCatalogService.entry_for_model(model_name=model_name)
+        ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
         return model_name, None
     except ValueError:
         pass

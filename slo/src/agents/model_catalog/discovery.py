@@ -7,6 +7,7 @@ from typing import Optional
 
 from config.logger import log_error, log_info
 from src.agents.model_catalog.dao import (
+    CatalogRefreshResultDAO,
     ModelAliasDAO,
     ModelCatalogEntryDAO,
     ModelCatalogOverrideDAO,
@@ -18,92 +19,32 @@ from src.agents.model_catalog.dao import (
     ProviderModelTemplateDAO,
 )
 from src.auth.credential_dao import ProviderName
-from src.auth.credential_resolver import CredentialResolver
 
 
 class ProviderModelDiscoveryService:
-    """Best-effort provider discovery and merge into a catalog snapshot."""
+    """Compatibility discovery gateway and pure legacy direct-family merge helpers."""
 
     @classmethod
-    def refresh(
-        cls,
-        *,
-        base_snapshot: ModelCatalogSnapshotDAO,
-    ) -> ModelCatalogSnapshotDAO:
-        """Run discovery for providers with credentials and merge the results.
-
-        Discovery never mutates ``base_snapshot`` in place. A failed discovery
-        call returns the base snapshot unchanged.
+    async def refresh(cls, *, provider: ProviderName, force: bool = False) -> CatalogRefreshResultDAO:
+        """Delegate explicit discovery to the sole raw-state/publication owner.
 
         Args:
-            base_snapshot (ModelCatalogSnapshotDAO): Seed+cache merged snapshot.
+            provider: Provider requested by the caller, never an all-provider scan.
+            force: Whether the existing owner should bypass freshness.
 
         Returns:
-            ModelCatalogSnapshotDAO: Snapshot with discovered entries merged in.
+            CatalogRefreshResultDAO: The catalog owner's safe outcome.
         """
-        log_info(msg="model_catalog_discovery_started")
-        providers: list[ProviderName] = cls._providers_with_credentials()
-        if not providers:
-            log_info(msg="model_catalog_discovery_skipped_no_credentials")
-            return base_snapshot
+        from src.agents.model_catalog.service import ModelCatalogService
 
-        refreshed_entries: dict[str, ModelCatalogEntryDAO] = dict(base_snapshot.entries)
-        for provider in providers:
-            result: ProviderDiscoveryResultDAO = cls._discover_provider(provider=provider)
-            refreshed_entries = cls._merge_provider_result(
-                entries=refreshed_entries,
-                templates=base_snapshot.templates,
-                result=result,
-            )
-        log_info(msg="model_catalog_discovery_succeeded")
-        return ModelCatalogSnapshotDAO(
-            schema_version=base_snapshot.schema_version,
-            generated_at=base_snapshot.generated_at,
-            entries=refreshed_entries,
-            aliases=base_snapshot.aliases,
-            templates=base_snapshot.templates,
-        )
-
-    @classmethod
-    def _providers_with_credentials(cls) -> list[ProviderName]:
-        """Return providers for which a credential can be resolved.
-
-        Returns:
-            list[ProviderName]: Providers with credentials.
-        """
-        providers: list[ProviderName] = []
-        for provider in ProviderName:
-            if CredentialResolver.resolve(provider=provider) is not None:
-                providers.append(provider)
-        return providers
-
-    @classmethod
-    def _discover_provider(
-        cls,
-        *,
-        provider: ProviderName,
-    ) -> ProviderDiscoveryResultDAO:
-        """Return a conservative discovery result for one provider.
-
-        v1 adapters are placeholders: they return an empty list so the default
-        gate stays offline-safe. Live-provider probes can be added behind
-        credential-gated e2e tests without changing this contract.
-
-        Args:
-            provider (ProviderName): Provider to query.
-
-        Returns:
-            ProviderDiscoveryResultDAO: Conservative discovery result.
-        """
-        log_info(msg="model_catalog_provider_discovery", provider=provider.value)
-        return ProviderDiscoveryResultDAO(provider=provider, available_model_names=[])
+        return await ModelCatalogService.refresh(provider=provider, force=force)
 
     @classmethod
     def _merge_provider_result(
         cls,
         *,
         entries: dict[str, ModelCatalogEntryDAO],
-        templates: list[ProviderModelTemplateDAO],
+        templates: tuple[ProviderModelTemplateDAO, ...],
         result: ProviderDiscoveryResultDAO,
     ) -> dict[str, ModelCatalogEntryDAO]:
         """Merge discovered model names into the entry map.
@@ -165,7 +106,7 @@ class ProviderModelDiscoveryService:
         cls,
         *,
         model_name: str,
-        templates: list[ProviderModelTemplateDAO],
+        templates: tuple[ProviderModelTemplateDAO, ...],
         metadata: Optional[ProviderModelMetadataDAO],
     ) -> Optional[ModelCatalogEntryDAO]:
         """Build an auto-discovered entry from the first matching family template.
@@ -208,7 +149,7 @@ class ProviderModelDiscoveryService:
         cls,
         *,
         model_name: str,
-        templates: list[ProviderModelTemplateDAO],
+        templates: tuple[ProviderModelTemplateDAO, ...],
     ) -> Optional[ProviderModelTemplateDAO]:
         """Return the first template that matches the discovered model name.
 
@@ -372,15 +313,109 @@ class ModelCatalogOverrideService:
         data: dict = entry.model_dump()
         if override.display_name is not None:
             data["display_name"] = override.display_name
-        if override.visible_in_picker is not None:
+        if entry.provider is not ProviderName.OPENROUTER and override.visible_in_picker is not None:
             data["visible_in_picker"] = override.visible_in_picker
+        if entry.provider is ProviderName.OPENROUTER and override.visible_in_picker is False:
+            data["visible_in_picker"] = False
         if override.support_tier is not None:
             data["support_tier"] = override.support_tier
         if override.runtime_profile is not None:
-            data["runtime_profile"] = override.runtime_profile.model_dump()
+            runtime_profile: ModelRuntimeProfileDAO = override.runtime_profile
+            if entry.provider is ProviderName.OPENROUTER:
+                runtime_profile = cls._restricted_runtime_profile(
+                    base=entry.runtime_profile,
+                    override=override.runtime_profile,
+                )
+            data["runtime_profile"] = runtime_profile.model_dump()
         if override.reasoning_profile is not None:
-            data["reasoning_profile"] = override.reasoning_profile.model_dump()
+            entry.require_reasoning_override_compatibility(reasoning_profile=override.reasoning_profile)
+            reasoning_profile: ModelReasoningProfileDAO = override.reasoning_profile
+            if entry.provider is ProviderName.OPENROUTER:
+                reasoning_profile = cls._restricted_reasoning_profile(
+                    base=entry.reasoning_profile,
+                    override=override.reasoning_profile,
+                )
+            data["reasoning_profile"] = reasoning_profile.model_dump()
         return ModelCatalogEntryDAO.model_validate(data)
+
+    @classmethod
+    def _restricted_runtime_profile(
+        cls,
+        *,
+        base: ModelRuntimeProfileDAO,
+        override: ModelRuntimeProfileDAO,
+    ) -> ModelRuntimeProfileDAO:
+        """Reject an override that broadens runtime limits.
+
+        Args:
+            base (ModelRuntimeProfileDAO): Provider-established profile.
+            override (ModelRuntimeProfileDAO): Operator requested profile.
+
+        Returns:
+            ModelRuntimeProfileDAO: Restrictive operator profile.
+
+        Raises:
+            ValueError: When an override increases a remote or local limit.
+        """
+        if override.max_tokens > base.max_tokens or override.context_window > base.context_window:
+            raise ValueError("Model catalog overrides cannot increase provider limits.")
+        if override.requests_per_minute > base.requests_per_minute:
+            raise ValueError("Model catalog overrides cannot increase provider rates.")
+        if cls._increases_optional_limit(base=base.tokens_per_minute, override=override.tokens_per_minute):
+            raise ValueError("Model catalog overrides cannot increase provider rates.")
+        return override
+
+    @staticmethod
+    def _increases_optional_limit(*, base: Optional[int], override: Optional[int]) -> bool:
+        """Return whether an optional limit becomes less restrictive.
+
+        Args:
+            base (Optional[int]): Provider-established optional limit.
+            override (Optional[int]): Operator requested optional limit.
+
+        Returns:
+            bool: Whether the override broadens the allowed rate.
+        """
+        if base is None:
+            return False
+        if override is None:
+            return True
+        return override > base
+
+    @staticmethod
+    def _restricted_reasoning_profile(
+        *,
+        base: ModelReasoningProfileDAO,
+        override: ModelReasoningProfileDAO,
+    ) -> ModelReasoningProfileDAO:
+        """Reject an override that introduces unsupported reasoning controls.
+
+        Args:
+            base (ModelReasoningProfileDAO): Provider-established reasoning profile.
+            override (ModelReasoningProfileDAO): Operator requested profile.
+
+        Returns:
+            ModelReasoningProfileDAO: Restrictive operator profile.
+
+        Raises:
+            ValueError: When an override unlocks a reasoning level.
+        """
+        if not set(override.supported_levels).issubset(set(base.supported_levels)):
+            raise ValueError("Model catalog overrides cannot unlock reasoning controls.")
+        if base.provider_reasoning_required and not override.provider_reasoning_required:
+            raise ValueError("Model catalog overrides cannot remove mandatory reasoning.")
+        if (
+            base.forbid_sampling_parameters_when_enabled
+            and not override.forbid_sampling_parameters_when_enabled
+        ):
+            raise ValueError("Model catalog overrides cannot relax reasoning request restrictions.")
+        for level, effort in override.provider_effort_map.items():
+            if base.provider_effort_map.get(level) != effort:
+                raise ValueError("Model catalog overrides cannot change provider reasoning effort mappings.")
+        for level, budget in override.provider_budget_map.items():
+            if base.provider_budget_map.get(level) != budget:
+                raise ValueError("Model catalog overrides cannot change provider reasoning budget mappings.")
+        return override
 
     @classmethod
     def _patch_alias(

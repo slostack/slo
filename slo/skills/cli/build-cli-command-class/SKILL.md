@@ -37,7 +37,7 @@ Companion documents — read these; do not expect this file to duplicate them:
 
 - [`build-cli-modules.md`](../build-cli-modules/SKILL.md) — full module shape, stack rules, `@handle_cli_errors`, argument patterns, two-console discipline, polling, retry, tests.
 - [`build-cli-commands.md`](../build-cli-commands/SKILL.md) — Makefile shape, CLI → router → AppService layering, auth, idempotency.
-- ``skills/languages/python/declarative-method-structure/SKILL.md`` — Tell-don't-ask, one decision per method, orchestrator = table of contents.
+- ``skills/coding/declarative-method-structure/SKILL.md`` plus ``skills/languages/python/declarative-method-structure/SKILL.md`` — shared Tell-don't-ask and one-decision guidance, then Python-specific contracts.
 - ``skills/languages/python/named-arguments-and-type-hints/SKILL.md`` — every parameter typed, every call site named.
 - ``skills/languages/python/method-docstrings/SKILL.md`` — Google-style docstrings on every public and protected method.
 
@@ -201,9 +201,9 @@ finally:
 
 ## Rule 3 — `execute` must read like a table of contents
 
-This is a restatement of the
-``skills/languages/python/declarative-method-structure/SKILL.md``
-orchestrator rule applied specifically to CLI commands. It is repeated here
+This is a restatement of the shared
+``skills/coding/declarative-method-structure/SKILL.md``
+orchestrator rule, with the Python specialization applied specifically to CLI commands. It is repeated here
 because it is the most commonly violated rule in this layer.
 
 The test: can you describe what `execute` does in one sentence? If the

@@ -888,7 +888,7 @@ Do **not** default to scraping deep Textual internals.
 - [ ] global keybindings live on the app/screen
 - [ ] TCSS files sit next to the modules they style
 - [ ] pilot-based tests cover interactive behavior
-- [ ] code also follows `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/languages/python/declarative-method-structure/SKILL.md`, and `skills/languages/python/method-docstrings/SKILL.md`
+- [ ] code also follows `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/languages/python/declarative-method-structure/SKILL.md`, and `skills/languages/python/method-docstrings/SKILL.md`
 
 ---
 

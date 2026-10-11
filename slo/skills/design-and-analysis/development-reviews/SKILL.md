@@ -59,7 +59,7 @@ handshake, use the collaboration protocol only when that workflow is explicitly
 requested. For a feature review against a formal specification, also apply
 [`skills/design-and-analysis/review-feature-code/SKILL.md`](../review-feature-code/SKILL.md)
 and the hard-rule pass in
-[`skills/languages/python/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md).
+[`skills/languages/python/code-review-rules/SKILL.md`](../../languages/python/code-review-rules/SKILL.md).
 
 ---
 
@@ -520,11 +520,11 @@ plain language.>
 
 - [`skills/design-and-analysis/review-feature-code/SKILL.md`](../review-feature-code/SKILL.md)
   — formal spec-to-code and end-to-end review process.
-- [`skills/languages/python/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md)
+- [`skills/languages/python/code-review-rules/SKILL.md`](../../languages/python/code-review-rules/SKILL.md)
   — hard-rule enforcement pass for every diff.
-- [`skills/languages/python/build-application-services/SKILL.md`](../../coding/build-application-services/SKILL.md)
+- [`skills/languages/python/build-application-services/SKILL.md`](../../languages/python/build-application-services/SKILL.md)
   — application-service boundary and `invoke()` convention.
-- [`skills/languages/python/build-domain-features/SKILL.md`](../../coding/build-domain-features/SKILL.md)
+- [`skills/languages/python/build-domain-features/SKILL.md`](../../languages/python/build-domain-features/SKILL.md)
   — domain ownership and DAO/model/service structure.
 - [`skills/coding/test-verification-policy/SKILL.md`](../../coding/test-verification-policy/SKILL.md)
   — decision-point and edge-case test expectations.

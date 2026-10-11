@@ -28,6 +28,8 @@ kind: skill
 
 **Scope:** TypeScript; load `skills/languages/typescript/typescript-conventions/SKILL.md`. Framework examples apply only to the declared stack. This is a vendored snapshot; installed same-name user skills still override it in the runtime manifest.
 
+**Response-profile status:** the retained `ok()`/`fail()` calls and envelope are profile-specific implementation examples from an unknown-profile historical framework recipe, not a universal response standard. For new or changed TypeScript APIs, select the [TypeScript API response profile](../typescript-api-response-conventions/SKILL.md) and the [language-independent response contract](../../../coding/api-response-conventions/SKILL.md); those owners decide concrete fields, version, error shape, status mapping, pagination, and helper behavior. For an existing API, preserve observed/project-documented wire bytes and require an explicit existing/project contract before changing them. This middleware recipe owns lifecycle mechanics, not a competing wire format.
+
 Middleware in TypeScript follows the same single-concern discipline as its Python counterpart. Each middleware function does one thing: it either enriches the request context (auth, request ID, parsed tenant) or it intercepts a specific lifecycle stage (logging, error normalization). Business logic never appears inside middleware.
 
 ### Core rules
@@ -161,7 +163,7 @@ export const authMiddleware = createMiddleware(async (ctx, next) => {
 });
 ```
 
-Usage in a route handler:
+Usage in a route handler (historical unknown-profile helper example; use the selected TypeScript profile's helper in a real project):
 
 ```typescript
 usersRouter.get('/me', async (ctx) => {
@@ -209,7 +211,7 @@ adminRouter.use('/*', requireRole('admin'));
 
 ### Error handling middleware (Hono)
 
-Registered with `app.onError()`. Normalizes `AppError`, `ZodError`, and unknown errors into the standard envelope:
+Registered with `app.onError()`. Normalizes `AppError`, `ZodError`, and unknown errors through the selected response profile. The `fail()` calls below are retained historical unknown-profile implementation examples, not a universal envelope:
 
 ```typescript
 // src/middleware/error.middleware.ts
@@ -244,7 +246,7 @@ export const errorHandler: ErrorHandler = (err, ctx) => {
 
 ### Express equivalents
 
-For teams using Express, the signatures differ but the rules are identical:
+For teams using Express, the signatures differ but the rules are identical. The retained `fail()` calls below use the same historical unknown-profile example; route concrete response shape, fields, version, errors, and statuses through the selected TypeScript profile and generic owner.
 
 ```typescript
 // Express auth middleware
@@ -305,3 +307,4 @@ Before finishing a middleware, verify:
 - [ ] Async errors propagate: throw (Hono) or `next(error)` (Express) — never swallowed
 - [ ] `ContextVariableMap` is augmented (Hono) or `res.locals` is typed (Express) so downstream handlers are typed
 - [ ] The middleware is registered in the correct order in `app.ts`, with a comment documenting the stack
+- [ ] Response helpers and concrete response fields/statuses follow the selected TypeScript response profile; do not treat the historical `ok()`/`fail()` example as universal

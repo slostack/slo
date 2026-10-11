@@ -55,7 +55,7 @@ Update `RESEARCH.md` whenever a code change alters the **structure, purpose, or 
 
 ### 2. Convention Documents — Code Prompts
 
-Update files in `skills/coding/` whenever a code change **establishes, modifies, or invalidates a convention**.
+Update the authoritative coding skill in `skills/coding/` for generic conventions, or the matching language-owned skill under `skills/languages/{python,go,typescript}/` for language-specific conventions.
 
 | Change Type | Action |
 |---|---|

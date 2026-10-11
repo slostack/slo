@@ -116,6 +116,31 @@ Construction must not mutate a giant long-lived façade one field at a time. A b
 
 A runtime model may aggregate collaborators that share a lifecycle, but it must not be an exported bag every caller can mutate. Consumers receive only their minimal required collaborators/interfaces. Public fields exposing all internals are forbidden.
 
+## Go constructor and lifecycle spelling
+
+Read `skills/coding/naming-and-clarity/SKILL.md` first for the shared, language-neutral lifecycle distinction. This section owns the Go spelling and constructor threshold only.
+
+The package-private constructor form `newX` remains idiomatic Go for a small single-object constructor:
+
+```go
+func newConn(fd int) *Conn { ... }   // fine — small, single-object constructor
+```
+
+Use `newX` for small single-object constructors; use `build…` when assembling or wiring a composite object graph. This is a Go spelling rule, not a language-independent lifecycle rule; the generic naming owner covers the shared construction-versus-execution distinction.
+
+The complete Go lifecycle examples from the generic vocabulary remain here as Go-owned illustrations:
+
+```go
+overlay := buildOverlay(cfg)          // assemble the overlay object graph
+strategy := buildNATStrategy(peer)    // assemble the NAT-traversal strategy
+
+CreateSession(ctx, session)            // write an in-memory session to the store
+session := BuildAndCreateSession(ctx, cfg)
+
+startRelay(ctx)                        // spawns the relay loop; construction happened earlier
+launchWatcher(ctx)                     // spawns a background watcher
+```
+
 ## 5. DAOs and named boundaries
 
 - A function with three or more non-obvious values besides `context.Context` accepts a named params DAO.

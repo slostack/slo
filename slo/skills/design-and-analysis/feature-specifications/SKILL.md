@@ -36,6 +36,8 @@ The older gather-feature-context and feature-specification-verification skills r
 
 ## Slo defaults for request and specification artifacts
 
+**Read the prerequisite design references before drafting.** Read [coding rules](../../coding/coding-rules/SKILL.md) and [code design principles](../../coding/code-design-principles/SKILL.md) before authoring a feature specification so its design follows the project's baseline rules. When a feature needs focused preimplementation design, consult [solution design](../../coding/solution-design/SKILL.md) as an optional companion; it is appropriate before implementation, but it is not mandatory for every feature specification.
+
 **Read the companion feature-development skills first.** Unless the user asks you not to, skim the sibling skills in this group before drafting — they carry the hooks, verification, and task-breakdown steps this guide leans on, and they keep the spec consistent with the rest of the Slo workflow:
 
 - `feature-specifications-pre-hook` — the PRE hook that builds the context bundle

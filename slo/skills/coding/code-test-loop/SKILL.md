@@ -26,6 +26,26 @@ source_prompt: code-test-loop.md
 - The user asks for an end-to-end workflow that fits: Operating rhythm for coding sessions: never write a large block of code without testing the last small block first. Code → test → green → next chunk.
 - Use as the default cadence whenever writing or modifying code; complements test-verification-policy (which dictates what must be tested) by specifying when those tests run.
 
+## Prerequisite guidance
+
+Before implementation, read the project instructions and use
+`skills/engineering/engineering-routing/SKILL.md` to select the smallest
+sufficient skill set. The effective hand-off order is:
+
+project context → shared engineering ownership/testing →
+`skills/coding/coding-rules/SKILL.md` → applicable language root →
+applicable feature/framework/test recipes → bounded implementation and
+verification.
+
+Read `skills/engineering/engineering-ownership/SKILL.md` and
+`skills/engineering/engineering-testing/SKILL.md` for shared authority, then
+read the applicable language guidance (for example,
+`skills/languages/python/`, `skills/languages/typescript/`, or
+`skills/languages/go/`) and applicable feature/framework guidance. Applicable
+specifics override generic defaults on the relevant point; unresolved
+specific-to-specific conflicts require an explicit decision. This is prompt
+routing and hand-off guidance, not an enforced runtime classifier.
+
 ## Guidance
 
 **Authority and applicability:** Shared incremental cadence only. Read
@@ -212,9 +232,9 @@ surface in PR review.
 
 - [skills/coding/test-verification-policy/SKILL.md](../test-verification-policy/SKILL.md) — what
   decision points must be tested.
-- [skills/languages/python/declarative-method-structure/SKILL.md](../declarative-method-structure/SKILL.md) —
-  why methods should be small enough to test in isolation.
-- [skills/languages/python/build-application-services/SKILL.md](../build-application-services/SKILL.md) — the
+- [skills/coding/declarative-method-structure/SKILL.md](../declarative-method-structure/SKILL.md) —
+  why methods should be coherently decomposed and testable in isolation; read the language specialization for syntax-specific rules.
+- [skills/languages/python/build-application-services/SKILL.md](../../languages/python/build-application-services/SKILL.md) — the
   `invoke()` + named private methods pattern that maps 1-to-1 with
   loop iterations.
 

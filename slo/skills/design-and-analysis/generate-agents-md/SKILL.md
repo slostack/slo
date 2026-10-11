@@ -43,7 +43,7 @@ Before writing anything, read the following files in order:
 1. `README.md` — project purpose, setup instructions, how to run locally
 2. `pyproject.toml` (or `package.json`) — dependency list, project name, scripts
 3. `config/cfg.py` (or equivalent config entrypoint) — environment variable inventory
-4. All files under `skills/coding/` — coding standards and architectural patterns
+4. `skills/coding/coding-rules/SKILL.md` plus the applicable language/framework/test owners — coding standards and architectural patterns
 5. All files under `skills/design-and-analysis/` — documentation and analysis conventions
 6. `src/` directory structure — identify microapps, domains, routers, services, workers, events, integrations
 
@@ -75,7 +75,7 @@ Format:
 ```markdown
 ## Coding Guidelines & Conventions
 
-All coding standards and architectural patterns are documented in ``skills/coding/``.
+Generic coding standards and architectural patterns are documented in `skills/coding/`; language-specific recipes are documented under `skills/languages/`.
 Agents **must** consult these files before writing or modifying code.
 
 | File | Purpose |
@@ -255,7 +255,7 @@ To regenerate RESEARCH.md, follow ``skills/design-and-analysis/generate-research
 
 Before saving, confirm:
 
-- [ ] Every file in `skills/coding/` is listed in the Coding Guidelines table
+- [ ] Every generic file in `skills/coding/` and every applicable language owner is represented in the Coding Guidelines table
 - [ ] Every file in `skills/design-and-analysis/` is listed in the Analyzing the Codebase table
 - [ ] The test run command is correct and matches the project's `Makefile` or README
 - [ ] All markdown links resolve to real files

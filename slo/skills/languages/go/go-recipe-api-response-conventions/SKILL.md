@@ -22,7 +22,7 @@ Go HTTP API envelope: data/api_version/errors, nested pagination, typed error/st
 
 ## Authority and reconciliation
 
-The installed Go root, Python and TypeScript contracts agree on `data`, `api_version`, `errors` with `errors.msg` and `errors.code`. The older Go response recipe's singular error plus top-level meta is superseded, not an alternative for new code. An existing deployed divergent API needs an explicit compatibility/version migration decision; never silently change its bytes. This is the sole Go envelope owner; handlers/middleware/docs summarize or link it.
+Load `skills/coding/api-response-conventions/SKILL.md` for the language-independent envelope semantics. This recipe is the sole Go implementation/profile owner: it owns Go types, JSON tags, status mapping, Gin/net/http response helpers, and Go contract tests. The installed Go, Python and TypeScript recipes agree on `data`, `api_version`, and `errors` with `errors.msg` and `errors.code` for the approved envelope family, but their version values and pagination defaults are not automatically interchangeable. The older Go response recipe's singular error plus top-level meta is superseded, not an alternative for new code. An existing deployed divergent API needs an explicit compatibility/version migration decision; never silently change its bytes. Handlers/middleware/docs summarize or link this adapter and the shared contract; they do not define a second envelope.
 
 ## Complete typed wire shapes
 

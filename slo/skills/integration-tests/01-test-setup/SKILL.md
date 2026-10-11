@@ -164,7 +164,7 @@ The specification store contains detailed feature documentation organized chrono
 | `skills/languages/python/setup-dependencies-and-tests/SKILL.md` | Test infrastructure, conftest patterns |
 | `skills/coding/test-verification-policy/SKILL.md` | Test coverage requirements |
 | `skills/languages/python/build-clients/SKILL.md` | HTTP client conventions |
-| `skills/languages/python/declarative-method-structure/SKILL.md` | Code style — flat code, early returns |
+| `skills/coding/declarative-method-structure/SKILL.md` plus `skills/languages/python/declarative-method-structure/SKILL.md` | Shared flat code and early returns, then Python-specific contracts |
 
 ---
 

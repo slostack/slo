@@ -242,7 +242,7 @@ Common mappings (read all that apply):
 - ClickHouse features → `skills/languages/python/build-clickhouse-features/SKILL.md`
 - Alembic setup → `skills/languages/python/setup-alembic/SKILL.md`
 - dependencies / tests → `skills/languages/python/setup-dependencies-and-tests/SKILL.md`
-- always-on style → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/languages/python/declarative-method-structure/SKILL.md`, `skills/languages/python/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/languages/python/application-structure/SKILL.md`
+- always-on style → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/languages/python/declarative-method-structure/SKILL.md`, `skills/languages/python/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/languages/python/application-structure/SKILL.md`
 
 For Vue / TS work, also read the relevant `skills/frontend-vue/` convention files.
 

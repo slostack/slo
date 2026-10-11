@@ -98,7 +98,7 @@ Clarity over cleverness, always. The doc-comment richness rule lives in
 - CLI construction rules → `skills/cli/build-cli-commands/SKILL.md`
 - CLI module layout rules → `skills/cli/build-cli-modules/SKILL.md`
 - Type hints and named args → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`
-- Declarative structure → `skills/languages/python/declarative-method-structure/SKILL.md`
+- Shared declarative structure → `skills/coding/declarative-method-structure/SKILL.md`; read the applicable language specialization for syntax-specific rules
 
 ---
 

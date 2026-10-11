@@ -28,6 +28,17 @@ and actual project verification commands. Pass this record to every phase.
 Load language/component recipes on demand; do not impose Python syntax or tooling
 on Go, TypeScript or an unsupported language. For Go use the test-first cadence.
 
+## Additive prerequisite handoff
+
+The coding phase also consumes `skills/coding/coding-rules/SKILL.md` before
+implementation. The routing record preserves this order: project context →
+generic coding rules → applicable language root → applicable feature/framework
+recipes → bounded implementation and verification. Applicable specific guidance
+overrides the generic default on the affected point; unresolved
+specific-to-specific conflicts remain explicit blockers. This is a read and
+handoff requirement only; it does not change phase order, review meaning,
+completion meaning, GitLab lifecycle, or engineering authority.
+
 Each phase returns a terminal verdict (READY/COMPLETE, REVISE, or FAILED), concrete
 artifact paths, requirement-to-evidence mapping, exact commands/results, deviations
 and unresolved blockers. Verify artifacts exist before advancing; a success exit
@@ -171,6 +182,10 @@ Wait for confirmation before continuing.
 **Governing skill:** `skills/coding/code-test-loop/SKILL.md`
 
 This step is identical to Step 1 of the [Code-Test-Review workflow](code-test-review.md). All rules apply without exception.
+
+The Step 1 handoff also includes `skills/coding/coding-rules/SKILL.md` and the
+routing record from the workflow preconditions; it does not alter the GitLab
+issue or MR lifecycle.
 
 Implement the feature by working through each implementation unit in dependency order (migrations → domain models/DAOs → domain services → application services → routers → workers → frontend). For each unit:
 

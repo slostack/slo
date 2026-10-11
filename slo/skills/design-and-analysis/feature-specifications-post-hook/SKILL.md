@@ -172,7 +172,7 @@ If **any** mandatory section is missing or stub-only, the verdict is automatical
 
 ## Step 2 — Cross-check the spec against the code-convention prompts
 
-For every layer the spec touches, open the matching rule file under `skills/coding/` and audit the spec for compliance.
+For every layer the spec touches, open the matching generic owner under `skills/coding/` and the applicable language/framework rule under `skills/languages/`; audit the spec for compliance.
 
 Audit checklist:
 

@@ -1,5 +1,5 @@
 ---
-name: api-response-conventions
+name: python-api-response-conventions
 description: 'Python: SuccessResponseDAO / FailureResponseDAO patterns and structured API response shapes.'
 when_to_use: For Python projects only. Use when designing or modifying response wrappers.
 group: languages
@@ -11,7 +11,7 @@ source_prompt: api-response-conventions.md
 
 ## Skill summary
 
-- **Name:** `api-response-conventions`
+- **Name:** `python-api-response-conventions`
 - **Description:** SuccessResponseDAO / FailureResponseDAO patterns and structured API response shapes.
 - **When to use:** Use when designing or modifying response wrappers.
 - **Group:** `languages`
@@ -25,11 +25,9 @@ source_prompt: api-response-conventions.md
 
 ## Guidance
 
-**Applicability:** Python only; framework-specific sections apply only when that stack is in the project. Load `skills/languages/python/python-conventions/SKILL.md` and `skills/engineering/engineering-testing/SKILL.md` for shared obligations and test-category selection.
+**Applicability:** Python only; framework-specific sections apply only when that stack is in the project. Load `skills/coding/api-response-conventions/SKILL.md` for the language-independent envelope semantics, `skills/languages/python/python-conventions/SKILL.md` for Python routing, and `skills/engineering/engineering-testing/SKILL.md` for shared obligations and test-category selection. This file owns the Python/Pydantic/FastAPI implementation and its approved Python wire profile; it does not redefine the generic contract.
 
-The workspace ships a single, consistent JSON response envelope on every FastAPI endpoint across `orders_service`, `payments_service`, `partner_integrations`, and every new subapp. **Use this convention on every endpoint you write.** Do not invent ad-hoc shapes.
-
-This prompt is the focused reference. The fuller router build guide is in [skills/languages/python/build-routers/SKILL.md](../build-routers/SKILL.md); the response wrapper is also implicitly documented inside that file but buried — when in doubt, read this page.
+Load `skills/coding/api-response-conventions/SKILL.md` for the language-independent envelope semantics and compatibility rules. This focused recipe owns the Python/Pydantic/FastAPI adapter: its DAOs, serializer behavior, helper, pagination profile, disclosure requirements, and tests. Existing deployed Python wire bytes remain authoritative. The fuller router build guide is in [skills/languages/python/build-routers/SKILL.md](../build-routers/SKILL.md); the response wrapper is also documented there in the request lifecycle.
 
 ---
 
@@ -56,7 +54,7 @@ The wire JSON of every `200 OK`:
 }
 ```
 
-**Three root fields. Always. No others.** Do not put `success: true`, `status: "ok"`, `meta`, or `pagination` at the root.
+The Python profile serializes exactly the three fields shown above; its adapter tests reject the profile's legacy ad-hoc fields.
 
 ## 2. The error envelope — `FailureResponseDAO[T]`
 
@@ -134,7 +132,7 @@ On the wire:
 
 **Rules:**
 
-1. **Pagination metadata lives inside `data`**, not as sibling to `data`. The `SuccessResponseDAO` envelope has exactly three root keys; pagination is part of the payload.
+1. This Python profile places pagination metadata inside `data` and keeps the `SuccessResponseDAO` envelope shape.
 2. **`page` is 0-indexed.** Default `page=0`, default `size=25`.
 3. **`size` is hard-capped at 100** server-side (`self.size = min(size, 100)` in the app service).
 4. **`total` is the unfiltered total** across all pages, not the count of returned rows. Compute it with a separate `SELECT COUNT(*)` that applies the same `WHERE` as the page-fetch query (so filter + total match).
@@ -214,9 +212,8 @@ Specs that hide the DAO behind a one-liner like `"DAO: FooPageDAO with usual pag
 ## 7. Common mistakes to avoid
 
 - ❌ Returning a raw `dict` or `list` from a controller — always wrap in `success_response()`.
-- ❌ Putting `pagination`, `meta`, or `total` at the root of the response (sibling to `data`). They belong inside `data`.
-- ❌ Using `success: true` / `success: false` flags. The HTTP status code is the signal; the envelope shape is the same on success.
-- ❌ Returning `"errors": null` on success. Always `{"msg": [], "code": null}` — never `null`.
+- ❌ Returning `"errors": null` on success in this Python profile. Always `{"msg": [], "code": null}` — never `null`.
+- ❌ Using the Python profile's helper inconsistently or inventing a second profile for one endpoint. Follow the selected project contract.
 - ❌ Heterogeneous item shapes in a list. Unify into one DAO with nullable fields.
 - ❌ Forgetting `mode="json"` on `model_dump()`. Without it, `Decimal` / `datetime` / `UUID` reach `success_response` as Python objects and downstream serialization may drop precision or fail.
 - ❌ Inventing per-endpoint envelope shapes. The envelope is shared workspace-wide; new shapes break the OpenAPI generator and the admin-ui's response parser.

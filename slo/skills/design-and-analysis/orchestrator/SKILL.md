@@ -42,6 +42,10 @@ Read shared obligations and only affected language/component/framework recipes.
 Python-specific examples and commands below are scoped examples, not universal
 requirements. For mixed-language work preserve each boundary's approved contract.
 Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+Read `skills/coding/coding-rules/SKILL.md` as the generic baseline after project
+context, then route to the applicable language root and feature/component recipes.
+Applicable specifics override generic defaults on the affected point; unresolved
+specific-to-specific conflicts remain explicit blockers.
 
 ## Goal
 

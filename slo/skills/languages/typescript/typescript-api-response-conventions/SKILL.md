@@ -27,9 +27,9 @@ kind: skill
 
 ## Guidance
 
-**Scope:** TypeScript; load `skills/languages/typescript/typescript-conventions/SKILL.md`. Framework examples apply only to the declared stack. This is a vendored snapshot; installed same-name user skills still override it in the runtime manifest.
+**Scope:** TypeScript; load `skills/coding/api-response-conventions/SKILL.md` for the language-independent envelope semantics and `skills/languages/typescript/typescript-conventions/SKILL.md` for TypeScript routing. Framework examples apply only to the declared stack. This file owns TypeScript types, factories, Zod schemas, and TypeScript contract tests for the selected wire profile; it does not silently change an existing API's version, pagination, or error-code values. This is a vendored snapshot; installed same-name user skills still override it in the runtime manifest.
 
-Every endpoint — success path and error path alike — returns the same JSON envelope. This eliminates special-casing in clients and makes response shapes predictable across the entire API surface.
+Load `skills/coding/api-response-conventions/SKILL.md` for the language-independent envelope semantics and compatibility rules. This focused recipe owns the TypeScript adapter: its types, factories, Zod schemas, framework examples, and tests for the selected wire profile. Every endpoint in that profile — success path and error path alike — returns the same JSON envelope. Existing deployed wire values remain authoritative.
 
 ### The envelope type
 
@@ -47,10 +47,11 @@ export interface ApiResponse<T = unknown> {
 ```
 
 Rules:
-- **Success:** `data` carries the payload; `errors` is `{ msg: [], code: null }`.
-- **Error:** `data` is `null`; `errors.msg` has one or more human-readable messages; `errors.code` is `SCREAMING_SNAKE_CASE`.
-- Never add extra root-level fields (`success`, `meta`, `pagination`). Everything lives inside `data` or `errors`.
-- `api_version` is always present — set it from an env var or a constant (e.g. `"v1"`).
+- **Success in this profile:** `data` carries the payload; `errors` is `{ msg: [], code: null }`.
+- **Error in this profile:** `data` is `null`; `errors.msg` has one or more human-readable messages; `errors.code` uses the profile's stable public-code policy.
+- This profile rejects unapproved extra root-level fields (`success`, `meta`, `pagination`); everything else remains inside `data` or `errors`.
+- `api_version` is always present in this profile; its value comes from an env var or constant (the example uses `"v1"`).
+- Existing endpoints with a different version, error, or pagination profile require an explicit compatibility decision.
 
 ### Factory helpers
 
@@ -133,6 +134,7 @@ export interface Page<T> {
 import type { Page } from '../types/page'
 
 router.get('/', async (req: Request, res: Response) => {
+  // This illustrative profile uses page 1 and size 20; a project profile may differ.
   const page = Number(req.query.page ?? 1)
   const size = Number(req.query.size ?? 20)
 
@@ -209,8 +211,8 @@ export function assertErrorResponse(body: unknown, expectedCode: string) {
 
 - [ ] Every route returns `ApiResponse<T>` — success and error paths both
 - [ ] `successResponse()` and `errorResponse()` factories used everywhere — no inline object literals
-- [ ] Error codes are `SCREAMING_SNAKE_CASE`
-- [ ] List endpoints return `Page<T>` inside `data`, never a bare array
-- [ ] No extra root-level keys (`success`, `meta`, `pagination`)
+- [ ] Error codes follow the selected profile's stable public-code policy
+- [ ] List endpoints return `Page<T>` inside `data` for this profile, never a bare array
+- [ ] No unapproved extra root-level keys (`success`, `meta`, `pagination`)
 - [ ] Zod schema validates responses in tests
 - [ ] `satisfies ApiResponse<T>` used in route handlers for compile-time safety

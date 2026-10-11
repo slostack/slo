@@ -19,6 +19,17 @@ and actual project verification commands. Pass this record to every phase.
 Load language/component recipes on demand; do not impose Python syntax or tooling
 on Go, TypeScript or an unsupported language. For Go use the test-first cadence.
 
+## Additive prerequisite handoff
+
+The coding phase also consumes `skills/coding/coding-rules/SKILL.md` before
+implementation. The routing record preserves this order: project context →
+generic coding rules → applicable language root → applicable feature/framework
+recipes → bounded implementation and verification. Applicable specific guidance
+overrides the generic default on the affected point; unresolved
+specific-to-specific conflicts remain explicit blockers. This is a read and
+handoff requirement only; it does not change phase order, review meaning,
+completion meaning, or engineering authority.
+
 Each phase returns a terminal verdict (READY/COMPLETE, REVISE, or FAILED), concrete
 artifact paths, requirement-to-evidence mapping, exact commands/results, deviations
 and unresolved blockers. Verify artifacts exist before advancing; a success exit
@@ -87,6 +98,7 @@ If any pre-condition is not met, satisfy it before entering Step 1.
 
 **Input consumed:**
 - The feature specification or task description
+- `skills/coding/coding-rules/SKILL.md` and the routing record from the workflow preconditions
 - All loaded `build-*.md` conventions for the task's layers
 - docs/RESEARCH.md for existing patterns to mirror
 
@@ -159,6 +171,7 @@ Wait for confirmation before continuing.
 - The specification document (or task description) from the pre-conditions
 - The implementation files from Step 1
 - The test coverage map from Step 1
+- The unchanged routing record, including the generic coding-rules prerequisite
 
 **What this step does:**
 
@@ -214,6 +227,7 @@ Wait for confirmation before continuing.
 - The original specification or task description
 - The Code Review Report from Step 2
 - The current codebase (post all Step 1 and Step 2 revisions)
+- The unchanged routing record, including the generic coding-rules prerequisite
 
 **What this step does:**
 

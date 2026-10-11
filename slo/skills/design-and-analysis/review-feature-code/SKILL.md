@@ -36,7 +36,7 @@ Guide for conducting AI-assisted feature code reviews against a specification do
 Covers all stacks in the Orders platform monorepo: **FastAPI/Python**, **Vue 3/TypeScript**, **Typer CLI**, and **Textual TUI**.
 
 > **POST-HOOK — mandatory:** After completing Steps 1–8 below, run
-> [`skills/languages/python/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md) as a hard-rules pass
+> [`skills/languages/python/code-review-rules/SKILL.md`](../../languages/python/code-review-rules/SKILL.md) as a hard-rules pass
 > against the same diff. That prompt is the enforcement checklist;
 > this prompt is the completeness and flow analysis. Both must complete
 > before the review is done. Findings from the hard-rules pass are
@@ -180,7 +180,7 @@ Apply the checks for every stack the feature touches.
 
 | Convention | What To Check |
 |---|---|
-| `skills/languages/python/declarative-method-structure/SKILL.md` | Flat code, early returns, single decision per method, orchestrator body ≤ ~8 lines of logic |
+| `skills/coding/declarative-method-structure/SKILL.md` | Shared flat structure, early returns, single decision per method, and meaningful decomposition; load the language specialization for syntax and thresholds |
 | `skills/languages/python/named-arguments-and-type-hints/SKILL.md` | Named args for 2+ params; type hints on all params and return values |
 | `skills/languages/python/method-docstrings/SKILL.md` | Google-style docstrings on all public methods |
 | `skills/design-and-analysis/ubiquitous-language/SKILL.md` | One concept, one canonical name across every layer — no synonyms anywhere in the diff |
@@ -310,6 +310,6 @@ Produce a markdown document with these sections:
 ## Post-Hook: Hard Rules Pass
 
 When the flow analysis (Steps 1–8) is complete, immediately run the hard-rules
-checklist in [`skills/languages/python/code-review-rules/SKILL.md`](../../coding/code-review-rules/SKILL.md). Work through every
+checklist in [`skills/languages/python/code-review-rules/SKILL.md`](../../languages/python/code-review-rules/SKILL.md). Work through every
 section that matches the stacks identified in Step 0. Merge those findings into
 the Step 8 output before delivering the review.

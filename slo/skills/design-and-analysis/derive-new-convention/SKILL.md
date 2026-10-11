@@ -87,7 +87,7 @@ The new convention must not conflict with these project-wide rules. Re-read thes
 | Convention File | What To Check |
 |---|---|
 | `skills/languages/python/application-structure/SKILL.md` | Folder layout, config patterns, connector usage |
-| `skills/languages/python/declarative-method-structure/SKILL.md` | Flat code, single decision per method, early returns |
+| `skills/coding/declarative-method-structure/SKILL.md` plus `skills/languages/python/declarative-method-structure/SKILL.md` | Shared flat code, single decision per method, and early returns, then Python-specific contracts |
 | `skills/languages/python/named-arguments-and-type-hints/SKILL.md` | All function signatures must use named args + type hints |
 | `skills/languages/python/method-docstrings/SKILL.md` | Google-style docstrings on all public methods |
 | `skills/languages/python/python-path-and-import-resolution/SKILL.md` | Import path conventions |

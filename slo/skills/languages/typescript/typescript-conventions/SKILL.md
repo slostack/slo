@@ -32,5 +32,7 @@ Testing: typescript-test-app-services owns isolated orchestration with injected 
 
 Vue: `skills/frontend-vue/vue-coding-conventions/SKILL.md`, then only the affected fundamentals, TypeScript, Composition API, Pinia, router, composable, websocket, theming or build-vue-components recipe. Preserve component/composable boundaries, typed props/emits, reactivity, lifecycle cleanup, store and API contracts. Python websocket backend guidance in this family is a separate boundary, not a frontend prescription.
 
+TypeScript workstream additions: for TypeScript LangGraph, load `typescript-build-langgraph`; its graph runtime stream is distinct from browser SSE/WebSocket transport. For browser SSE, load `skills/frontend-vue/build-sse-endpoints/SKILL.md` in addition to the Vue gateway. Observed Sentinel frontend evidence is additive only: retain the real/mock client distinction, the `vue-tsc -b` build gate, and the escaped-user-content / constrained assistant-rendering boundary. These observations do not replace the existing API-response owner or imply a framework or transport for unrelated projects.
+
 Installed same-name TypeScript skills may override these vendored snapshots. Inspect the manifest location; unresolved differences require an explicit decision, not deletion of the user's files.
 

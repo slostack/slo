@@ -50,6 +50,11 @@ roster is here:
 | [code-test-review.md](code-test-review.md) | Pipeline | `code-test-loop`, `review-feature-code`, `is-the-feature-completed` (+ engineering-routing, shared testing, scoped language conventions) |
 | [gitlab-code-test-review.md](gitlab-code-test-review.md) | Pipeline | Code-Test-Review sub-skills + `git-ops/gitlab-issues`, `git-ops/ship-feature` |
 
+The canonical Code-Test-Review definitions additionally require the additive
+`skills/coding/coding-rules/SKILL.md` prerequisite before implementation and
+carry its project-context → language/component routing record through review and
+completion. This does not replace any workflow phase or lifecycle rule.
+
 ## Guidance
 
 ## Specialized-use rule

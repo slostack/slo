@@ -232,7 +232,7 @@ interface SearchOptions {
 
 ### 3.1 Route handlers delegate to a service layer — no inline business logic
 
-A route handler's body must only: parse the request, call a service, and send the response. Business logic inside a handler is a blocker.
+A route handler's body must only: parse the request, call a service, and send the response. Business logic inside a handler is a blocker. The response objects in these mechanics examples are historical/unknown-profile illustrations; use the selected API response profile for their concrete fields, version, errors, and status behavior.
 
 ```typescript
 // Blocker: business logic inline in the route handler
@@ -253,18 +253,19 @@ router.post("/orders", async (req, res) => {
 });
 ```
 
-### 3.2 All responses use the standard envelope shape
+### 3.2 All responses follow the selected API response profile
 
-Every API response must use the project's standard envelope. No raw data, no inconsistent shapes.
+Every API response must follow the project's selected and documented response profile. The [TypeScript API response profile](../typescript-api-response-conventions/SKILL.md) owns the current TypeScript adapter, while the [language-independent response contract](../../../coding/api-response-conventions/SKILL.md) owns shared semantics and compatibility rules. Preserve existing deployed/project-documented wire bytes and require an explicit existing/project contract before changing root fields, version, pagination, error shape, status mapping, or helper behavior. The `{ data: ... }` and `{ error: ... }` snippets below are retained as historical or unknown-profile review examples; they are not a universal standard and do not define an additional TypeScript profile.
 
 ```typescript
-// Blocker: raw data in response
+// Historical/unknown-profile example: raw data in response
 res.json(user);
 
-// Required: envelope
+// Historical/unknown-profile example: a selected profile may require an envelope;
+// use that profile's factory/helper and exact fields rather than copying this shape.
 res.json({ data: user });
 
-// Error responses must also follow the envelope
+// Historical/unknown-profile example: error root shape is profile-specific.
 res.status(400).json({
   error: { code: "VALIDATION_ERROR", message: err.message },
 });
@@ -383,7 +384,7 @@ Copy this into a review comment to share findings systematically:
 
 ### Section 3 — Route handlers
 - [ ] Handlers delegate to service layer (no inline business logic)
-- [ ] All responses use the standard envelope shape
+- [ ] All responses follow the selected/project API response profile; no unqualified universal envelope is assumed
 - [ ] Auth/permissions applied as middleware, not inline
 
 ### Section 4 — Testing

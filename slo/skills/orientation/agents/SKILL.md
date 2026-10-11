@@ -167,7 +167,7 @@ no goroutines), `Create…` / `Save…` persist an already-built object,
 `publish…` / `consume…` with a shared noun. Full rules and examples live in
 [`naming-and-clarity`](../../coding/naming-and-clarity/SKILL.md);
 documentation-comment standards (WHAT/WHO/WHEN) live in
-[`method-docstrings`](../../coding/method-docstrings/SKILL.md).
+[`method-docstrings`](../../languages/python/method-docstrings/SKILL.md).
 
 ---
 

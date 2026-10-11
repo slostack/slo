@@ -87,6 +87,12 @@ they are present. Otherwise, derive the roots above under the active
      → `breakdown-feature-spec-to-tasks` (and lists those sub-skills at its top).
    - If a draft spec already exists, that workflow runs
      `feature-specification-verification` rather than rewriting blindly.
+Before choosing implementation skills, read `skills/coding/coding-rules/SKILL.md`
+and record the handoff order: project context → generic coding rules → applicable
+language root → applicable feature/framework recipes → bounded implementation and
+verification. Preserve applicable specific guidance over generic defaults and
+surface unresolved specific-to-specific conflicts instead of resolving them silently.
+
 3. **Choose the implementation skills.**
    - Match the task shape to the right build/test skills (`build-routers`,
      `build-domain-features`, `build-application-services`, `build-clients`,

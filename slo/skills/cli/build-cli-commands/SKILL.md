@@ -144,7 +144,7 @@ Named arguments on every 2+-arg call site. Explicit type hints on every signatur
 
 **Why:** a "small" script grows. The 80-line `parse_trigger_response.py` started as 12 lines of inline Python; today it has a custom exception class, two callable entry points, and a unit-test suite. Conventions that would have made the original 12 lines longer pay for themselves the moment the file crosses 30.
 
-**How to apply:** cross-link the global Python rules — ``skills/languages/python/named-arguments-and-type-hints/SKILL.md``, ``skills/languages/python/declarative-method-structure/SKILL.md``, ``skills/languages/python/method-docstrings/SKILL.md``. Treat `verifier/scripts/parse_trigger_response.py` as the reference implementation — read it before writing a new helper.
+**How to apply:** cross-link the shared declarative owner and Python rules — ``skills/languages/python/named-arguments-and-type-hints/SKILL.md``, ``skills/coding/declarative-method-structure/SKILL.md``, ``skills/languages/python/declarative-method-structure/SKILL.md``, and ``skills/languages/python/method-docstrings/SKILL.md``. Treat `verifier/scripts/parse_trigger_response.py` as the reference implementation — read it before writing a new helper.
 
 ---
 

@@ -28,23 +28,25 @@ kind: skill
 
 **Scope:** TypeScript; load `skills/languages/typescript/typescript-conventions/SKILL.md`. Framework examples apply only to the declared stack. This is a vendored snapshot; installed same-name user skills still override it in the runtime manifest.
 
-Route files in TypeScript follow the same thin-handler discipline as their Python FastAPI equivalents. The route handler's only job is to parse the incoming request, call the relevant service method, and wrap the result in the standard response envelope. No business logic lives inline.
+**Response-profile status:** the complete response example retained below is a historical, nonnormative framework example with an **unknown profile**. The authored source and the Feature 87 source review do not identify an existing application, project, or deployed wire contract that owns its `ApiError[] | null` shape. It is preserved because it still teaches thin Hono/Express routing, middleware, validation, and error-boundary mechanics; it is not evidence for Sentinel, Atlas, Slo, or any other application.
+
+For a new TypeScript API, use the current [TypeScript API response profile](../typescript-api-response-conventions/SKILL.md), together with the [language-independent response contract](../../../coding/api-response-conventions/SKILL.md). For an existing API, preserve its observed wire bytes and require an explicit feature/API contract before changing version, pagination, error shape, status, or helper behavior. The route handler's job remains to parse the incoming request, call the relevant service method, and wrap the result using the selected response profile. No business logic lives inline.
 
 ### Core rules
 
 1. **Handlers are thin**: parse request → call service → wrap response. Nothing else.
 2. **Auth is declared as middleware**, never as an inline `if (!user) return res.status(401)...` check inside the handler.
 3. **Zod validates all request bodies** at the boundary. Never trust `req.body` with a bare type assertion.
-4. **Response shape is always `{ data, errors }`** — success sets `data`, failures set `errors` with a code and message.
+4. **Response shape follows the selected profile** — new APIs use the current TypeScript response profile; existing APIs retain their documented/project-specific wire shape until an explicit feature/API contract authorizes a change. Do not infer a profile from the historical example below.
 5. **Error handling is centralized** in an error middleware registered after all routes. Route handlers never catch-and-return inline.
 6. **One router file per domain resource** — `users.router.ts`, `orders.router.ts`, etc.
 7. **Each router file exports one Hono app group** (or one Express `Router` instance).
 
 ---
 
-### Standard response envelope
+### Historical response-envelope example (unknown profile; nonnormative)
 
-Define this once in `src/lib/response.ts` and import it everywhere:
+The following complete example is retained for its routing and middleware mechanics. Its envelope is not the default for new TypeScript APIs and must not be copied into an existing application without an explicit wire-contract decision. Define the response helpers for the selected profile once (for example, in `src/lib/response.ts`) and import them everywhere:
 
 ```typescript
 // src/lib/response.ts
@@ -70,7 +72,7 @@ export function fail(code: string, message: string): ApiResponse<never> {
 
 ---
 
-### Typed error class
+### Historical typed-error example (same unknown profile; nonnormative)
 
 ```typescript
 // src/lib/errors.ts
@@ -101,7 +103,7 @@ export class UnauthorizedError extends AppError {
 
 ---
 
-### Auth middleware (Hono)
+### Historical auth-middleware example (same unknown profile; nonnormative)
 
 ```typescript
 // src/middleware/auth.middleware.ts
@@ -140,7 +142,7 @@ export const authMiddleware = createMiddleware<{
 
 ---
 
-### Zod request schema
+### Historical Zod request-schema example (same unknown profile; nonnormative)
 
 ```typescript
 // src/domains/users/users.schemas.ts
@@ -160,7 +162,7 @@ export type UpdateUserRequest = z.infer<typeof UpdateUserSchema>;
 
 ---
 
-### Router file (Hono — preferred)
+### Historical router-file example (Hono; same unknown profile; nonnormative)
 
 ```typescript
 // src/domains/users/users.router.ts
@@ -224,7 +226,7 @@ export { usersRouter };
 
 ---
 
-### Error middleware (Hono)
+### Historical error-middleware example (Hono; same unknown profile; nonnormative)
 
 ```typescript
 // src/middleware/error.middleware.ts
@@ -252,7 +254,7 @@ export const errorHandler: ErrorHandler = (err, ctx) => {
 
 ---
 
-### App assembly
+### Historical app-assembly example (same unknown profile; nonnormative)
 
 ```typescript
 // src/app.ts
@@ -277,7 +279,9 @@ export function buildApp(): Hono {
 
 ---
 
-### Router file checklist
+### Router-file checklist
+
+Apply the mechanics below to the selected API response profile. The `ok`/`fail` helpers shown in the historical example are not a universal response contract.
 
 Before finishing a router file, verify:
 

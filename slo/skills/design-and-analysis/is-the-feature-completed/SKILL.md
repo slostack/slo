@@ -90,7 +90,7 @@ Not every feature touches every layer. Only include layers that the specificatio
 
 ### 1.3 Read Code Prompts
 
-Read the relevant code-prompt files from `skills/coding/` to understand the implementation patterns expected for each layer. This ensures you know what a "complete" implementation looks like in this codebase.
+Read `skills/coding/coding-rules/SKILL.md`, then the applicable generic, language, framework, and test owners to understand the implementation patterns expected for each layer. This ensures you know what a "complete" implementation looks like in this codebase.
 
 ---
 

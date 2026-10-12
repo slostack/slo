@@ -101,7 +101,8 @@ services, GUI launchers — cannot be configured by an installer; they keep
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SLO_REPO_URL` | `https://gitlab.com/core-27/slo.git` | Public Git URL to install from |
+| `SLO_REPO_URL` | `https://gitlab.com/core-27/slo.git` | Primary Git URL to install/update from |
+| `SLO_REPO_FALLBACK_URL` | `https://github.com/slostack/slo.git` for the official primary | Mirror used when the primary is inaccessible; set empty to disable. Custom primaries have no default mirror. |
 | `SLO_REF` | `main` | Branch / tag / commit to install — the source-of-truth ref selector |
 | `SLO_VERSION` | unset | Compatibility selector: `dev` → `main`; any other value overrides `SLO_REF` |
 | `SLO_REPO_SUBDIR` | `slo` | Subdirectory holding `pyproject.toml` (set empty for a root-level project) |
@@ -112,9 +113,52 @@ services, GUI launchers — cannot be configured by an installer; they keep
 
 ### 2.2 Public repository installation
 
-The installer installs from the public repository and does not read, inject,
-or persist repository credentials. Existing deploy-token or personal-access-token
-variables in the environment are ignored by `install.sh`.
+The installer tries GitLab first. If pipx fails and a bounded `git ls-remote`
+probe confirms that the primary is inaccessible, it retries **once** from
+`https://github.com/slostack/slo.git`, keeping the same ref, Python interpreter,
+and package subdirectory. If GitLab remains reachable, build, dependency and
+missing-ref failures are returned without a mirror retry. If both attempts fail,
+installation fails and launcher/shell finalization does not run.
+
+Git probes have a 30-second deadline. Git HTTP fetches default to aborting after
+30 seconds below one byte/second; existing `GIT_HTTP_LOW_SPEED_LIMIT` and
+`GIT_HTTP_LOW_SPEED_TIME` overrides are respected. Git terminal prompting is
+disabled so unattended installs do not wait for credentials.
+
+Neither installation path reads API tokens, embeds them in VCS URLs, or persists
+repository credentials. Existing Git credential helpers continue to work; legacy
+Slo deploy-token variables and `GITHUB_SLOSTACK_TOKEN` are not automatically used
+for Git fetches.
+
+**Mirror access prerequisite:** anonymous fallback requires `slostack/slo` to be
+public. If an operator keeps the mirror private, each installing machine must
+already have Git authentication with read access (for example, an appropriately
+scoped token configured through a secure Git credential helper). The GitLab
+mirror's deploy key authorizes GitLab's pushes only, not end-user installations.
+
+`SLO_REPO_FALLBACK_URL=''` disables fallback. A custom `SLO_REPO_URL` does not
+fall back to the official mirror unless you explicitly configure a mirror URL.
+An identical primary and fallback URL is never retried. A mirror may lag GitLab;
+a missing ref on GitHub is an error, not permission to install another version.
+
+This fallback applies to the code fetch after `install.sh` is available. It does
+not make a GitLab-hosted installer download or third-party toolchain/dependency
+services resilient. The supported hosted entry point remains `get-slo.sh`.
+
+**Verification:** deterministic tests cover source switches and failure cutoffs.
+For a real Git/pipx fetch/build/update smoke in disposable HOME and pipx roots:
+
+```bash
+SLO_MIRROR_INSTALL_E2E=1 poetry run pytest -o addopts='' \
+  tests/cli/test_install_mirror_e2e.py -m e2e -v
+```
+
+This explicitly requested smoke uses network access, simulates GitLab failure at
+the Git command boundary, and delegates GitHub operations to real Git. Python
+3.11 and pipx must already be installed. A private mirror requires external Git
+read authentication; no token is embedded by the test. It exercises code
+installation, finalization, updater retries, CLI startup and release lookup,
+not bare-machine provisioning or a published hosted installer.
 
 ### 2.3 Direct local run (operator / testing)
 
@@ -185,8 +229,13 @@ Edit** scoped to the target zone.
 | `slo update --development` | `main` |
 | `slo update --ref <ref>` | An explicit branch / tag / commit |
 
-It uses the public repository URL, like the installer. Your `~/.slo` data is
-untouched.
+It uses GitLab first and the same GitHub fallback policy as the installer.
+`SLO_REPO_URL` and `SLO_REPO_FALLBACK_URL` also apply to `slo update`. Latest-release
+lookup retries `git ls-remote --tags --refs` on the mirror when the primary fails
+or times out, then selects the highest numeric release tag. A reachable primary
+with no release tags is an error, not an outage. Development and explicit-ref
+updates retain their requested ref when switching sources. Your `~/.slo` data is
+untouched. The private-mirror authentication prerequisite in §2.2 also applies.
 
 **`slo update` finalizes the isolated launcher, then sets missing environment defaults.**
 After a successful pipx reinstall, every mode runs the packaged

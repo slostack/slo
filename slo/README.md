@@ -190,7 +190,8 @@ below remain historical; no final workflow approval.
 > `https://github.com/slo/slo` plus `package:<version>` provenance. (That
 > `github.com/slo/slo` value is the bundled plugin's own provenance record
 > only — the public installer and `slo update` fetch Slo itself from GitLab,
-> `https://gitlab.com/core-27/slo.git`; see `docs/INSTALL.md`.)
+> `https://gitlab.com/core-27/slo.git`, with `https://github.com/slostack/slo.git`
+> as an outage fallback; see `docs/INSTALL.md` for private-mirror access requirements.)
 >
 > v0.8.0 added a **third AI provider: Kimi For Coding (KFC)** — an
 > OpenAI-compatible API from Moonshot AI with a `ModelPool` fallback router and
@@ -427,6 +428,16 @@ The script:
    `pyproject.toml`.
 
 Re-running the installer upgrades in place; it is idempotent.
+
+If GitLab is inaccessible, the installer and `slo update` retry once from
+`https://github.com/slostack/slo.git` with the same requested ref and subdirectory.
+Build/dependency errors on a reachable GitLab are not retried. Latest-release
+lookup also falls back when GitLab cannot be reached. Set
+`SLO_REPO_FALLBACK_URL=''` to disable fallback; custom primary URLs require an
+explicit mirror. **While the GitHub mirror is private, installs require existing
+Git read authentication; anonymous fallback requires making the mirror public.**
+No setup/API token is injected into installation URLs. See [the installation
+guide](docs/INSTALL.md#22-public-repository-installation).
 
 `pyproject.toml` declares packaging-owned `slo` and `slo-entry` scripts, both
 currently targeting `src.cli:main`. After pipx generates both artifacts,

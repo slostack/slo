@@ -740,6 +740,20 @@ of `ModelPool` in session.py. Pool config is parsed by
 
 ---
 
+### Installer/update repository fallback
+
+`install.sh` and `Updater` (`src/cli/update.py`) use GitLab as the primary and
+`https://github.com/slostack/slo.git` as an outage mirror. After a failed pipx
+install, an inaccessible primary (bounded Git probe) permits one mirror retry
+with the same ref; reachable-primary build/dependency/missing-ref errors do not.
+Latest-release tag discovery also retries on transport failure/timeout.
+`SLO_REPO_URL` and `SLO_REPO_FALLBACK_URL` configure both paths; empty fallback
+disables retries and custom primary URLs have no implicit official mirror.
+No API tokens are injected into Git URLs. A private mirror requires pre-existing
+Git read authentication; the push deploy key is not an end-user credential.
+Finalization still runs only after installation succeeds. Regression coverage:
+`tests/cli/test_update_mirror.py` and `tests/cli/test_install_mirror.py`.
+
 ### Installed-command isolation (spec 82.a)
 
 The installed user-facing pipx `slo` command is finalized by `install.sh` into a

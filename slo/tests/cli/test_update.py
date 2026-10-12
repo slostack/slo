@@ -63,7 +63,7 @@ class TestResolveLatestReleaseTag:
         with patch("src.cli.update.subprocess.run", return_value=_completed(stdout=self._LS_REMOTE)) as run:
             assert Updater.resolve_latest_release_tag() == "v0.10.1"
         # ls-remote invoked against the (clean) auth URL
-        assert run.call_args.args[0][:3] == ["git", "ls-remote", "--tags"]
+        assert run.call_args.kwargs["args"][:3] == ["git", "ls-remote", "--tags"]
 
     def test_no_version_tags_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_USERNAME", raising=False)
@@ -286,6 +286,7 @@ class TestInvokeEnsuresEnvironmentDefaults:
                 "src.cli.update.Updater._pipx_install",
                 side_effect=subprocess.CalledProcessError(returncode=1, cmd=["pipx"]),
             ),
+            patch("src.cli.update.Updater._remote_available", return_value=True),
             patch("src.cli.update.ShellEnvironmentDefaults.finalize_launcher") as launcher,
             patch("src.cli.update.ShellEnvironmentDefaults.ensure") as ensure,
         ):

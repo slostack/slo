@@ -46,9 +46,14 @@ roster is here:
 
 | Workflow file | Type | Sub-skills it sequences |
 |---|---|---|
-| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications` (Gather context → Draft → Self-check → Revise), `feature-specification-verification`, `breakdown-feature-spec-to-tasks` |
-| [code-test-review.md](code-test-review.md) | Pipeline | `code-test-loop`, `review-feature-code`, `is-the-feature-completed` (+ always-on `named-arguments-and-type-hints`, `declarative-method-structure`, `method-docstrings`, `test-verification-policy`) |
+| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications-pre-hook`, `feature-specifications`, `feature-specifications-post-hook`, `feature-specification-verification`, `breakdown-feature-spec-to-tasks` |
+| [code-test-review.md](code-test-review.md) | Pipeline | `code-test-loop`, `review-feature-code`, `is-the-feature-completed` (+ engineering-routing, shared testing, scoped language conventions) |
 | [gitlab-code-test-review.md](gitlab-code-test-review.md) | Pipeline | Code-Test-Review sub-skills + `git-ops/gitlab-issues`, `git-ops/ship-feature` |
+
+The canonical Code-Test-Review definitions additionally require the additive
+`skills/coding/coding-rules/SKILL.md` prerequisite before implementation and
+carry its project-context → language/component routing record through review and
+completion. This does not replace any workflow phase or lifecycle rule.
 
 ## Guidance
 
@@ -135,6 +140,94 @@ Regardless of workflow type, these rules are non-negotiable:
 
 ---
 
+## Workflow turns and limits
+
+A **workflow turn** is one complete pass through all the stages in the named
+workflow. A **step** and a **phase** mean the same thing. A step may contain several
+independent tasks. A **dispatch** is one call to `spawn_sub_agents`, starting one
+or several agents. **A dispatch is not a workflow turn.** An **orchestrator
+response** handles one submitted request through its final answer or stop; it can
+span multiple workflow turns.
+
+| Workflow | Stages belonging to one workflow turn |
+|---|---|
+| Code + Test + Review | Code and test → review; include the completion check when required |
+| Specification Development | Context and specification with PRE/POST hooks → independent verification → task breakdown |
+| Parallel workflow | All required branches → synthesis and any required review |
+
+The actual workflow file defines the stages. Do not omit a completion check just
+because a shortened example lists only Code+Test and Review. Keep implementation
+and its tests together when they form one step.
+
+### Counting revisions and retries
+
+- Start turn 1 when the first workflow step begins. When review or a workflow
+  check returns work to the revision-loop starting step, start the next turn.
+- Mark the previous turn partial if required later steps could not run. Four
+  writing attempts without independent review are not four completed workflow
+  turns. Eight turns started includes partial turns; they consume the limit too.
+- Local edits, test reruns, author self-checks and transient phase retries remain
+  within their current turn. A retry or exhausted dispatch budget does not itself
+  justify starting another turn.
+- On REVISE, return to the loop entry point defined by the workflow, fix the work,
+  rerun its checks and repeat affected review. Keep unchanged prerequisite evidence;
+  do not repeat unrelated work. Never just rerun review on unchanged artifacts.
+- Track started, completed and partial turns, dispatch calls per turn and retries
+  per failed task separately. Report the final verdict as well as the counts.
+
+### Limits and stopping
+
+The orchestrator prompt and these skills use the following limits:
+
+- **8 workflow turns started per task**, including partial turns.
+- **6 dispatch calls per workflow turn**, including retry calls. A batch counts
+  as one call, not one call per child. This permits at most 48 dispatch calls per
+  task, not 48 children. Runtime batch and concurrency limits still apply.
+- **3 retries per failed task** after the initial attempt: at most four attempts.
+  Retry counts do not reset when the task is renamed or the workflow turn changes.
+- **Never retry an aborted task**, whatever its cause. Stop and report; do not
+  automatically resume or relaunch it.
+
+A stricter user or workflow limit still applies. Start no ninth turn and make no
+seventh dispatch within a turn. Check before launch that the budget leaves room
+for required review; disclose conflicts instead of skipping stages. For ad-hoc
+work without a named workflow, use at most six dispatch calls for the task, not
+invented revision turns.
+
+**Do not bypass a harness limit** by nesting orchestrators, splitting tasks,
+resetting counts or relaunching runs. Resume, takeover and later responses about
+the same task preserve the counts. Only a legitimate new revision turn resets
+its per-turn dispatch counter, not the task-wide turn or failed-task retry count.
+If a budget stops a partial turn, report that exact limit, outstanding findings
+and the next required step. Do not claim a completed workflow turn.
+
+Direct takeover requires explicit authorization and must preserve independent
+review and remaining budgets. It is not automatic at a numeric threshold. If no
+permitted next action remains, stop with an honest incomplete result. Never use
+a limit as permission to commit or publish.
+
+These are prompt-level accounting rules, not new runtime-enforced counters.
+
+### Dispatch and acceptance
+
+Use `single` between steps that require verdict checks. Use `parallel` for
+independent tasks where permitted; wait for them before dependent review. Use
+`chain` only for ungated sequences: it checks execution status, not READY/REVISE.
+
+A normal exit, `all_completed=true` or `run_completed` means execution finished,
+not that the work passed. Check phase verdicts and required artifacts. Advance
+only on READY/COMPLETE with evidence. An author self-check is not independent review.
+
+Example progress report:
+
+```text
+Turn 1: code/tests finished; review requested changes.
+Completion check blocked: partial turn; it still consumes one of eight turns.
+Turn 2: fixes/tests finished; review and completion check passed.
+Totals: 2 turns started, 1 complete, 1 partial. Final verdict: COMPLETE.
+Dispatch calls per turn and failed-task retries: reported separately.
+```
+
 ## Confirmation Behavior
 
 ### Manual Mode
@@ -153,7 +246,7 @@ In auto mode (when the user has explicitly asked the agent to run to completion,
 - The agent runs all steps to completion without pausing for per-step confirmation.
 - The agent **logs a brief progress marker** at the start and end of each step (e.g., "Starting Step 2 — Verification…", "Step 2 complete.").
 - The agent **pauses and seeks confirmation at the end of the full workflow** before any committing, publishing, or externally-visible actions (pushing code, posting to JIRA, publishing to the wiki).
-- If any step produces a verdict of REVISE (e.g. the author self-check), the agent resolves the revision inline and re-runs that step before continuing, rather than pausing to ask.
+- If any step produces a verdict of REVISE (e.g. the POST hook), the agent resolves the revision inline and re-runs that step before continuing, rather than pausing to ask.
 
 ---
 

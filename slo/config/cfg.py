@@ -110,7 +110,7 @@ MODEL_CATALOG_OVERRIDES_FILE: Optional[str] = os.environ.get("SLO_MODEL_CATALOG_
 SESSION_ID: str = os.environ.get("SLO_SESSION_ID", "").strip()
 
 # Sub-agent pool concurrency caps
-SUBAGENT_MAX_CONCURRENCY: int = int(os.environ.get("SLO_SUBAGENT_MAX_CONCURRENCY", "4"))
+SUBAGENT_MAX_CONCURRENCY: int = int(os.environ.get("SLO_SUBAGENT_MAX_CONCURRENCY", "6"))
 SUBAGENT_MAX_TASKS: int = int(os.environ.get("SLO_SUBAGENT_MAX_TASKS", "8"))
 
 # Sub-agent / orchestrator timeout values

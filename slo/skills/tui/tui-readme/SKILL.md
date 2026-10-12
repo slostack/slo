@@ -47,6 +47,6 @@ Use this when the feature is a real in-process TUI — not a deploy script, not 
 
 - Typer CLI conventions — [`../skills/cli/build-typer-cli-apps/SKILL.md`](../../cli/build-typer-cli-apps/SKILL.md)
 - Vue frontend conventions — [`../skills/frontend-vue/vue-coding-conventions/SKILL.md`](../../frontend-vue/vue-coding-conventions/SKILL.md)
-- Named args + type hints — [`../skills/coding/named-arguments-and-type-hints/SKILL.md`](../../coding/named-arguments-and-type-hints/SKILL.md)
-- Declarative structure — [`../skills/coding/declarative-method-structure/SKILL.md`](../../coding/declarative-method-structure/SKILL.md)
-- Method docstrings — [`../skills/coding/method-docstrings/SKILL.md`](../../coding/method-docstrings/SKILL.md)
+- Named args + type hints — [`../skills/languages/python/named-arguments-and-type-hints/SKILL.md`](../../languages/python/named-arguments-and-type-hints/SKILL.md)
+- Declarative structure — [`../skills/coding/declarative-method-structure/SKILL.md`](../../coding/declarative-method-structure/SKILL.md), followed by the applicable language specialization
+- Method docstrings — [`../skills/languages/python/method-docstrings/SKILL.md`](../../languages/python/method-docstrings/SKILL.md)

@@ -979,3 +979,7 @@ Before submitting any Vue/TypeScript code, verify:
 - [ ] Styles are scoped
 - [ ] CSS custom properties used for colors, not hardcoded values
 - [ ] Tests type their test data and use named arguments
+- [ ] Select `build-websocket-endpoints` or `build-sse-endpoints` from the actual browser transport; do not treat LangGraph graph streaming as browser SSE
+- [ ] Preserve real API versus mock client boundaries when the application has both
+- [ ] Keep user content escaped; use assistant `v-html` only after a constrained, tested renderer (for example, `html: false`)
+- [ ] Run `vue-tsc -b` or the project's strict equivalent separately from Vitest when configured

@@ -1,14 +1,13 @@
 """Skill registry — dev-time helper for managing the committed skills tree.
 
-This module is **not invoked at runtime**. The runtime path for skills is
-"agent reads ``skills/INDEX.md`` via the ``read`` tool, then reads the chosen
-``SKILL.md`` body." The registry exists only so a developer can regenerate a
-consistent grouped index from the committed skill files after adding or editing
-one, without hand-curating the index entries one by one.
+This module is **not invoked at runtime**. It recursively discovers authored
+``SKILL.md`` files to generate the grouped ``skills/INDEX.md``. Runtime manifest
+loading is owned separately by ``SkillsLoader``; agents read selected skill
+bodies on demand.
 
-The committed ``skills/INDEX.md`` is the source of truth — the regenerator
-script (``scripts/build_skill_index.py``) is a convenience, not a runtime
-dependency.
+The authored skills tree is the source of truth; ``INDEX.md`` is derived.
+Both ``scripts/build_skill_index.py`` and ``scripts/refresh_skills.py`` use
+this registry through the same index builder without rewriting skill content.
 """
 
 from __future__ import annotations
@@ -31,6 +30,8 @@ _FRONTMATTER_RE = re.compile(
 )
 _GROUP_ORDER: tuple[str, ...] = (
     "orientation",
+    "engineering",
+    "languages",
     "design-and-analysis",
     "coding",
     "git-ops",
@@ -43,6 +44,8 @@ _GROUP_ORDER: tuple[str, ...] = (
 )
 _GROUP_TITLES: dict[str, str] = {
     "orientation": "Orientation",
+    "engineering": "Shared Engineering",
+    "languages": "Language Conventions and Recipes",
     "design-and-analysis": "Design and Analysis",
     "coding": "Coding",
     "git-ops": "Git Ops",

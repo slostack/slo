@@ -735,7 +735,7 @@ def serve() -> None:
 - [ ] `tests/cli/test_app.py` covers the command contract
 - [ ] `tests/cli/test_typer_dispatch.py` covers runtime assembly
 - [ ] helper modules have focused tests when non-trivial
-- [ ] code also follows `skills/coding/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, and `skills/coding/method-docstrings/SKILL.md`
+- [ ] code also follows `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/languages/python/declarative-method-structure/SKILL.md`, and `skills/languages/python/method-docstrings/SKILL.md`
 
 ---
 

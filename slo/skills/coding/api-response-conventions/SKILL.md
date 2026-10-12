@@ -1,11 +1,9 @@
 ---
 name: api-response-conventions
-description: SuccessResponseDAO / FailureResponseDAO patterns and structured API response
-  shapes.
-when_to_use: Use when designing or modifying response wrappers.
+description: Language-independent API response envelopes, scoped profiles, pagination semantics, and compatibility rules.
+when_to_use: Use when designing, reviewing, documenting, or testing an API response contract before selecting a language or framework adapter.
 group: coding
 kind: skill
-source_prompt: api-response-conventions.md
 ---
 
 # API Response Conventions
@@ -13,230 +11,266 @@ source_prompt: api-response-conventions.md
 ## Skill summary
 
 - **Name:** `api-response-conventions`
-- **Description:** SuccessResponseDAO / FailureResponseDAO patterns and structured API response shapes.
-- **When to use:** Use when designing or modifying response wrappers.
-- **Group:** `coding`
-- **Kind:** `skill`
-- **Source prompt:** `api-response-conventions.md`
+- **Scope:** The stable, language-independent semantics of the project's API response family.
+- **Family:** The existing response family is `{data, api_version, errors}`. The family is a semantic baseline; a project profile supplies exact wire values and implementation details.
+- **Use with:** The applicable Python, Go, TypeScript, framework, client, documentation, and test recipes. This skill is not a replacement for those scoped recipes.
+- **Compatibility rule:** Existing deployed wire bytes remain authoritative. A profile may override generic defaults, but cleanup must not silently change wire bytes, counts, field names, page bases, version formats, error shapes, or error codes. Such changes require explicit contract approval.
 
 ## Examples
 
-- The user asks for help with: SuccessResponseDAO / FailureResponseDAO patterns and structured API response shapes.
-- Use when designing or modifying response wrappers.
+The following examples are **illustrative samples**, not copied production snippets. They intentionally use one selected illustrative profile in all three languages:
 
-## Guidance
+- root keys are exactly `data`, `api_version`, and `errors`;
+- the version is the illustrative string `"v1.0"`;
+- success uses `errors: {"msg": [], "code": null}`;
+- failure uses `data: null` and a public `NOT_FOUND` code;
+- pagination is inside `data`, uses zero-based `page`, `size: 25`, `total`, and `items`; and
+- this sample profile defines `total` as the total matching the endpoint's documented query and caps `size` at `100`.
 
-The workspace ships a single, consistent JSON response envelope on every FastAPI endpoint across `orders_service`, `payments_service`, `partner_integrations`, and every new subapp. **Use this convention on every endpoint you write.** Do not invent ad-hoc shapes.
+A real project profile may select different values or names. Those choices are not interchangeable: preserve the deployed profile and obtain explicit contract approval before changing it.
 
-This prompt is the focused reference. The fuller router build guide is in [skills/coding/build-routers/SKILL.md](../build-routers/SKILL.md); the response wrapper is also implicitly documented inside that file but buried — when in doubt, read this page.
-
----
-
-## 1. The envelope — `SuccessResponseDAO[T]`
-
-**Defined in** `src/routers/base_controller.py` (lines 61-86) with a backup copy at `src/models/response_dao.py`. Every successful response is wrapped:
+### Python — illustrative typed envelope and serialization
 
 ```python
-class SuccessResponseDAO(BaseModel, Generic[T]):
-    data: Optional[T] = None
-    api_version: str = API_VERSION              # "v1.0"
-    errors: ResponseErrorsDAO = ResponseErrorsDAO()
-```
+# Illustrative sample; not copied from production and not executed here.
+from dataclasses import asdict, dataclass
+from typing import Generic, TypeVar
+import json
 
-`ResponseErrorsDAO` carries `msg: list[str]` and `code: Optional[str]`. On a successful response `errors` serializes as `{"msg": [], "code": null}`.
+PayloadT = TypeVar("PayloadT")
 
-The wire JSON of every `200 OK`:
 
-```json
-{
-  "data": { ... payload ... },
-  "api_version": "v1.0",
-  "errors": { "msg": [], "code": null }
-}
-```
+@dataclass(frozen=True)
+class ResponseErrors:
+    msg: list[str]
+    code: str | None
 
-**Three root fields. Always. No others.** Do not put `success: true`, `status: "ok"`, `meta`, or `pagination` at the root.
 
-## 2. The error envelope — `FailureResponseDAO[T]`
+@dataclass(frozen=True)
+class ApiResponse(Generic[PayloadT]):
+    data: PayloadT | None
+    api_version: str
+    errors: ResponseErrors
 
-```python
-class FailureResponseDAO(BaseModel, Generic[T]):
-    data: Optional[T] = None
-    api_version: str = API_VERSION
-    errors: ResponseErrorsDAO                   # required on failure
-```
 
-A `4xx` / `5xx`:
+@dataclass(frozen=True)
+class User:
+    id: str
+    display_name: str
 
-```json
-{
-  "data": null,
-  "api_version": "v1.0",
-  "errors": {
-    "msg": ["Account not found"],
-    "code": "ACCOUNT_NOT_FOUND"
-  }
-}
-```
 
-Error codes are SCREAMING_SNAKE_CASE strings. Messages are human-readable and may be plural (`msg` is a list so multiple validation errors compose).
-
-## 3. The `success_response()` helper
-
-**Defined in** `src/routers/base_controller.py` (lines 114-138). Use this at every controller return — never instantiate `SuccessResponseDAO` directly in a handler.
-
-```python
-def success_response(
-    payload: T,
-    api_version: str = API_VERSION,
-    errors: Optional[ResponseErrorsDAO] = None,
-) -> Dict[str, Any]:
-    """Wrap payload in SuccessResponseDAO and json-encode."""
-```
-
-Canonical controller return line:
-
-```python
-return success_response(payload=page_dao.model_dump(mode="json"))
-```
-
-The `mode="json"` is necessary so `Decimal`, `datetime`, `UUID`, `date` serialize to JSON-safe strings; `SuccessResponseDAO`'s own custom serializer handles those types but only after the payload DAO has been json-mode-dumped.
-
-## 4. List endpoints — pagination shape
-
-The authoritative reference for new list endpoints is the backend list-endpoint spec at `<confluence-base-url>/<page-id>`. Every list endpoint follows:
-
-```python
-class <Resource>PageDAO(BaseModel):
+@dataclass(frozen=True)
+class UserPage:
     page: int
     size: int
     total: int
-    items: List[<Resource>ItemDAO]
+    items: list[User]
+
+
+success: ApiResponse[User] = ApiResponse(
+    data=User(id="u1", display_name="Ada"),
+    api_version="v1.0",
+    errors=ResponseErrors(msg=[], code=None),
+)
+error: ApiResponse[User] = ApiResponse(
+    data=None,
+    api_version="v1.0",
+    errors=ResponseErrors(msg=["User not found"], code="NOT_FOUND"),
+)
+page: ApiResponse[UserPage] = ApiResponse(
+    data=UserPage(
+        page=0,
+        size=25,
+        total=1432,
+        items=[User(id="u1", display_name="Ada")],
+    ),
+    api_version="v1.0",
+    errors=ResponseErrors(msg=[], code=None),
+)
+
+# A production adapter should use its selected serializer (for example Pydantic).
+wire_success = json.dumps(asdict(success))
+wire_error = json.dumps(asdict(error))
+wire_page = json.dumps(asdict(page))
 ```
 
-On the wire:
+### Go — illustrative typed envelope and serialization
 
-```json
-{
-  "data": {
-    "page": 0,
-    "size": 25,
-    "total": 1432,
-    "items": [
-      { "id": 99001, "customer_name": "Robert Garcia", ... }
-    ]
-  },
-  "api_version": "v1.0",
-  "errors": { "msg": [], "code": null }
+```go
+// Illustrative sample; not copied from production and not compiled here.
+package envelope
+
+import "encoding/json"
+
+type ResponseErrors struct {
+    Msg  []string `json:"msg"`
+    Code *string  `json:"code"`
 }
-```
 
-**Rules:**
-
-1. **Pagination metadata lives inside `data`**, not as sibling to `data`. The `SuccessResponseDAO` envelope has exactly three root keys; pagination is part of the payload.
-2. **`page` is 0-indexed.** Default `page=0`, default `size=25`.
-3. **`size` is hard-capped at 100** server-side (`self.size = min(size, 100)` in the app service).
-4. **`total` is the unfiltered total** across all pages, not the count of returned rows. Compute it with a separate `SELECT COUNT(*)` that applies the same `WHERE` as the page-fetch query (so filter + total match).
-5. **Use offset-based pagination by default.** The workspace does **not** use opaque cursor tokens for new endpoints. If you have a strong reason to use cursors (very deep paginations, heavy joins where `OFFSET` is slow), document the cursor's encoding (typically base64 of a JSON `{occurred_at, source_table, source_id}` triple) and surface a `next_cursor` field inside `data`.
-
-### Collection field name — when to use `items` vs domain-specific
-
-The workspace **default is `items`**. This is what new endpoints use.
-
-A domain-specific collection name (`communication_logs`, `accounts`, `transactions`) is acceptable **only** when both of these hold:
-
-- The parent endpoint's URL already names the resource explicitly (e.g. `GET /accounts/{id}/communications` — the URL says "communications", so renaming the inner field to `communication_logs` makes the wire shape self-documenting).
-- The DAO is **not** a generic list-page DAO reused across resources. Item DAOs unique to one endpoint can carry a domain-specific outer field.
-
-Anywhere a list-page DAO is generic (search results, multi-resource paginated lists), keep `items`. Anywhere doubt exists, default to `items`.
-
-## 5. List endpoints — uniform item schema
-
-Every item in a list MUST have the **same JSON shape**. Heterogeneous item shapes (different fields per `type` discriminator) are forbidden — they make UI parsers brittle, defeat type generation, and require client-side branching that drifts.
-
-**Wrong** (heterogeneous):
-
-```json
-{
-  "items": [
-    { "type": "ai_call", "duration_seconds": 184, "disposition_summary": "..." },
-    { "type": "sms", "direction": "outbound", "delivery_status": "delivered" },
-    { "type": "email", "subject": "Important update", "direction": "outbound" }
-  ]
+type APIResponse[T any] struct {
+    Data       *T            `json:"data"`
+    APIVersion string        `json:"api_version"`
+    Errors     ResponseErrors `json:"errors"`
 }
-```
 
-**Right** (uniform, nullable per-type fields):
+type User struct {
+    ID          string `json:"id"`
+    DisplayName string `json:"display_name"`
+}
 
-```json
-{
-  "items": [
-    {
-      "type": "ai_call",
-      "occurred_at": "...",
-      "direction": "outbound",
-      "duration_seconds": 184,
-      "ai_call_disposition_summary": "...",
-      "sms_preview": null,
-      "email_subject": null,
-      "delivery_status": null
-    },
-    {
-      "type": "sms",
-      "occurred_at": "...",
-      "direction": "outbound",
-      "duration_seconds": null,
-      "ai_call_disposition_summary": null,
-      "sms_preview": "Reminder: your payment...",
-      "email_subject": null,
-      "delivery_status": "delivered"
+type UserPage struct {
+    Page  int    `json:"page"`
+    Size  int    `json:"size"`
+    Total int    `json:"total"`
+    Items []User `json:"items"`
+}
+
+func success[T any](data T) APIResponse[T] {
+    return APIResponse[T]{
+        Data: &data,
+        APIVersion: "v1.0",
+        Errors: ResponseErrors{Msg: []string{}, Code: nil},
     }
-  ]
+}
+
+func failure[T any](message string, code string) APIResponse[T] {
+    return APIResponse[T]{
+        Data: nil,
+        APIVersion: "v1.0",
+        Errors: ResponseErrors{Msg: []string{message}, Code: &code},
+    }
+}
+
+func exampleWireBytes() ([]byte, []byte, []byte, error) {
+    object := success(User{ID: "u1", DisplayName: "Ada"})
+    notFound := failure[User]("User not found", "NOT_FOUND")
+    page := success(UserPage{
+        Page: 0,
+        Size: 25,
+        Total: 1432,
+        Items: []User{{ID: "u1", DisplayName: "Ada"}},
+    })
+    objectBytes, err := json.Marshal(object)
+    if err != nil {
+        return nil, nil, nil, err
+    }
+    errorBytes, err := json.Marshal(notFound)
+    if err != nil {
+        return nil, nil, nil, err
+    }
+    pageBytes, err := json.Marshal(page)
+    return objectBytes, errorBytes, pageBytes, err
 }
 ```
 
-The parser does one schema check. The UI renders by `type`, but the wire shape is one DAO.
+### TypeScript — illustrative typed envelope and serialization
 
-If the per-type fields are numerous, prefix them with the type name (`ai_call_*`, `sms_*`, `email_*`) so the discriminator is obvious from the field name. If the per-type fields are few, drop the prefix and rely on the `type` field alone.
+```typescript
+// Illustrative sample; not copied from production and not compiled here.
+type ResponseErrors = {
+  msg: string[]
+  code: string | null
+}
 
-## 6. Disclosing DAOs and queries in specs
+type ApiResponse<T> = {
+  data: T | null
+  api_version: string
+  errors: ResponseErrors
+}
 
-Every spec section that documents an API response MUST also disclose, inline:
+type User = {
+  id: string
+  display_name: string
+}
 
-1. **The full Pydantic DAO definitions** (not one-liners — show every field with its type).
-2. **The application service that builds the DAO** (class name + file path).
-3. **The underlying domain services / queries** (method signatures or SQL fragments — enough that a reviewer can verify the response fields exist on the source tables).
-4. **The controller return line** showing `success_response(payload=...)`.
+type UserPage = {
+  page: number
+  size: number
+  total: number
+  items: User[]
+}
 
-Specs that hide the DAO behind a one-liner like `"DAO: FooPageDAO with usual page/size/total/items"` are insufficient. The reader (human or AI) needs the explicit shape to build against without round-tripping back to source.
+const success: ApiResponse<User> = {
+  data: { id: "u1", display_name: "Ada" },
+  api_version: "v1.0",
+  errors: { msg: [], code: null },
+}
 
-## 7. Common mistakes to avoid
+const error: ApiResponse<User> = {
+  data: null,
+  api_version: "v1.0",
+  errors: { msg: ["User not found"], code: "NOT_FOUND" },
+}
 
-- ❌ Returning a raw `dict` or `list` from a controller — always wrap in `success_response()`.
-- ❌ Putting `pagination`, `meta`, or `total` at the root of the response (sibling to `data`). They belong inside `data`.
-- ❌ Using `success: true` / `success: false` flags. The HTTP status code is the signal; the envelope shape is the same on success.
-- ❌ Returning `"errors": null` on success. Always `{"msg": [], "code": null}` — never `null`.
-- ❌ Heterogeneous item shapes in a list. Unify into one DAO with nullable fields.
-- ❌ Forgetting `mode="json"` on `model_dump()`. Without it, `Decimal` / `datetime` / `UUID` reach `success_response` as Python objects and downstream serialization may drop precision or fail.
-- ❌ Inventing per-endpoint envelope shapes. The envelope is shared workspace-wide; new shapes break the OpenAPI generator and the admin-ui's response parser.
+const page: ApiResponse<UserPage> = {
+  data: {
+    page: 0,
+    size: 25,
+    total: 1432,
+    items: [{ id: "u1", display_name: "Ada" }],
+  },
+  api_version: "v1.0",
+  errors: { msg: [], code: null },
+}
 
-## 8. Quick reference card
+const wireSuccess = JSON.stringify(success)
+const wireError = JSON.stringify(error)
+const wirePage = JSON.stringify(page)
+```
 
-| Concern | Convention |
-|---|---|
-| Success envelope | `{ data, api_version, errors }` — three root keys, always |
-| Error envelope | Same three keys; `errors.msg: list[str]`, `errors.code: str` |
-| Helper | `success_response(payload=...)` from `src/routers/base_controller.py` |
-| List page DAO | `<Resource>PageDAO { page, size, total, items }` |
-| Default pagination | `page=0`, `size=25`, server-cap `size <= 100` |
-| Pagination location | Inside `data`, never a sibling |
-| Item field name | `items` by default; domain-specific (`communication_logs`, etc.) only when URL already names the resource |
-| Item shape | Uniform — one DAO per list, nullable per-type fields, no discriminated unions on the wire |
-| Cursor pagination | Not used by default — only when offset is provably too slow |
-| Decimal / datetime | Always `model_dump(mode="json")` before `success_response()` |
+## Guidance
 
-## Related
+### Framework recipe links
 
-- [skills/coding/build-routers/SKILL.md](../build-routers/SKILL.md) — the fuller router build guide; also documents the envelope but in the context of exception handlers and the request lifecycle.
-- [skills/coding/build-api-documentation/SKILL.md](../build-api-documentation/SKILL.md) — how the OpenAPI / Redoc generation reads these shapes.
-- `src/routers/base_controller.py` — the canonical definitions.
+The generic owner delegates concrete behavior to the existing language recipes:
+
+- `skills/languages/python/api-response-conventions/SKILL.md`
+- `skills/languages/go/go-recipe-api-response-conventions/SKILL.md`
+- `skills/languages/typescript/typescript-api-response-conventions/SKILL.md`
+- `skills/languages/typescript/typescript-build-routers/SKILL.md`
+
+### 1. Shared semantics and scoped profiles
+
+For a new API that explicitly adopts this family, the response is a JSON object with the root keys `data`, `api_version`, and `errors`:
+
+- `data` carries the successful payload. A successful `null` payload is valid only when the endpoint profile documents an empty or no-content success semantic.
+- `api_version` is a string. The project profile selects its exact value and format; this skill does not convert among `"v1.0"`, `"1.0"`, `"v1"`, or another version format.
+- `errors` is an object with `msg`, a list of human-readable messages, and `code`, a nullable stable public code. Success uses an empty message list and a null code in the selected family.
+- A failure in this family uses `data: null` and one or more public messages. Whether a failure code may be null is a project-profile decision.
+- Do not add `success`, root-level `meta`, root-level `pagination`, or another unapproved root field to an API using this family.
+
+Profiles override these defaults on the exact points they document. A profile may define different version strings, page bases, page-size names/defaults/caps, collection names, count meanings, error-code casing, status mappings, or compatibility representations. Existing Atlas and Sentinel profiles are scoped compatibility evidence, not reasons to normalize all projects to one wire shape.
+
+When two specific contracts disagree, do not silently resolve the conflict by choosing the newest example or rewriting one recipe. Use the documented project profile and report any unresolved disagreement to the contract owner.
+
+### 2. Pagination
+
+Pagination metadata belongs inside `data`, not beside `data` at the root. Before implementing a paginated endpoint, the project profile must document:
+
+- zero-based or one-based page indexing;
+- request and response page-size names, defaults, and maximums;
+- whether `total` counts filtered results or all resources;
+- offset or cursor pagination and cursor ordering/encoding when applicable;
+- the collection field name (`items`, `results`, or a domain-specific name); and
+- the item schema and whether heterogeneous items are allowed.
+
+A profile may use `per_page`, `total_items`, `total_pages`, one-based pages, cursor tokens, or another established shape. Do not change existing counts, field names, page bases, defaults, caps, or cursor semantics without explicit contract approval.
+
+### 3. Errors, status, and security
+
+The applicable adapter or project profile owns domain-error to HTTP-status mapping, stable public-code selection, redaction of unexpected/internal messages, and diagnostic logging/error chaining. This generic contract does not prescribe a framework, exception mechanism, middleware ownership model, or universal status table.
+
+Stable public codes are preferred for new APIs, but spelling and casing are profile decisions. Preserve existing values such as `bad_request` until an explicit contract decision changes them. Client authentication refresh, response unwrapping, malformed-response handling, retries, streaming, file downloads, and binary transports belong in their scoped client/transport recipes.
+
+### 4. Adapter boundaries and verification
+
+Language and framework adapters own typed envelope/page structures, nullability and serialization, response factories, validation/schema generation, HTTP status mapping, handler/middleware wiring, and adapter contract tests. Use these existing scoped recipes for implementation details:
+
+- [Python API response conventions](../../languages/python/api-response-conventions/SKILL.md) — Pydantic/FastAPI response DAOs, `success_response()`, Python pagination, and Python-specific disclosure rules.
+- [Go API response conventions](../../languages/go/go-recipe-api-response-conventions/SKILL.md) — typed Go envelopes, status mapping, Gin/net/http boundaries, and `httptest` contract coverage.
+- [TypeScript API response conventions](../../languages/typescript/typescript-api-response-conventions/SKILL.md) — TypeScript types/factories, list DTOs, Zod validation, and TypeScript-specific tests.
+- [TypeScript router recipe](../../languages/typescript/typescript-build-routers/SKILL.md) — framework routing; its preserved unknown-profile historical response example is nonnormative and must not be silently merged into this contract. Select the documented/current TypeScript profile for new APIs, or obtain an explicit feature/API contract before changing an existing wire.
+
+Contract tests should cover a successful object payload, a successful empty-list payload, the exact selected success error object, each documented failure/status path, pagination bounds and count meaning, absence of unapproved root keys, malformed client responses, and generated-schema or frontend parsing compatibility. Generic tests assert semantics; profile tests assert concrete values.
+
+Before changing an existing contract, record current wire bytes and affected consumers, then obtain explicit approval for the version/migration plan. Do not claim overall cleanup or compatibility merely because multiple languages share the three root field names.

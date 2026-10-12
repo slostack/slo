@@ -19,6 +19,8 @@ EXPECTED_GROUPS: set[str] = {
     "presentation",
     "user-content",
     "samples",
+    "languages",
+    "engineering",
 }
 FORBIDDEN_SNIPPETS: tuple[str, ...] = (
     "/Users/",

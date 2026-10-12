@@ -3,7 +3,9 @@
 from pathlib import Path
 import re
 
-from scripts.refresh_skills import SkillSpec, _build_skill_specs, _write_skills
+import pytest
+
+from scripts import build_skill_index
 from scripts.build_skill_index import _INDEX_HEADER
 from src.agents.skills.registry import SkillRegistry
 from src.agents.slo_agent.skills.service import SkillsLoader
@@ -85,96 +87,76 @@ def test_code_review_links_canonical_depth_guidance() -> None:
     assert "not an automatic blocker" in text
 
 
-def test_refresh_preserves_repository_owned_authoring_and_workflow(tmp_path: Path) -> None:
-    """Refreshing upstream prompts cannot resurrect hooks or delete local workflow policy."""
+def test_refresh_preserves_repository_owned_authoring_and_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refreshing the authored tree cannot rewrite local authoring or workflow policy."""
     skills_dir = tmp_path / "skills"
     author = skills_dir / "design-and-analysis/feature-specifications/SKILL.md"
     workflow = skills_dir / "design-and-analysis/workflows/specification-development.md"
-    assert author.resolve().is_relative_to(tmp_path.resolve())
-    assert workflow.resolve().is_relative_to(tmp_path.resolve())
     author.parent.mkdir(parents=True)
     workflow.parent.mkdir(parents=True)
     author.write_text("canonical author", encoding="utf-8")
     workflow.write_text("local workflow", encoding="utf-8")
-    spec = SkillSpec(
-        slug="feature-specifications",
-        source_rel=None,
-        description="old",
-        when_to_use="old",
-        group="design-and-analysis",
-        kind="workflow",
-    )
-    _write_skills(specs={spec.slug: spec}, prompts_root=tmp_path, skills_dir=skills_dir)
+    monkeypatch.setattr(build_skill_index, "_resolve_skills_dir", lambda: skills_dir)
+
+    assert build_skill_index.main() == 0
     assert author.read_text(encoding="utf-8") == "canonical author"
     assert workflow.read_text(encoding="utf-8") == "local workflow"
+    assert (skills_dir / "INDEX.md").is_file()
 
 
-def test_refresh_manifest_preserves_local_policy_and_updates_upstream(tmp_path: Path) -> None:
-    """Exercise actual manifest collisions without writing outside the fixture root."""
+def test_refresh_preserves_authored_resources_and_discovers_nested_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refreshing the index preserves authored resources and discovers families recursively."""
     skills_dir = tmp_path / "skills"
-    upstream = tmp_path / "upstream"
-    slugs = (
-        "code-test-review",
-        "specification-development",
-        "feature-specifications",
-        "feature-specifications-pre-hook",
-        "feature-specifications-post-hook",
-        "declarative-method-structure",
-        "review-feature-code",
-        "code-test-loop",
-        "headless-orchestration",
-        "locate-knowledge-base",
-        "update-knowledge-base",
-        "development-reviews",
-        "code-review-rules",
-        "10-cardinal-rules-and-anti-patterns",
-    )
-    originals = [next(SKILLS_DIR.glob(f"*/{slug}/SKILL.md")) for slug in slugs]
-    originals += list((SKILLS_DIR / "design-and-analysis/workflows").glob("*.md"))
-    originals.append(SKILLS_DIR / "samples/implementation-details-granularity.md")
-    originals.append(SKILLS_DIR / "coding/named-arguments-and-type-hints/SKILL.md")
-    before: dict[Path, bytes] = {}
-    for original in originals:
-        destination = skills_dir / original.relative_to(SKILLS_DIR)
-        assert destination.resolve().is_relative_to(tmp_path.resolve())
+    authored = {
+        "languages/go/go-conventions/SKILL.md": (
+            "---\nname: go-conventions\ndescription: Go guidance.\n"
+            "when_to_use: Use for Go.\ngroup: languages\nkind: skill\n---\nGo body.\n"
+        ),
+        "engineering/testing/SKILL.md": (
+            "---\nname: testing\ndescription: Test guidance.\n"
+            "when_to_use: Use for tests.\ngroup: engineering\nkind: skill\n---\nTest body.\n"
+        ),
+        "presentation/pdf/assets/style.css": "body { color: navy; }\n",
+        "samples/example.md": "# Sample\n",
+    }
+    for relative, content in authored.items():
+        destination = skills_dir / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        before[destination] = original.read_bytes()
-        destination.write_bytes(before[destination])
-    for slug in (*slugs, "named-arguments-and-type-hints"):
-        source = upstream / (
-            f"{slug}.md" if slug == "named-arguments-and-type-hints" else f"workflows/{slug}.md"
-        )
-        assert source.resolve().is_relative_to(tmp_path.resolve())
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text(f"# {slug}\n\nUpstream replacement procedure.\n", encoding="utf-8")
-    specs = _build_skill_specs(prompts_root=upstream, skills_dir=skills_dir)
-    selected = {slug: specs[slug] for slug in (*slugs, "named-arguments-and-type-hints")}
-    assert selected["code-test-review"].source_rel == "workflows/code-test-review.md"
-    _write_skills(specs=selected, prompts_root=upstream, skills_dir=skills_dir)
-    for destination, content in before.items():
-        if destination.parent.name != "named-arguments-and-type-hints":
-            assert destination.read_bytes() == content, destination
-    updated = skills_dir / "coding/named-arguments-and-type-hints/SKILL.md"
-    assert updated.read_bytes() != before[updated]
-    assert "Upstream replacement procedure." in updated.read_text(encoding="utf-8")
+        destination.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(build_skill_index, "_resolve_skills_dir", lambda: skills_dir)
+
+    before = {relative: (skills_dir / relative).read_bytes() for relative in authored}
+    assert build_skill_index.main() == 0
+    after = {relative: (skills_dir / relative).read_bytes() for relative in authored}
+
+    assert after == before
+    index = (skills_dir / "INDEX.md").read_text(encoding="utf-8")
+    assert "skills/languages/go/go-conventions/SKILL.md" in index
+    assert "skills/engineering/testing/SKILL.md" in index
 
 
-def test_refresh_renders_upstream_owned_skill(tmp_path: Path) -> None:
-    """The preservation guard must not suppress ordinary upstream refreshes."""
+def test_refresh_rebuilds_index_for_new_authored_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refresh command's delegated builder indexes a new authored skill."""
     skills_dir = tmp_path / "skills"
     destination = skills_dir / "coding/example/SKILL.md"
-    assert destination.resolve().is_relative_to(tmp_path.resolve())
-    spec = SkillSpec(
-        slug="example",
-        source_rel=None,
-        description="Example",
-        when_to_use="Example",
-        group="coding",
-        kind="skill",
-        manual_body="Example body",
+    destination.parent.mkdir(parents=True)
+    destination.write_text(
+        "---\nname: example\ndescription: Example guidance.\n"
+        "when_to_use: Use for examples.\ngroup: coding\nkind: skill\n---\nExample body.\n",
+        encoding="utf-8",
     )
-    _write_skills(specs={spec.slug: spec}, prompts_root=tmp_path, skills_dir=skills_dir)
-    assert "Example body" in destination.read_text(encoding="utf-8")
+    monkeypatch.setattr(build_skill_index, "_resolve_skills_dir", lambda: skills_dir)
+
+    assert build_skill_index.main() == 0
+    index = (skills_dir / "INDEX.md").read_text(encoding="utf-8")
+    assert "**example**" in index
+    assert "skills/coding/example/SKILL.md" in index
 
 
 def test_context_companion_metadata_and_paths_use_canonical_author() -> None:

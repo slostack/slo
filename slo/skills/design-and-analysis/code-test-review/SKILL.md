@@ -43,3 +43,6 @@ Sub-skills the workflow sequences (loaded on demand per step):
 - Step 3 — `skills/design-and-analysis/is-the-feature-completed/SKILL.md`
 - Always-on — `named-arguments-and-type-hints`, `declarative-method-structure`,
   `method-docstrings`, `test-verification-policy` (all under `skills/coding/`)
+- Prerequisite baseline — read `skills/coding/coding-rules/SKILL.md`, then route to
+  the applicable language root and feature/framework guidance before implementation;
+  applicable specifics override generic defaults on the affected point.

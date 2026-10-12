@@ -26,7 +26,35 @@ source_prompt: code-test-loop.md
 - The user asks for an end-to-end workflow that fits: Operating rhythm for coding sessions: never write a large block of code without testing the last small block first. Code → test → green → next chunk.
 - Use as the default cadence whenever writing or modifying code; complements test-verification-policy (which dictates what must be tested) by specifying when those tests run.
 
+## Prerequisite guidance
+
+Before implementation, read the project instructions and use
+`skills/engineering/engineering-routing/SKILL.md` to select the smallest
+sufficient skill set. The effective hand-off order is:
+
+project context → shared engineering ownership/testing →
+`skills/coding/coding-rules/SKILL.md` → applicable language root →
+applicable feature/framework/test recipes → bounded implementation and
+verification.
+
+Read `skills/engineering/engineering-ownership/SKILL.md` and
+`skills/engineering/engineering-testing/SKILL.md` for shared authority, then
+read the applicable language guidance (for example,
+`skills/languages/python/`, `skills/languages/typescript/`, or
+`skills/languages/go/`) and applicable feature/framework guidance. Applicable
+specifics override generic defaults on the relevant point; unresolved
+specific-to-specific conflicts require an explicit decision. This is prompt
+routing and hand-off guidance, not an enforced runtime classifier.
+
 ## Guidance
+
+**Authority and applicability:** Shared incremental cadence only. Read
+`skills/engineering/engineering-testing/SKILL.md` for coverage/evidence and
+`skills/engineering/engineering-routing/SKILL.md` for language selection.
+**Go uses test-first** via `skills/languages/go/go-recipe-code-test-loop/SKILL.md`;
+implementation-first examples below apply to the retained Python/TypeScript
+cadence, not Go. Tooling examples apply only to their named stack. This cadence
+never substitutes for the full workflow.
 
 ### ⚠ Disambiguation — Are You Looking for the Code-Test-Review Workflow?
 
@@ -69,10 +97,8 @@ those tests run during development.
 
 For every coding task that produces more than ~50 lines of new code:
 
-1. **Write a small unit.** A function, a class, a route handler, a
-   single Vue component, a migration. Bounded scope, single purpose.
-2. **Write the test(s) for that unit.** One per decision point, per the
-   verification policy.
+1. **Select a small unit and its decision-path tests.** Bounded scope, single purpose.
+2. **Follow the language ordering.** Go writes the failing test first; the retained Python/TypeScript examples implement and test the same small unit.
 3. **Run the test.** Make it pass.
 4. **Run the surrounding suite** (the file's whole test module, or the
    module's containing folder). Confirm no regressions.
@@ -207,8 +233,8 @@ surface in PR review.
 - [skills/coding/test-verification-policy/SKILL.md](../test-verification-policy/SKILL.md) — what
   decision points must be tested.
 - [skills/coding/declarative-method-structure/SKILL.md](../declarative-method-structure/SKILL.md) —
-  why methods should be small enough to test in isolation.
-- [skills/coding/build-application-services/SKILL.md](../build-application-services/SKILL.md) — the
+  why methods should be coherently decomposed and testable in isolation; read the language specialization for syntax-specific rules.
+- [skills/languages/python/build-application-services/SKILL.md](../../languages/python/build-application-services/SKILL.md) — the
   `invoke()` + named private methods pattern that maps 1-to-1 with
   loop iterations.
 

@@ -39,6 +39,10 @@ Skim `feature-specification-verification` and `breakdown-feature-spec-to-tasks`
 unless the user asks otherwise; `gather-feature-context` remains an on-request
 context companion. Do not recursively invoke this skill through the old hooks.
 
+## Slo defaults for request and specification artifacts
+
+**Read the prerequisite design references before drafting.** Read [coding rules](../../coding/coding-rules/SKILL.md) and [code design principles](../../coding/code-design-principles/SKILL.md) before authoring a feature specification. When focused preimplementation design is useful, consult [solution design](../../coding/solution-design/SKILL.md) as an optional companion; it is not mandatory for every feature specification.
+
 ## Artifact paths and skill discovery
 
 Resolve artifact roots in this order: explicit user instruction → repository
@@ -222,24 +226,24 @@ Once you know the surface area, read **every** matching rule under `skills/codin
 
 Common mappings (read all that apply):
 
-- application services → `skills/coding/build-application-services/SKILL.md`
-- domain features → `skills/coding/build-domain-features/SKILL.md`
-- FastAPI routers → `skills/coding/build-routers/SKILL.md`
-- middleware → `skills/coding/build-middleware/SKILL.md`
-- event handlers → `skills/coding/build-event-handlers/SKILL.md`
-- partitioned events → `skills/coding/build-partitioned-events/SKILL.md`
-- Celery workers → `skills/coding/build-celery-workers/SKILL.md`
-- DBOS workflows → `skills/coding/build-dbos-workflow-orchestration-pattern/SKILL.md`
-- DBOS schedulers / tasks → `skills/coding/build-schedulers-tasks-with-dbos/SKILL.md`
-- LangGraph agents → `skills/coding/build-react-agent-with-langgraph/SKILL.md`
-- agent tools → `skills/coding/build-agent-tools/SKILL.md`
-- graph / gateway invoke convention → `skills/coding/graph-gateway-invoke-convention/SKILL.md`
-- API clients → `skills/coding/build-clients/SKILL.md`
-- API docs / Swagger → `skills/coding/build-api-documentation/SKILL.md`, `skills/coding/generate-swagger-documentation/SKILL.md`
-- ClickHouse features → `skills/coding/build-clickhouse-features/SKILL.md`
-- Alembic setup → `skills/coding/setup-alembic/SKILL.md`
-- dependencies / tests → `skills/coding/setup-dependencies-and-tests/SKILL.md`
-- always-on style → `skills/coding/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/coding/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/coding/application-structure/SKILL.md`
+- application services → `skills/languages/python/build-application-services/SKILL.md`
+- domain features → `skills/languages/python/build-domain-features/SKILL.md`
+- FastAPI routers → `skills/languages/python/build-routers/SKILL.md`
+- middleware → `skills/languages/python/build-middleware/SKILL.md`
+- event handlers → `skills/languages/python/build-event-handlers/SKILL.md`
+- partitioned events → `skills/languages/python/build-partitioned-events/SKILL.md`
+- Celery workers → `skills/languages/python/build-celery-workers/SKILL.md`
+- DBOS workflows → `skills/languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md`
+- DBOS schedulers / tasks → `skills/languages/python/build-schedulers-tasks-with-dbos/SKILL.md`
+- LangGraph agents → `skills/languages/python/build-react-agent-with-langgraph/SKILL.md`
+- agent tools → `skills/languages/python/build-agent-tools/SKILL.md`
+- graph / gateway invoke convention → `the graph-gateway-invoke-convention recipe`
+- API clients → `skills/languages/python/build-clients/SKILL.md`
+- API docs / Swagger → `skills/languages/python/build-api-documentation/SKILL.md`, `skills/languages/python/generate-swagger-documentation/SKILL.md`
+- ClickHouse features → `skills/languages/python/build-clickhouse-features/SKILL.md`
+- Alembic setup → `skills/languages/python/setup-alembic/SKILL.md`
+- dependencies / tests → `skills/languages/python/setup-dependencies-and-tests/SKILL.md`
+- always-on style → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/languages/python/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/languages/python/application-structure/SKILL.md`
 
 For Vue / TS work, also read the relevant `skills/frontend-vue/` convention files.
 

@@ -2780,7 +2780,7 @@ def test_system_prompt_contains_available_skills_xml_when_skills_loaded(
         SkillEntryDAO(
             name="build-routers",
             description="Adding or modifying FastAPI endpoints.",
-            file_path="/abs/skills/coding/build-routers/SKILL.md",
+            file_path="/abs/skills/languages/python/build-routers/SKILL.md",
         ),
         SkillEntryDAO(
             name="commit-and-push",
@@ -2795,7 +2795,7 @@ def test_system_prompt_contains_available_skills_xml_when_skills_loaded(
     assert "</available_skills>" in prompt
     assert "<name>build-routers</name>" in prompt
     assert "<description>Adding or modifying FastAPI endpoints.</description>" in prompt
-    assert "<location>/abs/skills/coding/build-routers/SKILL.md</location>" in prompt
+    assert "<location>/abs/skills/languages/python/build-routers/SKILL.md</location>" in prompt
     assert "<name>commit-and-push</name>" in prompt
 
 def test_system_prompt_falls_back_to_index_md_pointer_when_skills_empty_list(

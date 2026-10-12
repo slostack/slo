@@ -1,0 +1,57 @@
+[
+  {
+    "request": "Go lifecycle service",
+    "required": [
+      "skills/engineering/engineering-testing/SKILL.md",
+      "skills/languages/go/go-conventions/SKILL.md",
+      "skills/languages/go/go-test-lifecycle/SKILL.md"
+    ],
+    "excluded": [
+      "skills/languages/go/go-build-http-handlers/SKILL.md",
+      "skills/languages/python/test-app-services/SKILL.md"
+    ]
+  },
+  {
+    "request": "Python FastAPI endpoint",
+    "required": [
+      "skills/engineering/engineering-testing/SKILL.md",
+      "skills/languages/python/python-conventions/SKILL.md",
+      "skills/languages/python/build-routers/SKILL.md",
+      "skills/languages/python/test-controllers/SKILL.md"
+    ],
+    "excluded": [
+      "skills/languages/go/go-build-http-handlers/SKILL.md"
+    ]
+  },
+  {
+    "request": "TypeScript Vue composable",
+    "required": [
+      "skills/languages/typescript/typescript-conventions/SKILL.md",
+      "skills/frontend-vue/06-composables/SKILL.md"
+    ],
+    "excluded": [
+      "skills/languages/python/test-controllers/SKILL.md"
+    ]
+  },
+  {
+    "request": "mixed Go/TypeScript review",
+    "required": [
+      "skills/engineering/engineering-review/SKILL.md",
+      "skills/languages/go/go-conventions/SKILL.md",
+      "skills/languages/typescript/typescript-conventions/SKILL.md"
+    ],
+    "excluded": [
+      "skills/languages/python/code-review-rules/SKILL.md"
+    ]
+  },
+  {
+    "request": "unsupported language",
+    "required": [
+      "skills/engineering/engineering-ownership/SKILL.md",
+      "skills/engineering/engineering-testing/SKILL.md"
+    ],
+    "excluded": [
+      "skills/languages/python/python-conventions/SKILL.md"
+    ]
+  }
+]

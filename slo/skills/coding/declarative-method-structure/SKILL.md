@@ -9,6 +9,10 @@ source_prompt: declarative-method-structure.md
 
 # Declarative Method Structure: Tell, Don't Ask
 
+This is the active, full language-independent owner for declarative method structure. The shared meaningful-decomposition rule is grounded in `core-coding-rules.md`.
+Read this owner before the applicable Python, Go, or TypeScript specialization.
+The shared meaningful-decomposition rule is grounded in `core-coding-rules.md`.
+
 ## Skill summary
 
 - **Name:** `declarative-method-structure`
@@ -58,7 +62,7 @@ Avoid nesting conditionals more than one level deep. Use early returns and deleg
 - Each level of nesting doubles the cognitive load
 - Flat code reads linearly, like a story
 
-## Pattern: Nested Conditionals → Declarative Delegation
+## Pattern: Nested conditionals
 
 ### ❌ Bad: Multiple Nested Decisions
 
@@ -119,7 +123,7 @@ async def _execute_query_execution(self) -> None:
 - Each method can be tested independently
 - Clear separation: dispatch vs validation vs execution
 
-## Pattern: Validation Chains
+## Pattern: validation chains
 
 ### ❌ Bad: Deeply Nested Validation
 
@@ -196,7 +200,7 @@ def _validate_order_amount(self, order: Order) -> None:
 - Easy to test each validation independently
 - Easy to add new validations without changing existing code
 
-## Pattern: Strategy/Command with Lookup Tables
+## Pattern: strategy/command with lookup tables
 
 When you have multiple conditional branches doing different things, consider using a lookup table or strategy pattern.
 
@@ -255,7 +259,7 @@ def _get_formatter(self, report_type: str) -> Callable:
 - Easy to test: mock the formatter lookup
 - Dictionary documents all available formats in one place
 
-## Pattern: Tell, Don't Ask with Services
+## Pattern: Tell, Don't Ask with services
 
 ### ❌ Bad: Asking and Deciding
 
@@ -308,7 +312,7 @@ async def sync_user_data(self, user_id: str) -> None:
 Then in each service:
 
 ```python
-# email_service.py
+# email_service.py — a usable companion example
 async def sync_user_if_eligible(self, user: User) -> None:
     """Sync user contact to email system if they're eligible."""
     if not self._is_eligible_for_sync(user):
@@ -336,7 +340,7 @@ async def _sync_contact(self, user: User) -> None:
 - Each service is independently testable
 - Single Responsibility: coordinator just coordinates
 
-## Pattern: Polymorphism Over Conditionals
+## Pattern: polymorphism over conditionals
 
 When conditionals are based on type, consider using polymorphism.
 
@@ -385,7 +389,7 @@ class NotificationHandler(ABC):
         pass
 
 
-# Concrete handlers
+Concrete notification handlers:
 class EmailNotificationHandler(NotificationHandler):
     async def can_handle(self, notification: Notification) -> bool:
         return notification.channel == "email"
@@ -409,7 +413,7 @@ class SMSNotificationHandler(NotificationHandler):
         )
 
 
-# Coordinator
+Notification coordinator:
 class NotificationExecutor:
     def __init__(self, handlers: List[NotificationHandler]):
         self.handlers = handlers
@@ -435,7 +439,7 @@ class NotificationExecutor:
 - Each handler encapsulates all channel-specific logic
 - Open-closed principle: open for extension, closed for modification
 
-## Pattern: Orchestrator Methods Read Like a Table of Contents
+## Pattern: orchestrators read like a table of contents
 
 When a method orchestrates a multi-step workflow (e.g., a graph node, a pipeline step), the body should read as a flat sequence of **named delegations** — each line tells you *what* happens, the called method handles *how*.
 
@@ -590,7 +594,7 @@ Their language-specific hard rules still govern; this guidance grants no exempti
 2. **Single decision points** (one if with 2-3 branches)
 3. **Clear, readable conditionals** (sometimes if-else is clearest)
 
-## Testing Benefits
+## Testing benefits and decision-path examples
 
 Declarative code is dramatically easier to test:
 
@@ -634,7 +638,7 @@ async def test_execute_query_execution_dispatches_clickhouse(self):
         mock.assert_called_once()
 ```
 
-## Summary Checklist
+## Review checklist
 
 When writing or reviewing code, ask:
 

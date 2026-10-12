@@ -43,17 +43,15 @@ lint:  ## Type-check src/ and tests/ with mypy
 format:  ## Auto-format src/ and tests/ with black
 	poetry run black src/ tests/
 
-# Regenerate skills/INDEX.md from the committed skills/<group>/<slug>/SKILL.md tree.
+# Regenerate skills/INDEX.md from the current skills/**/SKILL.md tree.
 # Run by a developer after adding/editing a skill — never at runtime.
 build-skill-index:  ## Regenerate skills/INDEX.md from committed skill files
 	PYTHONPATH=$(PWD) poetry run python scripts/build_skill_index.py
 
-# Refresh committed skills from the upstream awesome-agi prompt library, then
-# rebuild the grouped index. Override SLO_CODE_PROMPTS_DIR when the upstream
-# clone lives somewhere other than ~/Code/TS/awesome-agi/claude-md/code-prompts.
-refresh-skills:  ## Pull upstream skills and rebuild INDEX.md
+# The authored tree is the source of truth. Refresh only its generated index;
+# skill bodies, workflow definitions, samples and assets are never rewritten.
+refresh-skills:  ## Rebuild INDEX.md from the current skills tree (preserves content)
 	PYTHONPATH=$(PWD) poetry run python scripts/refresh_skills.py
-	$(MAKE) build-skill-index
 
 # Install slo's code via pipx through install.sh (sub-spec 01.n), then
 # finalise the non-secret managed environment file under ~/.slo/shell/ (spec 80).

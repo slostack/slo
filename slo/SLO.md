@@ -4,6 +4,41 @@
   this repository. It is the authoritative reference for module layout, the
   runtime chain, the tool bundle, and the style rules.
 
+## Skills maintenance
+
+Use this checkout's vendored `skills/` tree, not the pipx installation, when
+working on its skills. Authored `SKILL.md` files and companion resources are the
+source of truth; `skills/INDEX.md` is generated.
+
+From the application root (the directory containing this file), run:
+
+```bash
+make refresh-skills
+# Equivalent; run either command, not both:
+make build-skill-index
+```
+
+Both commands recursively scan `skills/**/SKILL.md` and rebuild only
+`skills/INDEX.md`. They preserve skill bodies, workflow definitions, samples and
+assets, including non-code families such as PDF/presentation. Refresh delegates
+to the index builder; it no longer imports upstream prompts or uses
+`SLO_CODE_PROMPTS_DIR`. Runtime discovery and user override behavior are unchanged.
+See `AGENTS.md` for the layered skill structure.
+
+## Workflow-turn counting
+
+Use `skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`
+for counting and stopping rules. One workflow turn is a complete pass through
+all required phases, not one agent dispatch. Track partial passes, phase retries
+and dispatch limits separately. Disclose a harness budget conflict before launch;
+never claim repeated writing attempts were complete writing-and-review cycles.
+Limits: eight workflow turns started per task (partial turns included), six
+dispatch calls per turn, three retries per failed task, and no retries after an
+abort. Resume and takeover preserve task-wide counts. Use `single` at review
+gates; process completion alone does not establish workflow acceptance.
+
+## Workflow and testing rules
+
 - **Named workflows come from the `workflows/` folder.** When the user names a
   workflow, load `skills/design-and-analysis/workflows/<name>.md` — never a skill
   with a similar-sounding name. `code-test-loop` is Step 1 *inside* the

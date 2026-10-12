@@ -47,7 +47,7 @@ _REQUIRED_ENTRIES: tuple[str, ...] = (
     "skills/INDEX.md",
     "skills/design-and-analysis/workflows/specification-development.md",
     "skills/design-and-analysis/workflows/code-test-review.md",
-    "skills/coding/declarative-method-structure/SKILL.md",
+    "skills/languages/python/declarative-method-structure/SKILL.md",
 )
 
 # ``slo update`` runs ``<site-packages>/install.sh --finalize-environment``.
@@ -125,23 +125,6 @@ def _build_wheel(*, output_dir: Path) -> Path:
     return wheels[-1]
 
 
-def _repo_is_a_git_checkout() -> bool:
-    """Return whether ``_REPO_ROOT`` is inside a git work tree.
-
-    Returns:
-        bool: False when git is unavailable or the tree is not a checkout,
-            in which case the committed-file comparison cannot run.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(_REPO_ROOT),
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return False
-    return result.returncode == 0 and result.stdout.strip() == "true"
 
 
 @pytest.mark.skipif(
@@ -151,26 +134,20 @@ def _repo_is_a_git_checkout() -> bool:
 class TestWheelShipsSkills:
     """``[tool.poetry] include`` must place skills/ inside the wheel."""
 
-    def test_wheel_contains_every_committed_skill_file(self, tmp_path: Path) -> None:
-        """Each committed file under skills/ appears in the wheel."""
-        if not _repo_is_a_git_checkout():
-            pytest.skip("not a git checkout; cannot enumerate committed skill files")
+    def test_wheel_contains_every_authored_skill_file_in_current_snapshot(self, tmp_path: Path) -> None:
+        """Every current filesystem skill, including untracked additions, appears in the wheel."""
         wheel: Path = _build_wheel(output_dir=tmp_path)
         with zipfile.ZipFile(wheel) as archive:
             shipped: set[str] = {name for name in archive.namelist() if name.startswith("skills/")}
 
-        committed = subprocess.run(
-            ["git", "ls-files", "skills"],
-            cwd=str(_REPO_ROOT),
-            capture_output=True,
-            text=True,
-        )
-        assert committed.returncode == 0, committed.stderr
-        expected: set[str] = {line for line in committed.stdout.splitlines() if line.strip()}
-
-        assert expected, "no committed files under skills/ — check the checkout"
+        expected: set[str] = {
+            path.relative_to(_REPO_ROOT).as_posix()
+            for path in (_REPO_ROOT / "skills").rglob("*")
+            if path.is_file()
+        }
+        assert expected, "no authored files under skills/ — check the checkout"
         assert expected - shipped == set(), (
-            "committed skill files missing from the wheel: " f"{sorted(expected - shipped)}"
+            "current filesystem skill files missing from the wheel: " f"{sorted(expected - shipped)}"
         )
 
     def test_wheel_contains_the_workflow_entry_points(self, tmp_path: Path) -> None:

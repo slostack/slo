@@ -26,13 +26,18 @@ source_prompt: test-verification-policy.md
 
 ## Guidance
 
-Every code change must be verified by unit tests before it is considered complete. This is not optional — untested code is unfinished code.
+Shared obligation authority: `skills/engineering/engineering-testing/SKILL.md`.
+The detailed stack examples below retain existing Python/Vue verification recipes;
+they do not prescribe their commands, framework, mocking policy or file layout to
+Go or another language. Use the routing guide to select the appropriate test category.
+
+Every code change must be verified with evidence appropriate to the changed behavior and test category before it is considered complete. Use isolated unit tests for deterministic decisions, orchestration tests for delegation order and failure cutoffs, adapter/database integration tests for persistence or protocol behavior, and end-to-end tests for composed flows. Verification is not optional — untested behavior is unfinished behavior.
 
 ---
 
 ## Core Rule
 
-**Every piece of code you write or modify must have a corresponding unit test that passes.** Do not move on to the next task until the tests for the current change are green.
+**Every meaningful decision and failure path must have a passing test, and every changed boundary must have evidence from the appropriate test category.** Do not move on to the next task until the tests for the current change are green; missing evidence is not completion.
 
 ---
 
@@ -52,7 +57,7 @@ Every decision point in the code must have at least one test that exercises each
 | Loop with conditional `break` / `continue` | Tests that exercise both the break/continue path and the full iteration path |
 | Feature flags / configuration-driven branches | One test per configuration value that changes behavior |
 
-### Example
+### Python decision-path illustration (retained as a generic coverage example)
 
 Given this service method:
 

@@ -30,6 +30,23 @@ kind: workflow
 
 ## Guidance
 
+**Workflow-turn accounting:** Follow
+`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+Count a full pass through the workflow, not individual phases or agent calls.
+Report partial passes and separate harness limits explicitly; never skip review
+or treat repeated authoring dispatches as completed workflow turns.
+
+
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+Read `skills/coding/coding-rules/SKILL.md` as the generic baseline after project
+context, then route to the applicable language root and feature/component recipes.
+Applicable specifics override generic defaults on the affected point; unresolved
+specific-to-specific conflicts remain explicit blockers.
+
 ## Goal
 
 Route the current task into the **fewest high-signal skills** needed next.

@@ -42,6 +42,13 @@ kind: workflow
 
 ## Guidance
 
+**Workflow-turn accounting:** Follow
+`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+Count a full pass through the workflow, not individual phases or agent calls.
+Report partial passes and separate harness limits explicitly; never skip review
+or treat repeated authoring dispatches as completed workflow turns.
+
+
 ## Pre-conditions
 
 Before launching a headless workflow, confirm:
@@ -67,7 +74,7 @@ export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS="${SLO_STREAM_INACTIVITY_TIMEOUT_SE
 export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS="${SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS:-7200}"
 
 # Bash tool ceiling per command inside a sub-agent.  0 disables.
-export SLO_BASH_DEFAULT_TIMEOUT_SECONDS="${SLO_BASH_DEFAULT_TIMEOUT_SECONDS:-1200}"
+export SLO_BASH_DEFAULT_TIMEOUT_SECONDS="${SLO_BASH_DEFAULT_TIMEOUT_SECONDS:-1800}"
 
 # Maximum number of child sub-agents running simultaneously.
 export SLO_SUBAGENT_MAX_CONCURRENCY="${SLO_SUBAGENT_MAX_CONCURRENCY:-6}"
@@ -169,7 +176,7 @@ The prompt is purely context. The `DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT` injected 
 ```bash
 SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=10800 \
 SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=7200 \
-SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200 \
+SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1800 \
 SLO_SUBAGENT_MAX_CONCURRENCY=6 \
 python -m src.cli run \
   -p "$TASK_PROMPT" \
@@ -188,7 +195,7 @@ STATUS=$?
 ```bash
 SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=10800 \
 SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=7200 \
-SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200 \
+SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1800 \
 SLO_SUBAGENT_MAX_CONCURRENCY=6 \
 python -m src.cli run \
   -p "$TASK_PROMPT" \
@@ -243,7 +250,10 @@ Keyboard: `↑`/`↓` navigate sub-agents, `Enter` select transcript, `r` force 
 
 ### Programmatic monitoring (poll from script)
 
-The orchestrator run is complete when its JSONL output contains a terminal event (`run_completed`, `run_failed`, or `run_aborted`). Poll the output file:
+A terminal event (`run_completed`, `run_failed`, or `run_aborted`) means execution
+has stopped. `run_completed` indicates execution success, not workflow acceptance.
+Inspect phase verdicts and required artifacts before reporting the workflow as
+complete. A successful process can return REVISE or INCOMPLETE. Poll the output file:
 
 ```bash
 # Wait for terminal event (checks every 30s, up to 2 hours)
@@ -315,7 +325,8 @@ That one stale handle then blocks all new launches in the session, not just
 the one that was killed.
 
 **Verify:** after stopping, `workflow_status <workflow-id>` must report
-`aborted` before you relaunch, commit a snapshot, or report the stop as done.
+`aborted` before reporting the stop as done. Do not retry, resume or relaunch
+an aborted task as recovery.
 
 ---
 
@@ -325,7 +336,7 @@ The orchestrator (running as the `--orchestrator` headless process) uses `spawn_
 
 ### Serial phases (Pipeline workflow — most workflows)
 
-Pipeline workflows dispatch **one phase at a time** using `mode="single"`. Each phase must complete and return a terminal verdict before the next phase is dispatched.
+Pipeline workflows dispatch **one phase at a time** using `mode="single"`. Advance only after READY/COMPLETE and verification of required artifacts. REVISE returns to the workflow's revision-loop starting step; FAILED invokes recovery or stops the workflow. A normal process exit alone does not permit advancement.
 
 ```json
 // Correct: dispatch Phase 1 alone
@@ -405,9 +416,9 @@ python -m src.cli visualize --session "$WORKFLOW_SESSION" --no-follow
 
 | Exit code | Meaning | Action |
 |---|---|---|
-| `0` | `run_completed` — success | Extract synthesis; workflow done. |
-| `1` | `run_failed` | Read stderr: `tail -30 "${WORKFLOW_SESSION}.err"`. Check which phase failed in the JSONL. Retry with `--resume "$WORKFLOW_SESSION"` after fixing the root cause. |
-| `2` | `run_aborted` | Aborted (`/workflows abort`, SIGTERM, or timeout). Resume if partial work exists, or relaunch. Never cause this state with `pkill`; see "Stopping a running workflow". |
+| `0` | `run_completed` — execution finished normally | Read the synthesis and verify every required phase verdict and artifact. Report REVISE/INCOMPLETE if acceptance gates did not pass. |
+| `1` | `run_failed` | Read stderr: `tail -30 "${WORKFLOW_SESSION}.err"`. Check which phase failed in the JSONL. For a recoverable failure, address the cause and retry up to three times after the initial attempt, within the current workflow turn's dispatch budget. Carry counts forward on resume; do not reset them. |
+| `2` | `run_aborted` | Never retry an aborted task, including an abort caused by a timeout. Report the abort and stop; do not automatically resume or relaunch. Never cause this state with `pkill`; see "Stopping a running workflow". |
 
 ---
 
@@ -419,8 +430,8 @@ All variables relevant to a headless workflow launch:
 |---|---|---|---|
 | `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS` | `10800` | `10800` | Orchestrator's own LLM stream. Keep it at or above the shipped default. |
 | `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` | `7200` | `7200` | Each child sub-agent's stdout pipe. |
-| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1200` | `600` | Bash tool per-command ceiling inside sub-agents. |
-| `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `4` | Maximum simultaneous child processes. |
+| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1800` | `1800` | Bash tool per-command ceiling inside sub-agents. |
+| `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `6` | Maximum simultaneous child processes. |
 | `SLO_SUBAGENT_MAX_TASKS` | `8` | `8` | Maximum tasks per `spawn_sub_agents` call. |
 | `SLO_MODEL_POOL` | JSON pool array | — | Multi-provider fallback on rate limits. |
 | `SLO_SESSION_ID` | Slug or UUID | — | Alternative to `--session-id` for env-driven pipelines. |
@@ -451,7 +462,7 @@ SESSION="${WORKFLOW_NAME}-$(date +%Y%m%d-%H%M%S)"
 # ── Timeout and concurrency env vars ─────────────────────────────────────────
 export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=10800
 export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=7200
-export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200
+export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1800
 export SLO_SUBAGENT_MAX_CONCURRENCY=6
 
 # ── Task prompt (context only — orchestrator knows the workflow protocol) ─────
@@ -522,7 +533,7 @@ Pre-conditions: workflow name known, project cwd known, credentials set
 
 Step 1: Export SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS=10800 (critical)
         Export SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS=7200
-        Export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1200
+        Export SLO_BASH_DEFAULT_TIMEOUT_SECONDS=1800
 
 Step 2: Choose orchestrator model (and optionally per-phase models)
 

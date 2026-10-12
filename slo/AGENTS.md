@@ -1,96 +1,5 @@
 # Slo — Agent Reference
 
-## Feature 89 worktree — implementation wired, approval pending
-
-`providers/openai_platform.py` owns `OpenAIRequestPolicy` and the lifetime-pinned
-`OpenAIPlatformChatOpenAI`. `LLMFactory` selects the adapter only for captured API-key credentials on
-seed-owned `requires_responses_api` records. All three GPT-6 entries also support
-the existing Codex OAuth builder, without Platform constructor/final sanitation; session validation precedes adoption and lazy OAuth refresh. Picker
-auth types are captured only at lifecycle boundaries, and reasoning/startup use
-the session snapshot. Both seed-owned policy flags remain in memory and are
-excluded only by the existing schema-2 provider-cache writer. Jev null output
-metadata uses the existing conservative cap and authenticated admission.
-
-Real locked-SDK offline tools, mounted resume, mixed lanes and frozen readers
-have executable coverage. This is not live entitlement or release evidence.
-See `docs/implementation/89-gpt-6-support/recovery13-closure.md` for actual gates
-and the AC map. Static baseline gates remain unwaived; independent review and
-assessment remain pending. Earlier continuation receipts are historical.
-
-## Latest Step-1 bounded window correction — 2026-10-03
-
-The prior final gate is retained unchanged: `.f86-final-remediation-hldebc_g/full-final.log`
-reports **1 failed, 5155 passed, 18 deselected, 196 warnings**, exit 1. The exact
-bounded-model-window failure reproduced in isolation. Direct-provider summaries
-incorrectly acquired the gateway `; provider default` suffix, expanding the normal
-rows from two to three lines (five rather than eight rows). The existing suggestion
-projection now preserves direct-provider summaries; OpenRouter evidence is unchanged.
-A stronger eight-label/footer compositor assertion then exposed detail width exceeding
-the inner menu width by four cells. The menu now uses the same inner width for both.
-No count/window expectation was relaxed, no sleeps/skips added, and no R1/R3 changes.
-
-Focused partition: 38 passed; intermediate strengthened-paint run: 1 failed/173 passed;
-paint correction: 30 passed; final affected: **174 passed, 5 warnings**; additional
-surrounding picker/status regressions: **48 passed, 2 warnings**. Full expanded
-commands/logs/exits: `.f86-window-correction-tPhyAzET/`. The fresh complete gate
-is `full.log`, `full-command.txt`, `full.exit` there, generated AFTER these final
-documentation edits. Its actual exit/summary controls readiness; no anticipated pass.
-Final source/test/current-doc manifest: `source-test-manifest.sha256`, digest in
-`manifest.sha256`, generated after full gate and read-only checks; no edits thereafter.
-
-R1 router truth, R2 two-size compositor/hidden-paint sensitivity and R3 real schema-2
-public preparation/valid SDK no-budget proof remain retained. R4 points to this new
-receipt, not a reconstructed missing directory. E1 removal still injects refresh
-outcome (not all-real zero-HTTP removal). Historical selection offset has no claimed
-causal repair. Auth sensitivity remains retained. Black/mypy waived, not green;
-provider evidence remains offline synthetic, not live authorization or paid inference.
-Independent sequential Step2/Step3 remain pending; readiness is not feature approval.
-Earlier current/latest headings below are preserved historical receipts.
-
-## Current sequential remediation — 2026-10-03 (R1–R4)
-
-R1 control-aware `/reasoning`, R2 genuine two-size picker/router compositor proof,
-and R3 real schema-2 public admission → valid SDK no-budget completion are corrected
-with focused red/green evidence; affected partition: **460 passed, 5 warnings**.
-Initial full gate found five picker status/context clipping regressions (5151 passed,
-18 deselected); its full.log is retained. Corrected menu uses a separate reasoning
-line only for explicit disable semantics, preserving status/context; two-line rows
-retain original capacity and three-line rows use bounded capacity. This is a
-narrow viewport adjustment to the original two-line plan, not weakened assertions.
-Picker regressions now pass 32 tests. The new final gate receipt is `.f86-final-remediation-hldebc_g/full-final.log`, with exact
-command in `full-final-command.txt` and result in `full-final.exit`. These artifacts are produced
-**after this documentation is finalized**; consult their actual result, not an
-anticipated pass. The missing `.f86-step1-1791030546-full` claim is not relied on.
-See `docs/implementation/86-openrouter/sequential-r1-r4-remediation-2026-10-03.md`
-for the finite matrix and source/test freeze contract. Prior headings below are
-historical, not outstanding G1/G2 assertions or current gate pointers.
-
-E1 remains qualified real-loader/stale-delivery/rotation proof: removal injects a
-refresh outcome, not all-real zero-HTTP removal. Historical selection offset has
-no claimed causal repair. Auth compositor/sensitivity evidence is retained.
-Black/mypy remain waived, not green; 18 normal E2E/default-disabled exclusions
-are expected (actual gate log controls). All provider evidence is offline synthetic,
-not live authorization, availability or paid inference. Independent Step2/Step3
-remain pending; no feature-completion or approval claim.
-
-
-## Latest recovery receipt — 2026-10-03 final authorized Call 4: REVISE
-
-Fresh complete post-edit non-E2E gate: **5136 passed, 18 deselected, 196 warnings
-in 327.78s; exit 0**, `.f86-final-recovery-O3ZPKA/full-non-e2e.log`.
-This supersedes earlier receipts as the latest execution, not as approval.
-Budget evidence persistence, nullable-rate override restoration, actual default-effort
-SDK wire assertion and bounded picker detail fixes landed. Remaining: unexplained
-Call3 selection offset failure (passes isolated/full now, no causal repair), `/reasoning`
-presentation and mounted two-size proof, prepared/no-budget evidence, and stronger
-real-store admission proof (new removal test injects refresh outcome).
-See `docs/implementation/86-openrouter/final-recovery-evidence-2026-10-03.md`.
-**STEP1READY withheld.** Independent Step2/3 remain pending. Offline synthetic tests
-are not live authorization/availability/inference evidence; 18 E2E/default-disabled
-live/fixture cases were deselected. Black/mypy waived, not green. Earlier receipts
-below remain historical; no final workflow approval.
-
-
 This file is loaded into every agent session by `ProjectContextDiscovery` and is the
 authoritative reference for anyone (human or AI) working on this codebase. Update it
 whenever you make a significant architectural change, add a new component, rename a module,
@@ -202,7 +111,6 @@ slo/
 │   │   │   │   ├── layout.py           # OrchestrationLayout — canonical workflow/fleet/capture paths
 │   │   │   │   ├── process_probe.py    # ProcessProbe — conservative shared PID liveness semantic
 │   │   │   │   ├── spawn_env.py        # Shared allowlisted headless-child env and capture opener
-│   │   │   │   ├── capture_writer.py   # Independent split-byte literal redacting FD writer for launch/relaunch
 │   │   │   │   ├── process.py          # SubAgentProcess — child spawn, stream relay, captures
 │   │   │   │   ├── pool.py             # SubAgentPool — bounded sub-agent dispatch
 │   │   │   │   ├── launch_tool.py      # launch_workflow — detached orchestrator spawn
@@ -222,7 +130,7 @@ slo/
 │   │   ├── model_catalog/             # canonical model catalog — identity, defaults, reasoning, aliases, discovery
 │   │   │   ├── dao.py                 # ModelCatalogEntryDAO, ModelRuntimeProfileDAO, ModelReasoningProfileDAO, …
 │   │   │   ├── seed.py                # committed first-class entries, family templates, aliases
-│   │   │   ├── discovery.py           # async compatibility delegation to ModelCatalogService; pure override/direct-template helpers
+│   │   │   ├── discovery.py           # ProviderModelDiscoveryService, ModelCatalogOverrideService
 │   │   │   ├── service.py             # ModelCatalogService.load() — merged snapshot + projections
 │   │   │   ├── store.py               # cache and override file persistence
 │   │   │   └── prompt_clause.py       # append_kimi_for_coding_clause exact-match helper
@@ -729,12 +637,7 @@ SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed H
 
 **`CredentialResolver`** (`src/auth/credential_resolver.py`) is stateless. Precedence:
 1. Environment variable for the provider (`SLO_ANTHROPIC_API_KEY`, `SLO_OPENAI_API_KEY`, or `SLO_KIMI_FOR_CODING_API_KEY`).
-2. `CredentialStore` merges two files under `$SLO_HOME/global`: `authentication.json`
-   holds only `anthropic` / `openai` / `kimi_for_coding`; every other provider known
-   to this version (OpenRouter today) uses `authentication.additional-providers.json`.
-   Both use the same DAO. `SLO_AUTH_FILE` moves the released file and its sibling
-   together. Future versions must put providers unknown to this version in a new
-   sibling file, never in this version's closed-enum additional-provider file.
+2. `~/.slo/global/authentication.json` via `CredentialStore`.
 3. `~/.claude/.credentials.json` (Anthropic only — legacy Claude Code credentials).
 
 `LLMFactory.create` calls `CredentialResolver.require(provider=...)` once per build.
@@ -753,66 +656,6 @@ concurrently with the callback/paste race. Tests inject `browser_host=` instead 
 environment. The callback, browser/manual attempt,
 and device attempt deadlines are configured by `SLO_OAUTH_TIMEOUT_SECONDS`,
 `SLO_OAUTH_MANUAL_TIMEOUT_SECONDS`, and `SLO_OAUTH_DEVICE_TIMEOUT_SECONDS` respectively.
-
-### OpenRouter current delivery (Feature 86 — partial, not complete)
-
-Canonical OpenRouter identity is `'openrouter:<exact-remote-id>'` and always maps to
-`ProviderName.OPENROUTER`, regardless of the remote ID's author segment. Credential
-precedence is `SLO_OPENROUTER_API_KEY` then the OpenRouter credential-store row; there
-is no OpenRouter legacy fallback, empty is absent, and whitespace-only environment
-values fail before HTTP. `OpenRouterAuthenticationService` owns candidate-before-
-persist verification through the existing resolver, store, GET client, and catalog
-refresh evidence seam. Its public result is secret-free; an environment key wins over
-a pasted replacement and is never overwritten by it. Factory capabilities select the
-API-key-only OpenRouter screen, and `AuthenticationScreen` tracks cancellation.
-
-Authenticated `/key` and `/models/user` discovery feed the canonical catalog. Offline
-`load()` remains I/O-free; `/model refresh` delegates to the session/catalog gateway.
-The bounded picker searches cached canonical ID/display rows and exact selection
-prepares the route. Selection precedence is exactly: explicit model → configured
-pool → resumed route → saved default → cfg default. An explicit `--model` or
-`/model <route>` clears a configured pool. A resumed routed pool member is a single
-route, not a reconstructed pool.
-
-`TyperDispatch.tui` opts into pending-capable session construction; strict headless
-and programmatic paths prepare before inference. `preparation_status` is transient,
-pending usage has unknown limits, and the mounted app owns one tracked
-`prepare_startup()` task with retry after `/auth` or `/model refresh` and cancellation
-on unmount. Successful adoption updates the same session's snapshot/reasoning/usage;
-pending prompts and selection cannot run. Scheduled runs pass their stored model into
-the ordinary headless path. Trusted children receive the explicit
-`SLO_OPENROUTER_API_KEY` exception; other secret-shaped settings remain filtered.
-
-The adapter's opaque reasoning/route continuation metadata is private runtime/history
-state for same-route replay only. Public stream events, headless JSONL, and safe
-operator diagnostics must not expose it or raw provider bodies. Current local tests
-cover meaningful auth/catalog/picker/session/SDK/history slices, but do not prove
-live provider availability, credential authorization, network reachability, paid
-inference, or Feature 86 completion. The retained **pre-correction** Step 1 gate is
-**5115 passed, 18 E2E-marked deselected, 196 warnings in 373.69s; exit 0** at
-`.f86-integration-retry-ucwY1o/full-non-e2e.log`. The 18 deselections include the
-default-disabled live/fixture harness tests; executed OpenRouter tests are offline
-local/mock transport tests. Black/mypy are waived only as static gates, not green.
-Independent review and completion remain **REVISE** while source corrections are
-concurrent; do not treat this as a final post-correction gate or approval. Bounded
-evidence includes append ordering/refusal, independent OS-process resume admission,
-cancellation while an append lease waits, and a reaped-launcher kernel EBADF case
-through instrumented shipped writer/reporter bodies with native I/O. That is not
-native interpreter-startup equivalence and does not imply an argv-equality product
-requirement. See
-`docs/implementation/86-openrouter/independent-full-rereview-2026-10-03.md` for
-current findings and `current-status-2026-10-02.md` for preserved dated history.
-
-### OpenRouter private continuation diagnostics (bounded 86.a.3)
-
-`OpenRouterChatOpenAI` scopes SDK request-option protection with ContextVar depth
-and per-scope filters, preserving nested/concurrent request lifetimes. Known SDK
-transport-exception records retain fixed labels without raw tracebacks. Private
-runtime traces and replay-bearing history intentionally retain the typed extension;
-public stream events and headless JSONL do not. Local composed tests in
-`tests/agents/providers/test_openrouter_channels.py` cover the real SDK/tool/session,
-filesystem anchor, headless emitter, and TUI replay paint. Full status/fleet/capture
-and pool-audit sentinel proof remains incomplete.
 
 ### Kimi For Coding
 
@@ -909,41 +752,13 @@ protects initial CLI import resolution while preserving ordinary environment val
 Headless source/module spawns remain sanitized-environment paths without `-I`, and
 the visualizer source fallback is trusted-source-only with no forwarded `PYTHONPATH`.
 
-### Mixed-version state compatibility (86.b)
-
-`ModelCatalogStore` owns only `model_catalog_cache.v2.json` / `.v2.lock`.
-New code never opens, adopts, rewrites or removes released
-`model_catalog_cache.json` / `.lock`. An incompatible shared-file shape needs a
-new filename; an internal version field cannot protect a validating older reader.
-`CredentialStore` remains the sole owner of both credential files. Misfiled rows
-are ignored with a warning on each lookup, preserved on owning writes, and never
-migrated automatically. Either corrupt file fails lookups and history redaction
-closed. Move pre-fix rows manually before using the new build (README rollout).
-
-Unknown saved direct models resume on the existing preferred/default model with a
-notice in the existing startup block. Explicit models, configured pool primaries,
-known aliases and OpenRouter pending preparation retain their precedence.
-History is shared: the production `TreeBasedFilesystemSessionHistoryStore`
-decorates the flat store and physically writes `events.jsonl` plus `session.json`,
-not a separate tree.json format. Released compaction drops unknown
-`provider_message_extension` fields from rewritten events; the pre-compaction
-archive retains them. Ordinary append/resume preserves prior events.
-
-`tests/compat` extracts real tag `v0.20.1` via `git archive` and runs it in a
-minimal-environment subprocess on the same per-test synthetic SLO_HOME as new code.
-It proves catalog silence, alternating credentials, and continuation in both
-versions through default tree and explicit flat stores. Missing tags fail, never
-skip. The real CLI visualize guard mounts the actual app headlessly and audits
-catalog/credential access. See `docs/implementation/86b-model-catalog/b5-implementation.md`
-for current gate results; historical 86.a waivers do not apply to 86.b.
-
 ## 11. History / Persistence
 
-**Default store:** `TreeBasedFilesystemSessionHistoryStore` (`history/tree_store.py`).
+**Default store:** `TreeBasedFileSystemSessionHistoryStore` (`history/tree_store.py`).
 Laid out under `~/.slo/sessions/history/<session_id>/`:
 ```
 session.json    # SessionHistoryMetadataDAO — atomic temp+rename on update; includes session_name/session_name_key
-events.jsonl    # canonical events; tree links live in payload.metadata
+tree.json       # SessionTreeDAO — turn-grouped event tree (new default)
 transcript.md   # derived; not authoritative
 orchestrator.json # detached-orchestrator self-report when applicable
 fleet.json        # durable child fleet projection when applicable
@@ -951,12 +766,18 @@ abort_request.json # TUI-to-orchestrator abort channel when applicable
 children/<child_session_id>/status.json # child terminal result when applicable
 ```
 
-The tree store delegates persistence to `FilesystemSessionHistoryStore`; both
-satisfy `SessionHistoryStoreProtocol` (`history/store_protocol.py`) and use the
-same physical layout. Passing an explicit flat store omits the tree decorator.
-The decorator adds `entry_id` / `parent_entry_id` to `payload.metadata`, including
-linking each tool result to its opening tool call. Released readers tolerate these
-metadata fields. Do not infer a separate `tree.json` format from the class name.
+The legacy flat store (`FilesystemSessionHistoryStore`) uses `events.jsonl` instead of
+`tree.json`. Both stores satisfy `SessionHistoryStoreProtocol` (`history/store_protocol.py`).
+Pass a `FilesystemSessionHistoryStore` explicitly to `SloAgentSession` to opt back into
+the flat layout.
+
+**Tree layout (`tree.json`):**
+- `preamble_events` — envelope events with no `turn_id` (e.g. `session_started`).
+- `turns` — ordered `TurnNodeDAO` list; each node holds all events for one turn.
+  Tool-call events and their corresponding tool-result events are always in the
+  same `TurnNodeDAO` (shared `turn_id`), making whole-turn compaction safe.
+- `token_usage` per `TurnNodeDAO` — running sum of event-level estimates (stamped
+  at append time by `TokenUsageEstimator`).
 
 **Token usage estimation (`history/token_estimator.py`):**
 `TokenUsageEstimator.estimate(event)` applies `ceil(chars / 4)` where "chars"
@@ -1081,12 +902,6 @@ is diagnostic-only history and is excluded from replay context.
 
 ## 14. Testing
 
-- **Test state isolation (86.b.1):** `tests/state_isolation.py` runs before application
-  imports; `tests/conftest.py::isolated_slo_home` supplies a fresh HOME/SLO_HOME per
-  test and rebinds cached state paths. Request the fixture for default-path tests.
-  Its SLO_HOME import registry and inherited-state override list have source guards
-  in `tests/test_slo_home_isolation.py`. Build HOME-dependent test parameters at
-  test time, not collection time. Subprocess fixtures must keep their own temp roots.
 - **Never real keys** in the default gate. All tests use `FauxChatModel`
   (`src/agents/providers/faux.py`) — a queue-based deterministic mock that returns
   scripted `AIMessage` objects.
@@ -1145,19 +960,37 @@ is diagnostic-only history and is excluded from replay context.
 Keep **Section 5** (System Prompt Assembly) and **Section 6** (Tool Bundle) accurate — they
 directly affect what every agent session sees and does.
 
-## Feature 86 R2/R3/R4 remediation boundary
+## Workflow-turn counting
 
-The headless stream task's ContextVar does not propagate back to its parent.
-`HeadlessRunner` retains only the admitted operation capture observed at the event
-subscriber, sanitizes public events before retaining/emitting them, binds the capture
-around post-stream terminal notifier persistence, and releases it in `invoke` finally.
-No capture is persisted or attached to a public DTO; private continuation is unchanged.
-The fixed GET client rejects full pages adding no unique records before catalog
-publication. Failed refresh retains the last-good provider slice.
-`src/tui/model_catalog.py::ModelPickerRowDAO` is presentation-only;
-`src/agents/model_catalog/dao.py::ModelCatalogEntryDAO` remains canonical.
-See `docs/implementation/86-openrouter/remediation-r2-r3-r4-2026-10-03.md` for
-historical 5045-pass non-E2E evidence and limitations. The later independent Step 2
-rereview is **REVISE**; use
-`docs/implementation/86-openrouter/independent-full-rereview-2026-10-03.md` for its
-current findings.
+Use `skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`
+for counting and stopping rules. One workflow turn is a complete pass through
+all required phases, not one agent dispatch. Track partial passes, phase retries
+and dispatch limits separately. Disclose a harness budget conflict before launch;
+never claim repeated writing attempts were complete writing-and-review cycles.
+The default orchestrator prompt allows eight workflow turns started per task,
+including partial turns, and six dispatch calls per workflow turn (retries
+included): at most 48 calls per task. Failed tasks allow three retries after the
+initial attempt; aborted tasks are never retried. A new revision turn resets only
+its dispatch count, not task-wide turns or failed-task retries. Resume and takeover
+preserve counts. These are prompt rules, not runtime counters. The runtime pool
+defaults to six concurrent children via `SLO_SUBAGENT_MAX_CONCURRENCY`, a separate
+limit. Advance on verified phase verdicts and artifacts, not process exit alone.
+
+## Feature 87 — layered skill discovery
+
+The skills prompt now directs non-trivial tasks through
+`skills/engineering/engineering-routing/SKILL.md`: shared policy, affected language
+root, component/test-category recipe, relevant framework, then explicit project
+contracts. Python recipes live in `skills/languages/python/` with old `skills/coding/`
+paths retained as non-invocable forwarders. Go and TypeScript families are bundled
+under `skills/languages/`; Vue and canonical workflow paths remain stable.
+
+The runtime loader still merges bundled → user skills → user workflows by name;
+no automatic routing classifier or extra project skill-loading tier was added.
+Descriptions carry applicability because the XML manifest does not expose arbitrary
+metadata fields. `make refresh-skills` rebuilds `skills/INDEX.md` directly from
+the current authored tree, using the same builder as `make build-skill-index`.
+Neither command imports upstream prompts, rewrites skill bodies, or removes
+workflow definitions, samples or assets. `SLO_CODE_PROMPTS_DIR` is no longer used. See
+`docs/skills-reorganization/overview.md` and `preservation-map.md` for authority,
+source inventory, migrations, verification and limitations.

@@ -26,6 +26,12 @@ source_prompt: analyze/is-the-feature-completed.md
 
 ## Guidance
 
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+
 Use this prompt when you need to assess how much of a feature (from a Confluence spec, JIRA ticket, or verbal description) has actually been implemented in the codebase, and what remains.
 
 ---
@@ -84,7 +90,7 @@ Not every feature touches every layer. Only include layers that the specificatio
 
 ### 1.3 Read Code Prompts
 
-Read the relevant code-prompt files from `skills/coding/` to understand the implementation patterns expected for each layer. This ensures you know what a "complete" implementation looks like in this codebase.
+Read `skills/coding/coding-rules/SKILL.md`, then the applicable generic, language, framework, and test owners to understand the implementation patterns expected for each layer. This ensures you know what a "complete" implementation looks like in this codebase.
 
 ---
 
@@ -277,4 +283,4 @@ Before presenting results:
 - **Be specific about differences** — don't say "similar to X but for SMS". Say exactly which filter conditions, column names, enum values, and S3 paths differ.
 - **Order pending items by dependency** — foundational work first, consumer work last
 - **Include the full file path** for every file mentioned — both existing and to-be-created
-- **Reference code prompts** — when a pending item should follow a specific code-prompt pattern, mention it (e.g., "follows `skills/coding/build-domain-features/SKILL.md` pattern")
+- **Reference code prompts** — when a pending item should follow a specific code-prompt pattern, mention it (e.g., "follows `skills/languages/python/build-domain-features/SKILL.md` pattern")

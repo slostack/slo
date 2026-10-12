@@ -69,7 +69,7 @@ Extract and catalog:
 
 ### 1.2 Read code prompts
 
-Read **all** code-prompt files from `skills/coding/` before proceeding. Build a full mental model of the implementation patterns, naming conventions, testing standards, and architectural boundaries.
+Read `skills/coding/coding-rules/SKILL.md` and the applicable language/framework/test skills before proceeding. Build a bounded mental model of the implementation patterns, naming conventions, testing standards, and architectural boundaries.
 
 ### 1.3 Fetch the parent issue
 

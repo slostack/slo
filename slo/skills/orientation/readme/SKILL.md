@@ -28,6 +28,12 @@ source_prompt: README.md
 
 ## Guidance
 
+**Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.
+Read shared obligations and only affected language/component/framework recipes.
+Python-specific examples and commands below are scoped examples, not universal
+requirements. For mixed-language work preserve each boundary's approved contract.
+Use `skills/engineering/engineering-testing/SKILL.md` for test categories and evidence.
+
 The skill library is a set of coding instruction files that teach any agent —
 Claude, Codex, Slo, Kimi, or another — how to build features in a codebase:
 folder structure, naming conventions, patterns for services, workers, routers,
@@ -299,57 +305,57 @@ drops the review and completion-check steps.
 
 | Skill | What it covers |
 |---|---|
-| [`application-structure`](../../coding/application-structure/SKILL.md) | **Start here.** Folder layout, env config, DB setup, app architecture |
-| [`bootstrap-project-scaffolding`](../../coding/bootstrap-project-scaffolding/SKILL.md) | Creating a brand-new project or service |
-| [`build-routers`](../../coding/build-routers/SKILL.md) | FastAPI endpoints, OpenAPI docs, response wrappers |
-| [`build-domain-features`](../../coding/build-domain-features/SKILL.md) | Domain entities — the `dao.py` / `model.py` / `service.py` pattern |
-| [`build-application-services`](../../coding/build-application-services/SKILL.md) | Orchestration logic — the `invoke()` pattern, router → service → domain |
-| [`build-middleware`](../../coding/build-middleware/SKILL.md) | FastAPI cross-cutting middleware (DB sessions, request tracking, auth) |
+| [`application-structure`](../../languages/python/application-structure/SKILL.md) | **Start here.** Folder layout, env config, DB setup, app architecture |
+| [`bootstrap-project-scaffolding`](../../languages/python/bootstrap-project-scaffolding/SKILL.md) | Creating a brand-new project or service |
+| [`build-routers`](../../languages/python/build-routers/SKILL.md) | FastAPI endpoints, OpenAPI docs, response wrappers |
+| [`build-domain-features`](../../languages/python/build-domain-features/SKILL.md) | Domain entities — the `dao.py` / `model.py` / `service.py` pattern |
+| [`build-application-services`](../../languages/python/build-application-services/SKILL.md) | Orchestration logic — the `invoke()` pattern, router → service → domain |
+| [`build-middleware`](../../languages/python/build-middleware/SKILL.md) | FastAPI cross-cutting middleware (DB sessions, request tracking, auth) |
 | [`api-response-conventions`](../../coding/api-response-conventions/SKILL.md) | `SuccessResponseDAO` / `FailureResponseDAO` shapes |
-| [`graph-gateway-invoke-convention`](../../coding/graph-gateway-invoke-convention/SKILL.md) | Gateway invoke convention for graph entry points and orchestration seams |
+| [`graph-gateway-invoke-convention`](../../languages/python/graph-gateway-invoke-convention/SKILL.md) | Gateway invoke convention for graph entry points and orchestration seams |
 
 ### Workers and events
 
 | Skill | What it covers |
 |---|---|
-| [`build-celery-workers`](../../coding/build-celery-workers/SKILL.md) | Celery tasks — naming, registration, routes, beat |
-| [`build-dbos-workflow-orchestration-pattern`](../../coding/build-dbos-workflow-orchestration-pattern/SKILL.md) | Multi-step durable workflows with DBOS queues and recursive watchers |
-| [`build-schedulers-tasks-with-dbos`](../../coding/build-schedulers-tasks-with-dbos/SKILL.md) | DBOS init, DB pool config, scheduled tasks |
-| [`build-event-handlers`](../../coding/build-event-handlers/SKILL.md) | Event handler routing and dispatch |
-| [`build-partitioned-events`](../../coding/build-partitioned-events/SKILL.md) | Event partitioning via consistent hashing |
+| [`build-celery-workers`](../../languages/python/build-celery-workers/SKILL.md) | Celery tasks — naming, registration, routes, beat |
+| [`build-dbos-workflow-orchestration-pattern`](../../languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md) | Multi-step durable workflows with DBOS queues and recursive watchers |
+| [`build-schedulers-tasks-with-dbos`](../../languages/python/build-schedulers-tasks-with-dbos/SKILL.md) | DBOS init, DB pool config, scheduled tasks |
+| [`build-event-handlers`](../../languages/python/build-event-handlers/SKILL.md) | Event handler routing and dispatch |
+| [`build-partitioned-events`](../../languages/python/build-partitioned-events/SKILL.md) | Event partitioning via consistent hashing |
 
 ### AI and agents
 
 | Skill | What it covers |
 |---|---|
-| [`build-react-agent-with-langgraph`](../../coding/build-react-agent-with-langgraph/SKILL.md) | LangGraph ReAct loops — state, nodes, routing, graph assembly |
-| [`build-agent-tools`](../../coding/build-agent-tools/SKILL.md) | LangChain `@tool` conventions — schema DAO + tool class + thin bridge |
-| [`test-graphs-and-agents`](../../coding/test-graphs-and-agents/SKILL.md) | Testing LangGraph agents with the `FauxChatModel` pattern |
+| [`build-react-agent-with-langgraph`](../../languages/python/build-react-agent-with-langgraph/SKILL.md) | LangGraph ReAct loops — state, nodes, routing, graph assembly |
+| [`build-agent-tools`](../../languages/python/build-agent-tools/SKILL.md) | LangChain `@tool` conventions — schema DAO + tool class + thin bridge |
+| [`test-graphs-and-agents`](../../languages/python/test-graphs-and-agents/SKILL.md) | Testing LangGraph agents with the `FauxChatModel` pattern |
 
 ### External systems
 
 | Skill | What it covers |
 |---|---|
-| [`build-clients`](../../coding/build-clients/SKILL.md) | External API clients (aiohttp/httpx), DAOs, error handling, testing |
-| [`build-clickhouse-features`](../../coding/build-clickhouse-features/SKILL.md) | ClickHouse clients, migrations, DAOs, S3, queries |
-| [`build-tcp-codec`](../../coding/build-tcp-codec/SKILL.md) | Length-prefixed TCP codec — framing, header, checksum, size bounds |
-| [`auth-security-patterns`](../../coding/auth-security-patterns/SKILL.md) | Password hashing (bcrypt + SHA-256 pre-hash) and JWT session design |
+| [`build-clients`](../../languages/python/build-clients/SKILL.md) | External API clients (aiohttp/httpx), DAOs, error handling, testing |
+| [`build-clickhouse-features`](../../languages/python/build-clickhouse-features/SKILL.md) | ClickHouse clients, migrations, DAOs, S3, queries |
+| [`build-tcp-codec`](../../languages/python/build-tcp-codec/SKILL.md) | Length-prefixed TCP codec — framing, header, checksum, size bounds |
+| [`auth-security-patterns`](../../languages/python/auth-security-patterns/SKILL.md) | Password hashing (bcrypt + SHA-256 pre-hash) and JWT session design |
 
 ### Frontend (server-rendered)
 
 | Skill | What it covers |
 |---|---|
-| [`create-frontend-htmx-jinja2-fastapi-app`](../../coding/create-frontend-htmx-jinja2-fastapi-app/SKILL.md) | Server-rendered FastAPI + Jinja2 + HTMX frontends |
+| [`create-frontend-htmx-jinja2-fastapi-app`](../../languages/python/create-frontend-htmx-jinja2-fastapi-app/SKILL.md) | Server-rendered FastAPI + Jinja2 + HTMX frontends |
 
 ### Code quality
 
 | Skill | What it covers |
 |---|---|
-| [`code-review-rules`](../../coding/code-review-rules/SKILL.md) | Fast-pass checklist of non-negotiable hard rules — a violation is a blocker |
-| [`declarative-method-structure`](../../coding/declarative-method-structure/SKILL.md) | Tell, don't ask — flat structure, early returns, no nested conditionals |
+| [`code-review-rules`](../../languages/python/code-review-rules/SKILL.md) | Fast-pass checklist of non-negotiable hard rules — a violation is a blocker |
+| [`declarative-method-structure`](../../coding/declarative-method-structure/SKILL.md) | Shared Tell, don't ask — flat structure, early returns, and coherent decomposition; read the language specialization afterward |
 | [`naming-and-clarity`](../../coding/naming-and-clarity/SKILL.md) | Self-describing names, Build/Create/BuildAndCreate and publish/consume verbs |
-| [`method-docstrings`](../../coding/method-docstrings/SKILL.md) | Google-style docstrings on every method and function |
-| [`named-arguments-and-type-hints`](../../coding/named-arguments-and-type-hints/SKILL.md) | Keyword arguments and explicit type hints everywhere |
+| [`method-docstrings`](../../languages/python/method-docstrings/SKILL.md) | Google-style docstrings on every method and function |
+| [`named-arguments-and-type-hints`](../../languages/python/named-arguments-and-type-hints/SKILL.md) | Keyword arguments and explicit type hints everywhere |
 | [`code-test-loop`](../../coding/code-test-loop/SKILL.md) | The coding cadence — code → test → green → next chunk |
 
 ### Testing
@@ -357,21 +363,21 @@ drops the review and completion-check steps.
 | Skill | What it covers |
 |---|---|
 | [`test-verification-policy`](../../coding/test-verification-policy/SKILL.md) | Coverage and decision-path checklist before declaring tests done |
-| [`test-domain-services`](../../coding/test-domain-services/SKILL.md) | Testing domain services — Pydantic DAOs, service methods, persistence |
-| [`test-app-services`](../../coding/test-app-services/SKILL.md) | Testing application services with mocked dependencies |
-| [`test-controllers`](../../coding/test-controllers/SKILL.md) | Testing FastAPI routers via `TestClient` |
-| [`setup-dependencies-and-tests`](../../coding/setup-dependencies-and-tests/SKILL.md) | Postgres, Docker, `conftest.py`, transactional fixtures |
-| [`switch-environments-and-run-tests`](../../coding/switch-environments-and-run-tests/SKILL.md) | Environment switching and test execution |
+| [`test-domain-services`](../../languages/python/test-domain-services/SKILL.md) | Testing domain services — Pydantic DAOs, service methods, persistence |
+| [`test-app-services`](../../languages/python/test-app-services/SKILL.md) | Testing application services with mocked dependencies |
+| [`test-controllers`](../../languages/python/test-controllers/SKILL.md) | Testing FastAPI routers via `TestClient` |
+| [`setup-dependencies-and-tests`](../../languages/python/setup-dependencies-and-tests/SKILL.md) | Postgres, Docker, `conftest.py`, transactional fixtures |
+| [`switch-environments-and-run-tests`](../../languages/python/switch-environments-and-run-tests/SKILL.md) | Environment switching and test execution |
 
 ### Setup and tooling
 
 | Skill | What it covers |
 |---|---|
-| [`setup-alembic`](../../coding/setup-alembic/SKILL.md) | Initialising and managing Alembic migrations |
-| [`python-path-and-import-resolution`](../../coding/python-path-and-import-resolution/SKILL.md) | `PYTHONPATH` convention and import-failure debugging |
-| [`build-api-documentation`](../../coding/build-api-documentation/SKILL.md) | Redoc + FastAPI API docs |
-| [`generate-swagger-documentation`](../../coding/generate-swagger-documentation/SKILL.md) | OpenAPI / Swagger docs across multiple services |
-| [`build-vscode-launch-configurations`](../../coding/build-vscode-launch-configurations/SKILL.md) | Authoring VS Code launch configurations |
+| [`setup-alembic`](../../languages/python/setup-alembic/SKILL.md) | Initialising and managing Alembic migrations |
+| [`python-path-and-import-resolution`](../../languages/python/python-path-and-import-resolution/SKILL.md) | `PYTHONPATH` convention and import-failure debugging |
+| [`build-api-documentation`](../../languages/python/build-api-documentation/SKILL.md) | Redoc + FastAPI API docs |
+| [`generate-swagger-documentation`](../../languages/python/generate-swagger-documentation/SKILL.md) | OpenAPI / Swagger docs across multiple services |
+| [`build-vscode-launch-configurations`](../../languages/python/build-vscode-launch-configurations/SKILL.md) | Authoring VS Code launch configurations |
 
 ## Git Ops
 

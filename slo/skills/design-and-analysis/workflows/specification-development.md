@@ -3,10 +3,42 @@
 **Type:** Pipeline
 **Governs:** All feature specification work in this repository
 
+## Scoped guidance and phase handoff contract
+
+**Workflow-turn accounting:** Follow
+`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+Count a full pass through the workflow, not individual phases or agent calls.
+Report partial passes and separate harness limits explicitly; never skip review
+or treat repeated authoring dispatches as completed workflow turns.
+
+
+Before Step 1 read `skills/engineering/engineering-routing/SKILL.md` and
+`skills/engineering/engineering-testing/SKILL.md`. Record affected languages,
+frameworks, test categories, project contracts, selected skill paths/source tiers,
+and actual project verification commands. Pass this record to every phase.
+Load language/component recipes on demand; do not impose Python syntax or tooling
+on Go, TypeScript or an unsupported language. For Go use the test-first cadence.
+
+Each phase returns a terminal verdict (READY/COMPLETE, REVISE, or FAILED), concrete
+artifact paths, requirement-to-evidence mapping, exact commands/results, deviations
+and unresolved blockers. Verify artifacts exist before advancing; a success exit
+code without the required evidence is not READY. Revision changes invalidate later
+review/completion evidence: return to the responsible implementation/spec phase,
+retest and re-review. Preserve the workflow's original manual/auto confirmations.
+An execution failure stops progression; a recoverable failed task may be retried
+up to three times after the initial attempt, with its cause addressed and within
+the current workflow turn's dispatch budget. Never retry an aborted task, even when
+the reported cause is a timeout. User cancellation is not permission to restart work.
+Do not claim another agent independently reviewed work that was reviewed solo.
+
+For dynamic workflows use in-session spawn_sub_agents unless explicitly detached;
+ordinary workflow execution does not itself grant permission to spawn. A detached
+orchestrator never launches another detached workflow. A missing optional knowledge
+base is non-blocking; follow `skills/design-and-analysis/locate-knowledge-base/SKILL.md`.
+
 ## Skills used in this workflow
 
-Load these on demand as each step calls for them — you do not need to read any
-other skill file to run this workflow:
+Load these on demand as each step calls for them — also load the scoped language/component companions selected by the routing record:
 
 | Step | Skill |
 |---|---|

@@ -12,6 +12,50 @@ kind: workflow
 **Governs:** All feature implementation work tracked as a GitLab issue in this repository
 **Extends:** [Code-Test-Review](code-test-review.md) + [GitLab Issues](../../git-ops/gitlab-issues/SKILL.md)
 
+## Scoped guidance and phase handoff contract
+
+**Workflow-turn accounting:** Follow
+`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+Count a full pass through the workflow, not individual phases or agent calls.
+Report partial passes and separate harness limits explicitly; never skip review
+or treat repeated authoring dispatches as completed workflow turns.
+
+
+Before Step 1 read `skills/engineering/engineering-routing/SKILL.md` and
+`skills/engineering/engineering-testing/SKILL.md`. Record affected languages,
+frameworks, test categories, project contracts, selected skill paths/source tiers,
+and actual project verification commands. Pass this record to every phase.
+Load language/component recipes on demand; do not impose Python syntax or tooling
+on Go, TypeScript or an unsupported language. For Go use the test-first cadence.
+
+## Additive prerequisite handoff
+
+The coding phase also consumes `skills/coding/coding-rules/SKILL.md` before
+implementation. The routing record preserves this order: project context →
+generic coding rules → applicable language root → applicable feature/framework
+recipes → bounded implementation and verification. Applicable specific guidance
+overrides the generic default on the affected point; unresolved
+specific-to-specific conflicts remain explicit blockers. This is a read and
+handoff requirement only; it does not change phase order, review meaning,
+completion meaning, GitLab lifecycle, or engineering authority.
+
+Each phase returns a terminal verdict (READY/COMPLETE, REVISE, or FAILED), concrete
+artifact paths, requirement-to-evidence mapping, exact commands/results, deviations
+and unresolved blockers. Verify artifacts exist before advancing; a success exit
+code without the required evidence is not READY. Revision changes invalidate later
+review/completion evidence: return to the responsible implementation/spec phase,
+retest and re-review. Preserve the workflow's original manual/auto confirmations.
+An execution failure stops progression; a recoverable failed task may be retried
+up to three times after the initial attempt, with its cause addressed and within
+the current workflow turn's dispatch budget. Never retry an aborted task, even when
+the reported cause is a timeout. User cancellation is not permission to restart work.
+Do not claim another agent independently reviewed work that was reviewed solo.
+
+For dynamic workflows use in-session spawn_sub_agents unless explicitly detached;
+ordinary workflow execution does not itself grant permission to spawn. A detached
+orchestrator never launches another detached workflow. A missing optional knowledge
+base is non-blocking; follow `skills/design-and-analysis/locate-knowledge-base/SKILL.md`.
+
 ## Skills used in this workflow
 
 | Step | Skill |
@@ -70,7 +114,7 @@ Before the pre-step begins, confirm:
 - `AGENTS.md` and `docs/RESEARCH.md` have been read (or are already in context).
 - The relevant KB folders have been consulted for the feature's surface area.
 - All applicable `build-*.md` files for the layers this task touches have been read.
-- The always-on rules are loaded: named arguments, type hints, declarative methods, method docstrings, test verification policy.
+- Shared engineering policies and scoped language/component rules are loaded through engineering-routing.
 
 ---
 
@@ -139,41 +183,31 @@ Wait for confirmation before continuing.
 
 This step is identical to Step 1 of the [Code-Test-Review workflow](code-test-review.md). All rules apply without exception.
 
+The Step 1 handoff also includes `skills/coding/coding-rules/SKILL.md` and the
+routing record from the workflow preconditions; it does not alter the GitLab
+issue or MR lifecycle.
+
 Implement the feature by working through each implementation unit in dependency order (migrations → domain models/DAOs → domain services → application services → routers → workers → frontend). For each unit:
 
-1. Write the implementation unit (one function, class, route handler, migration, or component — bounded scope, single purpose).
-2. Write the tests for that unit (one test per decision point).
+1. Identify a bounded unit and its decision-path tests.
+2. Apply the language cadence: Go test-first; implement and test only that unit.
 3. Run the tests and confirm green.
 4. Run the surrounding suite to confirm no regressions.
 5. Only then start the next unit.
 
 The agent must not write more than ~50 lines without running the corresponding tests.
 
-**Coding conventions (all of them, always):**
+**Coding conventions:** Shared ownership/testing plus scoped language/component contracts from the routing record. Go test-first; Python and TypeScript retain their approved idioms.
 
-- Named arguments on every call with 2+ arguments
-- Type hints on every function signature and return type
-- Google-style docstrings on all public methods
-- Declarative method structure — no nested if-else, one decision per method, guard clauses at the top
-- Service namespace prefixes on every `app.include_router(...)`
-- Ubiquitous language — one concept, one name across every layer
-- Three-file domain pattern — `model.py`, `dao.py`, `service.py`
-- `invoke()` orchestration pattern for application services
-- New models registered in `src/models/model.py` for Alembic
-
-**Running tests:**
-
-```bash
-loadenv environments/test.env
-PYTHONPATH=${PWD} poetry run pytest -sv tests/path/to/test_file.py::TestClass
-```
+Use the exact targeted/package/full-suite commands from the project routing
+record, with its test environment and build variants. Include build/static/race
+checks where applicable; report blocked or baseline failures, never invent green.
 
 After all individual units pass:
 
-```bash
-loadenv environments/test.env
-PYTHONPATH=${PWD} poetry run pytest -sv tests/
-```
+Use the exact targeted/package/full-suite commands from the project routing
+record, with its test environment and build variants. Include build/static/race
+checks where applicable; report blocked or baseline failures, never invent green.
 
 **READY condition:** every decision point is covered by a passing test; the full suite is green; no failing tests are skipped or disabled.
 
@@ -438,7 +472,7 @@ The GitLab Code-Test-Review Workflow is complete when:
 
 The following rules remain in effect throughout this entire workflow:
 
-- The code+test cadence is non-negotiable. Write a unit, test it, run it green, then proceed.
+- The code+test cadence is non-negotiable. Follow the selected language test ordering, verify each unit green, then proceed.
 - All always-on coding conventions from `CLAUDE.md` apply to every line of code written.
 - Secret scanning before every commit — eye-scan all staged content for API keys, tokens, bcrypt hashes, and private keys.
 - **Confirmation before commit, push, or PR** — never commit, push, or create an MR without showing the operator the commit message and awaiting explicit approval.

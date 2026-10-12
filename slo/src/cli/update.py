@@ -50,6 +50,8 @@ class Updater:
 
     # ---- Repository identity (keep in sync with install.sh) ----------------
     REPO_URL: ClassVar[str] = "https://gitlab.com/core-27/slo.git"
+    FALLBACK_REPO_URL: ClassVar[str] = "https://github.com/slostack/slo.git"
+    REMOTE_TIMEOUT_SECONDS: ClassVar[int] = 30
     REPO_SUBDIR: ClassVar[str] = "slo"  # the project lives in slo/, not the repo root
     PYTHON_VERSION: ClassVar[str] = "3.11.7"
 
@@ -67,7 +69,7 @@ class Updater:
                 ``development`` and the default latest-release resolution.
         """
         target = ref or ("main" if development else cls.resolve_latest_release_tag())
-        cls._pipx_install(spec=cls._pipx_spec(ref=target))
+        cls._install_with_fallback(ref=target)
         ShellEnvironmentDefaults.finalize_launcher()
         ShellEnvironmentDefaults.ensure(environ=os.environ)
 
@@ -84,39 +86,156 @@ class Updater:
         Raises:
             SystemExit: When the remote exposes no ``vX.Y.Z`` tags.
         """
-        completed = subprocess.run(
-            ["git", "ls-remote", "--tags", "--refs", cls.REPO_URL],
-            check=True,
-            text=True,
-            capture_output=True,
-        )
+        repo_url = cls._repo_url()
+        try:
+            completed = cls._ls_remote(repo_url=repo_url, tags=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            fallback = cls._fallback_repo_url()
+            if not fallback:
+                raise
+            cls._announce_fallback()
+            repo_url = fallback
+            completed = cls._ls_remote(repo_url=repo_url, tags=True)
+        return cls._latest_release_tag(output=completed.stdout, repo_url=repo_url)
+
+    @classmethod
+    def _latest_release_tag(cls, *, output: str, repo_url: str) -> str:
+        """Select the highest numeric release from a reachable repository's tags.
+
+        Args:
+            output: Git ls-remote tag output.
+            repo_url: Source used for the no-release diagnostic.
+
+        Returns:
+            The highest release tag.
+
+        Raises:
+            SystemExit: The reachable repository has no release tags.
+        """
         versions: list[tuple[tuple[int, int, int], str]] = []
-        for line in completed.stdout.splitlines():
+        for line in output.splitlines():
             tag = line.rsplit("refs/tags/", 1)[-1].strip()
             if (match := cls._VERSION_TAG_RE.match(tag)) is not None:
                 versions.append(((int(match[1]), int(match[2]), int(match[3])), tag))
         if not versions:
             raise SystemExit(
-                f"slo update: no vX.Y.Z release tags found on {cls.REPO_URL}. "
+                f"slo update: no vX.Y.Z release tags found on {repo_url}. "
                 "Use --development to track main, or --ref to pin a branch/tag/commit."
             )
         versions.sort()
         return versions[-1][1]
 
     @classmethod
-    def _pipx_spec(cls, *, ref: str) -> str:
+    def _pipx_spec(cls, *, ref: str, repo_url: Optional[str] = None) -> str:
         """Build the public pip VCS requirement ``git+<url>@<ref>#subdirectory=<subdir>``.
 
         Args:
             ref: The git ref to install.
+            repo_url: Selected repository; defaults to the configured primary.
 
         Returns:
             The pip requirement string passed to ``pipx install``.
         """
-        spec = f"git+{cls.REPO_URL}@{ref}"
+        spec = f"git+{repo_url or cls._repo_url()}@{ref}"
         if cls.REPO_SUBDIR:
             spec += f"#subdirectory={cls.REPO_SUBDIR}"
         return spec
+
+    @classmethod
+    def _repo_url(cls) -> str:
+        """Return the primary repository configured for this update."""
+        return os.environ.get("SLO_REPO_URL") or cls.REPO_URL
+
+    @classmethod
+    def _fallback_repo_url(cls) -> str:
+        """Return the mirror, without substituting Slo for an unrelated custom repo.
+
+        An explicitly empty SLO_REPO_FALLBACK_URL disables fallback. Custom
+        primaries require an explicit mirror URL; identical URLs disable retries.
+        """
+        default = cls.FALLBACK_REPO_URL if cls._repo_url() == cls.REPO_URL else ""
+        fallback = os.environ.get("SLO_REPO_FALLBACK_URL", default)
+        return fallback if fallback != cls._repo_url() else ""
+
+    @classmethod
+    def _install_with_fallback(cls, *, ref: str) -> None:
+        """Retry the same ref on the mirror only if the primary is inaccessible.
+
+        Args:
+            ref: Resolved branch, tag or commit, unchanged across attempts.
+
+        Raises:
+            subprocess.CalledProcessError: Installation fails, or both sources fail.
+            OSError: A required local executable is unavailable.
+        """
+        try:
+            cls._pipx_install(spec=cls._pipx_spec(ref=ref))
+        except subprocess.CalledProcessError:
+            fallback = cls._fallback_repo_url()
+            if not fallback or cls._remote_available(repo_url=cls._repo_url()):
+                raise
+            cls._announce_fallback()
+            cls._pipx_install(spec=cls._pipx_spec(ref=ref, repo_url=fallback))
+
+    @classmethod
+    def _remote_available(cls, *, repo_url: str) -> bool:
+        """Probe the primary after pipx fails, excluding ordinary build failures.
+
+        Args:
+            repo_url: Repository whose accessibility is checked.
+
+        Returns:
+            Whether git can read the remote refs within the bounded wait.
+        """
+        try:
+            cls._ls_remote(repo_url=repo_url)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return False
+        return True
+
+    @classmethod
+    def _ls_remote(cls, *, repo_url: str, tags: bool = False) -> subprocess.CompletedProcess[str]:
+        """Read remote refs without prompting, with a bounded transport wait.
+
+        Args:
+            repo_url: Primary or mirror URL, never populated with a token.
+            tags: Read release tags rather than all refs.
+
+        Returns:
+            Successful git output.
+
+        Raises:
+            subprocess.CalledProcessError: The repository is inaccessible.
+            subprocess.TimeoutExpired: Git exceeds the probe deadline.
+            OSError: Git cannot be started.
+        """
+        options = ["--tags", "--refs"] if tags else []
+        return subprocess.run(
+            args=["git", "ls-remote", *options, repo_url],
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=cls.REMOTE_TIMEOUT_SECONDS,
+            env=cls._git_environment(),
+        )
+
+    @staticmethod
+    def _git_environment() -> dict[str, str]:
+        """Keep existing Git auth, but prevent interactive and stalled HTTP fetches.
+
+        The same environment reaches pipx's git subprocesses. No API token is
+        read, embedded in a URL, or persisted by the updater.
+        """
+        env = dict(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env.setdefault("GIT_HTTP_LOW_SPEED_LIMIT", "1")
+        env.setdefault("GIT_HTTP_LOW_SPEED_TIME", "30")
+        return env
+
+    @staticmethod
+    def _announce_fallback() -> None:
+        """Report a source switch without printing potentially sensitive URLs."""
+        print("slo update: primary repository inaccessible; trying the mirror.", file=sys.stderr)
 
     @classmethod
     def _pipx_install(cls, *, spec: str) -> None:
@@ -133,7 +252,7 @@ class Updater:
         Args:
             spec: The pip VCS requirement to install.
         """
-        env = dict(os.environ)
+        env = cls._git_environment()
         if "PIPX_DEFAULT_BACKEND" not in env and cls._uv_present_but_broken():
             env["PIPX_DEFAULT_BACKEND"] = "pip"
         subprocess.run(

@@ -472,6 +472,22 @@ credential freshness or complete Feature 86 readiness.
 - `slo update` invokes the packaged `install.sh --finalize-launcher` immediately after a successful pipx reinstall and before conditional shell-default work. Direct pipx mutations bypass this step; recovery is the matching tagged public installer.
 - The wrapper ignores hostile Python import configuration but preserves ordinary process environment for its initial CLI process, including `SLO_SKILLS_DIR` and `SLO_KB_DIR`. Headless children remain sanitized-environment module spawns without `-I`; visualizer source fallback is trusted-source-only and does not forward `PYTHONPATH`.
 
+## Installer/update GitHub outage fallback
+
+- `install.sh` and `src/cli/update.py::Updater` default to GitLab with
+  `https://github.com/slostack/slo.git` as a one-shot outage fallback. A failed
+  pipx invocation is retried only when a subsequent bounded Git probe cannot
+  reach the primary; reachable-primary build failures are not retried.
+- Latest release discovery falls back on failed/timed-out remote tag lookup;
+  empty release sets on reachable repositories remain semantic errors.
+- Both paths honor `SLO_REPO_URL` / `SLO_REPO_FALLBACK_URL`; empty mirror disables
+  retries, identical URLs are not retried, and custom primaries have no default
+  official mirror. No setup token injection. Git terminal prompts are disabled.
+- GitHub mirror privacy is operationally separate: anonymous users cannot fetch
+  a private mirror. The GitLab push key is not a credential for installing users.
+- Tests: `tests/cli/test_update_mirror.py` (mocked orchestration/transport) and
+  `tests/cli/test_install_mirror.py` (real Bash with temp-owned fake commands).
+
 ## Environment defaults and `slo update` (supersedes spec 80.a.2)
 
 - `install.sh` is still the only writer of shell state. `slo update` (all modes)

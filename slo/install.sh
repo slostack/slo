@@ -24,6 +24,7 @@
 #   SLO_VERSION        version to install (default: pinned release baked in at
 #                      publish time). Pass "dev" to track the main branch.
 #   SLO_REPO_URL       git URL to install from (default below)
+#   SLO_REPO_FALLBACK_URL mirror used when the primary is inaccessible; empty disables
 #   SLO_PYTHON_VERSION pinned interpreter version (default: 3.11.7)
 #
 # Testability: every function below is sourceable. The `main` dispatch at the
@@ -34,6 +35,12 @@ set -euo pipefail
 
 # ---- Configuration (single source of truth) --------------------------------
 SLO_REPO_URL="${SLO_REPO_URL:-https://gitlab.com/core-27/slo.git}"
+# Do not silently replace a custom repository with the official Slo mirror.
+if [ "$SLO_REPO_URL" = "https://gitlab.com/core-27/slo.git" ]; then
+    SLO_REPO_FALLBACK_URL="${SLO_REPO_FALLBACK_URL-https://github.com/slostack/slo.git}"
+else
+    SLO_REPO_FALLBACK_URL="${SLO_REPO_FALLBACK_URL-}"
+fi
 SLO_REF="${SLO_REF:-main}"
 SLO_PYTHON_VERSION="${SLO_PYTHON_VERSION:-3.11.7}"
 
@@ -336,7 +343,7 @@ slo_pipx_spec() {
     # SLO_REPO_SUBDIR to override; set it to empty for a root-level project.
     # The repository is public. Keep the URL exactly as configured so this
     # installer never reads, embeds, or writes repository credentials.
-    local url="$SLO_REPO_URL"
+    local url="${1:-$SLO_REPO_URL}"
     local subdir="${SLO_REPO_SUBDIR-slo}"
     local frag=""
     [ -n "$subdir" ] && frag="#subdirectory=${subdir}"
@@ -383,11 +390,52 @@ slo_install() {
         slo_log "uv on PATH is not runnable; forcing pipx pip backend"
         export PIPX_DEFAULT_BACKEND=pip
     fi
-    local spec python_bin
+    local spec python_bin status
     spec="$(slo_pipx_spec)"
     python_bin="$(slo_python_bin)"
-    slo_log "installing slo via pipx (python: $python_bin) from ${SLO_REPO_URL}@${SLO_REF}"
+    # Credentials stay with Git's existing helpers; never embed setup tokens.
+    export GIT_TERMINAL_PROMPT=0
+    export GIT_HTTP_LOW_SPEED_LIMIT="${GIT_HTTP_LOW_SPEED_LIMIT:-1}"
+    export GIT_HTTP_LOW_SPEED_TIME="${GIT_HTTP_LOW_SPEED_TIME:-30}"
+    slo_log "installing slo via pipx (python: $python_bin) from the primary repository at ${SLO_REF}"
+    if pipx install --force --python "$python_bin" "$spec"; then
+        return 0
+    else
+        status=$?
+    fi
+    # A missing executable, custom source, or explicit opt-out is not an outage.
+    if [ "$status" = "127" ] || [ -z "$SLO_REPO_FALLBACK_URL" ] || [ "$SLO_REPO_FALLBACK_URL" = "$SLO_REPO_URL" ]; then
+        return "$status"
+    fi
+    if slo_remote_available "$SLO_REPO_URL" "$python_bin"; then
+        # GitLab can be reached: preserve build/dependency/missing-ref errors.
+        return "$status"
+    fi
+    slo_log "primary repository inaccessible; trying the mirror at the same ref (${SLO_REF})"
+    spec="$(slo_pipx_spec "$SLO_REPO_FALLBACK_URL")"
     pipx install --force --python "$python_bin" "$spec"
+}
+
+slo_remote_available() {
+    # Use the install interpreter to bound git's whole probe on macOS and Linux,
+    # without relying on GNU timeout. Python is already provisioned by main.
+    "$2" - "$1" <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["git", "ls-remote", sys.argv[1]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+except subprocess.TimeoutExpired:
+    sys.exit(1)
+except OSError:
+    sys.exit(0)  # Missing local git must not masquerade as a server outage.
+sys.exit(0 if result.returncode == 0 else 1)
+PY
 }
 
 # ---- 7. Shell environment finalisation (spec 80) ----------------------------

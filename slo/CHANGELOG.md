@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- GitHub outage fallback for the pipx installer and `slo update`. GitLab remains
+  primary; an inaccessible primary permits one retry from `slostack/slo` with the
+  same ref and package subdirectory. Latest-release tag lookup also falls back.
+  Reachable-primary build/dependency failures are not retried. Custom repository
+  URLs require an explicit mirror; `SLO_REPO_FALLBACK_URL=''` disables fallback.
+  Anonymous installs require a public mirror; setup tokens are never embedded.
+
 ## [0.21.1] — Unreleased
 
 Local release candidate only: static gates remain unwaived, independent review

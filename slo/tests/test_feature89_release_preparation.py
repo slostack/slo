@@ -9,11 +9,11 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_candidate_version_and_notes_agree() -> None:
-    """Keep candidate metadata and unreleased notes aligned without installing it."""
+    """Keep current metadata and release notes aligned without installing it."""
     project = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.21.1"
+    version = project["project"]["version"]
     notes = (APP_ROOT / "CHANGELOG.md").read_text()
-    assert "## [0.21.1] — Unreleased" in notes
+    assert f"## [{version}] — " in notes
     for identity in ("gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "openrouter:typesafe/jev-router"):
         assert identity in notes
     assert "subscription OAuth" in notes

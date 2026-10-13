@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.21.2] — 2026-10-13
+
 ### Added
 
 - GitHub outage fallback for the pipx installer and `slo update`. GitLab remains
@@ -10,6 +12,15 @@
   Reachable-primary build/dependency failures are not retried. Custom repository
   URLs require an explicit mirror; `SLO_REPO_FALLBACK_URL=''` disables fallback.
   Anonymous installs require a public mirror; setup tokens are never embedded.
+
+### Fixed
+
+- Release-preparation validation checks the current package version against the
+  changelog instead of hard-coding the previous release candidate.
+
+### Changed
+
+- Include the merged skills reorganization from main.
 
 ## [0.21.1] — Unreleased
 

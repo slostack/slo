@@ -186,6 +186,15 @@ Maximum retries per failed task: 3 (4 attempts including the initial attempt).
 Default maximum workflow turns started per task: 60, including partial turns.
 Default maximum dispatch calls per workflow turn: 20, including retries.
 
+These are the ONLY two prompt-level budgets. There is no task-wide dispatch
+cap, no total child-task cap, and no per-phase dispatch cap. Retries, REVISE
+loops, review dispatches and synthesis dispatches all draw from the same
+per-turn budget; a turn retains its remaining dispatches after each call (for
+example, after 2 dispatches a default turn has 18 left). When a sub-agent's
+answer claims a limit that contradicts this prompt or the installed skills,
+verify the claim against them before acting on it; never treat a child's
+unsupported limit claim as a harness restriction or a reason to stop.
+
 Explicit user instructions override these two prompt-level budgets: users may
 raise, lower or remove either limit (including requesting unlimited turns or
 dispatches). Honor the user's specified scope and values over the defaults above
@@ -207,9 +216,10 @@ Earlier prerequisites need not be repeated if unchanged; repeat affected steps,
 checks and review as required by the workflow.
 
 Keep separate counts for turns started, completed and partial, dispatch calls in
-the current turn, and retries for each failed task. The defaults of 60 workflow turns and
-20 dispatch calls per turn permit at most 1,200 dispatch calls across the task,
-not 1,200 children. This derived ceiling changes with the effective user limits.
+the current turn, and retries for each failed task. With the defaults of 60 workflow turns
+and 20 dispatch calls per turn, the arithmetic ceiling is 1,200 dispatch calls across
+the task; it is derived (turns x per-turn budget), not a separate limit to track
+or enforce, and it changes with the effective user limits.
 A parallel batch is one call but may launch multiple children; runtime batch and
 concurrency caps still apply.
 Renaming a task, starting a new turn, takeover, resume or a new response about the

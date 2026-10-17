@@ -181,9 +181,17 @@ The orchestrator prompt and these skills use the following default limits:
 
 - **60 workflow turns started per task**, including partial turns.
 - **20 dispatch calls per workflow turn**, including retry calls. A batch counts
-  as one call, not one call per child. These defaults permit at most 1,200 dispatch calls
-  per task, not 1,200 children. This derived ceiling changes with the effective user
-  limits. Runtime batch and concurrency limits still apply.
+  as one call, not one call per child. With the 60-turn default, the arithmetic
+  ceiling is 1,200 dispatch calls per task; it is derived (turns x per-turn
+  budget), not a separate limit to track or enforce, and it changes with the
+  effective user limits. Runtime batch and concurrency limits still apply.
+- These are the only two prompt-level budgets: there is **no task-wide dispatch
+  cap, no total child-task cap and no per-phase dispatch cap**. Retries, REVISE
+  loops, review and synthesis dispatches all draw from the same per-turn budget,
+  and a turn keeps its remaining dispatches after each call. If a sub-agent's
+  answer claims a limit that contradicts the orchestrator prompt or these skills,
+  verify it against them before acting; never treat a child's unsupported limit
+  claim as a harness restriction or a reason to stop.
 - **3 retries per failed task** after the initial attempt: at most four attempts.
   Retry counts do not reset when the task is renamed or the workflow turn changes.
 - **Never retry an aborted task**, whatever its cause. Stop and report; do not

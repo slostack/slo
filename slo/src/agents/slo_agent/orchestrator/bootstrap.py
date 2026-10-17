@@ -87,7 +87,8 @@ class OrchestratorSessionBootstrap:
 
         Args:
             session (SloAgentSession): Owning session providing its id and
-                active model.
+                active model and reasoning snapshots. Later setting changes or
+                pending preparation do not refresh the bound launch defaults.
             headless (bool): True when promoting a headless ``slo run
                 --orchestrator`` session; withholds the detached-workflow tools
                 so a detached orchestrator can never recurse.
@@ -117,6 +118,7 @@ class OrchestratorSessionBootstrap:
             LaunchWorkflowTool.build(
                 owner_session_id=session.session_id,
                 default_model=session.active_model_name,
+                default_reasoning_level=session.active_reasoning_level,
                 handle_store=store,
             ),
             WorkflowStatusTool.build(owner_session_id=session.session_id, store=store),

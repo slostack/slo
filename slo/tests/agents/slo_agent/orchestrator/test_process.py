@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.agents.reasoning_capabilities import ReasoningLevel
 from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
 from src.agents.slo_agent.orchestrator.process import (
     PER_TASK_OUTPUT_CAP,
@@ -86,6 +87,30 @@ def _make_stream_reader(
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("level", ["medium", None])
+def test_phase_reasoning_is_independent_of_orchestrator(
+    level: Optional[ReasoningLevel], tmp_path: Path
+) -> None:
+    """A high configured parent does not supply reasoning to a phase task."""
+    from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+    from src.agents.slo_agent.sessions.service import SloAgentSession
+
+    parent = SloAgentSession.build(
+        config=SessionConfigDAO(
+            workdir=tmp_path, model_name="gpt-5.4", reasoning_level="high", enable_history=False
+        )
+    )
+    process, _ = _make_process(parent_session_id=parent.session_id)
+    process._task = SubAgentTaskDAO(task_id="t1", prompt="phase", reasoning_level=level)
+    argv = process._build_argv()
+    assert parent.active_reasoning_level == "high"
+    if level is None:
+        assert "--reasoning" not in argv
+    else:
+        assert argv.count("--reasoning") == 1
+        assert argv[argv.index("--reasoning") + 1] == "medium"
 
 
 class TestSubAgentProcessArgvBuilding:

@@ -967,13 +967,16 @@ for counting and stopping rules. One workflow turn is a complete pass through
 all required phases, not one agent dispatch. Track partial passes, phase retries
 and dispatch limits separately. Disclose a harness budget conflict before launch;
 never claim repeated writing attempts were complete writing-and-review cycles.
-The default orchestrator prompt allows eight workflow turns started per task,
-including partial turns, and six dispatch calls per workflow turn (retries
-included): at most 48 calls per task. Failed tasks allow three retries after the
-initial attempt; aborted tasks are never retried. A new revision turn resets only
+The default orchestrator prompt allows 60 workflow turns started per task,
+including partial turns, and 20 dispatch calls per workflow turn (retries
+included): at most 1,200 calls per task by default. Failed tasks allow three retries
+after the initial attempt; aborted tasks are never retried. A new revision turn resets only
 its dispatch count, not task-wide turns or failed-task retries. Resume and takeover
-preserve counts. These are prompt rules, not runtime counters. The runtime pool
-defaults to six concurrent children via `SLO_SUBAGENT_MAX_CONCURRENCY`, a separate
+preserve counts. These are prompt rules, not runtime counters.
+Explicit user instructions override these two budgets, including higher, lower or unlimited values; honor the user's
+scope over workflow-specific numeric defaults. Record effective limits and retain
+consumed counts. Runtime caps, retry/abort policy and required review are unchanged.
+The runtime pool defaults to six concurrent children via `SLO_SUBAGENT_MAX_CONCURRENCY`, a separate
 limit. Advance on verified phase verdicts and artifacts, not process exit alone.
 
 ## Feature 87 — layered skill discovery

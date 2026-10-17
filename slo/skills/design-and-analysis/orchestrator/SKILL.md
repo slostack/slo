@@ -35,6 +35,10 @@ kind: workflow
 Count a full pass through the workflow, not individual phases or agent calls.
 Report partial passes and separate harness limits explicitly; never skip review
 or treat repeated authoring dispatches as completed workflow turns.
+Explicit user instructions override the default workflow-turn and per-turn dispatch
+budgets: raise, lower or remove either limit as requested. Record and pass on the
+effective limits without resetting consumed counts; runtime caps and other
+policies remain separate. See the shared rules above for defaults and scope.
 
 
 **Multi-language scope:** Begin with `skills/engineering/engineering-routing/SKILL.md`.

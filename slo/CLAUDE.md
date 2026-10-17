@@ -39,10 +39,14 @@ for counting and stopping rules. One workflow turn is a complete pass through
 all required phases, not one agent dispatch. Track partial passes, phase retries
 and dispatch limits separately. Disclose a harness budget conflict before launch;
 never claim repeated writing attempts were complete writing-and-review cycles.
-Limits: eight workflow turns started per task (partial turns included), six
-dispatch calls per turn, three retries per failed task, and no retries after an
+Defaults: 60 workflow turns started per task (partial turns included),
+20 dispatch calls per turn, three retries per failed task, and no retries after an
 abort. Resume and takeover preserve task-wide counts. Use `single` at review
 gates; process completion alone does not establish workflow acceptance.
+Explicit user instructions override the workflow-turn and per-turn dispatch budgets,
+including higher, lower or unlimited values, over workflow-specific numeric defaults.
+Record effective limits and preserve consumed counts. Runtime caps, retry/abort
+policy and required review are unchanged.
 
 ## Workflow Routing
 

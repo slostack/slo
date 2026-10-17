@@ -165,7 +165,7 @@ and its tests together when they form one step.
   check returns work to the revision-loop starting step, start the next turn.
 - Mark the previous turn partial if required later steps could not run. Four
   writing attempts without independent review are not four completed workflow
-  turns. Eight turns started includes partial turns; they consume the limit too.
+  turns. The default 60 turns started includes partial turns; they consume the limit too.
 - Local edits, test reruns, author self-checks and transient phase retries remain
   within their current turn. A retry or exhausted dispatch budget does not itself
   justify starting another turn.
@@ -177,19 +177,32 @@ and its tests together when they form one step.
 
 ### Limits and stopping
 
-The orchestrator prompt and these skills use the following limits:
+The orchestrator prompt and these skills use the following default limits:
 
-- **8 workflow turns started per task**, including partial turns.
-- **6 dispatch calls per workflow turn**, including retry calls. A batch counts
-  as one call, not one call per child. This permits at most 48 dispatch calls per
-  task, not 48 children. Runtime batch and concurrency limits still apply.
+- **60 workflow turns started per task**, including partial turns.
+- **20 dispatch calls per workflow turn**, including retry calls. A batch counts
+  as one call, not one call per child. These defaults permit at most 1,200 dispatch calls
+  per task, not 1,200 children. This derived ceiling changes with the effective user
+  limits. Runtime batch and concurrency limits still apply.
 - **3 retries per failed task** after the initial attempt: at most four attempts.
   Retry counts do not reset when the task is renamed or the workflow turn changes.
 - **Never retry an aborted task**, whatever its cause. Stop and report; do not
   automatically resume or relaunch it.
 
-A stricter user or workflow limit still applies. Start no ninth turn and make no
-seventh dispatch within a turn. Check before launch that the budget leaves room
+Explicit user instructions override these two prompt-level budgets (workflow turns
+and dispatches per turn): users may raise, lower or remove either limit (including requesting unlimited turns or
+dispatches). Honor the user's specified scope and values over the defaults above
+and workflow-specific numeric defaults; retain the default for any unspecified
+budget. Record the effective limits before starting and carry them into phase
+prompts and authorized continuations. Changing a budget does not reset consumed
+counts. Without an explicit user override, a stricter workflow limit still applies.
+These overrides do not change runtime batch, concurrency or detached-workflow caps,
+retry/abort policy, required review, or cancellation handling. Disclose any
+remaining constraint rather than bypassing it.
+
+With the defaults, stop before turn 61 or dispatch 21 within a turn; when the user
+overrides a budget, stop at that effective limit instead (no numeric cutoff for
+an explicitly unlimited budget). Check before launch that the budget leaves room
 for required review; disclose conflicts instead of skipping stages. For ad-hoc
 work without a named workflow, use at most six dispatch calls for the task, not
 invented revision turns.
@@ -222,7 +235,7 @@ Example progress report:
 
 ```text
 Turn 1: code/tests finished; review requested changes.
-Completion check blocked: partial turn; it still consumes one of eight turns.
+Completion check blocked: partial turn; it still consumes one of the default 60 turns.
 Turn 2: fixes/tests finished; review and completion check passed.
 Totals: 2 turns started, 1 complete, 1 partial. Final verdict: COMPLETE.
 Dispatch calls per turn and failed-task retries: reported separately.

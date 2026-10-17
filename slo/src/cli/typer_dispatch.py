@@ -145,7 +145,8 @@ class TyperDispatch:
                 preferences then ``cfg("DEFAULT_MODEL_NAME")``.
             reasoning (Optional[str]): Reasoning level override
                 (``off``/``minimal``/``low``/``medium``/``high``/``xhigh``/``max``).
-                ``None`` keeps the model's seeded default.
+                ``None`` preserves the saved preference; the model's seeded
+                default applies only when no preference is configured.
             cwd (Optional[str]): Working directory for the run; ``None``
                 uses ``Path.cwd()``.
             enable_history (bool, optional): Persist history to disk.

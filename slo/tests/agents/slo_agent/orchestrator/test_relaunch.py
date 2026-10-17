@@ -9,8 +9,10 @@ import os
 import subprocess
 import sys
 import threading
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import IO
 from unittest.mock import AsyncMock
 
 import pytest
@@ -33,6 +35,31 @@ def _build_handle() -> WorkflowHandleDAO:
         cwd="/workspace",
         state="stalled",
     )
+
+
+async def test_resume_does_not_restore_initial_reasoning(tmp_path: Path) -> None:
+    """Initial high is not a durable handle field or a reconstructed resume flag."""
+    from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+    from src.agents.slo_agent.preferences.service import UserPreferencesStore
+    from src.cli.typer_dispatch import TyperDispatch
+    from tests.agents.slo_agent.orchestrator.test_launch_tool import _build_tool, _FakeSpawn
+
+    spawn = _FakeSpawn()
+    launch = _build_tool(tmp_path=tmp_path, spawn=spawn, default_reasoning_level="high")
+    handle = WorkflowHandleDAO.model_validate_json(
+        await launch.ainvoke({"brief": "bounded", "cwd": str(tmp_path)})
+    )
+    assert spawn.argv is not None
+    assert spawn.argv[-2:] == ("--reasoning", "high")
+    assert "reasoning_level" not in handle.model_dump()
+    argv = WorkflowRelauncher._build_argv(handle=handle)
+    assert "--reasoning" not in argv
+    assert argv[argv.index("--resume") + 1] == handle.orchestrator_session_id
+    assert argv[argv.index("--notify-session") + 1] == handle.owner_session_id
+    assert argv[argv.index("--cwd") + 1] == str(tmp_path)
+    UserPreferencesStore.upsert(reasoning_level="low")
+    config = TyperDispatch._build_session_config(workdir=tmp_path, model="gpt-5.4")
+    assert TyperDispatch._apply_reasoning_override(config=config, reasoning=None).reasoning_level == "low"
 
 
 def test_build_argv_resumes_original_session_and_brief() -> None:
@@ -232,14 +259,15 @@ async def test_cancelled_late_capture_open_closes_endpoint_without_workload_spaw
     endpoint_closed = threading.Event()
     spawn = AsyncMock()
 
-    class Endpoint:
-        """Capture-shaped endpoint that records late ownership teardown."""
+    class Endpoint(BytesIO):
+        """Binary endpoint that records late ownership teardown."""
 
         def close(self) -> None:
-            """Signal close after the cancelled worker returns this endpoint."""
+            """Close the binary stream and signal the late cleanup observer."""
+            super().close()
             endpoint_closed.set()
 
-    async def late_opener(**kwargs: object) -> Endpoint:
+    async def late_opener(**kwargs: object) -> IO[bytes]:
         """Return an endpoint only after the test has cancelled its waiter."""
         assert kwargs["name"] == name
         await release.wait()

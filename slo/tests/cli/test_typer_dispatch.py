@@ -331,6 +331,36 @@ class TestBuildSessionConfigPreferences:
         assert config.model_name == "fallback-model"
 
 
+def test_managed_reasoning_overrides_saved_preference(tmp_path: Path) -> None:
+    """Captured managed argv crosses the real CLI/preferences adapter unchanged."""
+    import asyncio
+    from typer.testing import CliRunner
+    from src.cli.app import app
+    from src.agents.slo_agent.preferences.service import UserPreferencesStore
+    from tests.agents.slo_agent.orchestrator.test_launch_tool import _build_tool, _FakeSpawn
+
+    UserPreferencesStore.upsert(reasoning_level="low", model_pool="gpt-5.4,kimi-k3")
+    spawn = _FakeSpawn()
+    launch = _build_tool(
+        tmp_path=tmp_path, spawn=spawn, default_model="kimi-k3", default_reasoning_level="low"
+    )
+    asyncio.run(
+        launch.ainvoke(
+            {"brief": "bounded", "cwd": str(tmp_path), "model": "gpt-5.4", "reasoning_level": "high"}
+        )
+    )
+    assert spawn.argv is not None
+    with patch("src.cli.typer_dispatch.HeadlessRunner") as runner:
+        runner.return_value.invoke = AsyncMock(return_value=0)
+        result = CliRunner().invoke(app=app, args=list(spawn.argv[3:]))
+    assert result.exit_code == 0, result.exception
+    config = runner.call_args.kwargs["config"]
+    assert config.reasoning_level == "high"
+    assert config.model_name == "gpt-5.4"
+    assert config.model_pool_dao is None
+    assert config.session_id == spawn.argv[spawn.argv.index("--session-id") + 1]
+
+
 class TestRunHeadlessReasoningOverride:
     """``run_headless`` applies the ``--reasoning`` flag to ``SessionConfigDAO``."""
 

@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from src.agents.slo_agent.orchestrator.dao import (
+    ChildAbortOutcomeDAO,
+    ChildAbortRequestDAO,
+    ChildControlCapabilityDAO,
+    ChildExecutionEvidenceDAO,
+    ExecutionIndexDAO,
+    StdoutCaptureIdentityDAO,
     FleetSnapshotDAO,
     build_cleanup_summary,
     project_fleet_entries,
@@ -15,6 +21,11 @@ from src.agents.slo_agent.orchestrator.dao import (
     SubAgentResultDAO,
     SubAgentStatusDAO,
     SubAgentTaskDAO,
+)
+from tests.agents.slo_agent.orchestrator.released_schemas import (
+    ReleasedFleetSnapshotDAO,
+    ReleasedSubAgentResultDAO,
+    ReleasedSubAgentStatusDAO,
 )
 
 
@@ -432,4 +443,294 @@ class TestSubAgentTaskDAOSystemPrompt:
                 task_id="t-sp3",
                 prompt="Run.",
                 unknown_extra_field="oops",  # type: ignore[call-arg]
+            )
+
+
+# ── Feature 94 T02: runtime execution identity and versioned evidence ─────────
+
+_EXECUTION_ID: str = "0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40"
+_RUN_ID: str = "7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f"
+_REQUEST_ID: str = "c3b2a190-8e7d-4c6b-9a58-473625140f0e"
+_STATUS_DIGEST: str = "a" * 64
+_CONTEXT_DIGEST: str = "b" * 64
+
+
+class TestReleasedWireSchemas:
+    """Runtime execution identity never leaks into released closed wire schemas."""
+
+    def test_status_and_fleet_dump_decode_with_released_readers(self) -> None:
+        """A fleet entry carrying execution_id serializes to the released fleet shape."""
+        entry: SubAgentStatusDAO = SubAgentStatusDAO(
+            task_id="t1", session_id="child-1", status="running", execution_id=_EXECUTION_ID
+        )
+        snapshot: FleetSnapshotDAO = FleetSnapshotDAO(
+            orchestrator_session_id="orch-1", entries=[entry], updated_at="2026-10-18T00:00:00+00:00"
+        )
+
+        raw: str = snapshot.model_dump_json(indent=2)
+
+        assert "execution_id" not in raw
+        decoded: ReleasedFleetSnapshotDAO = ReleasedFleetSnapshotDAO.model_validate_json(raw)
+        assert decoded.entries[0].session_id == "child-1"
+        assert entry.execution_id == _EXECUTION_ID
+
+    def test_result_dump_decodes_with_released_reader(self) -> None:
+        """A terminal result carrying execution_id serializes to the released status shape."""
+        result: SubAgentResultDAO = SubAgentResultDAO(
+            task_id="t1",
+            session_id="child-1",
+            status="completed",
+            answer="ok",
+            exit_code=0,
+            execution_id=_EXECUTION_ID,
+        )
+
+        raw: str = result.model_dump_json(indent=2)
+
+        assert "execution_id" not in raw
+        assert ReleasedSubAgentResultDAO.model_validate_json(raw).answer == "ok"
+
+    def test_current_wire_fields_match_released_fields(self) -> None:
+        """Only excluded runtime fields may differ from the released field sets."""
+        pairs: list[tuple[type[BaseModel], type[BaseModel]]] = [
+            (SubAgentStatusDAO, ReleasedSubAgentStatusDAO),
+            (SubAgentResultDAO, ReleasedSubAgentResultDAO),
+            (FleetSnapshotDAO, ReleasedFleetSnapshotDAO),
+        ]
+        for current, released in pairs:
+            wire: set[str] = {name for name, field in current.model_fields.items() if not field.exclude}
+            assert wire == set(released.model_fields), current.__name__
+
+    def test_runtime_execution_id_defaults_empty_for_legacy_rows(self) -> None:
+        """Legacy rows without identity remain readable with an empty execution_id."""
+        entry: SubAgentStatusDAO = SubAgentStatusDAO.model_validate_json(
+            '{"task_id": "t1", "session_id": "child-1"}'
+        )
+
+        assert entry.execution_id == ""
+
+    def test_runtime_execution_id_rejects_non_uuid(self) -> None:
+        """A non-empty runtime identity must be a canonical UUID."""
+        with pytest.raises(ValidationError):
+            SubAgentResultDAO(task_id="t1", session_id="s", status="failed", execution_id="not-a-uuid")
+
+    def test_runtime_execution_id_accepts_explicit_empty_legacy_value(self) -> None:
+        """An explicitly passed empty identity runs the validator and stays the legacy value."""
+        status: SubAgentStatusDAO = SubAgentStatusDAO(task_id="t1", session_id="s", execution_id="")
+        result: SubAgentResultDAO = SubAgentResultDAO(
+            task_id="t1", session_id="s", status="failed", execution_id=""
+        )
+
+        assert (status.execution_id, result.execution_id) == ("", "")
+
+
+class TestChildExecutionEvidenceDAO:
+    """Versioned sibling evidence owns the persisted incarnation phases."""
+
+    def test_pending_then_running_then_terminal_transitions(self) -> None:
+        """Each phase transition returns a new frozen value with phase-specific evidence."""
+        pending: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.pending(
+            session_id="child-1", execution_id=_EXECUTION_ID
+        )
+        running: ChildExecutionEvidenceDAO = pending.running(
+            stdout_identity=StdoutCaptureIdentityDAO(device=1, inode=2),
+            spawn_context_sha256=_CONTEXT_DIGEST,
+        )
+        terminal: ChildExecutionEvidenceDAO = running.terminal(
+            status="completed", status_sha256=_STATUS_DIGEST
+        )
+
+        assert (pending.phase, pending.status, pending.stdout_identity) == ("pending", "pending", None)
+        assert (running.phase, running.status) == ("running", "running")
+        assert running.stdout_identity == StdoutCaptureIdentityDAO(device=1, inode=2)
+        assert (terminal.phase, terminal.status, terminal.status_sha256) == (
+            "terminal",
+            "completed",
+            _STATUS_DIGEST,
+        )
+        assert terminal.stdout_identity == running.stdout_identity
+        assert terminal.execution_id == pending.execution_id == _EXECUTION_ID
+
+    def test_pending_terminal_without_spawn_has_no_stdout_identity(self) -> None:
+        """A pending abort publishes terminal status evidence with no capture identity."""
+        terminal: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.pending(
+            session_id="child-1", execution_id=_EXECUTION_ID
+        ).terminal(status="aborted", status_sha256=_STATUS_DIGEST)
+
+        assert terminal.stdout_identity is None
+        assert terminal.spawn_context_sha256 is None
+
+    def test_frozen(self) -> None:
+        """Evidence values cannot be mutated in place."""
+        evidence = ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=_EXECUTION_ID)
+
+        with pytest.raises(ValidationError):
+            evidence.phase = "running"  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"phase": "pending", "status": "running"},
+            {"phase": "running", "status": "running", "status_sha256": _STATUS_DIGEST},
+            {"phase": "terminal", "status": "completed"},
+            {"phase": "terminal", "status": "running", "status_sha256": _STATUS_DIGEST},
+            {"phase": "pending", "status": "pending", "spawn_context_sha256": _CONTEXT_DIGEST},
+            {"phase": "running", "status": "running", "spawn_context_sha256": "xyz"},
+            {"phase": "pending", "status": "pending", "extra": 1},
+        ],
+    )
+    def test_rejects_inconsistent_phase_evidence(self, payload: dict[str, object]) -> None:
+        """Phase, status and digests must agree before evidence can be constructed."""
+        with pytest.raises(ValidationError):
+            ChildExecutionEvidenceDAO.model_validate(
+                {"schema_version": 1, "session_id": "child-1", "execution_id": _EXECUTION_ID, **payload}
+            )
+
+    @pytest.mark.parametrize("session_id", ["", "../x", "a/b", "a\\b", ".."])
+    def test_rejects_unsafe_session_id(self, session_id: str) -> None:
+        """Session identity must be a safe path slug before it addresses evidence."""
+        with pytest.raises(ValidationError):
+            ChildExecutionEvidenceDAO.pending(session_id=session_id, execution_id=_EXECUTION_ID)
+
+    @pytest.mark.parametrize("execution_id", ["", "abc", _EXECUTION_ID.upper(), "{" + _EXECUTION_ID + "}"])
+    def test_rejects_non_canonical_execution_id(self, execution_id: str) -> None:
+        """Execution identity is a strictly parsed canonical UUID."""
+        with pytest.raises(ValidationError):
+            ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=execution_id)
+
+    def test_rejects_unknown_schema_version(self) -> None:
+        """Only schema version 1 is readable by this owner."""
+        with pytest.raises(ValidationError):
+            ChildExecutionEvidenceDAO.model_validate(
+                {
+                    "schema_version": 2,
+                    "session_id": "child-1",
+                    "execution_id": _EXECUTION_ID,
+                    "phase": "pending",
+                    "status": "pending",
+                }
+            )
+
+
+class TestExecutionIndexDAO:
+    """The execution index maps current fleet sessions to their incarnations."""
+
+    def test_valid_index_round_trips(self) -> None:
+        """A run-scoped index survives JSON round trip."""
+        index: ExecutionIndexDAO = ExecutionIndexDAO(
+            orchestrator_session_id="orch-1",
+            run_id=_RUN_ID,
+            executions={"child-1": _EXECUTION_ID},
+            updated_at="2026-10-18T00:00:00+00:00",
+        )
+
+        assert ExecutionIndexDAO.model_validate_json(index.model_dump_json()) == index
+
+    @pytest.mark.parametrize(
+        "update",
+        [{"run_id": "nope"}, {"executions": {"../x": _EXECUTION_ID}}, {"executions": {"child-1": "nope"}}],
+    )
+    def test_rejects_invalid_identity(self, update: dict[str, object]) -> None:
+        """Unsafe session keys and non-UUID identities are refused."""
+        payload: dict[str, object] = {
+            "orchestrator_session_id": "orch-1",
+            "run_id": _RUN_ID,
+            "executions": {"child-1": _EXECUTION_ID},
+            "updated_at": "now",
+            **update,
+        }
+        with pytest.raises(ValidationError):
+            ExecutionIndexDAO.model_validate(payload)
+
+
+class TestChildControlDAOs:
+    """Child-control request, outcome and capability structures (no capability yet)."""
+
+    def _request_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "request_id": _REQUEST_ID,
+            "owner_session_id": "owner-1",
+            "orchestrator_session_id": "orch-1",
+            "session_id": "child-1",
+            "run_id": _RUN_ID,
+            "execution_id": _EXECUTION_ID,
+        }
+
+    def test_request_accepts_exact_identity(self) -> None:
+        """A complete request carries only safe IDs and strict UUIDs."""
+        request: ChildAbortRequestDAO = ChildAbortRequestDAO.model_validate(self._request_payload())
+
+        assert request.execution_id == _EXECUTION_ID
+
+    @pytest.mark.parametrize(
+        "update",
+        [
+            {"request_id": "x"},
+            {"run_id": "x"},
+            {"execution_id": "x"},
+            {"session_id": "../child"},
+            {"owner_session_id": ""},
+            {"orchestrator_session_id": "a/b"},
+            {"pid": 123},
+            {"schema_version": 2},
+        ],
+    )
+    def test_request_rejects_unsafe_or_extra_fields(self, update: dict[str, object]) -> None:
+        """No PID, prompt, path or malformed identity can enter a request."""
+        with pytest.raises(ValidationError):
+            ChildAbortRequestDAO.model_validate({**self._request_payload(), **update})
+
+    def test_request_is_frozen(self) -> None:
+        """Requests are immutable once validated."""
+        request = ChildAbortRequestDAO.model_validate(self._request_payload())
+
+        with pytest.raises(ValidationError):
+            request.session_id = "other"  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        "outcome", ["requested", "aborted", "already_terminal", "not_owned", "unavailable", "unresolved"]
+    )
+    def test_outcome_accepts_each_literal(self, outcome: str) -> None:
+        """Each closed outcome literal is accepted with a fixed safe message."""
+        dao: ChildAbortOutcomeDAO = ChildAbortOutcomeDAO(
+            request_id=_REQUEST_ID,
+            session_id="child-1",
+            execution_id=_EXECUTION_ID,
+            outcome=outcome,  # type: ignore[arg-type]
+            safe_message="fixed",
+        )
+
+        assert dao.outcome == outcome
+
+    def test_outcome_rejects_unknown_literal_and_status(self) -> None:
+        """Unknown outcomes and non-status terminal values are refused."""
+        with pytest.raises(ValidationError):
+            ChildAbortOutcomeDAO(
+                request_id=_REQUEST_ID,
+                session_id="child-1",
+                execution_id=_EXECUTION_ID,
+                outcome="done",  # type: ignore[arg-type]
+                safe_message="x",
+            )
+        with pytest.raises(ValidationError):
+            ChildAbortOutcomeDAO(
+                request_id=_REQUEST_ID,
+                session_id="child-1",
+                execution_id=_EXECUTION_ID,
+                outcome="aborted",
+                terminal_status="gone",  # type: ignore[arg-type]
+                safe_message="x",
+            )
+
+    def test_capability_validates_identity(self) -> None:
+        """Capabilities carry strict run identity and an accepting flag."""
+        capability: ChildControlCapabilityDAO = ChildControlCapabilityDAO(
+            run_id=_RUN_ID, owner_session_id="owner-1", orchestrator_session_id="orch-1", accepting=True
+        )
+
+        assert capability.schema_version == 1
+        with pytest.raises(ValidationError):
+            ChildControlCapabilityDAO(
+                run_id="x", owner_session_id="owner-1", orchestrator_session_id="orch-1", accepting=True
             )

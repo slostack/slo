@@ -16,14 +16,12 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from config.cfg import SLO_HOME, SUBAGENT_MAX_CONCURRENCY, SUBAGENT_MAX_TASKS
+from config.cfg import SUBAGENT_MAX_CONCURRENCY, SUBAGENT_MAX_TASKS
 from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorResultDAO,
     lifecycle_kind_for_status,
-    terminal_reason_for_status,
     SubAgentMode,
     SubAgentResultDAO,
-    SubAgentStatusDAO,
     SubAgentTaskDAO,
 )
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
@@ -71,9 +69,13 @@ class SubAgentPool:
         _child_system_prompt (str): Assembled system prompt passed to each child
             process and written to ``spawn_context.json``.
         _semaphore (asyncio.Semaphore): Concurrency cap.
-        _registry (ProcessRegistry): Lifecycle registry for this pool.
-        _active (list[SubAgentProcess]): Currently active process wrappers;
-            used by ``cancel_all()``.
+        _registry (ProcessRegistry): Lifecycle registry for this pool; its
+            ``commit_terminal`` winner is the only terminal truth the pool emits.
+        _active (list[SubAgentProcess]): Currently active process wrappers,
+            registered before the spawned event; used by ``cancel_all()``.
+        _owner_session_id (str): Immutable owner identity from the composition root.
+        _run_id (str): Immutable UUID of this pool composition.
+        _history_root (Path): History root shared by fleet, evidence and child files.
     """
 
     def __init__(
@@ -82,14 +84,27 @@ class SubAgentPool:
         orchestrator_session_id: str,
         default_model: Optional[str],
         relay: AgentEventSubscriber,
+        owner_session_id: str,
+        run_id: str,
+        history_root: Path,
         child_system_prompt: str = "",
     ) -> None:
         """Initialise the pool with its identity, model, relay, and fresh registry.
+
+        WHAT: Binds immutable owner/run/history identity supplied by the composition
+            root (no request or hidden global supplies these) and builds the
+            registry mirrored to a run-bound FleetStore under that history root.
+        WHO: Called by OrchestratorSessionBootstrap._build_pool and by tests with
+            explicit synthetic identities.
+        WHEN: Once per orchestrator session attachment.
 
         Args:
             orchestrator_session_id (str): Parent session identifier.
             default_model (Optional[str]): Inherited model for tasks without an override.
             relay (AgentEventSubscriber): Orchestrator relay callable.
+            owner_session_id (str): Owner session resolved by the composition root.
+            run_id (str): Fresh UUID for this pool composition.
+            history_root (Path): Session history root shared with child files.
             child_system_prompt (str): Assembled system prompt shared by all child
                 processes. Written to ``spawn_context.json`` via each
                 ``SubAgentProcess``. Defaults to empty string for backwards compat.
@@ -97,12 +112,16 @@ class SubAgentPool:
         self._orchestrator_session_id: str = orchestrator_session_id
         self._default_model: Optional[str] = default_model
         self._relay: AgentEventSubscriber = relay
+        self._owner_session_id: str = owner_session_id
+        self._run_id: str = run_id
+        self._history_root: Path = history_root
         self._child_system_prompt: str = child_system_prompt
         self._semaphore: asyncio.Semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
         fleet_store: FleetStore = FleetStore(
-            history_root=default_history_root(),
+            history_root=history_root,
             orchestrator_session_id=orchestrator_session_id,
             workflow_id=os.environ.get("SLO_WORKFLOW_ID"),
+            run_id=run_id,
         )
         self._registry: ProcessRegistry = ProcessRegistry(fleet_store=fleet_store)
         self._active: list[SubAgentProcess] = []
@@ -118,6 +137,16 @@ class SubAgentPool:
             ProcessRegistry: The live process registry for this pool.
         """
         return self._registry
+
+    @property
+    def owner_session_id(self) -> str:
+        """Return the immutable owner session bound by the composition root."""
+        return self._owner_session_id
+
+    @property
+    def run_id(self) -> str:
+        """Return the immutable UUID of this pool composition."""
+        return self._run_id
 
     async def dispatch(
         self,
@@ -202,78 +231,85 @@ class SubAgentPool:
     async def _run_one(self, *, task: SubAgentTaskDAO) -> SubAgentResultDAO:
         """Spawn and await one task under the concurrency semaphore.
 
-        Lifecycle: register → emit spawned → acquire semaphore → mark running
-        → run process → mark terminal → emit completed/failed → return result.
+        WHAT: register (fresh execution_id) → create and record the wrapper → emit
+            spawned → acquire semaphore → run, or publish a sealed pending abort
+            without spawning → emit exactly one terminal lifecycle from the
+            returned registry winner → return that winner. No terminal state is
+            reconciled or written here; the process gateway owns publication.
+        WHO: Called by dispatch for each task (parallel/single) or step (chain).
+        WHEN: Once per task; a session that is still executing in this pool is
+            refused with a failed result and never spawned twice.
 
         Args:
             task (SubAgentTaskDAO): The task to run.
 
         Returns:
-            SubAgentResultDAO: Terminal result for this task.
+            SubAgentResultDAO: The registry winner for this task's incarnation.
         """
         session_id: str = await self._resolve_child_session_id(task=task)
         if self._sealed:
             return self._sealed_task_result(task=task, session_id=session_id)
-        self._registry.register(
-            task_id=task.task_id,
-            session_id=session_id,
-            task=task,
-        )
-        await self._emit_lifecycle(
-            kind="sub_agent_spawned",
-            task_id=task.task_id,
-            session_id=session_id,
-            prompt_preview=task.prompt[:80],
-        )
+        try:
+            execution_id: str = self._registry.register(
+                task_id=task.task_id, session_id=session_id, task=task
+            )
+        except ValueError:
+            return self._refused_task_result(task=task, session_id=session_id)
         process: SubAgentProcess = SubAgentProcess(
             task=task,
             session_id=session_id,
             model=task.model or self._default_model,
             relay=self._relay,
             registry=self._registry,
+            execution_id=execution_id,
             system_prompt=self._child_system_prompt,
             parent_session_id=self._orchestrator_session_id,
-            slo_home=SLO_HOME,
+            history_root=self._history_root,
         )
         self._active.append(process)
         try:
-            async with self._semaphore:
-                if self._sealed:
-                    return self._sealed_task_result(task=task, session_id=session_id)
-                result: SubAgentResultDAO = await process.run()
-            recorded: Optional[SubAgentStatusDAO] = self._registry.get(session_id=session_id)
-            if recorded is not None and recorded.status in {"completed", "failed", "aborted"}:
-                await self._emit_lifecycle(
-                    kind=lifecycle_kind_for_status(status=recorded.status),
-                    task_id=task.task_id,
-                    session_id=session_id,
-                )
-                return result.model_copy(
-                    update={
-                        "status": recorded.status,
-                        "answer": recorded.last_text or result.answer,
-                        "exit_code": (
-                            recorded.exit_code if recorded.exit_code is not None else result.exit_code
-                        ),
-                    }
-                )
-            terminal_kind: str = lifecycle_kind_for_status(status=result.status)
-            self._registry.mark_terminal(
-                session_id=session_id,
-                status=result.status,
-                answer=result.answer,
-                exit_code=result.exit_code,
-                terminal_reason=terminal_reason_for_status(status=result.status),  # type: ignore[arg-type]
-                terminated_by="natural",
-            )
             await self._emit_lifecycle(
-                kind=terminal_kind,
+                kind="sub_agent_spawned",
+                task_id=task.task_id,
+                session_id=session_id,
+                prompt_preview=task.prompt[:80],
+            )
+            async with self._semaphore:
+                result: SubAgentResultDAO = await self._run_admitted(process=process, task=task)
+            await self._emit_lifecycle(
+                kind=lifecycle_kind_for_status(status=result.status),
                 task_id=task.task_id,
                 session_id=session_id,
             )
             return result
         finally:
             self._active.remove(process)
+
+    async def _run_admitted(self, *, process: SubAgentProcess, task: SubAgentTaskDAO) -> SubAgentResultDAO:
+        """Run a slot-holding wrapper, or publish its sealed pending abort.
+
+        WHAT: With no await between the seal check and run entry, a sealed pool
+            publishes the aborted pending candidate through the wrapper's
+            ``finish_without_spawn``; otherwise the wrapper runs to its winner.
+        WHO: Called only by ``_run_one`` while it holds a semaphore permit.
+        WHEN: Immediately after slot acquisition.
+
+        Args:
+            process (SubAgentProcess): Registered wrapper for this incarnation.
+            task (SubAgentTaskDAO): Task the wrapper executes.
+
+        Returns:
+            SubAgentResultDAO: Registry winner for the incarnation.
+        """
+        if not self._sealed:
+            return await process.run()
+        return await process.finish_without_spawn(
+            result=self._sealed_task_result(task=task, session_id=process.session_id).model_copy(
+                update={"execution_id": process.execution_id}
+            ),
+            terminal_reason="operator_abort",
+            terminated_by="abort",
+        )
 
     @staticmethod
     def _sealed_task_result(*, task: SubAgentTaskDAO, session_id: str) -> SubAgentResultDAO:
@@ -284,6 +320,25 @@ class SubAgentPool:
             status="aborted",
             answer="pool sealed by abort before child spawn",
             exit_code=2,
+        )
+
+    @staticmethod
+    def _refused_task_result(*, task: SubAgentTaskDAO, session_id: str) -> SubAgentResultDAO:
+        """Build the result for a task whose session cannot start a new execution.
+
+        Args:
+            task (SubAgentTaskDAO): Refused task.
+            session_id (str): Session that is still executing or is unsafe.
+
+        Returns:
+            SubAgentResultDAO: Failed exit-1 result; nothing was registered or spawned.
+        """
+        return SubAgentResultDAO(
+            task_id=task.task_id,
+            session_id=session_id,
+            status="failed",
+            answer="session cannot start a new execution in this pool",
+            exit_code=1,
         )
 
     async def _run_chain(
@@ -332,7 +387,9 @@ class SubAgentPool:
     async def _run_abort_and_drain(self) -> None:
         """Perform the pool-owned ordered abort sequence.
 
-        WHAT: Seals new dispatches, cancels active children, then records abort facts.
+        WHAT: Seals new dispatches, cancels active children (confirmed reaps commit
+            canonical aborted winners inside each wrapper), then publishes pending
+            aborts for never-started wrappers and reports hard reaps.
         WHO: Started exactly once by abort_and_drain.
         WHEN: During the pool's first cooperative abort request.
         """
@@ -354,31 +411,32 @@ class SubAgentPool:
         )
         for process, outcome in zip(processes, outcomes):
             if isinstance(outcome, BaseException):
-                self._cancel_outcomes[process._session_id] = "unresolved"
+                self._cancel_outcomes[process.session_id] = "unresolved"
                 continue
             if outcome in {"graceful", "killed", "already_dead", "recycled_pid", "unresolved"}:
-                self._cancel_outcomes[process._session_id] = outcome  # type: ignore[assignment]
+                self._cancel_outcomes[process.session_id] = outcome  # type: ignore[assignment]
 
     async def _record_abort_outcomes(self) -> None:
-        """Mark running fleet entries aborted and report hard reaps.
+        """Publish sealed pending aborts and report hard reaps without writing terminal state.
 
-        WHAT: Persists operator-abort ownership only for still-running entries.
+        WHAT: Never-started wrappers latched by cancel_all publish their pending
+            abort through the wrapper gateway, so the fleet shows them aborted at
+            drain time; their ``_run_one`` later returns that same winner and emits
+            the single lifecycle. Killed children get a ``sub_agent_reaped`` event.
+            Running, unresolved or wrapper-less entries are never terminalized here.
         WHO: Called by abort_and_drain after child cancellation returns.
         WHEN: Once after a pool has completed its ordered shutdown.
         """
+        for process in list(self._active):
+            if process.awaiting_pending_abort:
+                await process.finish_without_spawn(
+                    result=self._sealed_task_result(
+                        task=process.task, session_id=process.session_id
+                    ).model_copy(update={"execution_id": process.execution_id}),
+                    terminal_reason="operator_abort",
+                    terminated_by="abort",
+                )
         for entry in self._registry.snapshot():
-            if entry.status not in {"pending", "running"}:
-                continue
-            if self._cancel_outcomes.get(entry.session_id) == "unresolved":
-                continue
-            self._registry.mark_terminal(
-                session_id=entry.session_id,
-                status="aborted",
-                answer="aborted by operator",
-                exit_code=2,
-                terminal_reason="operator_abort",
-                terminated_by="abort",
-            )
             if self._cancel_outcomes.get(entry.session_id) != "killed":
                 continue
             await self._emit_lifecycle(

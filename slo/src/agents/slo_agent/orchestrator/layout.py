@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.agents.slo_agent.orchestrator.dao import canonical_uuid, safe_identifier
+
 __all__ = ["OrchestrationLayout"]
 
 
@@ -206,3 +208,176 @@ class OrchestrationLayout:
             )
             / "status.json"
         )
+
+    @classmethod
+    def child_execution_path(
+        cls, *, history_root: Path, parent_session_id: str, child_session_id: str
+    ) -> Path:
+        """Return the versioned execution-evidence sibling for one child.
+
+        WHAT: Builds ``children/<child>/execution.v1.json`` after validating both
+            identities as safe path components.
+        WHO: Called by FleetStore when publishing evidence and by new readers.
+        WHEN: On every pending, running and terminal evidence publication or read.
+
+        Args:
+            history_root (Path): Root containing all session history directories.
+            parent_session_id (str): Orchestrator session owning the child.
+            child_session_id (str): Child session whose evidence is addressed.
+
+        Returns:
+            Path: Canonical execution sibling path.
+
+        Raises:
+            ValueError: If either identity is unsafe as a path component.
+        """
+        return (
+            cls.child_capture_dir(
+                history_root=history_root,
+                parent_session_id=safe_identifier(value=parent_session_id),
+                child_session_id=safe_identifier(value=child_session_id),
+            )
+            / "execution.v1.json"
+        )
+
+    @classmethod
+    def execution_index_path(cls, *, history_root: Path, orchestrator_session_id: str) -> Path:
+        """Return the run-scoped execution index beside fleet.json.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+
+        Returns:
+            Path: Canonical ``execution-index.v1.json`` path.
+
+        Raises:
+            ValueError: If the session identity is unsafe as a path component.
+        """
+        return (
+            cls.session_dir(
+                history_root=history_root, session_id=safe_identifier(value=orchestrator_session_id)
+            )
+            / "execution-index.v1.json"
+        )
+
+    @classmethod
+    def child_control_dir(cls, *, history_root: Path, orchestrator_session_id: str) -> Path:
+        """Return the versioned child-control directory of an orchestrator.
+
+        WHAT: Builds ``child-control.v1`` below the parent session; it is separate
+            from the existence-triggered whole-workflow ``abort_request.json``.
+        WHO: Called by the child-control adapter (later ticket) and path builders below.
+        WHEN: Before any child-control capability, request or receipt access.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+
+        Returns:
+            Path: Canonical child-control directory.
+
+        Raises:
+            ValueError: If the session identity is unsafe as a path component.
+        """
+        return (
+            cls.session_dir(
+                history_root=history_root, session_id=safe_identifier(value=orchestrator_session_id)
+            )
+            / "child-control.v1"
+        )
+
+    @classmethod
+    def child_control_capability_path(cls, *, history_root: Path, orchestrator_session_id: str) -> Path:
+        """Return the runner-published child-control capability path.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+
+        Returns:
+            Path: Canonical ``capability.json`` path.
+
+        Raises:
+            ValueError: If the session identity is unsafe as a path component.
+        """
+        return (
+            cls.child_control_dir(history_root=history_root, orchestrator_session_id=orchestrator_session_id)
+            / "capability.json"
+        )
+
+    @classmethod
+    def child_abort_request_path(
+        cls, *, history_root: Path, orchestrator_session_id: str, run_id: str, request_id: str
+    ) -> Path:
+        """Return one run-scoped child-abort request path.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+            run_id (str): Canonical runner invocation UUID.
+            request_id (str): Canonical request UUID.
+
+        Returns:
+            Path: Canonical ``<run_id>/requests/<request_id>.json`` path.
+
+        Raises:
+            ValueError: If any identity is unsafe or not a canonical UUID.
+        """
+        return cls._child_control_run_file(
+            history_root=history_root,
+            orchestrator_session_id=orchestrator_session_id,
+            run_id=run_id,
+            kind="requests",
+            request_id=request_id,
+        )
+
+    @classmethod
+    def child_abort_receipt_path(
+        cls, *, history_root: Path, orchestrator_session_id: str, run_id: str, request_id: str
+    ) -> Path:
+        """Return one run-scoped child-abort receipt path.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+            run_id (str): Canonical runner invocation UUID.
+            request_id (str): Canonical request UUID.
+
+        Returns:
+            Path: Canonical ``<run_id>/receipts/<request_id>.json`` path.
+
+        Raises:
+            ValueError: If any identity is unsafe or not a canonical UUID.
+        """
+        return cls._child_control_run_file(
+            history_root=history_root,
+            orchestrator_session_id=orchestrator_session_id,
+            run_id=run_id,
+            kind="receipts",
+            request_id=request_id,
+        )
+
+    @classmethod
+    def _child_control_run_file(
+        cls, *, history_root: Path, orchestrator_session_id: str, run_id: str, kind: str, request_id: str
+    ) -> Path:
+        """Build one request or receipt path below a validated run directory.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+            run_id (str): Canonical runner invocation UUID.
+            kind (str): ``requests`` or ``receipts``.
+            request_id (str): Canonical request UUID.
+
+        Returns:
+            Path: Run-scoped JSON path for the request identity.
+
+        Raises:
+            ValueError: If any identity is unsafe or not a canonical UUID.
+        """
+        control_dir: Path = cls.child_control_dir(
+            history_root=history_root, orchestrator_session_id=orchestrator_session_id
+        )
+        return control_dir / canonical_uuid(value=run_id) / kind / f"{canonical_uuid(value=request_id)}.json"

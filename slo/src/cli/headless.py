@@ -197,11 +197,7 @@ class HeadlessRunner:
             if self._session is None:
                 self._restore_sigterm_handler(previous=previous_sigterm)
         if self._orchestrator_mode:
-            from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
-                OrchestratorSessionBootstrap,
-            )
-
-            OrchestratorSessionBootstrap.attach(session=session, headless=True)
+            self._attach_orchestrator(session=session)
             self._fleet_entries_supplier = self._resolve_fleet_entries_supplier(session=session)
             self._fleet_snapshot_supplier = self._build_fleet_snapshot_supplier()
             emit_lifecycle_event(
@@ -681,6 +677,7 @@ class HeadlessRunner:
         if identity == "recycled_pid":
             pool.registry.mark_terminal(
                 session_id=entry.session_id,
+                execution_id=entry.execution_id,
                 status="failed",
                 answer="recorded pid belongs to a different process; not signalled",
                 exit_code=1,
@@ -691,6 +688,7 @@ class HeadlessRunner:
         if identity == "already_dead":
             pool.registry.mark_terminal(
                 session_id=entry.session_id,
+                execution_id=entry.execution_id,
                 status="failed",
                 answer="child was already absent during terminal drain",
                 exit_code=1,
@@ -704,6 +702,7 @@ class HeadlessRunner:
             return
         pool.registry.mark_terminal(
             session_id=entry.session_id,
+            execution_id=entry.execution_id,
             status="aborted" if outcome != "already_dead" else "failed",
             answer=(
                 "reaped during terminal drain"
@@ -754,6 +753,28 @@ class HeadlessRunner:
         return attempt if isinstance(attempt, int) and attempt > 0 else 1
 
     # ── workflow notification tap (spec 57.a.3) ──────────────────────────────
+
+    def _attach_orchestrator(self, *, session: SloAgentSession) -> None:
+        """Promote the headless session with its launch owner bound into the pool.
+
+        WHAT: Delegates to the single pool composition owner, passing the
+            ``--notify-session`` launch owner (or None, which resolves to this
+            session) so owner identity never comes from a request payload.
+        WHO: Called by ``_invoke`` for ``--orchestrator`` runs.
+        WHEN: After session preparation, before the stream subscription.
+
+        Args:
+            session (SloAgentSession): Prepared headless session to promote.
+        """
+        from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
+            OrchestratorSessionBootstrap,
+        )
+
+        OrchestratorSessionBootstrap.attach(
+            session=session,
+            headless=True,
+            owner_session_id=self._notify_session_id,
+        )
 
     def _resolve_notifier(self, *, orchestrator_session_id: str) -> Optional[WorkflowNotifier]:
         """Return the workflow notifier for this run, when one is requested.

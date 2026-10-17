@@ -37,12 +37,15 @@ async def test_feature89_child_model_selection(
     fake.stderr = asyncio.StreamReader()
     fake.stderr.feed_eof()
     fake.wait = AsyncMock(return_value=0)
+    registry = ProcessRegistry()
+    execution_id = registry.register(task_id=task.task_id, session_id="child89", task=task)
     process = SubAgentProcess(
         task=task,
         session_id="child89",
         model=task.model,
         relay=AsyncMock(),
-        registry=ProcessRegistry(),
+        registry=registry,
+        execution_id=execution_id,
         parent_session_id="parent89",
         slo_home=home,
     )

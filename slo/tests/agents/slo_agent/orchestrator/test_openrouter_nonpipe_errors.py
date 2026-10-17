@@ -50,13 +50,14 @@ async def test_nonpipe_failure_never_exports_credential(
     monkeypatch.setattr("src.agents.slo_agent.orchestrator.process.log_error", logs)
     registry = ProcessRegistry()
     task = SubAgentTaskDAO(task_id="task", prompt="safe")
-    registry.register(task_id="task", session_id="child", task=task)
+    execution_id = registry.register(task_id="task", session_id="child", task=task)
     process = SubAgentProcess(
         task=task,
         session_id="child",
         model=None,
         relay=AsyncMock(),
         registry=registry,
+        execution_id=execution_id,
         parent_session_id="parent",
         slo_home=root,
     )

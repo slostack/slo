@@ -191,7 +191,7 @@ async def test_child_capture_secret_stays_in_spawn_environment(
     store = FleetStore(history_root=root / "sessions/history", orchestrator_session_id="parent")
     registry = ProcessRegistry(fleet_store=store)
     task = SubAgentTaskDAO(task_id="task", prompt="Harmless task")
-    registry.register(task_id="task", session_id="child", task=task)
+    execution_id = registry.register(task_id="task", session_id="child", task=task)
     relay = AsyncMock()
     lifecycle = MagicMock()
     logs = MagicMock()
@@ -216,11 +216,11 @@ async def test_child_capture_secret_stays_in_spawn_environment(
         model=None,
         relay=relay,
         registry=registry,
+        execution_id=execution_id,
         parent_session_id="parent",
         slo_home=root,
     )
     result = await process.run()
-    registry.mark_terminal(session_id="child", status=result.status, answer=result.answer)
     assert spawn.call_args.kwargs["env"]["SLO_OPENROUTER_API_KEY"] == secret
     assert spawn.call_args.kwargs["env"]["SLO_PLUGINS_DISABLED"] == "1"
     assert "SLO_OTHER_SECRET" not in spawn.call_args.kwargs["env"]
@@ -272,7 +272,7 @@ async def test_child_artifacts_preserve_admitted_redaction_after_rotation_or_res
     store = FleetStore(history_root=root / "sessions/history", orchestrator_session_id="parent")
     registry = ProcessRegistry(fleet_store=store)
     task = SubAgentTaskDAO(task_id="task", prompt="Harmless task")
-    registry.register(task_id="task", session_id="child", task=task)
+    execution_id = registry.register(task_id="task", session_id="child", task=task)
     relay = AsyncMock()
     logs = MagicMock()
     lifecycle = MagicMock()
@@ -332,6 +332,7 @@ async def test_child_artifacts_preserve_admitted_redaction_after_rotation_or_res
         model=None,
         relay=relay,
         registry=registry,
+        execution_id=execution_id,
         parent_session_id="parent",
         slo_home=root,
     )
@@ -343,7 +344,6 @@ async def test_child_artifacts_preserve_admitted_redaction_after_rotation_or_res
         after_admission.setattr(CredentialResolver, "resolve", resolve_after_admission)
         result = await run_task
 
-    registry.mark_terminal(session_id="child", status=result.status, answer=result.answer)
     capture_dir = root / "sessions/history/parent/children/child"
     artifact_paths = [
         capture_dir / "stdout.jsonl",

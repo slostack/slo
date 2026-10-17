@@ -183,8 +183,19 @@ When a sub-agent fails (status "failed", exit_code 1):
 4. Never retry an aborted task (status "aborted" or exit_code 2), regardless of whether cancellation, interruption or timeout caused it. Report the abort and stop; do not resume or relaunch it as an automatic recovery. A recoverable execution failure is status "failed" / exit_code 1, not an abort.
 
 Maximum retries per failed task: 3 (4 attempts including the initial attempt).
-Maximum workflow turns started per task: 8, including partial turns.
-Maximum dispatch calls per workflow turn: 6, including retries.
+Default maximum workflow turns started per task: 60, including partial turns.
+Default maximum dispatch calls per workflow turn: 20, including retries.
+
+Explicit user instructions override these two prompt-level budgets: users may
+raise, lower or remove either limit (including requesting unlimited turns or
+dispatches). Honor the user's specified scope and values over the defaults above
+and workflow-specific numeric defaults; retain the default for any unspecified
+budget. Record the effective limits before starting and carry them into phase
+prompts and authorized continuations. Changing a budget does not reset consumed
+counts. Without an explicit user override, a stricter workflow limit still applies.
+These overrides do not change runtime batch, concurrency or detached-workflow caps,
+retry/abort policy, required review, or cancellation handling. Disclose any
+remaining constraint rather than bypassing it.
 
 ### Counting turns and stopping
 
@@ -196,14 +207,18 @@ Earlier prerequisites need not be repeated if unchanged; repeat affected steps,
 checks and review as required by the workflow.
 
 Keep separate counts for turns started, completed and partial, dispatch calls in
-the current turn, and retries for each failed task. Eight started turns permit at
-most 48 dispatch calls across the task, not 48 children. A parallel batch is one
-call but may launch multiple children; runtime batch and concurrency caps still apply.
+the current turn, and retries for each failed task. The defaults of 60 workflow turns and
+20 dispatch calls per turn permit at most 1,200 dispatch calls across the task,
+not 1,200 children. This derived ceiling changes with the effective user limits.
+A parallel batch is one call but may launch multiple children; runtime batch and
+concurrency caps still apply.
 Renaming a task, starting a new turn, takeover, resume or a new response about the
 same task does not reset its failed-task retry count or task-wide turn count.
 Only starting a legitimate revision turn resets the per-turn dispatch counter.
 
-Stop before turn 9 or dispatch 7 within a turn. Stop sooner when the work passes,
+With the defaults, stop before turn 61 or dispatch 21 within a turn; when the user
+overrides a budget, stop at that effective limit instead (no numeric cutoff for
+an explicitly unlimited budget). Stop sooner when the work passes,
 the user cancels, an agent aborts, or another applicable limit is reached. Report
 unfinished findings and counts, not success. Follow explicit takeover/handoff
 instructions only within remaining limits and preserve independent review. Do not
@@ -213,8 +228,8 @@ invent revision turns to extend the budget.
 
 Before launch, check that the budget can cover required steps, especially review.
 If it cannot, disclose the conflict rather than silently skipping steps. Carry
-counts into authorized continuations. A stricter user or workflow limit still
-applies. See skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits.
+counts and effective user overrides into authorized continuations. See
+skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits.
 These are prompt-level accounting rules, not claims of runtime-enforced counters.
 
 ## Synthesizing the final answer

@@ -2,7 +2,8 @@
  *
  * Minimal layout inspired by Claude Code's CLI:
  *   - No frame around the transcript; conversation flows on the surface.
- *   - Single rounded input at the bottom with a soft accent border.
+ *   - Prompt input framed only by two horizontal accent rules (top and
+ *     bottom); no side edges or corners, in focused and unfocused states.
  *   - Subtle header/footer so the conversation is the focal point.
  *
  * Colours resolve through the active Textual theme (tokyo-night by
@@ -45,8 +46,10 @@ Footer {
     margin: 1 0 0 0;
 }
 
-PromptInput {
-    border: round $accent;
+PromptInput, PromptInput:focus {
+    border: none;
+    border-top: solid $accent;
+    border-bottom: solid $accent;
     background: $surface;
     height: auto;
     min-height: 3;

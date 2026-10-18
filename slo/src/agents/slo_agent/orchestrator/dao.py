@@ -39,6 +39,9 @@ __all__ = [
     "ChildAbortRequestDAO",
     "ChildAbortOutcomeDAO",
     "ChildControlCapabilityDAO",
+    "DispatchIdentityDAO",
+    "ResolvedDispatchTaskDAO",
+    "AttachedDispatchSnapshotDAO",
     "TERMINAL_STATUSES",
     "canonical_uuid",
     "safe_identifier",
@@ -432,8 +435,9 @@ class SubAgentStatusDAO(BaseModel):
         status (SubAgentStatus): Current lifecycle state.
         last_text (Optional[str]): Latest visible answer text from the child.
             Updated on each ``text_delta`` event relayed from the child.
-        prompt_preview (str): First 120 characters of the task prompt.
-            Used as a human-readable label in the TUI fleet status.
+        prompt_preview (str): ``TaskPreview`` label of the task prompt (controls
+            stripped, whitespace collapsed, at most 150 code points including an
+            ellipsis). Used as a human-readable label in the TUI fleet status.
         last_heartbeat_at (Optional[float]): Monotonic timestamp of the most
             recent recognized child heartbeat.
         last_stdout_at (Optional[float]): Monotonic timestamp of the most
@@ -711,7 +715,9 @@ class ChildExecutionEvidenceDAO(BaseModel):
         schema_version (Literal[1]): Closed sibling schema version.
         session_id (str): Safe child session identifier.
         execution_id (str): Canonical UUID of this incarnation.
-        dispatch_id (Optional[str]): Dispatch batch identity once dispatch metadata exists.
+        dispatch_id (Optional[str]): Canonical UUID of the dispatch that admitted this
+            incarnation; ProcessRegistry.register always supplies it. None only when
+            a reader parses a sibling written before dispatch metadata existed.
         phase (ExecutionPhase): Pending, running or terminal publication phase.
         status (SubAgentStatus): Registry status published with the phase.
         stdout_identity (Optional[StdoutCaptureIdentityDAO]): Fresh capture identity;
@@ -749,8 +755,8 @@ class ChildExecutionEvidenceDAO(BaseModel):
     @field_validator("dispatch_id")
     @classmethod
     def _validate_dispatch_id(cls, value: Optional[str]) -> Optional[str]:
-        """Require a safe dispatch identity when one is present."""
-        return value if value is None else safe_identifier(value=value)
+        """Require a canonical dispatch UUID when one is present."""
+        return value if value is None else canonical_uuid(value=value)
 
     @field_validator("spawn_context_sha256", "status_sha256")
     @classmethod
@@ -786,7 +792,7 @@ class ChildExecutionEvidenceDAO(BaseModel):
         *,
         session_id: str,
         execution_id: str,
-        dispatch_id: Optional[str] = None,
+        dispatch_id: str,
     ) -> "ChildExecutionEvidenceDAO":
         """Build the initial evidence published at registration.
 
@@ -797,7 +803,8 @@ class ChildExecutionEvidenceDAO(BaseModel):
         Args:
             session_id (str): Safe child session identifier.
             execution_id (str): Freshly allocated incarnation UUID.
-            dispatch_id (Optional[str]): Dispatch identity when known. Defaults to None.
+            dispatch_id (str): Dispatch captured at admission; running and terminal
+                evidence copy it unchanged.
 
         Returns:
             ChildExecutionEvidenceDAO: Pending-phase evidence.
@@ -982,3 +989,145 @@ class ChildControlCapabilityDAO(_ChildControlIdentity):
     owner_session_id: str
     orchestrator_session_id: str
     accepting: bool
+
+
+class DispatchIdentityDAO(BaseModel):
+    """Identity of one admitted ``SubAgentPool.dispatch`` batch.
+
+    Captured once at admission and passed explicitly through the chain, run,
+    register and lifecycle calls, so asynchronous work never reads a mutable
+    "current dispatch" field. Feature 94 a.2.
+
+    Attributes:
+        dispatch_id (str): Pool-generated canonical UUID of the batch.
+        dispatch_sequence (int): Monotonic admitted-start sequence within one
+            pool, starting at 1; observers use it to ignore older event delivery.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dispatch_id: str
+    dispatch_sequence: int = Field(ge=1)
+
+    @field_validator("dispatch_id")
+    @classmethod
+    def _validate_dispatch_id(cls, value: str) -> str:
+        """Require the canonical UUID spelling the pool allocates."""
+        return canonical_uuid(value=value)
+
+    def started_metadata(self, *, orchestrator_session_id: str) -> dict[str, object]:
+        """Return the exact metadata of the stream-only ``sub_agent_dispatch_started`` event.
+
+        WHAT: Builds the three-key payload; nothing else may be added.
+        WHO: Called by SubAgentPool right after admission.
+        WHEN: Once per admitted dispatch, before any child lifecycle event.
+
+        Args:
+            orchestrator_session_id (str): Parent session owning the pool.
+
+        Returns:
+            dict[str, object]: ``orchestrator_session_id``, ``dispatch_id`` and
+                ``dispatch_sequence``.
+        """
+        return {
+            "orchestrator_session_id": orchestrator_session_id,
+            "dispatch_id": self.dispatch_id,
+            "dispatch_sequence": self.dispatch_sequence,
+        }
+
+    def lifecycle_metadata(self, *, execution_id: str) -> dict[str, object]:
+        """Return the dispatch metadata every pool lifecycle event carries.
+
+        WHAT: Adds the child's incarnation to this batch identity.
+        WHO: Called by SubAgentPool for spawned, terminal and reaped events.
+        WHEN: Each time the pool emits a child lifecycle event.
+
+        Args:
+            execution_id (str): Child incarnation the event concerns.
+
+        Returns:
+            dict[str, object]: ``dispatch_id``, ``dispatch_sequence`` and ``execution_id``.
+        """
+        return {
+            "dispatch_id": self.dispatch_id,
+            "dispatch_sequence": self.dispatch_sequence,
+            "execution_id": execution_id,
+        }
+
+
+class ResolvedDispatchTaskDAO(BaseModel):
+    """One dispatch task paired with the session it was resolved to exactly once.
+
+    Built during dispatch preparation, before admission; ``_run_one`` never
+    resolves session references again. Feature 94 a.2.
+
+    Attributes:
+        task (SubAgentTaskDAO): The task as requested (chain steps substitute
+            ``{previous}`` into a copy later).
+        session_id (str): Resolved child session; a safe path component.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    task: SubAgentTaskDAO
+    session_id: str
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, value: str) -> str:
+        """Require a session id that is safe as one evidence path component."""
+        return safe_identifier(value=value)
+
+
+class AttachedDispatchSnapshotDAO(BaseModel):
+    """Transient projection of the latest admitted dispatch's registry entries.
+
+    Observation only, not a second execution registry. An empty identity with
+    sequence zero denotes that no dispatch was admitted yet. Feature 94 a.2.
+
+    Attributes:
+        dispatch_id (str): Latest admitted dispatch UUID, or empty for none.
+        dispatch_sequence (int): Its admitted-start sequence, or 0 for none.
+        entries (tuple[SubAgentStatusDAO, ...]): Deep copies of that batch's
+            current-incarnation entries in registration order.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dispatch_id: str = ""
+    dispatch_sequence: int = Field(default=0, ge=0)
+    entries: tuple[SubAgentStatusDAO, ...] = ()
+
+    @field_validator("dispatch_id")
+    @classmethod
+    def _validate_dispatch_id(cls, value: str) -> str:
+        """Accept the empty no-dispatch value or a canonical UUID."""
+        return _optional_runtime_uuid(value=value)
+
+    @model_validator(mode="after")
+    def _validate_identity_pairing(self) -> "AttachedDispatchSnapshotDAO":
+        """Pair the empty identity with sequence zero and nothing else.
+
+        Returns:
+            AttachedDispatchSnapshotDAO: Self after validation.
+
+        Raises:
+            ValueError: If exactly one of identity and sequence denotes "no dispatch".
+        """
+        if (self.dispatch_id == "") != (self.dispatch_sequence == 0):
+            raise ValueError("empty dispatch identity requires sequence zero")
+        return self
+
+    @classmethod
+    def empty(cls) -> "AttachedDispatchSnapshotDAO":
+        """Return the explicit no-dispatch value.
+
+        WHAT: The value observers receive when no pool or no dispatch exists.
+        WHO: Called by ProcessRegistry before any dispatch and by
+            SloAgentSession.attached_dispatch_snapshot without a pool.
+        WHEN: On every observation that has no admitted batch.
+
+        Returns:
+            AttachedDispatchSnapshotDAO: Empty identity, sequence 0, no entries.
+        """
+        return cls()

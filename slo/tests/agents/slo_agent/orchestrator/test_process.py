@@ -52,7 +52,9 @@ def _make_process(
         collected.append(event)
 
     registry: ProcessRegistry = ProcessRegistry()
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
     execution_id: str = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444",
         task_id=task_id,
         session_id=session_id,
         task=SubAgentTaskDAO(task_id=task_id, prompt=prompt),

@@ -38,7 +38,13 @@ async def test_feature89_child_model_selection(
     fake.stderr.feed_eof()
     fake.wait = AsyncMock(return_value=0)
     registry = ProcessRegistry()
-    execution_id = registry.register(task_id=task.task_id, session_id="child89", task=task)
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
+    execution_id = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444",
+        task_id=task.task_id,
+        session_id="child89",
+        task=task,
+    )
     process = SubAgentProcess(
         task=task,
         session_id="child89",

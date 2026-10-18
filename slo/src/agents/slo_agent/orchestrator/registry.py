@@ -9,6 +9,11 @@ caller captured, and ``commit_terminal`` is the single no-await linearization
 point for terminal results. Callers publish caches and status.json only from the
 winner it returns.
 
+Feature 94 (a.2, T03) adds explicit dispatch generation: ``begin_dispatch``
+selects a fresh display batch, ``register`` appends each child to the batch its
+caller captured, and ``attached_snapshot`` projects only the latest batch.
+Execution entries are never cleared when the displayed batch changes.
+
 Sub-spec 71.a.2.
 """
 
@@ -19,7 +24,9 @@ from uuid import uuid4
 
 from src.agents.slo_agent.orchestrator.dao import (
     TERMINAL_STATUSES,
+    AttachedDispatchSnapshotDAO,
     ChildExecutionEvidenceDAO,
+    DispatchIdentityDAO,
     StdoutCaptureIdentityDAO,
     SubAgentResultDAO,
     SubAgentStatus,
@@ -29,6 +36,7 @@ from src.agents.slo_agent.orchestrator.dao import (
     TerminatedBy,
     terminal_reason_for_status,
 )
+from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
 
 if TYPE_CHECKING:
     from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
@@ -64,18 +72,144 @@ class ProcessRegistry:
         # Last published versioned evidence per session's current incarnation.
         self._evidence: dict[str, ChildExecutionEvidenceDAO] = {}
         self._fleet_store: Optional[FleetStore] = fleet_store
+        # Dispatch generation (a.2). Membership lists hold (session_id, execution_id)
+        # in registration order; only begun, not-yet-pruned dispatches have one, and
+        # identities are pruned with them, so both stay bounded by active + latest.
+        self._dispatch_members: dict[str, list[tuple[str, str]]] = {}
+        self._dispatch_identities: dict[str, DispatchIdentityDAO] = {}
+        # Dispatches whose pool teardown finished; pruned once they are not latest.
+        self._retired_dispatch_ids: set[str] = set()
+        self._latest_dispatch_id: str = ""
+        # Monotonic within one pool; never reset.
+        self._dispatch_sequence: int = 0
+        # Batch identity of each session's current incarnation, for lifecycle metadata.
+        self._entry_dispatch: dict[str, DispatchIdentityDAO] = {}
 
-    def register(self, *, task_id: str, session_id: str, task: SubAgentTaskDAO) -> str:
+    def begin_dispatch(self, *, dispatch_id: str) -> int:
+        """Select a fresh display batch before dispatch yields to child work.
+
+        WHAT: Increments the sequence, makes ``dispatch_id`` the latest batch with
+            an empty membership (so an empty valid dispatch still replaces the
+            displayed group) and prunes retired batches that are no longer latest.
+        WHO: Called by SubAgentPool inside its no-await admission section.
+        WHEN: Once per admitted dispatch, before the start event and any child.
+
+        Args:
+            dispatch_id (str): Pool-generated unique batch identity.
+
+        Returns:
+            int: Monotonic sequence used to ignore older event delivery.
+
+        Raises:
+            ValueError: If the identity's membership is still held by this registry.
+        """
+        if dispatch_id in self._dispatch_members:
+            raise ValueError("duplicate dispatch identity")
+        self._dispatch_sequence += 1
+        self._latest_dispatch_id = dispatch_id
+        self._dispatch_members[dispatch_id] = []
+        self._dispatch_identities[dispatch_id] = DispatchIdentityDAO(
+            dispatch_id=dispatch_id, dispatch_sequence=self._dispatch_sequence
+        )
+        self._prune_retired_dispatches()
+        return self._dispatch_sequence
+
+    def retire_dispatch(self, *, dispatch_id: str) -> None:
+        """Release a finished batch's membership unless it is still the displayed one.
+
+        WHAT: Marks the batch retired and discards every retired membership list
+            except the latest; execution entries are never touched. Unknown ids
+            are a no-op.
+        WHO: Called by SubAgentPool.dispatch in its teardown ``finally``.
+        WHEN: After every child of the batch has settled.
+
+        Args:
+            dispatch_id (str): Batch whose dispatch call has finished.
+        """
+        if dispatch_id not in self._dispatch_members:
+            return
+        self._retired_dispatch_ids.add(dispatch_id)
+        self._prune_retired_dispatches()
+
+    def retained_dispatch_ids(self) -> tuple[str, ...]:
+        """Return the batches whose membership is still held, oldest first.
+
+        WHAT: Exposes only identities, for teardown-bound verification.
+        WHO: Called by tests asserting membership stays bounded.
+        WHEN: After dispatch teardown.
+
+        Returns:
+            tuple[str, ...]: Active batches plus the latest one.
+        """
+        return tuple(self._dispatch_members)
+
+    def attached_snapshot(self) -> AttachedDispatchSnapshotDAO:
+        """Return the latest group for session observers without changing execution.
+
+        WHAT: Deep-copies the latest batch's members whose session still holds
+            the incarnation registered in that batch; a session reused by a newer
+            batch drops out of the older one.
+        WHO: Called through SubAgentPool and SloAgentSession by TUI observation.
+        WHEN: On every observation poll; it never mutates registry state.
+
+        Returns:
+            AttachedDispatchSnapshotDAO: Ordered current-batch projection only, or
+                the explicit empty value before the first dispatch.
+        """
+        identity: Optional[DispatchIdentityDAO] = self._dispatch_identities.get(self._latest_dispatch_id)
+        if identity is None:
+            return AttachedDispatchSnapshotDAO.empty()
+        return AttachedDispatchSnapshotDAO(
+            dispatch_id=identity.dispatch_id,
+            dispatch_sequence=identity.dispatch_sequence,
+            entries=tuple(
+                self._store[session_id].model_copy(deep=True)
+                for session_id, execution_id in self._dispatch_members[identity.dispatch_id]
+                if self._store[session_id].execution_id == execution_id
+            ),
+        )
+
+    def dispatch_of(self, *, session_id: str, execution_id: str) -> Optional[DispatchIdentityDAO]:
+        """Return the batch that registered the named current incarnation.
+
+        Args:
+            session_id (str): Registered child session identifier.
+            execution_id (str): Incarnation the caller captured.
+
+        Returns:
+            Optional[DispatchIdentityDAO]: Captured batch identity, or None for an
+                unknown or superseded incarnation.
+        """
+        if self._current_entry(session_id=session_id, execution_id=execution_id) is None:
+            return None
+        return self._entry_dispatch.get(session_id)
+
+    def accepts_new_execution(self, *, session_id: str) -> bool:
+        """Return whether a new incarnation of the session may be admitted.
+
+        Args:
+            session_id (str): Candidate child session identifier.
+
+        Returns:
+            bool: True when the session is unknown or its current incarnation is terminal.
+        """
+        existing: Optional[SubAgentStatusDAO] = self._store.get(session_id)
+        return existing is None or existing.status in TERMINAL_STATUSES
+
+    def register(self, *, dispatch_id: str, task_id: str, session_id: str, task: SubAgentTaskDAO) -> str:
         """Register a new pending incarnation and persist its identity and fleet row.
 
         WHAT: Allocates a fresh execution_id, replaces a terminal prior incarnation
-            (forgetting its winner), publishes pending sibling evidence, then
-            persists the pending fleet entry.
+            (forgetting its winner), records the normalized TaskPreview of the
+            prompt, publishes pending sibling evidence stamped with the captured
+            dispatch, persists the pending fleet entry, then appends the child to
+            that dispatch.
         WHO: Called by SubAgentPool before it creates the wrapper and emits spawned.
         WHEN: Once for every accepted child task, after any earlier incarnation of
             the same session has finished its pool teardown.
 
         Args:
+            dispatch_id (str): Batch captured at admission, never the latest batch.
             task_id (str): Caller-assigned child task identifier.
             session_id (str): Pool-assigned child session identifier.
             task (SubAgentTaskDAO): Child task that supplies the prompt preview.
@@ -85,26 +219,49 @@ class ProcessRegistry:
 
         Raises:
             ExecutionConflictError: If the session's current incarnation is not terminal.
-            ValueError: If the session id is unsafe as an evidence path component.
+            ValueError: If the dispatch was never begun or was pruned, or the
+                session id is unsafe as an evidence path component.
         """
-        existing: Optional[SubAgentStatusDAO] = self._store.get(session_id)
-        if existing is not None and existing.status not in TERMINAL_STATUSES:
+        if dispatch_id not in self._dispatch_members:
+            raise ValueError("unknown dispatch identity")
+        if not self.accepts_new_execution(session_id=session_id):
             raise ExecutionConflictError("session already has a non-terminal execution in this pool")
         execution_id: str = str(uuid4())
         pending: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.pending(
-            session_id=session_id, execution_id=execution_id
+            session_id=session_id, execution_id=execution_id, dispatch_id=dispatch_id
         )
         self._terminal_results.pop(session_id, None)
         self._store[session_id] = SubAgentStatusDAO(
             task_id=task_id,
             session_id=session_id,
             status="pending",
-            prompt_preview=task.prompt[:120],
+            prompt_preview=TaskPreview.build(task_text=task.prompt),
             execution_id=execution_id,
         )
         self._publish_evidence(evidence=pending)
         self._persist()
+        self._register_dispatch_member(
+            dispatch_id=dispatch_id, session_id=session_id, execution_id=execution_id
+        )
         return execution_id
+
+    def _register_dispatch_member(self, *, dispatch_id: str, session_id: str, execution_id: str) -> None:
+        """Associate register's child with its captured batch, never the latest batch.
+
+        Args:
+            dispatch_id (str): Dispatch captured before asynchronous identity resolution.
+            session_id (str): Registered session identity.
+            execution_id (str): Incarnation returned by register.
+        """
+        self._dispatch_members[dispatch_id].append((session_id, execution_id))
+        self._entry_dispatch[session_id] = self._dispatch_identities[dispatch_id]
+
+    def _prune_retired_dispatches(self) -> None:
+        """Discard retired membership lists except the latest batch's."""
+        for dispatch_id in self._retired_dispatch_ids - {self._latest_dispatch_id}:
+            self._dispatch_members.pop(dispatch_id, None)
+            self._dispatch_identities.pop(dispatch_id, None)
+        self._retired_dispatch_ids &= {self._latest_dispatch_id}
 
     def mark_running(
         self,

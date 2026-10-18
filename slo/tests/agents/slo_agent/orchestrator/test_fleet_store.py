@@ -100,6 +100,7 @@ class TestFleetStore:
 _RUN_ID: str = "7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f"
 _EXEC_A: str = "0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40"
 _EXEC_B: str = "1e2d3c4b-5a69-4788-9a1b-2c3d4e5f6a7b"
+_DISPATCH_ID: str = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
 _BOUNDED_SECONDS: float = 3.0
 """Bounded wait for reads that must not block; never a timing oracle."""
 
@@ -125,7 +126,7 @@ def _publish_running(
     stdout_path.write_bytes(b"")
     stat = stdout_path.stat()
     running: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.pending(
-        session_id="child-1", execution_id=execution_id
+        session_id="child-1", execution_id=execution_id, dispatch_id=_DISPATCH_ID
     ).running(
         stdout_identity=StdoutCaptureIdentityDAO(device=stat.st_dev, inode=stat.st_ino),
         spawn_context_sha256=hashlib.sha256(context_bytes).hexdigest(),
@@ -237,7 +238,9 @@ class TestExecutionEvidence:
 
     def test_publish_execution_writes_sibling(self, tmp_path: Path) -> None:
         """Pending evidence lands at children/<id>/execution.v1.json."""
-        evidence = ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=_EXEC_A)
+        evidence = ChildExecutionEvidenceDAO.pending(
+            session_id="child-1", execution_id=_EXEC_A, dispatch_id=_DISPATCH_ID
+        )
 
         assert _bound_store(tmp_path).publish_execution(evidence=evidence) is True
 
@@ -246,7 +249,9 @@ class TestExecutionEvidence:
 
     def test_publish_execution_failure_returns_false(self, tmp_path: Path) -> None:
         """A sibling write failure is reported, logged with a fixed reason, never raised."""
-        evidence = ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=_EXEC_A)
+        evidence = ChildExecutionEvidenceDAO.pending(
+            session_id="child-1", execution_id=_EXEC_A, dispatch_id=_DISPATCH_ID
+        )
 
         with (
             patch(
@@ -266,7 +271,9 @@ class TestExecutionEvidence:
         store: FleetStore = _bound_store(tmp_path)
         store.persist(entries=[SubAgentStatusDAO(task_id="t1", session_id="child-1", execution_id=_EXEC_A)])
         store.publish_execution(
-            evidence=ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=_EXEC_A)
+            evidence=ChildExecutionEvidenceDAO.pending(
+                session_id="child-1", execution_id=_EXEC_A, dispatch_id=_DISPATCH_ID
+            )
         )
 
         verified = _verified(tmp_path)
@@ -400,7 +407,9 @@ class TestExecutionEvidence:
         stdout_path.write_bytes(b"")
         stat = stdout_path.stat()
         terminal = (
-            ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=_EXEC_A)
+            ChildExecutionEvidenceDAO.pending(
+                session_id="child-1", execution_id=_EXEC_A, dispatch_id=_DISPATCH_ID
+            )
             .running(
                 stdout_identity=StdoutCaptureIdentityDAO(device=stat.st_dev, inode=stat.st_ino),
                 spawn_context_sha256=hashlib.sha256(context_bytes).hexdigest(),

@@ -190,8 +190,11 @@ async def test_child_capture_secret_stays_in_spawn_environment(
     root = tmp_path.resolve()
     store = FleetStore(history_root=root / "sessions/history", orchestrator_session_id="parent")
     registry = ProcessRegistry(fleet_store=store)
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
     task = SubAgentTaskDAO(task_id="task", prompt="Harmless task")
-    execution_id = registry.register(task_id="task", session_id="child", task=task)
+    execution_id = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444", task_id="task", session_id="child", task=task
+    )
     relay = AsyncMock()
     lifecycle = MagicMock()
     logs = MagicMock()
@@ -271,8 +274,11 @@ async def test_child_artifacts_preserve_admitted_redaction_after_rotation_or_res
     credential_b = credential_a.model_copy(update={"access_token": rotated_key})
     store = FleetStore(history_root=root / "sessions/history", orchestrator_session_id="parent")
     registry = ProcessRegistry(fleet_store=store)
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
     task = SubAgentTaskDAO(task_id="task", prompt="Harmless task")
-    execution_id = registry.register(task_id="task", session_id="child", task=task)
+    execution_id = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444", task_id="task", session_id="child", task=task
+    )
     relay = AsyncMock()
     logs = MagicMock()
     lifecycle = MagicMock()

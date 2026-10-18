@@ -55,8 +55,14 @@ class _Harness:
             history_root=tmp_path, orchestrator_session_id=_PARENT, run_id=_RUN_ID
         )
         self.registry: ProcessRegistry = ProcessRegistry(fleet_store=self.store)
+        self.registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
         self.task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="do the work")
-        self.execution_id: str = self.registry.register(task_id="t1", session_id=_CHILD, task=self.task)
+        self.execution_id: str = self.registry.register(
+            dispatch_id="44444444-4444-4444-8444-444444444444",
+            task_id="t1",
+            session_id=_CHILD,
+            task=self.task,
+        )
         self.process: SubAgentProcess = self.build_process(execution_id=self.execution_id)
 
     def build_process(self, *, execution_id: str) -> SubAgentProcess:
@@ -491,7 +497,12 @@ class TestCompetingCandidates:
             candidate=_aborted_candidate(harness), terminal_reason="operator_abort", terminated_by="abort"
         )
         stale_execution: str = harness.execution_id
-        harness.execution_id = harness.registry.register(task_id="t1", session_id=_CHILD, task=harness.task)
+        harness.execution_id = harness.registry.register(
+            dispatch_id="44444444-4444-4444-8444-444444444444",
+            task_id="t1",
+            session_id=_CHILD,
+            task=harness.task,
+        )
         stale: SubAgentProcess = harness.build_process(execution_id=stale_execution)
         status_before: bytes = harness.status_bytes()
 
@@ -745,7 +756,10 @@ class TestFreshIncarnationEvidence:
             patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=second)),
         ):
             harness.execution_id = harness.registry.register(
-                task_id="t1", session_id=_CHILD, task=harness.task
+                dispatch_id="44444444-4444-4444-8444-444444444444",
+                task_id="t1",
+                session_id=_CHILD,
+                task=harness.task,
             )
             harness.process = harness.build_process(execution_id=harness.execution_id)
             run_task = asyncio.create_task(harness.process.run())

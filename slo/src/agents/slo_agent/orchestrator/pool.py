@@ -16,9 +16,14 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from config.cfg import SUBAGENT_MAX_CONCURRENCY, SUBAGENT_MAX_TASKS
 from src.agents.slo_agent.orchestrator.dao import (
+    AttachedDispatchSnapshotDAO,
+    DispatchIdentityDAO,
     OrchestratorResultDAO,
+    ResolvedDispatchTaskDAO,
     lifecycle_kind_for_status,
     SubAgentMode,
     SubAgentResultDAO,
@@ -28,6 +33,7 @@ from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.process import SubAgentProcess
 from src.agents.slo_agent.orchestrator.reaper import ReapOutcome
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
+from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.filesystem_store import (
@@ -49,6 +55,53 @@ MAX_PARALLEL_TASKS: int = SUBAGENT_MAX_TASKS
 
 Overridable via the ``SLO_SUBAGENT_MAX_TASKS`` environment variable.
 """
+
+_DUPLICATE_SESSION_ERROR: str = "duplicate child session in dispatch; no sub-agents were started"
+"""Fixed refusal when two tasks of one batch resolve to the same child session."""
+
+_SESSION_BUSY_ERROR: str = "child session already executing in this pool; no sub-agents were started"
+"""Fixed refusal when a batch names a reserved or nonterminal child session."""
+
+_UNSAFE_SESSION_ERROR: str = "unsafe child session id; no sub-agents were started"
+"""Fixed refusal when a resolved session id is unsafe as a path component."""
+
+_SEALED_ERROR: str = "pool sealed by abort; no new sub-agents will be spawned"
+"""Fixed refusal for any dispatch reaching a sealed pool."""
+
+
+class _DispatchReservation:
+    """Child sessions one admitted dispatch holds until each execution is torn down.
+
+    Admission reserves every resolved session in the pool-owned set. ``_run_one``
+    claims its session when it starts and releases it after its wrapper and
+    terminal lifecycle event have settled; the dispatch ``finally`` releases the
+    sessions no step ever claimed (a stopped chain, or cancellation before a
+    child started). Every reserved session is released exactly once.
+    """
+
+    def __init__(self, *, reserved: set[str], session_ids: tuple[str, ...]) -> None:
+        """Reserve ``session_ids`` in the pool's shared set.
+
+        Args:
+            reserved (set[str]): Pool-owned set of sessions held by any dispatch.
+            session_ids (tuple[str, ...]): Distinct sessions of this batch.
+        """
+        self._reserved: set[str] = reserved
+        self._unclaimed: set[str] = set(session_ids)
+        reserved.update(session_ids)
+
+    def claim(self, *, session_id: str) -> None:
+        """Hand one session's release to the ``_run_one`` that starts it."""
+        self._unclaimed.discard(session_id)
+
+    def release(self, *, session_id: str) -> None:
+        """Release a claimed session after its execution teardown settled."""
+        self._reserved.discard(session_id)
+
+    def release_unclaimed(self) -> None:
+        """Release every session no step claimed; called once by dispatch teardown."""
+        self._reserved.difference_update(self._unclaimed)
+        self._unclaimed.clear()
 
 
 class SubAgentPool:
@@ -73,6 +126,8 @@ class SubAgentPool:
             ``commit_terminal`` winner is the only terminal truth the pool emits.
         _active (list[SubAgentProcess]): Currently active process wrappers,
             registered before the spawned event; used by ``cancel_all()``.
+        _reserved_session_ids (set[str]): Child sessions held by admitted
+            dispatches from admission until each execution's teardown settled.
         _owner_session_id (str): Immutable owner identity from the composition root.
         _run_id (str): Immutable UUID of this pool composition.
         _history_root (Path): History root shared by fleet, evidence and child files.
@@ -128,6 +183,7 @@ class SubAgentPool:
         self._sealed: bool = False
         self._abort_and_drain_task: Optional[asyncio.Task[None]] = None
         self._cancel_outcomes: dict[str, ReapOutcome] = {}
+        self._reserved_session_ids: set[str] = set()
 
     @property
     def registry(self) -> ProcessRegistry:
@@ -148,44 +204,217 @@ class SubAgentPool:
         """Return the immutable UUID of this pool composition."""
         return self._run_id
 
+    def attached_dispatch_snapshot(self) -> AttachedDispatchSnapshotDAO:
+        """Return the latest admitted batch's entries for session observers.
+
+        WHAT: Delegates to the registry's explicit dispatch projection; observers
+            never inspect pool or registry internals.
+        WHO: Called by SloAgentSession.attached_dispatch_snapshot.
+        WHEN: On every TUI observation poll; it has no side effects.
+
+        Returns:
+            AttachedDispatchSnapshotDAO: Latest batch, or the explicit empty value.
+        """
+        return self._registry.attached_snapshot()
+
     async def dispatch(
         self,
         *,
         mode: SubAgentMode,
         tasks: list[SubAgentTaskDAO],
     ) -> OrchestratorResultDAO:
-        """Run a batch of tasks under the requested dispatch mode.
+        """Admit one batch explicitly, then run it under the requested mode.
 
-        Rejects batches larger than ``MAX_PARALLEL_TASKS`` before spawning
-        any child so the orchestrator gets immediate feedback on oversized
-        requests.
+        WHAT: Refuses sealed or oversized batches, resolves every task's session
+            once, then (with no await) rechecks the seal and duplicate/reserved/live
+            sessions, reserves the batch and begins a new registry dispatch. The
+            stream-only ``sub_agent_dispatch_started`` event precedes every child
+            lifecycle event. Rejected batches begin nothing; an empty valid batch
+            still replaces the displayed group.
+        WHO: Called by the ``spawn_sub_agents`` tool for the orchestrator.
+        WHEN: Once per tool call; concurrent calls are admitted in the order their
+            preparation completes, not the order they were invoked.
 
         Args:
             mode (SubAgentMode): ``"parallel"``, ``"chain"``, or ``"single"``.
             tasks (list[SubAgentTaskDAO]): Ordered task list.
 
         Returns:
-            OrchestratorResultDAO: Aggregated batch result.
+            OrchestratorResultDAO: Aggregated batch result, or a refusal with no results.
+        """
+        intake_refusal: Optional[OrchestratorResultDAO] = self._intake_refusal(mode=mode, tasks=tasks)
+        if intake_refusal is not None:
+            return intake_refusal
+        resolved: Optional[tuple[ResolvedDispatchTaskDAO, ...]] = await self._resolve_dispatch_tasks(
+            tasks=tasks
+        )
+        if resolved is None:
+            return self._refusal(mode=mode, tasks=tasks, error=_UNSAFE_SESSION_ERROR)
+        admission_refusal: Optional[OrchestratorResultDAO] = self._admission_refusal(
+            mode=mode, tasks=tasks, resolved=resolved
+        )
+        if admission_refusal is not None:
+            return admission_refusal
+        dispatch, reservation = self._admit(resolved=resolved)
+        try:
+            results: list[SubAgentResultDAO] = await self._run_admitted_batch(
+                mode=mode, resolved=resolved, dispatch=dispatch, reservation=reservation
+            )
+        finally:
+            reservation.release_unclaimed()
+            self._registry.retire_dispatch(dispatch_id=dispatch.dispatch_id)
+        return self._aggregate(mode=mode, results=results)
+
+    def _intake_refusal(
+        self, *, mode: SubAgentMode, tasks: list[SubAgentTaskDAO]
+    ) -> Optional[OrchestratorResultDAO]:
+        """Refuse a batch that cannot be prepared at all.
+
+        Args:
+            mode (SubAgentMode): Requested dispatch mode.
+            tasks (list[SubAgentTaskDAO]): Requested tasks.
+
+        Returns:
+            Optional[OrchestratorResultDAO]: Sealed or oversize refusal, else None.
         """
         if self._sealed:
-            return OrchestratorResultDAO(
-                mode=mode,
-                results=[],
-                all_completed=False,
-                failed_task_ids=[task.task_id for task in tasks],
-                error="pool sealed by abort; no new sub-agents will be spawned",
-            )
+            return self._refusal(mode=mode, tasks=tasks, error=_SEALED_ERROR)
         if len(tasks) > MAX_PARALLEL_TASKS:
             return OrchestratorResultDAO(
                 mode=mode,
                 all_completed=False,
                 failed_task_ids=[t.task_id for t in tasks],
             )
+        return None
+
+    async def _resolve_dispatch_tasks(
+        self, *, tasks: list[SubAgentTaskDAO]
+    ) -> Optional[tuple[ResolvedDispatchTaskDAO, ...]]:
+        """Resolve every task's session reference exactly once, before admission.
+
+        WHAT: Bounded preparation: one resolution per task, in task order.
+            Cancellation here leaves nothing reserved or registered.
+        WHO: Called only by ``dispatch``.
+        WHEN: After intake checks and before the no-await admission section.
+
+        Args:
+            tasks (list[SubAgentTaskDAO]): Requested tasks.
+
+        Returns:
+            Optional[tuple[ResolvedDispatchTaskDAO, ...]]: Resolved tasks, or None
+                when a resolved session id is unsafe as a path component.
+        """
+        session_ids: list[str] = [await self._resolve_child_session_id(task=task) for task in tasks]
+        try:
+            return tuple(
+                ResolvedDispatchTaskDAO(task=task, session_id=session_id)
+                for task, session_id in zip(tasks, session_ids)
+            )
+        except ValidationError:
+            return None
+
+    def _admission_refusal(
+        self,
+        *,
+        mode: SubAgentMode,
+        tasks: list[SubAgentTaskDAO],
+        resolved: tuple[ResolvedDispatchTaskDAO, ...],
+    ) -> Optional[OrchestratorResultDAO]:
+        """Recheck seal and session identities after preparation, without awaiting.
+
+        Args:
+            mode (SubAgentMode): Requested dispatch mode.
+            tasks (list[SubAgentTaskDAO]): Requested tasks, for refusal ids.
+            resolved (tuple[ResolvedDispatchTaskDAO, ...]): Prepared batch.
+
+        Returns:
+            Optional[OrchestratorResultDAO]: Refusal for a sealed pool, a duplicate
+                session or a busy session; None when the batch may be admitted.
+        """
+        session_ids: list[str] = [item.session_id for item in resolved]
+        if self._sealed:
+            return self._refusal(mode=mode, tasks=tasks, error=_SEALED_ERROR)
+        if len(set(session_ids)) != len(session_ids):
+            return self._refusal(mode=mode, tasks=tasks, error=_DUPLICATE_SESSION_ERROR)
+        if any(not self._session_admissible(session_id=session_id) for session_id in session_ids):
+            return self._refusal(mode=mode, tasks=tasks, error=_SESSION_BUSY_ERROR)
+        return None
+
+    def _session_admissible(self, *, session_id: str) -> bool:
+        """Return whether no dispatch holds the session and it has no live incarnation."""
+        if session_id in self._reserved_session_ids:
+            return False
+        return self._registry.accepts_new_execution(session_id=session_id)
+
+    def _admit(
+        self, *, resolved: tuple[ResolvedDispatchTaskDAO, ...]
+    ) -> tuple[DispatchIdentityDAO, _DispatchReservation]:
+        """Reserve the batch and begin its registry dispatch in one synchronous step.
+
+        Args:
+            resolved (tuple[ResolvedDispatchTaskDAO, ...]): Admitted batch.
+
+        Returns:
+            tuple[DispatchIdentityDAO, _DispatchReservation]: Captured identity and
+                the reservation that dispatch teardown must settle.
+        """
+        reservation = _DispatchReservation(
+            reserved=self._reserved_session_ids, session_ids=tuple(item.session_id for item in resolved)
+        )
+        dispatch_id: str = str(uuid4())
+        sequence: int = self._registry.begin_dispatch(dispatch_id=dispatch_id)
+        return DispatchIdentityDAO(dispatch_id=dispatch_id, dispatch_sequence=sequence), reservation
+
+    async def _run_admitted_batch(
+        self,
+        *,
+        mode: SubAgentMode,
+        resolved: tuple[ResolvedDispatchTaskDAO, ...],
+        dispatch: DispatchIdentityDAO,
+        reservation: _DispatchReservation,
+    ) -> list[SubAgentResultDAO]:
+        """Announce the admitted batch, then run its children under ``mode``.
+
+        Args:
+            mode (SubAgentMode): Admitted dispatch mode.
+            resolved (tuple[ResolvedDispatchTaskDAO, ...]): Admitted batch.
+            dispatch (DispatchIdentityDAO): Identity captured at admission.
+            reservation (_DispatchReservation): The batch's session reservation.
+
+        Returns:
+            list[SubAgentResultDAO]: Results for the children that ran.
+        """
+        await self._emit_dispatch_started(dispatch=dispatch)
         if mode == "chain":
-            results: list[SubAgentResultDAO] = await self._run_chain(tasks=tasks)
-        else:
-            results = list(await asyncio.gather(*[self._run_one(task=t) for t in tasks]))
-        return self._aggregate(mode=mode, results=results)
+            return await self._run_chain(resolved=resolved, dispatch=dispatch, reservation=reservation)
+        return list(
+            await asyncio.gather(
+                *[
+                    self._run_one(resolved=item, dispatch=dispatch, reservation=reservation)
+                    for item in resolved
+                ]
+            )
+        )
+
+    @staticmethod
+    def _refusal(*, mode: SubAgentMode, tasks: list[SubAgentTaskDAO], error: str) -> OrchestratorResultDAO:
+        """Build a batch refusal that started no child.
+
+        Args:
+            mode (SubAgentMode): Requested dispatch mode.
+            tasks (list[SubAgentTaskDAO]): Refused tasks.
+            error (str): Fixed refusal message.
+
+        Returns:
+            OrchestratorResultDAO: No results; every task id marked failed.
+        """
+        return OrchestratorResultDAO(
+            mode=mode,
+            results=[],
+            all_completed=False,
+            failed_task_ids=[task.task_id for task in tasks],
+            error=error,
+        )
 
     async def _resolve_child_session_id(self, *, task: SubAgentTaskDAO) -> str:
         """Determine the session id for one child task.
@@ -228,33 +457,65 @@ class SubAgentPool:
                 )
         return str(uuid4())
 
-    async def _run_one(self, *, task: SubAgentTaskDAO) -> SubAgentResultDAO:
-        """Spawn and await one task under the concurrency semaphore.
+    async def _run_one(
+        self,
+        *,
+        resolved: ResolvedDispatchTaskDAO,
+        dispatch: DispatchIdentityDAO,
+        reservation: _DispatchReservation,
+    ) -> SubAgentResultDAO:
+        """Own one admitted child's session reservation around its execution.
 
-        WHAT: register (fresh execution_id) → create and record the wrapper → emit
-            spawned → acquire semaphore → run, or publish a sealed pending abort
-            without spawning → emit exactly one terminal lifecycle from the
-            returned registry winner → return that winner. No terminal state is
-            reconciled or written here; the process gateway owns publication.
+        WHAT: Claims the session from the dispatch reservation, runs the child and
+            releases the session only after its wrapper and terminal lifecycle
+            event have settled, on every return, error and cancellation path.
         WHO: Called by dispatch for each task (parallel/single) or step (chain).
-        WHEN: Once per task; a session that is still executing in this pool is
-            refused with a failed result and never spawned twice.
+        WHEN: Once per admitted task; session references were resolved at
+            preparation and are never resolved again here.
 
         Args:
-            task (SubAgentTaskDAO): The task to run.
+            resolved (ResolvedDispatchTaskDAO): Task and its admitted session.
+            dispatch (DispatchIdentityDAO): Batch identity captured at admission.
+            reservation (_DispatchReservation): The batch's session reservation.
 
         Returns:
             SubAgentResultDAO: The registry winner for this task's incarnation.
         """
-        session_id: str = await self._resolve_child_session_id(task=task)
+        reservation.claim(session_id=resolved.session_id)
+        try:
+            return await self._run_reserved(resolved=resolved, dispatch=dispatch)
+        finally:
+            reservation.release(session_id=resolved.session_id)
+
+    async def _run_reserved(
+        self, *, resolved: ResolvedDispatchTaskDAO, dispatch: DispatchIdentityDAO
+    ) -> SubAgentResultDAO:
+        """Register, spawn and await one reserved child under the concurrency semaphore.
+
+        WHAT: register into the captured dispatch (fresh execution_id) → create and
+            record the wrapper → emit spawned → acquire semaphore → run, or publish
+            a sealed pending abort without spawning → emit exactly one terminal
+            lifecycle from the returned registry winner → return that winner. No
+            terminal state is reconciled or written here; the process gateway owns
+            publication.
+        WHO: Called only by ``_run_one`` while it holds the session reservation.
+        WHEN: Once per admitted task; a pool sealed after admission returns the
+            sealed result without registering.
+
+        Args:
+            resolved (ResolvedDispatchTaskDAO): Task and its admitted session.
+            dispatch (DispatchIdentityDAO): Batch identity captured at admission.
+
+        Returns:
+            SubAgentResultDAO: The registry winner for this task's incarnation.
+        """
+        task: SubAgentTaskDAO = resolved.task
+        session_id: str = resolved.session_id
         if self._sealed:
             return self._sealed_task_result(task=task, session_id=session_id)
-        try:
-            execution_id: str = self._registry.register(
-                task_id=task.task_id, session_id=session_id, task=task
-            )
-        except ValueError:
-            return self._refused_task_result(task=task, session_id=session_id)
+        execution_id: str = self._registry.register(
+            dispatch_id=dispatch.dispatch_id, task_id=task.task_id, session_id=session_id, task=task
+        )
         process: SubAgentProcess = SubAgentProcess(
             task=task,
             session_id=session_id,
@@ -272,7 +533,8 @@ class SubAgentPool:
                 kind="sub_agent_spawned",
                 task_id=task.task_id,
                 session_id=session_id,
-                prompt_preview=task.prompt[:80],
+                metadata=dispatch.lifecycle_metadata(execution_id=execution_id),
+                prompt_preview=TaskPreview.build(task_text=task.prompt),
             )
             async with self._semaphore:
                 result: SubAgentResultDAO = await self._run_admitted(process=process, task=task)
@@ -280,6 +542,7 @@ class SubAgentPool:
                 kind=lifecycle_kind_for_status(status=result.status),
                 task_id=task.task_id,
                 session_id=session_id,
+                metadata=dispatch.lifecycle_metadata(execution_id=execution_id),
             )
             return result
         finally:
@@ -322,49 +585,42 @@ class SubAgentPool:
             exit_code=2,
         )
 
-    @staticmethod
-    def _refused_task_result(*, task: SubAgentTaskDAO, session_id: str) -> SubAgentResultDAO:
-        """Build the result for a task whose session cannot start a new execution.
-
-        Args:
-            task (SubAgentTaskDAO): Refused task.
-            session_id (str): Session that is still executing or is unsafe.
-
-        Returns:
-            SubAgentResultDAO: Failed exit-1 result; nothing was registered or spawned.
-        """
-        return SubAgentResultDAO(
-            task_id=task.task_id,
-            session_id=session_id,
-            status="failed",
-            answer="session cannot start a new execution in this pool",
-            exit_code=1,
-        )
-
     async def _run_chain(
         self,
         *,
-        tasks: list[SubAgentTaskDAO],
+        resolved: tuple[ResolvedDispatchTaskDAO, ...],
+        dispatch: DispatchIdentityDAO,
+        reservation: _DispatchReservation,
     ) -> list[SubAgentResultDAO]:
-        """Run tasks sequentially, substituting ``{previous}`` and stopping on failure.
+        """Run steps sequentially, substituting ``{previous}`` and stopping on noncompletion.
 
-        Each step's prompt may contain ``{previous}``, which is replaced with
-        the prior step's final answer before the child is spawned. A failed step
-        stops the chain; remaining tasks are not run.
+        Each step's prompt may contain ``{previous}``, which is replaced with the
+        prior step's final answer before the child is spawned. A step that does
+        not complete stops the chain with no automatic retry; the remaining steps'
+        reserved sessions are released by dispatch teardown. Every step joins the
+        dispatch captured at admission, even when a newer batch is displayed.
 
         Args:
-            tasks (list[SubAgentTaskDAO]): Ordered chain steps.
+            resolved (tuple[ResolvedDispatchTaskDAO, ...]): Ordered admitted steps.
+            dispatch (DispatchIdentityDAO): Batch identity captured at admission.
+            reservation (_DispatchReservation): The batch's session reservation.
 
         Returns:
             list[SubAgentResultDAO]: Results for the steps that were run.
         """
         results: list[SubAgentResultDAO] = []
         previous_answer: str = ""
-        for task in tasks:
-            stepped: SubAgentTaskDAO = task.model_copy(
-                update={"prompt": task.prompt.replace("{previous}", previous_answer)}
+        for step in resolved:
+            stepped: ResolvedDispatchTaskDAO = step.model_copy(
+                update={
+                    "task": step.task.model_copy(
+                        update={"prompt": step.task.prompt.replace("{previous}", previous_answer)}
+                    )
+                }
             )
-            result: SubAgentResultDAO = await self._run_one(task=stepped)
+            result: SubAgentResultDAO = await self._run_one(
+                resolved=stepped, dispatch=dispatch, reservation=reservation
+            )
             results.append(result)
             if result.status != "completed":
                 break
@@ -443,7 +699,45 @@ class SubAgentPool:
                 kind="sub_agent_reaped",
                 task_id=entry.task_id,
                 session_id=entry.session_id,
+                metadata=self._reaped_metadata(session_id=entry.session_id, execution_id=entry.execution_id),
             )
+
+    def _reaped_metadata(self, *, session_id: str, execution_id: str) -> dict[str, object]:
+        """Return the dispatch metadata of a reaped child's current incarnation.
+
+        Args:
+            session_id (str): Reaped child session.
+            execution_id (str): Its current incarnation.
+
+        Returns:
+            dict[str, object]: The registering batch's lifecycle metadata, or only
+                the execution identity when no batch registered it.
+        """
+        dispatch: Optional[DispatchIdentityDAO] = self._registry.dispatch_of(
+            session_id=session_id, execution_id=execution_id
+        )
+        if dispatch is None:
+            return {"execution_id": execution_id}
+        return dispatch.lifecycle_metadata(execution_id=execution_id)
+
+    async def _emit_dispatch_started(self, *, dispatch: DispatchIdentityDAO) -> None:
+        """Emit the stream-only start event of one admitted batch.
+
+        WHAT: Relays ``sub_agent_dispatch_started`` with exactly the orchestrator
+            session, dispatch id and sequence. It has no ``sub_agent_id``, so the
+            session history subscriber never persists it.
+        WHO: Called by ``_run_admitted_batch``.
+        WHEN: Immediately after admission, before any child is registered.
+
+        Args:
+            dispatch (DispatchIdentityDAO): Identity captured at admission.
+        """
+        await self._relay(
+            AgentStreamEventDAO(
+                kind="sub_agent_dispatch_started",
+                metadata=dispatch.started_metadata(orchestrator_session_id=self._orchestrator_session_id),
+            )
+        )
 
     async def _emit_lifecycle(
         self,
@@ -451,6 +745,7 @@ class SubAgentPool:
         kind: str,
         task_id: str,
         session_id: str,
+        metadata: dict[str, object],
         prompt_preview: str = "",
     ) -> None:
         """Emit one orchestrator-level lifecycle event to the relay.
@@ -460,13 +755,15 @@ class SubAgentPool:
 
         Args:
             kind (str): One of ``sub_agent_spawned``, ``sub_agent_completed``,
-                ``sub_agent_failed``.
+                ``sub_agent_failed``, ``sub_agent_aborted``, ``sub_agent_reaped``.
             task_id (str): The task the event concerns.
             session_id (str): The child session identifier.
-            prompt_preview (str): First 80 characters of the task prompt;
-                carried on ``sub_agent_spawned`` events so the TUI can show
-                meaningful fleet-row text before the first ``text_delta``
-                arrives. Empty string for terminal lifecycle events.
+            metadata (dict[str, object]): Captured dispatch identity plus the
+                child's execution_id; the history subscriber copies it into the
+                existing audit records.
+            prompt_preview (str): TaskPreview label carried on ``sub_agent_spawned``
+                events so the TUI can show meaningful fleet-row text before the
+                first ``text_delta`` arrives. Empty string for other events.
         """
         await self._relay(
             AgentStreamEventDAO(
@@ -474,6 +771,7 @@ class SubAgentPool:
                 sub_agent_id=session_id,
                 task_id=task_id,
                 content=prompt_preview if prompt_preview else None,
+                metadata=metadata,
             )
         )
 

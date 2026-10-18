@@ -996,6 +996,75 @@ class TestSloAgentSessionEventRelay:
         assert received[0].task_id == "t1"
 
 
+class TestSloAgentSessionAttachedDispatchSnapshot:
+    """``attached_dispatch_snapshot`` observation facade (feature 94 a.2)."""
+
+    def test_session_without_pool_returns_explicit_empty_value(self, tmp_path: Path) -> None:
+        """No attached pool means no dispatch, never a lookup of private fields."""
+        from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
+
+        session: SloAgentSession = SloAgentSession(
+            workdir=tmp_path, session_id="s1", agent=_build_faux_agent(tmp_path), enable_history=False
+        )
+
+        assert session.attached_dispatch_snapshot() == AttachedDispatchSnapshotDAO.empty()
+
+    async def test_attached_pool_latest_batch_is_returned_through_the_session(self, tmp_path: Path) -> None:
+        """A real pool dispatched through the session relay exposes only its latest batch."""
+        from langchain_core.tools import BaseTool
+
+        from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
+        from src.agents.slo_agent.orchestrator.pool import SubAgentPool
+        from src.agents.slo_agent.orchestrator.process import SubAgentProcess
+
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4", enable_history=False)
+        )
+        pool = SubAgentPool(
+            orchestrator_session_id="orch-1",
+            default_model=None,
+            relay=session.event_relay,
+            owner_session_id="orch-1",
+            run_id="7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f",
+            history_root=tmp_path / "history",
+        )
+        tool: MagicMock = MagicMock(spec=BaseTool)
+        tool.name = "spawn_sub_agents"
+        session.attach_sub_agent_pool(pool=pool, spawn_tool=tool)
+        received: list[AgentStreamEventDAO] = []
+
+        async def collect(event: AgentStreamEventDAO) -> None:
+            received.append(event)
+
+        session.subscribe(handler=collect)
+
+        async def finish(process: SubAgentProcess) -> SubAgentResultDAO:
+            return process._publish_terminal(
+                candidate=SubAgentResultDAO(
+                    task_id=process.task.task_id,
+                    session_id=process.session_id,
+                    status="completed",
+                    exit_code=0,
+                    execution_id=process.execution_id,
+                ),
+                terminal_reason="completed",
+                terminated_by="natural",
+            )
+
+        with patch.object(SubAgentProcess, "run", new=finish):
+            await pool.dispatch(
+                mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id="a")]
+            )
+            await pool.dispatch(
+                mode="single", tasks=[SubAgentTaskDAO(task_id="t2", prompt="y", session_id="b")]
+            )
+
+        snapshot = session.attached_dispatch_snapshot()
+        assert snapshot == pool.attached_dispatch_snapshot()
+        assert (snapshot.dispatch_sequence, [e.session_id for e in snapshot.entries]) == (2, ["b"])
+        assert [event.kind for event in received][0] == "sub_agent_dispatch_started"
+
+
 class TestSloAgentSessionAttachSubAgentPool:
     """``attach_sub_agent_pool()`` promotion seam (sub-spec 03.a)."""
 

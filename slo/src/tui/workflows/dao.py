@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 from typing import List, Literal, Optional, TypeAlias, cast, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.agents.slo_agent.orchestrator.dao import canonical_uuid
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowState
 
 __all__ = [
@@ -25,6 +26,11 @@ __all__ = [
     "ParsedLaunchResultDAO",
     "ParsedWorkflowLifecycleMessageDAO",
     "WorkflowLifecycleTarget",
+    "WorkflowSessionAvailability",
+    "WorkflowSessionKeyDAO",
+    "WorkflowSessionRole",
+    "WorkflowSessionRowDAO",
+    "WorkflowSessionSnapshotDAO",
     "workflow_lifecycle_target_for_kind",
     "parse_fleet_update_message",
     "parse_workflow_lifecycle_message",
@@ -349,3 +355,110 @@ def _is_path_safe_workflow_id(*, workflow_id: str) -> bool:
     if not workflow_id:
         return False
     return not any(marker in workflow_id for marker in _UNSAFE_WORKFLOW_ID_MARKERS)
+
+
+WorkflowSessionRole: TypeAlias = Literal["orchestrator", "child"]
+"""Row role in the session list; the parent row is always ``orchestrator``."""
+
+WorkflowSessionAvailability: TypeAlias = Literal["available", "stale", "unavailable"]
+"""Whether a row reflects a fresh read, retained last-good data, or no readable data."""
+
+
+class WorkflowSessionKeyDAO(BaseModel):
+    """Owner-scoped composite identity of one row in the workflow session list.
+
+    Feature 94 a.2. Transient; never persisted. The parent row's ``session_id``
+    equals its ``orchestrator_session_id``. Filesystem callers still apply the
+    session-id validation and containment checks; non-empty strings alone are
+    not path authority.
+
+    Attributes:
+        orchestrator_session_id (str): Parent orchestrator owning the group.
+        session_id (str): Exact row session; never a clipped display string.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    orchestrator_session_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+
+    @property
+    def is_parent(self) -> bool:
+        """Return whether this key names the orchestrator's own row."""
+        return self.session_id == self.orchestrator_session_id
+
+
+class WorkflowSessionRowDAO(BaseModel):
+    """Frozen presentation record for one session-list row (feature 94 a.2).
+
+    Not persisted and not a replacement for ``SubAgentStatusDAO``; a display row
+    is never cancellation authority.
+
+    Attributes:
+        key (WorkflowSessionKeyDAO): Composite row identity.
+        workflow_id (Optional[str]): Detached workflow id; None for attached rows.
+        task_id (Optional[str]): Child task id; None for the parent row.
+        execution_id (str): Child incarnation UUID; empty for the parent or legacy rows.
+        dispatch_id (str): Registering batch UUID; empty for legacy detached rows.
+        role (WorkflowSessionRole): ``orchestrator`` exactly for the parent key.
+        status (str): Display status supplied by registry/fleet evidence.
+        task_text (str): Full task or TaskPreview label; rendered literally.
+        task_text_complete (bool): True only when ``task_text`` is the full task
+            from the matching incarnation's context.
+        availability (WorkflowSessionAvailability): Freshness of the row's data;
+            fresh rows default to ``available`` and only stale or unavailable
+            projections pass it explicitly.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: WorkflowSessionKeyDAO
+    workflow_id: Optional[str] = None
+    task_id: Optional[str] = None
+    execution_id: str = ""
+    dispatch_id: str = ""
+    role: WorkflowSessionRole
+    status: str = Field(min_length=1)
+    task_text: str
+    task_text_complete: bool
+    availability: WorkflowSessionAvailability = "available"
+
+    @field_validator("execution_id", "dispatch_id")
+    @classmethod
+    def _validate_optional_uuid(cls, value: str) -> str:
+        """Accept an empty legacy identity or a canonical UUID."""
+        if value == "":
+            return value
+        return canonical_uuid(value=value)
+
+    @model_validator(mode="after")
+    def _validate_role_matches_key(self) -> "WorkflowSessionRowDAO":
+        """Tie the parent role to the parent key and forbid a parent incarnation.
+
+        Returns:
+            WorkflowSessionRowDAO: Self after validation.
+
+        Raises:
+            ValueError: If role and key disagree, or a parent row names an execution.
+        """
+        if (self.role == "orchestrator") != self.key.is_parent:
+            raise ValueError("orchestrator role requires the parent key")
+        if self.role == "orchestrator" and self.execution_id:
+            raise ValueError("parent row has no execution identity")
+        return self
+
+
+class WorkflowSessionSnapshotDAO(BaseModel):
+    """One immutable session-list result per refresh (feature 94 a.2).
+
+    Attributes:
+        rows (tuple[WorkflowSessionRowDAO, ...]): Rows in stable group order;
+            empty hides the panel. Duplicate keys are the panel's defense, not
+            rejected here.
+        notice (Optional[str]): Fixed safe notice (stale/unavailable), or None.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rows: tuple[WorkflowSessionRowDAO, ...] = ()
+    notice: Optional[str] = None

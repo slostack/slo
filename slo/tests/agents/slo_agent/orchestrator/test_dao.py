@@ -8,11 +8,14 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from src.agents.slo_agent.orchestrator.dao import (
+    AttachedDispatchSnapshotDAO,
     ChildAbortOutcomeDAO,
     ChildAbortRequestDAO,
     ChildControlCapabilityDAO,
     ChildExecutionEvidenceDAO,
+    DispatchIdentityDAO,
     ExecutionIndexDAO,
+    ResolvedDispatchTaskDAO,
     StdoutCaptureIdentityDAO,
     FleetSnapshotDAO,
     build_cleanup_summary,
@@ -449,6 +452,7 @@ class TestSubAgentTaskDAOSystemPrompt:
 # ── Feature 94 T02: runtime execution identity and versioned evidence ─────────
 
 _EXECUTION_ID: str = "0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40"
+_DISPATCH_ID: str = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
 _RUN_ID: str = "7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f"
 _REQUEST_ID: str = "c3b2a190-8e7d-4c6b-9a58-473625140f0e"
 _STATUS_DIGEST: str = "a" * 64
@@ -530,7 +534,7 @@ class TestChildExecutionEvidenceDAO:
     def test_pending_then_running_then_terminal_transitions(self) -> None:
         """Each phase transition returns a new frozen value with phase-specific evidence."""
         pending: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.pending(
-            session_id="child-1", execution_id=_EXECUTION_ID
+            session_id="child-1", execution_id=_EXECUTION_ID, dispatch_id=_DISPATCH_ID
         )
         running: ChildExecutionEvidenceDAO = pending.running(
             stdout_identity=StdoutCaptureIdentityDAO(device=1, inode=2),
@@ -554,15 +558,52 @@ class TestChildExecutionEvidenceDAO:
     def test_pending_terminal_without_spawn_has_no_stdout_identity(self) -> None:
         """A pending abort publishes terminal status evidence with no capture identity."""
         terminal: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.pending(
-            session_id="child-1", execution_id=_EXECUTION_ID
+            session_id="child-1", execution_id=_EXECUTION_ID, dispatch_id=_DISPATCH_ID
         ).terminal(status="aborted", status_sha256=_STATUS_DIGEST)
 
         assert terminal.stdout_identity is None
         assert terminal.spawn_context_sha256 is None
 
+    def test_every_phase_keeps_the_admitting_dispatch(self) -> None:
+        """Running and terminal evidence copy the dispatch identity from pending."""
+        terminal: ChildExecutionEvidenceDAO = (
+            ChildExecutionEvidenceDAO.pending(
+                session_id="child-1", execution_id=_EXECUTION_ID, dispatch_id=_DISPATCH_ID
+            )
+            .running(stdout_identity=None, spawn_context_sha256=None)
+            .terminal(status="completed", status_sha256=_STATUS_DIGEST)
+        )
+
+        assert terminal.dispatch_id == _DISPATCH_ID
+
+    def test_pending_requires_a_dispatch_identity(self) -> None:
+        """Registration evidence cannot be built without the admitting dispatch."""
+        with pytest.raises(TypeError):
+            ChildExecutionEvidenceDAO.pending(  # type: ignore[call-arg]
+                session_id="child-1", execution_id=_EXECUTION_ID
+            )
+
+    @pytest.mark.parametrize("dispatch_id", ["batch-1", _DISPATCH_ID.upper(), ""])
+    def test_non_canonical_dispatch_identity_is_rejected(self, dispatch_id: str) -> None:
+        """A present dispatch identity must be a canonical UUID like every other holder."""
+        with pytest.raises(ValidationError):
+            ChildExecutionEvidenceDAO.pending(
+                session_id="child-1", execution_id=_EXECUTION_ID, dispatch_id=dispatch_id
+            )
+
+    def test_sibling_without_dispatch_identity_still_parses(self) -> None:
+        """Readers accept an earlier sibling that predates dispatch metadata."""
+        evidence: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.model_validate(
+            {"session_id": "child-1", "execution_id": _EXECUTION_ID, "phase": "pending", "status": "pending"}
+        )
+
+        assert evidence.dispatch_id is None
+
     def test_frozen(self) -> None:
         """Evidence values cannot be mutated in place."""
-        evidence = ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=_EXECUTION_ID)
+        evidence = ChildExecutionEvidenceDAO.pending(
+            session_id="child-1", execution_id=_EXECUTION_ID, dispatch_id=_DISPATCH_ID
+        )
 
         with pytest.raises(ValidationError):
             evidence.phase = "running"  # type: ignore[misc]
@@ -590,13 +631,17 @@ class TestChildExecutionEvidenceDAO:
     def test_rejects_unsafe_session_id(self, session_id: str) -> None:
         """Session identity must be a safe path slug before it addresses evidence."""
         with pytest.raises(ValidationError):
-            ChildExecutionEvidenceDAO.pending(session_id=session_id, execution_id=_EXECUTION_ID)
+            ChildExecutionEvidenceDAO.pending(
+                session_id=session_id, execution_id=_EXECUTION_ID, dispatch_id=_DISPATCH_ID
+            )
 
     @pytest.mark.parametrize("execution_id", ["", "abc", _EXECUTION_ID.upper(), "{" + _EXECUTION_ID + "}"])
     def test_rejects_non_canonical_execution_id(self, execution_id: str) -> None:
         """Execution identity is a strictly parsed canonical UUID."""
         with pytest.raises(ValidationError):
-            ChildExecutionEvidenceDAO.pending(session_id="child-1", execution_id=execution_id)
+            ChildExecutionEvidenceDAO.pending(
+                session_id="child-1", execution_id=execution_id, dispatch_id=_DISPATCH_ID
+            )
 
     def test_rejects_unknown_schema_version(self) -> None:
         """Only schema version 1 is readable by this owner."""
@@ -734,3 +779,94 @@ class TestChildControlDAOs:
             ChildControlCapabilityDAO(
                 run_id="x", owner_session_id="owner-1", orchestrator_session_id="orch-1", accepting=True
             )
+
+
+_DISPATCH_EXECUTION_ID: str = "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9"
+
+
+class TestDispatchDAOs:
+    """Feature 94 a.2 dispatch identity, resolution and attached-snapshot DAOs."""
+
+    def test_dispatch_identity_builds_exact_event_metadata(self) -> None:
+        """Start metadata has exactly three keys; lifecycle metadata adds the incarnation."""
+        identity = DispatchIdentityDAO(dispatch_id=_DISPATCH_ID, dispatch_sequence=3)
+
+        assert identity.started_metadata(orchestrator_session_id="orch-1") == {
+            "orchestrator_session_id": "orch-1",
+            "dispatch_id": _DISPATCH_ID,
+            "dispatch_sequence": 3,
+        }
+        assert identity.lifecycle_metadata(execution_id=_DISPATCH_EXECUTION_ID) == {
+            "dispatch_id": _DISPATCH_ID,
+            "dispatch_sequence": 3,
+            "execution_id": _DISPATCH_EXECUTION_ID,
+        }
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"dispatch_id": "not-a-uuid", "dispatch_sequence": 1},
+            {"dispatch_id": _DISPATCH_ID.upper(), "dispatch_sequence": 1},
+            {"dispatch_id": _DISPATCH_ID, "dispatch_sequence": 0},
+            {"dispatch_id": _DISPATCH_ID, "dispatch_sequence": 1, "extra": 1},
+        ],
+        ids=["non-uuid", "non-canonical", "sequence-zero", "extra-field"],
+    )
+    def test_dispatch_identity_rejects_invalid_fields(self, fields: dict[str, object]) -> None:
+        """An admitted dispatch always has a canonical UUID and a positive sequence."""
+        with pytest.raises(ValidationError):
+            DispatchIdentityDAO.model_validate(fields)
+
+    def test_dispatch_identity_is_frozen(self) -> None:
+        """Captured identity cannot be mutated after admission."""
+        identity = DispatchIdentityDAO(dispatch_id=_DISPATCH_ID, dispatch_sequence=1)
+
+        with pytest.raises(ValidationError):
+            identity.dispatch_sequence = 2  # type: ignore[misc]
+
+    def test_resolved_task_keeps_task_and_safe_session(self) -> None:
+        """Resolution pairs the original task with its single resolved session."""
+        task = SubAgentTaskDAO(task_id="t1", prompt="x")
+
+        resolved = ResolvedDispatchTaskDAO(task=task, session_id="child-1")
+
+        assert (resolved.task, resolved.session_id) == (task, "child-1")
+
+    @pytest.mark.parametrize("session_id", ["", "..", "a/b", "../x", "."])
+    def test_resolved_task_rejects_unsafe_session(self, session_id: str) -> None:
+        """A resolved session must be a safe path component before admission."""
+        with pytest.raises(ValidationError):
+            ResolvedDispatchTaskDAO(task=SubAgentTaskDAO(task_id="t1", prompt="x"), session_id=session_id)
+
+    def test_empty_attached_snapshot_denotes_no_dispatch(self) -> None:
+        """The explicit empty value has no identity, sequence zero and no entries."""
+        empty = AttachedDispatchSnapshotDAO.empty()
+
+        assert (empty.dispatch_id, empty.dispatch_sequence, empty.entries) == ("", 0, ())
+
+    def test_attached_snapshot_carries_entries_as_tuple(self) -> None:
+        """Entries are an ordered immutable tuple of status copies."""
+        entry = SubAgentStatusDAO(task_id="t1", session_id="child-1", execution_id=_DISPATCH_EXECUTION_ID)
+
+        snapshot = AttachedDispatchSnapshotDAO(
+            dispatch_id=_DISPATCH_ID, dispatch_sequence=1, entries=(entry,)
+        )
+
+        assert snapshot.entries == (entry,)
+        with pytest.raises(ValidationError):
+            snapshot.dispatch_sequence = 2  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"dispatch_id": "", "dispatch_sequence": 1},
+            {"dispatch_id": _DISPATCH_ID, "dispatch_sequence": 0},
+            {"dispatch_id": "", "dispatch_sequence": -1},
+            {"dispatch_id": "batch", "dispatch_sequence": 1},
+        ],
+        ids=["empty-id-with-sequence", "id-without-sequence", "negative", "non-uuid"],
+    )
+    def test_attached_snapshot_rejects_inconsistent_identity(self, fields: dict[str, object]) -> None:
+        """Empty identity pairs only with sequence zero; any other identity is a UUID."""
+        with pytest.raises(ValidationError):
+            AttachedDispatchSnapshotDAO.model_validate(fields)

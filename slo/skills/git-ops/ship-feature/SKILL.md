@@ -27,31 +27,6 @@ kind: workflow
 
 ---
 
-## Mode
-
-**Confirm-first mode is the default**, consistent with the rest of git-ops
-(`commit-and-push` waits for confirmation; `create-pull-request` never
-auto-merges unless asked). The agent PAUSES at two mandatory gates and awaits
-explicit approval:
-
-| Gate | Confirm-first (default) | Auto mode (opt-in only) |
-|---|---|---|
-| Before pushing to remote | **PAUSE — show diff summary, await confirmation** | Proceed silently |
-| Before merging MR/PR | **PAUSE — show MR/PR URL, await confirmation** | Proceed silently |
-
-**Auto mode is OPT-IN.** Enable it only when the user explicitly asks to run the
-whole thing end-to-end without stopping, e.g.:
-- "ship it" / "ship it end-to-end"
-- "run the whole thing, don't ask me"
-- "auto-merge it" / "push and merge without confirmation"
-- auto mode is explicitly turned on
-
-Absent such an explicit instruction, stay in confirm-first mode. The
-"show the commit message before committing" gate (Step 5) always applies,
-in either mode.
-
----
-
 ## Pre-conditions
 
 Confirm before starting:
@@ -232,7 +207,7 @@ Changed files:
 Confirm push? (yes/no)
 ```
 
-**Auto mode (opt-in only):** proceed without pausing.
+
 
 ```bash
 # First push (no upstream)
@@ -294,8 +269,7 @@ About to merge:
 Confirm merge? (yes/no)
 ```
 
-**Auto mode (opt-in only):** proceed without pausing. Note: never auto-merge
-unless the user explicitly opted into auto mode / asked you to merge.
+
 
 ### GitLab (glab)
 
@@ -354,7 +328,7 @@ main is now at: <latest commit hash>
 
 - Never commit from `main` — stop and route to `create-feature-branch` if on main.
 - Never `git add -A` or `git add .` without showing the user what will be staged.
-- Never skip Gate 1 (push) or Gate 2 (merge) unless the user explicitly opted into auto mode. Confirm-first is the default.
+- Never skip Gate 1 (push) or Gate 2 (merge) unless the user explicitly requested it. Confirm-first is the default.
 - Always show the commit message before executing `git commit`.
 - Never force-push (`--force`) unless the user explicitly requests it.
 - Never amend a commit that has already been pushed.

@@ -19,7 +19,7 @@ POLICY_FILES = (
     "CLAUDE.md",
     "skills/git-ops/branching-and-commit-conventions/SKILL.md",
     "skills/git-ops/ship-feature/SKILL.md",
-    "skills/design-and-analysis/workflows/gitlab-code-test-review.md",
+    "skills/orchestration/workflows/gitlab-code-test-review.md",
 )
 COMMIT_EXAMPLE_FILES = POLICY_FILES[3:]
 

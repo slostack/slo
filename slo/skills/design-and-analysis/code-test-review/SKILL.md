@@ -29,11 +29,10 @@ source_prompt: workflows/code-test-review.md
 This index entry is a pointer. The full, authoritative workflow lives in one
 place to avoid drift:
 
-> **Load and follow `skills/design-and-analysis/workflows/code-test-review.md`.**
+> **Load and follow `skills/orchestration/workflows/code-test-review.md`.**
 
 That file lists the sub-skills it sequences at the top, then defines the three
-pipeline steps (Code + Test Loop → Code Review → Completion Check), the manual
-vs. auto confirmation behavior, and the exit condition. Do not re-derive the
+pipeline steps (Code + Test Loop → Code Review → Completion Check), evidence-gated progression, and the exit condition. Do not re-derive the
 steps from this entry — read the workflow file and execute it.
 
 Sub-skills the workflow sequences (loaded on demand per step):

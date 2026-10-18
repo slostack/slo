@@ -33,6 +33,22 @@ document before planning or changing a feature.
 - `skills/INDEX.md` is generated only by `make refresh-skills` or `make build-skill-index`. Packaging checks enumerate the current filesystem so untracked authored skills are included and deleted files excluded.
 - Active links to removed redirects must be distinguished from fixture paths, source examples, generated index text, and historical inventory/ledger records. Final integration evidence: `/root/Code/specifications/projects/slo/specifications/87-skills-reorganization/attempt-2/final-integration-ledger-20261011T185600Z.md`.
 
+## Feature 95 scoped skill maintenance
+
+- Workflow definitions and orchestration skills now live in `skills/orchestration/`;
+  names and runtime user/workflow override precedence are unchanged. In the
+  original relocation baseline, the six moved files retained base content except
+  frontmatter group and relocation references. Subsequently accepted mode-removal
+  and headless reasoning amendments intentionally changed five moved bodies:
+  the four workflow resources and the headless guide. The relocation-only claim
+  is historical, not a description of those final amended bodies.
+- The scheduled TUI skills are explicitly frozen. The old headless-skill pointer
+  at `skills/tui/tui-scheduled-workflows/SKILL.md:47` remains intentionally stale;
+  reference validation allows only that exact source/target pair.
+- Context gathering is an on-request, language-neutral evidence companion;
+  unavailable sources are not empty findings. Solution-design's vertical addendum
+  refines its existing document contract without authorizing a design exercise.
+
 ## Verification
 
 - Focused session-rate-limit coverage is under

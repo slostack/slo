@@ -45,8 +45,8 @@ _REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 
 _REQUIRED_ENTRIES: tuple[str, ...] = (
     "skills/INDEX.md",
-    "skills/design-and-analysis/workflows/specification-development.md",
-    "skills/design-and-analysis/workflows/code-test-review.md",
+    "skills/orchestration/workflows/specification-development.md",
+    "skills/orchestration/workflows/code-test-review.md",
     "skills/languages/python/declarative-method-structure/SKILL.md",
 )
 
@@ -123,8 +123,6 @@ def _build_wheel(*, output_dir: Path) -> Path:
     wheels: list[Path] = sorted(output_dir.glob("*.whl"))
     assert wheels, f"no wheel produced in {output_dir}"
     return wheels[-1]
-
-
 
 
 @pytest.mark.skipif(

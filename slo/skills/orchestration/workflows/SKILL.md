@@ -1,7 +1,7 @@
 ---
 name: workflows
 description: "Overview of Slo's formal workflow system: pipeline vs parallel execution,
-  context handoff, confirmation behavior, the named workflows available for explicit
+  context handoff, evidence-gated progression, the named workflows available for explicit
   use, and the routing rules: 'dynamic workflows' / 'dyanmic workflows' (no detach
   qualifier) = sync in-session execution via spawn_sub_agents; a detach-qualified
   request ('headless' / 'detached' / 'independent' dynamic workflows, or a named
@@ -15,7 +15,7 @@ when_to_use: 'Use only when the user explicitly asks about workflows, asks to us
   a detach-qualified phrase ("headless dynamic workflows", "detached dynamic
   workflows", "independent dynamic workflows") routes to the headless-orchestration
   skill.'
-group: design-and-analysis
+group: orchestration
 kind: skill
 source_prompt: workflows/overview.md
 ---
@@ -25,7 +25,7 @@ source_prompt: workflows/overview.md
 ## Skill summary
 
 - **Name:** `workflows`
-- **Description:** Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, the named workflows available for explicit use, and the routing rules: "dynamic workflows" / "dyanmic workflows" (no detach qualifier) = sync in-session execution via spawn_sub_agents; a detach-qualified request ("headless" / "detached" / "independent" dynamic workflows, or a named workflow with detach wording) = detached headless orchestrator via launch_workflow; a detached orchestrator never calls launch_workflow.
+- **Description:** Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, evidence-gated progression, the named workflows available for explicit use, and the routing rules: "dynamic workflows" / "dyanmic workflows" (no detach qualifier) = sync in-session execution via spawn_sub_agents; a detach-qualified request ("headless" / "detached" / "independent" dynamic workflows, or a named workflow with detach wording) = detached headless orchestrator via launch_workflow; a detached orchestrator never calls launch_workflow.
 - **When to use:** Use only when the user explicitly asks about workflows, asks to use a named workflow, wants a compound task executed through a formal multi-step workflow instead of ad-hoc skill loading, or says `dynamic workflows` / `dyanmic workflows` to request in-session orchestrated multi-agent workflow execution. An unqualified "dynamic workflows" phrase runs in-session (sync dynamic workflow); a detach-qualified phrase routes to the headless-orchestration skill.
 - **Group:** `design-and-analysis`
 - **Kind:** `skill`
@@ -87,7 +87,6 @@ A workflow prompt defines:
 - the **type** of the workflow (Pipeline or Parallel),
 - the **ordered steps** and which prompt file governs each,
 - **what context must be passed** between steps,
-- **when to pause for confirmation** (manual mode vs. auto mode),
 - **the exit condition** — what "done" means for the whole workflow.
 
 ---
@@ -130,7 +129,7 @@ Regardless of workflow type, these rules are non-negotiable:
 
 2. **The agent retains full access to all tools and prompts.** While executing any step, the agent may read additional prompt files, search the KB, use grep/glob/read tools, and consult any rule file it judges relevant. The workflow specifies the mandatory steps; it does not prevent the agent from consulting the full system.
 
-3. **Each step must complete before the next begins (Pipeline).** Completing a step means: the step's prompt has been executed fully, its outputs exist in the conversation, and any required confirmation has been received.
+3. **Each step must complete before the next begins (Pipeline).** Completing a step means: the step's prompt has been executed fully, its outputs exist in the conversation, and its READY artifacts have been verified.
 
 4. **Context accumulates across steps.** The agent carries forward everything produced by prior steps — context bundles, PRE-hook outputs, verification reports, task lists. Later steps should explicitly reference earlier outputs rather than re-deriving them from scratch.
 
@@ -249,27 +248,17 @@ Totals: 2 turns started, 1 complete, 1 partial. Final verdict: COMPLETE.
 Dispatch calls per turn and failed-task retries: reported separately.
 ```
 
-## Confirmation Behavior
-
-### Manual Mode
-
-In manual mode (the default when the agent is operating interactively and the user has not explicitly granted autonomous execution):
-
-- The agent **stops at the end of each step** and presents its outputs to the operator.
-- The agent **explicitly states which step just completed** and **which step comes next**.
-- The agent waits for one of: explicit confirmation ("proceed", "looks good", "continue"), a correction ("revise step 2 before moving on"), or a stop instruction ("stop here").
-- The agent does **not** proceed to the next step without a signal from the operator.
-
-### Auto Mode
-
-In auto mode (when the user has explicitly asked the agent to run to completion, or the agent is operating in an autonomous-execution context):
-
-- The agent runs all steps to completion without pausing for per-step confirmation.
-- The agent **logs a brief progress marker** at the start and end of each step (e.g., "Starting Step 2 — Verification…", "Step 2 complete.").
-- The agent **pauses and seeks confirmation at the end of the full workflow** before any committing, publishing, or externally-visible actions (pushing code, posting to JIRA, publishing to the wiki).
-- If any step produces a verdict of REVISE (e.g. the POST hook), the agent resolves the revision inline and re-runs that step before continuing, rather than pausing to ask.
 
 ---
+
+## Progression and authorization
+
+Follow every required phase and revision loop. Verify READY/COMPLETE verdicts and
+required artifacts before advancing; report progress and carry evidence forward.
+Ask only for genuinely blocking clarification, not routine phase transitions.
+Explicit operator authorization is required for commit, push, publish, merge,
+PR/MR creation and destructive operations, independently of phase progression.
+A request to run a workflow is not blanket authorization for these actions.
 
 ## What Counts as a Step Completion
 
@@ -305,7 +294,7 @@ Each workflow prompt in this folder defines a named workflow. Its structure is:
 3. **Steps** — an ordered list of steps. Each step names the governing prompt file, states what input it consumes, and states what output it produces.
 4. **Context carried forward** — explicit statement of what each step passes to the next.
 5. **Exit condition** — what "the workflow is complete" means for the specific workflow.
-6. **Confirmation points** — where in the workflow the agent pauses for confirmation (manual mode) vs. where it may proceed autonomously (auto mode).
+6. **Authorization boundaries** — external or destructive actions that require explicit operator authorization.
 
 ---
 
@@ -329,4 +318,4 @@ When a new compound task recurs enough to warrant a workflow:
 4. Add a row to the Available Workflows table in this file.
 5. If the workflow has a natural CLI/Make trigger, add a row to the ubiquitous-language table in `skills/design-and-analysis/ubiquitous-language/SKILL.md`.
 
-Keep workflow prompts short and directive. The detail lives in the step prompt files. The workflow prompt's job is sequencing, context passing, and confirmation — not re-documenting what each step already explains.
+Keep workflow prompts short and directive. The detail lives in the step prompt files. The workflow prompt's job is sequencing, context passing, and evidence gates — not re-documenting what each step already explains.

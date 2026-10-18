@@ -2,7 +2,7 @@
 name: gitlab-code-test-review
 description: Complete the Code-Test-Review implementation cycle while managing the GitLab issue lifecycle — pick an assigned issue, implement it with tests, open an MR, and close the issue on merge.
 when_to_use: Use when the user asks to implement a GitLab issue, pick up a ticket from the backlog, or complete a coding task that is tracked as a GitLab issue moving through Todo → In-Progress → Code-Review → Closed.
-group: design-and-analysis
+group: orchestration
 kind: workflow
 ---
 
@@ -12,10 +12,14 @@ kind: workflow
 **Governs:** All feature implementation work tracked as a GitLab issue in this repository
 **Extends:** [Code-Test-Review](code-test-review.md) + [GitLab Issues](../../git-ops/gitlab-issues/SKILL.md)
 
+Follow [progression and authorization](SKILL.md#progression-and-authorization):
+verify phase artifacts, report progress, and ask only for blocking clarification.
+External and destructive actions still require explicit operator authorization.
+
 ## Scoped guidance and phase handoff contract
 
 **Workflow-turn accounting:** Follow
-`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+`skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`.
 Count a full pass through the workflow, not individual phases or agent calls.
 Report partial passes and separate harness limits explicitly; never skip review
 or treat repeated authoring dispatches as completed workflow turns.
@@ -48,7 +52,7 @@ artifact paths, requirement-to-evidence mapping, exact commands/results, deviati
 and unresolved blockers. Verify artifacts exist before advancing; a success exit
 code without the required evidence is not READY. Revision changes invalidate later
 review/completion evidence: return to the responsible implementation/spec phase,
-retest and re-review. Preserve the workflow's original manual/auto confirmations.
+retest and re-review.
 An execution failure stops progression; a recoverable failed task may be retried
 up to three times after the initial attempt, with its cause addressed and within
 the current workflow turn's dispatch budget. Never retry an aborted task, even when
@@ -171,13 +175,7 @@ Identify the issue to work on, confirm it is assigned to you, and advance its la
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-State:
-
-> "Issue #N is now `In-Progress`. Ready to begin Step 1 (Code + Test Loop)."
-
-Wait for confirmation before continuing.
+Report the phase result and verify its required artifacts before advancing.
 
 ---
 
@@ -217,9 +215,7 @@ checks where applicable; report blocked or baseline failures, never invent green
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-> "Step 1 complete — all tests green. Proceeding to Step 2 (Code Review) unless you would like to review the implementation first."
+Report the phase result and verify its required artifacts before advancing.
 
 ---
 
@@ -245,9 +241,7 @@ If Glaring Gaps are found, return to Step 1 before the review is complete.
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-> "Step 2 complete — code review report ready. [N glaring gaps / no glaring gaps]. Proceeding to Step 3 (Completion Check)."
+Report the phase result and verify its required artifacts before advancing.
 
 ---
 
@@ -272,9 +266,7 @@ If completion is below 100%, return to Step 1 and implement the missing items.
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-> "Step 3 complete — [X]% complete. [Workflow proceeding to Step 4 / N items remain — returning to Step 1.]"
+Report the phase result and verify its required artifacts before advancing.
 
 ---
 
@@ -370,7 +362,7 @@ source ~/.zshrc && glab issue view <iid> --repo <group/project>
 
 **[PAUSE — MANDATORY before Step 5]**
 
-This gate is mandatory in both auto and manual mode.
+Explicit operator authorization to merge is required.
 
 Present:
 
@@ -480,7 +472,7 @@ The following rules remain in effect throughout this entire workflow:
 - All always-on coding conventions from `CLAUDE.md` apply to every line of code written.
 - Secret scanning before every commit — eye-scan all staged content for API keys, tokens, bcrypt hashes, and private keys.
 - **Confirmation before commit, push, or PR** — never commit, push, or create an MR without showing the operator the commit message and awaiting explicit approval.
-- **Step 5 is always gated** — never merge or close an issue without an explicit operator instruction, even in auto mode.
+- **Step 5 is always gated** — never merge or close an issue without an explicit operator instruction.
 - `glab` commands require `source ~/.zshrc &&` prefix because `GITLAB_TOKEN` is set there.
 - Never use `git add -A` or `git add .` blindly — always stage by explicit path and verify with `git diff --cached --stat`.
 

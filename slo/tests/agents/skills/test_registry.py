@@ -83,9 +83,9 @@ class TestSkillRegistry:
             )
             _write_skill(
                 skills_dir=tmp_path,
-                relative_dir="design-and-analysis/orchestrator",
+                relative_dir="orchestration/orchestrator",
                 name="orchestrator",
-                group="design-and-analysis",
+                group="orchestration",
                 kind="workflow",
             )
             _write_skill(
@@ -158,9 +158,9 @@ class TestSkillRegistry:
                     name="orchestrator",
                     description="Pick the next best skill.",
                     when_to_use="Use at the start of a task.",
-                    group="design-and-analysis",
+                    group="orchestration",
                     kind="workflow",
-                    location="skills/design-and-analysis/orchestrator/SKILL.md",
+                    location="skills/orchestration/orchestrator/SKILL.md",
                 ),
                 Skill(
                     name="build-routers",
@@ -189,7 +189,7 @@ class TestSkillRegistry:
             ]
             out = SkillRegistry.format_for_prompt(skills=skills)
             assert "## Workflows" in out
-            assert "### Design and Analysis" in out
+            assert "### Orchestration" in out
             assert "**orchestrator**" in out
             assert "When to use: Use at the start of a task." in out
             assert "## Individual Skills" in out

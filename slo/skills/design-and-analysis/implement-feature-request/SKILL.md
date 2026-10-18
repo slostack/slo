@@ -83,7 +83,7 @@ they are present. Otherwise, derive the roots above under the active
    - Read the Knowledge Base before inferring architecture or domain rules.
 2. **Produce or validate the implementation spec, then break it into tasks.**
    - Run the **Specification Development** workflow — load and follow
-     `skills/design-and-analysis/workflows/specification-development.md`. It
+     `skills/orchestration/workflows/specification-development.md`. It
      sequences `feature-specifications` (gather/draft/self-check/revise) →
      `feature-specification-verification`
      → `breakdown-feature-spec-to-tasks` (and lists those sub-skills at its top).
@@ -101,7 +101,7 @@ surface unresolved specific-to-specific conflicts instead of resolving them sile
      `build-agent-tools`, CLI/TUI skills, etc.).
 4. **Implement, test, and review each task.**
    - Run the **Code-Test-Review** workflow per task — load and follow
-     `skills/design-and-analysis/workflows/code-test-review.md`. It sequences
+     `skills/orchestration/workflows/code-test-review.md`. It sequences
      `code-test-loop` → `review-feature-code` → `is-the-feature-completed`
      (and lists those sub-skills at its top). Land one small unit, run its
      tests, then continue.

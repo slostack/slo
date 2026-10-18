@@ -8,6 +8,7 @@ from src.agents.skills.registry import SkillRegistry
 
 SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 EXPECTED_GROUPS: set[str] = {
+    "orchestration",
     "design-and-analysis",
     "coding",
     "git-ops",

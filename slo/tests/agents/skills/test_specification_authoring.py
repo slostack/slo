@@ -69,12 +69,13 @@ def test_legacy_hooks_redirect_without_duplicate_authoring_procedures() -> None:
 
 def test_workflow_sequences_author_review_and_breakdown_only() -> None:
     """Preserve formal routing and independent gates without nested hook calls."""
-    path = SKILLS_DIR / "design-and-analysis/workflows/specification-development.md"
+    path = SKILLS_DIR / "orchestration/workflows/specification-development.md"
     text = path.read_text(encoding="utf-8")
     assert "feature-specifications-pre-hook/SKILL.md" not in text
     assert "feature-specifications-post-hook/SKILL.md" not in text
     assert "independent, adversarial review" in text
-    assert "[AUTO MODE — FINAL CONFIRMATION]" in text
+    assert "#progression-and-authorization" in text
+    assert "Before creating any JIRA sub-tasks or publishing the spec" in text
     assert "Mode A" not in text and "Mode B" not in text
     assert "Gather context → Draft → Self-check → Revise" in text
 
@@ -93,7 +94,7 @@ def test_refresh_preserves_repository_owned_authoring_and_workflow(
     """Refreshing the authored tree cannot rewrite local authoring or workflow policy."""
     skills_dir = tmp_path / "skills"
     author = skills_dir / "design-and-analysis/feature-specifications/SKILL.md"
-    workflow = skills_dir / "design-and-analysis/workflows/specification-development.md"
+    workflow = skills_dir / "orchestration/workflows/specification-development.md"
     author.parent.mkdir(parents=True)
     workflow.parent.mkdir(parents=True)
     author.write_text("canonical author", encoding="utf-8")
@@ -207,10 +208,10 @@ def test_authoring_relative_links_and_anchors_resolve() -> None:
             "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md",
             "design-and-analysis/gather-feature-context/SKILL.md",
             "design-and-analysis/specification-development/SKILL.md",
-            "design-and-analysis/workflows/SKILL.md",
-            "design-and-analysis/workflows/specification-development.md",
+            "orchestration/workflows/SKILL.md",
+            "orchestration/workflows/specification-development.md",
             "design-and-analysis/implement-feature-request/SKILL.md",
-            "design-and-analysis/orchestrator/SKILL.md",
+            "orchestration/orchestrator/SKILL.md",
             "orientation/readme/SKILL.md",
             "coding/declarative-method-structure/SKILL.md",
         )
@@ -239,13 +240,13 @@ def test_authoring_relative_links_and_anchors_resolve() -> None:
 def test_specification_family_has_no_mode_selection_or_partial_exceptions() -> None:
     """Keep authoring, independent review and breakdown on the same two-part contract."""
     paths = (
-        "feature-specifications/SKILL.md",
-        "feature-specification-verification/SKILL.md",
-        "breakdown-feature-spec-to-tasks/SKILL.md",
-        "workflows/specification-development.md",
+        "design-and-analysis/feature-specifications/SKILL.md",
+        "design-and-analysis/feature-specification-verification/SKILL.md",
+        "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md",
+        "orchestration/workflows/specification-development.md",
     )
     for relative in paths:
-        text = (SKILLS_DIR / "design-and-analysis" / relative).read_text(encoding="utf-8")
+        text = (SKILLS_DIR / relative).read_text(encoding="utf-8")
         assert "overview.md" in text, relative
         assert "standalone engineering sub-specs" in text, relative
         for obsolete in (

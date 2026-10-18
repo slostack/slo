@@ -34,7 +34,7 @@ See `AGENTS.md` for the layered skill structure.
 
 ## Workflow-turn counting
 
-Use `skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`
+Use `skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`
 for counting and stopping rules. One workflow turn is a complete pass through
 all required phases, not one agent dispatch. Track partial passes, phase retries
 and dispatch limits separately. Disclose a harness budget conflict before launch;
@@ -50,13 +50,13 @@ policy and required review are unchanged.
 
 ## Workflow Routing
 
-When the user explicitly mentions a "workflow" or names one, load the workflow file directly from `skills/design-and-analysis/workflows/` — do NOT substitute a skill with a similar-sounding name.
+When the user explicitly mentions a "workflow" or names one, load the workflow file directly from `skills/orchestration/workflows/` — do NOT substitute a skill with a similar-sounding name.
 
 | User request | Load this file |
 |---|---|
-| "use the code-test-review workflow" | `skills/design-and-analysis/workflows/code-test-review.md` |
-| "use the specification-development workflow" | `skills/design-and-analysis/workflows/specification-development.md` |
-| "what workflows are available" | `skills/design-and-analysis/workflows/SKILL.md` |
+| "use the code-test-review workflow" | `skills/orchestration/workflows/code-test-review.md` |
+| "use the specification-development workflow" | `skills/orchestration/workflows/specification-development.md` |
+| "what workflows are available" | `skills/orchestration/workflows/SKILL.md` |
 
 **Critical:** `code-test-loop` (`skills/coding/code-test-loop/SKILL.md`) is NOT the code-test-review workflow. It is Step 1 (the coding cadence) inside that workflow. Loading it instead of the workflow silently skips Step 2 (Code Review) and Step 3 (Completion Check). Always read the `workflows/` file when a workflow is requested.
 

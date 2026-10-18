@@ -1,6 +1,6 @@
 ---
 name: gather-feature-context
-description: 'On-request extended context companion feeding feature-specifications mandatory Gather context stage; retains business, architecture, code and source evidence in a sign-off briefing, not a default pre-hook.'
+description: 'On-request extended context companion feeding feature-specifications mandatory Gather context stage; provides language-aware (Python, Go, TypeScript), framework-neutral tracing and an evidence-backed behavior map, not a default pre-hook.'
 when_to_use: 'Use on-request for an extended sign-off briefing feeding the mandatory Gather context stage, not as a default pre-hook.'
 group: design-and-analysis
 kind: workflow
@@ -70,23 +70,9 @@ If only the subject is given and no anchor exists, explicitly ask the user wheth
 
 ## Repositories in scope
 
-Source of truth: the workspace's `<project>.code-workspace` file (it lists the member repos).
-
-Gather context from the product repositories, e.g. for an order-management platform:
-
-- `orders_service`
-- `payments_service`
-- `notifications_service`
-- `admin_ui`
-- `integration_tests`
-
-**Skip** the prompt / tooling / out-of-scope repositories:
-
-- the prompt/skills library itself
-- any sibling repo the user marks out of scope
-- `partner_integrations` (unless the feature explicitly touches it)
-
-If the user names additional repos, include them. If the user names a specific subset, scope to those.
+The workspace file lists member repositories when one exists; otherwise follow
+operator scope hints. Skip prompt/tooling libraries and every repository the
+user marks out of scope. Include additional repositories only within that scope.
 
 ---
 
@@ -124,25 +110,28 @@ Record per repo: original branch, original commit SHA, and the path you actually
 
 Lead the briefing with the domain explanation. Engineers and reviewers rarely share the operator/partner vocabulary, and skipping this step is the single most common cause of off-target specs.
 
-### Sources (search all of them — they each cover a different angle)
+### Sources — tiered and explicit
 
-1. **JIRA ticket** (if provided) — pull description, acceptance criteria, linked epics, comments, RFC links.
-   - Use the Atlassian connector tools (`getJiraIssue`, `searchJiraIssuesUsingJql`) when available.
-   - Look for linked Confluence RFC pages; pull them via `getConfluencePage`.
-2. **Confluence — RFC / spec pages** — search by subject keywords using `searchConfluenceUsingCql`. Atlassian cloud ID: `<atlassian-cloud-id>`. These are engineering-flavoured.
-3. **Confluence — PRDs and product pages** — PRDs are usually written by product/business and explain the *why* and the customer/operator workflow. Search separately for `"PRD"`, `"Product Requirement"`, `"Proposal"`, `"Strategy"` alongside the subject keyword. Don't stop at the first RFC — the PRD almost always lives on a sibling page.
-4. **Confluence — runbooks, post-mortems, compliance pages** — for regulated or SLA-bound areas (dispute handling, refunds, data-retention, partner contractual rules) there are usually compliance one-pagers or operational runbooks. Pull these for the regulatory framing.
-5. **Google Drive — meeting notes and chat threads** — if a Google Drive / Docs connector is available, search Drive for the subject keywords and pull any **meeting notes, design conversations, vendor discussions, customer-success threads, or product brainstorms** that pre-date the JIRA ticket. These often contain the "real" rationale before it got sanitised into a ticket. If no Drive connector is available, **ask the user** whether such a thread exists and request a link.
-6. **Knowledge base** — locate it first with `skills/design-and-analysis/locate-knowledge-base/SKILL.md`.
-   Discovery is non-blocking: when no KB is found, tell the user, offer to
-   create one, and move on to the next source. Otherwise grep `$SLO_KB_DIR`:
-   ```bash
-   rg -i "<subject keywords>" "$SLO_KB_DIR"
-   ```
-   - Start at the KB entry point (`Welcome.md` or `index.md`) and the relevant repo's `index.md`.
-   - Always read `gotchas.md` in the relevant domain folder.
-7. **Memory** — check `<project-memory>/MEMORY.md` for prior project / feedback / reference notes on the subject. The memory often has a one-line summary plus a link to the deeper page.
-8. **External authoritative sources (only if internal sources are thin)** — for industry terminology, use reputable references (regulator guidance, published standards, vendor public docs). Cite the source URL in the briefing. Do not rely on training-time recall for regulatory definitions.
+Consult in this order, retaining evidence and status for each source:
+
+| Source | What it contributes | If absent |
+|---|---|---|
+| Knowledge base | Terminology, architecture, decisions, conventions, historical findings, limitations | Record "no KB found"; discovery is non-blocking |
+| Jira / Confluence | Requirements, acceptance criteria, business context, discussions, linked design material | Record unavailable; ask the user; proceed on confirmation |
+| Code | Actual wiring, execution paths, behavior, integrations, persistence, configuration | Record unavailable and surface the verification gap |
+| Documentation / READMEs | Structure, setup, API descriptions, architecture, operations, testing instructions | Record empty or unavailable |
+| Tests | Behavioral contracts, edge cases, fixtures, integration boundaries | Record empty if inspected without findings |
+
+Use `skills/design-and-analysis/locate-knowledge-base/SKILL.md` for non-blocking
+KB discovery. Read its entry point and relevant repository index and gotchas.
+A source consulted with findings is **consulted-with-findings**; inspected without
+relevant findings is **empty**; no connector, access, or source is **unavailable**.
+When connectors are absent, record unavailable rather than skipping silently.
+Report material contradictions between code, documentation, and tickets; never
+silently resolve them by assumption. Ask which intended contract should govern.
+Search linked RFCs, PRDs, runbooks and discussions when connectors are available;
+request links from the user otherwise. Consult project memory and, only when
+internal sources are thin, authoritative external references with citations.
 
 ### Capture
 
@@ -167,7 +156,7 @@ If no business context is found anywhere, explicitly tell the user. Do not fabri
 
 ## Step 3 — RFC discovery
 
-JIRA tickets often reference an RFC (Confluence page) that contains the canonical design.
+When connectors are available, follow tickets and linked design documents. JIRA tickets often reference an RFC (Confluence page) that contains the canonical design. Record unavailable connectors distinctly from an empty search.
 
 - Walk the JIRA ticket's links and remote links (`getJiraIssueRemoteIssueLinks`) for any `confluence` URLs.
 - Search Confluence by ticket ID and subject for `RFC`, `Spec`, `Design`.
@@ -185,53 +174,54 @@ Do not silently proceed if the absence of an RFC is unusual for the area.
 
 **Goal:** Describe the system *as it exists today* in the area the feature touches. The feature spec will build on this.
 
-For each in-scope repo, locate and summarise:
+Read RESEARCH.md, AGENTS.md and applicable conventions first. Use
+`skills/design-and-analysis/find-how-it-works/SKILL.md` for deeper tracing.
+Record actual file/symbol references and handoffs, not a hypothetical stack.
 
-1. **Entry points touched by the subject** — routers, event handlers, scheduled workers, CLI tasks.
-2. **Domain services and DAOs** in the relevant domain folder.
-3. **Data model** — tables, columns, indexes, FKs relevant to the feature.
-4. **Event flow** — what NATS events / Celery tasks fire today in this path. (Memory note: Celery does NOT dispatch events; events flow NATS → `GlobalStreamProcessor` → `EventHandlerProcessing`.)
-5. **External integrations** — vendor clients, third-party APIs.
-6. **Tests** — existing test coverage in this area, so the spec can extend it rather than duplicate it.
+### Python
 
-Tools to use:
+This is a discovery guide, not a mandated architecture — follow the actual
+repository and its conventions; do not invent layers. Support CLI, worker, and
+event-driven entry points as well as web applications.
+When present: bootstrap → route registration → middleware/dependencies →
+handler/controller → application service → domain behavior → persistence/external
+clients → response/error handling → tests.
 
-- `RESEARCH.md` at the root of the core service repo — the codebase index.
-- `AGENTS.md` per repo — repo-level conventions and architecture pointers.
-- `skills/design-and-analysis/find-how-it-works/SKILL.md` for tracing a flow end-to-end.
-- GitHub CLI (`gh`) or local code reads — local is faster if the worktree is fresh.
+### Go
+
+This is a discovery guide, not a mandated architecture — follow the actual
+repository and its conventions; do not invent layers. Support CLI, worker, and
+event-driven entry points as well as web applications.
+When present: entrypoint/wiring → router or command registration → middleware →
+handler → application/domain services → repositories/clients → response/error
+handling → tests. Trace context propagation and cancellation where relevant.
+
+### TypeScript
+
+This is a discovery guide, not a mandated architecture — follow the actual
+repository and its conventions; do not invent layers. Support CLI, worker, and
+event-driven entry points as well as web applications.
+When present: workspace/package/bootstrap → route/controller or UI entry point →
+middleware/providers → application services or state/data access → domain
+behavior → persistence/external APIs → response/rendering/error handling → tests.
+Distinguish frontend component/state/rendering paths from backend request paths;
+trace their actual shared boundary rather than treating them as one process.
 
 ### Step 4a — Verify the schema against running code or live data (mandatory)
 
 Every column name, table name, type, and nullability that the spec will mention **must** be verified against the actual code or live data — never inferred from a sibling spec, from a prior conversation, or from analogy to another table. Specs that name nonexistent columns or guess at types waste reviewer time and produce broken downstream code; this step is the gate that prevents it.
 
-For each table or model the spec will touch, do at least one of the following — **do not skip both**:
-
-1. **Read the SQLAlchemy model file directly.** It is the authoritative source for table name, column names, types, nullability, indexes, FKs, constraints, and relationships. For the orders service this means `src/domains/<domain>/model.py` (or `src/apps/<subapp>/domains/<domain>/model.py` for subapp-local domains). Quote the actual `__tablename__` string and column list in the context briefing.
-
-2. **Query the live data.** Use one of the following, in order of preference:
-
-   - **Local Postgres** for the orders service — `psql -h localhost -p 5434 -U orders_app -d orders_development` (see KB [[reference_dev_database]]). Run `\d <table>` for schema, `SELECT * FROM <table> LIMIT 10` for representative rows, and `SELECT DISTINCT <enum_column> FROM <table>` to enumerate live status / code values.
-   - **BigQuery tenant mirror** — dataset `<bq-project>.<dataset>.*` (see KB [[reference_bigquery_datasets]]). Use the `mcp__claude_ai_Google_Cloud_BigQuery__execute_sql_readonly` MCP connector when available, or fall back to the `bq` / `gcloud` CLI:
-
-     ```bash
-     bq query --use_legacy_sql=false --project_id=<bq-project> \
-       'SELECT * FROM `<bq-project>.<dataset>.<table>` ORDER BY created_at DESC LIMIT 50'
-     ```
-
-     If `mcp.tools.call` is denied on the project (it has been denied before — flagged in workspace memory), fall back to (1) reading the Postgres model directly.
-
-If the spec will introduce **new columns** on an existing table, verify the existing columns first and explicitly enumerate which are new vs reused. If the spec will introduce **new tables**, search for analogous tables and confirm none of them already cover the use case (`grep -r 'class.*Base' src/domains/ | head -50` to enumerate existing models).
-
-Common failure modes this step prevents:
-
-- Naming a table that doesn't exist (e.g. assuming `return_cases` when the table is `returns` — see KB [[returns-schema-and-tracking]]).
-- Inventing columns that don't exist (e.g. assuming `received_at` when the column is `returned_at`, or assuming `status` when no `status` column has been added).
-- Assuming a polymorphic table covers a discriminator it does not (e.g. assuming `documents.entity_type` accepts `"returns"` when the DAO restricts it to `{"orders", "customers"}`).
-- Assuming an enum has a value it does not (e.g. assuming `orders.status` contains `RETURNED` when no such value exists in `src/domains/order/dao.py`).
-- Designing a denormalised column to "avoid a JOIN" without checking that the JOIN target column already exists and is indexed.
-
-If you can verify neither the model file nor the live data (e.g. behind a firewall, on a cold worktree, MCP denied), **stop and surface the gap to the user before drafting the spec**. Drafting against assumed schema is worse than drafting nothing.
+Read the repository's authoritative model/schema source — the ORM model,
+migration directory, schema definition, or protobuf — and/or query live data
+through the project's documented development-database path. Use the project's
+documented local data path (KB-referenced where present), never assumed connection
+strings. Quote actual names, types and nullability and name the verification source.
+Mark new versus existing fields and structures. Verify existing state first;
+before proposing a new structure, search for an existing responsibility owner.
+Check constraints, indexes, relationships and actual enum/discriminator values.
+If neither source nor permitted data is available, **stop and surface the gap to
+the user before drafting the spec**. Drafting against assumed schema is worse
+than drafting nothing. Verify, never paraphrase.
 
 ### Capture (the context-briefing inputs)
 
@@ -246,10 +236,12 @@ If you can verify neither the model file nor the live data (e.g. behind a firewa
 
 **Goal:** Pull the precedents that the spec should follow so it doesn't reinvent patterns.
 
-- Find the **closest analogous feature** already implemented and capture the file layout it used (router + app service + domain `dao.py`/`model.py`/`service.py`).
+- Find the **closest analogous feature** already implemented and capture its actual language, framework, file layout and responsibility boundaries.
 - Find the **existing owners** of every capability the feature implies. The system may already do this work wholly, do part of it, or own the responsibility the feature is about to duplicate — and the existing component is usually named differently, which is why it gets missed. For each hit, record the symbol and `file:line`, whether the overlap is whole, partial, or adjacent, and whether the spec should consolidate by deleting and replacing it, encapsulating the new behavior in it, or re-designing it to absorb the new functionality. Redundant artefacts, entities, and domains are a design defect; the briefing must give the spec writer what it needs to keep the design DRY.
-- Pull the matching generic owner from `skills/coding/` and the applicable language-owned skill (for example, `skills/languages/python/build-routers/SKILL.md`, `skills/languages/python/build-application-services/SKILL.md`, `skills/languages/python/build-event-handlers/SKILL.md`, or `skills/languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md`).
-- Note any **conventions** that apply: named args, type hints, Google docstrings, declarative method structure, single-responsibility app services.
+- Select generic and language-appropriate conventions through
+  `skills/engineering/engineering-routing/SKILL.md`: `skills/languages/python/`,
+  `skills/languages/go/`, or `skills/languages/typescript/` as actually present.
+- Record the applicable conventions rather than imposing Python idioms elsewhere.
 - Note any **gotchas** from `KB/<repo>/gotchas.md` that the spec must respect.
 
 ---
@@ -268,11 +260,13 @@ Produce a single, scannable briefing **before** invoking [canonical author](../f
 - Linked RFC: <Confluence URL, or "none found — confirmed with user">
 - JIRA: <ticket ID + status + assignee>
 
-## 2. Current System State
+## 2. Behavior map — concise and evidence-backed
 - Entry points today: <files + line refs>
 - Control flow today (numbered)
-- Verified schema today: <quoted column inventory from Step 4a — for every table the spec will touch, list real columns + types + nullability, and how it was verified (model file path / `psql \d <table>` / BigQuery query). Mark which columns are existing vs new for this story.>
-- Event flow today: <NATS events / scheduled workers>
+- Verified schema today: <quoted names, types, nullability; authoritative source; new vs existing>
+- Event flow today: <actual events, tasks and completion boundaries>
+- Applicable conventions: <source paths and implications for this change>
+- Material contradictions: <code vs docs vs tickets; unresolved decision and impact>
 - Test coverage today: <files / coverage summary>
 - Gaps the feature must close: <bullets>
 
@@ -285,6 +279,7 @@ Produce a single, scannable briefing **before** invoking [canonical author](../f
 ## 4. Gather Hygiene
 - Repos read: <list with original branch + SHA + path used>
 - Worktrees created / stashes pushed: <list, with cleanup status>
+- Source status: <each source: consulted-with-findings / empty / unavailable, and why>
 - Anything not gathered (and why): <list>
 
 ## 5. Open Questions for the User
@@ -309,9 +304,11 @@ After the user signs off (or after the spec is generated, depending on the flow)
 
 1. **Ask before assuming.** If business context, RFC, or scope is unclear, ask. A short clarifying question is cheaper than a wrong spec.
 2. **Never invent.** If a source doesn't exist, say so. Do not fabricate goals, stakeholders, or precedents.
-3. **Verify the schema; never paraphrase it.** Every table / column / type / nullability the spec will mention must be read from the SQLAlchemy model file or queried from the live data (local Postgres or BigQuery) per Step 4a. If neither is available, stop and surface the gap — drafting against assumed schema is worse than drafting nothing.
+3. **Verify the schema; never paraphrase it.** Quote actual names, types and nullability from authoritative schema sources or permitted live data per Step 4a. If neither is available, stop and surface the gap — drafting against assumed schema is worse than drafting nothing.
 4. **Non-disruptive.** The user's working tree must look identical after the gather. Use worktrees by default.
 5. **Business first.** The briefing leads with *why*, not *what files*.
 6. **Surface the gaps.** Tell the user what is missing, not just what was found.
 7. **Surface the duplicates too.** Say what already exists that the feature would otherwise rebuild, so the spec consolidates instead of adding a second owner for the same responsibility.
 8. **Hand off cleanly.** The output is a briefing the user can paste forward — [canonical author](../feature-specifications/SKILL.md#gather-context) should be able to consume it directly.
+
+9. **Name what you found.** Name the language and framework the trace actually found; never present a guide’s ordering as the repository’s architecture.

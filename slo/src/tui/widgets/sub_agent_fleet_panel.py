@@ -194,9 +194,10 @@ class SubAgentFleetPanel(Vertical):
     async def reset(self) -> None:
         """Discard presentation on owner replacement.
 
-        WHO: SloTUI session replacement and, until T08 moves retention into the
-            service, the interim prompt-end cleanup.
-        WHEN: After any in-flight application, which it joins through the lock.
+        WHO: SloTUI's workflow observation teardown (``/new`` adoption and
+            unmount), never prompt completion.
+        WHEN: After the old owner's coordinator, service and sink are closed; it
+            joins any in-flight application through the lock.
         """
         await self.apply_snapshot(snapshot=WorkflowSessionSnapshotDAO())
 

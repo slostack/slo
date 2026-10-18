@@ -230,6 +230,7 @@ slo --plugin plugins/bash_live_output/plugin.py
 - `slo plugin install <url> --yes`, `list`, `uninstall <id>`, and `upgrade <id>` delegate through `TyperDispatch.plugin` to `PluginInstallerService`.
 - `/plugins`, `/plugins trust`, and `/plugins reload` are registered in `src/tui/slash_command_registry.py` and handled in `src/tui/slash_router.py`.
 - `src/tui/widgets/usage_status_bar.py` renders a plugin status segment from the dispatcher’s live status map when the app provides updates.
+- **Textual 8.2.8 screen dismissal (feature 94 T08):** `Screen.dismiss()` runs the result callback and then `app.pop_screen()`, which pops the *top* screen, not necessarily `self`. `ScreenResume` is a queued message, so a screen can receive it after it has already left the stack or after another screen was pushed above it. A screen that closes itself later (`SessionProgressScreen.retire`/`on_screen_resume`) must dismiss only while `self.is_active` and at most once. Otherwise it pops an unrelated modal or raises `ScreenStackError` on a base-only stack. `is_mounted` stays True after removal; use `is_mounted and is_attached` for delayed callbacks.
 
 ## Authentication (spec 78, fix 78.b.1)
 

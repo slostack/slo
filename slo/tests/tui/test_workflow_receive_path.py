@@ -20,6 +20,7 @@ from src.agents.slo_agent.history.inbox.dao import (
     InboxMessageKind,
     SessionInboxMessageDAO,
 )
+from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -29,6 +30,7 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.app import SloTUI
+from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 
 
 def _mock_session(*, history_root: Path) -> MagicMock:
@@ -61,6 +63,9 @@ def _mock_session(*, history_root: Path) -> MagicMock:
     )
     session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
     session.record_workflow_update = AsyncMock(return_value=True)
+    # Workflow observation polls these on mount; no pool and no history adapter.
+    session.attached_dispatch_snapshot = MagicMock(return_value=AttachedDispatchSnapshotDAO.empty())
+    session.history_store = None
     return session
 
 
@@ -688,7 +693,7 @@ class TestAbortSeparationAndExit:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            fleet_panel_spy: MagicMock = MagicMock()
+            fleet_panel_spy: MagicMock = MagicMock(spec=SubAgentFleetPanel)
             app._fleet_panel = fleet_panel_spy
             with (
                 patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),

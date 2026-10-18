@@ -9,13 +9,16 @@ consumes the effect objects.
 from __future__ import annotations
 
 import json
-from typing import List, Literal, Optional, TypeAlias, cast, get_args
+from typing import TYPE_CHECKING, List, Literal, Optional, TypeAlias, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.dao import canonical_uuid
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowState
+
+if TYPE_CHECKING:  # Annotation only: this module stays free of runtime Textual imports.
+    from textual.widgets import RichLog
 
 __all__ = [
     "ChildAbortTargetDAO",
@@ -27,6 +30,7 @@ __all__ = [
     "ParsedFleetUpdateDAO",
     "ParsedLaunchResultDAO",
     "ParsedWorkflowLifecycleMessageDAO",
+    "ProgressViewportDAO",
     "SessionProgressAvailability",
     "SessionProgressSnapshotDAO",
     "WorkflowLifecycleTarget",
@@ -578,3 +582,66 @@ class SessionProgressSnapshotDAO(BaseModel):
         if self.final_read_complete and self.availability not in {"available", "empty"}:
             raise ValueError("final read requires a readable source")
         return self
+
+
+class ProgressViewportDAO(BaseModel):
+    """Retain a reader's offsets independently of execution and persistence (feature 94 a.3).
+
+    In-memory only: the app's progress sink keeps one per recently visited
+    session key (bounded LRU) and never writes it to history. The key lives in
+    that cache, not in this value.
+
+    Attributes:
+        x (float): Horizontal scroll offset in cells.
+        y (float): Vertical scroll offset in lines.
+        following (bool): Whether the reader was at the tail, so new output should
+            keep the view at the end; a new view starts following.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    x: float = 0.0
+    y: float = 0.0
+    following: bool = True
+
+    @classmethod
+    def capture(cls, *, log: "RichLog") -> "ProgressViewportDAO":
+        """Capture the visible position immediately before a screen update.
+
+        WHAT: Records both offsets and treats a log at (or beyond) its maximum
+            vertical offset as following; an empty log is therefore following.
+        WHO: SessionProgressScreen at delivery time and on minimize.
+        WHEN: Just before the screen changes the log's content, never when the
+            background read starts, because the reader may scroll meanwhile.
+
+        Args:
+            log (RichLog): Mounted progress log owned by the screen.
+
+        Returns:
+            ProgressViewportDAO: Bottom-follow intent and exact current offsets.
+        """
+        return cls(x=log.scroll_x, y=log.scroll_y, following=log.scroll_y >= log.max_scroll_y)
+
+    def restore(self, *, log: "RichLog") -> None:
+        """Move the log back to this position after its content and layout changed.
+
+        WHAT: A following viewport jumps to the new end and keeps the current
+            horizontal offset; otherwise both saved offsets are clamped to the
+            current scrollable range.
+        WHO: SessionProgressScreen, only while its paint and user-navigation
+            revisions still match the delivery that captured this value.
+        WHEN: After the layout that follows a paint.
+
+        Args:
+            log (RichLog): Same mounted log after content/layout update.
+        """
+        if self.following:
+            # x_axis=False keeps a horizontal pan while following the tail.
+            log.scroll_end(animate=False, immediate=True, x_axis=False)
+            return
+        log.scroll_to(
+            x=min(self.x, log.max_scroll_x),
+            y=min(self.y, log.max_scroll_y),
+            animate=False,
+            immediate=True,
+        )

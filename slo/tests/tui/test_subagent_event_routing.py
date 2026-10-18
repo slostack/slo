@@ -6,16 +6,18 @@ sub-agent panes and no pane-switching. These tests verify:
 - Lifecycle events refresh the session list from the workflow service snapshot;
   content events never touch the list, so task labels stay stable.
 - The orchestrator projector never receives sub-agent events.
-- The session list resets cleanly at run end and returns focus when emptied.
+- Prompt-end cleanup keeps the service-owned rows; an emptied list returns focus.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from textual.pilot import Pilot
 from textual.screen import ModalScreen
 
 import pytest
@@ -31,7 +33,7 @@ from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThink
 from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.dao import WorkflowSessionSnapshotDAO
-from src.tui.workflows.service import DetachedWorkflowAppService
+from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -204,8 +206,11 @@ class _AttachedSupplier:
         return self.snapshot
 
 
-def _install_service(*, app: SloTUI) -> _AttachedSupplier:
-    """Replace the mount-bound workflow service with one reading a test supplier.
+async def _install_service(*, app: SloTUI) -> _AttachedSupplier:
+    """Rebind workflow observation to a test supplier for the current session.
+
+    Shadows the session's attached supplier, then rebinds through the app's own
+    owner-replacement path, so the real service, sink and coordinator read it.
 
     Args:
         app (SloTUI): Mounted app with a no-history session.
@@ -214,12 +219,35 @@ def _install_service(*, app: SloTUI) -> _AttachedSupplier:
         _AttachedSupplier: The supplier the service reads on every snapshot.
     """
     supplier: _AttachedSupplier = _AttachedSupplier()
-    app._workflow_app_service = DetachedWorkflowAppService(
-        workflow_handle_store=None,
-        owner_session_id=app._session.session_id,
-        attached_snapshot=supplier,
-    )
+    app._session.attached_dispatch_snapshot = supplier  # type: ignore[method-assign]
+    await app._bind_workflow_observation()
     return supplier
+
+
+async def _settle(*, app: SloTUI, pilot: Pilot[None]) -> None:
+    """Await the coordinator's in-flight refresh, then let Textual paint.
+
+    Args:
+        app (SloTUI): Mounted app.
+        pilot (Pilot[None]): Active pilot.
+    """
+    coordinator: Optional[WorkflowProgressCoordinator] = app._workflow_progress_coordinator
+    task: Optional[asyncio.Task[None]] = coordinator._task if coordinator is not None else None
+    if task is not None:
+        await task
+    await pilot.pause()
+
+
+async def _refresh(*, app: SloTUI, pilot: Pilot[None]) -> None:
+    """Request one coordinator refresh and wait until it painted.
+
+    Args:
+        app (SloTUI): Mounted app.
+        pilot (Pilot[None]): Active pilot.
+    """
+    assert app._workflow_progress_coordinator is not None
+    app._workflow_progress_coordinator.request_refresh()
+    await _settle(app=app, pilot=pilot)
 
 
 def _painted_rows(*, app: SloTUI) -> dict[str, str]:
@@ -249,9 +277,9 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
         assert app._adapter is not None
         lines = [content for content, _ in app._adapter.lines]
@@ -264,10 +292,10 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             with patch.object(app._projector, "project", new_callable=AsyncMock) as mock_proj:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
             mock_proj.assert_not_called()
 
@@ -277,14 +305,14 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            supplier: _AttachedSupplier = _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = await _install_service(app=app)
             supplier.publish()
             assert app._fleet_panel is not None
             assert app._fleet_panel.display is False
 
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert app._fleet_panel.display is True
             assert _painted_rows(app=app) == {app._session.session_id: "running", "s1": "running"}
@@ -299,9 +327,9 @@ class TestSubAgentEventRouting:
         with patch.object(session, "attached_dispatch_snapshot", new=supplier):
             app: SloTUI = SloTUI(session=session)
             async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 await app._render_event(_spawned(task_id="task-A", session_id="child-1"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
                 assert app._fleet_panel is not None
                 assert app._fleet_panel.display is True
@@ -323,20 +351,19 @@ class TestSubAgentEventRouting:
         ):
             app: SloTUI = SloTUI(session=old_session)
             async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 await app._render_event(_spawned(task_id="task-A", session_id="old-child"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 assert "old-child" in _painted_rows(app=app)
 
                 with patch("src.tui.app.SloAgentSession.build", return_value=new_session):
                     await app._start_new_session(requested_name=None)
-                await pilot.pause()
-                assert app._fleet_panel is not None
-                assert (app._fleet_panel.display, _painted_rows(app=app)) == (False, {})
                 old_reads: int = old_supplier.calls
+                await _settle(app=app, pilot=pilot)
+                assert _painted_rows(app=app) == {new_session.session_id: "running", "new-child": "running"}
 
                 await app._render_event(_spawned(task_id="task-A", session_id="new-child"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
                 assert _painted_rows(app=app) == {new_session.session_id: "running", "new-child": "running"}
                 assert old_supplier.calls == old_reads
@@ -347,11 +374,11 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
             lines_before = len(app._adapter.lines) if app._adapter else 0
             await app._render_event(_text_delta(task_id="task-A", session_id="s1", delta="work"))
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             lines_after = len(app._adapter.lines) if app._adapter else 0
             assert lines_after == lines_before
@@ -374,16 +401,16 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            supplier: _AttachedSupplier = _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = await _install_service(app=app)
             supplier.publish(preview="Audit the parser")
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             reads_after_spawn: int = supplier.calls
             supplier.publish(status="completed", preview="should not appear")
 
             await app._render_event(content_event)
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert supplier.calls == reads_after_spawn
             assert app._fleet_panel is not None
@@ -399,12 +426,14 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            supplier: _AttachedSupplier = _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = await _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            reads_after_bind: int = supplier.calls
             await app._render_event(_orchestrator_text_delta())
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
-            assert supplier.calls == 0
+            assert supplier.calls == reads_after_bind
             assert _painted_rows(app=app) == {}
 
     @pytest.mark.asyncio
@@ -413,10 +442,10 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
             await app._render_event(_completed(task_id="task-A", session_id="s1"))
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
         assert app._adapter is not None
         lines = [content for content, _ in app._adapter.lines]
@@ -435,13 +464,13 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            supplier: _AttachedSupplier = _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = await _install_service(app=app)
             supplier.publish()
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
             supplier.publish(status=status)
             await app._render_event(terminal_event)
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert _painted_rows(app=app)["s1"] == status
 
@@ -451,11 +480,11 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            await _install_service(app=app)
             lines_before: int = len(app._adapter.lines) if app._adapter else 0
             await app._render_event(_aborted())
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert (len(app._adapter.lines) if app._adapter else 0) == lines_before
 
@@ -465,12 +494,12 @@ class TestSubAgentEventRouting:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            supplier: _AttachedSupplier = _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = await _install_service(app=app)
             supplier.publish(status="completed")
             await app._render_event(_completed(task_id="task-A", session_id="s1"))
             await app._render_event(_text_delta(task_id="task-A", session_id="s1", delta="late"))
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert _painted_rows(app=app)["s1"] == "completed"
 
@@ -494,15 +523,15 @@ class TestFleetPanelCleanup:
     """Fleet panel lifecycle on run completion."""
 
     @pytest.mark.asyncio
-    async def test_fleet_panel_reset_on_run_end(self) -> None:
-        """``_cleanup_sub_agent_state`` hides and clears the session list."""
+    async def test_prompt_end_cleanup_retains_rows(self) -> None:
+        """``_cleanup_sub_agent_state`` keeps the service-owned rows on screen."""
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            _install_service(app=app).publish()
+            await _settle(app=app, pilot=pilot)
+            (await _install_service(app=app)).publish()
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert app._fleet_panel is not None
             assert app._fleet_panel.display is True
@@ -511,31 +540,36 @@ class TestFleetPanelCleanup:
             await pilot.pause()
 
             assert app._fleet_panel is not None
-            assert app._fleet_panel.display is False
-            assert _painted_rows(app=app) == {}
+            assert app._fleet_panel.display is True
+            assert _painted_rows(app=app) == {app._session.session_id: "running", "s1": "running"}
 
     @pytest.mark.asyncio
     async def test_cleanup_after_failed_list_application_completes(self) -> None:
-        """A failed row mount never wedges prompt-end cleanup or the launch guard."""
+        """A failed row mount is reported once, never wedges cleanup, and the next refresh repaints."""
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            supplier: _AttachedSupplier = _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = await _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
             supplier.publish()
             assert app._fleet_panel is not None
             session_list: FleetSessionList = app._fleet_panel.query_one(FleetSessionList)
             failing_extend: AsyncMock = AsyncMock(side_effect=RuntimeError("mount failed once"))
-            with patch.object(session_list, "extend", new=failing_extend):
-                with pytest.raises(RuntimeError, match="mount failed once"):
-                    await app._refresh_session_list()
+            with (
+                patch.object(session_list, "extend", new=failing_extend),
+                patch.object(app, "notify") as notify,
+            ):
+                await _refresh(app=app, pilot=pilot)
+            notify.assert_called_once()
+            assert "retrying" in notify.call_args.kwargs["message"]
             app._visualizer_launched_for_run = True
 
             await app._cleanup_sub_agent_state()
-            await pilot.pause()
+            await _refresh(app=app, pilot=pilot)
 
-            assert (app._visualizer_launched_for_run, app._fleet_panel.display) == (False, False)
-            assert _painted_rows(app=app) == {}
+            assert app._visualizer_launched_for_run is False
+            assert _painted_rows(app=app) == {app._session.session_id: "running", "s1": "running"}
 
     @pytest.mark.asyncio
     async def test_cleanup_is_safe_with_no_sub_agents(self) -> None:
@@ -543,10 +577,10 @@ class TestFleetPanelCleanup:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             await app._cleanup_sub_agent_state()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
 
 class _BlockingModal(ModalScreen[None]):
@@ -562,16 +596,16 @@ class TestSessionListFocusReturn:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            supplier: _AttachedSupplier = _install_service(app=app)
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = await _install_service(app=app)
             supplier.publish()
-            await app._refresh_session_list()
+            await _refresh(app=app, pilot=pilot)
             assert app._fleet_panel is not None
             app._fleet_panel.focus_sessions()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             await app._apply_session_snapshot(snapshot=WorkflowSessionSnapshotDAO())
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert app.focused is app._input
 
@@ -581,14 +615,14 @@ class TestSessionListFocusReturn:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            _install_service(app=app).publish()
-            await app._refresh_session_list()
+            await _settle(app=app, pilot=pilot)
+            (await _install_service(app=app)).publish()
+            await _refresh(app=app, pilot=pilot)
             app.set_focus(None)
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             await app._apply_session_snapshot(snapshot=WorkflowSessionSnapshotDAO())
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert app.focused is None
 
@@ -598,76 +632,77 @@ class TestSessionListFocusReturn:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            _install_service(app=app).publish()
-            await app._refresh_session_list()
+            await _settle(app=app, pilot=pilot)
+            (await _install_service(app=app)).publish()
+            await _refresh(app=app, pilot=pilot)
             assert app._fleet_panel is not None
             app._fleet_panel.focus_sessions()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             modal: _BlockingModal = _BlockingModal()
             await app.push_screen(modal)
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             await app._apply_session_snapshot(snapshot=WorkflowSessionSnapshotDAO())
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert app.screen is modal
             assert app._input is not None
             assert not app._input.has_focus
 
     @pytest.mark.asyncio
-    async def test_prompt_end_reset_of_focused_list_returns_focus_to_prompt(self) -> None:
-        """Prompt-end cleanup hides the focused base list and focuses the prompt editor."""
+    async def test_prompt_end_cleanup_keeps_focused_list(self) -> None:
+        """Prompt-end cleanup leaves the focused base list visible and focused."""
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            _install_service(app=app).publish()
-            await app._refresh_session_list()
+            await _settle(app=app, pilot=pilot)
+            (await _install_service(app=app)).publish()
+            await _refresh(app=app, pilot=pilot)
             assert app._fleet_panel is not None
             app._fleet_panel.focus_sessions()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             await app._cleanup_sub_agent_state()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
-            assert (app._fleet_panel.display, app.focused) == (False, app._input)
+            assert app._fleet_panel.display is True
+            assert app.focused is not None and app._fleet_panel in app.focused.ancestors_with_self
 
     @pytest.mark.asyncio
-    async def test_prompt_end_reset_of_unfocused_list_leaves_focus_alone(self) -> None:
+    async def test_prompt_end_cleanup_of_unfocused_list_leaves_focus_alone(self) -> None:
         """Prompt-end cleanup of a list that did not hold focus moves no focus."""
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            _install_service(app=app).publish()
-            await app._refresh_session_list()
+            await _settle(app=app, pilot=pilot)
+            (await _install_service(app=app)).publish()
+            await _refresh(app=app, pilot=pilot)
             app.set_focus(None)
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             await app._cleanup_sub_agent_state()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert app.focused is None
 
     @pytest.mark.asyncio
-    async def test_prompt_end_reset_behind_modal_does_not_take_focus(self) -> None:
+    async def test_prompt_end_cleanup_behind_modal_does_not_take_focus(self) -> None:
         """With a modal open, prompt-end cleanup of the focused base list leaves the prompt unfocused."""
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            _install_service(app=app).publish()
-            await app._refresh_session_list()
+            await _settle(app=app, pilot=pilot)
+            (await _install_service(app=app)).publish()
+            await _refresh(app=app, pilot=pilot)
             assert app._fleet_panel is not None
             app._fleet_panel.focus_sessions()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             modal: _BlockingModal = _BlockingModal()
             await app.push_screen(modal)
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             await app._cleanup_sub_agent_state()
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
 
             assert app.screen is modal
             assert app._input is not None
@@ -684,16 +719,16 @@ class TestSessionListFocusReturn:
         with patch.object(old_session, "attached_dispatch_snapshot", new=supplier):
             app: SloTUI = SloTUI(session=old_session)
             async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 await app._render_event(_spawned(task_id="task-A", session_id="old-child"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 assert app._fleet_panel is not None
                 app._fleet_panel.focus_sessions()
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
                 with patch("src.tui.app.SloAgentSession.build", return_value=new_session):
                     await app._start_new_session(requested_name=None)
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
                 assert (app._fleet_panel.display, app.focused) == (False, app._input)
 
@@ -723,10 +758,10 @@ class TestHistoryGatedLaunchEffects:
         ):
             app: SloTUI = SloTUI(session=session)
             async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 await app._render_event(launch_result)
                 await app._render_event(_spawned(task_id="task-A", session_id="child-1"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
                 renderer_launch.assert_not_called()
                 assert app._live_workflow_labels() == []
@@ -740,7 +775,7 @@ class TestHistoryGatedLaunchEffects:
         app: SloTUI = SloTUI(session=session)
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             assert app._workflow_app_service is not None
             outcome: str = app._workflow_app_service.advance_from_launch_result(
                 result_text='{"workflow_id": "wf-1", "orchestrator_session_id": "orch-1", "state": "running"}'
@@ -765,14 +800,14 @@ class TestVisualizerAutoLaunch:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             with patch(
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 new=MagicMock(return_value=True),
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
                 await app._render_event(_spawned(task_id="task-B", session_id="s2"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
             mock_launch.assert_called_once()
             assert app._visualizer_launched_for_run is True
@@ -784,13 +819,13 @@ class TestVisualizerAutoLaunch:
         app: SloTUI = SloTUI(session=session)
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             with patch(
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 new=MagicMock(return_value=True),
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
             _, kwargs = mock_launch.call_args
             assert kwargs["parent_session_id"] == session.session_id
@@ -801,13 +836,13 @@ class TestVisualizerAutoLaunch:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             with patch(
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 new=MagicMock(return_value=True),
             ):
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
             assert app._adapter is not None
             lines = [content for content, _ in app._adapter.lines]
@@ -819,13 +854,13 @@ class TestVisualizerAutoLaunch:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             with patch(
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 new=MagicMock(return_value=False),
             ):
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
 
             assert app._adapter is not None
             lines = [content for content, _ in app._adapter.lines]
@@ -837,18 +872,18 @@ class TestVisualizerAutoLaunch:
         app: SloTUI = SloTUI(session=_build_session())
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(app=app, pilot=pilot)
             with patch(
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 new=MagicMock(return_value=True),
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 assert app._visualizer_launched_for_run is True
 
                 await app._cleanup_sub_agent_state()
                 assert app._visualizer_launched_for_run is False
 
                 await app._render_event(_spawned(task_id="task-B", session_id="s2"))
-                await pilot.pause()
+                await _settle(app=app, pilot=pilot)
                 assert mock_launch.call_count == 2

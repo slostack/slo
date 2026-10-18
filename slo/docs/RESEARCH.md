@@ -272,6 +272,84 @@ handle or history, signals nothing and never cancels or acknowledges an abort.
   request with an empty `rendered`. The app writes the outcome's own line instead,
   then requests one coalesced coordinator refresh.
 
+## Feature 94 TUI session controls — owner map
+
+Feature 94 adds horizontal prompt rules, a workflow session list below the
+editor, a live progress modal and a child-only abort to the native Slo TUI.
+Herdr is excluded. Each decision has one owner:
+
+| Concern | Sole owner |
+|---|---|
+| Prompt frame | `src/tui/app.tcss` `PromptInput` per-edge `border-top`/`border-bottom` only |
+| Task label (150 code points incl. `…`) | `orchestrator/task_preview.py` `TaskPreview` (registry, loader and row all call it) |
+| Execution identity and terminal winner | `ProcessRegistry.commit_terminal` (first wins). Two routes reach it: `SubAgentProcess._publish_terminal` for wrapper results (natural run, confirmed reap, `finish_without_spawn`), and `ProcessRegistry.mark_terminal` for `HeadlessRunner`'s straggler sweep. Only the wrapper route writes child `status.json` |
+| Dispatch membership | `SubAgentPool.attached_dispatch_snapshot` (explicit `dispatch_id`, never inferred from child events) |
+| Bounded history read for observation | `load_observation_window` on the existing history stores; `JsonlTail` for captures |
+| Progress loading and the shared formatter | `WorkflowVisualizerLoader` + `workflows/transcript_renderer.py` (used by `slo visualize` and the modal) |
+| Owner-scoped list and progress gateway | `DetachedWorkflowAppService` (`load_session_snapshot`, `load_session_progress`, `begin_child_abort`) |
+| Observation timer | `WorkflowProgressCoordinator` (one 5.0 s timer per owning session) |
+| Panel/modal presentation | `SubAgentFleetPanel`/`FleetSessionList`/`SubAgentFleetRow`, `SessionProgressScreen`, `AbortConfirmationScreen`, via the app's `_WorkflowProgressSink` |
+| Stopping one child | `SubAgentPool.abort_child`; detached requests through `ChildAbortStore` → `ChildAbortController` |
+
+### Rules that are easy to break
+
+- **Identity vocabulary.** `dispatch_id` (one admitted batch), `execution_id`
+  (one child incarnation), `run_id` (one pool invocation), `request_id` (one
+  child-abort request) and `owner_session_id`/`session_id` are distinct. The
+  list key is `(orchestrator_session_id, session_id)`; abort targets add the
+  `execution_id`, so a restarted child is never aborted through a stale row.
+- **Released files keep their shape.** `status.json`, `fleet.json` and
+  `spawn_context.json` decode with the released closed DAOs (the context's
+  `execution_id` is `exclude=True`). Identity lives only in
+  `children/<id>/execution.v1.json` and `execution-index.v1.json`.
+  `sub_agent_dispatch_started` is stream-only and never persisted.
+- **Observation never repairs.** Observation reads are byte- and event-bounded
+  (`HISTORY_OBSERVATION_MAX_BYTES`/`_EVENTS`, `PROGRESS_MAX_ENTRIES`,
+  `OBSERVATION_MAX_HANDLES` = 256; beyond it the list keeps its last known
+  membership with a stale notice, never a partial tuple). They do no
+  recovery, mkdir or chmod, and refuse symlink escapes. Inference replay and full
+  export keep the full-load path.
+- **One timer, single flight.** The coordinator loads immediately, then every
+  `REFRESH_INTERVAL_SECONDS` (5.0). At most one drain runs (at most two reads per
+  drain). Results apply only when the generation and selected key captured before
+  the read are still current, so `/new`, minimize and teardown discard late
+  results. Lifecycle stream events request one coalesced refresh; content deltas
+  request none. Prompt end no longer clears the list.
+- **Reading position.** `ProgressLog` writes with `scroll_end=False`. New output
+  follows only when the reader was at the bottom; `End` resumes following. Escape
+  or Minimize saves the viewport (64 most recent keys, `PROGRESS_VIEWPORT_CACHE_LIMIT`)
+  and never cancels execution.
+- **Horizontal pan scope.** `ProgressLog(wrap=False)` does not stop Markdown
+  answers from wrapping to the log width, so Left/Right pans only unwrapped entries
+  (tool output and other preformatted lines). Pan tests must use a long tool-output
+  line, not assistant text. This narrows a.3's "Left/Right pan long lines" and is
+  open for the human visual approver to accept or reject.
+- **Abort is a request.** The confirmation names child and orchestrator; Escape
+  and Keep running submit nothing. Confirm submits once through the service, and
+  the modal shows "Abort requested" until terminal evidence arrives. After
+  `ABORT_CONFIRMATION_WAIT_SECONDS` (30, monotonic) without settlement it shows a
+  fixed notice and keeps the request: it never resubmits and never signals a PID.
+  Closing the modal does not cancel an accepted submission; teardown joins it.
+- **No workflow Ctrl+W.** Tab/Shift+Tab reach the list; arrows in the editor keep
+  editing and history recall. The demo's Ctrl+W is prototype-only.
+- **Panel geometry.** Heading plus at most five rows, at most a quarter of the
+  screen, between `PromptInput` and `UsageStatusBar`. Below 60×20 the rows give
+  way to a resize notice. An empty list takes zero height.
+
+### Rollback and safe operation
+
+Rolling back restores the prior UI. Older binaries ignore the additive
+`*.v1.json` siblings and `child-control.v1/`; nothing is rewritten, backfilled or
+automatically deleted. Whole-workflow abort keeps `abort_request.json`, the
+headless watchdog and `cancel_all`. `/workflows dismiss|resume` keep their
+meaning, and `slo visualize --follow` auto-launch is unchanged (`SLO_AUTO_VISUALIZE=0`
+disables it). Do not smoke-test child abort against real operator-owned children
+without separate authorization.
+
+Composed proof: `tests/integration/test_workflow_progress_tui.py` (including the
+20-child `TestTwentyChildFleetJourney` in both themes at 60×20/80×24/120×40) and
+`tests/integration/test_workflow_child_abort_tui.py`.
+
 ## Runtime path
 
 ```text

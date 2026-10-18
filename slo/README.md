@@ -2687,10 +2687,17 @@ first sub-agent registers. Clicking a tab sends `AgentTabStrip.TabSelected`
 to `SloTUI` which delegates the switch to `AgentPaneManager`.
 
 **`SubAgentFleetPanel`** (`src/tui/widgets/sub_agent_fleet_panel.py`) —
-fleet status rows mounted below `PromptInput` during a run. Each row
-shows: status icon, task id, elapsed seconds, and the latest activity
-text (`text_delta`, `thinking_delta`, or `tool_result` from the child).
-Automatically hidden when no sub-agents are active.
+the "Ongoing workflow tasks" session list between `PromptInput` and the
+usage bar (feature 94). Each `SubAgentFleetRow` reads
+`[status] session-id: task`, where the task is the literal 150-code-point
+`TaskPreview` label (never the latest activity). Owned attached and detached
+groups list orchestrator first, then children. Rows stay after a prompt ends;
+an empty list takes no height. Tab focuses the list; Up/Down select; Enter or
+click opens `SessionProgressScreen`, a live, position-preserving progress modal
+refreshed every 5 s by the single `WorkflowProgressCoordinator`. From there
+"Abort child…" asks for confirmation and requests a child-only abort; the UI
+shows "Abort requested" until terminal evidence arrives. Escape/Minimize never
+cancels execution. `/workflows tui dismiss [<id>]` hides finished groups.
 
 **`TranscriptProjector` sub-agent routing** — the projector's
 `is_sub_agent_event` gate routes events with a `sub_agent_id` to the
@@ -2796,7 +2803,8 @@ tui/
 │   ├── agent_tab_strip.py         # AgentTabStrip — horizontal tab strip for pane switching
 │   ├── assistant_stream_block.py  # one assistant turn: reasoning + answer regions; optional title_prefix
 │   ├── slash_suggestion_menu.py   # SlashSuggestionMenu — autocomplete dropdown
-│   ├── sub_agent_fleet_panel.py   # SubAgentFleetPanel — live fleet status rows (one per active sub-agent)
+│   ├── sub_agent_fleet_panel.py   # SubAgentFleetPanel + FleetSessionList — "Ongoing workflow tasks" session list
+│   ├── sub_agent_fleet_row.py     # SubAgentFleetRow — one literal `[status] session-id: task` row
 │   ├── tool_execution_block.py    # one live tool call: ⏺ headline + ⎿ result
 │   ├── usage_status_bar.py        # UsageStatusBar — token/rate display above footer
 │   └── user_message_block.py      # one user turn: raw source + compiled visible Content
@@ -2889,7 +2897,7 @@ into replay.
 | **`OrchestratorResultDAO`** | Aggregated result returned to the orchestrator LLM after a batch completes; JSON-serialised as the tool return value. |
 | **`AgentPaneManager`** | Owns per-agent scroll regions and `TranscriptProjector` instances. Pane 0 = orchestrator; pane 1..N = sub-agents. |
 | **`AgentTabStrip`** | Horizontal strip of tab buttons for switching panes; shows status icon per sub-agent. |
-| **`SubAgentFleetPanel`** | Fleet status row widget shown below `PromptInput` during a sub-agent run; one row per active child. |
+| **`SubAgentFleetPanel`** | "Ongoing workflow tasks" session list below `PromptInput`; one row per owned orchestrator/child session; Enter/click opens the progress modal. |
 | **`SkillsLoader`** | Scans skill directories for `SKILL.md` files; `load_merged()` merges vendored + user + workflow skills with user-wins-on-collision. |
 | **`USER_SKILLS_DIR`** | Default `~/.slo/user_skills`; user-defined skills placed here automatically override same-named vendored skills. |
 | **`USER_WORKFLOWS_DIR`** | Default `~/.slo/user_workflows`; multi-step pipeline workflows scanned alongside user skills. |
@@ -3027,21 +3035,28 @@ A shared `asyncio.Semaphore(MAX_CONCURRENCY)` (default 4, env `SLO_SUBAGENT_MAX_
 
 ### 7.5 `_run_one()` — One Task's Lifecycle
 
-Every task (regardless of mode) flows through `_run_one`. The full lifecycle:
+Every task (regardless of mode) flows through `_run_one` → `_run_reserved`. The pool first admits the whole batch: `_admit` calls `registry.begin_dispatch(dispatch_id)` once and reserves every child session. Then each task runs this lifecycle:
 
 ```
-1. session_id = uuid4()                           # unique identity for this child
-2. registry.register(task_id, session_id, task)   # status → pending
-3. relay ← sub_agent_spawned event                # TUI fleet row appears
-4. process = SubAgentProcess(task, session_id, model, relay, registry)
-   _active.append(process)                        # tracked for cancel_all()
-5. async with semaphore:                          # blocks if MAX_CONCURRENCY running
-       registry.mark_running(session_id)          # status → running
-       result = await process.run()               # blocks until child exits
-6. relay ← sub_agent_completed / sub_agent_failed
-7. registry.mark_terminal(session_id, status, answer)
-8. return SubAgentResultDAO
+1. reservation.claim(session_id)                         # session resolved at admission
+2. execution_id = registry.register(dispatch_id, task_id, session_id, task)
+                                                         # status → pending; fresh incarnation
+3. process = SubAgentProcess(..., execution_id=execution_id)
+   _install_incarnation(process)                         # _active_by_session_id[session_id] = process,
+                                                         # abort event + completion future per (session_id, execution_id)
+4. relay ← sub_agent_spawned (dispatch metadata, TaskPreview label)
+5. _run_with_slot: race the semaphore against a targeted child abort
+     sealed pool / abort won  → process.finish_without_spawn(...)   # never spawns
+     otherwise                → process.run()   # wrapper calls registry.mark_running(session_id, execution_id, ...)
+   both end in SubAgentProcess._publish_terminal → registry.commit_terminal → winner,
+   then the child status.json is written from that winner
+6. relay ← sub_agent_completed / sub_agent_failed / sub_agent_aborted (from the winner)
+7. finally: del _active_by_session_id[session_id]; settle the completion future once;
+   reservation.release(session_id)
+8. return the registry winner (SubAgentResultDAO)
 ```
+
+The pool itself writes no terminal state. The winner returned by `commit_terminal` is the only terminal truth it emits.
 
 ### 7.6 `SubAgentProcess` — The Child OS Process
 
@@ -3081,7 +3096,7 @@ The `_STDOUT_STREAM_LIMIT = 16 * 1024 * 1024` constant is passed as `limit=` to 
 1. Parse bytes → `AgentStreamEventDAO`. Non-JSON child diagnostic lines are silently ignored.
 2. If terminal: capture `event.content` as the final answer.
 3. If `forwarded_bytes >= PER_TASK_OUTPUT_CAP` (50 KB) and not terminal: drop the event. The relay stays bounded; terminal events are always forwarded regardless of the cap.
-4. If `text_delta`: call `registry.update_last_text(session_id, event.delta)` so the TUI fleet panel shows a live preview.
+4. If `text_delta`: call `registry.update_last_text(session_id=..., execution_id=..., text=event.delta)` (live registry preview; the TUI session list shows the task label, not this text).
 5. Tag: `event.model_copy(update={"sub_agent_id": session_id, "task_id": task_id})`.
 6. `await self._relay(tagged)` → pool relay → `session._dispatch_event` → TUI subscribers and history.
 
@@ -3110,18 +3125,22 @@ Exit codes: `run_completed → 0`, `run_aborted → 2`, everything else → `1`.
 
 ### 7.8 `ProcessRegistry` — The Live Scoreboard
 
-`ProcessRegistry` (`orchestrator/registry.py`) is a plain `dict[session_id → SubAgentStatusDAO]`. One registry per pool; never persisted to disk.
+`ProcessRegistry` (`orchestrator/registry.py`) is the in-memory write authority over `dict[session_id → SubAgentStatusDAO]`, one per pool. A bound `FleetStore` mirrors its transitions to durable fleet and execution evidence (`fleet.json`, `execution.v1.json`, `execution-index.v1.json`).
 
-**Write API** (called by pool and process only):
+**Write API** (called by the pool, the process wrapper and `HeadlessRunner`'s straggler sweep only):
 
 | Method | Called when | Transition |
 |---|---|---|
-| `register(task_id, session_id, task)` | Before `sub_agent_spawned` emit | → `pending` |
-| `mark_running(session_id)` | After semaphore acquired | → `running` |
-| `update_last_text(session_id, text)` | Each `text_delta` from the child | updates `last_text` |
-| `mark_terminal(session_id, status, answer)` | After `process.run()` returns | → `completed`/`failed`/`aborted` |
+| `begin_dispatch(dispatch_id)` | Pool admits one batch (feature 94) | new explicit dispatch generation |
+| `register(dispatch_id, task_id, session_id, task)` | Before `sub_agent_spawned` emit | → `pending`; returns the new `execution_id` |
+| `mark_running(session_id, execution_id, ...)` | By the wrapper right after the child subprocess is created | → `running` |
+| `update_last_text(session_id, execution_id, text)` | Each `text_delta` from the child | updates `last_text` |
+| `commit_terminal(result, terminal_reason, terminated_by)` | From `SubAgentProcess._publish_terminal` (natural run, confirmed reap, `finish_without_spawn` pending abort) and from `mark_terminal` | first terminal wins; later candidates get the winner |
+| `mark_terminal(session_id, execution_id, status, answer, ...)` | `HeadlessRunner`'s terminal straggler sweep, for a child no wrapper will publish | builds a complete result and delegates to `commit_terminal`; unknown or stale incarnations no-op; writes no child `status.json` |
 
-**Read API** (TUI fleet panel, tests):
+Every write is keyed by `(session_id, execution_id)`, so a stale incarnation can never overwrite a restarted child. Both terminal routes share `commit_terminal`'s first-wins arbitration, so the sweep and a wrapper can never install two different winners.
+
+**Read API** (TUI session list via `attached_snapshot()`, tests):
 - `snapshot()` → `list[SubAgentStatusDAO]` in insertion order.
 - `get(session_id=)` → one entry or `None`.
 - `count` / `running_count` properties.
@@ -3180,7 +3199,7 @@ User: "analyse in parallel"
          │  update ProcessRegistry on each text_delta
          ▼
   pool relay → session._dispatch_event
-         ├──▶ TUI (fleet panel rows, assistant blocks)
+         ├──▶ TUI (lifecycle events request one session-list refresh)
          └──▶ History (JSONL event log)
 
   ── all children exit ──

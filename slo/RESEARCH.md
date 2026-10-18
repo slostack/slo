@@ -49,6 +49,19 @@ document before planning or changing a feature.
   unavailable sources are not empty findings. Solution-design's vertical addendum
   refines its existing document contract without authorizing a design exercise.
 
+## Feature 94 TUI session controls
+
+- The native TUI shows owned workflow sessions in one "Ongoing workflow tasks" list below
+  the editor. Enter or click opens a 5-second live progress modal, and a confirmed
+  "Abort child…" stops one child. Herdr is excluded.
+- Single owners: `TaskPreview` labels, `ProcessRegistry.commit_terminal` terminal winners,
+  one `WorkflowProgressCoordinator` timer, `DetachedWorkflowAppService` as the list/progress
+  and abort gateway, and `SubAgentPool.abort_child` as the only child stopper. Execution
+  identity lives only in additive `*.v1.json` siblings, so released readers and rollback stay
+  safe.
+- Owner map, easy-to-break rules and rollback: [`docs/RESEARCH.md`](docs/RESEARCH.md)
+  "Feature 94 TUI session controls — owner map".
+
 ## Verification
 
 - Focused session-rate-limit coverage is under

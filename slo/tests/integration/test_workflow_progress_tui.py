@@ -27,7 +27,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from textual.await_complete import AwaitComplete
 from textual.pilot import Pilot
-from textual.widgets import Static
+from textual.widgets import Button, Static
 
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
@@ -45,12 +45,14 @@ from src.agents.slo_agent.orchestrator.dao import (
 )
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
+from src.agents.slo_agent.orchestrator.task_preview import TASK_PREVIEW_MAX_CODE_POINTS
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDAO, WorkflowHandleStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import SloTUI
-from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
+from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList, SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
+from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.dao import (
     ProgressViewportDAO,
@@ -1091,3 +1093,240 @@ class TestClearFinishedGroupsInRealApp:
                 "completed",
                 "running",
             }
+
+
+_SIBLINGS: int = 19
+_LONG_TASK: str = "Verify the redesigned workflow list keeps long task text readable " * 4
+_LONG_LINE: str = "wide-tool-output-" + "x" * 300
+_MULTILINE_DRAFT: str = "First draft line\nSecond draft line\nThird draft line"
+_THEMES: tuple[str, ...] = ("slo-dark", "slo-default")
+
+
+def _publish_fleet(*, world: _World, target_status: str) -> None:
+    """Report the target child plus nineteen long-task siblings as one attached batch.
+
+    Args:
+        world (_World): World whose ``start_child`` already wrote the target's files.
+        target_status (str): Registry status of the target child; siblings stay running.
+    """
+    siblings: tuple[SubAgentStatusDAO, ...] = tuple(
+        SubAgentStatusDAO(
+            task_id=f"task-{index:02d}",
+            session_id=f"sibling-{index:02d}",
+            status="running",
+            prompt_preview=f"{index:02d} {_LONG_TASK}",
+        )
+        for index in range(_SIBLINGS)
+    )
+    world.supplier.snapshot = AttachedDispatchSnapshotDAO(
+        dispatch_id=_DISPATCH_ID,
+        dispatch_sequence=1,
+        entries=(
+            SubAgentStatusDAO(
+                task_id="task-a",
+                session_id=_CHILD,
+                status=target_status,  # type: ignore[arg-type]
+                execution_id=_EXECUTION_A,
+                prompt_preview="Audit the parser",
+            ),
+            *siblings,
+        ),
+    )
+
+
+def _append_long_line(*, world: _World) -> None:
+    """Append one tool result whose output line is wider than every tested terminal.
+
+    Tool output paints unwrapped, so it exercises horizontal panning; answers wrap.
+
+    Args:
+        world (_World): World with a started child capture.
+    """
+    events: list[dict[str, str]] = [
+        {"kind": "tool_call_start", "block_id": "call-wide", "tool_name": "bash"},
+        {"kind": "tool_call_end", "block_id": "call-wide"},
+        {"kind": "tool_result", "tool_call_id": "call-wide", "content": _LONG_LINE},
+    ]
+    with (world.capture_dir / "stdout.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write("".join(json.dumps(event) + "\n" for event in events))
+
+
+def _capture(*, app: SloTUI, views: Path, name: str) -> None:
+    """Write the current screen as SVG for human visual review, only below ``views``.
+
+    Args:
+        app (SloTUI): Running app.
+        views (Path): Test-owned capture directory (under ``tmp_path``).
+        name (str): File stem.
+    """
+    target: Path = (views / f"{name}.svg").resolve()
+    assert target.is_relative_to(views.resolve())
+    target.write_text(app.export_screenshot(), encoding="utf-8")
+
+
+def _row_statuses(*, app: SloTUI) -> dict[str, str]:
+    """Return each painted row's status by session id.
+
+    Args:
+        app (SloTUI): Mounted app.
+
+    Returns:
+        dict[str, str]: Session id to status.
+    """
+    assert app._fleet_panel is not None
+    return {item.row.key.session_id: item.row.status for item in app._fleet_panel.query(SubAgentFleetRow)}
+
+
+def _session_state(*, screen: SessionProgressScreen) -> list[str]:
+    """Return the painted session-state line split into its ``" · "`` fields.
+
+    The first field is the abort/notice message (when present) and the second is
+    the loader's header status, so a test can tell "Abort requested" apart from
+    terminal evidence.
+
+    Args:
+        screen (SessionProgressScreen): Open progress screen.
+
+    Returns:
+        list[str]: Painted fields in order.
+    """
+    return str(screen.query_one("#session-state", Static).render()).split(" · ")
+
+
+class TestTwentyChildFleetJourney:
+    """T12 composed release journey over a synthetic 20-child fleet in both themes and three sizes."""
+
+    @pytest.mark.parametrize("theme", _THEMES)
+    @pytest.mark.parametrize(
+        ("width", "height"), [(60, 20), (80, 24), (120, 40)], ids=["60x20", "80x24", "120x40"]
+    )
+    async def test_twenty_child_fleet_journey(
+        self, tmp_path: Path, theme: str, width: int, height: int
+    ) -> None:
+        """List → keyboard select → read history across updates → minimize/reopen → cancel → abort one child.
+
+        The abort leg holds the pool seam so "Abort requested" paints with the header
+        still ``running``; only after the seam answers and the child's terminal
+        ``status.json`` plus execution evidence exist does the header read ``aborted``.
+        The supplier is test-controlled, so the sibling statuses only show the list
+        repaints; the target-only proof is the single recorded seam request (and the
+        real-pool test in ``test_workflow_child_abort_tui.py``).
+        """
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        world.start_child(lines=40)
+        _append_long_line(world=world)
+        _publish_fleet(world=world, target_status="running")
+        views: Path = tmp_path / "views"
+        views.mkdir()
+        stem: str = f"{theme}-{width}x{height}"
+        app: SloTUI = SloTUI(session=world.session)
+
+        async with app.run_test(size=(width, height)) as pilot:
+            app.theme = theme
+            await _settle(app=app, pilot=pilot)
+            assert app._input is not None and app._fleet_panel is not None and app._adapter is not None
+            foreground: list[tuple[str, str]] = list(app._adapter.lines)
+            app._input.load_text(_MULTILINE_DRAFT)
+            await _settle(app=app, pilot=pilot)
+
+            panel: SubAgentFleetPanel = app._fleet_panel
+            usage: UsageStatusBar = app.query_one(UsageStatusBar)
+            assert len(app.query(SubAgentFleetPanel)) == 1
+            assert len(list(panel.query(SubAgentFleetRow))) == 1 + 1 + _SIBLINGS
+            assert app._input.region.height >= 3
+            assert panel.region.y >= app._input.region.bottom
+            assert usage.region.y >= panel.region.bottom and usage.region.bottom <= height
+            sibling: SubAgentFleetRow = next(
+                item for item in panel.query(SubAgentFleetRow) if item.row.key.session_id == "sibling-00"
+            )
+            capped: str = f"00 {_LONG_TASK}"[: TASK_PREVIEW_MAX_CODE_POINTS - 1] + "…"
+            assert str(sibling.query_one(Static).render()) == f"[running] sibling-00: {capped}"
+            assert sibling.region.height <= 1
+            _capture(app=app, views=views, name=f"{stem}-1-list-multiline")
+
+            session_list: FleetSessionList = panel.query_one(FleetSessionList)
+            panel.focus_sessions()
+            await pilot.press(*(["down"] * (1 + _SIBLINGS)))
+            await _settle(app=app, pilot=pilot)
+            last: SubAgentFleetRow = list(panel.query(SubAgentFleetRow))[-1]
+            assert last.row.key.session_id == f"sibling-{_SIBLINGS - 1:02d}"
+            assert session_list.region.contains_region(last.region)
+            assert app._input.text == _MULTILINE_DRAFT
+            await pilot.press(*(["up"] * _SIBLINGS), "enter")
+            await _settle(app=app, pilot=pilot)
+
+            with patch.object(world.session, "abort") as whole_abort:
+                screen: SessionProgressScreen = _screen(app=app)
+                assert screen.key.session_id == _CHILD
+                for button in screen.query(Button):
+                    assert button.region.right <= width and button.region.bottom <= height
+                log: ProgressLog = screen.query_one(ProgressLog)
+                assert "wide-tool-output-xxxx" in _painted_log_text(screen=screen)
+                assert log.max_scroll_x > 0
+                log.scroll_to(x=4, y=5, animate=False, immediate=True)
+                await pilot.pause()
+                for start in (100, 110):
+                    world.append(start=start, lines=10)
+                    await _tick(app=app, pilot=pilot)
+                assert "child line 119" in _painted_log_text(screen=screen)
+                assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
+                _capture(app=app, views=views, name=f"{stem}-2-progress-reading-history")
+
+                await pilot.press("escape")
+                await _settle(app=app, pilot=pilot)
+                assert [s for s in app.screen_stack if isinstance(s, SessionProgressScreen)] == []
+                assert app.focused is not None and panel in app.focused.ancestors_with_self
+                await pilot.press("enter")
+                await _settle(app=app, pilot=pilot)
+                reopened: SessionProgressScreen = _screen(app=app)
+                reopened_log: ProgressLog = reopened.query_one(ProgressLog)
+                assert (reopened_log.scroll_x, reopened_log.scroll_y) == (4.0, 5.0)
+
+                await _open_confirmation(app=app, pilot=pilot)
+                _capture(app=app, views=views, name=f"{stem}-3-abort-confirmation")
+                await pilot.press("escape")
+                await pilot.pause()
+                assert app.screen is reopened and seam.calls == []
+
+                seam.gate.clear()
+                await _open_confirmation(app=app, pilot=pilot)
+                await pilot.click("#confirm-abort")
+                await _settle(app=app, pilot=pilot)
+                await _tick(app=app, pilot=pilot)
+                pending: list[str] = _session_state(screen=reopened)
+                assert pending[0].startswith("Abort requested") and pending[1] == "running"
+                assert reopened.query_one("#abort-child", Button).disabled
+                _capture(app=app, views=views, name=f"{stem}-4-abort-requested")
+
+                seam.gate.set()
+                assert app._workflow_app_service is not None
+                for submission in tuple(app._workflow_app_service._abort_submissions.values()):
+                    await submission.join()
+                world.finish(status="aborted")
+                _publish_fleet(world=world, target_status="aborted")
+                await _tick(app=app, pilot=pilot)
+                settled: list[str] = _session_state(screen=reopened)
+                assert settled[:2] == ["Child aborted.", "aborted"]
+                assert reopened.query_one("#abort-child", Button).disabled
+                _capture(app=app, views=views, name=f"{stem}-5-child-aborted")
+                await pilot.press("escape")
+                await _settle(app=app, pilot=pilot)
+                _capture(app=app, views=views, name=f"{stem}-6-list-after-abort")
+
+            [request] = seam.calls
+            assert (request.session_id, request.execution_id) == (_CHILD, _EXECUTION_A)
+            whole_abort.assert_not_called()
+            statuses: dict[str, str] = _row_statuses(app=app)
+            assert statuses.pop(_CHILD) == "aborted"
+            assert set(statuses.values()) == {"running"} and len(statuses) == 1 + _SIBLINGS
+            assert app._input.text == _MULTILINE_DRAFT
+            assert list(app._adapter.lines) == foreground
+            assert sorted(path.name for path in views.iterdir()) == [
+                f"{stem}-1-list-multiline.svg",
+                f"{stem}-2-progress-reading-history.svg",
+                f"{stem}-3-abort-confirmation.svg",
+                f"{stem}-4-abort-requested.svg",
+                f"{stem}-5-child-aborted.svg",
+                f"{stem}-6-list-after-abort.svg",
+            ]

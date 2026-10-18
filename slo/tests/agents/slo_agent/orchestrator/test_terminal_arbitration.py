@@ -23,12 +23,15 @@ from pydantic import BaseModel
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
 from src.agents.slo_agent.orchestrator.dao import (
+    ChildAbortOutcomeDAO,
+    ChildAbortRequestDAO,
     ChildExecutionEvidenceDAO,
     ExecutionIndexDAO,
     SubAgentResultDAO,
     SubAgentTaskDAO,
 )
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
+from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 from src.agents.slo_agent.orchestrator.process import SubAgentProcess
 from src.agents.slo_agent.orchestrator.reaper import ReapOutcome
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry, StaleExecutionError
@@ -861,3 +864,109 @@ class TestStdoutCaptureFailure:
         assert sorted(path.name for path in harness.child_dir.iterdir() if path.name.endswith(".tmp")) == []
         assert (winner.status, winner.answer) == ("completed", "natural")
         harness.assert_projections_agree(winner=winner)
+
+
+class TestPendingAdmissionThroughPool:
+    """T09: pool admission and pending publication composed in one callback (CRITICAL-1/2)."""
+
+    @pytest.mark.parametrize("admit_first", [True, False])
+    async def test_pending_admission_and_publication_same_turn(
+        self, tmp_path: Path, admit_first: bool
+    ) -> None:
+        """Admission and slot release in one callback, either order: one pending winner, no run."""
+        relayed: list[AgentStreamEventDAO] = []
+
+        async def relay(event: AgentStreamEventDAO) -> None:
+            relayed.append(event)
+
+        pool: SubAgentPool = SubAgentPool(
+            orchestrator_session_id=_PARENT,
+            default_model=None,
+            relay=relay,
+            owner_session_id="owner-1",
+            run_id=_RUN_ID,
+            history_root=tmp_path,
+        )
+        pool._semaphore = asyncio.Semaphore(0)  # slot held by an unseen sibling
+        run = AsyncMock(side_effect=AssertionError("run must not be entered"))
+        spawn = AsyncMock(side_effect=AssertionError("spawn must not be reached"))
+        reap = AsyncMock(side_effect=AssertionError("pending abort has no reaper"))
+        accepted: list[asyncio.Task[ChildAbortOutcomeDAO]] = []
+
+        with (
+            patch.object(SubAgentProcess, "run", new=run),
+            patch("asyncio.create_subprocess_exec", new=spawn),
+            patch("src.agents.slo_agent.orchestrator.process.FleetReaper.reap", new=reap),
+        ):
+            dispatch = asyncio.create_task(
+                pool.dispatch(
+                    mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id=_CHILD)]
+                )
+            )
+            await _wait_for(lambda: bool(pool._semaphore._waiters))
+            process: SubAgentProcess = pool._active_by_session_id[_CHILD]
+            process._cancel_settled.clear()  # sensitivity: a generic settlement wait would hang
+            request = ChildAbortRequestDAO(
+                request_id="c3b2a190-8e7d-4c6b-9a58-473625140f0e",
+                owner_session_id="owner-1",
+                orchestrator_session_id=_PARENT,
+                session_id=_CHILD,
+                run_id=_RUN_ID,
+                execution_id=process.execution_id,
+            )
+
+            def admit() -> None:
+                accepted.append(pool._join_or_start_child_abort(request=request))
+
+            def one_callback() -> None:
+                steps = (admit, pool._semaphore.release) if admit_first else (pool._semaphore.release, admit)
+                for step in steps:
+                    step()
+
+            asyncio.get_running_loop().call_soon(one_callback)
+            winner: SubAgentResultDAO = (await asyncio.wait_for(dispatch, timeout=_BOUNDED_SECONDS)).results[
+                0
+            ]
+            outcome = await asyncio.wait_for(accepted[0], timeout=_BOUNDED_SECONDS)
+
+        run.assert_not_awaited()
+        spawn.assert_not_awaited()
+        reap.assert_not_awaited()
+        assert not process._cancel_settled.is_set()
+        assert pool._semaphore._value == 1  # the released sibling permit is not consumed
+        completion = pool._child_completion[(_CHILD, process.execution_id)]
+        assert completion.done() and completion.result() == winner
+        assert (outcome.outcome, winner.status, winner.exit_code, winner.execution_id) == (
+            "aborted",
+            "aborted",
+            2,
+            process.execution_id,
+        )
+        terminal_kinds = {"sub_agent_completed", "sub_agent_failed", "sub_agent_aborted", "sub_agent_reaped"}
+        assert [e.kind for e in relayed if e.kind in terminal_kinds] == ["sub_agent_aborted"]
+        assert process._terminal_result_built == winner
+        assert pool.registry.terminal_result(session_id=_CHILD, execution_id=process.execution_id) == winner
+        child_dir = tmp_path / _PARENT / "children" / _CHILD
+        status = ReleasedSubAgentResultDAO.model_validate_json((child_dir / "status.json").read_bytes())
+        assert (status.status, status.exit_code, status.answer) == (
+            winner.status,
+            winner.exit_code,
+            winner.answer,
+        )
+        fleet = ReleasedFleetSnapshotDAO.model_validate_json((tmp_path / _PARENT / "fleet.json").read_bytes())
+        assert (fleet.entries[0].status, fleet.entries[0].exit_code) == ("aborted", 2)
+        index = ExecutionIndexDAO.model_validate_json(
+            (tmp_path / _PARENT / "execution-index.v1.json").read_bytes()
+        )
+        assert index.executions[_CHILD] == winner.execution_id
+        evidence = FleetStore.load_verified_execution(
+            history_root=tmp_path, orchestrator_session_id=_PARENT, child_session_id=_CHILD
+        )
+        assert evidence is not None
+        assert (evidence.phase, evidence.status, evidence.execution_id, evidence.stdout_identity) == (
+            "terminal",
+            "aborted",
+            winner.execution_id,
+            None,
+        )
+        assert evidence.status_sha256 == hashlib.sha256((child_dir / "status.json").read_bytes()).hexdigest()

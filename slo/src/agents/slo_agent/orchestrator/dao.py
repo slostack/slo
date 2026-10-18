@@ -972,6 +972,52 @@ class ChildAbortOutcomeDAO(_ChildControlIdentity):
     terminal_status: Optional[SubAgentStatus] = None
     safe_message: str
 
+    @classmethod
+    def for_request(
+        cls,
+        *,
+        request: ChildAbortRequestDAO,
+        outcome: ChildAbortOutcome,
+        terminal_status: Optional[SubAgentStatus] = None,
+    ) -> "ChildAbortOutcomeDAO":
+        """Build the outcome for one request with its fixed operator message.
+
+        WHAT: Copies the request's exact request/session/execution identity and
+            selects the fixed message for ``outcome``; no caller supplies text, so
+            exception detail can never reach a receipt or the operator.
+        WHO: SubAgentPool child cancellation, the session facade and later
+            control adapters.
+        WHEN: Whenever a child-abort request is refused, admitted or settled.
+
+        Args:
+            request (ChildAbortRequestDAO): Request the outcome answers.
+            outcome (ChildAbortOutcome): Closed outcome literal.
+            terminal_status (Optional[SubAgentStatus], optional): Canonical terminal
+                status when observed. Defaults to None.
+
+        Returns:
+            ChildAbortOutcomeDAO: Outcome bound to the request identity.
+        """
+        return cls(
+            request_id=request.request_id,
+            session_id=request.session_id,
+            execution_id=request.execution_id,
+            outcome=outcome,
+            terminal_status=terminal_status,
+            safe_message=_CHILD_ABORT_MESSAGES[outcome],
+        )
+
+
+_CHILD_ABORT_MESSAGES: dict[str, str] = {
+    "requested": "Abort requested; waiting for the orchestrator to confirm.",
+    "aborted": "Child aborted.",
+    "already_terminal": "Child already finished; nothing was aborted.",
+    "not_owned": "Child is not owned by this run; nothing was aborted.",
+    "unavailable": "Child abort unavailable for this run.",
+    "unresolved": "Abort could not be confirmed; the child may still be running.",
+}
+"""Fixed operator message per child-abort outcome; never exception text."""
+
 
 class ChildControlCapabilityDAO(_ChildControlIdentity):
     """Runner-published evidence that one run accepts child-control requests.

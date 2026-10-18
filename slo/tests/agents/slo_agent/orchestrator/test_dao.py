@@ -768,6 +768,41 @@ class TestChildControlDAOs:
                 safe_message="x",
             )
 
+    @pytest.mark.parametrize(
+        "outcome", ["requested", "aborted", "already_terminal", "not_owned", "unavailable", "unresolved"]
+    )
+    def test_outcome_for_request_copies_identity_and_fixed_message(self, outcome: str) -> None:
+        """The factory copies exact request identity and a fixed per-outcome message."""
+        request = ChildAbortRequestDAO.model_validate(self._request_payload())
+
+        dao: ChildAbortOutcomeDAO = ChildAbortOutcomeDAO.for_request(
+            request=request, outcome=outcome, terminal_status="aborted"  # type: ignore[arg-type]
+        )
+
+        assert (dao.request_id, dao.session_id, dao.execution_id, dao.outcome, dao.terminal_status) == (
+            _REQUEST_ID,
+            request.session_id,
+            _EXECUTION_ID,
+            outcome,
+            "aborted",
+        )
+        repeated = ChildAbortOutcomeDAO.for_request(request=request, outcome=outcome)  # type: ignore[arg-type]
+        assert dao.safe_message == repeated.safe_message
+        assert repeated.terminal_status is None
+
+    def test_outcome_messages_are_distinct_per_outcome(self) -> None:
+        """Each outcome has its own fixed message; the unavailable text is the spec's."""
+        request = ChildAbortRequestDAO.model_validate(self._request_payload())
+        outcomes = ["requested", "aborted", "already_terminal", "not_owned", "unavailable", "unresolved"]
+
+        messages = {
+            outcome: ChildAbortOutcomeDAO.for_request(request=request, outcome=outcome).safe_message  # type: ignore[arg-type]
+            for outcome in outcomes
+        }
+
+        assert len(set(messages.values())) == len(outcomes)
+        assert messages["unavailable"] == "Child abort unavailable for this run."
+
     def test_capability_validates_identity(self) -> None:
         """Capabilities carry strict run identity and an accepting flag."""
         capability: ChildControlCapabilityDAO = ChildControlCapabilityDAO(

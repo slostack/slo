@@ -136,7 +136,12 @@ from src.agents.slo_agent.history.transcript import ReplayEntryProjector
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPoolDAO
     from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-    from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
+    from src.agents.slo_agent.orchestrator.dao import (
+        AttachedDispatchSnapshotDAO,
+        ChildAbortOutcomeDAO,
+        ChildAbortRequestDAO,
+        ChildControlCapabilityDAO,
+    )
     from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 
 from src.agents.slo_agent.plugins.dao import PluginHealthDAO, PluginRegistrationDAO
@@ -2180,6 +2185,44 @@ class SloAgentSession:
         if self._sub_agent_pool is None:
             return AttachedDispatchSnapshotDAO.empty()
         return self._sub_agent_pool.attached_dispatch_snapshot()
+
+    async def abort_child(self, *, request: "ChildAbortRequestDAO") -> "ChildAbortOutcomeDAO":
+        """Ask the attached pool to stop one exact child, or report unavailable.
+
+        WHAT: Delegates to the pool's sole child-abort gateway, which revalidates
+            the request itself; without an attached pool returns the fixed
+            unavailable outcome. Whole-session ``abort`` is unaffected.
+        WHO: Bound by app composition as the workflow service's attached abort
+            seam (feature 94 a.4); the TUI never reaches the pool directly.
+        WHEN: After operator confirmation of an attached child.
+
+        Args:
+            request (ChildAbortRequestDAO): Exact current-run child identity.
+
+        Returns:
+            ChildAbortOutcomeDAO: The pool's observed outcome, or unavailable.
+        """
+        from src.agents.slo_agent.orchestrator.dao import ChildAbortOutcomeDAO  # noqa: PLC0415
+
+        if self._sub_agent_pool is None:
+            return ChildAbortOutcomeDAO.for_request(request=request, outcome="unavailable")
+        return await self._sub_agent_pool.abort_child(request=request)
+
+    def child_control_capability(self) -> Optional["ChildControlCapabilityDAO"]:
+        """Return the attached pool's typed child-control capability, if any.
+
+        WHAT: Exposes the pool's run/owner/parent identity and accepting state
+            without private-field inspection; valid with or without history files.
+        WHO: Bound by app composition as the workflow service's attached
+            capability supplier (feature 94 a.4).
+        WHEN: At confirmation and submission time; no side effects.
+
+        Returns:
+            Optional[ChildControlCapabilityDAO]: Capability, or None without a pool.
+        """
+        if self._sub_agent_pool is None:
+            return None
+        return self._sub_agent_pool.child_control_capability()
 
     @property
     def orchestration_tools(self) -> list[BaseTool]:

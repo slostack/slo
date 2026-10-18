@@ -226,7 +226,7 @@ class TestBatchReplacement:
             assert (snapshot.dispatch_sequence, _snapshot_sessions(pool)) == (2, ["b"])
             old = pool.registry.get(session_id="a")
             assert old is not None and old.status == "pending"
-            assert [process.session_id for process in pool._active] == ["a"]
+            assert list(pool._active_by_session_id) == ["a"]
 
             runs.release(session_id="a")
             first_result = await first
@@ -555,7 +555,7 @@ class TestReservationLifetime:
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await pending
-            assert pool._active == []
+            assert pool._active_by_session_id == {}
             for session_id in ("a", "b"):
                 entry = pool.registry.get(session_id=session_id)
                 if entry is not None and entry.status not in {"completed", "failed", "aborted"}:
@@ -595,7 +595,7 @@ class TestReservationLifetime:
 
         def first_a_torn_down() -> bool:
             completed = [e for e in relayed if e.kind == "sub_agent_completed" and e.sub_agent_id == "a"]
-            return bool(completed) and all(process.session_id != "a" for process in pool._active)
+            return bool(completed) and "a" not in pool._active_by_session_id
 
         with patch.object(SubAgentProcess, "run", new=runs.as_method()):
             first = asyncio.create_task(

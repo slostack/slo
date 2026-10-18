@@ -628,7 +628,7 @@ class TestSubAgentPoolAbortAndDrain:
             queued: asyncio.Task[OrchestratorResultDAO] = asyncio.create_task(
                 pool.dispatch(mode="single", tasks=[task])
             )
-            while not pool._active:
+            while not pool._active_by_session_id:
                 await asyncio.sleep(0)
             await pool.abort_and_drain()
             pool._semaphore.release()
@@ -736,11 +736,11 @@ class TestSubAgentPoolCancelAll:
     """``cancel_all()`` calls ``cancel()`` on every active process."""
 
     async def test_cancel_all_invokes_cancel_on_each_process(self) -> None:
-        """``cancel_all()`` calls ``cancel()`` on every process in ``_active``."""
+        """``cancel_all()`` calls ``cancel()`` on every wrapper in ``_active_by_session_id``."""
         pool, _ = _make_pool()
         mock_proc_1: AsyncMock = AsyncMock()
         mock_proc_2: AsyncMock = AsyncMock()
-        pool._active = [mock_proc_1, mock_proc_2]
+        pool._active_by_session_id = {"child-1": mock_proc_1, "child-2": mock_proc_2}
 
         await pool.cancel_all()
 
@@ -755,7 +755,7 @@ class TestSubAgentPoolCancelAll:
         failing_proc.cancel = AsyncMock(side_effect=RuntimeError("cancel failed"))
         succeeding_proc: AsyncMock = AsyncMock()
         succeeding_proc.session_id = "child-succeeding"
-        pool._active = [failing_proc, succeeding_proc]
+        pool._active_by_session_id = {"child-failing": failing_proc, "child-succeeding": succeeding_proc}
 
         await pool.cancel_all()  # must not raise
 
@@ -836,7 +836,7 @@ class TestSubAgentPoolCanonicalWinner:
 
         async def relay(event: AgentStreamEventDAO) -> None:
             if event.kind == "sub_agent_spawned":
-                seen.append(any(process._session_id == event.sub_agent_id for process in pool._active))
+                seen.append(event.sub_agent_id in pool._active_by_session_id)
 
         pool = SubAgentPool(
             orchestrator_session_id="orch-1",
@@ -998,7 +998,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
                     mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id="child-1")]
                 )
             )
-            await _until(lambda: bool(pool._active))
+            await _until(lambda: bool(pool._active_by_session_id))
             await pool.abort_and_drain()
 
             entry = pool.registry.get(session_id="child-1")
@@ -1053,7 +1053,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
                 )
             )
             await asyncio.wait_for(failed_seen.wait(), timeout=2.0)
-            assert len(pool._active) == 1
+            assert len(pool._active_by_session_id) == 1
             await asyncio.wait_for(pool.abort_and_drain(), timeout=2.0)
             release_emit.set()
             result = await asyncio.wait_for(dispatch, timeout=2.0)

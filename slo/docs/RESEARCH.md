@@ -186,6 +186,33 @@ workflow acceptance. Stream, child-output and Bash defaults remain 10800, 7200
 and 1800 seconds. Shell exports must precede process launch; a Bash tool export
 cannot modify an already running parent process.
 
+### Child-only abort (feature 94 a.4, T09)
+
+`SubAgentPool.abort_child(request=...)` is the only way to stop a single child.
+The session facade (`SloAgentSession.abort_child`) and the later runner
+controller both call it; nothing else may signal a PID. Rules that are easy to
+break:
+
+- **Identity.** The pool rechecks owner, parent, run and the current
+  `execution_id`. Every synchronization map is keyed by
+  `(session_id, execution_id)`, never by session alone.
+- **Reservation.** The reservation and abort `Event` are set synchronously before
+  the first await. Child abort never sets `_sealed`, so siblings and later
+  dispatches keep running.
+- **Slot race.** `_acquire_child_slot` races the semaphore against the event,
+  joins both waiters, and only then decides with no await in between. A
+  cancelled `acquire` task never holds a permit: check `cancelled()` before
+  `exception()`.
+- **Pending publication.** A reserved pending child publishes through
+  `finish_without_spawn` and never waits `_cancel_settled`.
+- **Unresolved outcomes.** An `unresolved` or `recycled_pid` reap returns
+  `unresolved` at once. That result is retained, and later requests join it
+  without another reap until natural terminal evidence makes them
+  `already_terminal`.
+- **Observed outcomes only.** `aborted` is reported only when the canonical
+  winner is aborted. Outcome text comes from
+  `ChildAbortOutcomeDAO.for_request`, never from exception text.
+
 ## Runtime path
 
 ```text

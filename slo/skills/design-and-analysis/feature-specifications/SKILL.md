@@ -33,7 +33,7 @@ Do not skip checks because “we just wrote it”. A specification without the c
 bundle and clean self-check report is incomplete.
 
 This is an authoring skill, not a formal workflow. When the operator requests the
-Specification Development workflow, load `skills/design-and-analysis/workflows/specification-development.md`.
+Specification Development workflow, load `skills/orchestration/workflows/specification-development.md`.
 That workflow sequences this skill, independent verification, then task breakdown.
 Skim `feature-specification-verification` and `breakdown-feature-spec-to-tasks`
 unless the user asks otherwise; `gather-feature-context` remains an on-request

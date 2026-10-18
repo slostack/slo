@@ -3,10 +3,14 @@
 **Type:** Pipeline
 **Governs:** All feature specification work in this repository
 
+Follow [progression and authorization](SKILL.md#progression-and-authorization):
+verify phase artifacts, report progress, and ask only for blocking clarification.
+External and destructive actions still require explicit operator authorization.
+
 ## Scoped guidance and phase handoff contract
 
 **Workflow-turn accounting:** Follow
-`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+`skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`.
 Count a full pass through the workflow, not individual phases or agent calls.
 Report partial passes and separate harness limits explicitly; never skip review
 or treat repeated authoring dispatches as completed workflow turns.
@@ -28,7 +32,7 @@ artifact paths, requirement-to-evidence mapping, exact commands/results, deviati
 and unresolved blockers. Verify artifacts exist before advancing; a success exit
 code without the required evidence is not READY. Revision changes invalidate later
 review/completion evidence: return to the responsible implementation/spec phase,
-retest and re-review. Preserve the workflow's original manual/auto confirmations.
+retest and re-review.
 An execution failure stops progression; a recoverable failed task may be retried
 up to three times after the initial attempt, with its cause addressed and within
 the current workflow turn's dispatch budget. Never retry an aborted task, even when
@@ -50,7 +54,7 @@ Load these on demand as each step calls for them — also load the scoped langua
 | 2 — Verification | `skills/design-and-analysis/feature-specification-verification/SKILL.md` |
 | 3 — Task breakdown | `skills/design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md` |
 | Ubiquitous language | `skills/design-and-analysis/ubiquitous-language/SKILL.md` |
-| Manual vs. auto mode | `skills/design-and-analysis/workflows/SKILL.md#confirmation-behavior` |
+
 
 ---
 
@@ -65,7 +69,7 @@ Activate this workflow whenever the operator asks to:
 - "Create a spec for [JIRA ticket or Confluence page]"
 - break a large feature description into tasks or sub-specs
 
-The trigger is intent to produce a specification document. Confirmation-seeking at the end of each step depends on [manual vs. auto mode](SKILL.md#confirmation-behavior).
+The trigger is intent to produce a specification document.
 
 ---
 
@@ -130,13 +134,7 @@ The consolidation pass is the step that keeps the system design DRY. A generated
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-Present the completed spec and the Author Self-check Report to the operator. State:
-
-> "Step 1 complete — specification is READY per the Self-check stage. Proceeding to Step 2 (Verification) unless you would like to revise first."
-
-Wait for confirmation before continuing.
+Report the phase result and verify its required artifacts before advancing.
 
 ---
 
@@ -178,13 +176,7 @@ If CRITICAL gaps are found, the agent must return to Step 1 and revise the speci
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-Present the Specification Verification Report. State:
-
-> "Step 2 complete — verification report is ready. [N critical gaps / no critical gaps] found. Proceeding to Step 3 (Task Breakdown) unless you would like to address findings first."
-
-Wait for confirmation before continuing.
+Report the phase result and verify its required artifacts before advancing.
 
 ---
 
@@ -223,13 +215,10 @@ If a JIRA project key was provided, push the tasks to JIRA as sub-tasks of the p
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
 Present the task breakdown and dependency graph. State:
 
 > "Step 3 complete — specification is broken down into [N] tasks. [JIRA sub-tasks created / not pushed to JIRA.] Workflow complete."
 
-**[AUTO MODE — FINAL CONFIRMATION]**
 
 Before creating any JIRA sub-tasks or publishing the spec to the wiki, pause and confirm with the operator:
 
@@ -274,6 +263,6 @@ Step 2: Verification (adversarial; returns to Step 1 if CRITICAL gaps)
 Step 3: Task breakdown → dependency graph → JIRA push (if applicable)
         └─ Output: child specs + dependency graph + JIRA sub-tasks
 
-[MANUAL] pause at end of each step
-[AUTO]   run to completion, confirm before publishing/committing
+Verify READY artifacts at every phase; report progress.
+Obtain explicit authorization before publishing or committing.
 ```

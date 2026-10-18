@@ -27,7 +27,7 @@ Select a small sufficient set of shared, language, component, framework and proj
 3. Load `skills/engineering/engineering-ownership/SKILL.md` and the task policy: `skills/engineering/engineering-testing/SKILL.md` for implementation/testing, `skills/engineering/engineering-review/SKILL.md` for review. Existing debugging, specification, git and presentation skills remain available on demand.
 4. Load only the affected language root(s): `skills/languages/go/go-conventions/SKILL.md`, `skills/languages/python/python-conventions/SKILL.md`, `skills/languages/typescript/typescript-conventions/SKILL.md`. Then choose component recipes from their family and framework guidance only when the project uses it.
 5. Identify test category before choosing a test recipe: isolated unit, orchestration unit, adapter/database integration, or end-to-end. Return a compact routing record: task, languages, stack, project contracts, selected absolute skill paths/source tiers, exclusions, commands and unresolved decisions.
-6. For a named workflow load its exact file in `skills/design-and-analysis/workflows/`; never substitute the cadence skill. Preserve in-session vs explicitly detached routing. Each phase receives this routing record, acceptance criteria and artifact paths, not merely the prior agent's verdict.
+6. For a named workflow load its exact file in `skills/orchestration/workflows/`; never substitute the cadence skill. Preserve in-session vs explicitly detached routing. Each phase receives this routing record, acceptance criteria and artifact paths, not merely the prior agent's verdict.
 
 ## Authority
 

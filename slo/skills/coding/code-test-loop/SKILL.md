@@ -69,7 +69,7 @@ never substitutes for the full workflow.
 Load the full workflow file instead:
 
 ```
-skills/design-and-analysis/workflows/code-test-review.md
+skills/orchestration/workflows/code-test-review.md
 ```
 
 This skill (`code-test-loop`) is the **coding cadence only** — write one unit, test it, go green, repeat. It is **Step 1 inside** the Code-Test-Review workflow. Loading this skill when the user asked for the workflow silently drops:

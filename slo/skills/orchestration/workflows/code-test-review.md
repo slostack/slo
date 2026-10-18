@@ -3,10 +3,14 @@
 **Type:** Pipeline
 **Governs:** All feature implementation work in this repository
 
+Follow [progression and authorization](SKILL.md#progression-and-authorization):
+verify phase artifacts, report progress, and ask only for blocking clarification.
+External and destructive actions still require explicit operator authorization.
+
 ## Scoped guidance and phase handoff contract
 
 **Workflow-turn accounting:** Follow
-`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+`skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`.
 Count a full pass through the workflow, not individual phases or agent calls.
 Report partial passes and separate harness limits explicitly; never skip review
 or treat repeated authoring dispatches as completed workflow turns.
@@ -39,8 +43,7 @@ artifact paths, requirement-to-evidence mapping, exact commands/results, deviati
 and unresolved blockers. Verify artifacts exist before advancing; a success exit
 code without the required evidence is not READY. Revision changes invalidate later
 review/completion evidence: return to the responsible implementation/spec phase,
-retest and re-review. Preserve the workflow's original manual/auto confirmations.
-An execution failure stops progression; a recoverable failed task may be retried
+retest and re-review. An execution failure stops progression; a recoverable failed task may be retried
 up to three times after the initial attempt, with its cause addressed and within
 the current workflow turn's dispatch budget. Never retry an aborted task, even when
 the reported cause is a timeout. User cancellation is not permission to restart work.
@@ -61,7 +64,7 @@ Load these on demand as each step calls for them — also load the scoped langua
 | 2 — Code Review | `skills/design-and-analysis/review-feature-code/SKILL.md` |
 | 3 — Completion Check | `skills/design-and-analysis/is-the-feature-completed/SKILL.md` |
 | Always-on conventions | `skills/engineering/engineering-ownership/SKILL.md`, `skills/engineering/engineering-testing/SKILL.md`, plus selected language roots |
-| Manual vs. auto mode | `skills/design-and-analysis/workflows/SKILL.md#confirmation-behavior` |
+
 
 ---
 
@@ -75,7 +78,7 @@ Activate this workflow whenever the operator asks to:
 - "Implement [task from the breakdown]"
 - Complete a task produced by the [Specification Development Workflow](specification-development.md)
 
-The trigger is intent to go from a specification (or a single task extracted from a spec) to running, tested code. Confirmation-seeking at the end of each step depends on [manual vs. auto mode](SKILL.md#confirmation-behavior).
+The trigger is intent to go from a specification (or a single task extracted from a spec) to running, tested code.
 
 ---
 
@@ -157,13 +160,7 @@ checks where applicable; report blocked or baseline failures, never invent green
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-Present a summary of what was implemented: files created, files modified, test count, any deviations from spec. State:
-
-> "Step 1 complete — implementation is in place and all tests are green. Proceeding to Step 2 (Code Review) unless you would like to review the implementation first."
-
-Wait for confirmation before continuing.
+Report the phase result and verify its required artifacts before advancing.
 
 ---
 
@@ -211,15 +208,6 @@ If Glaring Gaps are found, the agent must return to Step 1 and resolve them befo
 - The final implementation file list (post any Step 2 revisions)
 - The feature completeness table
 
----
-
-**[MANUAL MODE — PAUSE]**
-
-Present the Code Review Report. State:
-
-> "Step 2 complete — code review report is ready. [N glaring gaps / no glaring gaps] found. Proceeding to Step 3 (Completion Check) unless you would like to address findings first."
-
-Wait for confirmation before continuing.
 
 ---
 
@@ -261,19 +249,6 @@ If completion is below 100% (or below an operator-specified threshold), the agen
 
 ---
 
-**[MANUAL MODE — PAUSE]**
-
-Present the completion assessment. State:
-
-> "Step 3 complete — feature completion check done. [X]% complete. [Workflow complete / N items remain — returning to Step 1.]"
-
-**[AUTO MODE — FINAL CONFIRMATION]**
-
-Before committing code, pushing a branch, or creating a PR, pause and confirm:
-
-> "Code-Test-Review Workflow complete. Implementation is [X]% complete, all tests green. Ready to commit and open a PR. Confirm?"
-
----
 
 ## Exit Condition
 
@@ -294,7 +269,7 @@ The following rules remain in effect throughout this workflow:
 - Secret scanning before commit — eye-scan all staged content for API keys, tokens, bcrypt hashes, and private keys before any `git commit`.
 - Confirmation before commit, push, or PR — `ALWAYS SEEK CONFIRMATION BEFORE COMMITTING CODE, PUSHING CODE TO REMOTE REPOSITORIES OR MERGING CODE`.
 - The agent still needs to gather context. Reading the relevant `build-*.md` and KB entries is required before writing code for a new layer, not optional.
-- When this workflow runs detached, stop it only with `/workflows abort <workflow-id>` (or `SIGTERM` to the orchestrator pid for a shell launch). Never `pkill` / `kill` its process tree, even to snapshot work before a commit. A raw kill leaves a stale handle that makes every later `launch_workflow` in the session fail with `no evidence-backed correction`. See `skills/design-and-analysis/headless-orchestration/SKILL.md` → "Stopping a running workflow".
+- When this workflow runs detached, stop it only with `/workflows abort <workflow-id>` (or `SIGTERM` to the orchestrator pid for a shell launch). Never `pkill` / `kill` its process tree, even to snapshot work before a commit. A raw kill leaves a stale handle that makes every later `launch_workflow` in the session fail with `no evidence-backed correction`. See `skills/orchestration/headless-orchestration/SKILL.md` → "Stopping a running workflow".
 
 ---
 
@@ -315,7 +290,5 @@ Step 2: Code Review (spec completeness, flow wiring, test coverage, conventions)
 Step 3: Completion Check (fresh scan; percentage score; pending guidance)
         └─ Output: completion assessment; return to Step 1 if incomplete
 
-[MANUAL] pause at end of each step
-[AUTO]   run to completion, confirm before commit/push/PR
 [STOP]   detached run → /workflows abort <workflow-id>; never pkill/kill
 ```

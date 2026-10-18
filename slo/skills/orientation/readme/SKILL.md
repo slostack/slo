@@ -222,14 +222,14 @@ then run `make build-skill-index` to regenerate `INDEX.md`. Never hand-edit
 ## Workflows — load the workflow file, not a similarly-named skill
 
 When the user says "workflow" or names one, load the file from
-`skills/design-and-analysis/workflows/` directly.
+`skills/orchestration/workflows/` directly.
 
 | Workflow | File |
 |---|---|
-| Code-Test-Review | [`workflows/code-test-review.md`](../../design-and-analysis/workflows/code-test-review.md) |
-| GitLab Code-Test-Review | [`workflows/gitlab-code-test-review.md`](../../design-and-analysis/workflows/gitlab-code-test-review.md) |
-| Specification Development | [`workflows/specification-development.md`](../../design-and-analysis/workflows/specification-development.md) |
-| Overview of the workflow system | [`workflows/SKILL.md`](../../design-and-analysis/workflows/SKILL.md) |
+| Code-Test-Review | [`workflows/code-test-review.md`](../../orchestration/workflows/code-test-review.md) |
+| GitLab Code-Test-Review | [`workflows/gitlab-code-test-review.md`](../../orchestration/workflows/gitlab-code-test-review.md) |
+| Specification Development | [`workflows/specification-development.md`](../../orchestration/workflows/specification-development.md) |
+| Overview of the workflow system | [`workflows/SKILL.md`](../../orchestration/workflows/SKILL.md) |
 
 [`code-test-loop`](../../coding/code-test-loop/SKILL.md) is **not** the
 Code-Test-Review workflow — it is Step 1 inside it. Loading it instead silently
@@ -295,9 +295,9 @@ drops the review and completion-check steps.
 
 | Skill | What it covers |
 |---|---|
-| [`orchestrator`](../../design-and-analysis/orchestrator/SKILL.md) | Gateway that decides which skill or workflow to load next; routes dynamic-workflow requests |
-| [`workflows`](../../design-and-analysis/workflows/SKILL.md) | The workflow system: pipeline vs parallel, context handoff, routing rules |
-| [`headless-orchestration`](../../design-and-analysis/headless-orchestration/SKILL.md) | Launch a named workflow as a **detached** headless orchestrator — only on an explicit detach qualifier |
+| [`orchestrator`](../../orchestration/orchestrator/SKILL.md) | Gateway that decides which skill or workflow to load next; routes dynamic-workflow requests |
+| [`workflows`](../../orchestration/workflows/SKILL.md) | The workflow system: pipeline vs parallel, context handoff, routing rules |
+| [`headless-orchestration`](../../orchestration/headless-orchestration/SKILL.md) | Launch a named workflow as a **detached** headless orchestrator — only on an explicit detach qualifier |
 
 ## Coding
 

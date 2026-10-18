@@ -129,24 +129,24 @@ coding task.
 ## Workflow Routing — Workflows vs Skills
 
 When the user explicitly says "workflow" or names a formal workflow, **always
-load the workflow file directly from `skills/design-and-analysis/workflows/`** —
+load the workflow file directly from `skills/orchestration/workflows/`** —
 never substitute a skill with a similar-sounding name.
 
 Named workflows and their exact file paths (use with the `read` tool):
 
 | Workflow | File path |
 |---|---|
-| Code-Test-Review — implement a spec end-to-end (code → review → completion check) | `skills/design-and-analysis/workflows/code-test-review.md` |
-| GitLab Code-Test-Review — the same loop driven from a GitLab issue | `skills/design-and-analysis/workflows/gitlab-code-test-review.md` |
-| Specification Development — write a feature spec (context → draft → verify → tasks) | `skills/design-and-analysis/workflows/specification-development.md` |
-| Overview — what workflows exist, Pipeline vs Parallel model, confirmation behavior | `skills/design-and-analysis/workflows/SKILL.md` |
+| Code-Test-Review — implement a spec end-to-end (code → review → completion check) | `skills/orchestration/workflows/code-test-review.md` |
+| GitLab Code-Test-Review — the same loop driven from a GitLab issue | `skills/orchestration/workflows/gitlab-code-test-review.md` |
+| Specification Development — write a feature spec (context → draft → verify → tasks) | `skills/orchestration/workflows/specification-development.md` |
+| Overview — what workflows exist, Pipeline vs Parallel model, evidence-gated progression | `skills/orchestration/workflows/SKILL.md` |
 
 **Critical anti-pattern to avoid:**
 
 | User says | Wrong file | Correct file |
 |---|---|---|
-| "use the code-test-review workflow" | `skills/coding/code-test-loop/SKILL.md` ✗ | `skills/design-and-analysis/workflows/code-test-review.md` ✓ |
-| "run the specification-development workflow" | `skills/design-and-analysis/feature-specifications/SKILL.md` ✗ | `skills/design-and-analysis/workflows/specification-development.md` ✓ |
+| "use the code-test-review workflow" | `skills/coding/code-test-loop/SKILL.md` ✗ | `skills/orchestration/workflows/code-test-review.md` ✓ |
+| "run the specification-development workflow" | `skills/design-and-analysis/feature-specifications/SKILL.md` ✗ | `skills/orchestration/workflows/specification-development.md` ✓ |
 
 `code-test-loop` is the coding cadence (write a unit → test → green → repeat). It
 is Step 1 *inside* the Code-Test-Review workflow, not the workflow itself.

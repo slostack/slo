@@ -411,7 +411,9 @@ async def test_managed_phase_medium_is_independent_of_high_parent(
     managed_journey: ManagedJourney, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real pool/fleet/notifier consumes matching transport result with independent argv."""
-    from src.agents.slo_agent.orchestrator.process import SubAgentProcess
+    # Patch the pool's consumer binding: timeout tests reload process.py, which
+    # replaces its class without replacing the class already imported by the pool.
+    from src.agents.slo_agent.orchestrator.pool import SubAgentProcess
     from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO
     from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 

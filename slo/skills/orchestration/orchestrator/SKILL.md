@@ -9,7 +9,7 @@ description: Gateway workflow that decides which skill or workflow to load next 
   never calls launch_workflow.
 when_to_use: Use at the start or end of a turn when you need to route the task into
   the right Slo workflow, category, or individual skill.
-group: design-and-analysis
+group: orchestration
 kind: workflow
 ---
 
@@ -31,7 +31,7 @@ kind: workflow
 ## Guidance
 
 **Workflow-turn accounting:** Follow
-`skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`.
+`skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`.
 Count a full pass through the workflow, not individual phases or agent calls.
 Report partial passes and separate harness limits explicitly; never skip review
 or treat repeated authoring dispatches as completed workflow turns.
@@ -65,12 +65,12 @@ sub-skills and lists them at its top:
 | Task shape | Route to |
 |---|---|
 | Implement a feature request / JIRA story end-to-end | `skills/design-and-analysis/implement-feature-request/SKILL.md` |
-| Write / spec out / break down a feature specification | `skills/design-and-analysis/workflows/specification-development.md` |
-| Implement a spec or task slice into tested, reviewed code | `skills/design-and-analysis/workflows/code-test-review.md` |
-| Same, tracked through a GitLab issue + MR lifecycle | `skills/design-and-analysis/workflows/gitlab-code-test-review.md` |
-| Learn what workflows exist / run a named workflow | `skills/design-and-analysis/workflows/SKILL.md` |
-| User says `dynamic workflows` / `dyanmic workflows` without a detach qualifier — in-session orchestration with spawn_sub_agents | `skills/design-and-analysis/workflows/SKILL.md` |
-| User says `dynamic workflows` / `dyanmic workflows` **with** a detach qualifier ("headless" / "detached" / "independent") or detach wording ("in the background" / "without blocking") — headless dynamic workflow via launch_workflow | `skills/design-and-analysis/headless-orchestration/SKILL.md` |
+| Write / spec out / break down a feature specification | `skills/orchestration/workflows/specification-development.md` |
+| Implement a spec or task slice into tested, reviewed code | `skills/orchestration/workflows/code-test-review.md` |
+| Same, tracked through a GitLab issue + MR lifecycle | `skills/orchestration/workflows/gitlab-code-test-review.md` |
+| Learn what workflows exist / run a named workflow | `skills/orchestration/workflows/SKILL.md` |
+| User says `dynamic workflows` / `dyanmic workflows` without a detach qualifier — in-session orchestration with spawn_sub_agents | `skills/orchestration/workflows/SKILL.md` |
+| User says `dynamic workflows` / `dyanmic workflows` **with** a detach qualifier ("headless" / "detached" / "independent") or detach wording ("in the background" / "without blocking") — headless dynamic workflow via launch_workflow | `skills/orchestration/headless-orchestration/SKILL.md` |
 | Sequence a git task (branch → commit → push → PR) | `skills/git-ops/git-ops-orchestrator/SKILL.md` |
 
 For narrower, single-purpose tasks, skip the workflows and use the category

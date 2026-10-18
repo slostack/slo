@@ -97,7 +97,7 @@ Rules:
 ### Step 4 — Draft the pipeline body
 
 Structure the body using this template. This mirrors the format used by vendored
-workflows (e.g. `skills/design-and-analysis/workflows/specification-development.md`):
+workflows (e.g. `skills/orchestration/workflows/specification-development.md`):
 
 ```markdown
 # Workflow: <Title (Title Case)>

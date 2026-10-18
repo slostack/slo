@@ -29,4 +29,4 @@ PRE-Hook Context Bundle) before drafting. Continue through Draft, Self-check and
 Revise in that same authoritative skill; do not run a second hook procedure.
 When a caller already completed that stage for this draft, reuse the bundle and
 refresh changed context rather than repeat it. Formal workflow routing remains
-`skills/design-and-analysis/workflows/specification-development.md`.
+`skills/orchestration/workflows/specification-development.md`.

@@ -2,6 +2,140 @@
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-18
+
+**Orchestrated workflows gain reasoning-level control and honest budget
+accounting, every managed agent launch is import-isolated like the installed
+wrapper, and the prompt input trades its rounded box for two horizontal accent
+rules.**
+
+All changes since v0.21.2 are six non-merge commits:
+[compare v0.21.2...v0.22.0](https://gitlab.com/core-27/slo/-/compare/v0.21.2...v0.22.0).
+
+### Added
+
+- **Reasoning levels in managed workflow launches** (`a37eaf3`). The
+  `launch_workflow` tool accepts an optional canonical `reasoning_level`
+  (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) alongside `brief`,
+  `cwd`, and `model`. The schema now rejects unknown fields
+  (`extra="forbid"`), and an invalid canonical literal returns a safe
+  validation-error JSON instead of a traceback. The detached orchestrator
+  receives the resolved level as a single optional `--reasoning` CLI argument
+  (`src/agents/slo_agent/orchestrator/launch_tool.py`,
+  `src/cli/typer_dispatch.py`). Resolution is inference-only and explicit
+  override wins: a call-level value beats the tool's immutable bootstrap-time
+  snapshot (`session.active_reasoning_level` bound once by
+  `OrchestratorSessionBootstrap.attach`); a null snapshot omits the flag so the
+  child's own preference/seed resolution applies — later `/reasoning` changes
+  do not retroactively alter a running workflow. Clamping stays in the existing
+  child model-policy owners; the launcher records the *requested* level and
+  never claims an *effective* one, and a launch acknowledgement proves spawn
+  only, not child admission. Managed `/workflows resume` does not retain the
+  initial override; resumed configuration follows normal resume/preferences
+  policy. Unsupported audit values (aliases such as "extra-high") are rejected
+  at the schema boundary rather than forwarded.
+- **Higher orchestrator budget defaults with an explicit user-override
+  contract** (`fab7f1d`). The prompt-level defaults in the orchestrator system
+  prompt (`spawn_tool.py`) rise from 8 workflow turns per task and 6 dispatch
+  calls per turn to **60 turns and 20 dispatches** (derived ceiling 1,200
+  calls, not a separate tracked limit). Explicit user instructions may raise,
+  lower, or remove either budget — including unlimited — and win over defaults
+  and workflow-specific numbers; effective limits are recorded before starting,
+  carried into phase prompts and continuations, and changing a budget never
+  resets consumed counts. Overrides do **not** loosen runtime caps
+  (`SLO_SUBAGENT_MAX_CONCURRENCY=6`, `SLO_SUBAGENT_MAX_TASKS=8`,
+  `MAX_DETACHED_WORKFLOWS=2`), the 3-retries / never-retry-abort policy,
+  required independent review, or cancellation handling; remaining constraints
+  are disclosed, not bypassed.
+- **Horizontal accent rules around the prompt input** (`db26b71`, spec 94
+  ticket T01). `PromptInput` is now framed by two solid `$accent` rules (top
+  and bottom) with no side edges or rounded corners, replacing the previous
+  `border: round $accent` rectangle (`src/tui/app.tcss`). The rule applies to
+  both `PromptInput` and `PromptInput:focus`, so focus can no longer fall back
+  to Textual's default focus border. Mounted-TUI tests
+  (`tests/tui/test_prompt_input_rules.py`) read painted compositor cells to
+  prove the rules, the absence of side edges, focus-state parity, and that
+  prompt text never lands on a rule row.
+
+### Fixed
+
+- **Phantom dispatch-limit stops** (`d384c49`). A child sub-agent claimed a
+  nonexistent "four dispatches total" cap and the orchestrator accepted it
+  unverified, presented it as a harness restriction, and stopped a workflow
+  with ample budget left. The orchestrator prompt and the shared workflow
+  skill now state explicitly that turns and per-turn dispatches are the only
+  two prompt-level budgets — there is no task-wide dispatch cap, no total
+  child-task cap, and no per-phase dispatch cap — that retries, REVISE loops,
+  review, and synthesis dispatches all draw from the same per-turn budget, and
+  that 1,200 is a derived arithmetic ceiling (turns × per-turn budget), not a
+  limit to track. Orchestrators must verify any sub-agent limit claim against
+  the prompt and installed skills before acting on it and never treat an
+  unsupported claim as a reason to stop.
+- **All managed agent launches run in Python isolated mode** (`2eca91f`).
+  Sub-agents, detached workflows, and resumed workflows now spawn with
+  `sys.executable -I -m src.cli` (`orchestrator/process.py`,
+  `orchestrator/launch_tool.py`, `orchestrator/relaunch.py`), matching the
+  installed wrapper from v0.20.0. A hostile project `PYTHONPATH`, `PYTHONHOME`,
+  or working-directory package can no longer control the agent's own imports;
+  the child-environment allowlist, session identity, reasoning flags, and
+  timeout forwarding are unchanged, and project subprocesses launched by agent
+  tools keep their own explicitly configured import environment. Regression
+  tests (`test_launch_isolation.py`) prove isolation behaviorally.
+  **Requirement:** Slo must be installed (editable installs supported) in the
+  interpreter that launches managed agents — a bare source checkout on cwd or
+  `PYTHONPATH` is no longer sufficient for `-I` launches (`docs/INSTALL.md`).
+
+### Changed
+
+- **Orchestration skills relocated to their own group** (`55e78ca`, spec 95).
+  Six orchestration resources (`orchestrator`, `headless-orchestration`,
+  `workflows`, and the three workflow files `code-test-review.md`,
+  `gitlab-code-test-review.md`, `specification-development.md`) moved from
+  `skills/design-and-analysis/` to `skills/orchestration/`. Skill names and the
+  bundled → user-skill → user-workflow override precedence are unchanged; the
+  registry (`src/agents/skills/registry.py`) gained an `Orchestration` group
+  between Design-and-Analysis and Coding, and `skills/INDEX.md`, runtime prompt
+  paths, and wheel-content expectations were updated. Old
+  `skills/design-and-analysis/` paths no longer exist — update any external
+  references.
+- **Headless-orchestration guidance made explicit about reasoning**
+  (`55e78ca`). The skill now separates the managed orchestrator's own
+  `reasoning_level` from per-child `reasoning_level` task fields (the task key
+  is `reasoning_level`, not `reasoning`; the orchestrator never forwards its
+  own reasoning to children), uses native `tasks` arrays with canonical
+  lowercase values, documents model-policy clamping semantics (requested vs
+  effective recorded separately), exposes schema/version/resume limits
+  (`/workflows resume` forwards neither model nor reasoning overrides), and
+  keeps the `/workflows abort`-never-`pkill` stop contract.
+- **Evidence-gated workflow progression replaces confirmation-mode selection**
+  (`55e78ca`). The named workflows now advance only on verified phase artifacts
+  and verdicts with required independent review and completion checks; process
+  completion or a clean exit alone is not acceptance. External-action authority
+  (commit/push/merge) is unchanged — shipping guidance grants no implicit
+  commit, push, or merge.
+- **Context-gathering and design guidance generalized** (`55e78ca`).
+  `gather-feature-context` is now language-aware for Python, Go, and TypeScript
+  with framework-neutral tracing, source-availability checks, verified schemas,
+  and evidence-backed behavior maps. `solution-design` requires domain-first
+  contracts, complete vertical journeys (interfaces, migrations, layered
+  verification) rather than horizontal slices.
+
+### Migration notes
+
+- **No data, history, credential, or config migration is required.** No
+  persistence layout changed; existing sessions, handles, and stores are
+  untouched.
+- **`launch_workflow` callers:** an invalid `reasoning_level` or unknown field
+  now returns a validation-error JSON instead of being silently accepted; use
+  canonical lowercase literals (`off` … `max`), not aliases.
+- **Managed launch isolation:** a running session's managed children must find
+  Slo importable in the parent interpreter independent of cwd/`PYTHONPATH`.
+  Development checkouts need an editable install (`poetry install`), not just a
+  source directory.
+- **Skill paths:** external tooling or docs referencing
+  `skills/design-and-analysis/{orchestrator,headless-orchestration,workflows}/`
+  must be updated to `skills/orchestration/`.
+
 ## [0.21.2] — 2026-10-13
 
 ### Added

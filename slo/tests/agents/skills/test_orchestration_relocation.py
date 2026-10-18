@@ -50,7 +50,7 @@ def test_registry_group_order_and_documented_roster() -> None:
     assert rendered.index("### Design and Analysis") < rendered.index("### Orchestration")
     assert rendered.index("### Orchestration") < rendered.index("### Coding")
     text = (ROOT / "AGENTS.md").read_text()
-    assert "186 skills across 14 groups" in text
+    assert f"{len(entries)} skills across 14 groups" in text
 
 
 @pytest.mark.parametrize("name", NAMES)

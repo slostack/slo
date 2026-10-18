@@ -163,6 +163,14 @@ This concise index points maintainers to the runtime owners most relevant to Fea
   non-code families such as presentation. No `SLO_CODE_PROMPTS_DIR` is needed.
 - This is development-time maintenance only; runtime discovery and user override
   behavior remain unchanged. Regression coverage: `tests/agents/skills/test_refresh_skills.py`.
+- `skills/design-and-analysis/explain-with-html/SKILL.md` owns programmer-facing
+  functionality explanations: mandatory `solution-design`, `coding-rules`, and
+  `code-design-principles` reading before HTML design; one concept per section;
+  domain ownership and control-flow diagrams; final domain-type, interface, and
+  numbered code-journey sections. Existing source and proposed contracts remain
+  distinct. It composes with `present-as-single-page`, without changing runtime
+  behavior. Discovery, prerequisite links, section/code requirements, and generated
+  index freshness are covered by `tests/agents/skills/test_design_skill_additions.py`.
 
 ## Orchestrator limits
 

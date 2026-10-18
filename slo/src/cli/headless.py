@@ -38,6 +38,7 @@ from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
 from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.orchestrator.dao import (
     TERMINAL_KIND_TO_HEADLESS_LIFECYCLE,
+    ChildControlCapabilityDAO,
     SubAgentResultDAO,
     SubAgentStatusDAO,
     build_cleanup_summary,
@@ -45,6 +46,7 @@ from src.agents.slo_agent.orchestrator.dao import (
     project_fleet_entries,
     run_state_for_terminal_kind,
 )
+from src.agents.slo_agent.orchestrator.child_abort import ChildAbortController, ChildAbortStore
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
@@ -130,6 +132,7 @@ class HeadlessRunner:
         self._status_store: Optional[OrchestratorStatusStore] = None
         self._abort_reason: Optional[str] = None
         self._abort_requested: Optional[asyncio.Event] = None
+        self._child_control: Optional[ChildAbortController] = None
 
     async def invoke(self, *, prompt: str) -> int:
         """Run one prompt, releasing its private capture after terminal cleanup.
@@ -224,14 +227,18 @@ class HeadlessRunner:
         )
         watchdog.start()
         try:
+            await self._start_child_control()
             await self._drain_session_stream_until_abort(session=session, prompt=prompt)
         except Exception as exc:
             if not self._terminal_received:
                 await self._emit(AgentStreamEventDAO(kind="run_failed", content=str(exc)))
         finally:
-            watchdog.stop()
-            self._restore_sigterm_handler(previous=previous_sigterm)
-            await self._shutdown_model_catalog()
+            try:
+                await self._close_child_control()
+            finally:
+                watchdog.stop()
+                self._restore_sigterm_handler(previous=previous_sigterm)
+                await self._shutdown_model_catalog()
         self._write_orphan_status_if_needed(session_id=session.session_id)
         await self._write_terminal_status()
         await self._notify_terminal()
@@ -621,6 +628,78 @@ class HeadlessRunner:
         if pool is None:
             return
         await pool.abort_and_drain()
+
+    async def _start_child_control(self) -> None:
+        """Publish child control for this run when an explicit launch owner exists.
+
+        WHAT: Builds the controller from the attached pool and starts it. A
+            composition failure (a pool identity that fails validation, such as
+            an unsafe launch owner) or a publication failure is a fixed
+            diagnostic: execution continues with child control unavailable, and
+            no accepting capability exists.
+        WHO: Called by ``_invoke`` after pool and notifier setup.
+        WHEN: Once, immediately before the session stream starts.
+        """
+        try:
+            self._child_control = self._build_child_control()
+            if self._child_control is not None:
+                await self._child_control.start()
+        except (OSError, ValueError):
+            self._child_control = None
+            log_warning(msg="child_control_unavailable")
+
+    def _build_child_control(self) -> Optional[ChildAbortController]:
+        """Compose the runner-owned controller, or None when this run has no owner context.
+
+        WHAT: Binds the store to the pool's own history root and the accepting
+            capability to the pool's immutable run, owner and parent identity.
+            The owner comes from the ``--notify-session`` launch context bound at
+            attach time, never from a request.
+        WHO: Called by ``_start_child_control``.
+        WHEN: Once per run, after orchestrator attach.
+
+        Returns:
+            Optional[ChildAbortController]: Unstarted controller, or None for a plain
+                run or a run without an explicit launch owner.
+        """
+        pool: Optional[SubAgentPool] = self._attached_pool()
+        if pool is None or self._notify_session_id is None:
+            return None
+        capability: ChildControlCapabilityDAO = pool.child_control_capability().model_copy(
+            update={"accepting": True}
+        )
+        return ChildAbortController(
+            pool=pool,
+            store=ChildAbortStore(
+                history_root=pool.history_root, orchestrator_session_id=capability.orchestrator_session_id
+            ),
+            capability=capability,
+        )
+
+    async def _close_child_control(self) -> None:
+        """Join child-control shutdown to completion, even across repeated cancellation.
+
+        WHAT: Withdraws the capability, stops polling, joins accepted child
+            operations and flushes receipts. A cancellation of this runner while
+            waiting is deferred until shutdown completes, then re-raised.
+        WHO: Called from ``_invoke``'s ``finally`` on success, error and cancellation.
+        WHEN: Before ``_write_terminal_status`` drains the fleet.
+
+        Raises:
+            asyncio.CancelledError: The runner was cancelled while shutdown was joined.
+        """
+        if self._child_control is None:
+            return
+        closing: asyncio.Future[None] = asyncio.ensure_future(self._child_control.close())
+        interrupted: bool = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                interrupted = True
+        closing.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
     def _attached_pool(self) -> Optional[SubAgentPool]:
         """Return the bootstrap-attached pool when this session owns one.

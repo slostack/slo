@@ -222,6 +222,18 @@ class SubAgentPool:
         """Return the immutable UUID of this pool composition."""
         return self._run_id
 
+    @property
+    def history_root(self) -> Path:
+        """Return the history root bound by the composition root.
+
+        WHO: HeadlessRunner, to bind its ChildAbortStore to the same root as the
+            fleet and child files of this pool.
+
+        Returns:
+            Path: Immutable history root of this pool.
+        """
+        return self._history_root
+
     def attached_dispatch_snapshot(self) -> AttachedDispatchSnapshotDAO:
         """Return the latest admitted batch's entries for session observers.
 

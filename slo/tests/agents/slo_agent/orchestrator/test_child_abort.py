@@ -540,6 +540,10 @@ class TestAbortChildRefusals:
         harness.pool._sealed = True
         assert harness.pool.child_control_capability().accepting is False
 
+    def test_history_root_is_the_composed_root(self, tmp_path: Path) -> None:
+        """The runner binds its child-control store to the pool's own history root."""
+        assert _PoolHarness(tmp_path=tmp_path).pool.history_root == tmp_path
+
 
 class TestAbortChildExecution:
     """Pending and running targets stop alone; the pool stays unsealed and dispatchable."""

@@ -803,6 +803,24 @@ class TestChildControlDAOs:
         assert len(set(messages.values())) == len(outcomes)
         assert messages["unavailable"] == "Child abort unavailable for this run."
 
+    @pytest.mark.parametrize("durability_warning", [False, True])
+    def test_admitted_outcome_is_requested_with_fixed_durability_notice(
+        self, durability_warning: bool
+    ) -> None:
+        """A committed request is ``requested``; an unconfirmed fsync only changes the fixed notice."""
+        request = ChildAbortRequestDAO.model_validate(self._request_payload())
+        plain_message: str = ChildAbortOutcomeDAO.for_request(
+            request=request, outcome="requested"
+        ).safe_message
+
+        dao: ChildAbortOutcomeDAO = ChildAbortOutcomeDAO.admitted(
+            request=request, durability_warning=durability_warning
+        )
+
+        assert (dao.request_id, dao.outcome, dao.terminal_status) == (_REQUEST_ID, "requested", None)
+        assert (dao.safe_message == plain_message) is not durability_warning
+        assert ("durability" in dao.safe_message) is durability_warning
+
     def test_capability_validates_identity(self) -> None:
         """Capabilities carry strict run identity and an accepting flag."""
         capability: ChildControlCapabilityDAO = ChildControlCapabilityDAO(

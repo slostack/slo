@@ -307,6 +307,58 @@ class OrchestrationLayout:
         )
 
     @classmethod
+    def child_abort_requests_dir(
+        cls, *, history_root: Path, orchestrator_session_id: str, run_id: str
+    ) -> Path:
+        """Return one run's child-abort requests directory.
+
+        WHO: ChildAbortStore admission and the controller's bounded pending scan.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+            run_id (str): Canonical runner invocation UUID.
+
+        Returns:
+            Path: Canonical ``<run_id>/requests`` directory.
+
+        Raises:
+            ValueError: If any identity is unsafe or not a canonical UUID.
+        """
+        return cls._child_control_run_kind_dir(
+            history_root=history_root,
+            orchestrator_session_id=orchestrator_session_id,
+            run_id=run_id,
+            kind="requests",
+        )
+
+    @classmethod
+    def child_abort_receipts_dir(
+        cls, *, history_root: Path, orchestrator_session_id: str, run_id: str
+    ) -> Path:
+        """Return one run's child-abort receipts directory.
+
+        WHO: ChildAbortStore receipt reads and writes.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Session ID of the orchestrator.
+            run_id (str): Canonical runner invocation UUID.
+
+        Returns:
+            Path: Canonical ``<run_id>/receipts`` directory.
+
+        Raises:
+            ValueError: If any identity is unsafe or not a canonical UUID.
+        """
+        return cls._child_control_run_kind_dir(
+            history_root=history_root,
+            orchestrator_session_id=orchestrator_session_id,
+            run_id=run_id,
+            kind="receipts",
+        )
+
+    @classmethod
     def child_abort_request_path(
         cls, *, history_root: Path, orchestrator_session_id: str, run_id: str, request_id: str
     ) -> Path:
@@ -324,13 +376,10 @@ class OrchestrationLayout:
         Raises:
             ValueError: If any identity is unsafe or not a canonical UUID.
         """
-        return cls._child_control_run_file(
-            history_root=history_root,
-            orchestrator_session_id=orchestrator_session_id,
-            run_id=run_id,
-            kind="requests",
-            request_id=request_id,
+        requests_dir: Path = cls.child_abort_requests_dir(
+            history_root=history_root, orchestrator_session_id=orchestrator_session_id, run_id=run_id
         )
+        return requests_dir / f"{canonical_uuid(value=request_id)}.json"
 
     @classmethod
     def child_abort_receipt_path(
@@ -350,29 +399,25 @@ class OrchestrationLayout:
         Raises:
             ValueError: If any identity is unsafe or not a canonical UUID.
         """
-        return cls._child_control_run_file(
-            history_root=history_root,
-            orchestrator_session_id=orchestrator_session_id,
-            run_id=run_id,
-            kind="receipts",
-            request_id=request_id,
+        receipts_dir: Path = cls.child_abort_receipts_dir(
+            history_root=history_root, orchestrator_session_id=orchestrator_session_id, run_id=run_id
         )
+        return receipts_dir / f"{canonical_uuid(value=request_id)}.json"
 
     @classmethod
-    def _child_control_run_file(
-        cls, *, history_root: Path, orchestrator_session_id: str, run_id: str, kind: str, request_id: str
+    def _child_control_run_kind_dir(
+        cls, *, history_root: Path, orchestrator_session_id: str, run_id: str, kind: str
     ) -> Path:
-        """Build one request or receipt path below a validated run directory.
+        """Build the requests or receipts directory below a validated run directory.
 
         Args:
             history_root (Path): Root containing session history directories.
             orchestrator_session_id (str): Session ID of the orchestrator.
             run_id (str): Canonical runner invocation UUID.
             kind (str): ``requests`` or ``receipts``.
-            request_id (str): Canonical request UUID.
 
         Returns:
-            Path: Run-scoped JSON path for the request identity.
+            Path: Run-scoped directory for that kind.
 
         Raises:
             ValueError: If any identity is unsafe or not a canonical UUID.
@@ -380,4 +425,4 @@ class OrchestrationLayout:
         control_dir: Path = cls.child_control_dir(
             history_root=history_root, orchestrator_session_id=orchestrator_session_id
         )
-        return control_dir / canonical_uuid(value=run_id) / kind / f"{canonical_uuid(value=request_id)}.json"
+        return control_dir / canonical_uuid(value=run_id) / kind

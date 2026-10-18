@@ -213,6 +213,34 @@ break:
   winner is aborted. Outcome text comes from
   `ChildAbortOutcomeDAO.for_request`, never from exception text.
 
+### Durable child-control protocol (feature 94 a.4, T10)
+
+A detached TUI reaches the owning pool only through files under
+`<parent>/child-control.v1/`. `ChildAbortStore` (`orchestrator/child_abort.py`)
+is a file adapter; `ChildAbortController` is the runner-owned consumer.
+
+- **Admission boundary.** `submit` returns `requested` only after the atomic
+  commit. A durability warning still means requested
+  (`ChildAbortOutcomeDAO.admitted`), so callers never resubmit.
+- **One run-scoped lock.** Capability recheck, immutable-ID check and the
+  256-request capacity count all happen under `<run_id>/admission.lock`. An
+  identical duplicate stays idempotent even at capacity. A conflicting payload
+  or a malformed file with that ID is refused and never overwritten.
+- **No-follow walk.** Every open is descriptor-relative with `O_NOFOLLOW` from
+  the trusted history root. Before each write the store proves the path still
+  names the held directory. Readers never mkdir or chmod. A TUI writer never
+  creates the control directory; only the runner's capability write does.
+- **Consumption.** The poll runs every `POLL_INTERVAL_SECONDS` (1.0) on its own
+  task, so a blocked dispatch never delays it. Each request ID gets one tracked
+  operation. A receipt-write failure retries only the write on later ticks. A
+  decodable request naming another run or parent gets an `unavailable` receipt
+  and never executes. Unaddressable files are skipped with no receipt.
+- **Lifecycle.** `HeadlessRunner` starts the controller only for an attached
+  pool with an explicit `--notify-session` owner. A start failure logs
+  `child_control_unavailable` and the run continues. `_close_child_control`
+  joins shutdown even across repeated cancellation, before the final fleet
+  drain. A fresh pool `run_id` per invocation means old requests never execute.
+
 ## Runtime path
 
 ```text

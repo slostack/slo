@@ -113,6 +113,7 @@ slo/
 │   │   │   │   ├── spawn_env.py        # Shared allowlisted headless-child env and capture opener
 │   │   │   │   ├── process.py          # SubAgentProcess — child spawn, stream relay, captures
 │   │   │   │   ├── pool.py             # SubAgentPool — bounded sub-agent dispatch
+│   │   │   │   ├── child_abort.py      # ChildAbortStore (versioned request/receipt files) + runner ChildAbortController
 │   │   │   │   ├── launch_tool.py      # launch_workflow — detached orchestrator spawn
 │   │   │   │   ├── relaunch.py          # WorkflowRelauncher — resume a dead detached workflow
 │   │   │   │   └── workflow_registry.py # WorkflowHandleStore and workflow commands
@@ -798,9 +799,18 @@ tree.json       # SessionTreeDAO — turn-grouped event tree (new default)
 transcript.md   # derived; not authoritative
 orchestrator.json # detached-orchestrator self-report when applicable
 fleet.json        # durable child fleet projection when applicable
-abort_request.json # TUI-to-orchestrator abort channel when applicable
+abort_request.json # TUI-to-orchestrator whole-workflow abort channel when applicable
+child-control.v1/capability.json # runner child-abort capability (accepting while its controller runs)
+child-control.v1/<run_id>/{requests,receipts}/<request_id>.json # one child's abort request / settled receipt
 children/<child_session_id>/status.json # child terminal result when applicable
 ```
+
+Child abort never uses `abort_request.json` (an older runner would abort the whole
+workflow). `ChildAbortStore` owns bounded no-follow reads, immutable request IDs and
+the 256-request run capacity under a run-scoped `admission.lock`; `HeadlessRunner`
+starts `ChildAbortController` only for an attached pool with an explicit
+`--notify-session` owner and closes it before the final fleet drain. Requests and
+receipts are private audit state: never deleted, backfilled or migrated.
 
 The legacy flat store (`FilesystemSessionHistoryStore`) uses `events.jsonl` instead of
 `tree.json`. Both stores satisfy `SessionHistoryStoreProtocol` (`history/store_protocol.py`).

@@ -109,6 +109,22 @@ def test_layout_child_control_paths() -> None:
     ) == Path(f"/history/parent/child-control.v1/{_RUN_ID}/receipts/{_REQUEST_ID}.json")
 
 
+def test_layout_child_control_run_directories() -> None:
+    """Request and receipt directories are the parents of their file paths."""
+    root: Path = Path("/history")
+
+    assert OrchestrationLayout.child_abort_requests_dir(
+        history_root=root, orchestrator_session_id="parent", run_id=_RUN_ID
+    ) == Path(f"/history/parent/child-control.v1/{_RUN_ID}/requests")
+    assert OrchestrationLayout.child_abort_receipts_dir(
+        history_root=root, orchestrator_session_id="parent", run_id=_RUN_ID
+    ) == Path(f"/history/parent/child-control.v1/{_RUN_ID}/receipts")
+    with pytest.raises(ValueError):
+        OrchestrationLayout.child_abort_requests_dir(
+            history_root=root, orchestrator_session_id="parent", run_id="../escape"
+        )
+
+
 @pytest.mark.parametrize("unsafe", ["", "..", "../x", "a/b", "a\\b"])
 def test_layout_new_paths_reject_unsafe_session_ids(unsafe: str) -> None:
     """Traversal or separator identities never reach a filesystem join."""

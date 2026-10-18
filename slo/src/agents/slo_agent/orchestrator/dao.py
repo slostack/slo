@@ -1007,9 +1007,31 @@ class ChildAbortOutcomeDAO(_ChildControlIdentity):
             safe_message=_CHILD_ABORT_MESSAGES[outcome],
         )
 
+    @classmethod
+    def admitted(cls, *, request: ChildAbortRequestDAO, durability_warning: bool) -> "ChildAbortOutcomeDAO":
+        """Build the ``requested`` acknowledgement for a durably committed request.
+
+        WHAT: A commit whose directory fsync could not be confirmed is still
+            admitted; only the fixed notice changes, so callers never resubmit.
+        WHO: ChildAbortStore.submit after its atomic request commit.
+        WHEN: Once per committed (or idempotently repeated) request.
+
+        Args:
+            request (ChildAbortRequestDAO): Committed request.
+            durability_warning (bool): True when the commit's durability is unconfirmed.
+
+        Returns:
+            ChildAbortOutcomeDAO: Admission outcome bound to the request identity.
+        """
+        message_key: str = "requested_durability_unconfirmed" if durability_warning else "requested"
+        return cls.for_request(request=request, outcome="requested").model_copy(
+            update={"safe_message": _CHILD_ABORT_MESSAGES[message_key]}
+        )
+
 
 _CHILD_ABORT_MESSAGES: dict[str, str] = {
     "requested": "Abort requested; waiting for the orchestrator to confirm.",
+    "requested_durability_unconfirmed": "Abort requested; durability not confirmed. Do not resubmit.",
     "aborted": "Child aborted.",
     "already_terminal": "Child already finished; nothing was aborted.",
     "not_owned": "Child is not owned by this run; nothing was aborted.",

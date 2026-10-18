@@ -1607,3 +1607,438 @@ class TestUnexpectedErrorsPropagate:
 
         with pytest.raises(RuntimeError, match="bug"):
             await service.load_session_progress(key=_CHILD_1)
+
+
+# ---------------------------------------------------------------------------
+# Feature 94 a.5 (T13): clearing finished groups from the list
+# ---------------------------------------------------------------------------
+
+_HANDLE_DONE: WorkflowHandleDAO = _handle(
+    workflow_id="wf-b", orchestrator_session_id=_ORCH_B, state="completed", hour=13
+)
+_OWNER_PARENT: WorkflowSessionKeyDAO = _key(orchestrator_session_id=_OWNER, session_id=_OWNER)
+
+
+class _ListFixture:
+    """A mixed list: finished attached batch, running wf-a and finished wf-b."""
+
+    def __init__(self, *, service: DetachedWorkflowAppService, supplier: _Supplier) -> None:
+        """Hold the service and its attached supplier.
+
+        Args:
+            service (DetachedWorkflowAppService): Service under test.
+            supplier (_Supplier): Attached supplier the test may advance.
+        """
+        self.service: DetachedWorkflowAppService = service
+        self.supplier: _Supplier = supplier
+
+    def seed_loaders(self, *, child_b_status: str = "completed") -> None:
+        """Install recording loaders for the owner and both detached groups.
+
+        Args:
+            child_b_status (str, optional): Status of wf-b's child. Defaults to ``"completed"``.
+        """
+        loaders: dict[str, _FakeLoader] = {
+            _OWNER: _FakeLoader(groups=[_group(parent=_OWNER)]),
+            _ORCH_A: _FakeLoader(groups=[_group(parent=_ORCH_A, children=(_child(session_id="child-a"),))]),
+            _ORCH_B: _FakeLoader(
+                groups=[
+                    _group(parent=_ORCH_B, children=(_child(session_id="child-b", status=child_b_status),))
+                ]
+            ),
+        }
+        self.service._loaders.update(loaders)  # type: ignore[arg-type]
+
+    async def visible_groups(self) -> list[str]:
+        """Refresh once and return the orchestrator ids of the visible groups, in order.
+
+        Returns:
+            list[str]: Distinct orchestrator ids of the fresh snapshot.
+        """
+        snapshot: WorkflowSessionSnapshotDAO = await self.service.load_session_snapshot()
+        return list(dict.fromkeys(row.key.orchestrator_session_id for row in snapshot.rows))
+
+
+async def _mixed_list(
+    *, files: _Files, attached_statuses: tuple[str, ...] = ("completed", "failed")
+) -> _ListFixture:
+    """Seed real handles, recording loaders and an attached batch, then take one snapshot.
+
+    Args:
+        files (_Files): Real temporary root.
+        attached_statuses (tuple[str, ...], optional): Attached child statuses.
+
+    Returns:
+        _ListFixture: Fixture whose last committed snapshot holds all three groups.
+    """
+    await files.handle(handle=_HANDLE_A)
+    await files.handle(handle=_HANDLE_DONE)
+    entries: tuple[SubAgentStatusDAO, ...] = tuple(
+        _entry(session_id=f"child-{index}", status=status) for index, status in enumerate(attached_statuses)
+    )
+    supplier = _Supplier(snapshot=_attached(entries=entries))
+    fixture = _ListFixture(service=_service(root=files.root, supplier=supplier), supplier=supplier)
+    fixture.seed_loaders()
+    assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+    return fixture
+
+
+def _row(
+    *, orchestrator: str, session: str, status: str, availability: str = "available"
+) -> WorkflowSessionRowDAO:
+    """Build one display row for the isolated finished-group predicate.
+
+    Args:
+        orchestrator (str): Group orchestrator id.
+        session (str): Row session id.
+        status (str): Last known status.
+        availability (str, optional): Row freshness. Defaults to ``"available"``.
+
+    Returns:
+        WorkflowSessionRowDAO: Row fixture.
+    """
+    return WorkflowSessionRowDAO(
+        key=_key(orchestrator_session_id=orchestrator, session_id=session),
+        role="orchestrator" if orchestrator == session else "child",
+        status=status,
+        task_text="task",
+        task_text_complete=True,
+        availability=availability,  # type: ignore[arg-type]
+    )
+
+
+class TestGroupIsFinished:
+    """``_group_is_finished`` reuses the shared terminal-status owner; unknown is not finished."""
+
+    @pytest.mark.parametrize(
+        ("statuses", "availability", "finished"),
+        [
+            (("completed", "completed", "failed"), "available", True),
+            (("aborted", "aborted"), "available", True),
+            (("completed", "running"), "available", False),
+            (("running", "completed"), "available", False),
+            (("completed", "pending"), "available", False),
+            (("completed", "unknown"), "available", False),
+            (("stalled",), "available", False),
+            (("launching",), "available", False),
+            (("completed", "completed"), "stale", True),
+            (("completed", "unknown"), "unavailable", False),
+        ],
+        ids=[
+            "all-terminal",
+            "aborted",
+            "child-running",
+            "parent-running",
+            "child-pending",
+            "unknown-status",
+            "stalled-parent",
+            "launching-parent",
+            "stale-terminal",
+            "unavailable-unknown",
+        ],
+    )
+    def test_classification(self, statuses: tuple[str, ...], availability: str, finished: bool) -> None:
+        """Finished means every row (parent and children) has a terminal last known status."""
+        rows: tuple[WorkflowSessionRowDAO, ...] = tuple(
+            _row(
+                orchestrator=_ORCH_A,
+                session=_ORCH_A if index == 0 else f"child-{index}",
+                status=status,
+                availability=availability,
+            )
+            for index, status in enumerate(statuses)
+        )
+
+        assert DetachedWorkflowAppService._group_is_finished(rows=rows) is finished
+
+
+class TestDismissFromList:
+    """``dismiss_from_list``: in-memory suppression of finished groups only (94.a.5)."""
+
+    async def test_clear_all_hides_finished_groups_and_keeps_running(self, files: _Files) -> None:
+        """Acceptance 1: the finished attached and detached groups go; the running one stays."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+
+        outcome = fixture.service.dismiss_from_list(target_id=None)
+
+        assert (outcome.cleared, outcome.still_running) == ((_OWNER, "wf-b"), 1)
+        assert outcome.rendered == "cleared 2 finished workflow group(s) from the list; 1 still running"
+        assert {key.orchestrator_session_id for key in fixture.service._rows} == {_ORCH_A}
+        assert await fixture.visible_groups() == [_ORCH_A]
+
+    async def test_nothing_finished_changes_nothing(self, files: _Files) -> None:
+        """With no finished group the outcome says so and membership is untouched."""
+        fixture: _ListFixture = await _mixed_list(files=files, attached_statuses=("running",))
+        fixture.seed_loaders(child_b_status="running")
+        await fixture.visible_groups()
+        rows_before = dict(fixture.service._rows)
+
+        outcome = fixture.service.dismiss_from_list(target_id=None)
+
+        assert outcome.rendered == "no finished workflow groups to clear"
+        assert (outcome.cleared, outcome.still_running) == ((), 3)
+        assert fixture.service._rows == rows_before
+        assert fixture.service._dismissed == set()
+
+    async def test_empty_list_has_nothing_to_clear(self) -> None:
+        """A service with no committed rows (including no-history) clears nothing."""
+        service: DetachedWorkflowAppService = _service(root=None)
+
+        outcome = service.dismiss_from_list(target_id=None)
+
+        assert outcome.rendered == "no finished workflow groups to clear"
+
+    async def test_attached_suppression_is_keyed_by_dispatch(self, files: _Files) -> None:
+        """The hidden batch stays hidden for its dispatch and a new dispatch shows normally."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+        fixture.service.dismiss_from_list(target_id=_OWNER)
+
+        assert await fixture.visible_groups() == [_ORCH_A, _ORCH_B]
+        assert await fixture.visible_groups() == [_ORCH_A, _ORCH_B]
+        fixture.supplier.snapshot = _attached(
+            entries=(_entry(session_id="child-new"),), dispatch_id=_DISPATCH_2, sequence=2
+        )
+
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+
+    @pytest.mark.parametrize(
+        "grown",
+        [
+            (
+                _entry(session_id="child-0", status="completed"),
+                _entry(session_id="step-2", execution_id=_EXEC_B),
+            ),
+            (_entry(session_id="child-0", status="completed", execution_id=_EXEC_B),),
+        ],
+        ids=["chain-step-registers", "new-incarnation"],
+    )
+    async def test_same_dispatch_new_member_releases_suppression(
+        self, files: _Files, grown: tuple[SubAgentStatusDAO, ...]
+    ) -> None:
+        """A chain step registering in the hidden dispatch re-shows the batch while it runs."""
+        fixture: _ListFixture = await _mixed_list(files=files, attached_statuses=("completed",))
+        assert fixture.service.dismiss_from_list(target_id=_OWNER).cleared == (_OWNER,)
+        assert await fixture.visible_groups() == [_ORCH_A, _ORCH_B]
+
+        fixture.supplier.snapshot = _attached(entries=grown)
+        member: WorkflowSessionKeyDAO = _key(orchestrator_session_id=_OWNER, session_id=grown[-1].session_id)
+
+        assert fixture.service._current_attached_row(key=member) is not None
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+        assert fixture.service._hidden_attached_batch is None
+        assert member in fixture.service._rows
+        fixture.supplier.snapshot = _attached(entries=(_entry(session_id="child-0", status="completed"),))
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+
+    async def test_hidden_batch_judged_from_older_members_commits_grown_batch(self, files: _Files) -> None:
+        """A refresh that captured a grown batch before the command still commits it visibly."""
+        await files.handle(handle=_HANDLE_A)
+        supplier = _Supplier(snapshot=_attached(entries=(_entry(session_id="step-1", status="completed"),)))
+        fixture = _ListFixture(service=_service(root=files.root, supplier=supplier), supplier=supplier)
+        fixture.seed_loaders()
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A]
+        supplier.snapshot = _attached(
+            entries=(
+                _entry(session_id="step-1", status="completed"),
+                _entry(session_id="step-2", execution_id=_EXEC_B),
+            )
+        )
+        blocking = _BlockingLoader(group=_group(parent=_ORCH_A, children=(_child(session_id="child-a"),)))
+        fixture.service._loaders[_ORCH_A] = blocking  # type: ignore[assignment]
+        task: asyncio.Task[WorkflowSessionSnapshotDAO] = asyncio.create_task(
+            fixture.service.load_session_snapshot()
+        )
+        await blocking.entered.wait()
+
+        fixture.service.dismiss_from_list(target_id=_OWNER)
+        blocking.release.set()
+        snapshot: WorkflowSessionSnapshotDAO = await task
+
+        assert [row.key.session_id for row in snapshot.rows if row.key.orchestrator_session_id == _OWNER] == [
+            _OWNER,
+            "step-1",
+            "step-2",
+        ]
+
+    async def test_detached_suppression_survives_refresh_until_resume(self, files: _Files) -> None:
+        """A hidden detached group stays hidden across polls; a successful resume re-shows it."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+        outcome = fixture.service.dismiss_from_list(target_id="wf-b")
+
+        assert outcome.rendered == "cleared workflow wf-b from the list"
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A]
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A]
+        fixture.service.resume_group(workflow_id="wf-b")
+        fixture.seed_loaders()
+
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+
+    @pytest.mark.parametrize("target_id", ["wf-b", _ORCH_B], ids=["workflow-id", "parent-session-id"])
+    async def test_target_by_workflow_or_session_id(self, files: _Files, target_id: str) -> None:
+        """A detached group is addressed by its workflow id or its parent session id."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+
+        outcome = fixture.service.dismiss_from_list(target_id=target_id)
+
+        assert (outcome.cleared, outcome.rendered) == (
+            ("wf-b",),
+            f"cleared workflow {target_id} from the list",
+        )
+        assert fixture.service._dismissed == {"wf-b"}
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A]
+
+    @pytest.mark.parametrize("target_id", ["wf-a", _ORCH_A], ids=["workflow-id", "parent-session-id"])
+    async def test_running_target_is_refused_and_changes_nothing(self, files: _Files, target_id: str) -> None:
+        """Acceptance 3: a running group is refused with the abort hint and stays put."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+        rows_before = dict(fixture.service._rows)
+        loaders_before = dict(fixture.service._loaders)
+
+        outcome = fixture.service.dismiss_from_list(target_id=target_id)
+
+        assert outcome.rendered == (
+            f"workflow {target_id} is still running — wait for it or use /workflows abort {target_id}"
+        )
+        assert (fixture.service._rows, fixture.service._loaders) == (rows_before, loaders_before)
+        assert (fixture.service._dismissed, fixture.service._hidden_attached_batch) == (set(), None)
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+
+    async def test_abort_pending_child_keeps_attached_group(self, files: _Files) -> None:
+        """A child still running (e.g. abort requested) keeps its whole group visible."""
+        fixture: _ListFixture = await _mixed_list(files=files, attached_statuses=("completed", "running"))
+
+        outcome = fixture.service.dismiss_from_list(target_id=_OWNER)
+
+        assert outcome.refused_running == _OWNER
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+
+    @pytest.mark.parametrize(
+        "target_id", ["wf-zz", "child-a", "orch-x"], ids=["unknown", "child-id", "other"]
+    )
+    async def test_unknown_target(self, files: _Files, target_id: str) -> None:
+        """An id naming no group in the list (a child id included) changes nothing."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+
+        outcome = fixture.service.dismiss_from_list(target_id=target_id)
+
+        assert outcome.rendered == f"no workflow {target_id} in the list"
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_A, _ORCH_B]
+
+    async def test_already_hidden_target_is_not_in_the_list(self, files: _Files) -> None:
+        """Hiding the same group twice reports it as absent the second time."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+        fixture.service.dismiss_from_list(target_id="wf-b")
+
+        outcome = fixture.service.dismiss_from_list(target_id="wf-b")
+
+        assert outcome.rendered == "no workflow wf-b in the list"
+
+    async def test_gateway_membership_and_caches_drop_hidden_groups(self, files: _Files) -> None:
+        """Rows, cached group rows and loaders of hidden groups are pruned; progress is removal."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+        loader_b = fixture.service._loaders[_ORCH_B]
+
+        fixture.service.dismiss_from_list(target_id=None)
+        attached_progress = await fixture.service.load_session_progress(key=_OWNER_PARENT)
+        detached_progress = await fixture.service.load_session_progress(
+            key=_key(orchestrator_session_id=_ORCH_B, session_id="child-b")
+        )
+
+        assert {key.orchestrator_session_id for key in fixture.service._rows} == {_ORCH_A}
+        assert set(fixture.service._group_rows) == {_ORCH_A}
+        assert _ORCH_B not in fixture.service._loaders and _OWNER not in fixture.service._loaders
+        assert (attached_progress.membership_removed, detached_progress.membership_removed) == (True, True)
+        assert loader_b.progress_rows == []  # type: ignore[attr-defined]
+
+    async def test_hidden_attached_row_is_not_current_membership(self, files: _Files) -> None:
+        """The gateway's attached re-read drops a hidden batch, so a stale key cannot resolve."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+        fixture.service.dismiss_from_list(target_id=_OWNER)
+
+        assert fixture.service._current_attached_row(key=_OWNER_PARENT) is None
+
+    async def test_refresh_in_flight_cannot_resurrect_hidden_groups(self, files: _Files) -> None:
+        """A snapshot that read hidden groups before the command still commits without them."""
+        await files.handle(
+            handle=_handle(workflow_id="wf-b", orchestrator_session_id=_ORCH_B, state="completed", hour=11)
+        )
+        await files.handle(handle=_HANDLE_A)
+        supplier = _Supplier(snapshot=_attached(entries=(_entry(session_id="child-1", status="completed"),)))
+        fixture = _ListFixture(service=_service(root=files.root, supplier=supplier), supplier=supplier)
+        fixture.seed_loaders()
+        assert await fixture.visible_groups() == [_OWNER, _ORCH_B, _ORCH_A]
+        blocking = _BlockingLoader(group=_group(parent=_ORCH_A, children=(_child(session_id="child-a"),)))
+        fixture.service._loaders[_ORCH_A] = blocking  # type: ignore[assignment]
+        task: asyncio.Task[WorkflowSessionSnapshotDAO] = asyncio.create_task(
+            fixture.service.load_session_snapshot()
+        )
+        await blocking.entered.wait()
+
+        fixture.service.dismiss_from_list(target_id=None)
+        blocking.release.set()
+        snapshot: WorkflowSessionSnapshotDAO = await task
+
+        assert {row.key.orchestrator_session_id for row in snapshot.rows} == {_ORCH_A}
+        assert {key.orchestrator_session_id for key in fixture.service._rows} == {_ORCH_A}
+
+    async def test_close_drops_all_suppression(self, files: _Files) -> None:
+        """Teardown and ``/new`` adoption drop both detached and attached suppression."""
+        fixture: _ListFixture = await _mixed_list(files=files)
+        fixture.service.dismiss_from_list(target_id=None)
+
+        await fixture.service.close()
+
+        assert (fixture.service._dismissed, fixture.service._hidden_attached_batch) == (set(), None)
+
+    async def test_clearing_writes_nothing_and_calls_no_abort(
+        self, files: _Files, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Acceptance 5: handle bytes and mtimes, store writes and abort seams are untouched."""
+        await files.handle(handle=_HANDLE_A)
+        await files.handle(handle=_HANDLE_DONE)
+        store_writes: list[str] = []
+        for method in ("write", "update_state", "reconcile", "delete"):
+            if hasattr(WorkflowHandleStore, method):
+                monkeypatch.setattr(
+                    WorkflowHandleStore,
+                    method,
+                    lambda *_a, _m=method, **_k: store_writes.append(_m),  # type: ignore[misc]
+                )
+        attached_abort: AsyncMock = AsyncMock()
+        supplier = _Supplier(snapshot=_attached(entries=(_entry(session_id="child-1", status="completed"),)))
+        service = DetachedWorkflowAppService(
+            workflow_handle_store=WorkflowHandleStore(history_root=files.root, pid_alive=lambda pid: False),
+            owner_session_id=_OWNER,
+            attached_snapshot=supplier,
+            history_store=FilesystemSessionHistoryStore(root=files.root),
+            attached_abort=attached_abort,
+        )
+        fixture = _ListFixture(service=service, supplier=supplier)
+        fixture.seed_loaders()
+        await fixture.visible_groups()
+        before: dict[str, tuple[bytes, int]] = _tree_state(root=files.root)
+
+        fixture.service.dismiss_from_list(target_id=None)
+        await fixture.visible_groups()
+        fixture.service.dismiss_from_list(target_id="wf-a")
+
+        assert _tree_state(root=files.root) == before
+        assert store_writes == []
+        attached_abort.assert_not_called()
+        assert fixture.service._abort_requests == {}
+
+
+def _tree_state(*, root: Path) -> dict[str, tuple[bytes, int]]:
+    """Snapshot every regular file's bytes and nanosecond mtime below ``root``.
+
+    Args:
+        root (Path): Directory to snapshot.
+
+    Returns:
+        dict[str, tuple[bytes, int]]: Relative path to (bytes, ``st_mtime_ns``).
+    """
+    return {
+        str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }

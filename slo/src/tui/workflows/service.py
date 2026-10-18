@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, List, Optional, Protocol
+from typing import TYPE_CHECKING, Callable, List, Optional, Protocol, TypeAlias
 from uuid import uuid4
 
 from config.logger import log_info, log_warning
@@ -48,6 +48,7 @@ from src.tui.workflows.dao import (
     ParsedWorkflowLifecycleMessageDAO,
     SessionProgressAvailability,
     SessionProgressSnapshotDAO,
+    WorkflowListDismissOutcomeDAO,
     WorkflowSessionKeyDAO,
     WorkflowSessionRowDAO,
     WorkflowSessionSnapshotDAO,
@@ -76,6 +77,9 @@ SESSION_REMOVED_NOTICE: str = "Session removed from current workflow."
 
 _ABORTABLE_STATUSES: frozenset[str] = frozenset({"pending", "running"})
 """Child statuses that may still be aborted; every other status is terminal or unknown."""
+
+_AttachedBatchMembers: TypeAlias = frozenset[tuple[str, str, str]]
+"""Identity of one attached batch: one (dispatch_id, session_id, execution_id) triple per row."""
 
 _READABLE_PROGRESS: frozenset[str] = frozenset({"available", "empty"})
 """Progress availabilities whose status comes from a fresh, readable source."""
@@ -123,7 +127,8 @@ class DetachedWorkflowAppService:
 
     Feature 94 adds owner-scoped observation to the same service: session-list
     snapshots of the attached batch plus owned detached groups, explicit
-    dismissal suppression, and the selected session's progress gateway.
+    dismissal suppression, in-memory clearing of finished groups (a.5), and
+    the selected session's progress gateway.
     Observation is read-only: it never reconciles, sweeps or advances durable
     state, and unreadable files are retained as stale, never treated as removal.
     """
@@ -176,8 +181,13 @@ class DetachedWorkflowAppService:
         self._group_rows: dict[str, tuple[WorkflowSessionRowDAO, ...]] = {}
         self._loaders: dict[str, WorkflowVisualizerLoader] = {}
         self._handles: dict[str, WorkflowHandleDAO] = {}
+        # Detached workflow ids hidden by /workflows dismiss or tui dismiss; resume clears one.
         self._dismissed: set[str] = set()
         self._attached_dispatch_id: str = ""
+        # Members of the attached batch hidden by tui dismiss; None hides nothing.
+        # A chain step registering in the same dispatch changes the members, so
+        # the batch shows again while that step runs; a new dispatch shows normally.
+        self._hidden_attached_batch: Optional[_AttachedBatchMembers] = None
         self._observation_notice: Optional[str] = None
         self._rows: dict[WorkflowSessionKeyDAO, WorkflowSessionRowDAO] = {}
         self._closed: bool = False
@@ -433,6 +443,7 @@ class DetachedWorkflowAppService:
             return WorkflowSessionSnapshotDAO()
         attached: AttachedDispatchSnapshotDAO = self._attached_snapshot()
         self._adopt_dispatch(attached=attached)
+        self._release_attached_suppression(attached=attached)
         attached_rows: tuple[WorkflowSessionRowDAO, ...] = await self._project_attached_group(
             attached=attached
         )
@@ -469,6 +480,7 @@ class DetachedWorkflowAppService:
         self._handles.clear()
         self._rows.clear()
         self._dismissed.clear()
+        self._hidden_attached_batch = None
 
     def dismiss_group(self, *, workflow_id: str) -> None:
         """Suppress one explicitly dismissed workflow group for this TUI lifetime.
@@ -486,21 +498,207 @@ class DetachedWorkflowAppService:
         handle: Optional[WorkflowHandleDAO] = self._handles.get(workflow_id)
         if handle is None:
             return
-        self._group_rows.pop(handle.orchestrator_session_id, None)
-        self._loaders.pop(handle.orchestrator_session_id, None)
-        self._rows = {
-            key: row
-            for key, row in self._rows.items()
-            if key.orchestrator_session_id != handle.orchestrator_session_id
-        }
+        self._forget_group(orchestrator_session_id=handle.orchestrator_session_id)
 
     def resume_group(self, *, workflow_id: str) -> None:
         """Clear observation suppression after an explicit successful resume.
+
+        Clears both a durable dismissal's and a ``tui dismiss`` suppression,
+        because both share ``_dismissed``.
 
         Args:
             workflow_id (str): Resumed workflow.
         """
         self._dismissed.discard(workflow_id)
+
+    def dismiss_from_list(self, *, target_id: Optional[str]) -> WorkflowListDismissOutcomeDAO:
+        """Hide finished groups from the session list for this TUI lifetime (feature 94 a.5).
+
+        WHAT: Classifies the groups of the last committed snapshot. Without a
+            target it hides every finished group; with one it hides that group
+            only when finished, else refuses it as running or unknown. Hiding is
+            in-memory observation suppression: it writes no handle or history,
+            signals nothing and never cancels or acknowledges an abort.
+        WHO: SloTUI, from a typed ``/workflows tui dismiss [<id>]`` slash result.
+        WHEN: Synchronously on the UI loop, before the app requests one coalesced
+            refresh; suppression lives until resume, a change of the attached batch's
+            members (a new dispatch or chain step) or ``close``.
+
+        Args:
+            target_id (Optional[str]): Detached workflow id or orchestrator session
+                id of one group; None clears every finished group.
+
+        Returns:
+            WorkflowListDismissOutcomeDAO: What was hidden or refused; it owns the
+                transcript line.
+        """
+        groups: dict[str, tuple[WorkflowSessionRowDAO, ...]] = self._committed_groups()
+        if target_id is None:
+            return self._clear_finished_groups(groups=groups)
+        return self._clear_named_group(groups=groups, target_id=target_id)
+
+    def _committed_groups(self) -> dict[str, tuple[WorkflowSessionRowDAO, ...]]:
+        """Group the committed membership by orchestrator, in list order.
+
+        Returns:
+            dict[str, tuple[WorkflowSessionRowDAO, ...]]: Rows per orchestrator id,
+                parent first; empty when nothing is listed.
+        """
+        groups: dict[str, list[WorkflowSessionRowDAO]] = {}
+        for row in self._rows.values():
+            groups.setdefault(row.key.orchestrator_session_id, []).append(row)
+        return {orchestrator: tuple(rows) for orchestrator, rows in groups.items()}
+
+    def _clear_finished_groups(
+        self, *, groups: dict[str, tuple[WorkflowSessionRowDAO, ...]]
+    ) -> WorkflowListDismissOutcomeDAO:
+        """Hide every finished group and count the ones still running.
+
+        Args:
+            groups (dict[str, tuple[WorkflowSessionRowDAO, ...]]): Committed groups.
+
+        Returns:
+            WorkflowListDismissOutcomeDAO: Untargeted outcome.
+        """
+        finished: list[tuple[WorkflowSessionRowDAO, ...]] = [
+            rows for rows in groups.values() if self._group_is_finished(rows=rows)
+        ]
+        return WorkflowListDismissOutcomeDAO(
+            cleared=tuple(self._hide_group(rows=rows) for rows in finished),
+            still_running=len(groups) - len(finished),
+        )
+
+    def _clear_named_group(
+        self, *, groups: dict[str, tuple[WorkflowSessionRowDAO, ...]], target_id: str
+    ) -> WorkflowListDismissOutcomeDAO:
+        """Hide the one named group if it is listed and finished.
+
+        Args:
+            groups (dict[str, tuple[WorkflowSessionRowDAO, ...]]): Committed groups.
+            target_id (str): Workflow id or orchestrator session id.
+
+        Returns:
+            WorkflowListDismissOutcomeDAO: Targeted clear, running refusal or unknown.
+        """
+        rows: Optional[tuple[WorkflowSessionRowDAO, ...]] = next(
+            (
+                rows
+                for orchestrator, rows in groups.items()
+                if target_id in (orchestrator, rows[0].workflow_id)
+            ),
+            None,
+        )
+        if rows is None:
+            return WorkflowListDismissOutcomeDAO(target_id=target_id, unknown=target_id)
+        if not self._group_is_finished(rows=rows):
+            return WorkflowListDismissOutcomeDAO(target_id=target_id, refused_running=target_id)
+        return WorkflowListDismissOutcomeDAO(target_id=target_id, cleared=(self._hide_group(rows=rows),))
+
+    @staticmethod
+    def _group_is_finished(*, rows: tuple[WorkflowSessionRowDAO, ...]) -> bool:
+        """Return whether every row's last known status is terminal.
+
+        Uses the shared ``TERMINAL_STATUSES`` owner, so pending, running (including
+        an abort still pending), stalled, launching and unknown are unfinished.
+        Stale and unavailable rows are judged by their last known status.
+
+        Args:
+            rows (tuple[WorkflowSessionRowDAO, ...]): One group's parent and children.
+
+        Returns:
+            bool: True when the whole group is terminal.
+        """
+        return all(row.status in TERMINAL_STATUSES for row in rows)
+
+    def _hide_group(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> str:
+        """Suppress one finished group and forget its cached observation.
+
+        Args:
+            rows (tuple[WorkflowSessionRowDAO, ...]): Committed rows of the group.
+
+        Returns:
+            str: The group's name in the outcome: its workflow id, or the owner
+                session id for the attached batch.
+        """
+        row: WorkflowSessionRowDAO = rows[0]
+        self._forget_group(orchestrator_session_id=row.key.orchestrator_session_id)
+        if row.workflow_id is None:
+            # Only the owner's attached batch lacks a workflow id; its suppression
+            # holds only while the batch keeps exactly the members judged finished.
+            self._hidden_attached_batch = self._batch_members(rows=rows)
+            return row.key.orchestrator_session_id
+        self._dismissed.add(row.workflow_id)
+        return row.workflow_id
+
+    def _forget_group(self, *, orchestrator_session_id: str) -> None:
+        """Drop one group's cached rows, loader and gateway membership.
+
+        WHO: ``dismiss_group`` and ``_hide_group``, after recording the suppression.
+        WHEN: Immediately, so a stale key can no longer open a progress view.
+
+        Args:
+            orchestrator_session_id (str): Group whose caches are dropped.
+        """
+        self._group_rows.pop(orchestrator_session_id, None)
+        self._loaders.pop(orchestrator_session_id, None)
+        self._rows = {
+            key: row
+            for key, row in self._rows.items()
+            if key.orchestrator_session_id != orchestrator_session_id
+        }
+
+    @staticmethod
+    def _batch_members(*, rows: tuple[WorkflowSessionRowDAO, ...]) -> _AttachedBatchMembers:
+        """Return the identity of an attached batch's rows.
+
+        Args:
+            rows (tuple[WorkflowSessionRowDAO, ...]): Attached parent and children.
+
+        Returns:
+            _AttachedBatchMembers: One (dispatch, session, execution) triple per row.
+        """
+        return frozenset((row.dispatch_id, row.key.session_id, row.execution_id) for row in rows)
+
+    def _hides_attached(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> bool:
+        """Return whether attached rows are still exactly the batch judged finished.
+
+        The single suppression predicate for the attached projection, the commit
+        filter and the progress gateway; a new member or incarnation fails it.
+
+        Args:
+            rows (tuple[WorkflowSessionRowDAO, ...]): Attached parent and children.
+
+        Returns:
+            bool: True only while the members equal the hidden batch.
+        """
+        return self._hidden_attached_batch == self._batch_members(rows=rows)
+
+    def _release_attached_suppression(self, *, attached: AttachedDispatchSnapshotDAO) -> None:
+        """Drop the attached suppression once the registry batch no longer matches it.
+
+        WHO: ``load_session_snapshot``, right after capturing the registry batch.
+        WHEN: Every refresh, so a batch that grew never hides again if it shrinks.
+
+        Args:
+            attached (AttachedDispatchSnapshotDAO): Captured registry batch.
+        """
+        if not self._hides_attached(rows=self._batch_rows(attached=attached)):
+            self._hidden_attached_batch = None
+
+    def _visible_rows(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> tuple[WorkflowSessionRowDAO, ...]:
+        """Drop the rows of the hidden attached batch and of dismissed workflows.
+
+        Args:
+            rows (tuple[WorkflowSessionRowDAO, ...]): Freshly projected rows.
+
+        Returns:
+            tuple[WorkflowSessionRowDAO, ...]: Rows of groups still shown, in order.
+        """
+        attached: tuple[WorkflowSessionRowDAO, ...] = tuple(
+            row for row in rows if self._is_attached(key=row.key)
+        )
+        hidden: tuple[WorkflowSessionRowDAO, ...] = attached if self._hides_attached(rows=attached) else ()
+        return tuple(row for row in rows if row not in hidden and row.workflow_id not in self._dismissed)
 
     def _commit_snapshot(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> WorkflowSessionSnapshotDAO:
         """Publish rows as the membership the progress gateway validates against.
@@ -513,8 +711,10 @@ class DetachedWorkflowAppService:
         """
         if self._closed:
             return WorkflowSessionSnapshotDAO()
-        self._rows = {row.key: row for row in rows}
-        return WorkflowSessionSnapshotDAO(rows=rows, notice=self._observation_notice)
+        # Suppression may have changed while this refresh was reading; never resurrect.
+        visible: tuple[WorkflowSessionRowDAO, ...] = self._visible_rows(rows=rows)
+        self._rows = {row.key: row for row in visible}
+        return WorkflowSessionSnapshotDAO(rows=visible, notice=self._observation_notice)
 
     @staticmethod
     def _unique_rows(*, rows: tuple[WorkflowSessionRowDAO, ...]) -> tuple[WorkflowSessionRowDAO, ...]:
@@ -1321,7 +1521,20 @@ class DetachedWorkflowAppService:
 
         Returns:
             tuple[WorkflowSessionRowDAO, ...]: Parent then children with registry
-                previews; empty when the batch has no entries.
+                previews; empty when the batch has no entries or is still hidden.
+        """
+        rows: tuple[WorkflowSessionRowDAO, ...] = self._batch_rows(attached=attached)
+        return () if self._hides_attached(rows=rows) else rows
+
+    def _batch_rows(self, *, attached: AttachedDispatchSnapshotDAO) -> tuple[WorkflowSessionRowDAO, ...]:
+        """Map a captured batch to its parent and registry children, ignoring suppression.
+
+        Args:
+            attached (AttachedDispatchSnapshotDAO): Captured admitted batch.
+
+        Returns:
+            tuple[WorkflowSessionRowDAO, ...]: Parent then children; empty when the
+                batch has no entries.
         """
         if not attached.entries:
             return ()

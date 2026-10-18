@@ -699,7 +699,7 @@ command. The router is in `src/tui/slash_router.py:32`:
 | `/abort` | Cancel the in-flight prompt (graceful — the agent finishes its current step) |
 | `/steer <text>` | Queue a steering message that joins the next turn |
 | `/auth` | Re-open the authentication modal |
-| `/workflows` `/wf` | List detached workflows; `abort <id>` SIGTERMs the workflow's process group (SIGKILL after 5 s); `dismiss <id>` acknowledges a stalled one |
+| `/workflows` `/wf` | List detached workflows; `abort <id>` SIGTERMs the workflow's process group (SIGKILL after 5 s); `dismiss <id>` acknowledges a stalled one; `tui dismiss [<id>]` clears finished groups from the TUI session list (in memory only; running groups stay) |
 
 The router is **Textual-free**: every handler returns a
 `SlashCommandResultDAO` (`src/tui/slash_router.py:17`) carrying flags

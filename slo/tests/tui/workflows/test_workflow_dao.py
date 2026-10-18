@@ -15,6 +15,8 @@ from src.tui.workflows.dao import (
     SessionProgressSnapshotDAO,
     WorkflowSessionKeyDAO,
     WorkflowSessionRowDAO,
+    WorkflowListDismissOutcomeDAO,
+    WorkflowListDismissRequestDAO,
     WorkflowSessionSnapshotDAO,
     parse_fleet_update_message,
     parse_launch_workflow_result,
@@ -563,3 +565,89 @@ class TestSessionProgressSnapshotDAO:
 
         assert snapshot.entries == ()
         assert snapshot.membership_removed is True
+
+
+class TestWorkflowListDismissRequestDAO:
+    """``/workflows tui dismiss [<id>]`` request carried from the router to the app (94.a.5)."""
+
+    @pytest.mark.parametrize("target_id", [None, "wf-3f2a", "orch-a.1_B"])
+    def test_accepts_absent_or_safe_target(self, target_id: str | None) -> None:
+        """No target (clear all finished) and safe ids are accepted unchanged."""
+        assert WorkflowListDismissRequestDAO(target_id=target_id).target_id == target_id
+
+    @pytest.mark.parametrize("target_id", ["", "../wf", "wf/a", "wf a", ".", "[bold]x"])
+    def test_rejects_unsafe_target(self, target_id: str) -> None:
+        """Empty, traversal, separator, space and markup ids are refused."""
+        with pytest.raises(ValidationError):
+            WorkflowListDismissRequestDAO(target_id=target_id)
+
+    def test_is_frozen_and_forbids_extra_fields(self) -> None:
+        """The request is immutable and carries nothing beyond its target."""
+        request = WorkflowListDismissRequestDAO()
+        with pytest.raises(ValidationError):
+            request.target_id = "wf-a"  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            WorkflowListDismissRequestDAO(extra="x")  # type: ignore[call-arg]
+
+
+class TestWorkflowListDismissOutcomeDAO:
+    """The outcome owns its transcript text for every 94.a.5 branch."""
+
+    @pytest.mark.parametrize(
+        ("fields", "rendered"),
+        [
+            (
+                {"cleared": ("wf-a", "owner-1"), "still_running": 1},
+                "cleared 2 finished workflow group(s) from the list; 1 still running",
+            ),
+            ({"cleared": ("wf-a",)}, "cleared 1 finished workflow group(s) from the list"),
+            ({}, "no finished workflow groups to clear"),
+            ({"still_running": 2}, "no finished workflow groups to clear"),
+            ({"target_id": "wf-a", "cleared": ("wf-a",)}, "cleared workflow wf-a from the list"),
+            (
+                {"target_id": "wf-a", "refused_running": "wf-a"},
+                "workflow wf-a is still running — wait for it or use /workflows abort wf-a",
+            ),
+            ({"target_id": "wf-z", "unknown": "wf-z"}, "no workflow wf-z in the list"),
+        ],
+        ids=[
+            "cleared-some-running",
+            "cleared-none-running",
+            "nothing",
+            "nothing-running",
+            "target",
+            "refused",
+            "unknown",
+        ],
+    )
+    def test_rendered_line(self, fields: dict[str, object], rendered: str) -> None:
+        """Each outcome renders exactly the line the chapter's behaviour table names."""
+        assert WorkflowListDismissOutcomeDAO(**fields).rendered == rendered  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"refused_running": "wf-a"},
+            {"unknown": "wf-a"},
+            {"target_id": "wf-a", "refused_running": "wf-a", "unknown": "wf-a"},
+            {"target_id": "wf-a", "cleared": ("wf-a",), "unknown": "wf-a"},
+            {"target_id": "wf-a", "cleared": ("wf-a", "wf-b")},
+            {"target_id": "wf-a", "refused_running": "wf-b"},
+            {"still_running": -1},
+            {"private": "x"},
+        ],
+        ids=[
+            "refusal-without-target",
+            "unknown-without-target",
+            "refused-and-unknown",
+            "cleared-and-unknown",
+            "target-clears-two",
+            "refusal-other-id",
+            "negative-running",
+            "extra-field",
+        ],
+    )
+    def test_rejects_inconsistent_outcome(self, fields: dict[str, object]) -> None:
+        """An outcome cannot claim contradictory or off-target results."""
+        with pytest.raises(ValidationError):
+            WorkflowListDismissOutcomeDAO(**fields)  # type: ignore[arg-type]

@@ -241,6 +241,37 @@ is a file adapter; `ChildAbortController` is the runner-owned consumer.
   joins shutdown even across repeated cancellation, before the final fleet
   drain. A fresh pool `run_id` per invocation means old requests never execute.
 
+### Clearing finished groups (feature 94 a.5, T13)
+
+`/workflows tui dismiss [<id>]` hides finished groups from the TUI session list.
+It is observation only: `DetachedWorkflowAppService.dismiss_from_list` writes no
+handle or history, signals nothing and never cancels or acknowledges an abort.
+
+- **Finished.** Every row of the group has a status in `TERMINAL_STATUSES`
+  (the same owner the abort path uses). Running, pending, stalled, launching and
+  unknown keep the group visible; stale or unavailable rows count by their last
+  known status. A targeted running group is refused with an abort hint.
+- **Keyed lifetimes, in memory only.** A detached group joins `_dismissed`
+  (shared with `/workflows dismiss`), so a successful resume re-shows it. The
+  attached batch is keyed by its members, `_hidden_attached_batch` (one
+  `(dispatch_id, session_id, execution_id)` per row), not by `dispatch_id` alone.
+  Chain mode registers each step into the same dispatch only when the step
+  starts, so between steps a batch can look finished. The batch stays hidden
+  only while its members equal the hidden set: a new step or incarnation in the
+  same dispatch shows it again (and it can be opened and aborted), and a new
+  dispatch shows normally. The next refresh that sees different members releases
+  the suppression, so it never re-applies. One predicate, `_hides_attached`,
+  serves the attached projection, the commit filter and the progress gateway.
+  `close()` (teardown and `/new`) drops both kinds.
+- **No resurrection.** `_commit_snapshot` filters hidden rows, so a refresh that
+  was already reading when the command ran cannot repaint them. The attached
+  projection also omits the hidden batch, so the progress gateway treats its keys
+  as removed.
+- **Routing.** The router routes `tui` before the history guard, because
+  attached groups exist without history. It returns a typed `tui_dismiss`
+  request with an empty `rendered`. The app writes the outcome's own line instead,
+  then requests one coalesced coordinator refresh.
+
 ## Runtime path
 
 ```text

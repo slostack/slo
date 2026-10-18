@@ -13,6 +13,7 @@ terminal or user history is touched; visualizer launch stays disabled.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -969,3 +970,124 @@ class TestAttachedAndDetachedListInRealApp:
             assert rows[1].task_text == "Audit the parser thoroughly"
             assert rows[2].task_text == "Refactor the [b]loader[/b]"
             assert len(app.query(SubAgentFleetPanel)) == 1
+
+
+def _tree_state(*, root: Path) -> dict[str, tuple[bytes, int]]:
+    """Snapshot every regular file's bytes and nanosecond mtime below ``root``.
+
+    Args:
+        root (Path): Directory to snapshot.
+
+    Returns:
+        dict[str, tuple[bytes, int]]: Relative path to (bytes, ``st_mtime_ns``).
+    """
+    return {
+        str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }
+
+
+async def _write_detached(
+    *, world: _World, handles: WorkflowHandleStore, workflow_id: str, orchestrator: str, state: str, hour: int
+) -> None:
+    """Persist one owned detached handle and its legacy fleet with one child of the same status.
+
+    Args:
+        world (_World): Owner world.
+        handles (WorkflowHandleStore): Real handle store over the world's root.
+        workflow_id (str): Workflow id.
+        orchestrator (str): Detached orchestrator session id.
+        state (str): Handle state, also used as the child's status.
+        hour (int): Launch hour for list order.
+    """
+    await handles.write(
+        handle=WorkflowHandleDAO(
+            workflow_id=workflow_id,
+            owner_session_id=world.session.session_id,
+            orchestrator_session_id=orchestrator,
+            pid=4242,
+            brief=f"brief {workflow_id}",
+            cwd=str(world.root),
+            state=state,  # type: ignore[arg-type]
+            started_at=datetime(2026, 10, 18, hour, tzinfo=timezone.utc),
+        )
+    )
+    FleetStore(history_root=world.root, orchestrator_session_id=orchestrator, run_id=None).persist(
+        entries=[
+            SubAgentStatusDAO(
+                task_id=f"task-{workflow_id}",
+                session_id=f"child-{workflow_id}",
+                status=state,  # type: ignore[arg-type]
+                prompt_preview=f"task {workflow_id}",
+            )
+        ]
+    )
+
+
+class TestClearFinishedGroupsInRealApp:
+    """``/workflows tui dismiss`` through the real stack (94.a.5 acceptance 1, 2 and 5)."""
+
+    async def test_clear_finished_groups_end_to_end(self, tmp_path: Path) -> None:
+        """Finished attached and detached groups go, the running one stays, nothing is written."""
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        world.start_child(lines=1)
+        world.finish(status="completed")
+        handles: WorkflowHandleStore = WorkflowHandleStore(
+            history_root=world.root, pid_alive=lambda pid: True
+        )
+        await _write_detached(
+            world=world,
+            handles=handles,
+            workflow_id="wf-done",
+            orchestrator="orch-done",
+            state="completed",
+            hour=9,
+        )
+        await _write_detached(
+            world=world,
+            handles=handles,
+            workflow_id="wf-live",
+            orchestrator="orch-live",
+            state="running",
+            hour=10,
+        )
+        app: SloTUI = SloTUI(session=world.session, workflow_handle_store=handles)
+        owner: str = world.session.session_id
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            assert app._fleet_panel is not None and app._input is not None and app._adapter is not None
+            assert [
+                item.row.key.orchestrator_session_id for item in app._fleet_panel.query(SubAgentFleetRow)
+            ] == [
+                owner,
+                owner,
+                "orch-done",
+                "orch-done",
+                "orch-live",
+                "orch-live",
+            ]
+            before: dict[str, tuple[bytes, int]] = _tree_state(root=world.root)
+
+            app._input.load_text("/workflows tui dismiss")
+            await pilot.press("enter")
+            await _settle(app=app, pilot=pilot)
+            await _tick(app=app, pilot=pilot)
+
+            visible = [item.row.key for item in app._fleet_panel.query(SubAgentFleetRow)]
+            assert [(key.orchestrator_session_id, key.session_id) for key in visible] == [
+                ("orch-live", "orch-live"),
+                ("orch-live", "child-wf-live"),
+            ]
+            assert (
+                "cleared 2 finished workflow group(s) from the list; 1 still running",
+                "tool-result",
+            ) in app._adapter.lines
+            assert _tree_state(root=world.root) == before
+            assert seam.calls == []
+            assert {handle.state for handle in await handles.list_observation(owner_session_id=owner)} == {
+                "completed",
+                "running",
+            }

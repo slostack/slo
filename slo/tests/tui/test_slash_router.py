@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
+from src.tui.workflows.dao import WorkflowListDismissRequestDAO
 
 
 def _build_session_stub(*, workdir: Path = Path("/tmp/slo-fake")) -> MagicMock:
@@ -876,6 +878,13 @@ class TestSlashModelPreferencePersistence:
         assert prefs.default_reasoning_level == "high"
 
 
+_WORKFLOWS_USAGE: str = (
+    "usage: /workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>"
+    " | tui dismiss [<workflow-id>]]"
+)
+"""Exact ``/workflows`` usage line, shared by the router, the registry and ``/help``."""
+
+
 class TestSlashWorkflowsHandler:
     """``/workflows`` — list, abort, dismiss detached workflows (spec 57.a.6)."""
 
@@ -1070,7 +1079,7 @@ class TestSlashWorkflowsHandler:
             session=session,
         )
 
-        usage: str = "usage: /workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]"
+        usage: str = _WORKFLOWS_USAGE
         assert result.rendered == usage
         assert result_missing_id.rendered == usage
 
@@ -1123,11 +1132,94 @@ class TestSlashWorkflowsHandler:
         )
 
         assert result.rendered is not None
-        assert (
-            "/workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]"
-            in result.rendered
-        )
+        assert _WORKFLOWS_USAGE.removeprefix("usage: ") in result.rendered
         assert "list detached workflows" in result.rendered
+        assert "tui dismiss [<id>]" in result.rendered
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("line", "target_id"),
+        [
+            ("/workflows tui dismiss", None),
+            ("/workflows   tui   dismiss  ", None),
+            ("/workflows tui dismiss wf-1", "wf-1"),
+            ("/wf tui dismiss orch-1", "orch-1"),
+        ],
+        ids=["all", "extra-spaces", "workflow-id", "alias-session-id"],
+    )
+    async def test_tui_dismiss_returns_typed_request(
+        self, tmp_path: Path, line: str, target_id: Optional[str]
+    ) -> None:
+        """``tui dismiss [<id>]`` carries only a typed request; the app renders the outcome."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(line=line, session=session)
+
+        assert result.tui_dismiss == WorkflowListDismissRequestDAO(target_id=target_id)
+        assert (result.rendered, result.dismissed_workflow_id, result.resumed_workflow_id) == ("", None, None)
+        assert not session.history_root.exists()
+
+    @pytest.mark.asyncio
+    async def test_tui_dismiss_works_without_history_root(self) -> None:
+        """Attached groups exist without history, so ``tui`` routes before the history guard."""
+        session: MagicMock = _build_session_stub()
+        session.history_root = None
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows tui dismiss", session=session
+        )
+
+        assert result.tui_dismiss == WorkflowListDismissRequestDAO()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("history", [True, False], ids=["history", "no-history"])
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "/workflows tui",
+            "/workflows tui clear",
+            "/workflows tui dismiss wf-1 extra",
+            "/workflows tui dismiss ../escape",
+            "/workflows tui dismiss [bold]x",
+        ],
+        ids=["bare", "other", "two-ids", "unsafe", "markup"],
+    )
+    async def test_bad_tui_usage_renders_usage(self, tmp_path: Path, line: str, history: bool) -> None:
+        """Any other ``tui`` form changes nothing and renders the usage line."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        session.history_root = session.history_root if history else None
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(line=line, session=session)
+
+        assert (result.rendered, result.tui_dismiss) == (_WORKFLOWS_USAGE, None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "line",
+        ["/workflows", "/workflows abort wf-1", "/workflows dismiss wf-1", "/workflows resume wf-1"],
+    )
+    async def test_existing_subcommands_carry_no_tui_request(self, tmp_path: Path, line: str) -> None:
+        """List, abort, dismiss and resume never produce a list-clearing request."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(line=line, session=session)
+
+        assert result.tui_dismiss is None
+
+    @pytest.mark.asyncio
+    async def test_non_tui_without_history_still_unavailable(self) -> None:
+        """Only ``tui`` bypasses the history guard; other subcommands keep the unavailable line."""
+        session: MagicMock = _build_session_stub()
+        session.history_root = None
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows dismiss wf-1", session=session
+        )
+
+        assert (result.rendered, result.tui_dismiss) == (
+            "workflows unavailable — history is disabled for this session",
+            None,
+        )
 
 
 class TestSlashReasoningHandlerAstra:

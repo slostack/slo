@@ -995,3 +995,241 @@ class TestProgressLifecycleEdges:
                 await sink.apply_sessions(snapshot=WorkflowSessionSnapshotDAO(rows=(row,)))
 
             handler.assert_called_once_with(key=key)
+
+
+_CLEARED_ONE: str = "cleared 1 finished workflow group(s) from the list"
+
+
+def _publish_finished(
+    *, supplier: _AttachedSupplier, dispatch_id: str = _DISPATCH_ID, sequence: int = 1
+) -> None:
+    """Replace the attached batch with two terminal children.
+
+    Args:
+        supplier (_AttachedSupplier): Session supplier.
+        dispatch_id (str, optional): Batch identity. Defaults to ``_DISPATCH_ID``.
+        sequence (int, optional): Admission sequence. Defaults to 1.
+    """
+    supplier.snapshot = AttachedDispatchSnapshotDAO(
+        dispatch_id=dispatch_id,
+        dispatch_sequence=sequence,
+        entries=tuple(
+            SubAgentStatusDAO(
+                task_id=f"task-{status}", session_id=f"child-{status}", status=status  # type: ignore[arg-type]
+            )
+            for status in ("completed", "failed")
+        ),
+    )
+
+
+async def _finished_app(*, app: SloTUI, pilot: Pilot[None]) -> SubAgentFleetPanel:
+    """Paint a finished attached batch through the production refresh path.
+
+    Args:
+        app (SloTUI): Running app.
+        pilot (Pilot[None]): Active pilot.
+
+    Returns:
+        SubAgentFleetPanel: The populated panel.
+    """
+    await _settle(app=app, pilot=pilot)
+    _publish_finished(supplier=_supplier(app=app))
+    await _refresh(app=app, pilot=pilot)
+    assert app._fleet_panel is not None
+    assert set(_rows(app=app)) == {app._session.session_id, "child-completed", "child-failed"}
+    return app._fleet_panel
+
+
+def _transcript(*, app: SloTUI) -> list[str]:
+    """Return every transcript line written through the adapter.
+
+    Args:
+        app (SloTUI): Mounted app.
+
+    Returns:
+        list[str]: Line contents in order.
+    """
+    assert app._adapter is not None
+    return [content for content, _classes in app._adapter.lines]
+
+
+class TestClearFinishedGroups:
+    """``/workflows tui dismiss`` hides finished groups in memory through the real app (94.a.5)."""
+
+    @pytest.mark.asyncio
+    async def test_typed_command_removes_rows_and_collapses_the_panel(self, tmp_path: Path) -> None:
+        """Typing the command clears the finished batch, renders one line and hides the panel."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            panel: SubAgentFleetPanel = await _finished_app(app=app, pilot=pilot)
+            lines_before: int = len(_transcript(app=app))
+
+            await _submit_prompt(app=app, pilot=pilot, text="/workflows tui dismiss")
+            await _settle(app=app, pilot=pilot)
+
+            assert _rows(app=app) == {}
+            assert panel.display is False
+            assert panel.region.height == 0
+            assert app.focused is app._input
+            new_lines: list[str] = _transcript(app=app)[lines_before:]
+            assert _CLEARED_ONE in new_lines
+            assert "" not in new_lines
+
+    @pytest.mark.asyncio
+    async def test_focused_list_returns_focus_to_the_prompt(self, tmp_path: Path) -> None:
+        """When the emptied list held focus, focus returns to PromptInput."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            panel: SubAgentFleetPanel = await _finished_app(app=app, pilot=pilot)
+            panel.query_one(FleetSessionList).focus()
+            await pilot.pause()
+            assert app._session_list_holds_focus()
+
+            await app._dispatch_slash_command(line="/workflows tui dismiss")
+            await _settle(app=app, pilot=pilot)
+
+            assert panel.region.height == 0
+            assert app.focused is app._input
+
+    @pytest.mark.asyncio
+    async def test_modal_keeps_focus_while_the_list_empties(self, tmp_path: Path) -> None:
+        """Clearing behind an unrelated dialog never steals focus from it."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            panel: SubAgentFleetPanel = await _finished_app(app=app, pilot=pilot)
+            panel.query_one(FleetSessionList).focus()
+            await pilot.pause()
+            modal: _BlockingModal = _BlockingModal()
+            await app.push_screen(modal)
+            await pilot.pause()
+            focused_before = app.focused
+
+            await app._dispatch_slash_command(line="/workflows tui dismiss")
+            await _settle(app=app, pilot=pilot)
+
+            assert app.screen is modal
+            assert app.focused is focused_before
+            assert app.focused is not app._input
+            assert _rows(app=app) == {}
+
+    @pytest.mark.asyncio
+    async def test_coordinator_tick_does_not_resurrect_and_new_dispatch_shows(self, tmp_path: Path) -> None:
+        """A five-second refresh keeps the batch hidden; the next attached dispatch paints normally."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _finished_app(app=app, pilot=pilot)
+            await _submit_prompt(app=app, pilot=pilot, text="/workflows tui dismiss")
+            await _settle(app=app, pilot=pilot)
+
+            await _refresh(app=app, pilot=pilot)
+            assert _rows(app=app) == {}
+            _publish_finished(supplier=_supplier(app=app), dispatch_id=str(uuid4()), sequence=2)
+            await _refresh(app=app, pilot=pilot)
+
+            assert set(_rows(app=app)) == {app._session.session_id, "child-completed", "child-failed"}
+
+    @pytest.mark.asyncio
+    async def test_chain_step_in_the_cleared_dispatch_repaints(self, tmp_path: Path) -> None:
+        """A chain step registering in the cleared dispatch repaints the batch while it runs."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            supplier: _AttachedSupplier = _supplier(app=app)
+            step_1 = SubAgentStatusDAO(task_id="task-1", session_id="step-1", status="completed")
+            supplier.snapshot = AttachedDispatchSnapshotDAO(
+                dispatch_id=_DISPATCH_ID, dispatch_sequence=1, entries=(step_1,)
+            )
+            await _refresh(app=app, pilot=pilot)
+            await _submit_prompt(app=app, pilot=pilot, text="/workflows tui dismiss")
+            await _settle(app=app, pilot=pilot)
+            assert _rows(app=app) == {}
+
+            step_2 = SubAgentStatusDAO(task_id="task-2", session_id="step-2", status="running")
+            supplier.snapshot = AttachedDispatchSnapshotDAO(
+                dispatch_id=_DISPATCH_ID, dispatch_sequence=1, entries=(step_1, step_2)
+            )
+            await _refresh(app=app, pilot=pilot)
+
+            assert set(_rows(app=app)) == {app._session.session_id, "step-1", "step-2"}
+            assert app._fleet_panel is not None and app._fleet_panel.display is True
+            assert app._fleet_panel.region.height > 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("line", "target_id"),
+        [("/workflows tui dismiss", None), ("/wf tui dismiss wf-1", "wf-1")],
+        ids=["all", "target"],
+    )
+    async def test_request_routes_to_service_and_requests_one_refresh(
+        self, tmp_path: Path, line: str, target_id: Optional[str]
+    ) -> None:
+        """The typed request reaches the service once, then one coalesced refresh is requested."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
+            assert service is not None
+            with (
+                patch.object(service, "dismiss_from_list", wraps=service.dismiss_from_list) as dismiss,
+                patch.object(service, "dismiss_group") as durable_dismiss,
+                patch.object(_coordinator(app=app), "request_refresh") as request,
+            ):
+                await app._dispatch_slash_command(line=line)
+
+            assert dismiss.call_args_list == [((), {"target_id": target_id})]
+            durable_dismiss.assert_not_called()
+            request.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_running_target_is_refused_and_rows_stay(self, tmp_path: Path) -> None:
+        """A running batch named explicitly is refused with the still-running line."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _populated_app(app=app, pilot=pilot, children=2)
+            owner: str = app._session.session_id
+
+            await app._dispatch_slash_command(line=f"/workflows tui dismiss {owner}")
+            await _refresh(app=app, pilot=pilot)
+
+            assert _transcript(app=app)[-1] == (
+                f"workflow {owner} is still running — wait for it or use /workflows abort {owner}"
+            )
+            assert set(_rows(app=app)) == {owner, "child-00", "child-01"}
+
+    @pytest.mark.asyncio
+    async def test_without_observation_service_reports_nothing_to_clear(self, tmp_path: Path) -> None:
+        """With no workflow observation bound the command renders the nothing-to-clear line."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
+            app._workflow_app_service = None
+            try:
+                await app._dispatch_slash_command(line="/workflows tui dismiss")
+            finally:
+                app._workflow_app_service = service
+
+            assert _transcript(app=app)[-1] == "no finished workflow groups to clear"
+
+    @pytest.mark.asyncio
+    async def test_bad_tui_usage_renders_usage_without_touching_the_service(self, tmp_path: Path) -> None:
+        """``/workflows tui`` alone renders the usage line and never calls the service."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
+            assert service is not None
+            with patch.object(service, "dismiss_from_list") as dismiss:
+                await app._dispatch_slash_command(line="/workflows tui")
+
+            dismiss.assert_not_called()
+            assert _transcript(app=app)[-1].startswith("usage: /workflows [")

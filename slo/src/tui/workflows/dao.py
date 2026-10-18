@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, List, Literal, Optional, TypeAlias, cast, get_
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.agents.slo_agent.orchestrator.dao import canonical_uuid
+from src.agents.slo_agent.orchestrator.dao import canonical_uuid, safe_identifier
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowState
 
 if TYPE_CHECKING:  # Annotation only: this module stays free of runtime Textual imports.
@@ -34,6 +34,8 @@ __all__ = [
     "SessionProgressAvailability",
     "SessionProgressSnapshotDAO",
     "WorkflowLifecycleTarget",
+    "WorkflowListDismissOutcomeDAO",
+    "WorkflowListDismissRequestDAO",
     "WorkflowSessionAvailability",
     "WorkflowSessionKeyDAO",
     "WorkflowSessionRole",
@@ -470,6 +472,104 @@ class WorkflowSessionSnapshotDAO(BaseModel):
 
     rows: tuple[WorkflowSessionRowDAO, ...] = ()
     notice: Optional[str] = None
+
+
+class WorkflowListDismissRequestDAO(BaseModel):
+    """Operator request to clear finished groups from the session list (feature 94 a.5).
+
+    Built by ``SlashRouter`` for ``/workflows tui dismiss [<id>]`` and applied by
+    the app through ``DetachedWorkflowAppService.dismiss_from_list``. Transient;
+    clearing is in-memory observation suppression, never a durable change.
+
+    Attributes:
+        target_id (Optional[str]): Detached ``workflow_id`` or orchestrator session
+            id naming one group; None clears every finished group.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_id: Optional[str] = None
+
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target_id(cls, value: Optional[str]) -> Optional[str]:
+        """Accept no target or one safe identifier."""
+        return None if value is None else safe_identifier(value=value)
+
+
+class WorkflowListDismissOutcomeDAO(BaseModel):
+    """Result of one list-clearing request; owns its transcript line (feature 94 a.5).
+
+    Exactly one shape holds: an untargeted clear (``target_id`` None, no refusal),
+    a targeted clear (``cleared`` names one group), a running refusal or an
+    unknown target. ``cleared`` holds each hidden group's workflow id, or the
+    orchestrator session id for an attached group.
+
+    Attributes:
+        target_id (Optional[str]): Requested group; None for clear-all.
+        cleared (tuple[str, ...]): Groups hidden by this request, in list order.
+        still_running (int): Visible groups left unfinished by a clear-all.
+        refused_running (Optional[str]): Target refused because it still runs.
+        unknown (Optional[str]): Target that names no group in the list.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_id: Optional[str] = None
+    cleared: tuple[str, ...] = ()
+    still_running: int = Field(default=0, ge=0)
+    refused_running: Optional[str] = None
+    unknown: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_single_shape(self) -> "WorkflowListDismissOutcomeDAO":
+        """Reject outcomes that mix results or describe a group other than the target.
+
+        Returns:
+            WorkflowListDismissOutcomeDAO: Self after validation.
+
+        Raises:
+            ValueError: If both refusals are set, a refusal lacks the matching
+                target or clears something, or a targeted clear hides anything
+                but one group.
+        """
+        if self.refused_running is not None and self.unknown is not None:
+            raise ValueError("a target is either running or unknown, never both")
+        refusal: Optional[str] = self.refused_running or self.unknown
+        if refusal is not None and (refusal != self.target_id or self.cleared):
+            raise ValueError("a refusal names only the requested target and clears nothing")
+        if self.target_id is not None and refusal is None and len(self.cleared) != 1:
+            raise ValueError("a targeted clear hides exactly one group")
+        return self
+
+    @property
+    def rendered(self) -> str:
+        """Return the transcript line for this outcome.
+
+        Returns:
+            str: Fixed operator line from the a.5 behaviour table.
+        """
+        if self.refused_running is not None:
+            return (
+                f"workflow {self.refused_running} is still running — "
+                f"wait for it or use /workflows abort {self.refused_running}"
+            )
+        if self.unknown is not None:
+            return f"no workflow {self.unknown} in the list"
+        if self.target_id is not None:
+            return f"cleared workflow {self.target_id} from the list"
+        return self._clear_all_line()
+
+    def _clear_all_line(self) -> str:
+        """Return the clear-all summary, mentioning running groups only when some remain.
+
+        Returns:
+            str: Summary line, or the nothing-to-clear line when no group was hidden.
+        """
+        if not self.cleared:
+            return "no finished workflow groups to clear"
+        running: str = f"; {self.still_running} still running" if self.still_running else ""
+        return f"cleared {len(self.cleared)} finished workflow group(s) from the list{running}"
 
 
 SessionProgressAvailability: TypeAlias = Literal["available", "empty", "stale", "unavailable"]

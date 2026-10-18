@@ -571,7 +571,8 @@ does prefix-match autocomplete; `SlashSuggestionMenu` renders the dropdown.
 
 Available slash commands include: `/help`, `/diff <repository-relative-path>`, `/new [session name]`, `/rename <session name>`,
 `/model <name>`, `/reasoning <level>`, `/context-window`, `/compact`, `/abort`, `/steer <text>`,
-`/clear`, `/auth`, `/quit` (and aliases), and `/workflows [abort|dismiss|resume] <workflow-id>`.
+`/clear`, `/auth`, `/quit` (and aliases), `/workflows [abort|dismiss|resume] <workflow-id>`, and
+`/workflows tui dismiss [<workflow-id>]` (hides finished groups from the TUI list in memory only).
 `/context-window` reports the routed model's capacity
 and projector-faithful durable replay estimate; `/compact` requests one lock-safe, transactional
 manual compaction and rejects while a prompt owns the session lock.

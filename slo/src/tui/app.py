@@ -68,6 +68,8 @@ from src.tui.workflows.dao import (
     LiveWorkflowLabelDAO,
     ProgressViewportDAO,
     SessionProgressSnapshotDAO,
+    WorkflowListDismissOutcomeDAO,
+    WorkflowListDismissRequestDAO,
     WorkflowSessionKeyDAO,
     WorkflowSessionSnapshotDAO,
 )
@@ -2111,6 +2113,12 @@ class SloTUI(App):
         if git_diff_path is not None:
             await self._open_git_diff(path=git_diff_path)
             return
+        tui_dismiss: Optional[WorkflowListDismissRequestDAO] = (
+            result.tui_dismiss if isinstance(result.tui_dismiss, WorkflowListDismissRequestDAO) else None
+        )
+        if tui_dismiss is not None:
+            self._clear_finished_workflow_groups(request=tui_dismiss)
+            return
         if result.rendered is not None:
             self._write_adapter_line(content=result.rendered, classes="tool-result")
         self._apply_workflow_command_result(result=result)
@@ -2272,8 +2280,8 @@ class SloTUI(App):
     def _request_workflow_refresh(self) -> None:
         """Ask the observation coordinator for one coalesced refresh, if bound.
 
-        WHO: Child lifecycle and dispatch-start events, and typed dismiss/resume
-            slash results.
+        WHO: Child lifecycle and dispatch-start events, typed dismiss/resume
+            slash results and ``/workflows tui dismiss``.
         WHEN: Whenever list membership or status may have changed; the five-second
             tick repairs anything missed.
         """
@@ -2364,6 +2372,30 @@ class SloTUI(App):
             service.dismiss_group(workflow_id=result.dismissed_workflow_id)
         if result.resumed_workflow_id is not None:
             service.resume_group(workflow_id=result.resumed_workflow_id)
+        self._request_workflow_refresh()
+
+    def _clear_finished_workflow_groups(self, *, request: WorkflowListDismissRequestDAO) -> None:
+        """Apply ``/workflows tui dismiss [<id>]`` to observation and render its outcome.
+
+        WHAT: The service hides finished groups from its membership first; the
+            outcome's own line is written as a normal slash result; then one
+            coalesced refresh repaints the list through the coordinator (the
+            panel is never mutated here). Without observation nothing is listed,
+            so the nothing-to-clear line is rendered.
+        WHO: ``_dispatch_slash_command`` for a result carrying ``tui_dismiss``,
+            in place of writing the result's empty ``rendered`` text.
+        WHEN: Immediately after the router returns.
+
+        Args:
+            request (WorkflowListDismissRequestDAO): Validated list-clearing request.
+        """
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        outcome: WorkflowListDismissOutcomeDAO = (
+            WorkflowListDismissOutcomeDAO()
+            if service is None
+            else service.dismiss_from_list(target_id=request.target_id)
+        )
+        self._write_adapter_line(content=outcome.rendered, classes="tool-result")
         self._request_workflow_refresh()
 
     async def _apply_session_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:

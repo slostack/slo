@@ -163,12 +163,19 @@ def test_resolved_task_reasoning_reaches_child_argv(level: str | None) -> None:
     resolved = resolve_sub_agent_tasks(tasks=[raw], tasks_json=None)
     assert resolved.error is None
     task = resolved.tasks[0]
+    registry = ProcessRegistry()
+    dispatch_id = "44444444-4444-4444-8444-444444444444"
+    registry.begin_dispatch(dispatch_id=dispatch_id)
+    execution_id = registry.register(
+        dispatch_id=dispatch_id, task_id=task.task_id, session_id="child-test", task=task
+    )
     argv = SubAgentProcess(
         task=task,
         session_id="child-test",
         model=task.model,
         relay=AsyncMock(),
-        registry=ProcessRegistry(),
+        registry=registry,
+        execution_id=execution_id,
     )._build_argv()
     assert argv[argv.index("--model") + 1] == "gpt-6-astra"
     if level in {"omitted", None}:

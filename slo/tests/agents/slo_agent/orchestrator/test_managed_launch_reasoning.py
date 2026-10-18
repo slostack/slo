@@ -421,17 +421,26 @@ async def test_managed_phase_medium_is_independent_of_high_parent(
     phases: list[SubAgentResultDAO] = []
 
     async def run(process: SubAgentProcess) -> SubAgentResultDAO:
-        """Replace only phase workload transport, retaining real task and argv construction."""
+        """Replace only phase workload transport, retaining real task and argv construction.
+
+        Like production ``run``, the fake publishes its terminal result through the
+        canonical registry gateway, so the pool emits the winner without reconciling.
+        """
         argv = process._build_argv()
         assert process._task.reasoning_level == "medium"
         assert argv[argv.index("--reasoning") + 1] == "medium"
         assert argv[argv.index("--session-id") + 1] == process._session_id
-        result = SubAgentResultDAO(
-            task_id=process._task.task_id,
-            session_id=process._session_id,
-            status="completed",
-            answer="phase complete",
-            exit_code=0,
+        result = process._publish_terminal(
+            candidate=SubAgentResultDAO(
+                task_id=process._task.task_id,
+                session_id=process._session_id,
+                execution_id=process.execution_id,
+                status="completed",
+                answer="phase complete",
+                exit_code=0,
+            ),
+            terminal_reason="completed",
+            terminated_by="natural",
         )
         phases.append(result)
         return result

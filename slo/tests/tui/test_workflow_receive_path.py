@@ -708,8 +708,8 @@ class TestAbortSeparationAndExit:
                     ),
                 )
 
-            fleet_panel_spy.register_row.assert_not_called()
-            fleet_panel_spy.mark_terminal.assert_not_called()
+            fleet_panel_spy.apply_snapshot.assert_not_called()
+            fleet_panel_spy.reset.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_exit_hint_lists_live_workflows(self, tmp_path: Path) -> None:

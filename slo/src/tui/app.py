@@ -22,7 +22,6 @@ from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
 from config.logger import log_error
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
@@ -60,7 +59,7 @@ from src.tui.widgets.tree_markdown_exporter import TreeMarkdownExporter
 from src.tui.widgets.tree_viewer import SessionTreeViewer
 from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.tui.widgets.user_message_block import UserMessageBlock
-from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, LiveWorkflowLabelDAO
+from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, LiveWorkflowLabelDAO, WorkflowSessionSnapshotDAO
 from src.tui.workflows.renderer import DetachedWorkflowRenderer
 from src.tui.workflows.service import DetachedWorkflowAppService
 
@@ -78,6 +77,22 @@ After this grace, the TUI cancels the asyncio task outright, raising
 _SESSION_LEASE_TTL_SECONDS: float = 30.0
 _SESSION_LEASE_HEARTBEAT_SECONDS: float = 10.0
 _SESSION_INBOX_POLL_SECONDS: float = 1.0
+
+_SUB_AGENT_NOTICE_STATUSES: dict[str, str] = {
+    "sub_agent_spawned": "spawned",
+    "sub_agent_completed": "completed",
+    "sub_agent_failed": "failed",
+}
+"""Child lifecycle kinds that write a one-line ``⊇ task: status`` transcript notice."""
+
+_SUB_AGENT_LIST_REFRESH_KINDS: frozenset[str] = frozenset(
+    {"sub_agent_spawned", "sub_agent_completed", "sub_agent_failed", "sub_agent_aborted"}
+)
+"""Child lifecycle kinds that request a fresh session-list snapshot (feature 94 a.2).
+
+Content events never touch the list: a row's task label stays stable while
+its child streams.
+"""
 
 TRANSCRIPT_WINDOW_SIZE: int = 500
 """Maximum children kept mounted in #transcript-content.
@@ -376,6 +391,16 @@ class SloTUI(App):
 
     CSS_PATH = "app.tcss"
 
+    # Screen size classes consumed by the workflow session list rules in
+    # app.tcss (feature 94 a.2): 60x20 is the minimum interactive size, and
+    # screens shorter than 24 rows keep the list to one row.
+    HORIZONTAL_BREAKPOINTS = [(0, "-workflow-below-minimum-width"), (60, "-workflow-minimum-width")]
+    VERTICAL_BREAKPOINTS = [
+        (0, "-workflow-below-minimum-height"),
+        (20, "-workflow-short-height"),
+        (24, "-workflow-full-height"),
+    ]
+
     BINDINGS = [
         # ``priority=True`` so our interrupt wins over Textual's default
         # ctrl+c quit; ``show=False`` keeps it out of the footer.
@@ -530,9 +555,8 @@ class SloTUI(App):
             self._adapter = _TranscriptAdapter(tui=self)
             self._input = PromptInput()
             yield self._input
-            # Fleet panel: below PromptInput; hidden until first sub_agent_spawned.
-            # Shows live sub-agent status rows; the orchestrator transcript always
-            # stays in the foreground above the prompt.
+            # Workflow session list: below PromptInput, hidden while it has no
+            # rows. The orchestrator transcript always stays in the foreground.
             self._fleet_panel = SubAgentFleetPanel()
             yield self._fleet_panel
             self._usage_status_bar = UsageStatusBar()
@@ -586,6 +610,7 @@ class SloTUI(App):
         await self._hydrate_transcript_from_history()
         await self._maybe_render_startup_notice()
         self._session.subscribe(handler=self._render_event)
+        await self._bind_workflow_observation()
         await self._initialize_session_delivery()
         self._refresh_title_bar()
         await self._session.refresh_context_window_snapshot()
@@ -902,16 +927,8 @@ class SloTUI(App):
             self._lease_store = SessionOwnershipLeaseStore(history_root=history_root)
         if self._inbox_store is None:
             self._inbox_store = SessionInboxStore(history_root=history_root)
-        if self._workflow_handle_store is None:
-            self._workflow_handle_store = WorkflowHandleStore(history_root=history_root)
-        if self._workflow_app_service is None:
-            self._workflow_app_service = DetachedWorkflowAppService(
-                workflow_handle_store=self._workflow_handle_store,
-                owner_session_id=self._session.session_id,
-                attached_snapshot=self._session.attached_dispatch_snapshot,
-                history_store=self._session.history_store,
-            )
-        await self._workflow_app_service.reconcile_snapshot()
+        if self._workflow_app_service is not None:
+            await self._workflow_app_service.reconcile_snapshot()
         await self._acquire_session_lease()
         await self._inbox_store.ensure_session_inbox(session_id=self._session.session_id)
         self._lease_timer = self.set_interval(
@@ -922,6 +939,50 @@ class SloTUI(App):
             _SESSION_INBOX_POLL_SECONDS,
             self._poll_session_inbox,
         )
+
+    async def _bind_workflow_observation(self) -> None:
+        """Bind the workflow service to the current session, replacing any prior owner.
+
+        WHAT: Closes the previous service, then builds one for the current
+            session's id and attached-dispatch supplier. History-backed sessions
+            also get the durable handle store and history adapter; sessions
+            without history observe the attached batch only (registry-only path);
+            their launch effects stay off (``_history_backed_workflow_service``).
+            The mount-time handle store is reused across ``/new`` because the
+            replacement session copies the old session's ``history_root``.
+        WHO: ``on_mount`` before inbox delivery, and ``/new`` session adoption.
+        WHEN: Once per owning session, so no rows or caches cross sessions.
+        """
+        if self._workflow_app_service is not None:
+            await self._workflow_app_service.close()
+        history_backed: bool = self._session_supports_inbox_delivery()
+        if history_backed and self._workflow_handle_store is None:
+            self._workflow_handle_store = WorkflowHandleStore(
+                history_root=cast(Path, self._session.history_root)
+            )
+        self._workflow_app_service = DetachedWorkflowAppService(
+            workflow_handle_store=self._workflow_handle_store if history_backed else None,
+            owner_session_id=self._session.session_id,
+            attached_snapshot=self._session.attached_dispatch_snapshot,
+            history_store=self._session.history_store if history_backed else None,
+        )
+
+    def _history_backed_workflow_service(self) -> Optional[DetachedWorkflowAppService]:
+        """Return the workflow service for whole-workflow launch effects, if allowed.
+
+        WHAT: Every session gets a service so its session list observes attached
+            children, but launch-result handling and the live-workflow exit hint
+            stay history-gated (a.2: existing launch effects remain unchanged).
+        WHO: ``_maybe_launch_workflow_visualizer`` and ``_live_workflow_labels``.
+        WHEN: On each launch result and each exit-hint render.
+
+        Returns:
+            Optional[DetachedWorkflowAppService]: The bound service for a
+                history-backed session, else ``None``.
+        """
+        if not self._session_supports_inbox_delivery():
+            return None
+        return self._workflow_app_service
 
     def _session_supports_inbox_delivery(self) -> bool:
         """Return whether this TUI session should expose inbox delivery.
@@ -1143,12 +1204,14 @@ class SloTUI(App):
         Invoked from ``_render_event`` when a ``launch_workflow`` tool result
         streams through. The app service validates the result (seeding the
         live-state cache on success); the renderer re-validates and opens the
-        window. Malformed or error JSON is a safe no-op on both layers.
+        window. Malformed or error JSON is a safe no-op on both layers, and so
+        is any result in a session without history (launch effects are
+        history-gated, as before the session list observed every session).
 
         Args:
             result_text (str): Raw ``launch_workflow`` tool-result text.
         """
-        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        service: Optional[DetachedWorkflowAppService] = self._history_backed_workflow_service()
         if service is None:
             return
         if service.advance_from_launch_result(result_text=result_text) == "ignored":
@@ -1633,11 +1696,12 @@ class SloTUI(App):
 
         Returns:
             list[LiveWorkflowLabelDAO]: Live labels, empty when the workflow
-                receive path is not initialized.
+                receive path is not initialized or the session has no history.
         """
-        if self._workflow_app_service is None:
+        service: Optional[DetachedWorkflowAppService] = self._history_backed_workflow_service()
+        if service is None:
             return []
-        return self._workflow_app_service.live_workflow_labels()
+        return service.live_workflow_labels()
 
     async def action_clear(self) -> None:
         """Clear transcript state and discard any held ordinary prompt.
@@ -2050,6 +2114,8 @@ class SloTUI(App):
         if requested_name is not None:
             await new_session.rename_session(session_name=requested_name)
         self._session = new_session
+        await self._bind_workflow_observation()
+        await self._reset_session_list()
         await self._clear_transcript_and_prompt_queue()
         self._prompt_history.clear_navigation()
         self._prompt_history = PromptHistoryNavigator()
@@ -2081,94 +2147,104 @@ class SloTUI(App):
     # ---- Sub-agent routing and fleet panel --------------------------------
 
     async def _route_sub_agent_event(self, event: AgentStreamEventDAO) -> None:
-        """Route a tagged sub-agent event to the fleet panel.
+        """Route a tagged sub-agent event to transcript notices and the session list.
 
-        The orchestrator transcript is always in the foreground; sub-agent
-        content never appears there. Lifecycle events write a one-line notice
-        to the main transcript. Content events — including child
-        ``thinking_delta`` events, which update fleet activity only and never
-        mount an ``AssistantStreamThinkingBlock`` — update the fleet panel's
-        live-activity field so the user can see what each sub-agent is doing
-        without leaving the orchestrator view.
+        WHAT: The orchestrator transcript stays in the foreground; child content
+            never appears there and never changes the session list, so a row's
+            task label stays stable while its child streams. Lifecycle events
+            write their one-line notice, open the workflow visualizer on the first
+            spawn of a run, then request a fresh list snapshot.
+        WHO: ``_render_event`` for every event carrying ``sub_agent_id``.
+        WHEN: As the attached orchestrator streams child events.
 
         Args:
             event (AgentStreamEventDAO): Event carrying a non-``None`` ``sub_agent_id``.
         """
-        task_id: str = event.task_id or ""
-        session_id: str = event.sub_agent_id or ""
-
+        self._write_sub_agent_notice(event=event)
         if event.kind == "sub_agent_spawned":
-            prompt_preview: str = event.content or ""
-            if self._adapter is not None:
-                self._adapter.write(
-                    content=f"⊇ {task_id}: spawned",
-                    classes="sub-agent-notice",
-                )
-            if self._fleet_panel is not None:
-                await self._fleet_panel.register_row(
-                    session_id=session_id,
-                    task_id=task_id,
-                    prompt_preview=prompt_preview,
-                )
             self._maybe_launch_visualizer()
+        if event.kind not in _SUB_AGENT_LIST_REFRESH_KINDS:
             return
+        await self._refresh_session_list()
 
-        if event.kind in ("sub_agent_completed", "sub_agent_failed"):
-            terminal_status: SubAgentStatus = "completed" if event.kind == "sub_agent_completed" else "failed"
-            if self._adapter is not None:
-                self._adapter.write(
-                    content=f"⊇ {task_id}: {terminal_status}",
-                    classes="sub-agent-notice",
-                )
-            if self._fleet_panel is not None:
-                self._fleet_panel.mark_terminal(
-                    session_id=session_id,
-                    status=terminal_status,
-                )
-            return
-
-        # Content events: update fleet row last-activity only.
-        # Sub-agent content never reaches the orchestrator transcript.
-        if self._fleet_panel is None:
-            return
-        activity: Optional[str] = self._sub_agent_activity_text(event=event)
-        if activity is not None:
-            self._fleet_panel.update_last_text(
-                session_id=session_id,
-                text=activity,
-            )
-
-    @staticmethod
-    def _sub_agent_activity_text(*, event: AgentStreamEventDAO) -> Optional[str]:
-        """Return a brief activity string for the fleet row from a content event.
-
-        Extracts the most human-readable fragment from each content event kind
-        so the fleet row always shows what the sub-agent is currently doing.
-        Returns ``None`` for event kinds that carry no useful display text.
+    def _write_sub_agent_notice(self, *, event: AgentStreamEventDAO) -> None:
+        """Write the ``⊇ task: status`` transcript notice for a noticed lifecycle kind.
 
         Args:
-            event (AgentStreamEventDAO): A sub-agent content event.
+            event (AgentStreamEventDAO): Child event; other kinds write nothing.
+        """
+        status: Optional[str] = _SUB_AGENT_NOTICE_STATUSES.get(event.kind)
+        if status is None or self._adapter is None:
+            return
+        self._adapter.write(content=f"⊇ {event.task_id or ''}: {status}", classes="sub-agent-notice")
+
+    async def _refresh_session_list(self) -> None:
+        """Load one owner-scoped snapshot from the workflow service and apply it.
+
+        WHAT: Reads ``DetachedWorkflowAppService.load_session_snapshot`` (which
+            never reconciles or mutates durable state) and hands the rows to the
+            panel. A no-op without the service or panel.
+        WHO: ``_route_sub_agent_event`` on child lifecycle events.
+        WHEN: Until the a.3 refresh coordinator owns scheduling (ticket T08).
+        """
+        if self._workflow_app_service is None:
+            return
+        snapshot: WorkflowSessionSnapshotDAO = await self._workflow_app_service.load_session_snapshot()
+        await self._apply_session_snapshot(snapshot=snapshot)
+
+    async def _apply_session_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
+        """Apply a snapshot to the panel and return focus if its list vanished.
+
+        WHAT: The panel never focuses anything itself. When an empty snapshot hides
+            a list that held focus, focus returns to the prompt editor, but only on
+            the base screen (never behind a modal).
+        WHO: ``_refresh_session_list`` (later the a.3 refresh sink).
+        WHEN: Whenever a fresh session snapshot is available.
+
+        Args:
+            snapshot (WorkflowSessionSnapshotDAO): Ordered rows to display.
+        """
+        if self._fleet_panel is None:
+            return
+        list_focused: bool = self._session_list_holds_focus()
+        await self._fleet_panel.apply_snapshot(snapshot=snapshot)
+        if snapshot.rows:
+            return
+        self._return_focus_from_hidden_list(list_focused=list_focused)
+
+    async def _reset_session_list(self) -> None:
+        """Empty and hide the session list, returning focus if the list held it.
+
+        WHAT: The single app-owned reset path, so every emptying of the panel
+            carries the same base-screen focus-return rule as an empty snapshot.
+        WHO: Prompt-end ``_cleanup_sub_agent_state`` and ``/new`` session adoption.
+        WHEN: When the displayed rows must be dropped regardless of the service.
+        """
+        if self._fleet_panel is None:
+            return
+        list_focused: bool = self._session_list_holds_focus()
+        await self._fleet_panel.reset()
+        self._return_focus_from_hidden_list(list_focused=list_focused)
+
+    def _session_list_holds_focus(self) -> bool:
+        """Return whether the session list (or one of its rows) holds focus.
 
         Returns:
-            Optional[str]: Activity text for the fleet row, or ``None``.
+            bool: True when the mounted panel or a descendant is focused.
         """
-        if event.kind in ("text_delta", "thinking_delta"):
-            return event.delta or None
-        if event.kind == "tool_call_end":
-            # Show what tool the agent just dispatched and its primary argument.
-            if not event.tool_name:
-                return None
-            tool_name: str = event.tool_name
-            if not event.tool_input:
-                return tool_name
-            first_val: object = next(iter(event.tool_input.values()), None)
-            if first_val is None:
-                return tool_name
-            preview: str = str(first_val)[:50].replace("\n", " ")
-            return f"{tool_name}: {preview}"
-        if event.kind == "tool_result":
-            return f"✓ {event.tool_name}" if event.tool_name else "✓ tool result"
-        return None
+        if self._fleet_panel is None:
+            return False
+        return self._fleet_panel.has_focus or self._fleet_panel.has_focus_within
+
+    def _return_focus_from_hidden_list(self, *, list_focused: bool) -> None:
+        """Focus the prompt editor after a focused list was hidden on the base screen.
+
+        Args:
+            list_focused (bool): Whether the list held focus before it was emptied.
+        """
+        if not list_focused or len(self.screen_stack) > 1 or self._input is None:
+            return
+        self._input.focus()
 
     def _maybe_launch_visualizer(self) -> None:
         """Open the workflow visualizer window on the first sub-agent of a run.
@@ -2201,17 +2277,17 @@ class SloTUI(App):
         )
 
     async def _cleanup_sub_agent_state(self) -> None:
-        """Reset the fleet panel at the end of a run.
+        """Reset the session list at the end of a run.
 
         Called from ``_run_prompt``'s ``finally`` block after
-        ``_unmount_spinner``. Hides and clears the fleet panel so the layout
-        returns to the idle state and subsequent runs start cleanly. Also clears
+        ``_unmount_spinner``. Hides and clears the session list so the layout
+        returns to the idle state and subsequent runs start cleanly (ticket T08
+        replaces this with service-owned group retention). Also clears
         the per-run visualizer-launch guard so the next run that spawns
-        sub-agents opens a fresh visualizer window. A no-op when no sub-agents
-        were spawned in this run.
+        sub-agents opens a fresh visualizer window. Resetting an already empty
+        list changes nothing on screen; a focused list returns focus to the prompt.
         """
-        if self._fleet_panel is not None:
-            await self._fleet_panel.reset()
+        await self._reset_session_list()
         self._visualizer_launched_for_run = False
         self._refresh_title_bar()
 

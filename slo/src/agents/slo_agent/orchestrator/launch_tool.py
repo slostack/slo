@@ -84,9 +84,9 @@ def _build_argv(
 ) -> list[str]:
     """Build the detached headless orchestrator command line.
 
-    Mirrors ``SubAgentProcess._build_argv``: ``sys.executable -m src.cli``
+    Mirrors ``SubAgentProcess._build_argv``: ``sys.executable -I -m src.cli``
     keeps the child on the same interpreter and virtualenv as the parent in
-    both dev and installed layouts.
+    installed and editable-install layouts, isolated from project import paths.
 
     Args:
         brief (str): Workflow brief passed as the headless ``-p`` prompt.
@@ -102,6 +102,7 @@ def _build_argv(
     """
     argv: list[str] = [
         sys.executable,
+        "-I",
         "-m",
         "src.cli",
         "run",

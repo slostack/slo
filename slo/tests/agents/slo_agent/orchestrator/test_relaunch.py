@@ -68,8 +68,8 @@ def test_build_argv_resumes_original_session_and_brief() -> None:
 
     argv: list[str] = WorkflowRelauncher._build_argv(handle=_build_handle())
 
-    assert argv[:4] == [sys.executable, "-m", "src.cli", "run"]
-    assert "-I" not in argv
+    assert argv[:5] == [sys.executable, "-I", "-m", "src.cli", "run"]
+    assert argv.count("-I") == 1
     assert "-p" in argv
     assert argv[argv.index("-p") + 1] == "resume the original workflow"
     assert argv[argv.index("--resume") + 1] == "orchestrator-1"

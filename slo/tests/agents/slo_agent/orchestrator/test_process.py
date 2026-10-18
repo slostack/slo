@@ -117,15 +117,15 @@ class TestSubAgentProcessArgvBuilding:
     """``_build_argv`` constructs the correct child command line."""
 
     def test_argv_includes_module_and_run_flags(self) -> None:
-        """Argv always uses ``sys.executable -m src.cli run --json -p <prompt>``."""
+        """Argv always uses ``sys.executable -I -m src.cli run --json -p <prompt>``."""
         import sys
 
         process, _ = _make_process(prompt="Analyse files.")
         argv: list[str] = process._build_argv()
 
         assert argv[0] == sys.executable
-        assert argv[1:4] == ["-m", "src.cli", "run"]
-        assert "-I" not in argv
+        assert argv[1:5] == ["-I", "-m", "src.cli", "run"]
+        assert argv.count("-I") == 1
         assert "--json" in argv
         assert "-p" in argv
         assert "Analyse files." in argv
@@ -207,6 +207,7 @@ class TestSubAgentProcessArgvBuilding:
 
         assert process._build_argv() == [
             sys.executable,
+            "-I",
             "-m",
             "src.cli",
             "run",

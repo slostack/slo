@@ -1,7 +1,7 @@
 """SubAgentProcess — manage one headless child ``slo run`` process.
 
 One process wrapper is created per task by ``SubAgentPool._run_one``. It
-spawns ``sys.executable -m src.cli run --json -p <prompt>`` via
+spawns ``sys.executable -I -m src.cli run --json -p <prompt>`` via
 ``asyncio.create_subprocess_exec`` (venv-portable), reads its JSONL stdout
 line by line, re-hydrates each line into an ``AgentStreamEventDAO``, tags it
 with identity fields, updates the ``ProcessRegistry``, enforces the per-task
@@ -257,10 +257,11 @@ class SubAgentProcess:
     def _build_argv(self) -> list[str]:
         """Build the headless child command line.
 
-        Uses ``sys.executable -m src.cli`` rather than a bare ``slo`` on PATH
+        Uses ``sys.executable -I -m src.cli`` rather than a bare ``slo`` on PATH
         so the child always runs under the same interpreter and virtualenv as
-        the orchestrator in both dev and installed layouts. The pool-assigned
-        session id and history flag are unconditional so child captures,
+        the orchestrator in installed and editable-install layouts, isolated from
+        project import paths. The pool-assigned session id and history flag are
+        unconditional so child captures,
         heartbeats, and history share one identity.
 
         Returns:
@@ -272,6 +273,7 @@ class SubAgentProcess:
         )
         argv: list[str] = [
             sys.executable,
+            "-I",
             "-m",
             "src.cli",
             "run",

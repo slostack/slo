@@ -25,5 +25,7 @@ def test_install_guide_distinguishes_initial_wrapper_environment_from_child_sani
 
     assert "import isolation, not environment scrubbing" in content
     assert "initial\nwrapped CLI process" in content
-    assert "sanitized child\nenvironment" in content
+    assert "sanitized child environment" in " ".join(content.split())
+    assert "sys.executable -I -m src.cli" in content
+    assert "does not propagate to project interpreters" in " ".join(content.split())
     assert "trusted source fallback" in content

@@ -763,8 +763,12 @@ its generated `slo-entry` trampoline. `install.sh` is the only wrapper writer;
 and before conditional shell finalization. Direct pipx mutations bypass this
 contract and recover by re-running the matching tagged public installer. `-I`
 protects initial CLI import resolution while preserving ordinary environment values.
-Headless source/module spawns remain sanitized-environment paths without `-I`, and
-the visualizer source fallback is trusted-source-only with no forwarded `PYTHONPATH`.
+Sub-agents, detached workflow orchestrators, and workflow resumes always use
+`sys.executable -I -m src.cli` with the existing sanitized child environment. Slo
+must be installed in that interpreter (an editable install is supported); a source
+checkout on cwd or `PYTHONPATH` alone is insufficient. Isolation applies to the
+agent interpreter, not project commands it launches. The visualizer source fallback
+remains trusted-source-only with no forwarded `PYTHONPATH`.
 
 ## 11. History / Persistence
 

@@ -343,8 +343,8 @@ class TestBuildArgv:
             cwd="/repo",
         )
 
-        assert argv[:4] == [sys.executable, "-m", "src.cli", "run"]
-        assert "-I" not in argv
+        assert argv[:5] == [sys.executable, "-I", "-m", "src.cli", "run"]
+        assert argv.count("-I") == 1
         assert "--orchestrator" in argv
         assert "--json" in argv
         assert "--enable-history" in argv

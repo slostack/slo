@@ -300,7 +300,8 @@ class WorkflowRelauncher:
         """Build a resumed orchestrator argv from the durable workflow handle.
 
         WHAT: Keeps the original brief, owner notification target, and working
-            directory while using --resume instead of --session-id.
+            directory while using --resume instead of --session-id. Python isolated
+            mode prevents project import paths from selecting agent modules.
         WHO: WorkflowRelauncher.invoke passes this argv to the subprocess API.
         WHEN: Immediately before a resumed orchestrator is spawned.
 
@@ -312,6 +313,7 @@ class WorkflowRelauncher:
         """
         return [
             sys.executable,
+            "-I",
             "-m",
             "src.cli",
             "run",

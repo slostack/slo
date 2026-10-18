@@ -115,7 +115,7 @@ class CleanDrainScenario:
                 "Path(os.devnull).touch()\n"
                 "from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool\n"
                 "async def spawn(*args: object, **kwargs: object):\n"
-                "    assert args[1:4] == ('-m', 'src.cli', 'run')\n"
+                "    assert args[1:5] == ('-I', '-m', 'src.cli', 'run')\n"
                 f"    kwargs['pass_fds'] = ({barrier_read},)\n"
                 "    kwargs['cwd'] = root\n"
                 f"    return await asyncio.create_subprocess_exec({ _HARNESS_PYTHON!r}, '-I', '-B', {str(workload)!r}, **kwargs)\n"

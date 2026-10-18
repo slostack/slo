@@ -37,6 +37,7 @@ from src.tui.model_catalog import (
 )
 from src.agents.slo_agent.history.tree_builder import SessionTreeBuilder
 from src.agents.slo_agent.orchestrator.workflow_registry import (
+    WorkflowCommandResultDAO,
     WorkflowCommandService,
     WorkflowHandleStore,
 )
@@ -88,6 +89,10 @@ class SlashCommandResultDAO(BaseModel):
         refresh_usage_status (bool): Repaint a cached usage status without measuring.
         git_diff_path (Optional[str]): Raw path the operator asked to diff; the
             TUI loads it and pushes GitDiffScreen.
+        dismissed_workflow_id (Optional[str]): Workflow whose durable dismissal
+            succeeded; the TUI suppresses its observation group in memory.
+        resumed_workflow_id (Optional[str]): Workflow whose relaunch was
+            confirmed; the TUI clears any observation suppression for it.
     """
 
     rendered: Optional[str] = None
@@ -106,6 +111,8 @@ class SlashCommandResultDAO(BaseModel):
     refresh_context_window: bool = False
     refresh_usage_status: bool = False
     git_diff_path: Optional[str] = None
+    dismissed_workflow_id: Optional[str] = None
+    resumed_workflow_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _reject_duplicate_context_refresh(self) -> "SlashCommandResultDAO":
@@ -1261,11 +1268,27 @@ class SlashRouter:
         if subcommand == "abort" and workflow_id:
             return SlashCommandResultDAO(rendered=await service.abort(workflow_id=workflow_id))
         if subcommand == "dismiss" and workflow_id:
-            return SlashCommandResultDAO(rendered=await service.dismiss(workflow_id=workflow_id))
+            return cls._workflow_command_result(result=await service.dismiss_result(workflow_id=workflow_id))
         if subcommand == "resume" and workflow_id:
-            return SlashCommandResultDAO(rendered=await service.resume(workflow_id=workflow_id))
+            return cls._workflow_command_result(result=await service.resume_result(workflow_id=workflow_id))
         return SlashCommandResultDAO(
             rendered="usage: /workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]",
+        )
+
+    @staticmethod
+    def _workflow_command_result(*, result: WorkflowCommandResultDAO) -> SlashCommandResultDAO:
+        """Carry a typed dismiss/resume outcome to the TUI without parsing its text.
+
+        Args:
+            result (WorkflowCommandResultDAO): Command service outcome.
+
+        Returns:
+            SlashCommandResultDAO: Transcript text plus the typed observation signal.
+        """
+        return SlashCommandResultDAO(
+            rendered=result.rendered,
+            dismissed_workflow_id=result.dismissed_workflow_id,
+            resumed_workflow_id=result.resumed_workflow_id,
         )
 
     @classmethod

@@ -908,6 +908,8 @@ class SloTUI(App):
             self._workflow_app_service = DetachedWorkflowAppService(
                 workflow_handle_store=self._workflow_handle_store,
                 owner_session_id=self._session.session_id,
+                attached_snapshot=self._session.attached_dispatch_snapshot,
+                history_store=self._session.history_store,
             )
         await self._workflow_app_service.reconcile_snapshot()
         await self._acquire_session_lease()

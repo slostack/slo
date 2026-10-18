@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
+from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -74,6 +76,7 @@ def _build_service(*, store: WorkflowHandleStore) -> DetachedWorkflowAppService:
     return DetachedWorkflowAppService(
         workflow_handle_store=store,
         owner_session_id=_OWNER_SESSION_ID,
+        attached_snapshot=AttachedDispatchSnapshotDAO.empty,
     )
 
 
@@ -373,4 +376,47 @@ class TestLiveWorkflowLabels:
         store: WorkflowHandleStore = _build_store(history_root=tmp_path)
         service: DetachedWorkflowAppService = _build_service(store=store)
 
+        assert service.live_workflow_labels() == []
+
+
+class TestObservationConstruction:
+    """The extended constructor binds collaborators without starting I/O (feature 94 a.2)."""
+
+    def test_constructor_performs_no_io(self) -> None:
+        """Construction never reads the supplier, the handle store or the history store."""
+        supplier: MagicMock = MagicMock(return_value=AttachedDispatchSnapshotDAO.empty())
+        store: MagicMock = MagicMock(spec=WorkflowHandleStore)
+        history_store: MagicMock = MagicMock(spec=SessionHistoryStoreProtocol)
+        capability: MagicMock = MagicMock(return_value=None)
+
+        DetachedWorkflowAppService(
+            workflow_handle_store=store,
+            owner_session_id=_OWNER_SESSION_ID,
+            attached_snapshot=supplier,
+            history_store=history_store,
+            attached_abort=AsyncMock(),
+            attached_capability=capability,
+        )
+
+        assert supplier.call_count == 0
+        assert store.method_calls == []
+        assert history_store.method_calls == []
+        assert capability.call_count == 0
+
+    async def test_lifecycle_without_handle_store_is_safe_noop(self) -> None:
+        """A no-history service keeps every lifecycle method a safe no-effect outcome."""
+        service: DetachedWorkflowAppService = DetachedWorkflowAppService(
+            workflow_handle_store=None,
+            owner_session_id=_OWNER_SESSION_ID,
+            attached_snapshot=AttachedDispatchSnapshotDAO.empty,
+        )
+
+        reconciled: dict[str, WorkflowState] = await service.reconcile_snapshot()
+        outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
+            kind="workflow_started",
+            payload=_lifecycle_payload(),
+        )
+
+        assert reconciled == {}
+        assert outcome == HandleAdvanceOutcomeDAO(workflow_id="wf-1")
         assert service.live_workflow_labels() == []

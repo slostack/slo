@@ -961,12 +961,19 @@ class TestSlashWorkflowsHandler:
 
     @pytest.mark.asyncio
     async def test_slash_router_dispatches_workflows_resume(self, tmp_path: Path) -> None:
-        """``/workflows resume wf-1`` delegates to the workflow resume service."""
+        """``/workflows resume wf-1`` forwards the typed resume signal with its text."""
         from unittest.mock import AsyncMock
+
+        from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowCommandResultDAO
 
         session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
         service: MagicMock = MagicMock()
-        service.resume = AsyncMock(return_value="workflow wf-1 resumed (pid 5678)")
+        service.resume_result = AsyncMock(
+            return_value=WorkflowCommandResultDAO(
+                rendered="workflow wf-1 resumed (pid 5678)",
+                resumed_workflow_id="wf-1",
+            )
+        )
         with patch(
             "src.tui.slash_router.WorkflowCommandService",
             return_value=service,
@@ -976,28 +983,78 @@ class TestSlashWorkflowsHandler:
                 session=session,
             )
 
-        service.resume.assert_awaited_once_with(workflow_id="wf-1")
+        service.resume_result.assert_awaited_once_with(workflow_id="wf-1")
         assert result.rendered == "workflow wf-1 resumed (pid 5678)"
+        assert result.resumed_workflow_id == "wf-1"
+        assert result.dismissed_workflow_id is None
 
     @pytest.mark.asyncio
-    async def test_workflows_dismiss_routes_to_service(self, tmp_path: Path) -> None:
-        """``/workflows dismiss wf-1`` renders the service's dismiss text."""
+    async def test_workflows_failed_resume_carries_no_signal(self, tmp_path: Path) -> None:
+        """A refused resume renders its text and never clears observation suppression."""
         session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
-        from unittest.mock import AsyncMock
+        await self._write_handle(history_root=session.history_root, state="running")
 
-        service: MagicMock = MagicMock()
-        service.dismiss = AsyncMock(return_value="workflow wf-1 dismissed (stalled → failed)")
-        with patch(
-            "src.tui.slash_router.WorkflowCommandService",
-            return_value=service,
-        ):
-            result: SlashCommandResultDAO = await SlashRouter.dispatch(
-                line="/workflows dismiss wf-1",
-                session=session,
-            )
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows resume wf-1",
+            session=session,
+        )
 
-        service.dismiss.assert_awaited_once_with(workflow_id="wf-1")
+        assert result.rendered == "workflow wf-1 is running — only stalled or failed workflows can be resumed"
+        assert result.resumed_workflow_id is None
+
+    @pytest.mark.asyncio
+    async def test_workflows_dismiss_forwards_typed_dismissal(self, tmp_path: Path) -> None:
+        """A durable stalled→failed dismissal keeps the handle and signals its id."""
+        from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
+
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        await self._write_handle(history_root=session.history_root, state="stalled")
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows dismiss wf-1",
+            session=session,
+        )
+
         assert result.rendered == "workflow wf-1 dismissed (stalled → failed)"
+        assert result.dismissed_workflow_id == "wf-1"
+        assert result.resumed_workflow_id is None
+        handle = await WorkflowHandleStore(history_root=session.history_root).read(
+            owner_session_id="session-1234",
+            workflow_id="wf-1",
+        )
+        assert handle is not None
+        assert handle.state == "failed"
+
+    @pytest.mark.asyncio
+    async def test_workflows_refused_dismiss_carries_no_signal(self, tmp_path: Path) -> None:
+        """A refused dismissal keeps its text; success text is never parsed."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+        await self._write_handle(history_root=session.history_root, state="running")
+
+        result: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows dismiss wf-1",
+            session=session,
+        )
+
+        assert result.rendered == "workflow wf-1 is running — only stalled workflows can be dismissed"
+        assert result.dismissed_workflow_id is None
+
+    @pytest.mark.asyncio
+    async def test_workflows_list_and_abort_carry_no_signal(self, tmp_path: Path) -> None:
+        """Only dismiss and resume can populate the typed observation signals."""
+        session: MagicMock = self._build_workflow_session(tmp_path=tmp_path)
+
+        listing: SlashCommandResultDAO = await SlashRouter.dispatch(line="/workflows", session=session)
+        abort: SlashCommandResultDAO = await SlashRouter.dispatch(
+            line="/workflows abort wf-1", session=session
+        )
+
+        assert (listing.dismissed_workflow_id, listing.resumed_workflow_id) == (None, None)
+        assert (abort.rendered, abort.dismissed_workflow_id, abort.resumed_workflow_id) == (
+            "no workflow wf-1",
+            None,
+            None,
+        )
 
     @pytest.mark.asyncio
     async def test_workflows_bad_subcommand_renders_usage(self, tmp_path: Path) -> None:

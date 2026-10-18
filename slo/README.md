@@ -1927,6 +1927,29 @@ generic scheduled actions from the TUI such as repeated reminders,
 interval-based in-session output, delayed follow-ups, and schedules that
 run until the user explicitly stops them.
 
+### Explain a functionality with HTML
+
+Use the bundled [`explain-with-html`](skills/design-and-analysis/explain-with-html/SKILL.md)
+skill for a programmer-facing explanation of an existing feature or a proposed
+design. For example:
+
+> Use explain-with-html to explain this functionality. Show one concept per
+> section, the domain owners and control flow, then the interfaces and code journey.
+
+Before designing the HTML, the skill requires `solution-design`, `coding-rules`,
+and `code-design-principles`. It connects the current and intended user journeys
+to domain state, whole interfaces, lifecycle and failure behavior, using diagrams
+with explicit return paths. Near the end, separate **Domains as code**,
+**Interfaces as code**, and **The journey through code** sections show concrete
+contracts and ordered caller examples; complete implementation is not required.
+Existing source is cited and distinguished from proposed interfaces.
+
+The output is a self-contained scrolling page with inline diagrams, accessible
+navigation and syntax highlighting readable without JavaScript. It composes with
+`present-as-single-page` for visual presentation; it does not implement the feature
+or claim that proposed behavior has been tested. After editing bundled skills,
+run `make build-skill-index` from the application root to refresh discovery.
+
 ### Where user content lives
 
 ```

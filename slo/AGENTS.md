@@ -23,7 +23,7 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 - Persists a full-fidelity JSONL event log per session under `~/.slo/sessions/history/`.
 - Loads project instruction files (`SLO.md` / `AGENTS.md` / `CLAUDE.md`) from the
   working directory tree into the system prompt automatically.
-- Keeps 186 vendored convention skills (`skills/`) readable on demand via the `read` tool.
+- Keeps 187 vendored convention skills (`skills/`) readable on demand via the `read` tool.
 - Spawns and supervises headless sub-agents via `spawn_sub_agents` when promoted to
   orchestrator mode.
 
@@ -371,7 +371,7 @@ caller loop; only the synchronous formatting leaf crosses the gateway, and
 
 Skills are vendored convention prompts that the agent reads on demand.
 
-- **Location:** `skills/<group>/<slug>/SKILL.md` — 186 skills across 14 groups:
+- **Location:** `skills/<group>/<slug>/SKILL.md` — 187 skills across 14 groups:
   `orientation/`, `design-and-analysis/`, `coding/`, `git-ops/`, `cli/`, `tui/`,
   `integration-tests/`, `frontend-vue/`, `presentation/`, `user-content/`,
   `engineering/`, `languages/`, `samples/`, and `orchestration/`.
@@ -389,6 +389,17 @@ Skills are vendored convention prompts that the agent reads on demand.
 
 `SkillRegistry` (`src/agents/skills/registry.py`) parses individual `SKILL.md` files but
 is not yet wired into the session boot path.
+
+### Functionality explanations as HTML
+
+Use `skills/design-and-analysis/explain-with-html/SKILL.md` when asked to explain
+existing or proposed functionality as a programmer-facing HTML walkthrough. It
+requires reading `solution-design`, `coding-rules`, and `code-design-principles`
+before shaping the page. Present one concept per section, trace ownership and
+control flow through observable results, then finish with domain types, actual or
+explicitly proposed interfaces, and numbered code journeys matching the diagrams.
+Use `present-as-single-page` for rendering and offline syntax highlighting; the
+explanation skill does not authorize feature implementation or sub-agent dispatch.
 
 ### Workflows vs Skills — Critical Routing Rule
 

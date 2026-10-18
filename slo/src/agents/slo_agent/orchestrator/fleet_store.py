@@ -197,17 +197,59 @@ class FleetStore:
                 evidence is missing, oversized, malformed, stale or changed.
         """
         try:
+            index: ExecutionIndexDAO = ExecutionIndexDAO.model_validate_json(
+                cls._read_bounded(
+                    path=OrchestrationLayout.execution_index_path(
+                        history_root=history_root, orchestrator_session_id=orchestrator_session_id
+                    )
+                )
+            )
+        except (OSError, ValueError, ValidationError):
+            return None
+        return cls.verify_execution(
+            history_root=history_root,
+            orchestrator_session_id=orchestrator_session_id,
+            child_session_id=child_session_id,
+            index=index,
+        )
+
+    @classmethod
+    def verify_execution(
+        cls,
+        *,
+        history_root: Path,
+        orchestrator_session_id: str,
+        child_session_id: str,
+        index: ExecutionIndexDAO,
+    ) -> Optional[ChildExecutionEvidenceDAO]:
+        """Return a child's sibling when it agrees with an already decoded run index.
+
+        WHAT: Applies every check of ``load_verified_execution`` except reading the
+            index: the index must map the child to the sibling's execution_id, the
+            capture identity and digests must match current bytes, and the sibling
+            must be byte-identical after those reads.
+        WHO: Called by load_verified_execution and by group observers that already
+            read and decoded the run index once within their own byte budget.
+        WHEN: Once per child per observation.
+
+        Args:
+            history_root (Path): Root containing session history directories.
+            orchestrator_session_id (str): Parent session owning the fleet.
+            child_session_id (str): Child whose incarnation evidence is verified.
+            index (ExecutionIndexDAO): Run index decoded by the caller.
+
+        Returns:
+            Optional[ChildExecutionEvidenceDAO]: Verified evidence, or None when the
+                sibling is missing, oversized, malformed, stale or changed.
+        """
+        try:
             sibling_path: Path = OrchestrationLayout.child_execution_path(
                 history_root=history_root,
                 parent_session_id=orchestrator_session_id,
                 child_session_id=child_session_id,
             )
-            index_path: Path = OrchestrationLayout.execution_index_path(
-                history_root=history_root, orchestrator_session_id=orchestrator_session_id
-            )
             sibling_before: bytes = cls._read_bounded(path=sibling_path)
             evidence = ChildExecutionEvidenceDAO.model_validate_json(sibling_before)
-            index = ExecutionIndexDAO.model_validate_json(cls._read_bounded(path=index_path))
         except (OSError, ValueError, ValidationError):
             return None
         files_match: bool = index.executions.get(

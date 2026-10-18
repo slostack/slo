@@ -58,39 +58,46 @@ def test_read_new_returns_empty_when_absent(tmp_path: Path) -> None:
     assert tail.read_new() == []
 
 
-class _RecordingPath(type(Path())):  # type: ignore[misc]
-    """Temp-owned path whose opened handles record every requested read size."""
+class _ReadRecorder:
+    """Record every read size requested from handles the tail opens."""
 
-    read_sizes: list[int]
+    def __init__(self) -> None:
+        """Start with no recorded reads."""
+        self.read_sizes: list[int] = []
 
-    def open(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        """Open the file and wrap the handle so read sizes are observable."""
-        handle = super().open(*args, **kwargs)
-        sizes: list[int] = self.read_sizes
+    def wrap(self, *, handle: Any) -> Any:  # noqa: ANN401 — wraps any binary reader.
+        """Wrap ``handle.read`` so unbounded reads fail and sizes are observable."""
+        if handle is None:
+            return None
         real_read = handle.read
 
         def _read(size: int = -1) -> bytes:
             if size is None or size < 0:
                 raise AssertionError("unbounded capture read")
-            sizes.append(size)
+            self.read_sizes.append(size)
             return real_read(size)
 
         handle.read = _read
         return handle
 
 
-def _recording_path(*, path: Path) -> _RecordingPath:
-    """Return a recording view of a temp-owned capture path.
+def _record_reads(*, monkeypatch: pytest.MonkeyPatch) -> _ReadRecorder:
+    """Instrument the tail's single open boundary for the duration of one test.
 
     Args:
-        path (Path): Capture path inside tmp_path.
+        monkeypatch (pytest.MonkeyPatch): Test-scoped patcher.
 
     Returns:
-        _RecordingPath: Path whose reads are recorded in ``read_sizes``.
+        _ReadRecorder: Recorder whose ``read_sizes`` lists every requested read.
     """
-    recording = _RecordingPath(path)
-    recording.read_sizes = []
-    return recording
+    recorder = _ReadRecorder()
+    real_open = JsonlTail._open_regular
+
+    def _open(self: JsonlTail) -> Any:  # noqa: ANN401
+        return recorder.wrap(handle=real_open(self))
+
+    monkeypatch.setattr(JsonlTail, "_open_regular", _open)
+    return recorder
 
 
 def _replace(*, path: Path, data: bytes) -> None:
@@ -164,12 +171,14 @@ def test_shrink_resets_revision_and_discards_pending(tmp_path: Path) -> None:
     assert tail.revision == 1
 
 
-def test_initial_oversized_file_reads_latest_bounded_tail(tmp_path: Path) -> None:
+def test_initial_oversized_file_reads_latest_bounded_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Reads only the newest complete lines within the budget and marks omission."""
     path: Path = tmp_path / "stdout.jsonl"
     path.write_bytes(b"".join(f"line-{index:03d}\n".encode() for index in range(10)))
-    recording = _recording_path(path=path)
-    tail = JsonlTail(path=recording, max_read_bytes=25)
+    recording = _record_reads(monkeypatch=monkeypatch)
+    tail = JsonlTail(path=path, max_read_bytes=25)
 
     lines = tail.read_new()
 
@@ -178,11 +187,13 @@ def test_initial_oversized_file_reads_latest_bounded_tail(tmp_path: Path) -> Non
     assert recording.read_sizes == [25]
 
 
-def test_oversized_backlog_after_first_read_selects_bounded_tail(tmp_path: Path) -> None:
+def test_oversized_backlog_after_first_read_selects_bounded_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Skips an appended backlog larger than the budget down to its latest lines."""
     path: Path = tmp_path / "stdout.jsonl"
-    recording = _recording_path(path=path)
-    tail = JsonlTail(path=recording, max_read_bytes=25)
+    recording = _record_reads(monkeypatch=monkeypatch)
+    tail = JsonlTail(path=path, max_read_bytes=25)
     path.write_bytes(b"start\n")
     assert tail.read_new() == [b"start"]
     assert tail.truncated is False
@@ -210,11 +221,11 @@ def test_oversized_single_line_is_skipped_until_its_newline(tmp_path: Path) -> N
     assert tail.truncated is True
 
 
-def test_pending_bytes_are_capped_to_the_budget(tmp_path: Path) -> None:
+def test_pending_bytes_are_capped_to_the_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Drops a growing partial line once held bytes exceed the budget."""
     path: Path = tmp_path / "stdout.jsonl"
-    recording = _recording_path(path=path)
-    tail = JsonlTail(path=recording, max_read_bytes=16)
+    recording = _record_reads(monkeypatch=monkeypatch)
+    tail = JsonlTail(path=path, max_read_bytes=16)
     path.write_bytes(b"a" * 10)
     assert tail.read_new() == []
     assert tail.truncated is False
@@ -231,11 +242,11 @@ def test_pending_bytes_are_capped_to_the_budget(tmp_path: Path) -> None:
     assert max(recording.read_sizes) <= 16
 
 
-def test_bounded_repeated_append_returns_every_line(tmp_path: Path) -> None:
+def test_bounded_repeated_append_returns_every_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Returns every line of small appends without omission or reset."""
     path: Path = tmp_path / "stdout.jsonl"
-    recording = _recording_path(path=path)
-    tail = JsonlTail(path=recording, max_read_bytes=16)
+    recording = _record_reads(monkeypatch=monkeypatch)
+    tail = JsonlTail(path=path, max_read_bytes=16)
     path.write_bytes(b"")
     collected: list[bytes] = []
 
@@ -291,3 +302,44 @@ def test_line_exactly_at_budget_is_emitted(tmp_path: Path) -> None:
 
     assert tail.read_new() == [b"a" * 10 + b"b" * 6, b"ok"]
     assert tail.truncated is False
+
+
+def test_read_new_refuses_symlinked_capture(tmp_path: Path) -> None:
+    """A capture path that is a symlink is never followed, even to a readable file."""
+    outside: Path = tmp_path / "outside"
+    outside.mkdir()
+    target: Path = outside / "secret.jsonl"
+    target.write_bytes(b"private\n")
+    capture_dir: Path = tmp_path / "capture"
+    capture_dir.mkdir()
+    link: Path = capture_dir / "stdout.jsonl"
+    link.symlink_to(target)
+    tail = JsonlTail(path=link)
+
+    assert tail.read_new() == []
+    assert tail.identity is None
+    assert target.read_bytes() == b"private\n"
+
+
+def test_read_new_refuses_non_regular_capture_without_blocking(tmp_path: Path) -> None:
+    """A FIFO planted at the capture path returns no lines instead of blocking the poll."""
+    fifo: Path = tmp_path / "stdout.jsonl"
+    os.mkfifo(fifo)
+    tail = JsonlTail(path=fifo)
+
+    assert tail.read_new() == []
+    assert tail.identity is None
+
+
+def test_identity_reports_the_tailed_generation(tmp_path: Path) -> None:
+    """``identity`` is None before the first read and then names the read file."""
+    path: Path = tmp_path / "stdout.jsonl"
+    tail = JsonlTail(path=path)
+
+    assert tail.identity is None
+
+    path.write_bytes(b"one\n")
+    tail.read_new()
+    status = os.stat(path)
+
+    assert tail.identity == (status.st_dev, status.st_ino)

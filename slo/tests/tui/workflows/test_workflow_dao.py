@@ -5,11 +5,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.workflows.dao import (
+    ChildAbortTargetDAO,
     DetachedWorkflowUiEffectDAO,
     ParsedFleetUpdateDAO,
     ParsedLaunchResultDAO,
     ParsedWorkflowLifecycleMessageDAO,
+    SessionProgressSnapshotDAO,
     WorkflowSessionKeyDAO,
     WorkflowSessionRowDAO,
     WorkflowSessionSnapshotDAO,
@@ -445,3 +448,118 @@ class TestWorkflowSessionSnapshotDAO:
         assert snapshot.notice == "Workflow list unavailable."
         with pytest.raises(ValidationError):
             snapshot.notice = None  # type: ignore[misc]
+
+
+_RUN_ID: str = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+
+
+def _target(**overrides: object) -> ChildAbortTargetDAO:
+    """Build a confirmation target for the default child key, applying overrides."""
+    fields: dict[str, object] = {"key": _key(), "run_id": _RUN_ID, "execution_id": _EXECUTION_ID}
+    fields.update(overrides)
+    return ChildAbortTargetDAO.model_validate(fields)
+
+
+def _progress(**overrides: object) -> SessionProgressSnapshotDAO:
+    """Build a readable child progress snapshot, applying field overrides."""
+    fields: dict[str, object] = {
+        "key": _key(),
+        "execution_id": _EXECUTION_ID,
+        "dispatch_id": _DISPATCH_ID,
+        "entries": (TranscriptEntryDAO(kind="assistant", answer="hello"),),
+        "revision": "capture:1",
+        "source_generation": "capture:g1",
+        "availability": "available",
+        "observed_at": "2026-10-18T00:00:00+00:00",
+        "task_text": "Fix the bug",
+        "task_text_complete": True,
+        "status": "running",
+    }
+    fields.update(overrides)
+    return SessionProgressSnapshotDAO.model_validate(fields)
+
+
+class TestChildAbortTargetDAO:
+    """Immutable identity captured when abort confirmation opens."""
+
+    def test_target_is_frozen_hashable_and_canonical(self) -> None:
+        """Equal targets index one dict slot and cannot be reassigned."""
+        target = _target()
+
+        assert {target: 1}[_target()] == 1
+        with pytest.raises(ValidationError):
+            target.run_id = _RUN_ID  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"run_id": "not-a-uuid"},
+            {"run_id": _RUN_ID.upper()},
+            {"execution_id": ""},
+            {"key": WorkflowSessionKeyDAO(orchestrator_session_id="orch-1", session_id="orch-1")},
+            {"extra": "field"},
+        ],
+    )
+    def test_target_rejects_parent_key_bad_identity_and_extras(self, overrides: dict[str, object]) -> None:
+        """Only an exact child incarnation of one run can be a confirmation target."""
+        with pytest.raises(ValidationError):
+            _target(**overrides)
+
+
+class TestSessionProgressSnapshotDAO:
+    """Bounded public progress for one selected session (feature 94 a.3)."""
+
+    def test_defaults_carry_no_authority_or_final_read(self) -> None:
+        """Read-only consumers get no abort target, no removal and no final read by default."""
+        snapshot = _progress()
+
+        assert snapshot.abort_target is None
+        assert snapshot.membership_removed is False
+        assert snapshot.final_read_complete is False
+        assert snapshot.notice is None
+        with pytest.raises(ValidationError):
+            snapshot.revision = "other"  # type: ignore[misc]
+
+    def test_matching_abort_target_is_accepted(self) -> None:
+        """A target naming the snapshot's own key and execution is accepted."""
+        snapshot = _progress(abort_target=_target())
+
+        assert snapshot.abort_target == _target()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"availability": "loading"},
+            {"execution_id": "nope"},
+            {
+                "abort_target": _target(
+                    key=WorkflowSessionKeyDAO(orchestrator_session_id="orch-1", session_id="x")
+                )
+            },
+            {"abort_target": _target(execution_id=_DISPATCH_ID)},
+            {"membership_removed": True},
+            {"membership_removed": True, "entries": (), "final_read_complete": True},
+            {"final_read_complete": True, "availability": "stale"},
+            {
+                "key": WorkflowSessionKeyDAO(orchestrator_session_id="orch-1", session_id="orch-1"),
+                "execution_id": _EXECUTION_ID,
+            },
+            {"private": "metadata"},
+        ],
+    )
+    def test_snapshot_rejects_inconsistent_state(self, overrides: dict[str, object]) -> None:
+        """Mismatched authority, removal with content and stale final reads are refused."""
+        with pytest.raises(ValidationError):
+            _progress(**overrides)
+
+    def test_removed_snapshot_is_content_free(self) -> None:
+        """Authoritative removal carries no entries and keeps the fixed notice."""
+        snapshot = _progress(
+            entries=(),
+            availability="stale",
+            membership_removed=True,
+            notice="Session removed from current workflow.",
+        )
+
+        assert snapshot.entries == ()
+        assert snapshot.membership_removed is True

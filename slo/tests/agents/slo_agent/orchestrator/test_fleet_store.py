@@ -511,3 +511,43 @@ class TestExecutionEvidence:
             )
             is None
         )
+
+
+class TestVerifyExecutionAgainstDecodedIndex:
+    """``verify_execution`` checks a child against an index the caller already decoded."""
+
+    def test_caller_decoded_index_above_sibling_bound_verifies(self, tmp_path: Path) -> None:
+        """A large run index read under the caller's own budget still verifies the child."""
+        store: FleetStore = _bound_store(tmp_path)
+        running: ChildExecutionEvidenceDAO = _publish_running(tmp_path, store, execution_id=_EXEC_A)
+        executions: dict[str, str] = {f"filler-{index:05d}": _EXEC_B for index in range(2_000)}
+        index: ExecutionIndexDAO = ExecutionIndexDAO(
+            orchestrator_session_id="orch-1",
+            run_id=_RUN_ID,
+            executions={**executions, "child-1": _EXEC_A},
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+
+        verified = FleetStore.verify_execution(
+            history_root=tmp_path, orchestrator_session_id="orch-1", child_session_id="child-1", index=index
+        )
+
+        assert len(index.model_dump_json()) > MAX_EVIDENCE_BYTES
+        assert verified == running
+
+    def test_index_naming_another_incarnation_is_rejected(self, tmp_path: Path) -> None:
+        """A decoded index that maps the child elsewhere never trusts the sibling."""
+        store: FleetStore = _bound_store(tmp_path)
+        _publish_running(tmp_path, store, execution_id=_EXEC_A)
+        index: ExecutionIndexDAO = ExecutionIndexDAO(
+            orchestrator_session_id="orch-1",
+            run_id=_RUN_ID,
+            executions={"child-1": _EXEC_B},
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+
+        verified = FleetStore.verify_execution(
+            history_root=tmp_path, orchestrator_session_id="orch-1", child_session_id="child-1", index=index
+        )
+
+        assert verified is None

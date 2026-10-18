@@ -13,10 +13,12 @@ from typing import List, Literal, Optional, TypeAlias, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.dao import canonical_uuid
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowState
 
 __all__ = [
+    "ChildAbortTargetDAO",
     "DetachedWorkflowUiEffect",
     "DetachedWorkflowUiEffectDAO",
     "HandleAdvanceOutcomeDAO",
@@ -25,6 +27,8 @@ __all__ = [
     "ParsedFleetUpdateDAO",
     "ParsedLaunchResultDAO",
     "ParsedWorkflowLifecycleMessageDAO",
+    "SessionProgressAvailability",
+    "SessionProgressSnapshotDAO",
     "WorkflowLifecycleTarget",
     "WorkflowSessionAvailability",
     "WorkflowSessionKeyDAO",
@@ -462,3 +466,115 @@ class WorkflowSessionSnapshotDAO(BaseModel):
 
     rows: tuple[WorkflowSessionRowDAO, ...] = ()
     notice: Optional[str] = None
+
+
+SessionProgressAvailability: TypeAlias = Literal["available", "empty", "stale", "unavailable"]
+"""Readability of one progress observation; ``stale`` keeps the last-good paint."""
+
+
+class ChildAbortTargetDAO(BaseModel):
+    """Immutable child identity captured when abort confirmation opens (feature 94 a.4).
+
+    Never replaced with a refreshed row's identity after confirmation; read-only
+    observation consumers never build one.
+
+    Attributes:
+        key (WorkflowSessionKeyDAO): Child row key; never the parent key.
+        run_id (str): Runner invocation that must still own the child.
+        execution_id (str): Exact target incarnation.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: WorkflowSessionKeyDAO
+    run_id: str
+    execution_id: str
+
+    @field_validator("run_id", "execution_id")
+    @classmethod
+    def _validate_uuid(cls, value: str) -> str:
+        """Require canonical run and execution UUIDs."""
+        return canonical_uuid(value=value)
+
+    @field_validator("key")
+    @classmethod
+    def _validate_child_key(cls, value: WorkflowSessionKeyDAO) -> WorkflowSessionKeyDAO:
+        """Refuse the orchestrator's own key; only children can be aborted individually."""
+        if value.is_parent:
+            raise ValueError("abort target must name a child session")
+        return value
+
+
+class SessionProgressSnapshotDAO(BaseModel):
+    """Bounded public progress for one selected session (feature 94 a.3).
+
+    Transient result of ``WorkflowVisualizerLoader.load_session_progress``; never
+    persisted and never a raw payload bag. ``source_generation`` names the source
+    kind, execution and file identity and stays fixed across appends, while
+    ``revision`` changes whenever the bounded content changes.
+
+    Attributes:
+        key (WorkflowSessionKeyDAO): Observed session.
+        execution_id (str): Child incarnation UUID; empty for parent or legacy rows.
+        dispatch_id (str): Batch or run identity UUID; empty when unknown.
+        entries (tuple[TranscriptEntryDAO, ...]): At most 2,000 public entries.
+        revision (str): Content revision; empty when nothing was read.
+        source_generation (str): Source identity independent of appends.
+        availability (SessionProgressAvailability): Readability of this observation.
+        observed_at (str): UTC ISO-8601 observation time.
+        notice (Optional[str]): Fixed safe notice, never adapter error text.
+        task_text (str): Full task or preview, rendered literally.
+        task_text_complete (bool): True only for the matching incarnation's full task.
+        status (str): Display execution status.
+        membership_removed (bool): True only for authoritative removal; no content.
+        final_read_complete (bool): True only after a stable terminal source read.
+        abort_target (Optional[ChildAbortTargetDAO]): Confirmation identity; None in
+            read-only consumers.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: WorkflowSessionKeyDAO
+    execution_id: str = ""
+    dispatch_id: str = ""
+    entries: tuple[TranscriptEntryDAO, ...] = ()
+    revision: str
+    source_generation: str
+    availability: SessionProgressAvailability
+    observed_at: str
+    notice: Optional[str] = None
+    task_text: str
+    task_text_complete: bool
+    status: str
+    membership_removed: bool = False
+    final_read_complete: bool = False
+    abort_target: Optional[ChildAbortTargetDAO] = None
+
+    @field_validator("execution_id", "dispatch_id")
+    @classmethod
+    def _validate_optional_uuid(cls, value: str) -> str:
+        """Accept an empty legacy identity or a canonical UUID."""
+        return value if value == "" else canonical_uuid(value=value)
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> "SessionProgressSnapshotDAO":
+        """Reject authority, removal or completion claims the content cannot support.
+
+        Returns:
+            SessionProgressSnapshotDAO: Self after validation.
+
+        Raises:
+            ValueError: If the parent names an execution, the abort target names a
+                different session or incarnation, a removal carries content or
+                completion, or a final read is not readable.
+        """
+        if self.key.is_parent and self.execution_id:
+            raise ValueError("parent progress has no execution identity")
+        target = self.abort_target
+        if target is not None and (target.key, target.execution_id) != (self.key, self.execution_id):
+            raise ValueError("abort target must match the observed session and execution")
+        if self.membership_removed and (self.entries or self.final_read_complete or target is not None):
+            raise ValueError("removed membership carries no content, completion or authority")
+        if self.final_read_complete and self.availability not in {"available", "empty"}:
+            raise ValueError("final read requires a readable source")
+        return self

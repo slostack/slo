@@ -13,4 +13,7 @@ Layers, in dependency order:
   owns visualizer launch de-duplication, and emits transcript notices.
   It is the only layer allowed to talk to ``VisualizerLauncher`` and the
   transcript notice surface.
+- ``transcript_renderer.py`` — ``WorkflowTranscriptRenderer`` renders public
+  transcript entries for both the external visualizer and the in-app progress
+  view (feature 94 a.3). Presentation only; it never scrolls or reads files.
 """

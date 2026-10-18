@@ -6,7 +6,8 @@ call. Every read, and the held partial line, is bounded by ``max_read_bytes``:
 a larger backlog is skipped down to its latest complete lines, and a single line
 longer than the budget is dropped. A replaced (new device/inode) or shrunk file
 resets the tail and bumps ``revision`` so callers reproject instead of replaying
-old buffers into the new file. Pure filesystem, no Textual.
+old buffers into the new file. The capture is opened without following a
+symlink and only when it is a regular file. Pure filesystem, no Textual.
 
 Sub-spec 71.a.7; bounded contract from spec 94.a.3.
 """
@@ -14,6 +15,7 @@ Sub-spec 71.a.7; bounded contract from spec 94.a.3.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import BinaryIO, Optional
 
@@ -60,6 +62,11 @@ class JsonlTail:
         return self._revision
 
     @property
+    def identity(self) -> Optional[tuple[int, int]]:
+        """``(st_dev, st_ino)`` of the generation last read; None before any read. Read-only."""
+        return self._identity
+
+    @property
     def truncated(self) -> bool:
         """Whether bytes of the current generation were omitted from this view. Read-only."""
         return self._truncated
@@ -77,9 +84,8 @@ class JsonlTail:
         Returns:
             list[bytes]: Complete new lines without newline bytes, in order.
         """
-        try:
-            handle: BinaryIO = self._path.open("rb")
-        except FileNotFoundError:
+        handle: Optional[BinaryIO] = self._open_regular()
+        if handle is None:
             return []
         with handle:
             status: os.stat_result = os.fstat(handle.fileno())
@@ -87,6 +93,22 @@ class JsonlTail:
             if status.st_size == self._offset:
                 return []
             return self._read_appended(handle=handle, size=status.st_size)
+
+    def _open_regular(self) -> Optional[BinaryIO]:
+        """Open the capture read-only without following a symlink or blocking on a FIFO.
+
+        Returns:
+            Optional[BinaryIO]: Reader over the regular capture file, or None when it
+                is missing, a symlink, not a regular file, or unreadable.
+        """
+        try:
+            descriptor: int = os.open(self._path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            return None
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            return None
+        return os.fdopen(descriptor, "rb")
 
     def _follow_generation(self, *, status: os.stat_result) -> None:
         """Reset when the opened file is a new generation or shorter than the offset.

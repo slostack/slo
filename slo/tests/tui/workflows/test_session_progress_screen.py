@@ -776,6 +776,50 @@ class TestControls:
             assert isinstance(message, SessionProgressScreen.AbortRequested)
             assert message.target == target
 
+    async def test_withdrawn_target_disables_abort_and_shows_request_notice(self) -> None:
+        """A later snapshot without a target (request pending) disables Abort and paints its notice."""
+        app: _ScreenHost = _ScreenHost()
+        target: ChildAbortTargetDAO = ChildAbortTargetDAO(
+            key=_KEY, run_id=_RUN_ID, execution_id=_EXECUTION_ID
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await _paint(
+                app=app, pilot=pilot, snapshot=_snapshot(entries=_entries(count=2), abort_target=target)
+            )
+            await _paint(
+                app=app,
+                pilot=pilot,
+                snapshot=_snapshot(
+                    entries=_entries(count=2),
+                    notice="Abort requested; waiting for the orchestrator to confirm.",
+                ),
+            )
+
+            button: Button = app.screen_under_test.query_one("#abort-child", Button)
+            assert button.disabled is True
+            assert "Abort requested; waiting for the orchestrator to confirm." in _state_text(app=app)
+            assert "running" in _state_text(app=app)
+            await pilot.click("#abort-child")
+            assert app.messages == []
+
+    async def test_stale_snapshot_disables_abort_but_keeps_content(self) -> None:
+        """A status-only failure (stale) disables Abort while the last good content stays painted."""
+        app: _ScreenHost = _ScreenHost()
+        target: ChildAbortTargetDAO = ChildAbortTargetDAO(
+            key=_KEY, run_id=_RUN_ID, execution_id=_EXECUTION_ID
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await _paint(
+                app=app, pilot=pilot, snapshot=_snapshot(entries=_entries(count=2), abort_target=target)
+            )
+            painted: int = len(_log(app=app).lines)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(availability="stale", revision=""))
+
+            assert app.screen_under_test.query_one("#abort-child", Button).disabled is True
+            assert len(_log(app=app).lines) == painted
+
     async def test_literal_identity_task_and_status(self) -> None:
         """Session id, task text and status paint literally, never as markup."""
         app: _ScreenHost = _ScreenHost()

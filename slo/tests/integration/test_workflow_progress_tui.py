@@ -34,6 +34,9 @@ from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHisto
 from src.agents.slo_agent.orchestrator.context_dao import SpawnContextDAO, dump_json_bytes
 from src.agents.slo_agent.orchestrator.dao import (
     AttachedDispatchSnapshotDAO,
+    ChildAbortOutcomeDAO,
+    ChildAbortRequestDAO,
+    ChildControlCapabilityDAO,
     ChildExecutionEvidenceDAO,
     StdoutCaptureIdentityDAO,
     SubAgentResultDAO,
@@ -47,6 +50,7 @@ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import SloTUI
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
+from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.dao import (
     ProgressViewportDAO,
     WorkflowSessionKeyDAO,
@@ -99,6 +103,29 @@ class _AttachedSupplier:
             AttachedDispatchSnapshotDAO: Current batch.
         """
         return self.snapshot
+
+
+class _PoolSeam:
+    """Recording attached child-abort seam; ``gate`` holds the pool's answer until set."""
+
+    def __init__(self) -> None:
+        """Start open, with no requests."""
+        self.calls: list[ChildAbortRequestDAO] = []
+        self.gate: asyncio.Event = asyncio.Event()
+        self.gate.set()
+
+    async def __call__(self, *, request: ChildAbortRequestDAO) -> ChildAbortOutcomeDAO:
+        """Record the request, wait at the gate, then report the child aborted.
+
+        Args:
+            request (ChildAbortRequestDAO): Submitted request.
+
+        Returns:
+            ChildAbortOutcomeDAO: Aborted outcome for the request.
+        """
+        self.calls.append(request)
+        await self.gate.wait()
+        return ChildAbortOutcomeDAO.for_request(request=request, outcome="aborted", terminal_status="aborted")
 
 
 class _World:
@@ -189,21 +216,47 @@ class _World:
         with (self.capture_dir / "stdout.jsonl").open("a", encoding="utf-8") as handle:
             handle.write("".join(json.dumps(event) + "\n" for event in events))
 
-    def finish(self) -> None:
-        """Publish the child's terminal status and evidence; the registry reports completed."""
+    def finish(self, *, status: str = "completed") -> None:
+        """Publish the child's terminal status and evidence; the registry reports it too.
+
+        Args:
+            status (str, optional): Terminal status. Defaults to ``"completed"``.
+        """
         assert self.evidence is not None
         data: bytes = (
-            SubAgentResultDAO(task_id="task-a", session_id=_CHILD, status="completed", exit_code=0)
+            SubAgentResultDAO(
+                task_id="task-a",
+                session_id=_CHILD,
+                status=status,  # type: ignore[arg-type]
+                exit_code=0 if status == "completed" else 2,
+            )
             .model_dump_json()
             .encode()
         )
         (self.capture_dir / "status.json").write_bytes(data)
         self._store().publish_execution(
             evidence=self.evidence.terminal(
-                status="completed", status_sha256=hashlib.sha256(data).hexdigest()
+                status=status, status_sha256=hashlib.sha256(data).hexdigest()  # type: ignore[arg-type]
             )
         )
-        self.supplier.publish(status="completed")
+        self.supplier.publish(status=status)
+
+    def enable_attached_control(self) -> "_PoolSeam":
+        """Give the session an accepting attached pool seam that records every request.
+
+        The recording seam stands in for ``SloAgentSession.abort_child`` (the pool
+        boundary); no process is signalled. Must run before the app mounts.
+
+        Returns:
+            _PoolSeam: The recording seam.
+        """
+        seam: _PoolSeam = _PoolSeam()
+        owner: str = self.session.session_id
+        self.session.abort_child = seam  # type: ignore[method-assign]
+        self.session.child_control_capability = lambda: ChildControlCapabilityDAO(  # type: ignore[method-assign]
+            run_id=_RUN_ID, owner_session_id=owner, orchestrator_session_id=owner, accepting=True
+        )
+        return seam
 
     def _store(self) -> FleetStore:
         """Return the run-bound fleet store of the owner session."""
@@ -330,6 +383,23 @@ async def _open_child(*, app: SloTUI, pilot: Pilot[None]) -> SessionProgressScre
     return _screen(app=app)
 
 
+async def _open_confirmation(*, app: SloTUI, pilot: Pilot[None]) -> AbortConfirmationScreen:
+    """Click the progress view's Abort child button and return the confirmation.
+
+    Args:
+        app (SloTUI): Mounted app with an open, abort-eligible progress view.
+        pilot (Pilot[None]): Pilot.
+
+    Returns:
+        AbortConfirmationScreen: Confirmation on top of the progress view.
+    """
+    await pilot.click("#abort-child")
+    for _ in range(3):
+        await pilot.pause()
+    assert isinstance(app.screen, AbortConfirmationScreen)
+    return app.screen
+
+
 class TestOwnedWorkflowListToProgress:
     """The full journey keeps the reader's place and never touches execution."""
 
@@ -442,6 +512,306 @@ class TestOwnedWorkflowListToProgress:
             assert key not in sink._viewports
             late_paint.assert_not_called()
             abort.assert_not_called()
+
+    async def test_incarnation_change_with_confirmation_open(self, tmp_path: Path) -> None:
+        """Same-key reuse while confirming withdraws the confirmation (False) before the view; no abort."""
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        world.start_child(lines=30)
+        app: SloTUI = SloTUI(session=world.session)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
+            sink = app._workflow_progress_sink
+            assert sink is not None
+            key: WorkflowSessionKeyDAO = screen.key
+            confirmation: AbortConfirmationScreen = await _open_confirmation(app=app, pilot=pilot)
+            coordinator: WorkflowProgressCoordinator = _coordinator(app=app)
+            order: list[str] = []
+            results: list[Optional[bool]] = []
+            real_minimize = coordinator.minimize
+            real_withdraw = confirmation.withdraw
+            real_dismiss = confirmation.dismiss
+
+            def minimize() -> None:
+                order.append(f"minimize:{coordinator._generation}")
+                real_minimize()
+
+            def withdraw() -> None:
+                order.append(f"withdraw:{coordinator._generation}")
+                real_withdraw()
+
+            def dismiss(result: Optional[bool] = None) -> AwaitComplete:
+                results.append(result)
+                return real_dismiss(result)
+
+            coordinator.minimize = minimize  # type: ignore[method-assign]
+            confirmation.withdraw = withdraw  # type: ignore[method-assign]
+            confirmation.dismiss = dismiss  # type: ignore[method-assign]
+            world.start_child(lines=3, execution_id=_EXECUTION_B)
+            with (
+                patch.object(
+                    app, "_on_progress_incarnation_changed", wraps=app._on_progress_incarnation_changed
+                ) as handler,
+                patch.object(world.session, "abort") as abort,
+                patch.object(screen, "apply_snapshot") as late_paint,
+            ):
+                await _tick(app=app, pilot=pilot)
+                await _settle(app=app, pilot=pilot)
+
+            handler.assert_called_once_with(key=key)
+            generation: int = int(order[0].split(":")[1])
+            assert order == [f"minimize:{generation}", f"withdraw:{generation + 1}"]
+            assert results == [False]
+            assert [
+                s for s in app.screen_stack if isinstance(s, (SessionProgressScreen, AbortConfirmationScreen))
+            ] == []
+            assert key not in sink._viewports
+            late_paint.assert_not_called()
+            abort.assert_not_called()
+            assert seam.calls == []
+            assert app._workflow_app_service is not None
+            assert app._workflow_app_service._abort_submissions == {}
+
+    async def test_removal_with_confirmation_open(self, tmp_path: Path) -> None:
+        """Group removal while confirming withdraws the confirmation (False) before the view; no abort."""
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        world.start_child(lines=5)
+        app: SloTUI = SloTUI(session=world.session)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
+            sink = app._workflow_progress_sink
+            assert sink is not None
+            key: WorkflowSessionKeyDAO = screen.key
+            confirmation: AbortConfirmationScreen = await _open_confirmation(app=app, pilot=pilot)
+            coordinator: WorkflowProgressCoordinator = _coordinator(app=app)
+            order: list[str] = []
+            results: list[Optional[bool]] = []
+            real_minimize = coordinator.minimize
+            real_withdraw = confirmation.withdraw
+            real_dismiss = confirmation.dismiss
+            real_retire = screen.retire
+
+            def minimize() -> None:
+                order.append("minimize")
+                real_minimize()
+
+            def withdraw() -> None:
+                order.append("withdraw")
+                real_withdraw()
+
+            def dismiss(result: Optional[bool] = None) -> AwaitComplete:
+                results.append(result)
+                return real_dismiss(result)
+
+            def retire() -> None:
+                order.append("retire")
+                real_retire()
+
+            coordinator.minimize = minimize  # type: ignore[method-assign]
+            confirmation.withdraw = withdraw  # type: ignore[method-assign]
+            confirmation.dismiss = dismiss  # type: ignore[method-assign]
+            screen.retire = retire  # type: ignore[method-assign]
+            world.supplier.snapshot = AttachedDispatchSnapshotDAO.empty()
+            with (
+                patch.object(world.session, "abort") as abort,
+                patch.object(screen, "apply_snapshot") as late_paint,
+            ):
+                await _tick(app=app, pilot=pilot)
+                await _settle(app=app, pilot=pilot)
+
+            assert order == ["minimize", "withdraw", "retire"]
+            assert results == [False]
+            assert [
+                s for s in app.screen_stack if isinstance(s, (SessionProgressScreen, AbortConfirmationScreen))
+            ] == []
+            assert key not in sink._viewports
+            late_paint.assert_not_called()
+            abort.assert_not_called()
+            assert seam.calls == []
+            assert app._workflow_app_service is not None
+            assert app._workflow_app_service._abort_submissions == {}
+
+    async def test_dispose_with_confirmation_open(self, tmp_path: Path) -> None:
+        """Observation teardown while confirming withdraws the confirmation (False) before the view."""
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        world.start_child(lines=5)
+        app: SloTUI = SloTUI(session=world.session)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
+            sink = app._workflow_progress_sink
+            assert sink is not None
+            service = app._workflow_app_service
+            assert service is not None
+            confirmation: AbortConfirmationScreen = await _open_confirmation(app=app, pilot=pilot)
+            order: list[str] = []
+            results: list[Optional[bool]] = []
+            real_minimize = sink.minimize_progress
+            real_withdraw = confirmation.withdraw
+            real_dismiss = confirmation.dismiss
+            real_retire = screen.retire
+
+            def minimize() -> None:
+                order.append("minimize")
+                real_minimize()
+
+            def withdraw() -> None:
+                order.append("withdraw")
+                real_withdraw()
+
+            def dismiss(result: Optional[bool] = None) -> AwaitComplete:
+                results.append(result)
+                return real_dismiss(result)
+
+            def retire() -> None:
+                order.append("retire")
+                real_retire()
+
+            sink.minimize_progress = minimize  # type: ignore[method-assign]
+            confirmation.withdraw = withdraw  # type: ignore[method-assign]
+            confirmation.dismiss = dismiss  # type: ignore[method-assign]
+            screen.retire = retire  # type: ignore[method-assign]
+            with (
+                patch.object(world.session, "abort") as abort,
+                patch.object(screen, "apply_snapshot") as late_paint,
+            ):
+                await app._close_workflow_observation()
+                for _ in range(3):
+                    await pilot.pause()
+
+            assert order == ["minimize", "withdraw", "retire"]
+            assert results == [False]
+            assert [
+                s for s in app.screen_stack if isinstance(s, (SessionProgressScreen, AbortConfirmationScreen))
+            ] == []
+            assert sink._viewports == {}
+            late_paint.assert_not_called()
+            abort.assert_not_called()
+            assert seam.calls == []
+            assert service._abort_submissions == {}
+
+    async def test_confirmation_choices_and_double_activation(self, tmp_path: Path) -> None:
+        """Escape and Keep running submit nothing; a double click opens one confirmation; True submits once."""
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        world.start_child(lines=5)
+        app: SloTUI = SloTUI(session=world.session)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
+
+            await _open_confirmation(app=app, pilot=pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is screen
+            await _open_confirmation(app=app, pilot=pilot)
+            await pilot.click("#keep-running")
+            await pilot.pause()
+            assert app.screen is screen
+            assert seam.calls == []
+
+            screen.query_one("#abort-child").press()  # type: ignore[attr-defined]
+            screen.query_one("#abort-child").press()  # type: ignore[attr-defined]
+            for _ in range(3):
+                await pilot.pause()
+            assert len([s for s in app.screen_stack if isinstance(s, AbortConfirmationScreen)]) == 1
+            await pilot.click("#confirm-abort")
+            await _settle(app=app, pilot=pilot)
+            assert app._workflow_app_service is not None
+            for submission in tuple(app._workflow_app_service._abort_submissions.values()):
+                await submission.join()
+
+            [request] = seam.calls
+            assert (
+                request.orchestrator_session_id,
+                request.session_id,
+                request.execution_id,
+                request.run_id,
+            ) == (
+                world.session.session_id,
+                _CHILD,
+                _EXECUTION_A,
+                _RUN_ID,
+            )
+            assert app.screen is screen
+
+    async def test_confirmation_closed_without_result_submits_nothing(self, tmp_path: Path) -> None:
+        """A confirmation dismissed with no result (None) is forgotten and never submits."""
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        world.start_child(lines=5)
+        app: SloTUI = SloTUI(session=world.session)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
+            sink = app._workflow_progress_sink
+            service = app._workflow_app_service
+            assert sink is not None and service is not None
+            confirmation: AbortConfirmationScreen = await _open_confirmation(app=app, pilot=pilot)
+            assert sink._confirmation is confirmation
+            with (
+                patch.object(service, "begin_child_abort", wraps=service.begin_child_abort) as begin,
+                patch.object(world.session, "abort") as whole_abort,
+            ):
+                await confirmation.dismiss()
+                await _settle(app=app, pilot=pilot)
+
+            assert app.screen is screen
+            assert sink._confirmation is None
+            begin.assert_not_called()
+            whole_abort.assert_not_called()
+            assert seam.calls == []
+            assert service._abort_submissions == {}
+
+    async def test_minimize_during_attached_abort_keeps_request(self, tmp_path: Path) -> None:
+        """Escape while the pool works neither cancels nor repeats the request; reopen shows the outcome."""
+        world: _World = _World(tmp_path=tmp_path)
+        seam: _PoolSeam = world.enable_attached_control()
+        seam.gate.clear()
+        world.start_child(lines=5)
+        app: SloTUI = SloTUI(session=world.session)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            assert app._adapter is not None
+            foreground: list[tuple[str, str]] = list(app._adapter.lines)
+            screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
+            await _open_confirmation(app=app, pilot=pilot)
+            with patch.object(world.session, "abort") as whole_abort:
+                await pilot.click("#confirm-abort")
+                await _settle(app=app, pilot=pilot)
+                state: str = str(screen.query_one("#session-state", Static).render())
+                assert "Abort requested" in state
+                assert screen.query_one("#abort-child").disabled  # type: ignore[attr-defined]
+
+                await pilot.press("escape")
+                await _settle(app=app, pilot=pilot)
+                assert [s for s in app.screen_stack if isinstance(s, SessionProgressScreen)] == []
+                assert app._workflow_app_service is not None
+                [submission] = app._workflow_app_service._abort_submissions.values()
+                assert submission.blocks_new_request
+                seam.gate.set()
+                await submission.join()
+                world.finish(status="aborted")
+                await _tick(app=app, pilot=pilot)
+
+                reopened: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
+                reopened_state: str = str(reopened.query_one("#session-state", Static).render())
+
+            assert "Child aborted." in reopened_state
+            assert "aborted" in reopened_state
+            assert len(seam.calls) == 1
+            whole_abort.assert_not_called()
+            assert list(app._adapter.lines) == foreground
 
     async def test_matching_incarnation_invokes_no_handler(self, tmp_path: Path) -> None:
         """A tick with the same execution leaves the view open and calls no handler."""

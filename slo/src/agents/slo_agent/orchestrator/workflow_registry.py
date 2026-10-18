@@ -317,6 +317,23 @@ class WorkflowHandleStore:
         async with self._lock:
             return await asyncio.to_thread(self._list_observation_sync, owner_session_id=owner_session_id)
 
+    def is_live(self, *, handle: WorkflowHandleDAO) -> bool:
+        """Return whether a handle names a running orchestrator with live process evidence.
+
+        WHAT: Requires the ``running`` state and a positive pid the store's
+            liveness probe reports alive; it reads and writes nothing.
+        WHO: The TUI workflow service before offering or submitting a detached
+            child abort (feature 94 a.4).
+        WHEN: At abort-eligibility and confirmation time.
+
+        Args:
+            handle (WorkflowHandleDAO): Owned handle from a bounded observation listing.
+
+        Returns:
+            bool: True only for a running handle whose process is still live.
+        """
+        return handle.state == "running" and handle.pid > 0 and self._pid_alive(handle.pid)
+
     async def update_state(
         self,
         *,

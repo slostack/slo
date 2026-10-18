@@ -61,7 +61,9 @@ from src.tui.widgets.tree_markdown_exporter import TreeMarkdownExporter
 from src.tui.widgets.tree_viewer import SessionTreeViewer
 from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.tui.widgets.user_message_block import UserMessageBlock
+from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.dao import (
+    ChildAbortTargetDAO,
     HandleAdvanceOutcomeDAO,
     LiveWorkflowLabelDAO,
     ProgressViewportDAO,
@@ -1022,7 +1024,8 @@ class SloTUI(App):
 
         Returns:
             DetachedWorkflowAppService: Service bound to this session's id, attached
-                supplier and, when history-backed, handle store and history adapter.
+                supplier and child-abort seams (with or without history) and, when
+                history-backed, handle store and history adapter.
         """
         history_backed: bool = self._session_supports_inbox_delivery()
         if history_backed and self._workflow_handle_store is None:
@@ -1034,6 +1037,8 @@ class SloTUI(App):
             owner_session_id=self._session.session_id,
             attached_snapshot=self._session.attached_dispatch_snapshot,
             history_store=self._session.history_store if history_backed else None,
+            attached_abort=self._session.abort_child,
+            attached_capability=self._session.child_control_capability,
         )
 
     def _schedule_workflow_refresh(self, seconds: float, callback: Callable[[], None]) -> Timer:
@@ -2295,6 +2300,34 @@ class SloTUI(App):
         if self._workflow_progress_coordinator is None:
             return
         self._workflow_progress_coordinator.minimize()
+
+    def on_session_progress_screen_abort_requested(
+        self, message: SessionProgressScreen.AbortRequested
+    ) -> None:
+        """Ask the sink to confirm the exact target the progress view displayed.
+
+        Args:
+            message (SessionProgressScreen.AbortRequested): Captured confirmation target.
+        """
+        if self._workflow_progress_sink is None:
+            return
+        self._workflow_progress_sink.confirm_abort(target=message.target)
+
+    def _on_child_abort_confirmed(self, *, target: ChildAbortTargetDAO) -> None:
+        """Hand an explicitly confirmed target to the service and refresh at once.
+
+        WHAT: The service owns the submission (minimizing never withdraws it);
+            the immediate refresh paints the pending notice and disabled Abort.
+        WHO: ``_WorkflowProgressSink`` from its confirmation callback, only on True.
+        WHEN: Once per explicit Abort child choice.
+
+        Args:
+            target (ChildAbortTargetDAO): Identity captured when confirmation opened.
+        """
+        if self._workflow_app_service is None:
+            return
+        self._workflow_app_service.begin_child_abort(target=target)
+        self._request_workflow_refresh()
 
     def _on_progress_incarnation_changed(self, *, key: WorkflowSessionKeyDAO) -> None:
         """Close the old execution view when the sink observes same-key reuse.
@@ -3710,6 +3743,8 @@ class _WorkflowProgressSink:
         # Identity of the open view's row when it was opened; None when unknown.
         self._selected_identity: Optional[tuple[str, str]] = None
         self._failure_notified: bool = False
+        # The one confirmation this sink pushed above its progress view, if open.
+        self._confirmation: Optional[AbortConfirmationScreen] = None
 
     def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
         """Open one owned view, refusing to stack behind unrelated modals.
@@ -3742,9 +3777,10 @@ class _WorkflowProgressSink:
     def minimize_progress(self) -> None:
         """Save the current viewport and give up this sink's progress screen.
 
-        WHAT: The retired screen closes at once when it is on top, or as soon as
-            an unrelated modal above it closes; that modal is never popped.
-            Focus returns when the screen actually leaves the stack.
+        WHAT: Withdraws an owned confirmation first (answering False, so no
+            abort is submitted), then retires the view: it closes at once when it
+            is on top, or as soon as the modal above it closes; an unrelated
+            modal is never popped. Focus returns when the view leaves the stack.
         WHO: The coordinator's ``minimize`` (Escape, removal, incarnation change),
             ``open_progress`` when replacing a view, and ``dispose``.
         WHEN: After the coordinator invalidated its generation.
@@ -3752,6 +3788,7 @@ class _WorkflowProgressSink:
         screen: Optional[SessionProgressScreen] = self._screen
         if screen is None:
             return
+        self._withdraw_confirmation()
         self._remember_viewport(screen=screen)
         self._screen = None
         self._selected_identity = None
@@ -3774,6 +3811,29 @@ class _WorkflowProgressSink:
         self._close_reused_selection(snapshot=snapshot)
         self._prune_viewports(snapshot=snapshot)
         await self._tui._apply_session_snapshot(snapshot=snapshot)
+
+    def confirm_abort(self, *, target: ChildAbortTargetDAO) -> None:
+        """Open one owned confirmation for the exact target the active view displayed.
+
+        WHAT: Ignores targets of another key and requests while the view is not
+            the active screen, which includes repeats while a confirmation is open. The target is
+            retained in the callback closure, never replaced by refreshed rows.
+        WHO: SloTUI's ``AbortRequested`` handler.
+        WHEN: When the operator activates Abort child on the progress view.
+
+        Args:
+            target (ChildAbortTargetDAO): Identity captured from the displayed snapshot.
+        """
+        screen: Optional[SessionProgressScreen] = self._screen
+        # An open confirmation is the active screen, so this also absorbs repeats.
+        if screen is None or screen.key != target.key or self._tui.screen is not screen:
+            return
+        confirmation: AbortConfirmationScreen = AbortConfirmationScreen(target=target)
+        self._confirmation = confirmation
+        self._tui.push_screen(
+            screen=confirmation,
+            callback=partial(self._confirmed, confirmation=confirmation, target=target),
+        )
 
     def apply_progress(self, *, snapshot: SessionProgressSnapshotDAO) -> None:
         """Deliver bounded public content only to the still-selected screen object.
@@ -3815,6 +3875,32 @@ class _WorkflowProgressSink:
         self._viewports.clear()
         self._identities.clear()
         self._selected_identity = None
+
+    def _confirmed(
+        self,
+        confirmed: Optional[bool],
+        *,
+        confirmation: AbortConfirmationScreen,
+        target: ChildAbortTargetDAO,
+    ) -> None:
+        """Forget the closed confirmation; submit only on an explicit True.
+
+        Args:
+            confirmed (Optional[bool]): Confirmation result; False/None submit nothing.
+            confirmation (AbortConfirmationScreen): Screen this callback belongs to.
+            target (ChildAbortTargetDAO): Target captured when it opened.
+        """
+        if self._confirmation is confirmation:
+            self._confirmation = None
+        if confirmed is True:
+            self._tui._on_child_abort_confirmed(target=target)
+
+    def _withdraw_confirmation(self) -> None:
+        """Close only the owned confirmation (answering False) before its view goes."""
+        confirmation: Optional[AbortConfirmationScreen] = self._confirmation
+        self._confirmation = None
+        if confirmation is not None:
+            confirmation.withdraw()
 
     def _progress_closed(self, _result: None) -> None:
         """Return focus once an owned view has actually left the screen stack.

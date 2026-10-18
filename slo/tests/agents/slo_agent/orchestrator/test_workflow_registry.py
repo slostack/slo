@@ -1333,3 +1333,33 @@ class TestListObservation:
         assert [handle.workflow_id for handle in handles] == ["wf-good"]
         with pytest.raises(ValueError, match=_OBSERVATION_UNAVAILABLE):
             await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+
+class TestIsLive:
+    """Current orchestrator liveness evidence for child-control authority (feature 94 a.4)."""
+
+    @pytest.mark.parametrize(
+        ("state", "pid", "alive", "expected"),
+        [
+            ("running", 4242, True, True),
+            ("running", 4242, False, False),
+            ("running", 0, True, False),
+            ("launching", 4242, True, False),
+            ("stalled", 4242, True, False),
+            ("completed", 4242, True, False),
+        ],
+    )
+    def test_requires_running_state_and_live_pid(
+        self, tmp_path: Path, state: WorkflowState, pid: int, alive: bool, expected: bool
+    ) -> None:
+        """Only a running handle whose positive pid the injected probe reports alive is live."""
+        probed: list[int] = []
+
+        def probe(candidate: int) -> bool:
+            probed.append(candidate)
+            return alive
+
+        store: WorkflowHandleStore = WorkflowHandleStore(history_root=tmp_path / "history", pid_alive=probe)
+
+        assert store.is_live(handle=_build_handle(state=state, pid=pid)) is expected
+        assert probed == ([pid] if state == "running" and pid > 0 else [])

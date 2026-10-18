@@ -12,13 +12,18 @@ modules.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, List, Optional, Protocol
+from uuid import uuid4
 
-from config.logger import log_info
+from config.logger import log_info, log_warning
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
+from src.agents.slo_agent.orchestrator.child_abort import ChildAbortStore
 from src.agents.slo_agent.orchestrator.dao import (
+    TERMINAL_STATUSES,
     AttachedDispatchSnapshotDAO,
+    ChildAbortOutcome,
     ChildAbortOutcomeDAO,
     ChildAbortRequestDAO,
     ChildControlCapabilityDAO,
@@ -31,7 +36,9 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleStore,
     WorkflowState,
 )
+from src.tui.workflows.abort_submission import ChildAbortSubmission
 from src.tui.workflows.dao import (
+    ChildAbortTargetDAO,
     DetachedWorkflowUiEffectDAO,
     HandleAdvanceOutcomeDAO,
     LaunchResultOutcome,
@@ -66,6 +73,29 @@ LIST_UNAVAILABLE_NOTICE: str = "Workflow list unavailable; showing last known se
 
 SESSION_REMOVED_NOTICE: str = "Session removed from current workflow."
 """Fixed progress notice for authoritative membership removal."""
+
+_ABORTABLE_STATUSES: frozenset[str] = frozenset({"pending", "running"})
+"""Child statuses that may still be aborted; every other status is terminal or unknown."""
+
+_READABLE_PROGRESS: frozenset[str] = frozenset({"available", "empty"})
+"""Progress availabilities whose status comes from a fresh, readable source."""
+
+
+class ChildAbortRefused(Exception):
+    """Signal an abort refusal that carries only a closed outcome (never error text).
+
+    Raised by the abort revalidation helpers and caught by ``request_child_abort``;
+    it is internal to this module and never escapes to callers.
+    """
+
+    def __init__(self, *, outcome: ChildAbortOutcome) -> None:
+        """Capture the fixed outcome the service reports for this refusal.
+
+        Args:
+            outcome (ChildAbortOutcome): Closed refusal literal.
+        """
+        super().__init__(outcome)
+        self.outcome: ChildAbortOutcome = outcome
 
 
 class AttachedChildAbort(Protocol):
@@ -107,6 +137,7 @@ class DetachedWorkflowAppService:
         history_store: Optional[SessionHistoryStoreProtocol] = None,
         attached_abort: Optional[AttachedChildAbort] = None,
         attached_capability: Optional[Callable[[], Optional[ChildControlCapabilityDAO]]] = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """Bind the service to one owning session's adapters without starting I/O.
 
@@ -128,6 +159,9 @@ class DetachedWorkflowAppService:
             attached_capability (Optional[Callable[[], Optional[ChildControlCapabilityDAO]]], optional):
                 Attached child-control capability supplier; None means unavailable.
                 Defaults to None.
+            monotonic (Callable[[], float], optional): Clock for the 30-second
+                abort-confirmation notice; tests inject a fake. Defaults to
+                ``time.monotonic``.
         """
         self._store: Optional[WorkflowHandleStore] = workflow_handle_store
         self._owner_session_id: str = owner_session_id
@@ -147,6 +181,12 @@ class DetachedWorkflowAppService:
         self._observation_notice: Optional[str] = None
         self._rows: dict[WorkflowSessionKeyDAO, WorkflowSessionRowDAO] = {}
         self._closed: bool = False
+        self._monotonic: Callable[[], float] = monotonic
+        # One request per confirmed target, allocated before any await; kept while pending.
+        self._abort_requests: dict[ChildAbortTargetDAO, ChildAbortRequestDAO] = {}
+        # Service-owned submissions, latest last; joined on close, never cancelled.
+        self._abort_submissions: dict[ChildAbortTargetDAO, ChildAbortSubmission] = {}
+        self._control_stores: dict[str, ChildAbortStore] = {}
 
     async def reconcile_snapshot(self) -> dict[str, WorkflowState]:
         """Refresh the cached workflow states from a pid-liveness reconcile pass.
@@ -400,18 +440,30 @@ class DetachedWorkflowAppService:
         detached_rows: tuple[WorkflowSessionRowDAO, ...] = await self._project_detached_groups(
             handles=handles
         )
-        return self._commit_snapshot(rows=self._unique_rows(rows=(*attached_rows, *detached_rows)))
+        snapshot: WorkflowSessionSnapshotDAO = self._commit_snapshot(
+            rows=self._unique_rows(rows=(*attached_rows, *detached_rows))
+        )
+        await self._observe_abort_submissions(rows=snapshot.rows)
+        return snapshot
 
     async def close(self) -> None:
-        """Clear observation caches and refuse new observation work.
+        """Join submissions, clear observation caches and refuse new observation work.
 
-        WHAT: Marks the service closed and drops group, loader, handle, row and
-            suppression caches; later snapshot and progress reads return empty.
-            Lifecycle state (workflow states, fleet notes) is left untouched.
+        WHAT: Marks the service closed, then joins every service-owned child-abort
+            submission without cancelling it (a possibly committing write must
+            finish; accepted pool work is never withdrawn), then drops group,
+            loader, handle, row, suppression, request and control-store caches;
+            later snapshot and progress reads return empty. Lifecycle state
+            (workflow states, fleet notes) is left untouched.
         WHO: SloTUI teardown, after the refresh coordinator is closed.
         WHEN: On ``/new`` session adoption and on unmount.
         """
         self._closed = True
+        for submission in tuple(self._abort_submissions.values()):
+            await submission.join()
+        self._abort_submissions.clear()
+        self._abort_requests.clear()
+        self._control_stores.clear()
         self._group_rows.clear()
         self._loaders.clear()
         self._handles.clear()
@@ -498,21 +550,39 @@ class DetachedWorkflowAppService:
 
         Returns:
             SessionProgressSnapshotDAO: Bounded content, a safe stale/unavailable
-                notice, or a removal; never abort authority.
+                notice, or a removal; carries an abort target only for an eligible
+                current child (a.4) and the tracked request's fixed notice.
         """
         row: Optional[WorkflowSessionRowDAO] = None if self._closed else self._rows.get(key)
         if row is None:
             return self._progress_notice(key=key, removed=True)
+        snapshot, current = await self._read_member_progress(row=row)
+        return await self._with_abort_control(snapshot=snapshot, current=current)
+
+    async def _read_member_progress(
+        self, *, row: WorkflowSessionRowDAO
+    ) -> tuple[SessionProgressSnapshotDAO, Optional[WorkflowSessionRowDAO]]:
+        """Read one member's progress and its re-read current row, before abort control.
+
+        Args:
+            row (WorkflowSessionRowDAO): Row captured from the latest snapshot.
+
+        Returns:
+            tuple[SessionProgressSnapshotDAO, Optional[WorkflowSessionRowDAO]]: The
+                accepted progress (or a fixed notice) and the authoritative current
+                row; no-history sessions still re-read their attached registry row.
+        """
         if self._history_store is None:
-            return self._progress_notice(key=key, row=row, availability="unavailable")
+            unavailable = self._progress_notice(key=row.key, row=row, availability="unavailable")
+            return unavailable, self._current_attached_row(key=row.key)
         try:
             snapshot: SessionProgressSnapshotDAO = await self._loader(
-                parent_session_id=key.orchestrator_session_id
+                parent_session_id=row.key.orchestrator_session_id
             ).load_session_progress(row=row)
-            current: Optional[WorkflowSessionRowDAO] = await self._current_progress_row(key=key)
+            current: Optional[WorkflowSessionRowDAO] = await self._current_progress_row(key=row.key)
         except (OSError, ValueError):
-            return self._progress_notice(key=key, row=row)
-        return self._accept_progress(row=row, current=current, snapshot=snapshot)
+            return self._progress_notice(key=row.key, row=row), None
+        return self._accept_progress(row=row, current=current, snapshot=snapshot), current
 
     async def _current_progress_row(self, *, key: WorkflowSessionKeyDAO) -> Optional[WorkflowSessionRowDAO]:
         """Re-read authoritative membership for one key without touching UI caches.
@@ -527,9 +597,34 @@ class DetachedWorkflowAppService:
             OSError: When the detached group cannot be read.
             ValueError: When the detached group is unavailable or untrusted.
         """
-        if key.orchestrator_session_id == self._owner_session_id:
-            return self._find_row(rows=self._attached_rows(attached=self._attached_snapshot()), key=key)
+        if self._is_attached(key=key):
+            return self._current_attached_row(key=key)
         return await self._current_detached_row(key=key)
+
+    def _current_attached_row(self, *, key: WorkflowSessionKeyDAO) -> Optional[WorkflowSessionRowDAO]:
+        """Return the attached registry's current row for a key of this owner, without file reads.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Requested key.
+
+        Returns:
+            Optional[WorkflowSessionRowDAO]: Current attached row; None for a detached
+                key or a key the latest batch no longer holds.
+        """
+        if not self._is_attached(key=key):
+            return None
+        return self._find_row(rows=self._attached_rows(attached=self._attached_snapshot()), key=key)
+
+    def _is_attached(self, *, key: WorkflowSessionKeyDAO) -> bool:
+        """Return whether a key belongs to this owner's attached batch.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Row key.
+
+        Returns:
+            bool: True when the owner session is the key's orchestrator.
+        """
+        return key.orchestrator_session_id == self._owner_session_id
 
     async def _current_detached_row(self, *, key: WorkflowSessionKeyDAO) -> Optional[WorkflowSessionRowDAO]:
         """Re-read one owned, undismissed detached group through the bounded loader.
@@ -684,6 +779,518 @@ class DetachedWorkflowAppService:
             membership_removed=removed,
             notice=SESSION_REMOVED_NOTICE if removed else PROGRESS_UNAVAILABLE_NOTICE,
         )
+
+    # ── feature 94 a.4: child-abort control ─────────────────────────────────
+
+    def begin_child_abort(self, *, target: ChildAbortTargetDAO) -> None:
+        """Retain one confirmed submission even if the progress screen minimizes.
+
+        WHAT: Allocates the request once and starts one service-owned submission
+            task; a request for the same incarnation that is still pending, or
+            whose operation task still runs, absorbs repeats (double activation
+            or a stale confirmation), so ``close`` always joins that task. Only
+            a settled request with a finished task allows an explicit new
+            request. The task's outcome and failures are always retrieved.
+        WHO: SloTUI after the operator explicitly confirmed this exact target.
+        WHEN: Once per confirmation; never retried automatically.
+
+        Args:
+            target (ChildAbortTargetDAO): Immutable identity captured at confirmation.
+        """
+        tracked: Optional[ChildAbortSubmission] = self._tracked_submission(
+            key=target.key, execution_id=target.execution_id
+        )
+        if self._closed or (tracked is not None and tracked.blocks_new_request):
+            return
+        self._abort_requests.pop(target, None)
+        self._abort_submissions.pop(target, None)
+        try:
+            request: ChildAbortRequestDAO = self._request_for(target=target)
+        except ValueError:
+            log_warning(msg="child_abort_target_invalid")
+            return
+        operation: asyncio.Task[ChildAbortOutcomeDAO] = asyncio.create_task(
+            self.request_child_abort(target=target)
+        )
+        operation.add_done_callback(self._observe_submission)
+        self._abort_submissions[target] = ChildAbortSubmission(
+            target=target,
+            request=request,
+            operation=operation,
+            started_at=self._monotonic(),
+            attached=self._is_attached(key=target.key),
+        )
+
+    @staticmethod
+    def _observe_submission(task: asyncio.Task[ChildAbortOutcomeDAO]) -> None:
+        """Retrieve failures when a service-owned submission finishes off-screen.
+
+        Args:
+            task (asyncio.Task[ChildAbortOutcomeDAO]): Tracked submission task.
+        """
+        if not task.cancelled():
+            task.exception()
+
+    async def request_child_abort(self, *, target: ChildAbortTargetDAO) -> ChildAbortOutcomeDAO:
+        """Revalidate the confirmed identity and submit exactly once to its owner.
+
+        WHAT: Checks owner, membership, accepting capability/liveness, run,
+            incarnation and terminal state afresh, then hands the request to the
+            attached pool facade or commits it to the detached control store.
+            Every refusal or adapter failure is a fixed outcome; nothing falls
+            back to signals and nothing is retried.
+        WHO: ``begin_child_abort``'s tracked task (UI callers never await it directly).
+        WHEN: Right after confirmation.
+
+        Args:
+            target (ChildAbortTargetDAO): Captured key/run/incarnation, not a PID.
+
+        Returns:
+            ChildAbortOutcomeDAO: Requested after durable commit, the attached
+                pool's observed outcome, or a fixed refusal.
+        """
+        request: ChildAbortRequestDAO = self._request_for(target=target)
+        try:
+            await self._require_abort_authority(target=target)
+            return await self._submit_child_abort(request=request)
+        except ChildAbortRefused as refusal:
+            return ChildAbortOutcomeDAO.for_request(request=request, outcome=refusal.outcome)
+        except (OSError, ValueError):
+            return ChildAbortOutcomeDAO.for_request(request=request, outcome="unavailable")
+
+    def _request_for(self, *, target: ChildAbortTargetDAO) -> ChildAbortRequestDAO:
+        """Allocate once before any asynchronous validation or atomic submission.
+
+        Args:
+            target (ChildAbortTargetDAO): Confirmation identity.
+
+        Returns:
+            ChildAbortRequestDAO: Same request on every observation of this target.
+
+        Raises:
+            ValueError: The target's identities are unsafe for the control protocol.
+        """
+        if target not in self._abort_requests:
+            self._abort_requests[target] = ChildAbortRequestDAO(
+                request_id=str(uuid4()),
+                owner_session_id=self._owner_session_id,
+                orchestrator_session_id=target.key.orchestrator_session_id,
+                session_id=target.key.session_id,
+                run_id=target.run_id,
+                execution_id=target.execution_id,
+            )
+        return self._abort_requests[target]
+
+    async def _require_abort_authority(self, *, target: ChildAbortTargetDAO) -> None:
+        """Refuse unless the target is still this owner's current, accepting, live child.
+
+        Args:
+            target (ChildAbortTargetDAO): Confirmed identity.
+
+        Raises:
+            ChildAbortRefused: not_owned, unavailable or already_terminal.
+            OSError: A detached file read failed.
+            ValueError: Detached evidence is unavailable or untrusted.
+        """
+        if self._closed:
+            raise ChildAbortRefused(outcome="unavailable")
+        if self._is_attached(key=target.key):
+            self._require_attached_authority(target=target)
+            return
+        await self._require_detached_authority(target=target)
+
+    def _require_attached_authority(self, *, target: ChildAbortTargetDAO) -> None:
+        """Check the attached registry row and the pool's capability synchronously.
+
+        Args:
+            target (ChildAbortTargetDAO): Attached target.
+
+        Raises:
+            ChildAbortRefused: not_owned, unavailable or already_terminal.
+        """
+        row: Optional[WorkflowSessionRowDAO] = self._current_attached_row(key=target.key)
+        if row is None:
+            raise ChildAbortRefused(outcome="not_owned")
+        self._require_same_execution(row=row, target=target, run_id=self._attached_run_id())
+
+    async def _require_detached_authority(self, *, target: ChildAbortTargetDAO) -> None:
+        """Check the owned live handle, capability and a fresh bounded group read.
+
+        Ownership and liveness are re-checked after every await: a dismissal,
+        close or orchestrator death while reading refuses rather than submitting
+        for a group no longer owned or served.
+
+        Args:
+            target (ChildAbortTargetDAO): Detached target.
+
+        Raises:
+            ChildAbortRefused: not_owned, unavailable or already_terminal.
+            OSError: A file read failed.
+            ValueError: The group is unavailable or untrusted.
+        """
+        if self._history_store is None:
+            raise ChildAbortRefused(outcome="unavailable")
+        parent: str = target.key.orchestrator_session_id
+        run_id: str = await self._detached_run_id(parent=parent)
+        handle: WorkflowHandleDAO = self._live_owned_handle(parent=parent)
+        group: WorkflowDataDAO = await self._loader(parent_session_id=parent).load_observation_group()
+        rows: tuple[WorkflowSessionRowDAO, ...] = self._project_group(handle=handle, group=group)
+        row: Optional[WorkflowSessionRowDAO] = self._authoritative_row(rows=rows, group=group, key=target.key)
+        if row is None:
+            raise ChildAbortRefused(outcome="not_owned")
+        self._live_owned_handle(parent=parent)
+        self._require_group_run(parent_row=rows[0], run_id=run_id)
+        self._require_same_execution(row=row, target=target, run_id=run_id)
+
+    @staticmethod
+    def _require_same_execution(
+        *, row: WorkflowSessionRowDAO, target: ChildAbortTargetDAO, run_id: str
+    ) -> None:
+        """Refuse another run or incarnation, then a terminal execution.
+
+        Args:
+            row (WorkflowSessionRowDAO): Current authoritative row of the target key.
+            target (ChildAbortTargetDAO): Confirmed identity.
+            run_id (str): Run of the current accepting capability.
+
+        Raises:
+            ChildAbortRefused: unavailable for a changed run/incarnation;
+                already_terminal for a terminal row.
+        """
+        if (run_id, row.execution_id) != (target.run_id, target.execution_id):
+            raise ChildAbortRefused(outcome="unavailable")
+        if row.status in TERMINAL_STATUSES:
+            raise ChildAbortRefused(outcome="already_terminal")
+
+    @staticmethod
+    def _require_group_run(*, parent_row: WorkflowSessionRowDAO, run_id: str) -> None:
+        """Refuse a group whose execution index belongs to another runner invocation.
+
+        Args:
+            parent_row (WorkflowSessionRowDAO): Group parent row; its dispatch_id is the index run.
+            run_id (str): Run of the current accepting capability.
+
+        Raises:
+            ChildAbortRefused: unavailable when the runs differ.
+        """
+        if parent_row.dispatch_id != run_id:
+            raise ChildAbortRefused(outcome="unavailable")
+
+    def _attached_run_id(self) -> str:
+        """Return the attached pool's run while it accepts and a facade exists.
+
+        Returns:
+            str: Current attached run UUID.
+
+        Raises:
+            ChildAbortRefused: unavailable without facade, pool or accepting capability.
+        """
+        capability: Optional[ChildControlCapabilityDAO] = (
+            self._attached_capability() if self._attached_capability is not None else None
+        )
+        if self._attached_abort is None or not self._accepts(
+            capability=capability, parent=self._owner_session_id
+        ):
+            raise ChildAbortRefused(outcome="unavailable")
+        assert capability is not None  # narrowed by _accepts
+        return capability.run_id
+
+    async def _detached_run_id(self, *, parent: str) -> str:
+        """Return the run a live owned orchestrator currently accepts requests for.
+
+        Args:
+            parent (str): Detached orchestrator session.
+
+        Returns:
+            str: Accepting capability's run UUID.
+
+        Raises:
+            ChildAbortRefused: not_owned without an owned visible handle; unavailable
+                without live evidence or a matching accepting capability.
+            OSError: The capability read failed.
+        """
+        self._live_owned_handle(parent=parent)
+        capability: Optional[ChildControlCapabilityDAO] = await self._control_store(
+            parent=parent
+        ).load_capability()
+        if not self._accepts(capability=capability, parent=parent):
+            raise ChildAbortRefused(outcome="unavailable")
+        assert capability is not None  # narrowed by _accepts
+        return capability.run_id
+
+    def _live_owned_handle(self, *, parent: str) -> WorkflowHandleDAO:
+        """Return the owned handle while the service is open and its orchestrator lives.
+
+        WHO: Detached authority, before and again after each await.
+
+        Args:
+            parent (str): Detached orchestrator session.
+
+        Returns:
+            WorkflowHandleDAO: Owned, undismissed handle with live orchestrator evidence.
+
+        Raises:
+            ChildAbortRefused: not_owned once closed or without an owned visible
+                handle; unavailable without live orchestrator evidence.
+        """
+        handle: Optional[WorkflowHandleDAO] = (
+            None if self._closed else self._visible_handle(orchestrator_session_id=parent)
+        )
+        if handle is None:
+            raise ChildAbortRefused(outcome="not_owned")
+        if self._store is None or not self._store.is_live(handle=handle):
+            raise ChildAbortRefused(outcome="unavailable")
+        return handle
+
+    def _accepts(self, *, capability: Optional[ChildControlCapabilityDAO], parent: str) -> bool:
+        """Return whether a capability accepts requests from this owner for ``parent``.
+
+        Args:
+            capability (Optional[ChildControlCapabilityDAO]): Current capability, if any.
+            parent (str): Expected orchestrator session.
+
+        Returns:
+            bool: True for an accepting capability naming this owner and parent.
+        """
+        if capability is None or not capability.accepting:
+            return False
+        return (capability.owner_session_id, capability.orchestrator_session_id) == (
+            self._owner_session_id,
+            parent,
+        )
+
+    async def _submit_child_abort(self, *, request: ChildAbortRequestDAO) -> ChildAbortOutcomeDAO:
+        """Select the attached facade or detached atomic channel after validation.
+
+        Args:
+            request (ChildAbortRequestDAO): Validated immutable request.
+
+        Returns:
+            ChildAbortOutcomeDAO: Canonical attached result or durable admission receipt.
+
+        Raises:
+            ChildAbortRefused: unavailable without facade or history root.
+            OSError: The detached write failed before commit.
+            ValueError: The store refused (capability, conflict or capacity).
+        """
+        if request.orchestrator_session_id != self._owner_session_id:
+            return await self._control_store(parent=request.orchestrator_session_id).submit(request=request)
+        if self._attached_abort is None:
+            raise ChildAbortRefused(outcome="unavailable")
+        return await self._attached_outcome(attached_abort=self._attached_abort, request=request)
+
+    @staticmethod
+    async def _attached_outcome(
+        *, attached_abort: AttachedChildAbort, request: ChildAbortRequestDAO
+    ) -> ChildAbortOutcomeDAO:
+        """Await the attached pool's outcome; an unexpected failure is unresolved.
+
+        Args:
+            attached_abort (AttachedChildAbort): Session → pool facade.
+            request (ChildAbortRequestDAO): Validated request.
+
+        Returns:
+            ChildAbortOutcomeDAO: Pool outcome, or the fixed unresolved outcome.
+        """
+        try:
+            return await attached_abort(request=request)
+        except Exception:  # noqa: BLE001 - boundary: execution truth unknown, never claim abort
+            log_warning(msg="child_abort_attached_unresolved")
+            return ChildAbortOutcomeDAO.for_request(request=request, outcome="unresolved")
+
+    def _control_store(self, *, parent: str) -> ChildAbortStore:
+        """Reuse one same-root control adapter per detached parent.
+
+        Args:
+            parent (str): Detached orchestrator session.
+
+        Returns:
+            ChildAbortStore: Adapter bound to the session's history root.
+
+        Raises:
+            ChildAbortRefused: unavailable for a no-history session.
+            ValueError: The parent identity is unsafe as a path component.
+        """
+        if self._history_store is None:
+            raise ChildAbortRefused(outcome="unavailable")
+        store: ChildAbortStore = self._control_stores.get(parent) or ChildAbortStore(
+            history_root=self._history_store.root, orchestrator_session_id=parent
+        )
+        if not self._closed:
+            self._control_stores[parent] = store
+        return store
+
+    async def _with_abort_control(
+        self,
+        *,
+        snapshot: SessionProgressSnapshotDAO,
+        current: Optional[WorkflowSessionRowDAO],
+    ) -> SessionProgressSnapshotDAO:
+        """Attach the eligible abort target and the tracked request's notice.
+
+        Args:
+            snapshot (SessionProgressSnapshotDAO): Accepted progress or fixed notice.
+            current (Optional[WorkflowSessionRowDAO]): Authoritative current row.
+
+        Returns:
+            SessionProgressSnapshotDAO: Same content; target only when eligible and
+                no request for this incarnation is pending.
+        """
+        if snapshot.membership_removed:
+            return snapshot
+        tracked: Optional[ChildAbortSubmission] = self._tracked_submission(
+            key=snapshot.key, execution_id=snapshot.execution_id
+        )
+        blocked: bool = tracked is not None and tracked.blocks_new_request
+        target: Optional[ChildAbortTargetDAO] = (
+            None if blocked else await self._eligible_target(snapshot=snapshot, current=current)
+        )
+        return snapshot.model_copy(
+            update={"abort_target": target, "notice": self._abort_notice(snapshot=snapshot, tracked=tracked)}
+        )
+
+    def _abort_notice(
+        self, *, snapshot: SessionProgressSnapshotDAO, tracked: Optional[ChildAbortSubmission]
+    ) -> Optional[str]:
+        """Combine the observation notice with the tracked request's fixed notice.
+
+        Args:
+            snapshot (SessionProgressSnapshotDAO): Progress being decorated.
+            tracked (Optional[ChildAbortSubmission]): Request for this incarnation.
+
+        Returns:
+            Optional[str]: Combined notice, or the original one without a request.
+        """
+        if tracked is None:
+            return snapshot.notice
+        notice: str = tracked.notice(now=self._monotonic())
+        return notice if snapshot.notice is None else f"{snapshot.notice} · {notice}"
+
+    async def _eligible_target(
+        self,
+        *,
+        snapshot: SessionProgressSnapshotDAO,
+        current: Optional[WorkflowSessionRowDAO],
+    ) -> Optional[ChildAbortTargetDAO]:
+        """Return the exact target for a current, abortable, accepting child, else None.
+
+        Args:
+            snapshot (SessionProgressSnapshotDAO): Progress being decorated.
+            current (Optional[WorkflowSessionRowDAO]): Authoritative current row.
+
+        Returns:
+            Optional[ChildAbortTargetDAO]: Target bound to the current run and incarnation.
+        """
+        if current is None or not self._abortable(row=current, snapshot=snapshot):
+            return None
+        try:
+            run_id: str = await self._accepting_run_id(key=current.key)
+        except (ChildAbortRefused, OSError, ValueError):
+            return None
+        return ChildAbortTargetDAO(key=current.key, run_id=run_id, execution_id=current.execution_id)
+
+    def _abortable(self, *, row: WorkflowSessionRowDAO, snapshot: SessionProgressSnapshotDAO) -> bool:
+        """Return whether a fresh child row of the observed incarnation may be aborted.
+
+        Detached status comes from files, so a stale or unavailable read disables
+        Abort even though old content stays painted; attached status is the
+        in-memory registry and needs no readable transcript.
+
+        Args:
+            row (WorkflowSessionRowDAO): Authoritative current row.
+            snapshot (SessionProgressSnapshotDAO): Progress observed for it.
+
+        Returns:
+            bool: True for a nonterminal child with a modern identity matching the observation.
+        """
+        current: bool = (
+            row.role == "child"
+            and row.execution_id != ""
+            and row.execution_id == snapshot.execution_id
+            and row.status in _ABORTABLE_STATUSES
+            and row.availability == "available"
+        )
+        return current and (self._is_attached(key=row.key) or snapshot.availability in _READABLE_PROGRESS)
+
+    async def _accepting_run_id(self, *, key: WorkflowSessionKeyDAO) -> str:
+        """Return the run currently accepting requests for the key's owner.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Child key.
+
+        Returns:
+            str: Accepting run UUID; for detached groups it must match the listed index run.
+
+        Raises:
+            ChildAbortRefused: not_owned or unavailable.
+            OSError: The capability read failed.
+        """
+        if self._is_attached(key=key):
+            return self._attached_run_id()
+        parent: str = key.orchestrator_session_id
+        run_id: str = await self._detached_run_id(parent=parent)
+        parent_row: Optional[WorkflowSessionRowDAO] = self._rows.get(
+            WorkflowSessionKeyDAO(orchestrator_session_id=parent, session_id=parent)
+        )
+        if parent_row is None:
+            raise ChildAbortRefused(outcome="not_owned")
+        self._require_group_run(parent_row=parent_row, run_id=run_id)
+        return run_id
+
+    def _tracked_submission(
+        self, *, key: WorkflowSessionKeyDAO, execution_id: str
+    ) -> Optional[ChildAbortSubmission]:
+        """Return the latest tracked request for one key and incarnation.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Child key.
+            execution_id (str): Incarnation; empty (legacy/parent) never matches.
+
+        Returns:
+            Optional[ChildAbortSubmission]: Latest request, or None.
+        """
+        return next(
+            (
+                submission
+                for submission in reversed(self._abort_submissions.values())
+                if execution_id
+                and (submission.target.key, submission.target.execution_id) == (key, execution_id)
+            ),
+            None,
+        )
+
+    async def _observe_abort_submissions(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> None:
+        """Settle tracked requests from terminal rows first, then matching receipts.
+
+        Runs on every list refresh, so requests settle even while no progress view
+        is open. A row of another incarnation never settles or inherits a request.
+
+        Args:
+            rows (tuple[WorkflowSessionRowDAO, ...]): Rows just committed.
+        """
+        for submission in tuple(self._abort_submissions.values()):
+            row: Optional[WorkflowSessionRowDAO] = self._find_row(rows=rows, key=submission.target.key)
+            if row is None or not submission.concerns(row=row):
+                continue
+            submission.observe_row(row=row)
+            if submission.awaits_receipt:
+                submission.observe_receipt(receipt=await self._load_receipt(request=submission.request))
+
+    async def _load_receipt(self, *, request: ChildAbortRequestDAO) -> Optional[ChildAbortOutcomeDAO]:
+        """Read one detached receipt; unreadable storage keeps the request pending.
+
+        Args:
+            request (ChildAbortRequestDAO): Admitted detached request.
+
+        Returns:
+            Optional[ChildAbortOutcomeDAO]: Store-validated receipt, or None.
+        """
+        try:
+            return await self._control_store(parent=request.orchestrator_session_id).load_receipt(
+                request=request
+            )
+        except (ChildAbortRefused, OSError, ValueError):
+            return None
 
     # ── feature 94 observation: attached projection ─────────────────────────
 

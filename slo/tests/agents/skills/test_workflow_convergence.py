@@ -28,6 +28,21 @@ SKILLS = ROOT / "skills"
             ("existing tests", "pure delegation", "forbidden effects"),
         ),
         (
+            "languages/typescript/typescript-code-review-rules/SKILL.md",
+            (
+                "skills/coding/test-verification-policy/SKILL.md",
+                "typescript-test-verification-policy/SKILL.md",
+                "One behavioral test may traverse several branches",
+                "not a test-count formula",
+                "critical failure paths",
+                "explicit specification matrices",
+                "existing tests",
+                "forbidden effects",
+                "unverified",
+                "explicit approval",
+            ),
+        ),
+        (
             "design-and-analysis/review-feature-code/SKILL.md",
             ("closure condition", "stable IDs", "Early integration feedback"),
         ),
@@ -85,6 +100,7 @@ def test_convergence_does_not_create_a_hidden_budget_or_review_bypass() -> None:
         "coding/test-verification-policy/SKILL.md",
         "languages/python/code-review-rules/SKILL.md",
         "languages/typescript/typescript-code-test-loop/SKILL.md",
+        "languages/typescript/typescript-code-review-rules/SKILL.md",
         "languages/typescript/typescript-test-verification-policy/SKILL.md",
     ),
 )
@@ -96,6 +112,9 @@ def test_related_owners_do_not_reintroduce_mechanical_cadence(relative: str) -> 
         "each test should exercise exactly one branch",
         "implement one private method",
         "Resist the urge to run the tests first",
+        "must have at least one dedicated test",
+        "each decision point gets its own test",
+        "Every decision point (if/switch/guard/catch) has a test",
     ):
         assert obsolete not in text, (relative, obsolete)
 

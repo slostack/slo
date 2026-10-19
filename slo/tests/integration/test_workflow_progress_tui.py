@@ -1281,7 +1281,11 @@ class TestTwentyChildFleetJourney:
                 await _settle(app=app, pilot=pilot)
                 reopened: SessionProgressScreen = _screen(app=app)
                 reopened_log: ProgressLog = reopened.query_one(ProgressLog)
-                assert (reopened_log.scroll_x, reopened_log.scroll_y) == (4.0, 5.0)
+                assert (reopened_log.scroll_x, reopened_log.scroll_y) == (4.0, 5.0), (
+                    f"max_scroll=({reopened_log.max_scroll_x}, {reopened_log.max_scroll_y}) "
+                    f"size={reopened_log.size} virtual_size={reopened_log.virtual_size} "
+                    f"lines={len(reopened_log.lines)}"
+                )
 
                 await _open_confirmation(app=app, pilot=pilot)
                 _capture(app=app, views=views, name=f"{stem}-3-abort-confirmation")

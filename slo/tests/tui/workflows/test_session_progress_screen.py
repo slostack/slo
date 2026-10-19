@@ -33,7 +33,6 @@ from src.tui.workflows.dao import (
 )
 from src.tui.workflows.session_progress_screen import (
     PROGRESS_RESET_VIEW_NOTICE,
-    RESTORE_ATTEMPTS,
     ProgressLog,
     SessionProgressScreen,
 )
@@ -897,7 +896,7 @@ class TestRestoreConvergence:
             assert ProgressViewportDAO(x=5.0, y=30.0, following=False).restore(log=log) is True
             assert ProgressViewportDAO(x=10_000.0, y=10_000.0, following=False).restore(log=log) is False
 
-    async def test_clamped_restore_retries_after_the_next_refresh(self) -> None:
+    async def test_clamped_restore_retries_when_the_log_is_laid_out(self) -> None:
         """Reopening before wide lines are laid out must not lose the saved pan."""
         app: _ScreenHost = _ScreenHost(viewport=ProgressViewportDAO(x=4.0, y=5.0, following=False))
         async with app.run_test(size=(100, 30)) as pilot:
@@ -905,16 +904,36 @@ class TestRestoreConvergence:
             deferred: _DeferredRestores = _DeferredRestores(screen=app.screen_under_test)
             app.screen_under_test.apply_snapshot(snapshot=_snapshot(entries=_entries(count=40)))
 
-            with patch.object(ProgressViewportDAO, "restore", side_effect=[False, True]) as restore:
+            with patch.object(ProgressViewportDAO, "restore", side_effect=[False, True, True]) as restore:
                 deferred.run_all()
-                assert len(deferred.callbacks) == 1
-                deferred.run_all()
+                _log(app=app).post_message(ProgressLog.LayoutChanged())
+                await pilot.pause()
+                _log(app=app).post_message(ProgressLog.LayoutChanged())
+                await pilot.pause()
 
             assert restore.call_count == 2
-            assert deferred.callbacks == []
 
-    async def test_navigation_cancels_a_pending_retry(self) -> None:
-        """Reader input after a clamped restore wins over the retry."""
+    async def test_pending_saved_position_survives_a_new_paint(self) -> None:
+        """A newer paint restores the still-unmet saved position, not the clamped one."""
+        saved: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+        app: _ScreenHost = _ScreenHost(viewport=saved)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            deferred: _DeferredRestores = _DeferredRestores(screen=app.screen_under_test)
+            first: tuple[TranscriptEntryDAO, ...] = _entries(count=40)
+            app.screen_under_test.apply_snapshot(snapshot=_snapshot(entries=first))
+
+            with patch.object(ProgressViewportDAO, "restore", return_value=False):
+                deferred.run_all()
+            app.screen_under_test.apply_snapshot(
+                snapshot=_snapshot(entries=first + _entries(count=3), revision="r2")
+            )
+            [(_callback, kwargs)] = deferred.callbacks
+
+            assert kwargs["viewport"] == saved
+
+    async def test_navigation_cancels_a_pending_restore(self) -> None:
+        """Reader input after a clamped restore wins over the pending retry."""
         app: _ScreenHost = _ScreenHost(viewport=ProgressViewportDAO(x=4.0, y=5.0, following=False))
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
@@ -925,21 +944,7 @@ class TestRestoreConvergence:
                 deferred.run_all()
                 _log(app=app).post_message(ScrollTo(y=2))
                 await pilot.pause()
-                deferred.run_all()
+                _log(app=app).post_message(ProgressLog.LayoutChanged())
+                await pilot.pause()
 
             assert restore.call_count == 1
-
-    async def test_retries_are_bounded(self) -> None:
-        """A permanently clamped restore stops retrying instead of looping forever."""
-        app: _ScreenHost = _ScreenHost(viewport=ProgressViewportDAO(x=4.0, y=5.0, following=False))
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            deferred: _DeferredRestores = _DeferredRestores(screen=app.screen_under_test)
-            app.screen_under_test.apply_snapshot(snapshot=_snapshot(entries=_entries(count=40)))
-
-            with patch.object(ProgressViewportDAO, "restore", return_value=False) as restore:
-                for _ in range(RESTORE_ATTEMPTS + 3):
-                    deferred.run_all()
-
-            assert restore.call_count == RESTORE_ATTEMPTS
-            assert deferred.callbacks == []

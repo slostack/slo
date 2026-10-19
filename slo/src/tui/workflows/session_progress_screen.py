@@ -35,15 +35,7 @@ from src.tui.workflows.dao import (
 )
 from src.tui.workflows.transcript_renderer import WorkflowTranscriptRenderer
 
-__all__ = ["PROGRESS_RESET_VIEW_NOTICE", "RESTORE_ATTEMPTS", "ProgressLog", "SessionProgressScreen"]
-
-RESTORE_ATTEMPTS: int = 8
-"""Post-refresh tries for a restore clamped by unfinished layout.
-
-``RichLog`` can lay out wide lines a refresh or two after a paint, so the first
-restore may see ``max_scroll_x == 0`` and clamp a saved pan. Retrying after the
-next refresh lets the saved position land once layout settles; the bound stops
-a permanently out-of-range position from retrying forever."""
+__all__ = ["PROGRESS_RESET_VIEW_NOTICE", "ProgressLog", "SessionProgressScreen"]
 
 PROGRESS_RESET_VIEW_NOTICE: str = "Progress view reset; earlier position unavailable"
 """Shown after a non-append repaint until the reader next navigates."""
@@ -66,9 +58,21 @@ class ProgressLog(RichLog):
 
     navigation_revision: var[int] = var(0, init=False)
 
+    class LayoutChanged(Message):
+        """The log was resized, so a restore clamped by earlier layout may now land."""
+
     def __init__(self) -> None:
         """Build the screen's non-wrapping, manually followed log."""
         super().__init__(wrap=False, markup=False, auto_scroll=False, id="session-log")
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Render deferred lines natively, then report the new layout to the screen.
+
+        Args:
+            event (events.Resize): Native resize event.
+        """
+        super().on_resize(event)
+        self.post_message(self.LayoutChanged())
 
     async def _on_key(self, event: events.Key) -> None:
         """Invalidate restoration before Textual handles a local key.
@@ -224,6 +228,10 @@ class SessionProgressScreen(ModalScreen[None]):
         self._snapshot: Optional[SessionProgressSnapshotDAO] = None
         self._last_readable: Optional[SessionProgressSnapshotDAO] = None
         self._paint_revision: int = 0
+        # A restore that layout clamped (for example, before wide lines were laid
+        # out), kept until it lands, the reader navigates, or it is superseded.
+        self._pending_restore: Optional[ProgressViewportDAO] = None
+        self._pending_navigation: int = 0
         # Navigation revision at which the reset notice appeared; None when hidden.
         self._reset_notice_navigation: Optional[int] = None
         # True from retirement until the view pops itself; it pops only while on top.
@@ -251,6 +259,15 @@ class SessionProgressScreen(ModalScreen[None]):
         """Focus the log for keyboard reading and watch for user navigation."""
         self._log.focus()
         self.watch(self._log, "navigation_revision", self._hide_reset_notice, init=False)
+        self.watch(self._log, "virtual_size", self._retry_pending_restore, init=False)
+
+    def on_progress_log_layout_changed(self, _message: ProgressLog.LayoutChanged) -> None:
+        """Retry a clamped restore once the log has been laid out again.
+
+        Args:
+            _message (ProgressLog.LayoutChanged): Resize notification from the log.
+        """
+        self._retry_pending_restore()
 
     def apply_snapshot(self, *, snapshot: SessionProgressSnapshotDAO) -> None:
         """Paint safe status and changed content after coordinator freshness checks.
@@ -357,6 +374,9 @@ class SessionProgressScreen(ModalScreen[None]):
         """
         if self._initial_viewport is not None and not self._log.lines:
             return self._initial_viewport
+        if self._pending_restore is not None and self._pending_navigation == self._log.navigation_revision:
+            # The live offsets are only a clamp of the saved position, not the reader's.
+            return self._pending_restore
         return self.capture_viewport()
 
     def _paint_entries(
@@ -480,39 +500,40 @@ class SessionProgressScreen(ModalScreen[None]):
             viewport (ProgressViewportDAO): Position captured immediately before paint.
         """
         self._paint_revision += 1
+        self._pending_restore = None
         self.call_after_refresh(
             self._restore_if_current,
             revision=self._paint_revision,
             navigation=self._log.navigation_revision,
             viewport=viewport,
-            attempts_left=RESTORE_ATTEMPTS,
         )
 
-    def _restore_if_current(
-        self, *, revision: int, navigation: int, viewport: ProgressViewportDAO, attempts_left: int
-    ) -> None:
+    def _restore_if_current(self, *, revision: int, navigation: int, viewport: ProgressViewportDAO) -> None:
         """Let user navigation and newer paints win over delayed layout callbacks.
 
-        A restore clamped by layout that has not settled yet is retried after the
-        next refresh, under the same paint and navigation checks, until the saved
-        position lands or the attempts run out.
+        A restore clamped by layout that has not settled yet stays pending; the
+        log's next resize or content-size change retries it.
 
         Args:
             revision (int): Paint generation that scheduled restoration.
             navigation (int): User-navigation generation captured at paint.
             viewport (ProgressViewportDAO): Old offsets and tail-follow intent.
-            attempts_left (int): Tries remaining, including this one.
         """
         if not self.is_live or revision != self._paint_revision:
             return
         if navigation != self._log.navigation_revision:
             return
-        if viewport.restore(log=self._log) or attempts_left <= 1:
+        if not viewport.restore(log=self._log):
+            self._pending_restore = viewport
+            self._pending_navigation = navigation
+
+    def _retry_pending_restore(self) -> None:
+        """Land a pending restore after layout changed, unless the reader navigated."""
+        viewport: Optional[ProgressViewportDAO] = self._pending_restore
+        if viewport is None or not self.is_live:
             return
-        self.call_after_refresh(
-            self._restore_if_current,
-            revision=revision,
-            navigation=navigation,
-            viewport=viewport,
-            attempts_left=attempts_left - 1,
-        )
+        if self._pending_navigation != self._log.navigation_revision:
+            self._pending_restore = None
+            return
+        if viewport.restore(log=self._log):
+            self._pending_restore = None

@@ -10,6 +10,7 @@ from src.agents.slo_agent.history.transcript import (
     ReplayEntryProjector,
     TranscriptEntryDAO,
 )
+from src.agents.slo_agent.message_text import merge_reasoning_delta
 
 
 def _event(
@@ -272,3 +273,180 @@ class TestWorkflowUpdateReplay:
 
         assert "### Workflow update" in markdown
         assert "phase 1 done" in markdown
+
+
+def _thinking(
+    *, delta_kind: str, delta: str | None = None, content: str | None = None
+) -> SessionHistoryEventDAO:
+    """Build one persisted thinking marker or delta for block ``thinking:0:0``.
+
+    Args:
+        delta_kind (str): ``thinking_start``, ``thinking_delta`` or ``thinking_end``.
+        delta (str | None): Streamed text for a delta.
+        content (str | None): Completed segment text carried by an end marker.
+
+    Returns:
+        SessionHistoryEventDAO: An ``assistant_delta`` history event.
+    """
+    return _event(
+        kind="assistant_delta",
+        payload=SessionHistoryEventPayloadDAO(
+            delta_kind=delta_kind, block_id="thinking:0:0", delta=delta, content=content  # type: ignore[arg-type]
+        ),
+    )
+
+
+class TestThinkingSegmentReplay:
+    """Resumed thinking keeps the segment boundaries the live stream showed."""
+
+    def test_separate_segments_replay_as_separate_paragraphs(self) -> None:
+        """Summary parts sharing a block id must not run together on resume."""
+        events = [
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_end"),
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_delta", delta="**Planning multi-agent delegation**"),
+            _thinking(delta_kind="thinking_end", content="**Planning multi-agent delegation**"),
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_delta", delta="**Designing parallel workflow**"),
+            _thinking(delta_kind="thinking_end", content="**Designing parallel workflow**"),
+            _event(kind="assistant_message", payload=SessionHistoryEventPayloadDAO(content="done")),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert (
+            entries[0].reasoning == "**Planning multi-agent delegation**\n\n**Designing parallel workflow**"
+        )
+
+    def test_streamed_deltas_within_one_segment_join_verbatim(self) -> None:
+        """Token deltas of one open segment keep their exact spacing."""
+        events = [
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_delta", delta="Plan the "),
+            _thinking(delta_kind="thinking_delta", delta="work"),
+            _thinking(delta_kind="thinking_delta", delta=" carefully."),
+            _thinking(delta_kind="thinking_end", content="Plan the work carefully."),
+            _event(kind="assistant_message", payload=SessionHistoryEventPayloadDAO(content="done")),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert entries[0].reasoning == "Plan the work carefully."
+
+    def test_summary_parts_without_completed_text_merge_like_the_live_view(self) -> None:
+        """A contentless end keeps the deltas, merged with the live view's spacing.
+
+        Mirrors a real persisted history whose summary titles stream back to
+        back and whose ``thinking_end`` carries no completed text.
+        """
+        events = [
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_delta", delta="**Planning clear implementation explanation**"),
+            _thinking(delta_kind="thinking_delta", delta="**Outlining detailed specification**"),
+            _thinking(delta_kind="thinking_end"),
+            _event(kind="assistant_message", payload=SessionHistoryEventPayloadDAO(content="done")),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert (
+            entries[0].reasoning
+            == "**Planning clear implementation explanation** **Outlining detailed specification**"
+        )
+
+    def test_replayed_deltas_equal_the_live_merge(self) -> None:
+        """Replay and the live thinking widget share one delta-merge owner."""
+        deltas = ["**Checking**", "the repo", ", then", "re-reading", " files.", "(fast)"]
+        expected = ""
+        for delta in deltas:
+            expected = merge_reasoning_delta(existing=expected, delta=delta)
+        events = [_thinking(delta_kind="thinking_delta", delta=delta) for delta in deltas]
+        events.append(_event(kind="assistant_message", payload=SessionHistoryEventPayloadDAO(content="done")))
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert entries[0].reasoning == expected
+        assert expected == "**Checking** the repo, then re-reading files. (fast)"
+
+    def test_late_thinking_end_repairs_glued_summary_parts(self) -> None:
+        """The completed segment text wins, even when its end follows a tool call.
+
+        Mirrors a real persisted history: summary parts stream as back-to-back
+        deltas with no separator, the turn is flushed by a tool call, and the
+        properly spaced segment text only arrives in the later ``thinking_end``.
+        """
+        spaced = "**Planning multi-agent delegation** **Designing parallel workflow**"
+        events = [
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_end"),
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_delta", delta="**Planning multi-agent delegation**"),
+            _thinking(delta_kind="thinking_delta", delta="**Designing parallel workflow**"),
+            _event(
+                kind="tool_call",
+                payload=SessionHistoryEventPayloadDAO(tool_name="ls", tool_call_id="c1", tool_input={}),
+            ),
+            _thinking(delta_kind="thinking_end", content=spaced),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert [entry.kind for entry in entries] == ["assistant", "tool"]
+        assert entries[0].reasoning == spaced
+
+    def test_thinking_end_before_flush_replaces_streamed_deltas(self) -> None:
+        """An end that arrives inside the turn repairs that turn's segment."""
+        events = [
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_delta", delta="**A**"),
+            _thinking(delta_kind="thinking_delta", delta="**B**"),
+            _thinking(delta_kind="thinking_end", content="**A** **B**"),
+            _event(kind="assistant_message", payload=SessionHistoryEventPayloadDAO(content="done")),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert entries[0].reasoning == "**A** **B**"
+
+    def test_contentless_thinking_end_keeps_streamed_deltas(self) -> None:
+        """Without completed text, replay keeps exactly what was streamed."""
+        events = [
+            _thinking(delta_kind="thinking_start"),
+            _thinking(delta_kind="thinking_delta", delta="kept"),
+            _thinking(delta_kind="thinking_end"),
+            _event(kind="assistant_message", payload=SessionHistoryEventPayloadDAO(content="done")),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert entries[0].reasoning == "kept"
+
+    def test_late_thinking_end_does_not_open_a_turn_for_the_next_iteration(self) -> None:
+        """A late end repairs its own turn and never relabels the next iteration's thinking."""
+        events = [
+            _thinking(delta_kind="thinking_delta", delta="**First**"),
+            _event(
+                kind="tool_call",
+                payload=SessionHistoryEventPayloadDAO(tool_name="ls", tool_call_id="c1", tool_input={}),
+            ),
+            _thinking(delta_kind="thinking_end", content="**First**"),
+            _event(
+                kind="assistant_delta",
+                iteration=1,
+                payload=SessionHistoryEventPayloadDAO(
+                    delta_kind="thinking_delta", block_id="thinking:1:0", delta="**Second**"
+                ),
+            ),
+            _event(
+                kind="assistant_message", iteration=1, payload=SessionHistoryEventPayloadDAO(content="done")
+            ),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert [(entry.kind, entry.iteration, entry.reasoning) for entry in entries] == [
+            ("assistant", 0, "**First**"),
+            ("tool", 0, None),
+            ("assistant", 1, "**Second**"),
+        ]

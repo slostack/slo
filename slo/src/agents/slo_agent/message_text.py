@@ -12,7 +12,33 @@ from src.agents.providers.message_extension import (
     ProviderMessageExtensionDAO,
 )
 
-__all__ = ["assistant_message_reasoning_text", "assistant_message_text"]
+__all__ = ["assistant_message_reasoning_text", "assistant_message_text", "merge_reasoning_delta"]
+
+
+def merge_reasoning_delta(*, existing: str, delta: str) -> str:
+    """Append one streamed reasoning fragment with the established spacing repair.
+
+    Providers stream reasoning summaries as fragments that may lack the space
+    between them (for example back-to-back ``**Title**`` parts). The live
+    thinking widget and session replay both merge through this one function,
+    so a resumed transcript shows exactly the text the live view showed.
+
+    Args:
+        existing (str): Previously accumulated reasoning text.
+        delta (str): New streamed reasoning fragment.
+
+    Returns:
+        str: Readable concatenation of both fragments.
+    """
+    if not existing or not delta:
+        return existing + delta
+    if existing[-1].isspace() or delta[0].isspace():
+        return existing + delta
+    if delta[0] in ",.;:!?)]}%\"'”’" or existing[-1] in '([{$"“‘':
+        return existing + delta
+    if delta[0] in "-/\\_`" or existing[-1] in "-/\\_`'’":
+        return existing + delta
+    return f"{existing} {delta}"
 
 
 def assistant_message_text(*, message: AIMessage) -> str:

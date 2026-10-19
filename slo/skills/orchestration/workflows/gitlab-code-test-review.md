@@ -189,29 +189,15 @@ The Step 1 handoff also includes `skills/coding/coding-rules/SKILL.md` and the
 routing record from the workflow preconditions; it does not alter the GitLab
 issue or MR lifecycle.
 
-Implement the feature by working through each implementation unit in dependency order (migrations → domain models/DAOs → domain services → application services → routers → workers → frontend). For each unit:
+Follow the canonical workflow's Acceptance contract and Step 1 milestones:
+Runnable slice → early integration feedback → Acceptance-ready hardening and gates.
+Use its baseline approval, test cadence and evidence rules without duplicating them.
+Keep all applicable coding conventions and GitLab issue lifecycle requirements.
 
-1. Identify a bounded unit and its decision-path tests.
-2. Apply the language cadence: Go test-first; implement and test only that unit.
-3. Run the tests and confirm green.
-4. Run the surrounding suite to confirm no regressions.
-5. Only then start the next unit.
+**READY condition:** the canonical Step 1 evidence gate is met, including all required
+nondeferred acceptance items, no introduced regressions and explicit baseline dispositions.
 
-The agent must not write more than ~50 lines without running the corresponding tests.
 
-**Coding conventions:** Shared ownership/testing plus scoped language/component contracts from the routing record. Go test-first; Python and TypeScript retain their approved idioms.
-
-Use the exact targeted/package/full-suite commands from the project routing
-record, with its test environment and build variants. Include build/static/race
-checks where applicable; report blocked or baseline failures, never invent green.
-
-After all individual units pass:
-
-Use the exact targeted/package/full-suite commands from the project routing
-record, with its test environment and build variants. Include build/static/race
-checks where applicable; report blocked or baseline failures, never invent green.
-
-**READY condition:** every decision point is covered by a passing test; the full suite is green; no failing tests are skipped or disabled.
 
 ---
 
@@ -251,18 +237,15 @@ Report the phase result and verify its required artifacts before advancing.
 
 This step is identical to Step 3 of the [Code-Test-Review workflow](code-test-review.md). All rules apply without exception.
 
-Run a fresh codebase scan against the full set of expected deliverables:
+Reconcile the accepted checklist against the original issue/specification and current
+implementation and executable evidence using canonical Step 3. Identify missing items
+by source and closure condition; do not use a completion percentage as a readiness gate.
 
-1. Re-derive the deliverable checklist from the issue / spec by layer.
-2. Search the codebase for evidence of each deliverable.
-3. Score each: Done, Partial, Not Started.
-4. Calculate completion percentage.
-5. For any Not Started or Partial items, produce a specific implementation guide.
-6. If multiple items remain, produce a dependency graph for the remaining work.
+**READY condition:** every required nondeferred item is verified, independent review
+is accepted, required gates pass and no unresolved blockers remain. Otherwise return
+to Step 1 for repairs; scope deferral requires explicit operator approval.
 
-If completion is below 100%, return to Step 1 and implement the missing items.
 
-**READY condition:** 100% of deliverables are implemented and all tests remain green. (Or operator explicitly accepts deferral.)
 
 ---
 
@@ -456,9 +439,9 @@ source ~/.zshrc && glab issue update <iid> --repo <group/project> --label Releas
 The GitLab Code-Test-Review Workflow is complete when:
 
 - **Pre-Step:** Issue is `In-Progress`, feature branch is checked out.
-- **Step 1:** All implementation units written, all tests pass, full suite green.
+- **Step 1:** Acceptance-ready behaviors verified; all required gates pass with explicit baseline dispositions.
 - **Step 2:** Code review report complete, no Glaring Gaps remain.
-- **Step 3:** Completion assessment at 100%, all tests green.
+- **Step 3:** All required nondeferred items verified; independent review accepted and required gates pass.
 - **Step 4:** MR is open, issue is `Code-Review`.
 - **Step 5:** MR is merged, `main` is updated, issue is `Closed` (and `Released` if requested).
 
@@ -489,12 +472,12 @@ Pre-conditions: glab auth OK, feature branch checked out,
 Pre-Step: Find assigned Todo issue → move to In-Progress
 
 Step 1: Code + Test Loop (write unit → test → green → repeat)
-        └─ Output: all files written, full suite green
+        └─ Output: acceptance-ready implementation and required gates passed
 
 Step 2: Code Review (completeness, flow, test coverage, conventions)
         └─ Output: review report; return to Step 1 if Glaring Gaps
 
-Step 3: Completion Check (fresh scan; percentage score)
+Step 3: Completion Check (original-spec reconciliation and current evidence)
         └─ Output: completion assessment; return to Step 1 if incomplete
 
 Step 4: Create MR + move issue to Code-Review

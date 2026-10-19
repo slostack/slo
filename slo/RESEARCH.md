@@ -42,9 +42,13 @@ document before planning or changing a feature.
   and headless reasoning amendments intentionally changed five moved bodies:
   the four workflow resources and the headless guide. The relocation-only claim
   is historical, not a description of those final amended bodies.
-- The scheduled TUI skills are explicitly frozen. The old headless-skill pointer
-  at `skills/tui/tui-scheduled-workflows/SKILL.md:47` remains intentionally stale;
-  reference validation allows only that exact source/target pair.
+- The scheduled TUI skills are explicitly frozen except for the repaired headless
+  pointer to `skills/orchestration/headless-orchestration/SKILL.md`; reference
+  validation no longer exempts the old link. In
+  `tests/agents/skills/test_orchestration_relocation.py`, normalization covers
+  only that exact source/target pair: the repaired link is mapped back to its
+  old path before hashing, retaining the original historical hash rather than
+  repinning the changed body.
 - Context gathering is an on-request, language-neutral evidence companion;
   unavailable sources are not empty findings. Solution-design's vertical addendum
   refines its existing document contract without authorizing a design exercise.

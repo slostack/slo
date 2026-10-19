@@ -43,7 +43,12 @@ Every code change must be verified with evidence appropriate to the changed beha
 
 ## What Must Be Tested
 
-Every decision point in the code must have at least one test that exercises each path. A "decision point" is any place where execution can take more than one route.
+Use the following code-pattern table to discover missing proof, not as a test-count
+formula. Cover distinct outcomes, meaningful changed decisions, changed contracts
+and relevant failure paths. Explicit specification matrices and critical safety
+paths remain mandatory. One clear behavioral test may traverse several branches;
+parameterized cases may cover equivalent inputs. Reuse existing tests when they
+still prove the contract, and rerun them against the current change.
 
 | Code Pattern | What to Test |
 |-------------|-------------|
@@ -104,27 +109,22 @@ class TestBuildAndCreate:
         assert doc.embeddings is None
 ```
 
-Three decision points → three tests. Each test name describes the specific path it exercises.
+These three scenarios illustrate distinct outcomes, not a universal branch-to-test formula. Add error-path evidence where the affected contract requires it.
 
 ---
 
 ## Workflow
 
-1. **Write or modify code** — implement the feature, fix, or change.
-2. **Identify every decision point** — scan the code you touched for `if`, `match`, `try`, dynamic dispatch, guard clauses, and conditional expressions.
-3. **Write one test per path** — each test should exercise exactly one branch and assert the expected outcome for that branch.
-4. **Run the tests** — execute the relevant test file or test class:
-   ```bash
-   loadenv environments/test.env
-   PYTHONPATH=${PWD} pytest -sv tests/path/to/test_file.py::TestClass
-   ```
-5. **All tests must pass** — if any test fails, fix the code or the test before proceeding. Do not leave failing tests behind.
-6. **Run the full suite before finishing** — after all individual tests pass, confirm no regressions:
-   ```bash
-   PYTHONPATH=${PWD} pytest -sv tests/
-   ```
+1. Follow `skills/coding/code-test-loop/SKILL.md` and selected language/user test ordering.
+2. Map changed behavior and boundaries to requirements and risks; inspect existing tests.
+3. Add missing assertions for outcomes and relevant forbidden effects. A regression test
+   must detect the defect it addresses; show failure before the fix where feasible,
+   or explain other sensitivity evidence without inventing a RED run.
+4. Run the exact project commands from the routing record. Classify failures before
+   modifying code or expectations; oracle corrections require contract evidence.
+5. Run affected suites and all agreed final gates. Separate baseline failures,
+   blocked checks and explicitly approved exceptions; never manufacture green.
 
----
 
 ## Test Naming Convention
 
@@ -142,7 +142,7 @@ The pattern is: `test_<method>_when_<condition>`, matching the domain/app/contro
 
 ## What Does NOT Need a Separate Test
 
-- **Pure wiring** — if a method simply delegates to another method with no logic, test the delegatee instead.
+- **Pure wiring** — pure delegation may not need its own unit test, but composed evidence must show the real caller reaches the intended component with correct inputs. Testing the delegatee alone does not prove wiring.
 - **Framework behavior** — do not test that FastAPI parses query params or SQLAlchemy flushes correctly. Trust the framework.
 - **Trivial getters/setters** — a Pydantic field with no custom validator does not need its own test.
 
@@ -152,7 +152,10 @@ The pattern is: `test_<method>_when_<condition>`, matching the domain/app/contro
 
 Before marking any task as complete, confirm:
 
-- [ ] Every new or modified method has tests covering each decision point
-- [ ] All tests pass (`pytest` exit code 0)
-- [ ] No existing tests were broken by the change
-- [ ] Test names describe the specific code path they exercise
+- [ ] Acceptance criteria map to passing evidence, including existing tests where adequate
+- [ ] Meaningful changed decisions and critical failure paths are covered
+- [ ] Changed boundaries have evidence from the appropriate test category
+- [ ] Assertions prove outcomes and relevant forbidden effects, not just execution
+- [ ] Required gates pass with no introduced regressions; baseline exceptions need explicit approval
+- [ ] Skipped and blocked checks remain unverified and are explicitly dispositioned
+- [ ] Test names describe the outcome and condition

@@ -146,12 +146,6 @@ def test_concrete_skill_references_resolve() -> None:
     pattern = re.compile(r"(?<![/\w])skills/[A-Za-z0-9_./-]+(?:SKILL\.md|workflows/[A-Za-z0-9_-]+\.md)")
     for path in SKILLS.rglob("*.md"):
         for reference in pattern.findall(path.read_text()):
-            # 95.a.1 explicitly freezes this file; only this exact stale target is permitted.
-            if (
-                path == SKILLS / "tui/tui-scheduled-workflows/SKILL.md"
-                and reference == "skills/design-and-analysis/headless-orchestration/SKILL.md"
-            ):
-                continue
             assert (ROOT / reference).is_file(), (path, reference)
 
 

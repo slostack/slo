@@ -1,6 +1,6 @@
 ---
 name: is-the-feature-completed
-description: Estimating implementation completeness against a spec.
+description: Verify acceptance criteria against the original specification, current implementation and executable evidence.
 when_to_use: Use to assess what remains before declaring a feature done — checklist-style
   traversal of acceptance criteria vs. what shipped.
 group: design-and-analysis
@@ -13,7 +13,7 @@ source_prompt: analyze/is-the-feature-completed.md
 ## Skill summary
 
 - **Name:** `is-the-feature-completed`
-- **Description:** Estimating implementation completeness against a spec.
+- **Description:** Verify acceptance against the original specification and current evidence.
 - **When to use:** Use to assess what remains before declaring a feature done — checklist-style traversal of acceptance criteria vs. what shipped.
 - **Group:** `design-and-analysis`
 - **Kind:** `skill`
@@ -38,9 +38,15 @@ Use this prompt when you need to assess how much of a feature (from a Confluence
 
 ## Purpose
 
-Analyze a feature requirement against the current codebase to produce a completion assessment: what percentage is done, what percentage is missing, which files implement the completed parts, and what specific work remains — with file paths, code snippets, and implementation guidance derived from adjacent features that follow the same patterns.
+Verify the agreed acceptance checklist against the original specification and current
+implementation/evidence. Completion is an evidence gate, not an estimated percentage.
+Reuse the current routing record, read relevant authoritative rules, and validate
+changed inputs. Do not rederive unrelated context or assume author/reviewer READY
+means the work is correct. Explicit deferrals and baseline exceptions remain visible.
 
 ---
+
+
 
 ## Inputs
 
@@ -70,7 +76,7 @@ If the specification references sub-pages or child features, fetch those too. Th
 
 ### 1.2 Extract Expected Deliverables
 
-From the specification, extract a concrete checklist of what "done" looks like. Categorize by implementation layer:
+Reconcile the existing acceptance IDs against the original specification. Add a missing item only with its source requirement or concrete correctness/safety defect; recommendations do not invent scope. Organize required deliverables by journey, using layers as a secondary omission check:
 
 | Layer | Examples |
 |-------|----------|
@@ -117,7 +123,7 @@ Search strategy:
 1. Look for sibling implementations in the same app or domain (e.g., if `ai_call_list` exists but `sms_list` doesn't, `ai_call_list` is the analogue)
 2. Look for features that share the same base class or pattern (e.g., subclasses of the same abstract service)
 3. Look for features mentioned alongside the missing one in the spec or RESEARCH.md
-4. Read the adjacent feature's complete implementation across all layers
+4. Read the relevant adjacent implementation when it helps resolve an actual gap; do not require unrelated full-feature reading
 
 ### 2.3 Read Existing Implementations
 
@@ -129,158 +135,91 @@ For any files found (complete or partial), read them in full. Do not assume a fi
 
 ### 3.1 Score Each Deliverable
 
-For each expected deliverable from Step 1.2, assign a status:
+For each acceptance ID assign an evidence-backed status:
 
 | Status | Meaning |
 |--------|---------|
-| **Done** | Fully implemented and matches spec requirements |
-| **Partial** | File exists but implementation is incomplete or diverges from spec |
-| **Not Started** | No evidence of implementation in the codebase |
+| **Done** | Required behavior is implemented, wired and verified by appropriate current evidence |
+| **Partial** | Some required behavior or wiring is missing or incorrect |
+| **Not Started** | Search found no implementation |
+| **Unverified** | Implementation exists but required evidence is missing, stale or blocked |
+| **Deferred** | Operator approved explicit deferral; record authority, scope and consequence |
 
 ### 3.2 Calculate Completion Percentage
 
-```
-Completion % = (Done count + Partial count * 0.5) / Total deliverables * 100
-Incompletion % = 100 - Completion %
-```
-
-Weight the deliverables by effort if appropriate — a missing Alembic migration is smaller than a missing application service with 5 steps. Use your judgment to adjust weights, but state your reasoning.
+Do not use weighted percentages or half-credit for partial items as an acceptance
+gate. Report verified counts against stable acceptance IDs. If the operator requests
+an estimate, label its assumptions; a percentage cannot establish readiness or hide
+one critical missing item. Only explicit deferral changes the accepted delivery scope.
 
 ### 3.3 Infrastructure Assessment
 
-Separately assess how much supporting infrastructure already exists:
-
-- Does the base class / abstract pattern exist? (e.g., `BaseStrategyListExporterAppService`)
-- Do the enums, constants, and configuration keys exist?
-- Is the database schema ready (columns in the source table, etc.)?
-- Are adjacent features implemented that can be copied as templates?
-
-This produces a second metric: **Infrastructure Readiness %** — how much of the scaffolding is already in place.
+Check infrastructure only where a requirement depends on it: schema, configuration,
+registration, adapters and resource ownership. Record concrete blockers and evidence,
+not a speculative infrastructure-readiness percentage. A working scaffold is not a
+verified user journey.
 
 ---
+
+
 
 ## Step 4 — Present The Assessment
 
 ### 4.1 Summary Table
 
-```markdown
-## Feature Completion Assessment
-
-| Metric | Value |
-|--------|-------|
-| **Feature** | [Feature name] |
-| **Source** | [Confluence URL / JIRA ticket / description] |
-| **Completion** | XX% |
-| **Incompletion** | XX% |
-| **Infrastructure Readiness** | XX% |
-```
+Report feature/spec source, verdict, verified/required acceptance counts, required
+verification gates, independent review status and explicit exceptions/deferrals.
+For an assessment-only request, report status without silently starting implementation.
 
 ### 4.2 Detailed Status By Layer
 
-Present a table showing every expected deliverable, its status, and the implementing file (if any):
-
-```markdown
-### Status By Component
-
-| Layer | Component | Status | File(s) |
-|-------|-----------|--------|---------|
-| Database | `sms_list` CH table | Not Started | — |
-| Domain | `SMSListService` | Not Started | — |
-| App Service | `SMSListExporterAppService` | Not Started | — |
-| Worker | `sms_list_exporter_worker` | Not Started | — |
-| Config | `JobType.SMS_LIST_EXPORTER` | Not Started | — |
-| Database | `ai_call_list` CH table | Done | `src/apps/.../ai_call_list/service.py` |
-```
+Use a compact table: acceptance ID | source | journey/boundary | status | implementation
+paths | executable evidence | remaining blocker. Layer labels are optional aids,
+not extra requirements. Distinguish code inspection from tests actually executed.
 
 ### 4.3 Existing Implementation Files
 
-If the feature is partially or fully implemented, list every file that contributes to it:
-
-```markdown
-### Implemented Files
-
-- `src/apps/decision_strategy/domains/ai_call_list/service.py` — ClickHouse table, MV, S3 export
-- `src/apps/decision_strategy/services/ai_call_list_exporter_app_service.py` — Export orchestration
-- `src/apps/decision_strategy/tasks/dbos_workers/ai_call_list_exporter_worker.py` — DBOS worker
-```
+Reference the implementing files and current evidence; file existence alone is not
+proof. Reuse valid evidence when its inputs are unchanged; revalidate affected proof
+after revisions. Do not require a fresh full scan of unrelated components.
 
 ### 4.4 Pending Items
 
-For each deliverable that is **Not Started** or **Partial**, provide:
-
-1. **What needs to be built** — one-line description
-2. **Where it goes** — full file path
-3. **Pattern to follow** — the adjacent feature file to use as a template
-4. **Key differences** — what changes from the template (e.g., different filter conditions, different column names, different enum values)
-5. **Code snippet** — a succinct, representative code sample showing the core logic. Not the full file — just enough to convey the implementation shape and the specific differences from the template.
-
-Structure this as a numbered list ordered by dependency (foundational items first).
-
-```markdown
-### Pending Implementation
-
-**1. Add `DECISION_STRATEGY_SMS_LIST_EXPORTER` to JobType enum**
-
-- **File:** `src/domains/jobs/constant.py`
-- **Pattern:** Existing `DECISION_STRATEGY_AI_CALL_LIST_EXPORTER` entry
-- **Change:** Add new enum value
-
-  ```python
-  DECISION_STRATEGY_SMS_LIST_EXPORTER = "DecisionStrategySmsListExporter"
-  ```
-
-**2. Create `SMSListService` domain service**
-
-- **File:** `src/apps/decision_strategy/domains/sms_list/service.py` (new)
-- **Pattern:** `src/apps/decision_strategy/domains/ai_call_list/service.py`
-- **Key differences:**
-  - Filter: `sms_flag = true AND sms_to IS NOT NULL AND sms_suppression_reason IS NULL`
-  - Bucketing: `sms_send_time_utc` / `sms_send_time_local` instead of `phone_call_time_*`
-  - Table name: `sms_list`, MV name: `mv_sms_list`
-
-  ```python
-  # Core MV filter (the main difference from ai_call_list)
-  WHERE
-      dt.sms_flag = true
-      AND dt.sms_to IS NOT NULL
-      AND dt.sms_suppression_reason IS NULL
-  ```
-```
+For each missing, partial or unverified item give its source, evidence gap, affected
+path, next action and closure condition. Give adjacent patterns or code snippets only
+when they help resolve a real implementation gap. Identify environment/authorization
+blockers separately; never silently replace a required gate with weaker evidence.
 
 ### 4.5 Dependency Graph
 
-If there are multiple pending items, show their dependency order:
-
-```
-1. JobType enum additions
-    ├──→ 2. SMSListService (CH table + MV)
-    │       └──→ 3. SMSListExporterAppService
-    │               └──→ 4. sms_list_exporter_worker (DBOS)
-    └──→ 5. EmailListService (CH table + MV)
-            └──→ 6. EmailListExporterAppService
-                    └──→ 7. email_list_exporter_worker (DBOS)
-```
+When several pending items have meaningful dependencies, show their order. Otherwise
+a short ordered list suffices. Do not manufacture diagrams or new implementation scope.
 
 ---
+
+
 
 ## Step 5 — Verify Your Assessment
 
 Before presenting results:
 
-- [ ] Every "Done" item was verified by reading the actual file content, not just checking file existence
-- [ ] Every "Not Started" item was confirmed by searching for multiple possible naming conventions (the feature might exist under a different name)
-- [ ] The adjacent feature used as a template was read in full
-- [ ] Code snippets in pending items reflect the actual differences from the template, not generic placeholders
-- [ ] The completion percentage accounts for effort weighting where appropriate
-- [ ] Infrastructure readiness is assessed separately from feature-specific completion
+- [ ] Original-spec reconciliation accounts for every required acceptance item
+- [ ] Done items have current implementation, wiring and appropriate passing evidence
+- [ ] Unverified/blocked/skipped checks are not counted as passing
+- [ ] Final independent review is accepted and its blockers are closed
+- [ ] Required gates pass with no introduced regressions; exceptions have explicit approval
+- [ ] Each pending item cites its source and closure condition
+- [ ] Explicit deferrals are authorized and visible, not silently removed from the checklist
 
----
+**READY:** every nondeferred requirement is verified, independent final review is
+accepted, required gates pass and no unresolved blockers remain. **REVISE:** concrete
+implementation/evidence gaps remain; return to the responsible implementation phase,
+retest and re-review affected changes. Report an external blocker as incomplete;
+execution failure is FAILED, not approval. Never invent a waiver to finish the loop.
 
 ## Conventions
 
-- **Always search before concluding "Not Started"** — try at least 3 naming variations (e.g., `sms_list`, `smsList`, `sms_worklist`, `sms_send_list`)
-- **Read, don't assume** — a file's existence doesn't mean it's complete. Read it and verify.
-- **Be specific about differences** — don't say "similar to X but for SMS". Say exactly which filter conditions, column names, enum values, and S3 paths differ.
-- **Order pending items by dependency** — foundational work first, consumer work last
-- **Include the full file path** for every file mentioned — both existing and to-be-created
-- **Reference code prompts** — when a pending item should follow a specific code-prompt pattern, mention it (e.g., "follows `skills/languages/python/build-domain-features/SKILL.md` pattern")
+Search before declaring an item absent; use relevant alternate names rather than a
+fixed search-count ritual. Read the actual implementation. Keep source and evidence
+paths precise, preserve applicable coding conventions, and order pending work by
+real dependencies. Completion verifies the contract; it does not create a new one.

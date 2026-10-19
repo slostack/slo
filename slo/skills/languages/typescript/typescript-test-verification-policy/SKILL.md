@@ -1,9 +1,7 @@
 ---
 name: typescript-test-verification-policy
-description: TypeScript test verification policy — every decision point must have a passing test before
-  the task is complete.
-when_to_use: Use when writing or modifying TypeScript code to ensure every branch and decision point has
-  a corresponding Vitest or Jest test.
+description: TypeScript evidence for meaningful decisions, changed boundaries and required failure paths.
+when_to_use: Use to verify TypeScript acceptance evidence with the project test runner.
 group: languages
 kind: skill
 ---
@@ -13,8 +11,8 @@ kind: skill
 ## Skill summary
 
 - **Name:** `typescript-test-verification-policy`
-- **Description:** TypeScript test verification policy — every decision point must have a passing test before the task is complete.
-- **When to use:** Use when writing or modifying TypeScript code to ensure every branch and decision point has a corresponding Vitest or Jest test.
+- **Description:** TypeScript evidence for meaningful decisions, changed boundaries and required failure paths.
+- **When to use:** Verify TypeScript acceptance evidence with the project test runner.
 - **Group:** `languages`
 - **Kind:** `skill`
 
@@ -30,11 +28,11 @@ kind: skill
 
 ### Core rule
 
-Every piece of code you write or modify must have a corresponding test that passes before the task is considered done. Untested code is unfinished code. This is not optional — it is the completion criterion.
+Every changed behavior needs appropriate passing evidence before completion. Follow `skills/coding/test-verification-policy/SKILL.md` and `skills/engineering/engineering-testing/SKILL.md`; existing tests may supply adequate evidence when rerun. Critical safety paths and explicit specification matrices remain mandatory.
 
 ### What must be tested
 
-Every decision point in the code must have at least one test that exercises each path. A "decision point" is any place where execution can take more than one route.
+Use this table as a gap-discovery checklist for meaningful decisions, not a test-count formula. One behavioral test may traverse several branches; parameterized cases can cover equivalent outcomes. Do not duplicate proof at every test level. Pure delegation still needs evidence that its real caller is wired correctly.
 
 | Code Pattern | What to test |
 |---|---|
@@ -161,7 +159,7 @@ describe('DocumentService.create', () => {
 })
 ```
 
-Three decision points → three tests. Each test name describes the specific path.
+These scenarios demonstrate distinct outcomes, not a universal branch-to-test formula.
 
 ### Bad test vs. good test
 
@@ -223,8 +221,8 @@ it('throws when the database is unreachable', async () => {
 
 ### Workflow: verification checklist before marking a task complete
 
-1. [ ] Every new or modified method has tests covering each decision point
-2. [ ] All tests pass: `pnpm vitest run`
+1. [ ] Acceptance outcomes, meaningful changed decisions and critical failure paths have evidence
+2. [ ] Required project gates pass; baseline exceptions require explicit approval
 3. [ ] No existing tests were broken by the change
 4. [ ] Test names describe the specific code path they exercise
 5. [ ] No `.skip` or `.todo` without an explanatory comment

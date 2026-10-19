@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
 from src.agents.slo_agent.history.dao import (
+    HISTORY_OBSERVATION_MAX_BYTES,
+    HISTORY_OBSERVATION_MAX_EVENTS,
+    HistoryObservationWindowDAO,
     SessionHistoryEventDAO,
     SessionHistoryMetadataDAO,
 )
@@ -116,6 +119,31 @@ class SessionHistoryStoreProtocol(Protocol):
 
         Returns:
             list[SessionHistoryEventDAO]: Events sorted by ``sequence``.
+        """
+        ...
+
+    async def load_observation_window(
+        self,
+        *,
+        session_id: str,
+        max_bytes: int = HISTORY_OBSERVATION_MAX_BYTES,
+        max_events: int = HISTORY_OBSERVATION_MAX_EVENTS,
+    ) -> HistoryObservationWindowDAO:
+        """Read a bounded public-observation input without repairing history.
+
+        Progress observation only; inference replay and export use ``load_events``.
+
+        Args:
+            session_id (str): Validated session under this store's configured root.
+            max_bytes (int): Positive byte budget, at most 2,097,152.
+            max_events (int): Positive event budget, at most 2,000.
+
+        Returns:
+            HistoryObservationWindowDAO: A bounded suffix with explicit omission state.
+
+        Raises:
+            ValueError: Invalid identity or bounds.
+            OSError: Read failure; the loader translates it to a safe stale view.
         """
         ...
 

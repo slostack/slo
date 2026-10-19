@@ -9,7 +9,6 @@ SLO_HOME_BINDINGS: tuple[tuple[str, str], ...] = (
     ("src.agents.slo_agent.history.filesystem_store", "_CFG_SLO_HOME"),
     ("src.agents.slo_agent.history.migration.token_usage_backfiller", "_CFG_SLO_HOME"),
     ("src.agents.slo_agent.history.migration.tree_migrator", "_CFG_SLO_HOME"),
-    ("src.agents.slo_agent.orchestrator.pool", "SLO_HOME"),
     ("src.agents.slo_agent.preferences.service", "_CFG_SLO_HOME"),
     ("src.auth.credential_refresher", "_CFG_SLO_HOME"),
     ("src.cli.typer_dispatch", "_CFG_SLO_HOME"),

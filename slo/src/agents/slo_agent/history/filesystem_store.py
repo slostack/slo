@@ -15,18 +15,28 @@ Layout::
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import math
 import os
+import stat
+from collections import deque
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import BinaryIO, Iterator, Optional
+
+from pydantic import ValidationError
 
 from config.cfg import SLO_HOME as _CFG_SLO_HOME
+from config.logger import log_warning
 from src.auth.credential_resolver import CredentialResolver
 
 from src.agents.slo_agent.compaction.compacter import CompactionResult
 from src.agents.slo_agent.history.dao import (
+    HISTORY_OBSERVATION_MAX_BYTES,
+    HISTORY_OBSERVATION_MAX_EVENTS,
+    HistoryObservationWindowDAO,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
     SessionHistoryMetadataDAO,
@@ -48,6 +58,10 @@ __all__ = [
 _DIR_MODE: int = 0o700
 _FILE_MODE: int = 0o600
 _COMPACTION_ARCHIVE_PREFIX: str = "events.pre-"
+_EVENTS_FILE_NAME: str = "events.jsonl"
+# Open failures that mean "no readable active log right now" rather than an I/O fault:
+# missing file or directory, a non-directory component, or a refused symlink.
+_OBSERVATION_UNAVAILABLE_ERRNOS: frozenset[int] = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP})
 
 
 class HistoryCompactionRecoveryError(RuntimeError):
@@ -98,6 +112,163 @@ def default_history_root() -> Path:
         Path: Resolved absolute path of ``~/.slo/sessions/history``.
     """
     return (_CFG_SLO_HOME / "sessions" / "history").resolve()
+
+
+class _ObservedEventsFile:
+    """One descriptor-relative, no-follow view of a session's active ``events.jsonl``.
+
+    Owns the root, session-directory and file descriptors for exactly one bounded
+    observation read and closes all of them when its context exits. It never
+    creates, renames or repairs anything, so missing logs stay missing.
+    """
+
+    def __init__(self, *, root_fd: int, session_id: str, session_fd: int, stream: BinaryIO) -> None:
+        """Bind the already-opened descriptors of one observation read.
+
+        Args:
+            root_fd (int): Directory descriptor of the resolved history root.
+            session_id (str): Single path component naming the session directory.
+            session_fd (int): No-follow directory descriptor of the session directory.
+            stream (BinaryIO): Unbuffered read-only stream over the regular events file.
+        """
+        self._root_fd: int = root_fd
+        self._session_id: str = session_id
+        self._session_fd: int = session_fd
+        self.stream: BinaryIO = stream
+
+    @classmethod
+    @contextmanager
+    def open(cls, *, root: Path, session_id: str) -> Iterator[Optional[_ObservedEventsFile]]:
+        """Open the active log without following symlinks, yielding None when unreadable.
+
+        WHAT: Opens root, session directory and events file relative to each other's
+            descriptors, refusing symlinked components and non-regular files.
+        WHO: Called by FilesystemSessionHistoryStore._load_observation_window_sync.
+        WHEN: Once per bounded observation, after budgets and identity are validated.
+
+        Args:
+            root (Path): Resolved history root.
+            session_id (str): Validated single-component session identity.
+
+        Yields:
+            Optional[_ObservedEventsFile]: The open view, or None for a missing,
+                symlinked or non-regular source.
+
+        Raises:
+            OSError: An open failure other than missing/refused (for example EACCES).
+        """
+        with ExitStack() as descriptors:
+            try:
+                observed: Optional[_ObservedEventsFile] = cls._open_descriptors(
+                    root=root,
+                    session_id=session_id,
+                    descriptors=descriptors,
+                )
+            except OSError as exc:
+                observed = cls._refused_source(error=exc)
+            yield observed
+
+    @classmethod
+    def _open_descriptors(
+        cls,
+        *,
+        root: Path,
+        session_id: str,
+        descriptors: ExitStack,
+    ) -> Optional[_ObservedEventsFile]:
+        """Open the three descriptors, registering each for closing as soon as it exists.
+
+        Args:
+            root (Path): Resolved history root.
+            session_id (str): Validated single-component session identity.
+            descriptors (ExitStack): Owner that closes every opened descriptor.
+
+        Returns:
+            Optional[_ObservedEventsFile]: The open view, or None for a non-regular file.
+        """
+        root_fd: int = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        descriptors.callback(os.close, root_fd)
+        session_fd: int = os.open(session_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        descriptors.callback(os.close, session_fd)
+        # O_NONBLOCK keeps a planted FIFO from blocking the observation thread.
+        file_fd: int = os.open(
+            _EVENTS_FILE_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=session_fd
+        )
+        descriptors.callback(os.close, file_fd)
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            return None
+        return cls(
+            root_fd=root_fd,
+            session_id=session_id,
+            session_fd=session_fd,
+            stream=cls._stream_for(descriptor=file_fd),
+        )
+
+    @staticmethod
+    def _stream_for(*, descriptor: int) -> BinaryIO:
+        """Wrap the file descriptor in an unbuffered reader that does not own it.
+
+        Unbuffered so each ``read(n)`` is one bounded read of at most ``n`` bytes.
+
+        Args:
+            descriptor (int): Regular-file descriptor closed by the ExitStack owner.
+
+        Returns:
+            BinaryIO: Raw binary reader over ``descriptor``.
+        """
+        return os.fdopen(descriptor, "rb", buffering=0, closefd=False)
+
+    @staticmethod
+    def _refused_source(*, error: OSError) -> None:
+        """Translate a missing or refused open into "no source"; re-raise real I/O faults.
+
+        Args:
+            error (OSError): Failure raised while opening a descriptor.
+
+        Raises:
+            OSError: When the failure is not a missing, non-directory or symlink refusal.
+        """
+        if error.errno not in _OBSERVATION_UNAVAILABLE_ERRNOS:
+            raise error
+        return None
+
+    def path_matches(self) -> bool:
+        """Report whether the session path still names the descriptors that were read.
+
+        WHAT: Compares no-follow lstat device/inode of the session directory and
+            events file with the open descriptors, so a replaced or re-pointed path
+            is detected even though the open descriptor itself never changed.
+        WHO: Called by FilesystemSessionHistoryStore after the bounded read.
+        WHEN: Once per observation, before any record is decoded.
+
+        Returns:
+            bool: True when both path components still name the opened objects.
+        """
+        try:
+            file_now: os.stat_result = os.stat(
+                _EVENTS_FILE_NAME, dir_fd=self._session_fd, follow_symlinks=False
+            )
+            session_now: os.stat_result = os.stat(
+                self._session_id, dir_fd=self._root_fd, follow_symlinks=False
+            )
+        except OSError:
+            return False
+        return self._same_object(
+            path_status=file_now, opened_status=os.fstat(self.stream.fileno())
+        ) and self._same_object(path_status=session_now, opened_status=os.fstat(self._session_fd))
+
+    @staticmethod
+    def _same_object(*, path_status: os.stat_result, opened_status: os.stat_result) -> bool:
+        """Return True when a path lstat and a descriptor fstat describe one object.
+
+        Args:
+            path_status (os.stat_result): No-follow status of the path component.
+            opened_status (os.stat_result): Status of the open descriptor.
+
+        Returns:
+            bool: Whether device and inode match.
+        """
+        return (path_status.st_dev, path_status.st_ino) == (opened_status.st_dev, opened_status.st_ino)
 
 
 class FilesystemSessionHistoryStore:
@@ -257,6 +428,44 @@ class FilesystemSessionHistoryStore:
                 self._load_events_sync,
                 session_id=session_id,
             )
+
+    async def load_observation_window(
+        self,
+        *,
+        session_id: str,
+        max_bytes: int = HISTORY_OBSERVATION_MAX_BYTES,
+        max_events: int = HISTORY_OBSERVATION_MAX_EVENTS,
+    ) -> HistoryObservationWindowDAO:
+        """Read a bounded public-observation input without repairing history.
+
+        WHAT: Reads one bounded suffix of the active log through no-follow
+            descriptors, decodes only complete LF records with the canonical event
+            contract, and reports omission explicitly. Never loads the whole log,
+            never runs compaction recovery and never takes the writer lock.
+        WHO: Called by WorkflowVisualizerLoader for progress, never by inference replay.
+        WHEN: On each progress poll; inference replay, compaction and full export
+            keep using ``load_events``.
+
+        Args:
+            session_id (str): Validated session under this store's configured root.
+            max_bytes (int): Positive byte budget, at most 2,097,152.
+            max_events (int): Positive event budget, at most 2,000.
+
+        Returns:
+            HistoryObservationWindowDAO: A bounded suffix with explicit omission state.
+
+        Raises:
+            ValueError: Invalid identity or bounds.
+            OSError: Read failure; the loader translates it to a safe stale view.
+        """
+        self._validate_observation_limits(max_bytes=max_bytes, max_events=max_events)
+        self._validate_observation_identity(session_id=session_id)
+        return await asyncio.to_thread(
+            self._load_observation_window_sync,
+            session_id=session_id,
+            max_bytes=max_bytes,
+            max_events=max_events,
+        )
 
     async def session_exists(self, *, session_id: str) -> bool:
         """Return ``True`` iff the session directory and metadata exist.
@@ -607,6 +816,240 @@ class FilesystemSessionHistoryStore:
             events.append(SessionHistoryEventDAO.model_validate(json.loads(stripped)))
         events.sort(key=lambda e: e.sequence)
         return events
+
+    @staticmethod
+    def _validate_observation_limits(*, max_bytes: int, max_events: int) -> None:
+        """Reject observation budgets that are not positive integers within the caps.
+
+        Args:
+            max_bytes (int): Requested byte budget.
+            max_events (int): Requested event budget.
+
+        Raises:
+            ValueError: When either budget is boolean, nonpositive or above its cap.
+        """
+        for budget, cap in (
+            (max_bytes, HISTORY_OBSERVATION_MAX_BYTES),
+            (max_events, HISTORY_OBSERVATION_MAX_EVENTS),
+        ):
+            if isinstance(budget, bool) or not isinstance(budget, int) or not 0 < budget <= cap:
+                raise ValueError("observation budget must be a positive integer within its limit")
+
+    @staticmethod
+    def _validate_observation_identity(*, session_id: str) -> None:
+        """Require the session identity to be exactly one safe path component.
+
+        Args:
+            session_id (str): Requested session identity.
+
+        Raises:
+            ValueError: When the identity is empty, a dot component, or contains a
+                separator or NUL byte.
+        """
+        unsafe: bool = session_id in {"", ".", ".."} or any(
+            mark in session_id for mark in ("/", "\\", "\x00")
+        )
+        if unsafe:
+            raise ValueError("session_id must be a single safe path component")
+
+    def _load_observation_window_sync(
+        self,
+        *,
+        session_id: str,
+        max_bytes: int,
+        max_events: int,
+    ) -> HistoryObservationWindowDAO:
+        """Observe one file generation of the active log; never calls ``_load_events_sync``.
+
+        Args:
+            session_id (str): Validated session identity.
+            max_bytes (int): Validated byte budget.
+            max_events (int): Validated event budget.
+
+        Returns:
+            HistoryObservationWindowDAO: Bounded window, or unavailable for a missing,
+                refused or changing source.
+        """
+        with _ObservedEventsFile.open(root=self._root, session_id=session_id) as observed:
+            if observed is None:
+                log_warning(
+                    msg="history_observation_unavailable", session_id=session_id, reason="source_absent"
+                )
+                return HistoryObservationWindowDAO.unavailable()
+            return self._observe_window(
+                observed=observed,
+                session_id=session_id,
+                max_bytes=max_bytes,
+                max_events=max_events,
+            )
+
+    @classmethod
+    def _observe_window(
+        cls,
+        *,
+        observed: _ObservedEventsFile,
+        session_id: str,
+        max_bytes: int,
+        max_events: int,
+    ) -> HistoryObservationWindowDAO:
+        """Read the bounded suffix and decode it only when one generation was observed.
+
+        Args:
+            observed (_ObservedEventsFile): Open no-follow view of the active log.
+            session_id (str): Session identity for diagnostics.
+            max_bytes (int): Validated byte budget.
+            max_events (int): Validated event budget.
+
+        Returns:
+            HistoryObservationWindowDAO: Empty, available or unavailable window.
+        """
+        complete, revision, omitted, stable = cls._read_observation_bytes(
+            stream=observed.stream, max_bytes=max_bytes
+        )
+        if not (stable and observed.path_matches()):
+            log_warning(msg="history_observation_unavailable", session_id=session_id, reason="source_changed")
+            return HistoryObservationWindowDAO.unavailable()
+        if not complete and not omitted:
+            return HistoryObservationWindowDAO(
+                events=(), revision=revision, truncated=False, availability="empty"
+            )
+        return cls._decode_observation_window(
+            complete=complete,
+            revision=revision,
+            omitted=omitted,
+            session_id=session_id,
+            max_events=max_events,
+        )
+
+    @classmethod
+    def _read_observation_bytes(cls, *, stream: BinaryIO, max_bytes: int) -> tuple[bytes, str, bool, bool]:
+        """Capture one bounded suffix for the store's observation reader.
+
+        Args:
+            stream (BinaryIO): Read-only regular descriptor owned by the caller.
+            max_bytes (int): Previously validated positive byte budget.
+
+        Returns:
+            tuple[bytes, str, bool, bool]: Complete-line bytes, revision, omission,
+                and whether descriptor evidence stayed stable during this read.
+        """
+        before: os.stat_result = os.fstat(stream.fileno())
+        start: int = max(0, before.st_size - max_bytes)
+        stream.seek(start)
+        raw: bytes = stream.read(before.st_size - start)
+        after: os.stat_result = os.fstat(stream.fileno())
+        identity: tuple[int, int, int, int] = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        current: tuple[int, int, int, int] = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        revision: str = ":".join(str(value) for value in (*identity, start))
+        complete, omitted = cls._complete_observation_lines(raw=raw, start=start)
+        return complete, revision, omitted, identity == current
+
+    @classmethod
+    def _complete_observation_lines(cls, *, raw: bytes, start: int) -> tuple[bytes, bool]:
+        """Exclude partial records before the observation decoder sees any bytes.
+
+        A positive start always discards through the first LF, even when the offset
+        landed on a record boundary: conservative omission beats parsing a fragment.
+
+        Args:
+            raw (bytes): At most the configured read budget.
+            start (int): Absolute offset; positive offsets omit the leading record.
+
+        Returns:
+            tuple[bytes, bool]: Complete LF-delimited bytes and omission flag.
+        """
+        omitted: bool = start > 0
+        if start > 0:
+            boundary: int = raw.find(b"\n")
+            raw = raw[boundary + 1 :] if boundary >= 0 else b""
+        end: int = raw.rfind(b"\n")
+        if end != len(raw) - 1:
+            omitted = True
+        return raw[: end + 1], omitted
+
+    @classmethod
+    def _decode_observation_window(
+        cls,
+        *,
+        complete: bytes,
+        revision: str,
+        omitted: bool,
+        session_id: str,
+        max_events: int,
+    ) -> HistoryObservationWindowDAO:
+        """Validate complete records and keep only the latest ``max_events`` of them.
+
+        Args:
+            complete (bytes): LF-delimited complete records from one bounded read.
+            revision (str): Generation revision of the read.
+            omitted (bool): Whether bytes were already discarded at the edges.
+            session_id (str): Session identity for diagnostics.
+            max_events (int): Validated event budget.
+
+        Returns:
+            HistoryObservationWindowDAO: Available window in ascending sequence order.
+        """
+        retained: deque[SessionHistoryEventDAO] = deque(maxlen=max_events)
+        valid_count: int = 0
+        invalid_count: int = 0
+        for event in cls._iter_observation_records(complete=complete):
+            if event is None:
+                invalid_count += 1
+                continue
+            valid_count += 1
+            retained.append(event)
+        if invalid_count:
+            log_warning(
+                msg="history_observation_records_skipped",
+                session_id=session_id,
+                reason="invalid_record",
+                count=invalid_count,
+            )
+        return HistoryObservationWindowDAO(
+            events=tuple(sorted(retained, key=lambda event: event.sequence)),
+            revision=revision,
+            truncated=omitted or invalid_count > 0 or valid_count > len(retained),
+            availability="available",
+        )
+
+    @classmethod
+    def _iter_observation_records(cls, *, complete: bytes) -> Iterator[Optional[SessionHistoryEventDAO]]:
+        """Yield each non-blank complete record decoded, or None when it is invalid.
+
+        Splits on literal LF bytes only, like ``_load_events_sync``: Unicode line
+        separators inside JSON strings are record content, not boundaries.
+
+        Args:
+            complete (bytes): LF-delimited complete records.
+
+        Yields:
+            Optional[SessionHistoryEventDAO]: The validated event, or None.
+        """
+        for record in complete.split(b"\n"):
+            stripped: bytes = record.rstrip(b"\r")
+            if stripped.strip():
+                yield cls._decode_observation_record(record=stripped)
+
+    @staticmethod
+    def _decode_observation_record(*, record: bytes) -> Optional[SessionHistoryEventDAO]:
+        """Decode one record with the canonical event contract, never logging its bytes.
+
+        Args:
+            record (bytes): One complete JSONL record without its LF.
+
+        Returns:
+            Optional[SessionHistoryEventDAO]: The event, or None for invalid UTF-8,
+                JSON or schema.
+        """
+        try:
+            return SessionHistoryEventDAO.model_validate(json.loads(record.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError):
+            return None
 
     def _rebuild_transcript_sync(
         self,

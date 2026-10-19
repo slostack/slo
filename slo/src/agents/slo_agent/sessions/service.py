@@ -136,6 +136,12 @@ from src.agents.slo_agent.history.transcript import ReplayEntryProjector
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPoolDAO
     from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+    from src.agents.slo_agent.orchestrator.dao import (
+        AttachedDispatchSnapshotDAO,
+        ChildAbortOutcomeDAO,
+        ChildAbortRequestDAO,
+        ChildControlCapabilityDAO,
+    )
     from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 
 from src.agents.slo_agent.plugins.dao import PluginHealthDAO, PluginRegistrationDAO
@@ -145,6 +151,9 @@ from src.agents.slo_agent.plugins.trust import PluginTrustStore
 
 __all__ = ["SloAgentSession"]
 
+
+_DISPATCH_AUDIT_KEYS: tuple[str, ...] = ("dispatch_id", "dispatch_sequence", "execution_id")
+"""Pool lifecycle metadata copied into the existing sub-agent audit records (feature 94 a.2)."""
 
 _RATE_LIMIT_OUTPUT_ESTIMATE_TOKENS: int = 8192
 """Realistic per-turn output estimate for the local TPM pre-flight check.
@@ -2157,6 +2166,63 @@ class SloAgentSession:
             Optional[SubAgentPool]: Attached pool, or None for ordinary sessions.
         """
         return self._sub_agent_pool
+
+    def attached_dispatch_snapshot(self) -> "AttachedDispatchSnapshotDAO":
+        """Return the attached pool's latest admitted batch for TUI observation.
+
+        WHAT: Delegates to the pool's explicit dispatch projection, or returns the
+            explicit empty value when no pool is attached; never inspects private
+            pool fields and has no side effects.
+        WHO: Bound by app composition as the workflow service's attached supplier
+            (feature 94 a.2); every TUI refresh calls it afresh.
+        WHEN: On mount and on each observation poll.
+
+        Returns:
+            AttachedDispatchSnapshotDAO: Latest batch entries, or the empty value.
+        """
+        from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO  # noqa: PLC0415
+
+        if self._sub_agent_pool is None:
+            return AttachedDispatchSnapshotDAO.empty()
+        return self._sub_agent_pool.attached_dispatch_snapshot()
+
+    async def abort_child(self, *, request: "ChildAbortRequestDAO") -> "ChildAbortOutcomeDAO":
+        """Ask the attached pool to stop one exact child, or report unavailable.
+
+        WHAT: Delegates to the pool's sole child-abort gateway, which revalidates
+            the request itself; without an attached pool returns the fixed
+            unavailable outcome. Whole-session ``abort`` is unaffected.
+        WHO: Bound by app composition as the workflow service's attached abort
+            seam (feature 94 a.4); the TUI never reaches the pool directly.
+        WHEN: After operator confirmation of an attached child.
+
+        Args:
+            request (ChildAbortRequestDAO): Exact current-run child identity.
+
+        Returns:
+            ChildAbortOutcomeDAO: The pool's observed outcome, or unavailable.
+        """
+        from src.agents.slo_agent.orchestrator.dao import ChildAbortOutcomeDAO  # noqa: PLC0415
+
+        if self._sub_agent_pool is None:
+            return ChildAbortOutcomeDAO.for_request(request=request, outcome="unavailable")
+        return await self._sub_agent_pool.abort_child(request=request)
+
+    def child_control_capability(self) -> Optional["ChildControlCapabilityDAO"]:
+        """Return the attached pool's typed child-control capability, if any.
+
+        WHAT: Exposes the pool's run/owner/parent identity and accepting state
+            without private-field inspection; valid with or without history files.
+        WHO: Bound by app composition as the workflow service's attached
+            capability supplier (feature 94 a.4).
+        WHEN: At confirmation and submission time; no side effects.
+
+        Returns:
+            Optional[ChildControlCapabilityDAO]: Capability, or None without a pool.
+        """
+        if self._sub_agent_pool is None:
+            return None
+        return self._sub_agent_pool.child_control_capability()
 
     @property
     def orchestration_tools(self) -> list[BaseTool]:
@@ -4906,6 +4972,11 @@ class SloAgentSession:
         all write a ``sub_agent_completed`` history event so the on-disk trace
         records the terminal kind for future forensics.
 
+        Both audit records also copy the pool's dispatch identity
+        (``dispatch_id``, ``dispatch_sequence``, ``execution_id``) when the event
+        carries it (feature 94 a.2). ``sub_agent_dispatch_started`` has no
+        ``sub_agent_id`` and stays stream-only; no history kind is added.
+
         Args:
             event (AgentStreamEventDAO): Event to inspect and optionally persist.
         """
@@ -4920,6 +4991,7 @@ class SloAgentSession:
                         metadata={
                             "sub_agent_id": event.sub_agent_id,
                             "task_id": event.task_id,
+                            **self._dispatch_audit_identity(event=event),
                         }
                     ),
                 ),
@@ -4934,10 +5006,25 @@ class SloAgentSession:
                             "sub_agent_id": event.sub_agent_id,
                             "task_id": event.task_id,
                             "terminal_kind": event.kind,
+                            **self._dispatch_audit_identity(event=event),
                         }
                     ),
                 ),
             )
+
+    @staticmethod
+    def _dispatch_audit_identity(*, event: AgentStreamEventDAO) -> dict[str, object]:
+        """Return the dispatch identity keys a pool lifecycle event carries.
+
+        Args:
+            event (AgentStreamEventDAO): Child lifecycle event from the pool relay.
+
+        Returns:
+            dict[str, object]: ``dispatch_id``, ``dispatch_sequence`` and
+                ``execution_id`` present in the event metadata; empty for
+                events emitted without dispatch identity.
+        """
+        return {key: event.metadata[key] for key in _DISPATCH_AUDIT_KEYS if key in event.metadata}
 
     async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
         """Forward ``event`` to every registered subscriber (failure-isolated)."""

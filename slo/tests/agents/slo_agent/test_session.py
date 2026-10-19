@@ -15,6 +15,8 @@ from src.agents.providers.model_pool import ModelPool, ModelPoolDAO, ModelPoolEn
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.dao import SessionHistoryMetadataDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+from src.agents.slo_agent.orchestrator.dao import ChildAbortRequestDAO
+from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 from src.agents.slo_agent.sessions.service import PromptAttemptPlanDAO, SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -994,6 +996,147 @@ class TestSloAgentSessionEventRelay:
         assert len(received) == 1
         assert received[0].sub_agent_id == "child-uuid"
         assert received[0].task_id == "t1"
+
+
+class TestSloAgentSessionAttachedDispatchSnapshot:
+    """``attached_dispatch_snapshot`` observation facade (feature 94 a.2)."""
+
+    def test_session_without_pool_returns_explicit_empty_value(self, tmp_path: Path) -> None:
+        """No attached pool means no dispatch, never a lookup of private fields."""
+        from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
+
+        session: SloAgentSession = SloAgentSession(
+            workdir=tmp_path, session_id="s1", agent=_build_faux_agent(tmp_path), enable_history=False
+        )
+
+        assert session.attached_dispatch_snapshot() == AttachedDispatchSnapshotDAO.empty()
+
+    async def test_attached_pool_latest_batch_is_returned_through_the_session(self, tmp_path: Path) -> None:
+        """A real pool dispatched through the session relay exposes only its latest batch."""
+        from langchain_core.tools import BaseTool
+
+        from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
+        from src.agents.slo_agent.orchestrator.pool import SubAgentPool
+        from src.agents.slo_agent.orchestrator.process import SubAgentProcess
+
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4", enable_history=False)
+        )
+        pool = SubAgentPool(
+            orchestrator_session_id="orch-1",
+            default_model=None,
+            relay=session.event_relay,
+            owner_session_id="orch-1",
+            run_id="7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f",
+            history_root=tmp_path / "history",
+        )
+        tool: MagicMock = MagicMock(spec=BaseTool)
+        tool.name = "spawn_sub_agents"
+        session.attach_sub_agent_pool(pool=pool, spawn_tool=tool)
+        received: list[AgentStreamEventDAO] = []
+
+        async def collect(event: AgentStreamEventDAO) -> None:
+            received.append(event)
+
+        session.subscribe(handler=collect)
+
+        async def finish(process: SubAgentProcess) -> SubAgentResultDAO:
+            return process._publish_terminal(
+                candidate=SubAgentResultDAO(
+                    task_id=process.task.task_id,
+                    session_id=process.session_id,
+                    status="completed",
+                    exit_code=0,
+                    execution_id=process.execution_id,
+                ),
+                terminal_reason="completed",
+                terminated_by="natural",
+            )
+
+        with patch.object(SubAgentProcess, "run", new=finish):
+            await pool.dispatch(
+                mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id="a")]
+            )
+            await pool.dispatch(
+                mode="single", tasks=[SubAgentTaskDAO(task_id="t2", prompt="y", session_id="b")]
+            )
+
+        snapshot = session.attached_dispatch_snapshot()
+        assert snapshot == pool.attached_dispatch_snapshot()
+        assert (snapshot.dispatch_sequence, [e.session_id for e in snapshot.entries]) == (2, ["b"])
+        assert [event.kind for event in received][0] == "sub_agent_dispatch_started"
+
+
+class TestSloAgentSessionChildAbortFacade:
+    """``abort_child`` / ``child_control_capability`` facade (feature 94 a.4, T09)."""
+
+    _RUN_ID: str = "7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f"
+
+    def _request(self, *, owner: str) -> ChildAbortRequestDAO:
+        return ChildAbortRequestDAO(
+            request_id="c3b2a190-8e7d-4c6b-9a58-473625140f0e",
+            owner_session_id=owner,
+            orchestrator_session_id="orch-1",
+            session_id="child-1",
+            run_id=self._RUN_ID,
+            execution_id="0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40",
+        )
+
+    def _attached_session(self, tmp_path: Path) -> tuple[SloAgentSession, SubAgentPool]:
+        from langchain_core.tools import BaseTool
+
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4", enable_history=False)
+        )
+        pool = SubAgentPool(
+            orchestrator_session_id="orch-1",
+            default_model=None,
+            relay=session.event_relay,
+            owner_session_id="orch-1",
+            run_id=self._RUN_ID,
+            history_root=tmp_path / "history",
+        )
+        tool: MagicMock = MagicMock(spec=BaseTool)
+        tool.name = "spawn_sub_agents"
+        session.attach_sub_agent_pool(pool=pool, spawn_tool=tool)
+        return session, pool
+
+    async def test_session_without_pool_returns_unavailable_and_no_capability(self, tmp_path: Path) -> None:
+        """No attached pool: a fixed unavailable outcome for the exact request, no capability."""
+        session: SloAgentSession = SloAgentSession(
+            workdir=tmp_path, session_id="s1", agent=_build_faux_agent(tmp_path), enable_history=False
+        )
+        request = self._request(owner="s1")
+
+        outcome = await session.abort_child(request=request)
+
+        assert (outcome.outcome, outcome.request_id, outcome.execution_id) == (
+            "unavailable",
+            request.request_id,
+            request.execution_id,
+        )
+        assert outcome.safe_message == "Child abort unavailable for this run."
+        assert session.child_control_capability() is None
+
+    async def test_attached_pool_receives_the_request_through_the_session(self, tmp_path: Path) -> None:
+        """The facade delegates to the real pool, which applies its own validation."""
+        session, pool = self._attached_session(tmp_path)
+
+        outcome = await session.abort_child(request=self._request(owner="orch-1"))
+
+        assert outcome.outcome == "not_owned"  # unknown child: the pool, not the facade, decided
+        assert pool.registry.count == 0
+
+    def test_no_history_attached_capability_is_valid_without_files(self, tmp_path: Path) -> None:
+        """A no-history attached session exposes the pool capability; no control files exist."""
+        session, pool = self._attached_session(tmp_path)
+
+        capability = session.child_control_capability()
+
+        assert capability == pool.child_control_capability()
+        assert capability is not None and capability.accepting is True
+        assert capability.run_id == self._RUN_ID
+        assert not (tmp_path / "history").exists()
 
 
 class TestSloAgentSessionAttachSubAgentPool:

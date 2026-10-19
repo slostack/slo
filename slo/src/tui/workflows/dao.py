@@ -9,13 +9,19 @@ consumes the effect objects.
 from __future__ import annotations
 
 import json
-from typing import List, Literal, Optional, TypeAlias, cast, get_args
+from typing import TYPE_CHECKING, List, Literal, Optional, TypeAlias, cast, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.agents.slo_agent.orchestrator.dao import canonical_uuid, safe_identifier
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowState
 
+if TYPE_CHECKING:  # Annotation only: this module stays free of runtime Textual imports.
+    from textual.widgets import RichLog
+
 __all__ = [
+    "ChildAbortTargetDAO",
     "DetachedWorkflowUiEffect",
     "DetachedWorkflowUiEffectDAO",
     "HandleAdvanceOutcomeDAO",
@@ -24,7 +30,17 @@ __all__ = [
     "ParsedFleetUpdateDAO",
     "ParsedLaunchResultDAO",
     "ParsedWorkflowLifecycleMessageDAO",
+    "ProgressViewportDAO",
+    "SessionProgressAvailability",
+    "SessionProgressSnapshotDAO",
     "WorkflowLifecycleTarget",
+    "WorkflowListDismissOutcomeDAO",
+    "WorkflowListDismissRequestDAO",
+    "WorkflowSessionAvailability",
+    "WorkflowSessionKeyDAO",
+    "WorkflowSessionRole",
+    "WorkflowSessionRowDAO",
+    "WorkflowSessionSnapshotDAO",
     "workflow_lifecycle_target_for_kind",
     "parse_fleet_update_message",
     "parse_workflow_lifecycle_message",
@@ -349,3 +365,389 @@ def _is_path_safe_workflow_id(*, workflow_id: str) -> bool:
     if not workflow_id:
         return False
     return not any(marker in workflow_id for marker in _UNSAFE_WORKFLOW_ID_MARKERS)
+
+
+WorkflowSessionRole: TypeAlias = Literal["orchestrator", "child"]
+"""Row role in the session list; the parent row is always ``orchestrator``."""
+
+WorkflowSessionAvailability: TypeAlias = Literal["available", "stale", "unavailable"]
+"""Whether a row reflects a fresh read, retained last-good data, or no readable data."""
+
+
+class WorkflowSessionKeyDAO(BaseModel):
+    """Owner-scoped composite identity of one row in the workflow session list.
+
+    Feature 94 a.2. Transient; never persisted. The parent row's ``session_id``
+    equals its ``orchestrator_session_id``. Filesystem callers still apply the
+    session-id validation and containment checks; non-empty strings alone are
+    not path authority.
+
+    Attributes:
+        orchestrator_session_id (str): Parent orchestrator owning the group.
+        session_id (str): Exact row session; never a clipped display string.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    orchestrator_session_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+
+    @property
+    def is_parent(self) -> bool:
+        """Return whether this key names the orchestrator's own row."""
+        return self.session_id == self.orchestrator_session_id
+
+
+class WorkflowSessionRowDAO(BaseModel):
+    """Frozen presentation record for one session-list row (feature 94 a.2).
+
+    Not persisted and not a replacement for ``SubAgentStatusDAO``; a display row
+    is never cancellation authority.
+
+    Attributes:
+        key (WorkflowSessionKeyDAO): Composite row identity.
+        workflow_id (Optional[str]): Detached workflow id; None for attached rows.
+        task_id (Optional[str]): Child task id; None for the parent row.
+        execution_id (str): Child incarnation UUID; empty for the parent or legacy rows.
+        dispatch_id (str): Registering batch UUID; empty for legacy detached rows.
+        role (WorkflowSessionRole): ``orchestrator`` exactly for the parent key.
+        status (str): Display status supplied by registry/fleet evidence.
+        task_text (str): Full task or TaskPreview label; rendered literally.
+        task_text_complete (bool): True only when ``task_text`` is the full task
+            from the matching incarnation's context.
+        availability (WorkflowSessionAvailability): Freshness of the row's data;
+            fresh rows default to ``available`` and only stale or unavailable
+            projections pass it explicitly.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: WorkflowSessionKeyDAO
+    workflow_id: Optional[str] = None
+    task_id: Optional[str] = None
+    execution_id: str = ""
+    dispatch_id: str = ""
+    role: WorkflowSessionRole
+    status: str = Field(min_length=1)
+    task_text: str
+    task_text_complete: bool
+    availability: WorkflowSessionAvailability = "available"
+
+    @field_validator("execution_id", "dispatch_id")
+    @classmethod
+    def _validate_optional_uuid(cls, value: str) -> str:
+        """Accept an empty legacy identity or a canonical UUID."""
+        if value == "":
+            return value
+        return canonical_uuid(value=value)
+
+    @model_validator(mode="after")
+    def _validate_role_matches_key(self) -> "WorkflowSessionRowDAO":
+        """Tie the parent role to the parent key and forbid a parent incarnation.
+
+        Returns:
+            WorkflowSessionRowDAO: Self after validation.
+
+        Raises:
+            ValueError: If role and key disagree, or a parent row names an execution.
+        """
+        if (self.role == "orchestrator") != self.key.is_parent:
+            raise ValueError("orchestrator role requires the parent key")
+        if self.role == "orchestrator" and self.execution_id:
+            raise ValueError("parent row has no execution identity")
+        return self
+
+
+class WorkflowSessionSnapshotDAO(BaseModel):
+    """One immutable session-list result per refresh (feature 94 a.2).
+
+    Attributes:
+        rows (tuple[WorkflowSessionRowDAO, ...]): Rows in stable group order;
+            empty hides the panel. Duplicate keys are the panel's defense, not
+            rejected here.
+        notice (Optional[str]): Fixed safe notice (stale/unavailable), or None.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rows: tuple[WorkflowSessionRowDAO, ...] = ()
+    notice: Optional[str] = None
+
+
+class WorkflowListDismissRequestDAO(BaseModel):
+    """Operator request to clear finished groups from the session list (feature 94 a.5).
+
+    Built by ``SlashRouter`` for ``/workflows tui dismiss [<id>]`` and applied by
+    the app through ``DetachedWorkflowAppService.dismiss_from_list``. Transient;
+    clearing is in-memory observation suppression, never a durable change.
+
+    Attributes:
+        target_id (Optional[str]): Detached ``workflow_id`` or orchestrator session
+            id naming one group; None clears every finished group.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_id: Optional[str] = None
+
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target_id(cls, value: Optional[str]) -> Optional[str]:
+        """Accept no target or one safe identifier."""
+        return None if value is None else safe_identifier(value=value)
+
+
+class WorkflowListDismissOutcomeDAO(BaseModel):
+    """Result of one list-clearing request; owns its transcript line (feature 94 a.5).
+
+    Exactly one shape holds: an untargeted clear (``target_id`` None, no refusal),
+    a targeted clear (``cleared`` names one group), a running refusal or an
+    unknown target. ``cleared`` holds each hidden group's workflow id, or the
+    orchestrator session id for an attached group.
+
+    Attributes:
+        target_id (Optional[str]): Requested group; None for clear-all.
+        cleared (tuple[str, ...]): Groups hidden by this request, in list order.
+        still_running (int): Visible groups left unfinished by a clear-all.
+        refused_running (Optional[str]): Target refused because it still runs.
+        unknown (Optional[str]): Target that names no group in the list.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_id: Optional[str] = None
+    cleared: tuple[str, ...] = ()
+    still_running: int = Field(default=0, ge=0)
+    refused_running: Optional[str] = None
+    unknown: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_single_shape(self) -> "WorkflowListDismissOutcomeDAO":
+        """Reject outcomes that mix results or describe a group other than the target.
+
+        Returns:
+            WorkflowListDismissOutcomeDAO: Self after validation.
+
+        Raises:
+            ValueError: If both refusals are set, a refusal lacks the matching
+                target or clears something, or a targeted clear hides anything
+                but one group.
+        """
+        if self.refused_running is not None and self.unknown is not None:
+            raise ValueError("a target is either running or unknown, never both")
+        refusal: Optional[str] = self.refused_running or self.unknown
+        if refusal is not None and (refusal != self.target_id or self.cleared):
+            raise ValueError("a refusal names only the requested target and clears nothing")
+        if self.target_id is not None and refusal is None and len(self.cleared) != 1:
+            raise ValueError("a targeted clear hides exactly one group")
+        return self
+
+    @property
+    def rendered(self) -> str:
+        """Return the transcript line for this outcome.
+
+        Returns:
+            str: Fixed operator line from the a.5 behaviour table.
+        """
+        if self.refused_running is not None:
+            return (
+                f"workflow {self.refused_running} is still running — "
+                f"wait for it or use /workflows abort {self.refused_running}"
+            )
+        if self.unknown is not None:
+            return f"no workflow {self.unknown} in the list"
+        if self.target_id is not None:
+            return f"cleared workflow {self.target_id} from the list"
+        return self._clear_all_line()
+
+    def _clear_all_line(self) -> str:
+        """Return the clear-all summary, mentioning running groups only when some remain.
+
+        Returns:
+            str: Summary line, or the nothing-to-clear line when no group was hidden.
+        """
+        if not self.cleared:
+            return "no finished workflow groups to clear"
+        running: str = f"; {self.still_running} still running" if self.still_running else ""
+        return f"cleared {len(self.cleared)} finished workflow group(s) from the list{running}"
+
+
+SessionProgressAvailability: TypeAlias = Literal["available", "empty", "stale", "unavailable"]
+"""Readability of one progress observation; ``stale`` keeps the last-good paint."""
+
+
+class ChildAbortTargetDAO(BaseModel):
+    """Immutable child identity captured when abort confirmation opens (feature 94 a.4).
+
+    Never replaced with a refreshed row's identity after confirmation; read-only
+    observation consumers never build one.
+
+    Attributes:
+        key (WorkflowSessionKeyDAO): Child row key; never the parent key.
+        run_id (str): Runner invocation that must still own the child.
+        execution_id (str): Exact target incarnation.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: WorkflowSessionKeyDAO
+    run_id: str
+    execution_id: str
+
+    @field_validator("run_id", "execution_id")
+    @classmethod
+    def _validate_uuid(cls, value: str) -> str:
+        """Require canonical run and execution UUIDs."""
+        return canonical_uuid(value=value)
+
+    @field_validator("key")
+    @classmethod
+    def _validate_child_key(cls, value: WorkflowSessionKeyDAO) -> WorkflowSessionKeyDAO:
+        """Refuse the orchestrator's own key; only children can be aborted individually."""
+        if value.is_parent:
+            raise ValueError("abort target must name a child session")
+        return value
+
+
+class SessionProgressSnapshotDAO(BaseModel):
+    """Bounded public progress for one selected session (feature 94 a.3).
+
+    Transient result of ``WorkflowVisualizerLoader.load_session_progress``; never
+    persisted and never a raw payload bag. ``source_generation`` names the source
+    kind, execution and file identity and stays fixed across appends, while
+    ``revision`` changes whenever the bounded content changes.
+
+    Attributes:
+        key (WorkflowSessionKeyDAO): Observed session.
+        execution_id (str): Child incarnation UUID; empty for parent or legacy rows.
+        dispatch_id (str): Batch or run identity UUID; empty when unknown.
+        entries (tuple[TranscriptEntryDAO, ...]): At most 2,000 public entries.
+        revision (str): Content revision; empty when nothing was read.
+        source_generation (str): Source identity independent of appends.
+        availability (SessionProgressAvailability): Readability of this observation.
+        observed_at (str): UTC ISO-8601 observation time.
+        notice (Optional[str]): Fixed safe notice, never adapter error text.
+        task_text (str): Full task or preview, rendered literally.
+        task_text_complete (bool): True only for the matching incarnation's full task.
+        status (str): Display execution status.
+        membership_removed (bool): True only for authoritative removal; no content.
+        final_read_complete (bool): True only after a stable terminal source read.
+        abort_target (Optional[ChildAbortTargetDAO]): Confirmation identity; None in
+            read-only consumers.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: WorkflowSessionKeyDAO
+    execution_id: str = ""
+    dispatch_id: str = ""
+    entries: tuple[TranscriptEntryDAO, ...] = ()
+    revision: str
+    source_generation: str
+    availability: SessionProgressAvailability
+    observed_at: str
+    notice: Optional[str] = None
+    task_text: str
+    task_text_complete: bool
+    status: str
+    membership_removed: bool = False
+    final_read_complete: bool = False
+    abort_target: Optional[ChildAbortTargetDAO] = None
+
+    @field_validator("execution_id", "dispatch_id")
+    @classmethod
+    def _validate_optional_uuid(cls, value: str) -> str:
+        """Accept an empty legacy identity or a canonical UUID."""
+        return value if value == "" else canonical_uuid(value=value)
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> "SessionProgressSnapshotDAO":
+        """Reject authority, removal or completion claims the content cannot support.
+
+        Returns:
+            SessionProgressSnapshotDAO: Self after validation.
+
+        Raises:
+            ValueError: If the parent names an execution, the abort target names a
+                different session or incarnation, a removal carries content or
+                completion, or a final read is not readable.
+        """
+        if self.key.is_parent and self.execution_id:
+            raise ValueError("parent progress has no execution identity")
+        target = self.abort_target
+        if target is not None and (target.key, target.execution_id) != (self.key, self.execution_id):
+            raise ValueError("abort target must match the observed session and execution")
+        if self.membership_removed and (self.entries or self.final_read_complete or target is not None):
+            raise ValueError("removed membership carries no content, completion or authority")
+        if self.final_read_complete and self.availability not in {"available", "empty"}:
+            raise ValueError("final read requires a readable source")
+        return self
+
+
+class ProgressViewportDAO(BaseModel):
+    """Retain a reader's offsets independently of execution and persistence (feature 94 a.3).
+
+    In-memory only: the app's progress sink keeps one per recently visited
+    session key (bounded LRU) and never writes it to history. The key lives in
+    that cache, not in this value.
+
+    Attributes:
+        x (float): Horizontal scroll offset in cells.
+        y (float): Vertical scroll offset in lines.
+        following (bool): Whether the reader was at the tail, so new output should
+            keep the view at the end; a new view starts following.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    x: float = 0.0
+    y: float = 0.0
+    following: bool = True
+
+    @classmethod
+    def capture(cls, *, log: "RichLog") -> "ProgressViewportDAO":
+        """Capture the visible position immediately before a screen update.
+
+        WHAT: Records both offsets and treats a log at (or beyond) its maximum
+            vertical offset as following; an empty log is therefore following.
+        WHO: SessionProgressScreen at delivery time and on minimize.
+        WHEN: Just before the screen changes the log's content, never when the
+            background read starts, because the reader may scroll meanwhile.
+
+        Args:
+            log (RichLog): Mounted progress log owned by the screen.
+
+        Returns:
+            ProgressViewportDAO: Bottom-follow intent and exact current offsets.
+        """
+        return cls(x=log.scroll_x, y=log.scroll_y, following=log.scroll_y >= log.max_scroll_y)
+
+    def restore(self, *, log: "RichLog") -> bool:
+        """Move the log back to this position after its content and layout changed.
+
+        WHAT: A following viewport jumps to the new end and keeps the current
+            horizontal offset; otherwise both saved offsets are clamped to the
+            current scrollable range.
+        WHO: SessionProgressScreen, only while its paint and user-navigation
+            revisions still match the delivery that captured this value.
+        WHEN: After the layout that follows a paint.
+
+        Args:
+            log (RichLog): Same mounted log after content/layout update.
+
+        Returns:
+            bool: True when the saved position was reached; False when the
+                current range clamped it (for example, wide lines not laid out yet).
+        """
+        if self.following:
+            # x_axis=False keeps a horizontal pan while following the tail.
+            log.scroll_end(animate=False, immediate=True, x_axis=False)
+            return True
+        reachable: bool = self.x <= log.max_scroll_x and self.y <= log.max_scroll_y
+        log.scroll_to(
+            x=min(self.x, log.max_scroll_x),
+            y=min(self.y, log.max_scroll_y),
+            animate=False,
+            immediate=True,
+        )
+        return reachable

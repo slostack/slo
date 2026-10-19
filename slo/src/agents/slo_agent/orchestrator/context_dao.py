@@ -16,7 +16,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from src.agents.slo_agent.orchestrator.dao import canonical_uuid
 
 __all__ = [
     "OrchestratorContextDAO",
@@ -91,6 +93,9 @@ class SpawnContextDAO(BaseModel):
             spawn time (snapshot of the module-level constant).
         system_prompt (str): Assembled system prompt for the child agent.
         recorded_at (str): ISO 8601 datetime string with UTC timezone.
+        execution_id (str): Runtime incarnation that owns this context. Excluded
+            from serialization so released readers keep decoding the file; the
+            ``execution.v1.json`` sibling binds the bytes to the incarnation.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -103,6 +108,13 @@ class SpawnContextDAO(BaseModel):
     inactivity_timeout_seconds: float
     system_prompt: str
     recorded_at: str
+    execution_id: str = Field(default="", exclude=True)
+
+    @field_validator("execution_id")
+    @classmethod
+    def _validate_execution_id(cls, value: str) -> str:
+        """Accept an empty reader-side identity or a canonical incarnation UUID."""
+        return value if value == "" else canonical_uuid(value=value)
 
     @classmethod
     def build(
@@ -115,6 +127,7 @@ class SpawnContextDAO(BaseModel):
         model: Optional[str],
         reasoning_level: Optional[str],
         cwd: Optional[str],
+        execution_id: str = "",
     ) -> "SpawnContextDAO":
         """Build a ``SpawnContextDAO`` with the current UTC timestamp.
 
@@ -126,11 +139,14 @@ class SpawnContextDAO(BaseModel):
             model (Optional[str]): Effective model name.
             reasoning_level (Optional[str]): Reasoning level override.
             cwd (Optional[str]): Working directory override.
+            execution_id (str): Registry-captured incarnation UUID. Defaults to an
+                empty identity for reader-side fixtures that do not own an execution.
 
         Returns:
             SpawnContextDAO: Populated DAO with ISO timestamp.
         """
         return cls(
+            execution_id=execution_id,
             task_id=task_id,
             prompt=prompt,
             model=model,

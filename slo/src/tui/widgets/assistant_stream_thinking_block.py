@@ -11,6 +11,7 @@ from textual.selection import Selection
 from textual.timer import Timer
 from textual.widgets import Static
 
+from src.agents.slo_agent.message_text import merge_reasoning_delta
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.markdown_content_compiler import (
     MarkdownContentCompiler,
@@ -212,7 +213,7 @@ class AssistantStreamThinkingBlock(Vertical):
         """
         if self._finalized or not delta:
             return
-        merged_text: str = self._merge_reasoning_delta(existing=self._thinking_text, delta=delta)
+        merged_text: str = merge_reasoning_delta(existing=self._thinking_text, delta=delta)
         self._thinking_text = self._stabilize_raw_thinking(text=merged_text)
         self._schedule_render()
 
@@ -422,24 +423,3 @@ class AssistantStreamThinkingBlock(Vertical):
         if stripped_line.startswith("*") and stripped_line.endswith("*") and stripped_line.count("*") == 2:
             return f"**{stripped_line[1:-1].strip()}**"
         return line
-
-    @staticmethod
-    def _merge_reasoning_delta(*, existing: str, delta: str) -> str:
-        """Append one reasoning fragment with established spacing repair.
-
-        Args:
-            existing (str): Previously accumulated reasoning text.
-            delta (str): New streamed reasoning fragment.
-
-        Returns:
-            str: Readable concatenation of both fragments.
-        """
-        if not existing or not delta:
-            return existing + delta
-        if existing[-1].isspace() or delta[0].isspace():
-            return existing + delta
-        if delta[0] in ",.;:!?)]}%\"'”’" or existing[-1] in '([{$"“‘':
-            return existing + delta
-        if delta[0] in "-/\\_`" or existing[-1] in "-/\\_`'’":
-            return existing + delta
-        return f"{existing} {delta}"

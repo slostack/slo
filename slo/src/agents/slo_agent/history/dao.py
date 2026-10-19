@@ -22,6 +22,10 @@ from src.agents.providers.message_extension import ProviderMessageExtensionDAO
 
 __all__ = [
     "HistoryEventKind",
+    "HISTORY_OBSERVATION_MAX_BYTES",
+    "HISTORY_OBSERVATION_MAX_EVENTS",
+    "HistoryObservationAvailability",
+    "HistoryObservationWindowDAO",
     "SessionHistoryEventPayloadDAO",
     "SessionHistoryEventDAO",
     "SessionHistoryMetadataDAO",
@@ -161,3 +165,47 @@ class SessionHistoryMetadataDAO(BaseModel):
     latest_sequence: int = 0
     last_completed_turn_id: Optional[str] = None
     startup_notice_shown_at: Optional[datetime] = None
+
+
+# Upper bounds for one progress observation (spec 94.a.3); callers may ask for less, never more.
+HISTORY_OBSERVATION_MAX_BYTES: int = 2_097_152
+HISTORY_OBSERVATION_MAX_EVENTS: int = 2_000
+
+HistoryObservationAvailability = Literal["available", "empty", "unavailable"]
+
+
+class HistoryObservationWindowDAO(BaseModel):
+    """Bounded, read-only suffix of one session's canonical history.
+
+    An observation envelope returned by ``load_observation_window`` for progress
+    views; it is never persisted and never feeds inference replay.
+
+    Fields:
+        events (tuple[SessionHistoryEventDAO, ...]): Valid complete records from the
+            bounded suffix, in ascending ``sequence`` order.
+        revision (str): ``device:inode:size:mtime_ns:start`` of the file generation
+            read; empty when nothing was observed.
+        truncated (bool): True when bytes or records were omitted from the window.
+        availability (HistoryObservationAvailability): ``empty`` for an existing
+            zero-byte log, ``unavailable`` for a missing, refused or changing source.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    events: tuple[SessionHistoryEventDAO, ...]
+    revision: str
+    truncated: bool
+    availability: HistoryObservationAvailability
+
+    @classmethod
+    def unavailable(cls) -> HistoryObservationWindowDAO:
+        """Build the observation of a source that could not be read safely this poll.
+
+        WHAT: Carries no events and no revision so callers keep their last good view.
+        WHO: Built by FilesystemSessionHistoryStore for missing, refused or changed files.
+        WHEN: Whenever one bounded observation cannot observe a single file generation.
+
+        Returns:
+            HistoryObservationWindowDAO: The empty unavailable envelope.
+        """
+        return cls(events=(), revision="", truncated=False, availability="unavailable")

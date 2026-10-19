@@ -17,6 +17,7 @@ from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, SubAgentStat
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.workflow_registry import (
+    WorkflowCommandResultDAO,
     WorkflowCommandService,
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -1016,3 +1017,118 @@ class TestAbortPidSafety:
         service: WorkflowCommandService = _build_service(store=_build_store(tmp_path=tmp_path))
 
         assert await service.abort(workflow_id="../evil") == "no workflow ../evil"
+
+
+class TestTypedCommandResults:
+    """Typed dismiss/resume results feed observation suppression (feature 94 a.2)."""
+
+    @pytest.mark.asyncio
+    async def test_successful_dismiss_names_the_workflow(self, tmp_path: Path) -> None:
+        """Only a durable stalled→failed dismissal carries the dismissed id."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, state="stalled")
+        service: WorkflowCommandService = _build_service(store=store)
+
+        result: WorkflowCommandResultDAO = await service.dismiss_result(workflow_id="wf-1")
+
+        assert result == WorkflowCommandResultDAO(
+            rendered="workflow wf-1 dismissed (stalled → failed)",
+            dismissed_workflow_id="wf-1",
+        )
+        handle = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-1")
+        assert handle is not None
+        assert handle.state == "failed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("state", "workflow_id", "rendered"),
+        [
+            ("running", "wf-1", "workflow wf-1 is running — only stalled workflows can be dismissed"),
+            ("stalled", "wf-nope", "no workflow wf-nope"),
+        ],
+    )
+    async def test_refused_dismiss_names_nothing(
+        self, tmp_path: Path, state: WorkflowState, workflow_id: str, rendered: str
+    ) -> None:
+        """Refusals keep their text and never signal a dismissal."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, state=state)
+        service: WorkflowCommandService = _build_service(store=store)
+
+        result: WorkflowCommandResultDAO = await service.dismiss_result(workflow_id=workflow_id)
+
+        assert result == WorkflowCommandResultDAO(rendered=rendered)
+
+    @pytest.mark.asyncio
+    async def test_failed_dismiss_transition_names_nothing(self, tmp_path: Path) -> None:
+        """A lost transition race keeps the existing error text without a dismissal."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, state="stalled")
+        service: WorkflowCommandService = _build_service(store=store)
+        with patch.object(
+            store, "update_state", AsyncMock(side_effect=WorkflowStateTransitionError("raced"))
+        ):
+            result: WorkflowCommandResultDAO = await service.dismiss_result(workflow_id="wf-1")
+
+        assert result == WorkflowCommandResultDAO(rendered="could not dismiss workflow wf-1: raced")
+
+    @pytest.mark.asyncio
+    async def test_successful_resume_names_the_workflow(self, tmp_path: Path) -> None:
+        """A confirmed relaunch carries the resumed id beside the unchanged text."""
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        service: WorkflowCommandService = _build_service(store=store)
+
+        @asynccontextmanager
+        async def successful_adoption(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Yield a controlled process-shaped object without spawning a child."""
+            del handle, history_root
+            yield SimpleNamespace(process=SimpleNamespace(pid=5678), activate=lambda *, expected_pid: None)
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=successful_adoption):
+            result: WorkflowCommandResultDAO = await service.resume_result(workflow_id="wf-1")
+
+        assert result.resumed_workflow_id == "wf-1"
+        assert result.dismissed_workflow_id is None
+        assert result.rendered.startswith("workflow wf-1 resumed (pid 5678)")
+
+    @pytest.mark.asyncio
+    async def test_failed_resume_names_nothing(self, tmp_path: Path) -> None:
+        """A spawn failure keeps its safe text and never clears suppression."""
+        from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
+
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        await _write_handle(store=store, state="failed")
+        service: WorkflowCommandService = _build_service(store=store)
+
+        @asynccontextmanager
+        async def failed_adoption(*, handle: WorkflowHandleDAO, history_root: Path):
+            """Fail before workload ownership becomes available."""
+            del handle, history_root
+            raise OSError("workflow resume failed: unavailable")
+            yield
+
+        with patch.object(WorkflowRelauncher, "spawn_for_adoption", new=failed_adoption):
+            result: WorkflowCommandResultDAO = await service.resume_result(workflow_id="wf-1")
+
+        assert result == WorkflowCommandResultDAO(rendered="workflow wf-1 resume failed")
+
+    @pytest.mark.asyncio
+    async def test_refused_resume_names_nothing(self, tmp_path: Path) -> None:
+        """A running workflow refusal carries no resumed id."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        await _write_handle(store=store, state="running")
+        service: WorkflowCommandService = _build_service(store=store)
+
+        result: WorkflowCommandResultDAO = await service.resume_result(workflow_id="wf-1")
+
+        assert result == WorkflowCommandResultDAO(
+            rendered="workflow wf-1 is running — only stalled or failed workflows can be resumed"
+        )
+
+    def test_result_rejects_both_signals(self) -> None:
+        """One command result never claims dismissal and resume together."""
+        with pytest.raises(ValueError):
+            WorkflowCommandResultDAO(rendered="x", dismissed_workflow_id="wf-1", resumed_workflow_id="wf-1")

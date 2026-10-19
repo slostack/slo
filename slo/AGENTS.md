@@ -112,7 +112,9 @@ slo/
 │   │   │   │   ├── process_probe.py    # ProcessProbe — conservative shared PID liveness semantic
 │   │   │   │   ├── spawn_env.py        # Shared allowlisted headless-child env and capture opener
 │   │   │   │   ├── process.py          # SubAgentProcess — child spawn, stream relay, captures
-│   │   │   │   ├── pool.py             # SubAgentPool — bounded sub-agent dispatch
+│   │   │   │   ├── pool.py             # SubAgentPool — bounded sub-agent dispatch, explicit dispatch_id batches, abort_child
+│   │   │   │   ├── task_preview.py     # TaskPreview — the one 150-code-point task label (feature 94)
+│   │   │   │   ├── child_abort.py      # ChildAbortStore (versioned request/receipt files) + runner ChildAbortController
 │   │   │   │   ├── launch_tool.py      # launch_workflow — detached orchestrator spawn
 │   │   │   │   ├── relaunch.py          # WorkflowRelauncher — resume a dead detached workflow
 │   │   │   │   └── workflow_registry.py # WorkflowHandleStore and workflow commands
@@ -169,15 +171,21 @@ slo/
 │   │   ├── slash_suggestion_engine.py # SlashSuggestionEngine — prefix-match autocomplete
 │   │   ├── thinking_spinner.py        # ThinkingSpinner widget
 │   │   ├── headless_workflow_visualizer.py # `slo visualize` TUI — resizable panes, summary bar, markdown transcript
-│   │   ├── workflow_visualizer_loader.py   # WorkflowVisualizerLoader — reads parent/child session captures
+│   │   ├── workflow_visualizer_loader.py   # WorkflowVisualizerLoader — bounded parent/child capture + progress reads
+│   │   ├── jsonl_tail.py              # JsonlTail — the one bounded capture JSONL reader
 │   │   ├── visualizer_launcher.py     # VisualizerLauncher — opens `slo visualize` in a new OS terminal window
 │   │   ├── slodiff/                   # Clean-room extractable diff model + Textual widget
 │   │   ├── git_diff_content_service.py # Safe HEAD-versus-worktree content loader
 │   │   ├── git_diff_screen.py          # Focused /diff screen and controls
-│   │   ├── workflows/                 # Detached-workflow receive path (spec 57.a.5)
-│   │   │   ├── dao.py                 # Parsed lifecycle/launch DTOs, DetachedWorkflowUiEffectDAO
-│   │   │   ├── service.py             # DetachedWorkflowAppService — handles, state cache, typed effects
-│   │   │   └── renderer.py            # DetachedWorkflowRenderer — launch guard, notices (no Textual)
+│   │   ├── workflows/                 # Detached-workflow receive path (spec 57.a.5) + session observation (feature 94)
+│   │   │   ├── dao.py                 # Parsed lifecycle/launch DTOs, effects, session key/row/snapshot/progress/viewport DAOs
+│   │   │   ├── service.py             # DetachedWorkflowAppService — handles, typed effects, owner-scoped list/progress gateway, child-abort begin
+│   │   │   ├── renderer.py            # DetachedWorkflowRenderer — launch guard, notices (no Textual)
+│   │   │   ├── progress_coordinator.py # WorkflowProgressCoordinator — the one 5.0 s single-flight observation timer
+│   │   │   ├── session_progress_screen.py (+ .tcss) # SessionProgressScreen + ProgressLog — position-preserving progress modal
+│   │   │   ├── abort_confirmation_screen.py (+ .tcss) # AbortConfirmationScreen — exact-child confirmation (safe default)
+│   │   │   ├── abort_submission.py    # ChildAbortSubmission — tracked request, 30 s not-confirmed notice
+│   │   │   └── transcript_renderer.py # WorkflowTranscriptRenderer — shared entry formatter (modal + `slo visualize`)
 │   │   ├── model_catalog.py           # supported_models_by_provider()
 │   │   ├── authentication/            # AuthenticationScreen + widgets (api_key, oauth, …)
 │   │   └── widgets/
@@ -187,6 +195,8 @@ slo/
 │   │       ├── tool_execution_block.py   # ToolExecutionBlock — one tool call+result with panel surface styling
 │   │       ├── queued_prompt_block.py    # QueuedPromptBlock — one visible latest-wins held ordinary prompt
 │   │       ├── usage_status_bar.py       # UsageStatusBar — token/rate display
+│   │       ├── sub_agent_fleet_panel.py  # SubAgentFleetPanel + FleetSessionList — "Ongoing workflow tasks" list below PromptInput
+│   │       ├── sub_agent_fleet_row.py    # SubAgentFleetRow — one literal `[status] session-id: task` ListItem
 │   │       └── slash_suggestion_menu.py  # SlashSuggestionMenu — autocomplete dropdown
 │   └── exceptions.py
 ├── tests/
@@ -194,7 +204,7 @@ slo/
 │   │   └── slo_agent/                 # unit tests: agent loop, session, rate limits, usage
 │   ├── tui/                           # TUI tests: app, replay, slash, status bar, tool blocks
 │   │   └── workflows/                 # receive-path dao/service/renderer unit tests
-│   └── integration/                   # cross-component (future)
+│   └── integration/                   # cross-component composed flows (e.g. feature 94 list → progress → child abort)
 ├── plugins/
 │   └── bash_live_output/              # bundled Feature 75 consumer-only Bash live-output renderer
 ├── skills/                            # 186 vendored SKILL.md files + INDEX.md
@@ -509,8 +519,8 @@ ancestry, so home-prefix lookalikes stay absolute); the usage bar owns no cwd di
 
 `TranscriptProjector` owns parent `block_id` routing and mounts replay reasoning as a
 sealed thinking block immediately before its answer block (replay adjacency). `SloTUI`
-owns child/sub-agent events: child thinking updates fleet activity only and never mounts
-a foreground transcript block.
+owns child/sub-agent events: they never mount a foreground transcript block; child
+lifecycle events only request one coalesced session-list refresh (feature 94).
 
 **Queued prompt (spec 72.a.4 + input-adjacent anchoring):** an ordinary (non-slash) prompt
 submitted while a run is active is held in a one-deep, latest-wins app-owned slot
@@ -570,7 +580,8 @@ does prefix-match autocomplete; `SlashSuggestionMenu` renders the dropdown.
 
 Available slash commands include: `/help`, `/diff <repository-relative-path>`, `/new [session name]`, `/rename <session name>`,
 `/model <name>`, `/reasoning <level>`, `/context-window`, `/compact`, `/abort`, `/steer <text>`,
-`/clear`, `/auth`, `/quit` (and aliases), and `/workflows [abort|dismiss|resume] <workflow-id>`.
+`/clear`, `/auth`, `/quit` (and aliases), `/workflows [abort|dismiss|resume] <workflow-id>`, and
+`/workflows tui dismiss [<workflow-id>]` (hides finished groups from the TUI list in memory only).
 `/context-window` reports the routed model's capacity
 and projector-faithful durable replay estimate; `/compact` requests one lock-safe, transactional
 manual compaction and rejects while a prompt owns the session lock.
@@ -604,7 +615,8 @@ manual `slo visualize` command into the transcript. Only a non-secret `SLO_*` al
 forwarded into the new window. Disable with `SLO_AUTO_VISUALIZE=0`; pick the emulator with
 `SLO_VISUALIZER_TERMINAL_APP`. The visualizer TUI itself
 (`headless_workflow_visualizer.py`) has a workflow-summary bar, status-coloured sub-agent
-list, markdown transcript rendering matching the main TUI, and keyboard-resizable panes
+list, markdown transcript rendering through the shared `WorkflowTranscriptRenderer` (the same
+formatter as the in-app progress modal), and keyboard-resizable panes
 (`ctrl+←/→` for the sub-agent list width, `ctrl+↑/↓` for the diagnostics height).
 
 **Headless heartbeat and failure envelope (specs 70/71):** `HeadlessRunner` emits a stderr-only
@@ -618,7 +630,8 @@ SIGTERM → grace → SIGKILL → reap with one cached terminal result.
 **Detached workflow supervision:** workflow handles live at
 `<owner_session>/workflows/wf-*.json` (TUI-owned); each orchestrator session also has
 `orchestrator.json` (HeadlessRunner self-report), `fleet.json` (pool projection),
-`abort_request.json` (TUI durable abort channel), and each child has `status.json` (terminal result).
+`abort_request.json` (TUI durable whole-workflow abort channel), `child-control.v1/` (child-only
+abort requests/receipts, feature 94), and each child has `status.json` (terminal result).
 `/workflows resume <workflow-id>` relaunches a `stalled` or `failed` handle against its original
 orchestrator session with `--resume`; the dedicated flock-protected store transition returns it to
 `launching`, and fresh self-reported evidence advances it to `running`.
@@ -648,6 +661,34 @@ SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed H
 - **Strict app boundary:** `SloTUI` passes raw inbox kind/payload (or the raw
   `launch_workflow` tool-result text) to the service exactly once, then only executes the
   typed effects the service returned. The app never parses workflow payloads itself.
+
+**Workflow session list, progress modal and child abort (feature 94).** Spec family:
+`specifications/94-slo-tui-redesign/tui/`; runtime notes: `docs/RESEARCH.md` "Feature 94 TUI
+session controls — owner map".
+
+```
+SloTUI ── one WorkflowProgressCoordinator (5.0 s, single flight) ──> DetachedWorkflowAppService
+   ▲                                                                  │ load_session_snapshot (owner-scoped,
+   │ _WorkflowProgressSink (apply_sessions / apply_progress)          │  attached batch first, then detached)
+   │                                                                  │ load_session_progress (bounded loader)
+   ├── SubAgentFleetPanel ("Ongoing workflow tasks", below PromptInput, above UsageStatusBar)
+   ├── SessionProgressScreen (ProgressLog, Minimize, Abort child…)
+   └── AbortConfirmationScreen ──> service.begin_child_abort ──> attached: session.abort_child → pool
+                                                                detached: ChildAbortStore → runner ChildAbortController → pool
+```
+
+- `PromptInput` paints only top and bottom accent rules (`app.tcss`); editing, queue anchor,
+  history recall, Enter handling and min/max height 3/17 are unchanged.
+- Rows read `[status] session-id: task`, with the task from `TaskPreview` (150 code points
+  including `…`, rendered literally). Tab/Shift+Tab focus the list; Up/Down select without
+  wrapping; Enter or click opens the exact session. There is no workflow Ctrl+W binding.
+- The modal loads immediately and refreshes every 5 s. It preserves the reader's position (tail
+  follows only from the bottom; End resumes). Escape/Minimize keeps the viewport for reopen and
+  never cancels execution.
+- Abort child needs explicit confirmation and reports "Abort requested" until terminal evidence
+  arrives. It never resubmits, never signals a PID from the TUI, and never touches siblings, the
+  orchestrator or `abort_request.json`.
+- `/workflows tui dismiss [<id>]` hides finished groups in memory only.
 
 ---
 
@@ -798,9 +839,27 @@ tree.json       # SessionTreeDAO — turn-grouped event tree (new default)
 transcript.md   # derived; not authoritative
 orchestrator.json # detached-orchestrator self-report when applicable
 fleet.json        # durable child fleet projection when applicable
-abort_request.json # TUI-to-orchestrator abort channel when applicable
+abort_request.json # TUI-to-orchestrator whole-workflow abort channel when applicable
+child-control.v1/capability.json # runner child-abort capability (accepting while its controller runs)
+child-control.v1/<run_id>/{requests,receipts}/<request_id>.json # one child's abort request / settled receipt
 children/<child_session_id>/status.json # child terminal result when applicable
+children/<child_session_id>/execution.v1.json # child incarnation evidence (execution_id, dispatch_id, terminal binding)
+execution-index.v1.json # session_id → current execution_id projection beside fleet.json
 ```
+
+`status.json`, `fleet.json` and `spawn_context.json` keep their released closed
+shapes; execution identity lives only in the `*.v1.json` siblings, so older readers
+keep decoding. `ProcessRegistry.commit_terminal` decides the first-wins terminal winner
+before any cache or file projection. It is reached through `SubAgentProcess._publish_terminal`
+(wrapper results, including `finish_without_spawn`) and through `ProcessRegistry.mark_terminal`
+(`HeadlessRunner`'s straggler sweep); both share the same arbitration.
+
+Child abort never uses `abort_request.json` (an older runner would abort the whole
+workflow). `ChildAbortStore` owns bounded no-follow reads, immutable request IDs and
+the 256-request run capacity under a run-scoped `admission.lock`; `HeadlessRunner`
+starts `ChildAbortController` only for an attached pool with an explicit
+`--notify-session` owner and closes it before the final fleet drain. Requests and
+receipts are private audit state: never deleted, backfilled or migrated.
 
 The legacy flat store (`FilesystemSessionHistoryStore`) uses `events.jsonl` instead of
 `tree.json`. Both stores satisfy `SessionHistoryStoreProtocol` (`history/store_protocol.py`).

@@ -15,12 +15,13 @@ NAMES = ("orchestrator", "workflows", "headless-orchestration")
 
 
 def test_frozen_moves_normalize_to_base_bytes() -> None:
-    """Freeze untouched move-only owners; revised workflow behavior has semantic gates."""
+    """Freeze preserved owners; convergence policy revisions have semantic gates."""
     # Code-test-review, its GitLab companion and workflow orchestration now intentionally
     # evolve under test_workflow_convergence.py and the progression/turn-rule suites.
-    # Retain original pins for the unaffected owners instead of blessing new body hashes.
+    # Retain the specification workflow pin accepted in readable-contract commit 51bc104
+    # and the original orchestrator pin; do not derive new pins from this merge.
     pins = {
-        "skills/orchestration/workflows/specification-development.md": "6b2b625b6c090c60fb6ed6818f46c9f97c211fa5485d4d1e2ac70f14e576ebbb",
+        "skills/orchestration/workflows/specification-development.md": "678dbead2f3cc07da9e6529fe4d8e3f89a2bdc4b907806fb52fddee9348de2e9",
         "skills/orchestration/orchestrator/SKILL.md": "d8b280b7016ec038685edfed443eaa81b1d988d714893db034ea1ba3d9809cc2",
     }
     for relative, expected in pins.items():

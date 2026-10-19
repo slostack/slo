@@ -44,7 +44,7 @@ Load it when:
 
 Do **not** load this skill for a one-off background workflow launch that does not
 need recurring supervision. Use
-`skills/design-and-analysis/headless-orchestration/SKILL.md` for that.
+`skills/orchestration/headless-orchestration/SKILL.md` for that.
 
 ---
 

@@ -15,14 +15,12 @@ NAMES = ("orchestrator", "workflows", "headless-orchestration")
 
 
 def test_frozen_moves_normalize_to_base_bytes() -> None:
-    """Freeze whole moved bodies, including the authorized progression-policy revision."""
-    # Only four workflow policy pins change; whole-body checks remain strict.
-    # Original pins and bounded diff: implementation/95-skill-update/mode-removal-preservation.json.
+    """Freeze untouched move-only owners; revised workflow behavior has semantic gates."""
+    # Code-test-review, its GitLab companion and workflow orchestration now intentionally
+    # evolve under test_workflow_convergence.py and the progression/turn-rule suites.
+    # Retain original pins for the unaffected owners instead of blessing new body hashes.
     pins = {
-        "skills/orchestration/workflows/code-test-review.md": "7d5ccffb224f8c5b0e1bbd5e95bcbeeaea541833db87c687022bb3fcc0a2572c",
-        "skills/orchestration/workflows/gitlab-code-test-review.md": "569021483634c8053e48bf59007ce857e0178621dab7f929c397a8d84c8fbacb",
         "skills/orchestration/workflows/specification-development.md": "6b2b625b6c090c60fb6ed6818f46c9f97c211fa5485d4d1e2ac70f14e576ebbb",
-        "skills/orchestration/workflows/SKILL.md": "aa6f484a9da88752f1b456a9466e96c58ce8983435f5cc9ef89aa6ec24dd36b0",
         "skills/orchestration/orchestrator/SKILL.md": "d8b280b7016ec038685edfed443eaa81b1d988d714893db034ea1ba3d9809cc2",
     }
     for relative, expected in pins.items():
@@ -87,11 +85,17 @@ def test_relocated_identity_and_group(name: str) -> None:
     assert not (SKILLS / "design-and-analysis" / name).exists()
 
 
-def test_excluded_tui_skills_remain_byte_identical() -> None:
-    """Pins are captured from base 7625be3, not refreshed from edited content."""
+def test_excluded_tui_skills_preserve_body_except_repaired_reference() -> None:
+    """Retain base 7625be3 pins, normalizing only the authorized dangling-link repair."""
     pins = {
         "tui-scheduled-workflows": "ca00e36826f5e12d986df4079c3a6f10081b1a0cd92a174ab9b77d68290286de",
         "tui-scheduled-operations": "9315d9d5bdd8a32cfed188bae4ff8edd86bf5d5023654cf46343897e6215a869",
     }
     for name, expected in pins.items():
-        assert hashlib.sha256((SKILLS / "tui" / name / "SKILL.md").read_bytes()).hexdigest() == expected
+        text = (SKILLS / "tui" / name / "SKILL.md").read_text(encoding="utf-8")
+        if name == "tui-scheduled-workflows":
+            current = "skills/orchestration/headless-orchestration/SKILL.md"
+            obsolete = "skills/design-and-analysis/headless-orchestration/SKILL.md"
+            assert current in text and obsolete not in text
+            text = text.replace(current, obsolete)
+        assert hashlib.sha256(text.encode()).hexdigest() == expected

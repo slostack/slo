@@ -69,7 +69,8 @@ gates; process completion alone does not establish workflow acceptance.
   splitting phases so no single blocking call exceeds the parent guard. See
   `AGENTS.md` and KB `slo/headless-workflow-orchestration.md`.
 
-- **Verify before you claim.** Every code change needs a passing test covering
-  each decision point it touches, and the full non-e2e suite must be green
-  before the work is called done. Report failures with their output rather than
-  summarising them away.
+- **Verify before you claim.** Follow `skills/engineering/engineering-testing/SKILL.md`
+  and `skills/coding/test-verification-policy/SKILL.md` for meaningful behavior,
+  boundary and critical failure-path evidence. Run the full non-e2e suite before
+  acceptance; baseline exemptions need explicit approval. Report failures and
+  blocked checks honestly, never as passing.

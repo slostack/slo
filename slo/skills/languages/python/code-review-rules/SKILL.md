@@ -197,10 +197,10 @@ const runId = ref<string>('')         // snake: run_id → camelCase: runId
 
 ### 1.5 Code-Test Loop Evidence
 
-- [ ] Every new **production unit** (function, class, route, store action,
-      component) has a corresponding test file or test additions.
-- [ ] No more than **~50 lines of new production code** without accompanying
-      new tests in the same diff.
+- [ ] Each changed behavior has appropriate current evidence; existing tests may
+      supply it when rerun and adequate. Pure delegation still needs wiring proof.
+- [ ] Bounded behavioral increments were verified before extension, following
+      required test ordering; no fixed line count or per-method test-file mandate.
 - [ ] Tests assert **decision points**, not just that the function runs.
       A test that calls `invoke()` and asserts `result is not None` is not
       a test.

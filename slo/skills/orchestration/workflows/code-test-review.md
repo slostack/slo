@@ -97,168 +97,115 @@ If any pre-condition is not met, satisfy it before entering Step 1.
 
 ---
 
+## Acceptance contract
+
+Before Step 1, record the original specification, stable acceptance IDs, required
+user journeys, critical risks, verification commands/environment, relevant baseline
+failures and unresolved decisions. Map requirements to evidence; additions must cite
+their source or a concrete defect. Baseline exclusions and scope deferrals require
+explicit approval. Do not silently relax mandatory coding conventions or safety rules.
+Use the routing record for authoritative language/component guidance instead of
+copying language-specific rules into this workflow.
+
 ## Steps
 
-### Step 1 — Code + Test Loop
+## Step 1 — Code + Test Loop
 
 **Governing skill:** `skills/coding/code-test-loop/SKILL.md`
 
-**Input consumed:**
-- The feature specification or task description
-- `skills/coding/coding-rules/SKILL.md` and the routing record from the workflow preconditions
-- All loaded `build-*.md` conventions for the task's layers
-- docs/RESEARCH.md for existing patterns to mirror
+Consume the acceptance contract, current routing record and
+`skills/coding/coding-rules/SKILL.md`. Work in bounded behavioral increments,
+respecting dependency order within a vertical slice rather than completing every
+lower layer before wiring its consumers. Follow language/user test ordering.
 
-**What this step does:**
+### Runnable
 
-Implement the feature by working through each implementation unit in dependency order (migrations → domain models/DAOs → domain services → application services → routers → workers → frontend). For each unit:
+Make the first milestone the smallest representative user journey: real entry point
+→ core behavior → observable terminal result. Verify wiring through the real
+application boundary; controlled external substitutes must be declared along with
+what they cannot prove. For documentation/skills changes, demonstrate the equivalent
+consumer path (discovery/loading → usable guidance → reference-valid artifact).
+This is progress, not final acceptance or permission to defer required robustness.
+If a genuine prerequisite prevents the slice, identify it and its closure target.
 
-1. Identify a bounded implementation unit and its observable decision-path tests.
-2. Follow the selected language cadence: Go writes the failing test first; other languages retain their approved cadence. Implement and test only that unit.
-3. Run the tests and confirm green.
-4. Run the surrounding suite (the file's whole test module or the containing folder) to confirm no regressions.
-5. Only then start the next unit.
+### Early integration feedback
 
-The agent must not write more than ~50 lines without running the corresponding tests. Writing all code first and testing at the end is a violation of this step.
+After the runnable milestone, obtain bounded independent feedback on wiring,
+architecture and the remaining risk plan using the early mode of
+`skills/design-and-analysis/review-feature-code/SKILL.md`. This checkpoint remains
+inside Step 1, not formal phase progression or a completed workflow turn. It is
+advisory except for concrete blockers; it must not demand final coverage prematurely.
+Use only authorized reviewers/sub-agents. If independent feedback is unavailable,
+report that limitation and request the needed review/authorization; do not claim a
+self-check is independent or silently substitute it. Final review remains required.
 
-**Coding conventions within this step:**
+### Acceptance-ready
 
-Apply shared ownership/testing and the selected language/component contracts.
-Python retains its keyword arguments, typed signatures, Google docstrings,
-model/DAO/service and invoke patterns, FastAPI namespace/envelope and Alembic
-registration where applicable. Go uses named construction/input DAOs,
-consumer-owned interfaces, Execute, sentinel errors and supervised lifecycles.
-TypeScript/Vue retains its typed boundaries, component/composable and API contracts.
-These are scoped translations, not rules copied across languages.
+Extend the slice to all required journeys and critical failure paths. Apply the
+requirement-and-risk map in `skills/engineering/engineering-testing/SKILL.md` and
+adequacy gate in `skills/coding/test-verification-policy/SKILL.md`.
+Run focused tests per increment, affected suites at milestones, and all agreed
+full-suite/static/build/race gates before Step 2. Baseline exceptions need explicit
+approval; unavailable checks are unverified. No disabled tests to manufacture green.
 
-**When running tests:**
+**Output:** implementing files, acceptance-to-evidence map, exact commands/results,
+baseline dispositions, deviations, early feedback and remaining blockers. Maintain
+a compact current handoff; detailed receipts remain referenced, not recopied.
 
-Use the exact targeted/package/full-suite commands from the project routing
-record, with its test environment and build variants. Include build/static/race
-checks where applicable; report blocked or baseline failures, never invent green.
-
-After all individual units pass, run the full suite before moving to Step 2:
-
-Use the exact targeted/package/full-suite commands from the project routing
-record, with its test environment and build variants. Include build/static/race
-checks where applicable; report blocked or baseline failures, never invent green.
-
-**Output produced:**
-
-- All implementation files written to their correct file paths
-- All corresponding test files written and passing
-- Full test suite green (no regressions)
-- A brief implementation log in conversation: which files were created/modified, which tests cover which decision points
-
-**READY condition:** every decision point in the new code is covered by a passing test, the full suite is green, no failing tests were left disabled or skipped.
-
-**Context carried forward to Step 2:**
-- The list of files created and modified
-- The test coverage map (which tests cover which units)
-- The full suite green status
-- Any implementation decisions made that deviate from the spec (must be surfaced explicitly)
-
----
+**READY condition:** all nondeferred acceptance items have appropriate passing
+evidence, required gates pass with no regressions, mandatory conventions hold and
+no unresolved blockers remain. Explicitly list approved exceptions/deferrals.
 
 Report the phase result and verify its required artifacts before advancing.
 
----
-
-### Step 2 — Code Review
+## Step 2 — Code Review
 
 **Governing skill:** `skills/design-and-analysis/review-feature-code/SKILL.md`
 
-**Input consumed:**
-- The specification document (or task description) from the pre-conditions
-- The implementation files from Step 1
-- The test coverage map from Step 1
-- The unchanged routing record, including the generic coding-rules prerequisite
+Conduct final independent review against the original specification, acceptance
+contract, implementation and current evidence. Trace real end-to-end wiring, inspect
+assertion quality, applicable conventions, critical risks and baseline dispositions.
+Early feedback does not substitute for this review.
 
-**What this step does:**
+**Output:** verdict, requirement/evidence map, verification limitations and findings
+with stable IDs, source/rule or concrete defect, path/evidence and closure condition.
+Optional improvements stay nonblocking; acknowledged debt cannot hide a required
+contract or safety failure. Diagrams are useful when they clarify complexity, not
+mandatory ceremony for every change.
 
-Conduct a structured review of the Step 1 implementation against the specification. The review is not a style pass — it is a completeness, correctness, and convention audit.
+**READY condition:** required review is complete and no blocking findings remain.
+On REVISE return to Step 1 with the finite repair list, retest and re-review affected
+work. Reuse unchanged evidence but inspect changed boundaries and any new defects.
 
-Follow the full review process from `review-feature-code.md`:
+Report the phase result and verify its required artifacts before advancing.
 
-1. Load the specification and extract all requirements as a checklist.
-2. Inventory every implementation file by layer (domains, app services, routers, workers, migrations).
-3. Map each spec requirement to its implementation (Covered / Partial / Not Covered).
-4. Trace the end-to-end flow from entry point through all intermediate components to terminal state. Verify that every component in the chain is wired to the next — no dead code, no disconnected workers, no unregistered queues.
-5. Analyze test coverage: identify untested production files, missing decision branches, missing error paths, and false-confidence tests (tests that exist but only cover the happy path).
-6. Check compliance against all applicable coding conventions.
-7. Compile findings into three tiers: Glaring Gaps (must fix), Nice-to-Haves (should fix), Temporary Shortcuts (acknowledged debt).
-
-If Glaring Gaps are found, the agent must return to Step 1 and resolve them before the review is considered complete.
-
-**Output produced:**
-
-- Code Review Report (in conversation or written to a review file) with:
-  - Executive Summary
-  - Feature Completeness Table (spec requirement vs. implementation status)
-  - End-to-End Flow Verification
-  - Unit Tests Assessment
-  - Convention Adherence
-  - Three-tier Findings Summary
-  - Architecture Diagram (Mermaid)
-
-**READY condition:** review report is complete; no Glaring Gaps remain unaddressed.
-
-**Context carried forward to Step 3:**
-- The Code Review Report
-- The final implementation file list (post any Step 2 revisions)
-- The feature completeness table
-
-
----
-
-### Step 3 — Completion Check
+## Step 3 — Completion Check
 
 **Governing skill:** `skills/design-and-analysis/is-the-feature-completed/SKILL.md`
 
-**Input consumed:**
-- The original specification or task description
-- The Code Review Report from Step 2
-- The current codebase (post all Step 1 and Step 2 revisions)
-- The unchanged routing record, including the generic coding-rules prerequisite
+Independently verify the agreed checklist against the original specification and
+current executable evidence. Do not assume author/reviewer verdicts establish truth.
+Check all required deliverables, wired journeys, review closure and required gates.
+An omitted requirement must cite its source; recommendations cannot invent scope.
 
-**What this step does:**
+**Output:** acceptance status/evidence table, review and gate status, explicit
+exceptions/deferrals, and any pending item with its source and closure condition.
+Percentages cannot establish readiness. Provide implementation guidance only for
+actual gaps; add a dependency graph when it helps resolve multiple pending items.
 
-Run the completion assessment from `is-the-feature-completed.md`. This is a fresh codebase scan against the full set of expected deliverables — it does not assume Step 1 and Step 2 produced a correct result. The assessment:
-
-1. Re-derives the full deliverable checklist from the specification by layer (database, domain, application services, workers, routers, events, integrations, frontend, configuration, tests).
-2. Searches the codebase for evidence of each deliverable's implementation.
-3. Scores each deliverable as Done, Partial, or Not Started.
-4. Calculates completion percentage (with effort weighting where appropriate).
-5. Assesses infrastructure readiness (base classes, enums, constants, schema).
-6. For any Not Started or Partial items, produces a specific implementation guide: what needs to be built, where it goes, which adjacent feature to mirror, and what the key differences are.
-7. If multiple items remain, produces a dependency graph for the remaining work.
-
-If completion is below 100% (or below an operator-specified threshold), the agent must return to Step 1 and implement the missing items before the workflow completes.
-
-**Output produced:**
-
-- Feature Completion Assessment (in conversation):
-  - Completion % and Incompletion %
-  - Infrastructure Readiness %
-  - Status By Layer table
-  - Implemented Files list
-  - Pending Implementation list (if any) with guidance per pending item
-  - Dependency graph (if multiple items remain)
-
-**READY condition:** completion assessment confirms 100% of spec deliverables are implemented and tests are green. (Or the operator explicitly accepts a lower threshold and marks remaining items as deferred scope.)
-
----
-
+**READY condition:** every required nondeferred item is verified, final review is
+accepted, required gates pass and no unresolved blockers remain. Otherwise return
+to Step 1 for implementation gaps and repeat affected verification/review; report
+external blockers honestly. Only the operator may approve explicit deferral.
 
 ## Exit Condition
 
-The Code-Test-Review Workflow is complete when:
+- Step 1: acceptance-ready implementation with passing required evidence and gates.
+- Step 2: final independent review accepted, with no blocking findings.
+- Step 3: original-spec reconciliation confirms no unapproved omissions or unverified
+  required items; approved exceptions and deferrals are visible in the final result.
 
-- Step 1: All implementation units are written, all tests pass, the full suite is green.
-- Step 2: Code Review Report is complete, no Glaring Gaps remain.
-- Step 3: Completion assessment reaches 100% (or operator accepts explicit deferral), all tests remain green.
 
----
 
 ## What Does Not Change
 
@@ -275,20 +222,12 @@ The following rules remain in effect throughout this workflow:
 
 ## Quick Reference
 
+```text
+Acceptance contract + routing + baseline
+Step 1: Runnable slice → early integration feedback → acceptance-ready hardening + gates
+Step 2: Independent final review → bounded repairs through Step 1 when needed
+Step 3: Completion check against the original specification and current evidence
 ```
-Trigger: "implement [feature spec / task]"
 
-Pre-conditions: spec available, AGENTS.md and docs/RESEARCH.md loaded,
-                all build-*.md for the task's layers loaded
-
-Step 1: Code + Test Loop (language cadence → verify green → next bounded unit)
-        └─ Output: all files written, full suite green
-
-Step 2: Code Review (spec completeness, flow wiring, test coverage, conventions)
-        └─ Output: review report; return to Step 1 if Glaring Gaps found
-
-Step 3: Completion Check (fresh scan; percentage score; pending guidance)
-        └─ Output: completion assessment; return to Step 1 if incomplete
-
-[STOP]   detached run → /workflows abort <workflow-id>; never pkill/kill
-```
+Use `skills/orchestration/workflows/SKILL.md` for convergence checkpoints, counters,
+authorization and stopping rules. A runnable demonstration is not workflow completion.

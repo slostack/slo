@@ -16,12 +16,13 @@ NAMES = ("orchestrator", "workflows", "headless-orchestration")
 
 def test_frozen_moves_normalize_to_base_bytes() -> None:
     """Freeze whole moved bodies, including the authorized progression-policy revision."""
-    # Only four workflow policy pins change; whole-body checks remain strict.
+    # Specification workflow pin includes the authorized readable-contract policy.
+    # Other whole-body workflow checks remain strict.
     # Original pins and bounded diff: implementation/95-skill-update/mode-removal-preservation.json.
     pins = {
         "skills/orchestration/workflows/code-test-review.md": "7d5ccffb224f8c5b0e1bbd5e95bcbeeaea541833db87c687022bb3fcc0a2572c",
         "skills/orchestration/workflows/gitlab-code-test-review.md": "569021483634c8053e48bf59007ce857e0178621dab7f929c397a8d84c8fbacb",
-        "skills/orchestration/workflows/specification-development.md": "6b2b625b6c090c60fb6ed6818f46c9f97c211fa5485d4d1e2ac70f14e576ebbb",
+        "skills/orchestration/workflows/specification-development.md": "678dbead2f3cc07da9e6529fe4d8e3f89a2bdc4b907806fb52fddee9348de2e9",
         "skills/orchestration/workflows/SKILL.md": "aa6f484a9da88752f1b456a9466e96c58ce8983435f5cc9ef89aa6ec24dd36b0",
         "skills/orchestration/orchestrator/SKILL.md": "d8b280b7016ec038685edfed443eaa81b1d988d714893db034ea1ba3d9809cc2",
     }

@@ -303,77 +303,65 @@ Record each finding using the **REDUNDANCY** format in Step 6.5a.
 
 ## Step 5 — Style and Structure Review
 
-### 5.1 Shared structure compliance
+### 5.1 Readability and contract review
 
-Verify:
+Apply the [authoring presentation contract](../feature-specifications/SKILL.md#presentation-rules)
+and [packaged sample](../../samples/implementation-details-granularity.md).
+Accept combined or renamed sections when all required information remains clear.
+Do not request prose merely to satisfy a heading template.
 
-- [ ] the opening reads like an O'Reilly technical book chapter
-- [ ] `## Context` opens with `### Changes` or `### Description`
-- [ ] `### Big Picture` is present and non-trivial
-- [ ] `### Existing structure we are extending` appears when structure matters
-- [ ] `### What this document changes` walks from broad to narrow
-- [ ] prose does not use `§` references
-- [ ] code blocks have prose before them
-- [ ] central classes are shown in enough detail to be implementable
-- [ ] helper-method docstrings explain what, who, and when
-- [ ] call-outs are grouped cleanly rather than stacked
-- [ ] file trees are full enough to orient the reader
+Verify a reader can readily locate purpose/scope, current versus proposed behavior,
+changed files and ownership, public interfaces, state transitions, failure behavior,
+transaction/resource boundaries, dependencies, tests and acceptance criteria.
 
-### 5.2 Overview review — product framing
+Return REVISE for interfaces reconstructed from compressed prose, competing versions
+of a contract, historical commentary obscuring current requirements, or material
+constraints hidden in unrelated sections. Keep workflow evidence separately linked;
+correct authoritative sections in place rather than appending review history.
 
-If the draft is the **overview**, verify:
+### 5.2 Overview review
 
-- [ ] product or business framing leads the document
-- [ ] user/admin journey is covered when applicable
-- [ ] scope / goals / non-goals are explicit
-- [ ] rollout / risk / stakeholder boundaries are covered where relevant
-- [ ] the spec does not collapse into a narrow technical child slice unless that was intended
+Verify product framing, user/system journey, scope/non-goals, safety and ownership,
+child delivery/dependency map, rollout/rollback and acceptance status. An overview
+need not reproduce DTOs or implementations. Check stale parent summaries against
+current children without mistaking specification review for runtime acceptance.
+Independent workstreams retain independent release gates.
 
-### 5.3 Technical sub-spec review — engineering structure
+### 5.3 Engineering contract review
 
-If the draft is a **technical sub-spec**, verify:
+Treat material implementation ambiguity as a **CRITICAL** gap:
 
-- [ ] metadata header exists under the H1
-- [ ] title format is compatible with repo numbering (e.g. `02.a.1 — ...`)
-- [ ] the canonical numbered structure is present:
-  - [ ] `## 1. Context`
-  - [ ] `## 2. Why`
-  - [ ] `## 3. Current State`
-  - [ ] `## 4. Proposed Approach`
-  - [ ] `## 5. Domain Introductions`
-  - [ ] `## 6. End-to-End Flow`
-  - [ ] `## 7. Implementation Details`
-  - [ ] `## 8. Tests`
-  - [ ] `## 9. Acceptance Criteria`
-  - [ ] `## 10. Dependencies`
-- [ ] the spec is readable in isolation from the parent spec
-- [ ] `Current State` records real symbols / file paths / live truths
-- [ ] stale parent-spec text or earlier design drift is called out and corrected when relevant
-- [ ] `Proposed Approach` exists before code
-- [ ] new noun concepts are introduced before code uses them
-- [ ] end-to-end flow is explained before low-level implementation detail
-- [ ] implementation order / verification commands / manual smoke are included when applicable
-- [ ] dependencies are explicit
-- [ ] **Implementation-details contract is satisfied.** Treat this as a release-blocking review, not a superficial heading check. Compare the draft against the packaged [`implementation-details-granularity.md`](../../samples/implementation-details-granularity.md) sample, which is shipped with Slo and available in installed environments.
-  - [ ] Every created, modified, moved, or deleted file has an explicit repository-relative path and a stated place in the application structure.
-  - [ ] Every affected class, function, method, model, type, constant, registration, and call site is named, with whether it is added, changed, removed, or rewired.
-  - [ ] The implementation order and end-to-end behavior cover inputs, outputs, state and error paths, configuration, edge cases, and intentionally unchanged behavior without forcing the implementer to choose semantics.
-  - [ ] Non-trivial work includes implementation-ready, convention-compliant code detail (signatures, types, realistic values, or complete before/after examples as appropriate), rather than vague directives or pseudocode.
-  - [ ] Current behavior and affected existing code are grounded in real `file:line` references; stale behavior, replacement behavior, and required consolidation or deletions are explicit.
-  - [ ] Tests are concrete: test file paths; tests to add, update, replace, or remove; named scenarios or test methods; fixtures/setup; assertions; required test level; and scoped verification commands and manual smoke steps where applicable.
-  - [ ] The specified code and tests honor the repository's applicable coding, layering, naming, typing, dependency, and test conventions.
-  - [ ] No reasonable implementer could reach materially different file-placement, API, behavioral, error-handling, or test-coverage decisions from the draft.
-- [ ] Flag missing, vague, ambiguous, or convention-violating implementation detail as a **CRITICAL** gap. A bare `## 7. Implementation Details` heading, “add tests,” or “update the service” does not pass verification.
+- Every created, modified, moved or deleted file has an exact repository-relative
+  path, owner and named symbols/call sites.
+- Interfaces use syntax-highlighted target-language declarations, complete fields,
+  parameters, enum values and defaults. Requiredness is not confused with nullability.
+- Source claims cite real paths/symbols; proposed code is labeled, not asserted to exist.
+- Signature-only bodies are acceptable when behavior is fully specified. Non-obvious
+  algorithms and ordering-sensitive seams include sufficient implementation detail.
+- Shared contracts have one definition; consumers link it and show integration usage.
+- Implementation order, configuration, failure paths and unchanged behavior are explicit.
+- Test files, cases, fixtures/setup, assertions, levels, commands and relevant manual
+  smoke steps are concrete. Code and tests follow the selected repository conventions.
 
-### 5.4 Actionability
+A standalone child explains its owned changes without requiring the parent overview;
+it may link canonical shared contracts. Do not require duplicate schemas or full
+routine class implementations merely for standalone readability.
 
-For both the overview and technical sub-specs, verify:
+### 5.4 Semantic preservation when shortening
 
-- [ ] a developer can implement directly from this spec without clarification
-- [ ] every file to create or modify has a full path
-- [ ] code samples are complete enough to convey intent
-- [ ] configuration values and environment variables are listed where relevant
-- [ ] dependencies between components are clear
+Compare the revised specification with source requirements and the prior contract:
+
+- Types, requiredness, nullability, defaults and bounds.
+- Validation and cross-field invariants.
+- Ordering, atomicity, concurrency, and idempotency.
+- Errors, cancellation, recovery and resource ownership.
+- Security, authorization and operational constraints.
+- Compatibility and migration requirements.
+- Test and acceptance coverage, exclusions and unchanged behavior.
+
+Concision is not permission to weaken the contract. Removed historical examples may
+be consolidated, but every material requirement must still map to its authoritative
+section and evidence plan. Missing material semantics are CRITICAL, not style nits.
 
 ---
 
@@ -473,7 +461,7 @@ Before presenting results:
 - [ ] the review is actionable,
 - [ ] JIRA comments were read,
 - [ ] the artefact judgment (overview vs technical sub-spec) is explicit,
-- [ ] technical sub-specs were checked for standalone readability and canonical structure when applicable.
+- [ ] technical sub-specs were checked for standalone readability and required information and readable organization when applicable.
 - [ ] implementation details were reviewed as the implementation contract: granular file placement, symbol-level behavior, convention compliance, and concrete test coverage leave no material ambiguity for the coding agent.
 
 ---

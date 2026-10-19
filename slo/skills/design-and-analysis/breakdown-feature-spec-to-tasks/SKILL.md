@@ -157,70 +157,30 @@ Examples:
 
 If the repository already uses numbered engineering sub-specs, preserve that numbering convention.
 
-## Step 3.3 Required body structure
+## Step 3.3 Required body information
 
-Every standalone engineering sub-spec must open with the human-readable narrative sections required by [`feature-specifications.md`](../feature-specifications/SKILL.md). Retain the product framing in its overview as well.
+Follow the [canonical authoring structure](../feature-specifications/SKILL.md#engineering-sub-spec-structure).
+Keep product framing, journeys, boundaries and delivery maps in overview.md. Each
+standalone engineering sub-spec explains purpose, current → proposed behavior,
+design/flow, file-by-file contracts, implementation order/dependencies and tests/
+acceptance. Combine or rename headings when useful; do not repeat introductions.
+Keep compact metadata and repository numbering. Link shared definitions rather than
+copying them; show consumer imports/signatures/usage at the integration boundary.
+Keep verification commands and manual smoke steps where applicable.
 
-### Product framing retained in the overview
+## Step 3.4 Allocate contracts and examples
 
-Keep the following product context in the family overview. For broad slices, carry
-relevant context into the engineering sub-spec without replacing its engineering structure.
+Preserve semantic coverage, not every historical code block verbatim. Assign every
+required implementation contract and meaningful example to one owning sub-spec.
+Consolidate redundant examples and remove superseded ones without losing types,
+defaults, invariants, failure behavior or acceptance coverage.
 
-Required opening:
-
-- `## Context`
-  - `### Changes` or `### Description`
-  - `### Big Picture`
-  - `### Existing structure we are extending` *(when applicable)*
-  - `### What this document changes`
-- `## The journey this plan owns a slice of` *(when applicable)*
-- `## Control Flow: <hot-path-name> (Step-by-Step)` *(when applicable)*
-- `## Code Reference`
-- `## Scope`
-- `## Acceptance Criteria`
-- `## Dependencies`
-- `## Repo`
-
-### Required standalone engineering sub-spec
-
-Every technical child slice requires this structure. Follow the `02.a.1` onward pattern.
-
-Required structure:
-
-- metadata header under the H1 with available fields (`Status`, `Owner`, `Last updated`, `Parent spec`, `Branch`, `Repo`, `Approx. size`)
-- `## 1. Context`
-- `## 2. Why`
-- `## 3. Current State`
-- `## 4. Proposed Approach`
-- `## 5. Domain Introductions`
-- `## 6. End-to-End Flow`
-- `## 7. Implementation Details`
-- `## 8. Tests`
-- `## 9. Acceptance Criteria`
-- `## 10. Dependencies`
-
-Additional rules for standalone engineering sub-specs:
-
-- the sub-spec must be readable on its own,
-- it must restate current-state truths relevant to the slice,
-- it must explicitly correct stale parent-spec snippets when relevant,
-- it must include implementation order, verification commands, and manual smoke guidance when applicable,
-- every code block must be preceded by prose,
-- central classes must include class docstring, main public method, and core helpers,
-- helper-method docstrings must explain what the method does, who invokes it, and when it is used.
-
-## Step 3.4 Include code samples
-
-Code samples are mandatory. Include every relevant code sample from the source spec in exactly one child task. Prefer complete implementations over snippets.
-
-Use:
-
-- schema definitions,
-- full class implementations,
-- method signatures with bodies,
-- endpoint definitions and response shapes,
-- template snippets,
-- file trees showing new vs modified files.
+Use syntax-highlighted interfaces organized by target file. Complete contracts are
+required; implementation bodies are conditional on algorithm/integration ambiguity.
+Consumer tasks link shared definitions and show their own integration usage.
+Execution tickets link the owning sub-spec rather than reproducing its whole body.
+Do not expand a concise verified contract into a longer narrative during breakdown.
+Material contract changes require renewed verification before task publication.
 
 ## Step 3.5 Acceptance criteria
 
@@ -292,7 +252,7 @@ Post the standard comment on the parent issue once subtasks are created.
 
 Before pushing to JIRA, verify:
 
-- [ ] every code sample from the source spec is included in exactly one task
+- [ ] every required contract and meaningful example has exactly one authoritative owner
 - [ ] no task references a component that has not been built by a prior task in the dependency chain
 - [ ] each task can be assigned independently without unnecessary merge conflicts
 - [ ] acceptance criteria are specific and testable
@@ -300,7 +260,7 @@ Before pushing to JIRA, verify:
 - [ ] the dependency graph has no cycles
 - [ ] context paragraphs explain why, not just what
 - [ ] code-prompt conventions are referenced where applicable
-- [ ] every child spec carries the human-readable narrative opening required by `feature-specifications.md`
+- [ ] every child spec follows the readable, file-oriented contract in `feature-specifications.md`
 - [ ] every technical child slice is written as a **standalone engineering sub-spec**
 - [ ] standalone engineering sub-specs include current-state truths, end-to-end flow, implementation details, tests, and dependencies
 
@@ -311,13 +271,14 @@ Before pushing to JIRA, verify:
 - use active verb phrases for task names,
 - always specify the repo,
 - always link back to the source spec,
-- prefer complete code samples,
+- prefer complete interface contracts; include bodies where needed to resolve ambiguity,
 - map explicit source-spec acceptance criteria to the appropriate child task,
 - when in doubt, favor fewer stronger child specs over many vague tickets,
 - when a task is primarily a runtime or architecture seam, do **not** write it as a generic business-feature task — write it as an engineering implementation sub-spec.
 
 ## Final Note
 
-Do not forget to include code samples from the original specifications. This is crucial to creating a task that offers clear context and examples.
-
-Always publish the entire task to JIRA. Never truncate for any reason.
+Preserve all material requirements and their ownership when consolidating examples.
+Publish complete task acceptance/dependency information and links to authoritative
+sub-specs; do not truncate semantics or copy entire specifications into tickets.
+Obtain explicit authorization before external publication.

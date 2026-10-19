@@ -105,11 +105,19 @@ Apply the style guide from `skills/design-and-analysis/feature-specifications/SK
 
 ### Required implementation-details pass — do not skim
 
-Before the draft is eligible for the Self-check stage, perform a dedicated implementation-details pass for every engineering slice. `## 7. Implementation Details` is the most important part of the specification: it is the coding agent's implementation contract, not a high-level recap. Read the packaged granularity sample at `skills/samples/implementation-details-granularity.md` as the required standard; it is shipped with Slo and is therefore available in installed environments.
+Before the draft is eligible for the Self-check stage, perform a dedicated implementation-details pass for every engineering slice. The file-by-file implementation contracts are the coding agent's build brief, not a high-level recap. Read the packaged granularity sample at `skills/samples/implementation-details-granularity.md` as the required standard; it is shipped with Slo and is therefore available in installed environments.
 
 The pass must ensure the sub-spec leaves no material implementation decision ambiguous. It must name the exact repository-relative files and folders involved; exact symbols and call sites to add, change, remove, or rewire; implementation order; current and target behavior; input/output, state, error, configuration, edge-case, and unchanged-behavior rules; convention-compliant implementation-ready code detail for non-trivial work; and consolidation or deletion work needed to preserve single ownership.
 
 The same pass must prescribe validation rather than merely saying “add tests”: identify exact test file paths, existing tests to update or replace, new test scenarios or names, fixtures/setup, expected assertions, required test levels, verification commands, and manual smoke steps where applicable. The prescribed code and tests must honor the conventions established by the Context Bundle. If an implementing agent could reasonably make different choices about code placement, behavior, or test coverage, revise the draft before running the Self-check stage.
+
+Perform a final editorial pass before self-check: remove repeated framing, present
+interfaces by production file in the target language, consolidate rules under one
+owner, and separate current contracts from historical findings. Keep review and
+workflow records outside the specification body, preserving them in the conversation
+or linked evidence artifacts. Compare the shortened contract against requirements:
+no lost types/defaults, invariants, failures, ordering, authorization or test coverage.
+The overview stays a product journey and delivery map, not an interface reference.
 
 Once the spec body is drafted, execute the Self-check stage. Independent verification runs once at Step 2, not nested in authoring. The Self-check stage runs the complete author-owned requirements/architecture/flow/error audit, audits narrative sections, cross-checks against coding conventions, **always runs the DRY consolidation pass**, assesses granularity, audits example richness, and validates test coverage. If the verdict is REVISE, edit the spec in place and re-run the Self-check stage until the verdict is READY.
 
@@ -191,12 +199,14 @@ Report the phase result and verify its required artifacts before advancing.
 
 **What this step does:**
 
-Decompose the verified specification into dependency-ordered implementation tasks. Keep the product overview and map each implementation task to standalone engineering sub-specs; create or refine the required sub-specs rather than selecting a document mode. Group cohesive work, split at dependency boundaries, identify parallelizable tasks, and prefer single-repo tasks.
+Decompose the verified specification into dependency-ordered implementation tasks. Keep the product overview and map each implementation task to standalone engineering sub-specs; create or refine the required sub-specs without copying shared contracts. Preserve
+semantic coverage rather than historical code blocks. Material contract changes in
+breakdown return to authoring/self-check and independent verification before publication. Group cohesive work, split at dependency boundaries, identify parallelizable tasks, and prefer single-repo tasks.
 
 Each child task must:
-- Open with the human-readable narrative sections required by `skills/design-and-analysis/feature-specifications/SKILL.md` for its artifact role
+- Use the concise purpose/scope and file-oriented contract required by `skills/design-and-analysis/feature-specifications/SKILL.md` for its artifact role
 - Carry any consolidation work the spec committed to — the deletions, replacements, encapsulations, and re-designs that keep the system DRY belong in the dependency-ordered tasks, not in a follow-up nobody schedules
-- Include every relevant code sample from the source spec in exactly one task
+- Assign each required contract and meaningful example to one authoritative sub-spec
 - State explicit acceptance criteria (specific and testable)
 - Reference the adjacent feature or pattern to follow
 
@@ -211,7 +221,7 @@ If a JIRA project key was provided, push the tasks to JIRA as sub-tasks of the p
 - ASCII dependency graph
 - JIRA sub-tasks created (if project key was provided), with summary table
 
-**READY condition:** task list is complete, dependency graph has no cycles, every code sample from the source spec appears in exactly one task, JIRA tasks are created if applicable.
+**READY condition:** task list is complete, dependency graph has no cycles, every required contract and meaningful example has one authoritative owner, JIRA tasks are created if applicable.
 
 ---
 

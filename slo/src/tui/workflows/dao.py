@@ -722,7 +722,7 @@ class ProgressViewportDAO(BaseModel):
         """
         return cls(x=log.scroll_x, y=log.scroll_y, following=log.scroll_y >= log.max_scroll_y)
 
-    def restore(self, *, log: "RichLog") -> None:
+    def restore(self, *, log: "RichLog") -> bool:
         """Move the log back to this position after its content and layout changed.
 
         WHAT: A following viewport jumps to the new end and keeps the current
@@ -734,14 +734,20 @@ class ProgressViewportDAO(BaseModel):
 
         Args:
             log (RichLog): Same mounted log after content/layout update.
+
+        Returns:
+            bool: True when the saved position was reached; False when the
+                current range clamped it (for example, wide lines not laid out yet).
         """
         if self.following:
             # x_axis=False keeps a horizontal pan while following the tail.
             log.scroll_end(animate=False, immediate=True, x_axis=False)
-            return
+            return True
+        reachable: bool = self.x <= log.max_scroll_x and self.y <= log.max_scroll_y
         log.scroll_to(
             x=min(self.x, log.max_scroll_x),
             y=min(self.y, log.max_scroll_y),
             animate=False,
             immediate=True,
         )
+        return reachable

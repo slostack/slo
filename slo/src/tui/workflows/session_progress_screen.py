@@ -35,7 +35,15 @@ from src.tui.workflows.dao import (
 )
 from src.tui.workflows.transcript_renderer import WorkflowTranscriptRenderer
 
-__all__ = ["PROGRESS_RESET_VIEW_NOTICE", "ProgressLog", "SessionProgressScreen"]
+__all__ = ["PROGRESS_RESET_VIEW_NOTICE", "RESTORE_ATTEMPTS", "ProgressLog", "SessionProgressScreen"]
+
+RESTORE_ATTEMPTS: int = 8
+"""Post-refresh tries for a restore clamped by unfinished layout.
+
+``RichLog`` can lay out wide lines a refresh or two after a paint, so the first
+restore may see ``max_scroll_x == 0`` and clamp a saved pan. Retrying after the
+next refresh lets the saved position land once layout settles; the bound stops
+a permanently out-of-range position from retrying forever."""
 
 PROGRESS_RESET_VIEW_NOTICE: str = "Progress view reset; earlier position unavailable"
 """Shown after a non-append repaint until the reader next navigates."""
@@ -477,17 +485,34 @@ class SessionProgressScreen(ModalScreen[None]):
             revision=self._paint_revision,
             navigation=self._log.navigation_revision,
             viewport=viewport,
+            attempts_left=RESTORE_ATTEMPTS,
         )
 
-    def _restore_if_current(self, *, revision: int, navigation: int, viewport: ProgressViewportDAO) -> None:
+    def _restore_if_current(
+        self, *, revision: int, navigation: int, viewport: ProgressViewportDAO, attempts_left: int
+    ) -> None:
         """Let user navigation and newer paints win over delayed layout callbacks.
+
+        A restore clamped by layout that has not settled yet is retried after the
+        next refresh, under the same paint and navigation checks, until the saved
+        position lands or the attempts run out.
 
         Args:
             revision (int): Paint generation that scheduled restoration.
             navigation (int): User-navigation generation captured at paint.
             viewport (ProgressViewportDAO): Old offsets and tail-follow intent.
+            attempts_left (int): Tries remaining, including this one.
         """
         if not self.is_live or revision != self._paint_revision:
             return
-        if navigation == self._log.navigation_revision:
-            viewport.restore(log=self._log)
+        if navigation != self._log.navigation_revision:
+            return
+        if viewport.restore(log=self._log) or attempts_left <= 1:
+            return
+        self.call_after_refresh(
+            self._restore_if_current,
+            revision=revision,
+            navigation=navigation,
+            viewport=viewport,
+            attempts_left=attempts_left - 1,
+        )

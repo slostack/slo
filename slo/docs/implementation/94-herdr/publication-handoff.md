@@ -1,8 +1,22 @@
 # Publication handoff — DRAFT MR snapshot (user-authorized concurrent publication)
 
-**Written before commit; commit SHA / MR URL / pipeline status are filled in by the
-publication step immediately after push and are authoritative in the git history
-of this file's committed version.**
+**Publication facts (filled in immediately after push; this file's committed
+version predates the push by design — the push content is identical to the
+snapshot commit below):**
+
+- Commit SHA: `bc98b76ef1c71c2b6b1e0ceedd726464e9dc232a` (parent: original base
+  `d0e3a756689f2675e5507034d43cd8b272d3c6b8`).
+- Remote branch: `origin/feature-94-herdr-integration` (first push, `-u`).
+- DRAFT MR: <https://gitlab.com/core-27/slo/-/merge_requests/131> (target `main`).
+- Pipelines at publication time (both **running**, NOT yet passed):
+  - branch pipeline <https://gitlab.com/core-27/slo/-/pipelines/2966466222>
+  - MR pipeline <https://gitlab.com/core-27/slo/-/pipelines/2966468583>
+  (re-check current status before relying on them; this publication does not
+  wait on CI and makes no CI-green claim).
+- Pre-staging worktree manifest: `/tmp/publication-worktree-manifest.sha256`
+  on this host (153 files, manifest digest
+  `90beb40882bafcdd1b16372c18a28c29d38e37f9db5f6b12abb7658771ed7b58`;
+  ephemeral, pre-dates the addition of this handoff file).
 
 ## What happened
 
@@ -53,12 +67,22 @@ publication step beyond adding this handoff note.
    recorded in the commit message of the publication commit
    (`git write-tree` before commit). The pre-staging worktree manifest lives
    at `/tmp/publication-worktree-manifest.sha256` on this host (ephemeral).
-4. **Omitted raw receipts inventory** (left intact locally, deliberately not
-   published; ~312 MB dominated by four ~63–67 MB `static-[A-D]-153-receipts/`
-   full lint dumps): all `*-receipts/` directories under
-   `docs/implementation/94-herdr/` **except** the six published ones below,
-   plus root-level raw `*.log`/`*.exit`/`*.command`/`*.diff`/`*.sha256`/
-   `*.txt`/`*.sh`/probe files.
+4. **What was actually committed vs omitted** (corrected after staging — the
+   committed 94-herdr doc tree is 3,174 files / ~5.8 MB and includes ALL
+   `*.md` reports plus the small receipt directories listed below and their
+   peers; the ~312 MB worktree figure was dominated by generated caches that
+   were never staged):
+   - **Omitted by existing `.gitignore` rules** (not by ad-hoc selection):
+     `*.log` (root-level raw run logs incl. `t5-usage-final-52-full.log`,
+     `selection-10*-*.log`), `*.db` / cache directories (the four ~63–67 MB
+     `static-[A-D]-153-receipts/{cache,mypy-cache}/` mypy cache databases),
+     `__pycache__/`. These remain intact locally and are regenerable or
+     superseded by their `.md` reports.
+   - **Published:** every `*.md` status/review report (228) plus receipt
+     directories including the six called out below and adjacent small ones
+     (e.g. `gates-171-receipts/`, `integrated-gates-154-receipts/`,
+     `profile-revision-156-receipts/`, `usage-revision-159-receipts/`,
+     `independent-review-155/158/161/169-receipts/`, `t6-*` receipt dirs).
    Published receipt directories (test-referenced or review-current):
    - `conventions-revision-159-receipts/` — **required**:
      `tests/implementation_checks/test_conventions_audit_paths.py` imports
@@ -72,7 +96,7 @@ publication step beyond adding this handoff note.
      core review evidence.
    - `turn6-code-test-174-receipts/` — latest complete author full-gate
      evidence (8763 passed).
-   All other raw evidence remains available locally at
+   All ignored raw evidence (logs, caches) remains available locally at
    `/root/Code/slo-94-herdr-integration/slo/docs/implementation/94-herdr/`.
 5. **Duplicate doc note:** `docs/t5-gateway-map-99.md` is byte-identical to
    `docs/implementation/94-herdr/t5-gateway-map-99.md`; both were committed
@@ -82,8 +106,9 @@ publication step beyond adding this handoff note.
    under the workflow's feet, that change belongs to the workflow's own next
    commit.
 
-## Publication facts (filled in by the publication step)
+## Publication facts
 
-- Commit SHA: _see commit history of this file_
-- MR: _see commit history of this file_
-- Pipeline: _see commit history of this file_
+See the header of this file (filled in immediately after push): commit
+`bc98b76ef1c71c2b6b1e0ceedd726464e9dc232a`, DRAFT MR
+<https://gitlab.com/core-27/slo/-/merge_requests/131>, both pipelines
+**running** at publication time — no CI-green claim is made.

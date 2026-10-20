@@ -1,6 +1,8 @@
 """Deterministic final cache-read interleavings over private durable bytes."""
 
 import asyncio
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +18,9 @@ from src.agents.model_catalog.seed import SeedModelCatalog
 from src.agents.model_catalog.service import ModelCatalogService, ModelPreparationRequiredError
 from src.agents.model_catalog.store import ModelCatalogStore
 from src.auth.credential_dao import ProviderName
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 def _cache_with_entry(*, api_model_name: str, max_tokens: int) -> ModelCatalogCacheDAO:
@@ -67,7 +72,9 @@ async def test_final_read_revalidates_publication_and_credential(tmp_path: Path,
         """Return only the mutable synthetic credential identity."""
         return identity
 
-    async def held_read(function: object, *args: object, **kwargs: object) -> object:
+    async def held_read(
+        function: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R | ModelCatalogCacheDAO | None:
         """Hold delivery after real bytes are read, not before the cache read."""
         nonlocal reads
         if function == ModelCatalogStore.load_provider_cache:
@@ -82,12 +89,20 @@ async def test_final_read_revalidates_publication_and_credential(tmp_path: Path,
     ModelCatalogService.reset()
     candidate = await ModelCatalogService._build_publication_candidate(cache=cache)
     with (
-        patch.object(ModelCatalogService, "_effective_fingerprint_for_resolved_credential", side_effect=effective_identity),
+        patch.object(
+            ModelCatalogService,
+            "_effective_fingerprint_for_resolved_credential",
+            side_effect=effective_identity,
+        ),
         patch("src.agents.model_catalog.service.asyncio.to_thread", side_effect=held_read),
     ):
-        task = asyncio.create_task(ModelCatalogService._publish_admission_candidate_if_current(
-            candidate=candidate, fingerprint="a", cache=cache,
-        ))
+        task = asyncio.create_task(
+            ModelCatalogService._publish_admission_candidate_if_current(
+                candidate=candidate,
+                fingerprint="a",
+                cache=cache,
+            )
+        )
         await read_finished.wait()
         winner_cache = _cache_with_entry(api_model_name="vendor/newer", max_tokens=512)
         ModelCatalogService._active_openrouter_fingerprint = "a"

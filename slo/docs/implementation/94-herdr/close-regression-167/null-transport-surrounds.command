@@ -1,0 +1,1 @@
+python -m pytest -q -o faulthandler_timeout=30 tests/agents/slo_agent/herdr/test_gate.py tests/agents/slo_agent/herdr/test_cli_transport.py tests/agents/slo_agent/herdr/test_transport_lifetime.py tests/agents/slo_agent/herdr/test_retained_transport_composition.py 

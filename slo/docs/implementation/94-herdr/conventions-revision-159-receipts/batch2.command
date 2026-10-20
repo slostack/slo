@@ -1,0 +1,1 @@
+python -m pytest -q tests/agents/slo_agent/herdr/test_reporter.py tests/agents/slo_agent/herdr/test_restore_save.py tests/agents/slo_agent/herdr/test_transport_lifetime.py tests/agents/providers/test_faux.py tests/agents/slo_agent/herdr/test_cli_transport.py 

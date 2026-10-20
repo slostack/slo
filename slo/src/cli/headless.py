@@ -143,9 +143,52 @@ class HeadlessRunner:
         try:
             return await self._invoke(prompt=prompt)
         finally:
-            self._operation_credential = None
+            try:
+                await self._close_external_reporting()
+            finally:
+                self._operation_credential = None
+
+    async def _close_external_reporting(self) -> None:
+        """Join adopted reporting owners before releasing the runner's session."""
+        if self._session is None:
+            return
+        try:
+            try:
+                await self._session.close_external_reporting()
+            except Exception:
+                self._report_cleanup_failure()
+        finally:
+            try:
+                await self._session.finish_retired_reporting_cleanup()
+            except Exception:
+                self._report_cleanup_failure()
+
+    def _report_cleanup_failure(self) -> None:
+        """Emit fixed best-effort diagnostics without replacing the run outcome."""
+        try:
+            sys.stderr.write("Headless reporting cleanup failed.\n")
+        except Exception:
+            pass
 
     async def _invoke(self, *, prompt: str) -> int:
+        """Own process cleanup across preparation, adoption, activation and execution."""
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        self._abort_requested = asyncio.Event()
+        previous = self._install_sigterm_handler(loop=loop)
+        try:
+            return await self._invoke_with_signal_owner(prompt=prompt)
+        finally:
+            try:
+                self._restore_sigterm_handler(previous=previous)
+            except Exception:
+                self._report_cleanup_failure()
+            finally:
+                try:
+                    await self._shutdown_model_catalog()
+                except Exception:
+                    self._report_cleanup_failure()
+
+    async def _invoke_with_signal_owner(self, *, prompt: str) -> int:
         """Run one prompt to completion and return the POSIX exit code.
 
         Builds the session, optionally promotes it to orchestrator mode when
@@ -176,10 +219,6 @@ class HeadlessRunner:
             message="session id resolved",
         )
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-        self._abort_requested = asyncio.Event()
-        previous_sigterm: Callable[[int, Optional[FrameType]], None] | int | None = (
-            self._install_sigterm_handler(loop=loop)
-        )
         preparation_task: asyncio.Task[Optional[SloAgentSession]] = asyncio.create_task(
             self._prepare_session()
         )
@@ -190,12 +229,11 @@ class HeadlessRunner:
             if session is None:
                 return await self._complete_preparation_failure()
             self._session = session
+            await session.start_external_reporting()
         except asyncio.CancelledError:
             return await self._complete_preparation_abort()
         finally:
             await self._cancel_preparation_task_if_needed(preparation_task=preparation_task)
-            if self._session is None:
-                self._restore_sigterm_handler(previous=previous_sigterm)
         if self._orchestrator_mode:
             from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
                 OrchestratorSessionBootstrap,
@@ -233,9 +271,10 @@ class HeadlessRunner:
             if not self._terminal_received:
                 await self._emit(AgentStreamEventDAO(kind="run_failed", content=str(exc)))
         finally:
-            watchdog.stop()
-            self._restore_sigterm_handler(previous=previous_sigterm)
-            await self._shutdown_model_catalog()
+            try:
+                watchdog.stop()
+            except Exception:
+                self._report_cleanup_failure()
         self._write_orphan_status_if_needed(session_id=session.session_id)
         await self._write_terminal_status()
         await self._notify_terminal()
@@ -365,7 +404,6 @@ class HeadlessRunner:
             kind (str): ``run_failed`` or ``run_aborted`` terminal kind.
         """
         session_id: str = self._session_id
-        await self._shutdown_model_catalog()
         self._status_store = self._build_status_store(session_id=session_id)
         self._notifier = self._resolve_notifier(orchestrator_session_id=session_id)
         await self._emit(

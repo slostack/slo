@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -324,7 +325,7 @@ class AssistantChunkNormalizer:
         Returns:
             list[AgentStreamEventDAO]: Zero or more tool-call events.
         """
-        raw_tool_calls: list[dict[str, Any]] = []
+        raw_tool_calls: list[Mapping[str, object]] = []
         tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
         if isinstance(tool_call_chunks, list):
             raw_tool_calls.extend(item for item in tool_call_chunks if isinstance(item, dict))

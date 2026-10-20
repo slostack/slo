@@ -42,9 +42,10 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 
 | Command | What it does |
 |---|---|
-| `make test` | Self-sources `tests.env`; runs `pytest -m "not e2e"` |
-| `make smoke` | Same as test |
-| `make lint` | `poetry run mypy src/` |
+| `make test` | Reviewed local `tests.env` or tracked safe fallback; full `pytest -m "not e2e"` |
+| `make test-env` | Reports `tests.env` or `fallback`; does not create a file |
+| `make smoke` | Smoke-only `tests/test_smoke.py` |
+| `make lint` | `poetry run mypy src/ tests/` |
 | `make format` | `poetry run black src/ tests/` (line length 110) |
 | `make build-skill-index` | Regenerate `skills/INDEX.md` from committed `SKILL.md` files |
 | `make install` | `install.sh` → pipx install of the code, then finalise the managed shell environment file under `~/.slo/shell/` |
@@ -575,7 +576,7 @@ two child `Static`s: an accent braille activity glyph rotating every 0.08 s
 `set_override_status(text=...)` — overrides never stop the glyph. Slash dispatch only
 unmounts a spinner it mounted itself, so it cannot remove an active run spinner.
 
-**Workflow visualizer auto-launch:** when a TUI session is promoted to orchestrator mode and
+**Workflow visualizer auto-launch (platform path; Herdr extension below):** when a TUI session is promoted to orchestrator mode and
 the first sub-agent is spawned, `SloTUI._maybe_launch_visualizer` opens a separate terminal
 window running `slo visualize --session <parent_session_id> --follow` via `VisualizerLauncher`
 (`src/tui/visualizer_launcher.py`). It fires once per run (guarded by
@@ -623,15 +624,75 @@ SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed H
 - `DetachedWorkflowAppService` (`service.py`) owns `WorkflowHandleStore` reconcile/update,
   the legal durable transitions, and the `workflow_id → state` cache that backs the
   resume/exit hint. Terminal advances emit **reset-only** effects — never a launch effect.
-- `DetachedWorkflowRenderer` (`renderer.py`) owns the one-window-per-orchestrator-session
-  launch guard, `VisualizerLauncher` calls, and transcript notices via the
-  `DetachedWorkflowNoticeSink` protocol. Guard reset happens only through a typed
-  `reset_launch_guard` effect — the app never branches on terminal fields.
+- `DetachedWorkflowRenderer` (`renderer.py`) owns typed-effect deduplication and
+  shared attached/detached outcome notices via `DetachedWorkflowNoticeSink`.
+  `DetachedVisualizerSchedule` registers with the app; it returns no launch result.
+  The renderer no longer parses raw launch results or calls a window launcher.
+  Typed `reset_launch_guard` resets request deduplication, not the session-owned
+  Herdr one-shot attempt ledger. The app never branches on terminal fields.
 - **Strict app boundary:** `SloTUI` passes raw inbox kind/payload (or the raw
   `launch_workflow` tool-result text) to the service exactly once, then only executes the
   typed effects the service returned. The app never parses workflow payloads itself.
 
 ---
+
+### Feature 94 — optional Herdr runtime (not live-certified)
+
+`HerdrEnvironmentGate` captures inherited pane configuration; construction is inert.
+Session activation selects the null path outside/disabled, or assembles one reporter,
+shared transport and viewer. Enabled configuration/activation failure is unavailable,
+not permission to open a fallback OS window. `SLO_HERDR_DISABLED=1` takes effect at
+restart; metadata defaults to compact, with explicit detail opt-in.
+
+| Owner | Actual responsibility |
+|---|---|
+| `sessions/service.py` | Committed lifecycle/usage authority, private immutable capture and generation, publication, activation/close and retained drain; existing snapshot remains sole token accounting source |
+| `sessions/dao.py` | Operation/attention tokens and provenance carriers |
+| `sessions/identity.py`, `sessions/token_format.py` | Extracted identity validator closure and shared half-up formatter; CLI/footer compatibility delegates retained |
+| `orchestrator/bootstrap.py` | Before/after standard attachment provenance; matching names alone cannot establish reproducibility |
+| `herdr/dao.py` | Frozen typed public snapshot/private capture, restore, admission, close and viewer contracts |
+| `herdr/service.py` | Environment/null path, safe projection, shared CLI lock/process/deadline/reap mechanics and retained task join |
+| `herdr/reporter.py` | Sole private-save scheduler, capture/generation matching, report revisions, ordered commands, remote binding versus acknowledgements |
+| `herdr/sequence_store.py` | Shared file lease primitive; distinct durable pane sequence and restore lock scopes |
+| `herdr/restore.py` | Secure bounded immutable revision records using unchanged `AtomicFileWriter`; no latest pointer, overwrite, GC or history ownership |
+| `herdr/visualizer.py` | Session-owned per-parent one-shot attempt ledger, split result parsing and lock-held live admission |
+| `cli/app.py`, `cli/typer_dispatch.py` | Thin `--herdr-restore` parse surface; canonical literal UUID/conflict checks and private load before runtime construction, without ambient policy merge |
+| `cli/headless.py` | Adopted headless integration lifetime/final drain without changing original result/stdout; no native restore advertisement |
+| `tui/app.py` | Captured session/timer/inbox ownership, irreversible replacement and retained shutdown; `_register_prompt_task` is the final synchronous cutoff for local, queued and machine prompts |
+| `tui/app.py::_schedule_visualizer_launch` | One captured-parent task registry, identity-safe done callbacks, awaited cancellation and suppression of late notices |
+| `tui/visualizer_launcher.py::launch_async` | One destination decision; platform thread joined before cancellation escapes; Herdr delegates to session, never fallback after failure |
+| `tui/workflows/service.py`, `renderer.py` | One raw-result parser/service → typed effects → schedule callback; one shared typed outcome renderer; duplicate renderer parser/old launch callable removed |
+| `orchestrator/context_reader.py` | Single `OrchestratorContextReader.load` parser, shared by eligibility and `tui/workflow_visualizer_loader.py`; duplicate loader parser removed, no reverse TUI import |
+| `scheduling/runtime/subprocess_runner.py` | Copies inherited environment excluding exactly case-insensitive `HERDR_` prefix; child/detached/relaunch allowlist ownership unchanged |
+
+Public reports contain fixed vocabulary and numeric telemetry only, not arbitrary
+model/provider/session labels, conversation, credentials, errors or private paths.
+Private capture preserves configured ordered pool policy and effective reasoning,
+not transient routed fallback. Reporter publishes reference argv only after durable
+save. Same configuration can reuse a save with newer display; a different capture
+cannot adopt it merely because session IDs match. Under the acquired transport lock,
+each command's owner admits synchronously before tracked spawn.
+
+Native restore uses plain installed `slo --resume UUID --herdr-restore r1-<hex>`
+on PATH with unchanged SLO_HOME/default history. It restores exact saved supported
+configuration and current history, not a checkpoint or automatic prompt replay.
+Current capability/trust admission still applies. Ordinary name/slug resume is not
+tightened by Herdr's canonical UUID rule. Private records remain after release;
+quota refuses without eviction. See `docs/INSTALL.md` for limits and rollback.
+
+Replacement prepares a candidate before irreversible old close/adoption; captured
+old-ID inbox leases cannot silently move to a successor. Uncertain release suppresses
+successor integration; undrained local resources retain one retired session and keep
+final teardown pending if drain cannot complete. Refused inbox delivery remains
+claimed without ack/replay: investigate before explicit resubmission. Pre-cutoff
+registered work retains its existing policy, but no queued successor starts.
+
+Attached and detached viewer requests converge on the same registry/typed outcomes.
+Herdr retains one split/run attempt per parent/adapter lifetime even if uncertain;
+manual recovery replaces automatic focus/query/retry/close. Platform work admitted
+before cutoff may still spawn while its owned thread is joined. `submitted` is not
+paint/liveness evidence. Herdr 0.9.2+ remains a target, **UNPROVEN live**; T6 acceptance,
+independent review and all-green static gates are separate from T1–T5 author readiness.
 
 ## 10. Auth
 
@@ -921,7 +982,13 @@ is diagnostic-only history and is excluded from replay context.
   scripted `AIMessage` objects.
 - **Default gate:** `pytest -m "not e2e"` (set in `pyproject.toml` `addopts`).
   Use `pytest -m e2e` only when real provider credentials are intentionally in scope.
-- **Test env:** `make test` self-sources `environments/tests.env`; never the dev DB.
+- **Test env:** `make test-env` identifies a readable local `environments/tests.env`
+  or the tracked Makefile fallback. Inspect local settings first; never source the
+  dev environment or assume a gitignored test file ships. The fallback supplies
+  synthetic credentials and disables automatic windows/Herdr. Root fixtures strip
+  inherited Herdr settings and require independently registered temp-owned fake
+  executables before transport spawning. `slo-harness` Python 3.11.7 is the approved
+  existing interpreter for this feature checkout; do not install an absent alias.
 - **Never real terminal windows.** `VisualizerLauncher.launch()` opens a real
   Terminal/iTerm window running `slo visualize --follow` that outlives the suite. Any
   test path that reaches it (a `sub_agent_spawned` event or a `launch_workflow` tool

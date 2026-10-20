@@ -510,15 +510,67 @@ Once installed, three commands prove the surface is alive:
 ```bash
 slo --version            # prints the version from pyproject.toml
 slo --help               # the Typer help block
-make test                # 431 tests pass
+make test                # full non-E2E suite; inspect the actual result
 ```
 
-The Makefile lives at `slo/Makefile`. `make test` sources the
-`environments/tests.env` file (so test runs never use your development
-database) and then runs the full pytest suite. If this is green, you're
-ready to launch.
+The Makefile lives at `slo/Makefile`. Run `make test-env` first: it reports
+`tests.env` when the local file is readable, otherwise `fallback`. Inspect a local
+`environments/tests.env` before sourcing it; it is not a shipped-file assumption.
+The tracked Makefile fallback supplies non-secret test settings, disables automatic
+windows and Herdr, and uses a synthetic credential placeholder. Root test fixtures
+also strip inherited Herdr settings and guard real process/window boundaries.
+Never source development settings for tests. `make test` runs the full non-E2E
+suite; `make smoke` runs only smoke tests; `make lint` checks **src and tests**.
+A passing test suite does not waive a failing static or live-acceptance gate.
 
 ---
+
+## Optional Herdr integration
+
+This checkout adds optional status reporting, private native restore, and workflow
+viewer submission inside Herdr. Slo still owns execution, tools, retries, history,
+and token accounting; a slow or unavailable Herdr must not become a prompt gate.
+**Herdr 0.9.2+ is a target, not verified live compatibility.** Offline implementation
+evidence is not release approval. T6 composed acceptance, independent review and
+live pane/restart evidence have separate gates; static failures remain unwaived.
+
+Start Slo normally from a Herdr pane that supplies `HERDR_ENV=1`, `HERDR_PANE_ID`
+and an absolute `HERDR_BIN_PATH` (`HERDR_SOCKET_PATH` is optional). The compact
+metadata profile is default; `SLO_HERDR_METADATA_PROFILE=detail` explicitly opts
+into additional numeric telemetry. Neither profile publishes conversation text,
+credentials, raw errors, arbitrary model/provider/session labels or private paths.
+See [setup, privacy, retention and rollback](docs/INSTALL.md#optional-herdr-integration)
+before enabling or testing it.
+
+Eligible interactive sessions advertise exactly:
+
+```text
+slo --resume <canonical-UUID> --herdr-restore r1-<32-lowercase-hex>
+```
+
+Use the installed plain `slo` on PATH, the same `SLO_HOME`, and its default history
+root across restart. The reference restores immutable saved configuration with
+**current history**, not a history checkpoint or a replay of a submitted prompt.
+Records are private and retained without automatic garbage collection; missing or
+unsafe records fail closed. Ordinary `--resume` still supports normal name/slug
+resolution but does not promise exact saved policy.
+
+Workflow viewers get one automatic split/run attempt per parent per adapter
+lifetime. A submitted command is not proof that a viewer painted or stayed alive.
+Repeated requests give manual selection/recovery guidance; Slo does not discover,
+focus, replace or close retained panes automatically. Enabled-but-unavailable Herdr
+does not fall back to opening an OS terminal.
+
+A shutdown-refused inbox item stays **claimed and unacknowledged**. Investigate
+privately before explicit resubmission; there is no automatic replay/requeue or
+exactly-once crash guarantee. An already registered task follows its existing
+execution policy; acknowledgement is not completion proof.
+
+To disable integration, set `SLO_HERDR_DISABLED=1` **before restarting Slo**.
+This is not a hot toggle or a cleanup command. Keep history, retained references
+and user-owned viewer panes. Older Slo may not understand `--herdr-restore`;
+remove the saved Herdr command through an explicitly authorized operation or use
+ordinary resume explicitly when rolling back.
 
 ## Chapter 2 — Your First Conversation
 

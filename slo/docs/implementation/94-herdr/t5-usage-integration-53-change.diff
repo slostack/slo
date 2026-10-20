@@ -1,0 +1,105 @@
+diff --git a/slo/tests/integration/test_feature89_model_flows.py b/slo/tests/integration/test_feature89_model_flows.py
+index d8ef2ed..29d5c7e 100644
+--- a/slo/tests/integration/test_feature89_model_flows.py
++++ b/slo/tests/integration/test_feature89_model_flows.py
+@@ -10,6 +10,9 @@ from unittest.mock import patch
+ 
+ import httpx
+ import pytest
++from langchain_core.messages import AIMessage, BaseMessage
++
++from src.agents.slo_agent.agent import SloAgent
+ 
+ from src.agents.providers.stream_recovery.dao import ProviderStreamFailure, StreamRecoveryAction
+ from src.integrations.openrouter.exceptions import OpenRouterAPIError
+@@ -342,6 +345,16 @@ async def test_prepared_mixed_pool_tool_fallback(
+     direct_requests: list[httpx.Request] = []
+     gateway_requests: list[httpx.Request] = []
+     order: list[str] = []
++    delivered: list[httpx.Response] = []
++    completed: list[AIMessage] = []
++    capture_usage = SloAgent._capture_completed_update_usage
++
++    def record_completed(agent: SloAgent, *, messages: list[BaseMessage]) -> None:
++        """Observe completed SDK messages without replacing real usage accounting."""
++        completed.extend(
++            message.model_copy(deep=True) for message in messages if isinstance(message, AIMessage)
++        )
++        capture_usage(agent, messages=messages)
+ 
+     def provider_transport(*, route: str, ledger: list[httpx.Request]) -> httpx.MockTransport:
+         """Build a finite provider script; assert captured wire only after consumption."""
+@@ -369,7 +382,9 @@ async def test_prepared_mixed_pool_tool_fallback(
+             ledger.append(request)
+             order.append(route)
+             if responses:
+-                return responses.pop(0)
++                response = responses.pop(0)
++                delivered.append(response)
++                return response
+             return httpx.Response(status_code=400, json={"error": {"message": "finite script exhausted"}})
+ 
+         return httpx.MockTransport(respond)
+@@ -404,13 +419,60 @@ async def test_prepared_mixed_pool_tool_fallback(
+                     workdir=root, model_pool_dao=pool, history_root=root / "history", extra_tools=[echo_tool]
+                 )
+             )
+-            events = [event async for event in session.invoke(text="run echo-89")]
++            with patch.object(
++                SloAgent, "_capture_completed_update_usage", autospec=True, side_effect=record_completed
++            ):
++                events = [event async for event in session.invoke(text="run echo-89")]
+             echo.assert_called_once()
+     assert order == [first] * (4 if first == "gpt-6-luna" and not oauth else 1) + [other, other]
+     assert session.active_model_name == first
+     assert session.usage_snapshot().active_model_name == other
++    successful = [response for response in delivered if response.status_code == 200]
++    assert len(successful) == 2
++    assert [response.status_code for response in delivered] == [429] * (len(order) - 2) + [200, 200]
++    response_ids: list[str] = []
++    for response in successful:
++        frames = [
++            json.loads(line.removeprefix("data: "))
++            for line in response.content.decode().splitlines()
++            if line.startswith("data: ") and line != "data: [DONE]"
++        ]
++        if other == ROUTE:
++            usage_frames = [frame for frame in frames if "usage" in frame]
++            assert len(usage_frames) == 1
++            terminal = usage_frames[0]
++            assert terminal["choices"] == []
++            assert terminal["usage"] == {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
++        else:
++            usage_frames = [frame for frame in frames if frame["type"] == "response.completed"]
++            assert len(usage_frames) == 1
++            terminal = usage_frames[0]["response"]
++            assert terminal["status"] == "completed"
++            assert terminal["usage"] == {
++                "input_tokens": 10,
++                "output_tokens": 4,
++                "total_tokens": 14,
++                "input_tokens_details": {"cached_tokens": 0},
++                "output_tokens_details": {"reasoning_tokens": 0},
++            }
++        response_ids.append(terminal["id"])
++    prefix = "chat" if other == ROUTE else "resp"
++    assert response_ids == [f"{prefix}_89_tool", f"{prefix}_89_answer"]
++    assert len(completed) == 2
++    assert [bool(message.tool_calls) for message in completed] == [True, False]
++    for message in completed:
++        assert message.usage_metadata is not None
++        assert (
++            message.usage_metadata["input_tokens"],
++            message.usage_metadata["output_tokens"],
++            message.usage_metadata["total_tokens"],
++        ) == (10, 4, 14)
++    assert not any(event.kind in {"run_retrying", "recovery_started", "run_failed"} for event in events)
+     totals = session.refresh_usage_snapshot().session_totals
+-    assert (totals.input_tokens, totals.output_tokens, totals.total_tokens) == (10, 4, 14)
++    # Equal usage belongs to two distinct completed responses, not one duplicate update.
++    assert (totals.input_tokens, totals.output_tokens, totals.total_tokens) == (20, 8, 28)
++    assert session.refresh_usage_snapshot().session_totals == totals
++    assert [event.iteration for event in events if event.kind == "run_completed"] == [1]
+     assert [event.content for event in events if event.kind == "run_completed"] == ["complete-89"]
+     public = "\n".join(event.model_dump_json() for event in events)
+     assert "private-jev89" not in public

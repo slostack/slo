@@ -132,14 +132,16 @@ class TestStreamInactivityTimeoutConfig:
         import config.cfg as cfg_module
         import src.agents.slo_agent.sessions.service as session_service_module
 
+        original_session_class = session_service_module.SloAgentSession
         monkeypatch.delenv("SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS", raising=False)
+        # Reload configuration only: reloading its consumers replaces class identities
+        # still held by headless/TUI imports and invalidates later fixture patches.
         importlib.reload(cfg_module)
-        importlib.reload(session_service_module)
 
         assert session_service_module._stream_inactivity_timeout_seconds() == 10800.0
+        assert session_service_module.SloAgentSession is original_session_class
 
         importlib.reload(cfg_module)
-        importlib.reload(session_service_module)
 
 
 class TestSloAgentSessionPromptStreaming:

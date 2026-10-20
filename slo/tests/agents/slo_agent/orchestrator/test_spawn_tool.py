@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import BaseModel
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -198,7 +200,10 @@ class TestSpawnSubAgentsToolDispatch:
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        description: str = tool_obj.args_schema.model_fields["tasks"].description
+        schema = tool_obj.args_schema
+        assert isinstance(schema, type) and issubclass(schema, BaseModel)
+        description = schema.model_fields["tasks"].description
+        assert description is not None
 
         assert "reasoning_level" in description
         assert 'NOT "reasoning"' in description
@@ -344,6 +349,7 @@ class TestSpawnSubAgentsSchemaDAO:
 
         dao = SpawnSubAgentsSchemaDAO(mode="parallel", tasks_json='[{"task_id":"t1","prompt":"x"}]')
         assert dao.mode == "parallel"
+        assert dao.tasks_json is not None
         assert "task_id" in dao.tasks_json
 
     def test_tool_carries_explicit_args_schema(self) -> None:
@@ -526,6 +532,8 @@ class TestSpawnSubAgentsNativeTasks:
         """``SpawnSubAgentsSchemaDAO`` documents native ``tasks`` and legacy ``tasks_json``."""
         fields = SpawnSubAgentsSchemaDAO.model_fields
         assert "tasks" in fields and "tasks_json" in fields
+        assert fields["tasks"].description is not None
+        assert fields["tasks_json"].description is not None
         assert "preferred" in fields["tasks"].description.lower()
         assert "legacy" in fields["tasks_json"].description.lower()
 
@@ -654,9 +662,7 @@ class TestSpawnToolCanonicalMax:
         """An unknown reasoning token is rejected without dispatch."""
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps(
-            [{"task_id": "t1", "prompt": "Do it.", "reasoning_level": "ultra"}]
-        )
+        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it.", "reasoning_level": "ultra"}])
 
         raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
@@ -669,7 +675,10 @@ class TestSpawnToolCanonicalMax:
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        description: str = tool_obj.args_schema.model_fields["tasks"].description  # type: ignore[union-attr, assignment]
+        schema = tool_obj.args_schema
+        assert isinstance(schema, type) and issubclass(schema, BaseModel)
+        description = schema.model_fields["tasks"].description
+        assert description is not None  # type: ignore[union-attr, assignment]
 
         for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"]:
             assert f'"{level}"' in description

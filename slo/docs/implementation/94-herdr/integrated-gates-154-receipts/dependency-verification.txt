@@ -1,0 +1,5 @@
+All 87 existing lock records identical; only approved stub added.
+Historical inventory example [['CacheControl', '0.14.4']]
+Current-only or changed [('slo', '0.16.3')]
+E-only or changed [('slo', '0.21.0')]
+PASS exact distribution MULTISET equals E:  134 records. Prior dict comparison was invalid: duplicate slo distributions already existed in E.

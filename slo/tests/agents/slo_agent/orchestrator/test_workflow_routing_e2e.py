@@ -171,7 +171,9 @@ def build_orchestrator_session(
     # ---- Patch _build_agent to inject our FauxChatModel with baked tools ---
     # We must defer this until after bootstrap because bootstrap mutates
     # _config.extra_tools; the patch captures the post-bootstrap state.
-    _extra_tools = list(session._config.extra_tools or [])
+    config = session._config
+    assert config is not None
+    _extra_tools = list(config.extra_tools or [])
     _all_tools = create_extended_tools() + _extra_tools
 
     def _patched_build_agent() -> SloAgent:
@@ -184,8 +186,8 @@ def build_orchestrator_session(
             llm=faux,
             cwd=str(session._workdir),
             tools=_all_tools,
-            system_prompt=session._config.system_prompt,
-            append_system_prompt=session._config.append_system_prompt,
+            system_prompt=config.system_prompt,
+            append_system_prompt=config.append_system_prompt,
         )
 
     session._build_agent = _patched_build_agent  # type: ignore[method-assign]

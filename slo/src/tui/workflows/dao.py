@@ -20,7 +20,6 @@ __all__ = [
     "DetachedWorkflowUiEffectDAO",
     "HandleAdvanceOutcomeDAO",
     "LiveWorkflowLabelDAO",
-    "LaunchResultOutcome",
     "ParsedFleetUpdateDAO",
     "ParsedLaunchResultDAO",
     "ParsedWorkflowLifecycleMessageDAO",
@@ -52,9 +51,6 @@ _WORKFLOW_KIND_TO_TARGET: dict[str, WorkflowLifecycleTarget] = {
     "workflow_failed": "terminal",
 }
 """Claimed workflow lifecycle note kind → lifecycle side-effect target."""
-
-LaunchResultOutcome: TypeAlias = Literal["launched", "ignored"]
-"""Outcome of translating one ``launch_workflow`` tool-result text."""
 
 DetachedWorkflowUiEffect: TypeAlias = Literal["launch_visualizer", "reset_launch_guard"]
 """A typed UI effect the renderer knows how to execute.

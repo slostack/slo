@@ -194,8 +194,7 @@ class SkillRegistry:
         when_to_use = cls._string_field(data=data, key="when_to_use")
         group = cls._string_field(data=data, key="group") or "coding"
         kind_value = cls._string_field(data=data, key="kind") or "skill"
-        if kind_value not in {"skill", "workflow"}:
-            kind_value = "skill"
+        kind: Literal["skill", "workflow"] = "workflow" if kind_value == "workflow" else "skill"
 
         if not name or not description or not when_to_use:
             return None
@@ -206,7 +205,7 @@ class SkillRegistry:
             description=description,
             when_to_use=when_to_use,
             group=group,
-            kind=kind_value,
+            kind=kind,
             location=location,
         )
 

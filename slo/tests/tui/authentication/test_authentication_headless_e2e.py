@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from textual.app import App
-from textual.widgets import Input, RadioButton, RadioSet
+from textual.widgets import Input, RadioButton, RadioSet, Static
 
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_store import CredentialStore
@@ -43,55 +43,58 @@ def _credential(*, provider: ProviderName) -> CredentialDAO:
     )
 
 
-def _faux_oauth_factory(
-    *,
-    provider: ProviderName,
-    login_method: OAuthLoginMethod,
-    present_browser_authorization: Callable[[AuthorizationPresentationDAO], None],
-    present_device_authorization: Callable[[DeviceAuthorizationPresentationDAO], None],
-    authorization_response_receiver: Callable[[], Awaitable[str]] | None,
-    present_callback_unavailable: Callable[[], None] = lambda: None,
-) -> OAuthAuthenticationFlow:
-    """Build the recorded scripted flow for this E2E scenario."""
-    if login_method is OAuthLoginMethod.DEVICE_AUTHORIZATION:
+class _FauxOAuthFactory:
+    """Scripted flow factory with the same capability contract as production."""
 
-        async def _device() -> CredentialDAO:
-            """Present dummy device instructions and return its credential."""
-            present_device_authorization(
-                DeviceAuthorizationPresentationDAO(
-                    verification_uri="https://example.invalid/dummy-device",
-                    user_code="DUMMY-DEVICE-CODE",
-                    expires_in_seconds=900,
+    def supported_login_methods(self, *, provider: ProviderName) -> frozenset[OAuthLoginMethod]:
+        """Advertise browser-only Anthropic and both OpenAI interactions."""
+        if provider is ProviderName.ANTHROPIC:
+            return frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION})
+        return frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION, OAuthLoginMethod.DEVICE_AUTHORIZATION})
+
+    def __call__(
+        self,
+        *,
+        provider: ProviderName,
+        login_method: OAuthLoginMethod,
+        present_browser_authorization: Callable[[AuthorizationPresentationDAO], None],
+        present_device_authorization: Callable[[DeviceAuthorizationPresentationDAO], None],
+        authorization_response_receiver: Callable[[], Awaitable[str]] | None,
+        present_callback_unavailable: Callable[[], None] = lambda: None,
+    ) -> OAuthAuthenticationFlow:
+        """Build the recorded scripted flow for this E2E scenario."""
+        if login_method is OAuthLoginMethod.DEVICE_AUTHORIZATION:
+
+            async def _device() -> CredentialDAO:
+                """Present dummy device instructions and return its credential."""
+                present_device_authorization(
+                    DeviceAuthorizationPresentationDAO(
+                        verification_uri="https://example.invalid/dummy-device",
+                        user_code="DUMMY-DEVICE-CODE",
+                        expires_in_seconds=900,
+                    )
+                )
+                return _credential(provider=provider)
+
+            return _FauxFlow(run=_device)
+
+        assert authorization_response_receiver is not None
+        receiver: Callable[[], Awaitable[str]] = authorization_response_receiver
+
+        async def _browser() -> CredentialDAO:
+            """Present dummy browser instructions, downgrade, and complete from the modal receiver."""
+            present_browser_authorization(
+                AuthorizationPresentationDAO(
+                    authorize_url="https://example.invalid/dummy-browser",
+                    redirect_uri="http://localhost:1455/auth/callback",
+                    instructions="unused",
                 )
             )
+            present_callback_unavailable()
+            await receiver()
             return _credential(provider=provider)
 
-        return _FauxFlow(run=_device)
-
-    assert authorization_response_receiver is not None
-    receiver: Callable[[], Awaitable[str]] = authorization_response_receiver
-
-    async def _browser() -> CredentialDAO:
-        """Present dummy browser instructions, downgrade, and complete from the modal receiver."""
-        present_browser_authorization(
-            AuthorizationPresentationDAO(
-                authorize_url="https://example.invalid/dummy-browser",
-                redirect_uri="http://localhost:1455/auth/callback",
-                instructions="unused",
-            )
-        )
-        present_callback_unavailable()
-        await receiver()
-        return _credential(provider=provider)
-
-    return _FauxFlow(run=_browser)
-
-
-_faux_oauth_factory.supported_login_methods = lambda *, provider: (
-    frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION})
-    if provider is ProviderName.ANTHROPIC
-    else frozenset({OAuthLoginMethod.BROWSER_AUTHORIZATION, OAuthLoginMethod.DEVICE_AUTHORIZATION})
-)
+        return _FauxFlow(run=_browser)
 
 
 class _Harness(App):
@@ -104,7 +107,7 @@ class _Harness(App):
 
     def on_mount(self) -> None:
         """Push the modal using dependency injection rather than monkeypatching."""
-        self.push_screen(AuthenticationScreen(store=self._store, oauth_factory=_faux_oauth_factory))
+        self.push_screen(AuthenticationScreen(store=self._store, oauth_factory=_FauxOAuthFactory()))
 
 
 @pytest.mark.asyncio
@@ -140,7 +143,7 @@ async def test_anthropic_browser_e2e_accepts_response_after_callback_deadline(tm
         status: OAuthStatusWidget = pilot.app.screen.query_one(OAuthStatusWidget)
         await pilot.pause()
         assert (
-            str(status.query_one("#oauth-status").content)
+            str(status.query_one("#oauth-status", Static).content)
             == "Local browser did not respond. Paste your authorization response below."
         )
         response_input: Input = status.query_one("#oauth-response-input", Input)

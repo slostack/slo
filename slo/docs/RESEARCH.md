@@ -1,5 +1,131 @@
 # Slo Codebase Index
 
+Acquisition170: [bounded correction](implementation/94-herdr/acquisition-owner-170.md).
+Failed pane acquisition can retain a lease without usable admission. Reporter final
+cleanup/evidence now reads sequence-owner truth, not `_lease_held`. Native-lock/load
+rollback matrix covers reporter and session drain; core1229/surrounds969 and scoped
+statics pass. Author bounded READY only; fresh full gates and independent core
+verification still required. Live USER-DEFERRED; compatibility UNVERIFIED.
+
+Core168: [final author gates](implementation/94-herdr/final-core-gates-168.md). Finite public-API documentation
+audit complete; full8727/smoke288/lint813 and exact chapter/surrounding/Black
+gates pass on unchanged1063 comprehensive inputs. Intermediate default drain
+remains distinct from final disposal evidence; null final cleanup is independent.
+Author READY OFFLINE only; independent core/wiring/harness/full review and fresh
+Completion remain pending. Live USER-DEFERRED, compatibility UNVERIFIED.
+
+Close167: [bounded regression receipt](implementation/94-herdr/close-regression-167.md).
+Session resets evidence before each cleanup gateway: throwing final close cannot
+inherit intermediate drained. Null final cleanup independently proves its inert
+ownership; it never retries intermediate close. Earlier uncertainty stays sticky.
+Focused/surrounding426 and scoped static5 pass; no broad/full gates run here.
+R161-4 API ledger/full gates and independent review remain pending.
+
+Core165: [contract correction receipt](implementation/94-herdr/core-contracts-165.md).
+Intermediate reporter close uses default drained resources as remote/sticky-defect
+evidence only, never disposal permission; the pane lease stays held until transport
+drain. Session preserves every uncertain result. Owned1113/surrounds745 pass;
+R161-4 exhaustive public API audit remains pending despite expanded contracts.
+Combined assignment REVISE; full gates and independent review remain separate.
+
+Core164: [bounded R161-1/2 receipt](implementation/94-herdr/core-owner-164.md).
+`HerdrRestoreStore` retains its operation lease after ambiguous cleanup and refuses
+new operations until explicit cleanup demonstrates absence. Its nonblocking local
+guard serializes operation/cleanup; reporter final drain consumes the optional typed
+resource-owner capability. Same inode never authorizes re-closing an ambiguous FD.
+Short counter reads consume EOF/bound and composed refusal blocks queued viewers.
+R161-3/4 and independent re-review remain pending; full suite/live not claimed.
+
+Revision160 integration: [receipt](implementation/94-herdr/integration-revision-160.md).
+Timeout-config tests must not reload the consuming session module: headless imports
+retain the old class and subsequent build monkeypatches otherwise target a different
+class. Config-only reload preserves identities. Combined1835/full8680 pass on frozen
+inputs; independent full-feature Review R155-2 and fresh Completion remain pending.
+
+Current revision156: [implementation/94-herdr/profile-revision-156.md](implementation/94-herdr/profile-revision-156.md) corrects the captured metadata-profile
+connection to session publication. Validated activation profile is retained by the
+session; events never reread it. Composed interactive/headless profile tests and
+full8675/smoke288/lint805 pass. Independent review155 remains unfinished (R155-2);
+fresh Completion pending; live user-deferred/compatibility UNVERIFIED. Earlier
+154 readiness below is historical author evidence, not independent approval.
+
+## Feature 94 Herdr — runtime ownership and acceptance boundary
+
+Current author checkpoint: [integrated154](implementation/94-herdr/integrated-gates-154.md)
+is **Code+Test READY USER-APPROVED OFFLINE** for T1–T6. Full8667/smoke288,
+B261452/C311459/D091669/surrounding472, unmodified full lint804 and all214
+changed/new Python Black checks pass on an unchanged843-input manifest.
+Independent full-feature Review and fresh Completion remain pending. Live installed
+launcher/native restart/version/wire/panes/paint/TTL/wait/release is explicitly
+user-deferred, compatibility UNVERIFIED. Earlier static-red/live-required status
+below is historical, not the current author verdict. Security-finding132 remains
+separate and open; reporting privacy does not promise a global tool-event redactor.
+
+The optional implementation is session-owned, not a TUI execution engine.
+`sessions/service.py` supplies committed lifecycle, existing usage snapshots and
+immutable private configuration captures. Standard attachment provenance is checked
+before/after `orchestrator/bootstrap.py`; tool-name equality alone is insufficient.
+`herdr/reporter.py` alone schedules saves and associates a reference with its exact
+capture/generation. Report revision and configuration generation are distinct.
+`herdr/service.py` owns the shared bounded CLI transport: acquired lock → synchronous
+owner admission → tracked spawn. `sequence_store.py` owns distinct pane/restore
+leases and durable counters; `restore.py` reuses the existing atomic writer without
+changing history. `dao.py` owns frozen boundary contracts, `visualizer.py` the
+one-shot attempt ledger. Shared identity/formatter owners now live in `sessions/`.
+
+`cli/app.py` parses `--herdr-restore`; `typer_dispatch.py` validates canonical literal
+resume UUID/conflicts and reads exact private policy before constructing runtime.
+It does not substitute ambient preferences. Records preserve full ordered configured
+pool policy, effective reasoning and allowed paths; no transient routed fallback,
+conversation or credential copy. Native restore needs plain installed `slo` on PATH,
+the same SLO_HOME and default history. An old reference restores old configuration
+with **current history**, not old history or repeated execution. Current provider
+capability/plugin trust still applies. Ordinary resume names/slugs are unchanged.
+
+`tui/app.py` owns captured session delivery/timers, final synchronous prompt-task
+registration, replacement and retained shutdown. It also owns the captured-parent
+viewer task registry and joins it before lifetime completion. Workflow service is
+the single raw-result parser; renderer now only consumes typed effects, schedules
+and renders typed outcomes (duplicate parser and old launch callable removed).
+`VisualizerLauncher.launch_async` chooses one destination. Enabled-but-unavailable
+Herdr never falls back to an OS window; admitted platform threads are joined even
+on cancellation. `OrchestratorContextReader.load` in `orchestrator/context_reader.py`
+replaces the duplicate TUI-loader parser without reverse dependencies.
+
+Headless lifetime belongs to `cli/headless.py`, preserving result/stdout and publishing
+no native restore. Scheduler environment copying strips exactly case-insensitive
+`HERDR_`; existing child/detached/relaunch exclusion policy is retained.
+
+Operational constraints: private immutable `integrations/herdr/restore-v1` records
+(0700 directories/0600 files), 64 KiB each, 1,024 records/64 MiB total, no GC/eviction.
+Deletion of an advertised revision fails closed. Graceful remote release does not
+delete local revisions. Claimed inbox refusal requires private investigation before
+explicit resubmission; no auto replay/requeue and ack is not completion. Local drain
+failure retains its owner; remote uncertainty alone is not a local resource leak.
+Viewer attempts are one-shot per parent/lifetime; retained panes require manual
+selection/recovery. Queue submission is not viewer paint or live compatibility.
+
+Operator contract: [INSTALL](INSTALL.md#optional-herdr-integration). Architecture:
+[AGENTS](../AGENTS.md#feature-94--optional-herdr-runtime-not-live-certified).
+Current author gate: [T6 correction151](implementation/94-herdr/t6-accounting-fix-151.md):
+deterministic real report/replacement cancellation disproves the observer's returned-DAO
+count oracle. Transport joins/reaps and completes admitted owner accounting before
+raising cancellation; test observation now requires one terminal per entry, with
+resource/task/callback proof and fixed cancellation metadata privacy scans.
+Full8653 and D091669 pass; no production change. Bounded correction READY OFFLINE,
+overall T6 REVISE: current lint281/58 remains unwaived. Independent review and live acceptance remain
+pending. Historical T6 docs/static diagnosis: [receipt](implementation/94-herdr/t6-docs-static-121.md).
+Historical T5-120 full gate: 8213 passed, 19 deselected; fresh T6-121 lint remains
+295 errors/60 files, **UNWAIVED**. This is not T6 composed-test, independent review,
+completion or release approval. Herdr 0.9.2+ is only a target; live version/restart/
+pane acceptance needs explicit disposable named-session authorization. No live
+action or package/global change is authorized by these notes.
+
+Test setup uses reviewed local tests.env or tracked Makefile fallback, never an
+assumption that gitignored tests.env ships. `make test-env` identifies the variant;
+root guards prohibit real windows/providers/Herdr in default tests. `make smoke`
+is smoke-only, `make lint` checks src AND tests. Earlier entries remain historical.
+
 ## Feature 89 runtime owners and offline acceptance
 
 `src/agents/providers/openai_platform.py` owns strict nonmutating caller-option

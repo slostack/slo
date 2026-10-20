@@ -62,13 +62,30 @@ class OrchestratorSessionBootstrap:
             return
         if cls._already_has_pool(session=session):
             return
+        session_id: str = session.session_id
+        permitted: bool = session._begin_standard_orchestrator_attachment()
+        policy_sources = session._snapshot_herdr_policy_sources() if permitted else None
         pool: SubAgentPool = cls._build_pool(session=session)
         spawn_tool: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         extra_tools: list[BaseTool] = [spawn_tool] + cls._build_workflow_tools(
             session=session,
             headless=headless,
         )
-        session.attach_sub_agent_pool(pool=pool, spawn_tools=extra_tools)
+        permitted = (
+            permitted
+            and session._begin_standard_orchestrator_attachment()
+            and session._herdr_policy_sources_match(expected=policy_sources)
+            and session.session_id == session_id
+        )
+        session._attach_sub_agent_pool(pool=pool, spawn_tools=extra_tools)
+        session._finish_standard_orchestrator_attachment(
+            permitted=(
+                permitted
+                and session._herdr_policy_sources_match(expected=policy_sources)
+                and session.session_id == session_id
+            ),
+            expected_tools=tuple(extra_tools),
+        )
 
     # ── private helpers ──────────────────────────────────────────────────────
 

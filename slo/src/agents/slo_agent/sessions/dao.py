@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Literal, Optional
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, ValidationError, model_validator
 
 from src.agents.hooks import Hook, ShouldStopAfterTurnHook
 from src.agents.providers.model_pool import ModelPoolDAO
@@ -169,3 +169,67 @@ class SessionConfigDAO(BaseModel):
             ShouldStopAfterTurnHook: A non-``None`` hook callable.
         """
         return self.should_stop_after_turn_hook or Hook.should_stop_after_turn_hook
+
+
+OperatorAttentionReason = Literal[
+    "Authentication required", "Model preparation required", "Run failed; review Slo", "Approval required"
+]
+SessionReportingState = Literal["idle", "working", "blocked"]
+
+
+class OperatorAttentionDAO(BaseModel):
+    """Process-local human attention, never a history event."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+    token: int = Field(ge=0, strict=True, description="Session-owned attention serial.")
+    reason: OperatorAttentionReason = Field(description="Fixed human intervention reason.")
+
+
+class SessionReportingStateDAO(BaseModel):
+    """Observation state independent of execution authority."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+    state: SessionReportingState = Field(description="Observed session activity.")
+    block_reason: Optional[OperatorAttentionReason] = Field(
+        default=None, description="Reason only when blocked."
+    )
+
+    @model_validator(mode="after")
+    def _require_reason_pair(self) -> SessionReportingStateDAO:
+        """Require a reason exactly when blocked."""
+        if (self.state == "blocked") != (self.block_reason is not None):
+            raise ValueError("Invalid reporting state.")
+        return self
+
+
+class HerdrOrchestratorProvenanceDAO(BaseModel):
+    """Private process-local attachment identity; never serialize this object."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", arbitrary_types_allowed=True, hide_input_in_errors=True
+    )
+    tools: tuple[BaseTool, ...] = Field(repr=False, description="Exact attached tool identities in order.")
+    system_prompt: Optional[str] = Field(repr=False, description="Exact attached system prompt.")
+    append_system_prompt: Optional[str] = Field(repr=False, description="Exact attached prompt suffix.")
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _private_validation(
+        cls, value: object, handler: ModelWrapValidatorHandler[HerdrOrchestratorProvenanceDAO]
+    ) -> HerdrOrchestratorProvenanceDAO:
+        """Discard rejected provenance inputs rather than exposing tool or prompt data."""
+        try:
+            return handler(value)
+        except (ValidationError, ValueError, TypeError, AttributeError):
+            raise ValidationError.from_exception_data(
+                title="Provenance validation",
+                hide_input=True,
+                line_errors=[
+                    {
+                        "type": "value_error",
+                        "loc": (),
+                        "input": None,
+                        "ctx": {"error": ValueError("Invalid provenance.")},
+                    }
+                ],
+            ) from None

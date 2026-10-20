@@ -1,0 +1,11 @@
+--- /dev/fd/63	2026-10-18 17:36:27.290936896 +0700
++++ /dev/fd/62	2026-10-18 17:36:27.291936872 +0700
+@@ -8,8 +8,6 @@
+ src/agents/skills/registry.py:LINE: error: Library stubs not installed for "yaml"  [import-untyped]
+ src/agents/slo_agent/assistant_chunk_normalizer.py:LINE: error: Generator has incompatible item type "ToolCall"; expected "dict[str, Any]"  [misc]
+ src/agents/slo_agent/skills/service.py:LINE: error: Library stubs not installed for "yaml"  [import-untyped]
+-src/cli/app.py:LINE: error: Argument 1 of "parse_args" is incompatible with supertype "typer._click.core.Command"; supertype defines the argument type as "Context"  [override]
+-src/cli/app.py:LINE: error: Argument 1 of "parse_args" is incompatible with supertype "typer.core.TyperGroup"; supertype defines the argument type as "Context"  [override]
+ src/tui/transcript_projector.py:LINE: error: Argument "tool_name" to "ToolOutputUpdateDAO" has incompatible type "str | None"; expected "str"  [arg-type]
+ tests/agents/model_catalog/test_model_catalog_store.py:LINE: error: "object" has no attribute "flock"  [attr-defined]
+ tests/agents/model_catalog/test_openrouter_admission_security.py:LINE: error: Argument 1 has incompatible type "object"; expected "def (*object, **object) -> object"  [arg-type]

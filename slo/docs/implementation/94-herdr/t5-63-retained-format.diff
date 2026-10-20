@@ -1,0 +1,19 @@
+Skipping virtualenv creation, as specified in config file.
+--- tests/cli/test_headless_retained.py	2026-10-18 11:50:59.050439+00:00
++++ tests/cli/test_headless_retained.py	2026-10-18 12:26:00.400756+00:00
+@@ -20,11 +20,10 @@
+ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
+ from src.auth.credential_resolver import CredentialResolver
+ from src.cli.headless import HeadlessRunner
+ from tests.agents.slo_agent.herdr.test_cli_transport import RecordingAdmission
+ from tests.state_isolation import FakeHerdrFixture
+-
+ 
+ RetainedOwner = TypeVar("RetainedOwner")
+ 
+ 
+ def require_retained(reference: weakref.ReferenceType[RetainedOwner]) -> RetainedOwner:
+would reformat tests/cli/test_headless_retained.py
+
+Oh no! 💥 💔 💥
+1 file would be reformatted.

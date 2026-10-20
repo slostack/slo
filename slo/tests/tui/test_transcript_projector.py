@@ -8,6 +8,9 @@ from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.transcript_projector import TranscriptProjector
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
+from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.tool_execution_block import ToolExecutionBlock
+from src.tui.widgets.user_message_block import UserMessageBlock
 
 
 def _user_entry(*, content: str) -> TranscriptEntryDAO:
@@ -40,10 +43,12 @@ def _tool_entry(*, tool_name: str, tool_input: dict, output: str) -> TranscriptE
     )
 
 
-class FakeAssistantBlock:
+class FakeAssistantBlock(AssistantStreamBlock):
     """Minimal answer-only assistant block fake for projector tests."""
 
     def __init__(self) -> None:
+        """Initialize widget state and independent projector call records."""
+        super().__init__()
         self.answer: str = ""
         self.title_prefix: str | None = None
         self.finalized_with: str | None = None
@@ -56,34 +61,40 @@ class FakeAssistantBlock:
         return self.answer
 
     def append_text(self, *, delta: str) -> None:
+        """Record streamed answer text for projector assertions."""
         self.answer += delta
 
     def set_answer(self, *, content: str) -> None:
+        """Record the authoritative replacement answer."""
         self.answer = content
 
     def finalize(self, *, final_text: str) -> None:
+        """Record the terminal answer supplied by the projector."""
         self.finalized_with = final_text
 
     def seal(self) -> None:
+        """Record that this segment can no longer receive live content."""
         self.sealed = True
 
     def mark_aborted(self) -> None:
+        """Record abort treatment separately from clean finalization."""
         self.aborted = True
 
     def mark_failed(self, *, error_message: str) -> None:
+        """Record failure treatment and its exact message."""
         self.failed_with = error_message
 
 
 class FakeThinkingBlock(AssistantStreamThinkingBlock):
     """Minimal thinking-segment block fake for projector tests.
 
-    Subclasses the real widget so ``FakeHost.mount_thinking_block`` stays
-    return-type compatible with ``TranscriptMountHost``; every method the
-    projector touches is overridden and ``__init__`` deliberately skips
-    ``super().__init__()`` so no Textual state is constructed.
+    Initializes the real widget while recording projector calls independently
+    of Textual mounting and rendering.
     """
 
     def __init__(self) -> None:
+        """Initialize widget state and reasoning call records."""
+        super().__init__()
         self.thinking: str = ""
         self.sealed: bool = False
 
@@ -96,45 +107,29 @@ class FakeThinkingBlock(AssistantStreamThinkingBlock):
         return self.sealed
 
     def append_thinking(self, *, delta: str) -> None:
+        """Record streamed reasoning for segment-order assertions."""
         self.thinking += delta
 
     def set_thinking(self, *, content: str) -> None:
+        """Record the authoritative reasoning repair."""
         self.thinking = content
 
     def seal(self) -> None:
+        """Record that this segment can no longer receive live content."""
         self.sealed = True
 
 
-class FakeToolBlock:
-    """Minimal tool block fake for projector tests."""
+class FakeToolBlock(ToolExecutionBlock):
+    """Real unmounted tool widget with the legacy incomplete assertion alias."""
 
-    def __init__(self, *, tool_call_id: str, tool_name: str) -> None:
-        self.tool_call_id: str = tool_call_id
-        self.tool_name: str = tool_name
-        self.tool_input: dict = {}
-        self.result_output: str | None = None
-
-    def update_tool_call(self, *, tool_name: str | None = None, tool_input: dict | None = None) -> None:
-        if tool_name:
-            self.tool_name = tool_name
-        if tool_input is not None:
-            self.tool_input = dict(tool_input)
-
-    def update_result(self, *, tool_name: str | None, output: str) -> None:
-        if tool_name:
-            self.tool_name = tool_name
-        self.result_output = output
-
-    def mark_incomplete(self) -> None:
-        self.result_output = None
-        self.incomplete = True
+    @property
+    def incomplete(self) -> bool:
+        """Expose the real widget's incomplete state to existing assertions."""
+        return self.is_incomplete
 
 
-class FakeUserBlock:
+class FakeUserBlock(UserMessageBlock):
     """Minimal user block fake for projector tests."""
-
-    def __init__(self, *, text: str) -> None:
-        self.text: str = text
 
 
 class FakeHost:
@@ -150,7 +145,8 @@ class FakeHost:
         self.lines: list[tuple[str, str]] = []
         self.recorded: list[tuple[str, str]] = []
 
-    async def mount_user_message_block(self, *, text: str, before: int | None = None):
+    async def mount_user_message_block(self, *, text: str, before: int | None = None) -> FakeUserBlock:
+        """Return a real user widget while recording logical mount order."""
         del before
         block = FakeUserBlock(text=text)
         self.user_blocks.append(block)
@@ -165,7 +161,10 @@ class FakeHost:
             return True
         return False
 
-    async def mount_assistant_block(self, *, title_prefix=None, before: int | None = None):
+    async def mount_assistant_block(
+        self, *, title_prefix: str | None = None, before: int | None = None
+    ) -> FakeAssistantBlock:
+        """Return an initialized recording answer widget without mounting it."""
         del before
         block = FakeAssistantBlock()
         block.title_prefix = title_prefix
@@ -196,9 +195,10 @@ class FakeHost:
         self,
         *,
         tool_call_id: str,
-        tool_name: str,
+        tool_name: str | None,
         before: int | None = None,
-    ):
+    ) -> FakeToolBlock:
+        """Return a real tool widget, retaining unknown identity when absent."""
         del before
         block = FakeToolBlock(tool_call_id=tool_call_id, tool_name=tool_name)
         self.tool_blocks[tool_call_id] = block

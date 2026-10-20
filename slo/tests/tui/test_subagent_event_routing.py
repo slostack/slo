@@ -11,6 +11,7 @@ sub-agent panes and no pane-switching. These tests verify:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -418,7 +419,12 @@ class TestFleetPanelCleanup:
 
 
 class TestVisualizerAutoLaunch:
-    """``_maybe_launch_visualizer`` opens the visualizer once per run."""
+    """``_maybe_launch_visualizer`` schedules the visualizer once per run."""
+
+    @pytest.fixture(autouse=True)
+    def enable_auto_visualize(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Opt these five launch contracts into the production master gate."""
+        monkeypatch.setenv("SLO_AUTO_VISUALIZE", "1")
 
     @pytest.mark.asyncio
     async def test_first_spawn_launches_visualizer_once(self) -> None:
@@ -433,7 +439,9 @@ class TestVisualizerAutoLaunch:
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
                 await app._render_event(_spawned(task_id="task-B", session_id="s2"))
-                await pilot.pause()
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             mock_launch.assert_called_once()
             assert app._visualizer_launched_for_run is True
@@ -451,7 +459,9 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=True),
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             _, kwargs = mock_launch.call_args
             assert kwargs["parent_session_id"] == session.session_id
@@ -468,7 +478,9 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=True),
             ):
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             assert app._adapter is not None
             lines = [content for content, _ in app._adapter.lines]
@@ -486,7 +498,9 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=False),
             ):
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             assert app._adapter is not None
             lines = [content for content, _ in app._adapter.lines]
@@ -504,14 +518,18 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=True),
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await pilot.pause()
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
                 assert app._visualizer_launched_for_run is True
 
                 await app._cleanup_sub_agent_state()
                 assert app._visualizer_launched_for_run is False
 
                 await app._render_event(_spawned(task_id="task-B", session_id="s2"))
-                await pilot.pause()
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
                 assert mock_launch.call_count == 2
 
 

@@ -22,6 +22,7 @@ def test_concurrency_default_and_override(monkeypatch: pytest.MonkeyPatch) -> No
         and isinstance(node.target, ast.Name)
         and node.target.id == "SUBAGENT_MAX_CONCURRENCY"
     )
+    assert assignment.value is not None
     expression = compile(ast.Expression(body=assignment.value), "config/cfg.py", "eval")
     monkeypatch.delenv("SLO_SUBAGENT_MAX_CONCURRENCY", raising=False)
     assert eval(expression, {"os": os}) == 6

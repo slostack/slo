@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, SubAgentStatusDAO
 from src.tui.workflow_visualizer_loader import (
@@ -21,6 +21,17 @@ def _loader(*, root: Path) -> WorkflowVisualizerLoader:
         config=HeadlessWorkflowVisualizerConfigDAO(session_reference="parent", follow=False),
         store=store,
     )
+
+
+def test_context_delegates_to_shared_reader(tmp_path: Path) -> None:
+    """Preserve the loader API while using only the lower-layer parser."""
+    from src.agents.slo_agent.orchestrator.context_reader import OrchestratorContextReader
+    from src.agents.slo_agent.orchestrator.context_dao import OrchestratorContextDAO
+
+    context = OrchestratorContextDAO.build(system_prompt="private", user_prompt="private", model=None)
+    with patch.object(OrchestratorContextReader, "load", return_value=context) as load:
+        assert _loader(root=tmp_path).load_orchestrator_context(parent_session_id="parent") is context
+    load.assert_called_once_with(history_root=tmp_path, parent_session_id="parent")
 
 
 def test_overlay_populates_fleet_fields(tmp_path: Path) -> None:

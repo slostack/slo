@@ -1,0 +1,1 @@
+poetry run pytest -q tests/tui/test_herdr_activation_composed.py tests/tui/test_herdr_activation_faults.py tests/agents/slo_agent/herdr/test_session_lifetime.py tests/tui/test_herdr_replacement.py tests/tui/test_herdr_app_shutdown.py tests/cli/test_headless_retained.py 

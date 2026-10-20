@@ -55,6 +55,7 @@ async def test_read_png_returns_image_content(tmp_path: Path) -> None:
     assert isinstance(result.content, list)
     assert result.content[0]["type"] == "image"
     assert result.content[0]["source"]["media_type"] == "image/png"
+    assert result.image_reference is not None
     assert result.image_reference.startswith("[image attached: tiny.png,")
 
 
@@ -100,6 +101,7 @@ async def test_read_large_image_returns_tool_result_dao(tmp_path: Path) -> None:
     assert isinstance(result, ToolResultDAO)
     assert isinstance(result.content, list)
     assert result.content[0]["type"] == "image"
+    assert result.image_reference is not None
     assert result.image_reference.startswith("[image attached: large.png,")
 
 

@@ -1,0 +1,1 @@
+bash docs/implementation/94-herdr/t1-dao-check.sh tests/tui/test_transcript_projector.py tests/tui/test_tool_block_partial.py tests/tui/test_recovery_ux.py tests/tui/test_tool_execution_block.py tests/tui/test_replay_resume.py tests/integration/test_herdr_full_flow.py::test_unified_mounted_prompt_configuration_both_viewers 

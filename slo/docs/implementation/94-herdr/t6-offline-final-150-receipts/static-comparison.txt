@@ -1,0 +1,18 @@
+initial=301; current=281; vs147 added=0 removed=0
+vs initial added=0 removed=20
+ADDED versus initial:
+REMOVED versus initial:
+1 x src/agents/skills/registry.py: error: Library stubs not installed for "yaml"  [import-untyped]
+1 x src/cli/app.py: error: Argument 1 of "parse_args" is incompatible with supertype "typer._click.core.Command"; supertype defines the argument type as "Context"  [override]
+1 x src/cli/app.py: error: Argument 1 of "parse_args" is incompatible with supertype "typer.core.TyperGroup"; supertype defines the argument type as "Context"  [override]
+1 x tests/agents/skills/test_api_response_generic_owner.py: error: Library stubs not installed for "yaml"  [import-untyped]
+1 x tests/agents/skills/test_design_skill_additions.py: error: Library stubs not installed for "yaml"  [import-untyped]
+1 x tests/agents/skills/test_reorganization.py: error: Library stubs not installed for "yaml"  [import-untyped]
+6 x tests/cli/test_headless.py: error: Cannot assign to a method  [method-assign]
+1 x tests/cli/test_headless.py: error: Incompatible types in assignment (expression has type "Mapping[str, Any] | Any", variable has type "dict[Any, Any]")  [assignment]
+1 x tests/cli/test_headless.py: error: Set comprehension has incompatible type Set[str | None]; expected Set[str]  [misc]
+1 x tests/cli/test_headless.py: error: Type cannot be declared in assignment to non-self attribute  [misc]
+1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "int"  [arg-type]
+1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "list[dict[str, object]]"  [arg-type]
+1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "str"  [arg-type]
+2 x tests/tui/workflows/test_workflow_app_service.py: error: Cannot assign to a method  [method-assign]

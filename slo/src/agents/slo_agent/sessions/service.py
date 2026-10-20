@@ -63,7 +63,31 @@ from src.agents.providers.credit_exhaustion_policy import (
     ProviderErrorSignalDAO,
     ProviderLimitObservationDAO,
 )
-from src.agents.providers.model_pool import RouteSwitchRecordDAO
+from src.agents.providers.model_pool import ModelPoolDAO, ModelPoolEntryDAO, RouteSwitchRecordDAO
+from src.agents.slo_agent.herdr.sequence_store import HerdrFileLease
+from src.agents.slo_agent.herdr.visualizer import HerdrVisualizerLauncher
+from src.agents.slo_agent.herdr.dao import HerdrVisualizerRequestDAO, VisualizerLaunchOutcomeDAO
+from src.agents.slo_agent.orchestrator.context_reader import OrchestratorContextReader
+import shutil
+from src.agents.slo_agent.herdr.reporter import HerdrReporter
+from src.agents.slo_agent.herdr.service import (
+    HerdrEnvironmentGate,
+    HerdrTaskJoin,
+    HerdrSnapshotProjector,
+    NullHerdrReporter,
+)
+from src.agents.slo_agent.herdr.dao import (
+    HerdrReporterProtocol,
+    HerdrDestination,
+    HerdrReporterCloseOutcomeDAO,
+    HerdrPublicationDAO,
+    HerdrReporterConfigDAO,
+    HerdrRestoreCaptureDAO,
+    HerdrRestoreConfigDAO,
+    HerdrRestorePoolDAO,
+    HerdrRestorePoolEntryDAO,
+)
+from src.agents.slo_agent.sessions.identity import is_canonical_uuid_session_id
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
@@ -73,6 +97,7 @@ from src.agents.slo_agent.history.dao import (
 from src.agents.slo_agent.workspace.dao import WorkspaceFolderDAO
 from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
+    default_history_root,
 )
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
 from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
@@ -107,6 +132,10 @@ from src.agents.slo_agent.events.runtime import (
 from src.agents.slo_agent.runtime import SloRuntimeContext
 from src.agents.slo_agent.sessions.dao import (
     AgentEventSubscriber,
+    HerdrOrchestratorProvenanceDAO,
+    OperatorAttentionDAO,
+    OperatorAttentionReason,
+    SessionReportingStateDAO,
     ManualCompactionResultDAO,
     PreflightBypassNoticeDAO,
     PreflightDecisionDAO,
@@ -470,6 +499,58 @@ class PromptAttemptResultDAO(BaseModel):
     )
 
 
+class HerdrPolicySourcesDAO(BaseModel):
+    """Private immutable commit comparison; never persisted or publicly projected."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
+    model_name: Optional[str] = Field(repr=False, description="Configured model source.")
+    configured_reasoning: Optional[ReasoningLevel] = Field(
+        repr=False, description="Original reasoning input."
+    )
+    history_enabled: bool = Field(repr=False, description="Configured persistence policy.")
+    effective_reasoning: ReasoningLevel = Field(repr=False, description="Committed effective reasoning.")
+    paths: tuple[object, ...] = Field(repr=False, description="Copied lexical path sources.")
+    pool: Optional[HerdrRestorePoolDAO] = Field(repr=False, description="Validated immutable pool scalars.")
+
+    def permits_commit(
+        self, *, previous: HerdrPolicySourcesDAO, model_selection: bool, reasoning_commit: bool
+    ) -> bool:
+        """Permit a new capture commit only when all unowned policy sources are unchanged.
+
+        WHAT: Compares this freshly sampled source snapshot against the previous
+            committed snapshot. ``configured_reasoning``, ``history_enabled`` and
+            ``paths`` are never owned by any gateway and must always match.
+        WHO: ``SloAgentSession._adopt_herdr_capture`` calls it before advancing
+            the configuration generation; an inequality invalidates the capture
+            instead of committing.
+        WHEN: At every capture-adoption point (history ensure, model selection,
+            prepared/reasoning commit, startup).
+
+        Args:
+            previous (HerdrPolicySourcesDAO): Previously committed source snapshot.
+            model_selection (bool): Authority of the model-selection gateway;
+                permits ``model_name`` and ``pool`` to change (and transitively
+                ``effective_reasoning``).
+            reasoning_commit (bool): Authority of a prepared/reasoning commit
+                gateway; permits ``effective_reasoning`` alone to change.
+
+        Returns:
+            bool: True when every field not permitted by the named authorities
+                is unchanged, so the new capture may commit.
+        """
+        return (
+            self.configured_reasoning == previous.configured_reasoning
+            and self.history_enabled == previous.history_enabled
+            and self.paths == previous.paths
+            and (model_selection or (self.model_name == previous.model_name and self.pool == previous.pool))
+            and (
+                model_selection
+                or reasoning_commit
+                or self.effective_reasoning == previous.effective_reasoning
+            )
+        )
+
+
 class SloAgentSession:
     """One ``SloAgent`` per process, one in-flight prompt at a time."""
 
@@ -536,6 +617,41 @@ class SloAgentSession:
         self._agent_openrouter_fingerprint: Optional[str] = None
         self._agent: Optional[SloAgent] = agent
         self._agent_is_injected: bool = agent is not None
+        self._herdr_reporter: HerdrReporterProtocol = NullHerdrReporter(destination="platform")
+        self._herdr_start_task: Optional[asyncio.Task[None]] = None
+        self._herdr_close_task: Optional[asyncio.Task[HerdrReporterCloseOutcomeDAO]] = None
+        self._herdr_retired_drain_task: Optional[asyncio.Task[HerdrReporterCloseOutcomeDAO]] = None
+        self._herdr_finish_cleanup_task: Optional[asyncio.Task[HerdrReporterCloseOutcomeDAO]] = None
+        self._candidate_pool_cleanup_task: Optional[asyncio.Task[None]] = None
+        self._herdr_closing = self._herdr_suppressed = self._herdr_close_uncertain = False
+        self._herdr_reporting_started = False
+        self._herdr_metadata_profile: Literal["compact", "detail"] = "compact"
+        self._operator_attention: Optional[OperatorAttentionDAO] = None
+        self._attention_serial = self._operation_serial = 0
+        self._reporting_operations: set[int] = set()
+        self._suspended_reporting_operation: Optional[int] = None
+        self._herdr_destination: HerdrDestination = "platform"
+        self._herdr_visualizer: Optional[HerdrVisualizerLauncher] = None
+        self._herdr_viewer_drain_failed = False
+        self._herdr_interactive: bool = False
+        self._herdr_default_history: bool = False
+        self._herdr_history_persisted: bool = False
+        self._herdr_workspace_file: Optional[Path] = None
+        self._herdr_workdir: Path = self._workdir
+        self._herdr_plugin_paths: tuple[Path, ...] = ()
+        self._herdr_path_sources: Optional[tuple[object, ...]] = None
+        self._herdr_policy_sources: Optional[HerdrPolicySourcesDAO] = None
+        self._herdr_policy_invalidated: bool = False
+        self._herdr_pristine_origin: bool = config is not None and (
+            config.system_prompt is None
+            and config.append_system_prompt is None
+            and not config.extra_tools
+            and config.should_stop_after_turn_hook is None
+        )
+        self._herdr_capture: Optional[HerdrRestoreCaptureDAO] = None
+        self._herdr_capture_session_id: str = session_id
+        self._herdr_configuration_generation: int = 0
+        self._standard_orchestrator_attachment: Optional[HerdrOrchestratorProvenanceDAO] = None
         self._agent_catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = catalog_snapshot
         configured_plugin_paths: list[Path] = list(config.plugin_paths) if config is not None else []
         self._plugin_paths: list[Path] = list(plugin_paths or configured_plugin_paths)
@@ -558,6 +674,7 @@ class SloAgentSession:
         # Register the internal history subscriber for sub-agent lifecycle
         # events when history is enabled. This subscriber runs alongside
         # external TUI/test subscribers and persists parent↔child links.
+        self._subscribers.append(self._on_herdr_event)
         if self._enable_history:
             self._subscribers.append(self._on_stream_event_for_history)
         self._sub_agent_pool: Optional["SubAgentPool"] = None
@@ -584,9 +701,9 @@ class SloAgentSession:
         self._active_reasoning_level: ReasoningLevel = self._seed_active_reasoning_level(
             config=config,
         )
+        self._herdr_policy_sources = self._snapshot_herdr_policy_sources()
         self._allows_model_switching: bool = config is not None
         self._session_usage_totals: TokenUsageTotalsDAO = TokenUsageTotalsDAO()
-        self._usage_snapshot_commit_version: int = 0
         self._recent_request_times: deque[float] = deque()
         self._recent_request_token_estimates: deque[tuple[float, int]] = deque()
         self._preflight_decisions_by_turn: dict[str, PreflightDecisionDAO] = {}
@@ -669,39 +786,66 @@ class SloAgentSession:
         async with self._preparation_lock:
             if self._preparation_status == "ready":
                 return
-            self._preparation_status = "pending"
-            assert self._config is not None
-            startup_config = self._config
-            try:
-                snapshot = await ModelCatalogService.prepare_models(
-                    model_names=self._configured_model_names(config=self._config)
-                )
-                if self._config is not startup_config:
-                    return
-                self._require_prepared_openrouter_route(config=self._config, snapshot=snapshot)
-                reasoning = clamp_reasoning_level(
-                    model_name=self.active_model_name,
-                    requested_level=self.active_reasoning_level,
-                    snapshot=snapshot,
-                )
-                usage = self._build_usage_snapshot(snapshot=snapshot, reasoning_level=reasoning)
-            except BaseException as error:
-                if self._config is not startup_config:
-                    if isinstance(error, asyncio.CancelledError):
-                        raise
-                    return
-                self._preparation_status = "failed"
+            async with self._startup_reporting_scope():
+                await self._prepare_startup_locked()
+
+    async def _prepare_startup_locked(self) -> None:
+        """Derive and atomically adopt startup capabilities under the preparation lock."""
+        self._preparation_status = "pending"
+        assert self._config is not None
+        startup_config = self._config
+        try:
+            snapshot = await ModelCatalogService.prepare_models(
+                model_names=self._configured_model_names(config=self._config)
+            )
+            if self._config is not startup_config:
+                return
+            self._require_prepared_openrouter_route(config=self._config, snapshot=snapshot)
+            reasoning = clamp_reasoning_level(
+                model_name=self.active_model_name,
+                requested_level=self.active_reasoning_level,
+                snapshot=snapshot,
+            )
+            usage = self._build_usage_snapshot(snapshot=snapshot, reasoning_level=reasoning)
+        except BaseException as error:
+            if self._config is not startup_config:
                 if isinstance(error, asyncio.CancelledError):
                     raise
-                if not isinstance(error, Exception):
-                    raise
-                raise ModelPreparationRequiredError(
-                    "Model preparation failed; use /auth or /model refresh to retry."
-                ) from None
-            self._catalog_snapshot = snapshot
-            self._active_reasoning_level = reasoning
-            self._usage_snapshot = usage
-            self._preparation_status = "ready"
+                return
+            self._preparation_status = "failed"
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            if not isinstance(error, Exception):
+                raise
+            raise ModelPreparationRequiredError(
+                "Model preparation failed; use /auth or /model refresh to retry."
+            ) from None
+        self._withdraw_stale_herdr_capture()
+        self._catalog_snapshot = snapshot
+        self._active_reasoning_level = reasoning
+        self._usage_snapshot = usage
+        self._preparation_status = "ready"
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore(), reasoning_commit=True)
+        self._publish_herdr_snapshot()
+
+    @asynccontextmanager
+    async def _startup_reporting_scope(self) -> AsyncIterator[None]:
+        """Track startup work and clear only its captured preparation requirement."""
+        attention = self._operator_attention
+        config = self._config
+        token = self._begin_reporting_operation()
+        try:
+            yield
+            if self._preparation_status == "ready" and attention is not None:
+                if attention.reason == "Model preparation required":
+                    self.clear_operator_attention(token=attention.token)
+        except Exception:
+            if self._config is config and self._operator_attention is attention:
+                self.set_operator_attention(reason="Model preparation required")
+            raise
+        finally:
+            self._refresh_final_reporting_usage()
+            self._end_reporting_operation(token=token)
 
     @classmethod
     async def prepare(cls, *, config: SessionConfigDAO) -> "SloAgentSession":
@@ -1205,16 +1349,12 @@ class SloAgentSession:
         )
 
     def _sync_usage_snapshot_commit(self) -> None:
-        """Commit the latest-turn usage into session totals when newly captured."""
+        """Drain completed usage once, including updates with no public event."""
         if self._agent is None:
             return
-        current_version: int = self._agent.usage_capture_version
-        if current_version == self._usage_snapshot_commit_version:
-            return
         self._session_usage_totals = self._session_usage_totals.add(
-            other=self._agent.last_usage_totals,
+            other=self._agent.consume_completed_usage(),
         )
-        self._usage_snapshot_commit_version = current_version
 
     def _rebuild_usage_snapshot(self) -> SessionUsageSnapshotDAO:
         """Recompute and store the session usage snapshot.
@@ -1223,6 +1363,7 @@ class SloAgentSession:
             SessionUsageSnapshotDAO: Freshly rebuilt usage snapshot.
         """
         self._usage_snapshot = self._build_usage_snapshot()
+        self._publish_herdr_snapshot()
         return self._usage_snapshot
 
     def _latest_turn_usage_totals(self) -> TokenUsageTotalsDAO:
@@ -1646,9 +1787,21 @@ class SloAgentSession:
                 status="unavailable",
                 detail="cannot compact while a prompt is in flight; run /abort first",
             )
-        async with self._lock:
-            result: ManualCompactionResultDAO = await self._compact_context_locked()
-        return await self._with_refreshed_context_window(result=result)
+        token = None
+        try:
+            async with self._lock:
+                token = self._begin_reporting_operation()
+                result: ManualCompactionResultDAO = await self._compact_context_locked()
+                if result.status == "failed":
+                    self.set_operator_attention(reason="Run failed; review Slo")
+            return await self._with_refreshed_context_window(result=result)
+        except Exception:
+            self.set_operator_attention(reason="Run failed; review Slo")
+            raise
+        finally:
+            if token is not None:
+                self._refresh_final_reporting_usage()
+                self._end_reporting_operation(token=token)
 
     async def _compact_context_locked(self) -> ManualCompactionResultDAO:
         """Validate history and run Manual Compaction under the session lock.
@@ -1966,10 +2119,12 @@ class SloAgentSession:
         if not self._enable_history or self._history_store is None:
             raise RuntimeError("Cannot rename a session when history is disabled.")
         await self._ensure_history_session()
-        return await self._history_store.rename_session(
+        metadata = await self._history_store.rename_session(
             session_id=self._session_id,
             session_name=session_name,
         )
+        self._publish_herdr_snapshot()
+        return metadata
 
     async def record_workflow_update(
         self,
@@ -2085,6 +2240,822 @@ class SloAgentSession:
 
         return _positional_relay
 
+    def _begin_standard_orchestrator_attachment(self) -> bool:
+        """Permit only pristine configured policy before ordinary bootstrap."""
+        config = self._config
+        return (
+            config is not None
+            and self._herdr_pristine_origin
+            and not self._herdr_policy_invalidated
+            and not self._agent_is_injected
+            and (
+                config.system_prompt is None
+                and config.append_system_prompt is None
+                and not config.extra_tools
+                and config.should_stop_after_turn_hook is None
+            )
+        )
+
+    def _finish_standard_orchestrator_attachment(
+        self, *, permitted: bool, expected_tools: tuple[BaseTool, ...] = ()
+    ) -> None:
+        """Verify final standard additions before granting process-local provenance.
+
+        Args:
+            permitted (bool): Unchanged pristine source verdict from bootstrap.
+            expected_tools (tuple[BaseTool, ...]): Exact tools built by bootstrap.
+        """
+        if not permitted or not self._matches_standard_orchestrator_additions(tools=expected_tools):
+            self._withdraw_stale_herdr_capture()
+            self._publish_herdr_snapshot()
+            return
+        assert self._config is not None  # Established by the final additions guard.
+        self._standard_orchestrator_attachment = HerdrOrchestratorProvenanceDAO(
+            tools=tuple(self._config.extra_tools or ()),
+            system_prompt=self._config.system_prompt,
+            append_system_prompt=self._config.append_system_prompt,
+        )
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore())
+        self._publish_herdr_snapshot()
+
+    def _matches_standard_orchestrator_additions(self, *, tools: tuple[BaseTool, ...]) -> bool:
+        """Check the construction result, not arbitrary final values, before attestation."""
+        from src.agents.slo_agent.orchestrator.spawn_tool import (
+            DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
+            ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM,
+        )
+
+        config = self._config
+        if config is None or not tools or not isinstance(config.extra_tools, list):
+            return False
+        return (
+            len(config.extra_tools) == len(tools)
+            and all(actual is expected for actual, expected in zip(config.extra_tools, tools))
+            and config.system_prompt == DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
+            and config.append_system_prompt == ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM
+            and config.should_stop_after_turn_hook is None
+        )
+
+    @property
+    def workflow_visualizer_destination(self) -> HerdrDestination:
+        """Return captured destination without allowing failed authority to fall back."""
+        if self._herdr_destination == "herdr" and self._herdr_reporter.destination != "herdr":
+            return "unavailable"
+        return self._herdr_destination
+
+    async def open_workflow_visualizer(self, *, parent_session_id: str) -> VisualizerLaunchOutcomeDAO:
+        """Submit a saved workflow parent to this session's existing pane owner.
+
+        Args:
+            parent_session_id (str): Exact canonical workflow parent, not the TUI owner.
+
+        Returns:
+            VisualizerLaunchOutcomeDAO: Fixed skipped result when eligibility is absent.
+
+        Raises:
+            asyncio.CancelledError: After the retained eligibility reads finish;
+                cancellation never reaches pane submission.
+        """
+        viewer = self._herdr_visualizer
+        if not is_canonical_uuid_session_id(value=parent_session_id) or not self._may_open_workflow_viewer():
+            return VisualizerLaunchOutcomeDAO(status="skipped")
+        task = asyncio.create_task(
+            coro=self._workflow_parent_is_persisted(parent_session_id=parent_session_id)
+        )
+        cancelled = await HerdrTaskJoin.wait(task=task)
+        try:
+            eligible = task.result()
+        except Exception:
+            eligible = False
+        if cancelled:
+            raise asyncio.CancelledError
+        if not eligible or not self._may_open_workflow_viewer() or viewer is not self._herdr_visualizer:
+            return VisualizerLaunchOutcomeDAO(status="skipped")
+        assert viewer is not None and self._history_store is not None
+        return await viewer.invoke(
+            request=HerdrVisualizerRequestDAO(
+                parent_session_id=parent_session_id,
+                history_root=self._history_store.root,
+            )
+        )
+
+    def _may_open_workflow_viewer(self) -> bool:
+        """Recheck session eligibility and live reporter authority after awaited reads."""
+        self._withdraw_stale_herdr_capture()
+        return (
+            not self._herdr_closing
+            and self._herdr_capture is not None
+            and self._herdr_visualizer is not None
+            and self.workflow_visualizer_destination == "herdr"
+            and isinstance(self._herdr_reporter, HerdrReporter)
+            and self._herdr_reporter.allows_viewer_admission()
+        )
+
+    async def _workflow_parent_is_persisted(self, *, parent_session_id: str) -> bool:
+        """Read existing parent evidence only; private context never leaves this boundary."""
+        assert self._history_store is not None
+        current_default = await asyncio.to_thread(default_history_root)
+        if await asyncio.to_thread(self._history_store.root.resolve) != current_default:
+            return False
+        metadata = await self._history_store.read_metadata(session_id=parent_session_id)
+        if metadata.session_id != parent_session_id:
+            return False
+        if await asyncio.to_thread(metadata.workdir.resolve) != self._herdr_workdir:
+            return False
+        if not await asyncio.to_thread(shutil.which, cmd="slo"):
+            return False
+        context = await asyncio.to_thread(
+            OrchestratorContextReader.load,
+            history_root=self._history_store.root,
+            parent_session_id=parent_session_id,
+        )
+        if context is None:
+            events = await self._history_store.load_events(session_id=parent_session_id)
+            if not any(
+                event.session_id == parent_session_id and event.kind == "sub_agent_spawned"
+                for event in events
+            ):
+                return False
+        # Recheck the default after all evidence awaits; activation's root is not authority.
+        return current_default == await asyncio.to_thread(default_history_root)
+
+    async def start_external_reporting(self, *, interactive: bool = False) -> None:
+        """Activate the optional Herdr reporter exactly once and join it.
+
+        WHAT: Starts one session-owned activation task on the first eligible
+            activating call, then waits for it. Later calls join the same
+            retained task; activation is never duplicated. Disabled calls
+            (``_herdr_closing``, suppressed via ``suppress_external_reporting``,
+            or an inactive environment — ``HERDR_ENV != "1"`` or
+            ``SLO_HERDR_DISABLED`` truthy) allocate nothing, do zero I/O, and
+            do not pin the interactive mode; only the first call that actually
+            creates the activation task records ``interactive``. Successful
+            activation can publish the Herdr snapshot inside the activation
+            task before its waiter returns. An ordinary (non-cancelled) failed
+            activation returns with its partial owner retained: the
+            destination becomes ``unavailable`` and close uncertainty is
+            marked, but no close task is created and ``reporter.close`` is not
+            called here. Joining a failed activation is not closing it —
+            cleanup of the retained owner belongs to a later lifecycle
+            finalizer (``close_external_reporting`` and, when resources remain
+            retained, ``finish_retired_reporting_cleanup``). Only a cancelled
+            waiter joins the activation and then runs the close gateway before
+            the cancellation escapes.
+        WHO: ``SloTUI._finish_replacement_runtime`` (``interactive=True``) and
+            ``HeadlessRunner`` (default non-interactive) call it after delivery
+            initialization.
+        WHEN: Once per mounted/adopted session, after the session's own
+            runtime/delivery setup and before any publication.
+
+        Args:
+            interactive (bool, optional): Whether native restore may be eligible.
+                Only the first eligible activating call's value is recorded;
+                disabled calls record nothing and later calls joining the
+                existing task cannot change the mode. Defaults to False.
+
+        Raises:
+            asyncio.CancelledError: Propagated only after the activation task
+                has been joined; the cancelled waiter then closes reporting via
+                ``close_external_reporting`` so cleanup still runs to
+                completion before the cancellation escapes. The retained
+                activation task itself is never cancelled from outside.
+        """
+        if self._herdr_closing or self._herdr_suppressed:
+            return
+        if self._herdr_start_task is None and self._herdr_environment_is_inactive():
+            return
+        if self._herdr_start_task is None:
+            self._herdr_interactive = interactive
+            self._herdr_start_task = asyncio.create_task(coro=self._start_herdr_once())
+        cancelled = await HerdrTaskJoin.wait(task=self._herdr_start_task)
+        self._herdr_start_task.result()
+        if cancelled:
+            await self.close_external_reporting()
+            raise asyncio.CancelledError
+
+    @staticmethod
+    def _herdr_environment_is_inactive() -> bool:
+        """Refuse disabled/outside activation before allocating an async task."""
+        return os.environ.get("HERDR_ENV") != "1" or os.environ.get(
+            "SLO_HERDR_DISABLED", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+    async def _start_herdr_once(self) -> None:
+        """Retain partial assembly before starting any adapter-owned work."""
+        try:
+            self._herdr_reporter = await self._prepare_herdr_reporter()
+            if self._herdr_closing:
+                self._herdr_reporter.revoke_viewer_admission()
+                return
+            await self._herdr_reporter.start()
+            if not self._herdr_closing:
+                self._herdr_destination = self._herdr_reporter.destination
+                if self._herdr_destination == "herdr":
+                    self._herdr_visualizer = self._herdr_reporter.build_visualizer()
+                    self._herdr_reporting_started = True
+                    self._publish_herdr_snapshot()
+        except (Exception, asyncio.CancelledError):
+            # This retained task is never publicly cancelled; an inner cancellation
+            # is an activation defect. The partial owner stays retained; closing
+            # it belongs to the later close gateway, not to this failure path.
+            self._herdr_close_uncertain = True
+            self._herdr_destination = "unavailable"
+            self._log_herdr_publication_failure()
+
+    def _log_herdr_publication_failure(self) -> None:
+        """Delegate fixed diagnostics without making the sink mandatory."""
+        try:
+            self._herdr_reporter.record_publication_failure()
+        except Exception:
+            pass
+
+    def set_operator_attention(self, *, reason: OperatorAttentionReason) -> int:
+        """Publish a fixed human-action requirement and return its completion token.
+
+        WHAT: Replaces any current attention with a new session-owned record
+            and republishes the Herdr snapshot. Attention is process-local
+            observation state only; it never becomes a history event and never
+            controls execution.
+        WHO: Session gateways that require human intervention (for example
+            model-preparation gating in ``invoke``).
+        WHEN: Synchronously at the moment the blocking condition is detected.
+
+        Args:
+            reason (OperatorAttentionReason): One of the fixed literal reasons
+                ("Authentication required", "Model preparation required",
+                "Run failed; review Slo", "Approval required").
+
+        Returns:
+            int: A new session-owned attention serial token. Only this exact
+                token completes this attention via ``clear_operator_attention``;
+                tokens are never reused within a session.
+        """
+        attention = OperatorAttentionDAO(token=self._attention_serial + 1, reason=reason)
+        self._attention_serial = attention.token
+        self._operator_attention = attention
+        self._publish_herdr_snapshot()
+        return attention.token
+
+    def clear_operator_attention(self, *, token: int) -> None:
+        """Clear only the requesting owner's matching attention, never a newer one.
+
+        WHAT: Matching-completion-only semantics: the current attention is
+            cleared only when ``token`` equals the token returned by the
+            ``set_operator_attention`` call that created it. A stale or unknown
+            token is a silent no-op, so a late completion can never clear a
+            newer owner's attention. Clearing also drops any suspended
+            reporting operation and republishes the Herdr snapshot.
+        WHO: The session gateway that resolved the blocking condition (for
+            example ``_startup_reporting_scope`` after preparation succeeds).
+        WHEN: Synchronously when the human-action requirement no longer holds.
+
+        Args:
+            token (int): Completion token previously returned by
+                ``set_operator_attention`` for this exact attention record.
+        """
+        if self._operator_attention is None or self._operator_attention.token != token:
+            return
+        self._operator_attention = None
+        self._suspended_reporting_operation = None
+        self._publish_herdr_snapshot()
+
+    def _begin_reporting_operation(self) -> int:
+        """Observe admitted work until its owner retires the returned token in finally."""
+        self._operation_serial += 1
+        self._reporting_operations.add(self._operation_serial)
+        self._publish_herdr_snapshot()
+        return self._operation_serial
+
+    def _end_reporting_operation(self, *, token: int) -> None:
+        """Retire this owner only, after its final usage has been committed."""
+        self._reporting_operations.discard(token)
+        if self._suspended_reporting_operation == token:
+            self._suspended_reporting_operation = None
+        self._publish_herdr_snapshot()
+
+    def _suspend_reporting_operation(self, *, token: int) -> None:
+        """Observe an actual human wait only for an active owner with attention."""
+        if token not in self._reporting_operations or self._operator_attention is None:
+            return
+        self._suspended_reporting_operation = token
+        self._publish_herdr_snapshot()
+
+    def _reporting_state(self) -> SessionReportingStateDAO:
+        """Project unsuspended work before fixed attention, without execution authority."""
+        if self._reporting_operations - {self._suspended_reporting_operation}:
+            return SessionReportingStateDAO(state="working")
+        if self._operator_attention is not None:
+            return SessionReportingStateDAO(state="blocked", block_reason=self._operator_attention.reason)
+        return SessionReportingStateDAO(state="idle")
+
+    def _publish_herdr_snapshot(self) -> None:
+        """Pair current public facts with committed private capture without I/O."""
+        if not self._herdr_reporting_started or self._herdr_closing:
+            return
+        try:
+            self._withdraw_stale_herdr_capture()
+            state = self._reporting_state()
+            self._herdr_reporter.publish(
+                publication=HerdrPublicationDAO(
+                    configuration_generation=self._herdr_configuration_generation,
+                    snapshot=HerdrSnapshotProjector.build(
+                        session_id=self._session_id,
+                        state=state.state,
+                        block_reason=state.block_reason,
+                        history_enabled=self._enable_history,
+                        usage=self._usage_snapshot,
+                        metadata_profile=self._herdr_metadata_profile,
+                    ),
+                    restore_capture=self._herdr_capture,
+                )
+            )
+        except Exception:
+            self._log_herdr_publication_failure()
+
+    def suppress_external_reporting(self) -> None:
+        """Permanently refuse successor reporting before activation.
+
+        Raises:
+            RuntimeError: Activation was already requested; its owner is retained.
+        """
+        if self._herdr_start_task is not None:
+            raise RuntimeError("Reporting activation already requested")
+        self._herdr_suppressed = True
+        self._herdr_destination = "unavailable"
+
+    def begin_external_reporting_close(self) -> None:
+        """Synchronously revoke optional authority without cancelling execution."""
+        if self._herdr_closing:
+            return
+        self._herdr_closing = True
+        self._herdr_reporting_started = False
+        try:
+            self._herdr_reporter.revoke_viewer_admission()
+        except (Exception, asyncio.CancelledError):
+            self._herdr_close_uncertain = True
+
+    async def close_external_reporting(self) -> HerdrReporterCloseOutcomeDAO:
+        """Revoke reporting authority, drain every current owner, and join cleanup.
+
+        WHAT: Synchronously revokes viewer admission via
+            ``begin_external_reporting_close``, then runs one retained close
+            task that joins the activation task, drains the viewer, and closes
+            reporter and transport — each gateway attempted independently, with
+            failures retained as sticky uncertainty rather than skipped. The
+            outcome carries two independent dimensions: ``replacement``
+            (whether a successor reporter may safely be adopted; remote or
+            defect uncertainty is sticky and survives even a fully drained
+            local close) and ``resources`` (final local disposal evidence;
+            an intermediate reporter gateway's default of drained is not
+            disposal permission — a throwing final gateway can never inherit
+            drained evidence). A completed close is cached: repeated calls
+            join the same retained task and return the same outcome, never
+            re-running cleanup. Caller cancellation waits for the retained
+            cleanup to finish before propagating (join-before-cancel).
+        WHO: ``SloTUI`` shutdown/replacement, ``HeadlessRunner``'s outer
+            finalizer, ``dispose_unmounted_session``, the cancellation path of
+            ``start_external_reporting``, and the internal
+            ``_finish_herdr_cleanup_once``.
+        WHEN: At session close, replacement commit, candidate disposal, or
+            caller cancellation after activation joined.
+
+        Returns:
+            HerdrReporterCloseOutcomeDAO: Independent remote/local evidence.
+                Any final-drain caller (``SloTUI._finish_shutdown_owner``,
+                ``HeadlessRunner._close_external_reporting``) that observes
+                ``resources=retained`` must keep the session owner strongly
+                retained and finish through
+                ``finish_retired_reporting_cleanup`` instead of dropping it.
+
+        Raises:
+            asyncio.CancelledError: Propagated only after the retained close
+                task has been joined, never instead of cleanup.
+        """
+        self.begin_external_reporting_close()
+        if self._herdr_close_task is None:
+            self._herdr_close_task = asyncio.create_task(coro=self._close_herdr_once())
+        cancelled = await HerdrTaskJoin.wait(task=self._herdr_close_task)
+        outcome = self._herdr_close_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return outcome
+
+    async def _close_herdr_once(self) -> HerdrReporterCloseOutcomeDAO:
+        """Drain all current owners despite ordinary optional cleanup failures."""
+        if self._herdr_start_task is not None:
+            await HerdrTaskJoin.wait(task=self._herdr_start_task)
+            try:
+                self._herdr_start_task.result()
+            except (Exception, asyncio.CancelledError):
+                # Inner task cancellation is defective activation, not caller cancellation.
+                self._herdr_close_uncertain = True
+        if self._herdr_visualizer is not None:
+            try:
+                await self._herdr_visualizer.close()
+            except (Exception, asyncio.CancelledError):
+                self._herdr_viewer_drain_failed = True
+                self._herdr_close_uncertain = True
+        final_resources_retained = True
+        for cleanup in (self._herdr_reporter.close, self._herdr_reporter.close_transport):
+            # Each gateway must supply its own evidence. In particular, a throwing
+            # final gateway cannot inherit the intermediate default of drained.
+            final_resources_retained = True
+            try:
+                outcome = await cleanup()
+                final_resources_retained = outcome.resources == "retained"
+                # Remote/defect uncertainty survives even a successful final local drain.
+                self._herdr_close_uncertain |= outcome.replacement == "uncertain"
+            except (Exception, asyncio.CancelledError):
+                self._herdr_close_uncertain = True
+        try:
+            retained = (
+                self._herdr_viewer_drain_failed
+                or final_resources_retained
+                or self._herdr_reporter.retains_external_resources
+            )
+        except (Exception, asyncio.CancelledError):
+            retained = True
+        return HerdrReporterCloseOutcomeDAO(
+            replacement="uncertain" if retained or self._herdr_close_uncertain else "safe",
+            resources="retained" if retained else "drained",
+        )
+
+    async def dispose_unmounted_session(self) -> None:
+        """Dispose an inactive failed candidate, never a mounted or running session.
+
+        The caller owns the unmounted-candidate precondition. History and detached
+        workflows are preserved; only this session's attached pool is drained.
+
+        Raises:
+            asyncio.CancelledError: After reporting and candidate pool cleanup join.
+        """
+        try:
+            await self.close_external_reporting()
+        finally:
+            try:
+                await self._drain_unmounted_pool()
+            finally:
+                await self.finish_retired_reporting_cleanup()
+
+    async def _drain_unmounted_pool(self) -> None:
+        """Retain and join the candidate's existing pool drain exactly once."""
+        if self._sub_agent_pool is None:
+            return
+        if self._candidate_pool_cleanup_task is None:
+            self._candidate_pool_cleanup_task = asyncio.create_task(
+                coro=self._sub_agent_pool.abort_and_drain()
+            )
+        cancelled = await HerdrTaskJoin.wait(task=self._candidate_pool_cleanup_task)
+        try:
+            self._candidate_pool_cleanup_task.result()
+        except Exception:
+            self._log_herdr_publication_failure()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def finish_retired_reporting_cleanup(self) -> HerdrReporterCloseOutcomeDAO:
+        """Finish local ownership before a final caller may drop this session.
+
+        Persistent retained resources intentionally leave this gateway pending;
+        caller cancellation cannot abandon its single retained cleanup task.
+
+        Returns:
+            HerdrReporterCloseOutcomeDAO: Drained evidence with sticky uncertainty.
+
+        Raises:
+            asyncio.CancelledError: After cleanup finishes, never instead of cleanup.
+        """
+        self.begin_external_reporting_close()
+        if self._herdr_finish_cleanup_task is None:
+            self._herdr_finish_cleanup_task = asyncio.create_task(coro=self._finish_herdr_cleanup_once())
+        cancelled = await HerdrTaskJoin.wait(task=self._herdr_finish_cleanup_task)
+        outcome = self._herdr_finish_cleanup_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return outcome
+
+    async def _finish_herdr_cleanup_once(self) -> HerdrReporterCloseOutcomeDAO:
+        """Allow one final local attempt, never polling or retrying remote withdrawal."""
+        outcome = await self.close_external_reporting()
+        if outcome.resources == "drained":
+            return outcome
+        outcome = await self.drain_retained_external_resources()
+        if outcome.resources == "retained":
+            await asyncio.Future()
+        return outcome
+
+    async def drain_retained_external_resources(self) -> HerdrReporterCloseOutcomeDAO:
+        """Join one local-only final drain after close, preserving remote uncertainty.
+
+        Returns:
+            HerdrReporterCloseOutcomeDAO: Cached evidence, never remote release proof.
+
+        Raises:
+            RuntimeError: Close has not completed.
+            asyncio.CancelledError: Only after the retained local attempt completes.
+        """
+        if self._herdr_close_task is None or not self._herdr_close_task.done():
+            raise RuntimeError("Reporting close must complete before final drain")
+        if self._herdr_retired_drain_task is None:
+            self._herdr_retired_drain_task = asyncio.create_task(coro=self._drain_retired_herdr_once())
+        cancelled = await HerdrTaskJoin.wait(task=self._herdr_retired_drain_task)
+        outcome = self._herdr_retired_drain_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return outcome
+
+    async def _drain_retired_herdr_once(self) -> HerdrReporterCloseOutcomeDAO:
+        """Retain ownership on local drain or evidence failure without remote retry."""
+        try:
+            outcome = await self._herdr_reporter.drain_retained_external_resources()
+            retained = (
+                self._herdr_viewer_drain_failed
+                or outcome.resources == "retained"
+                or self._herdr_reporter.retains_external_resources
+            )
+        except (Exception, asyncio.CancelledError):
+            retained = True
+        return HerdrReporterCloseOutcomeDAO(
+            replacement="uncertain", resources="retained" if retained else "drained"
+        )
+
+    async def _prepare_herdr_reporter(self) -> HerdrReporterProtocol:
+        """Classify before private input I/O, then assemble inert enabled owners.
+
+        Returns:
+            HerdrReporterProtocol: Retained adapter or an allocation-free null owner.
+        """
+        environment = dict(os.environ)
+        state_root = Path(environment.get("SLO_HOME") or str(Path.home() / ".slo")) / "integrations" / "herdr"
+        gate = HerdrEnvironmentGate.build(environment=environment, state_root=state_root)
+        if not isinstance(gate, HerdrReporterConfigDAO):
+            return gate
+        if not is_canonical_uuid_session_id(value=self._session_id):
+            return NullHerdrReporter(destination="unavailable")
+        self._herdr_metadata_profile = gate.metadata_profile
+        await self._prepare_herdr_capture_inputs(interactive=self._herdr_interactive)
+        await asyncio.to_thread(self._prepare_herdr_parent, state_root=state_root)
+        return HerdrReporter.build(environment=environment, state_root=state_root)
+
+    @staticmethod
+    def _prepare_herdr_parent(*, state_root: Path) -> None:
+        """Prepare only the integration parent beneath the private configured home."""
+        HerdrFileLease.validate(path=state_root.parent.parent, directory=True)
+        state_root.parent.mkdir(mode=0o700, exist_ok=True)
+        HerdrFileLease.validate(path=state_root.parent, directory=True)
+
+    async def _prepare_herdr_capture_inputs(self, *, interactive: bool) -> None:
+        """Establish private activation facts without creating history.
+
+        Called only after enabled-environment admission by the lifetime owner.
+        Ordinary failures deny restore; cancellation remains owned by the caller.
+
+        Args:
+            interactive (bool): Whether the activating process is interactive.
+        """
+        self._herdr_interactive = interactive
+        self._herdr_default_history = False
+        if not interactive or self._agent_is_injected or not self._enable_history:
+            self._adopt_herdr_capture(capture=None)
+            return
+        try:
+            await asyncio.to_thread(self._resolve_herdr_capture_paths)
+            if self._history_store is not None:
+                metadata = await self._history_store.read_metadata(session_id=self._session_id)
+                self._herdr_history_persisted = metadata.session_id == self._session_id
+                if self._config is not None and self._config.workspace_file is None:
+                    self._herdr_workspace_file = (
+                        await asyncio.to_thread(metadata.workspace_file.resolve)
+                        if metadata.workspace_file is not None
+                        else None
+                    )
+        except FileNotFoundError:
+            self._herdr_history_persisted = False
+        except Exception:
+            self._herdr_default_history = False
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore())
+
+    def _resolve_herdr_capture_paths(self) -> None:
+        """Resolve activation paths off-loop; never called from an event callback."""
+        if self._history_store is None or self._config is None:
+            return
+        self._herdr_path_sources = self._herdr_current_path_sources()
+        self._herdr_workdir = self._workdir.resolve()
+        self._herdr_plugin_paths = tuple(path.resolve() for path in self._plugin_paths)
+        self._herdr_default_history = self._history_store.root.resolve() == default_history_root().resolve()
+        self._herdr_workspace_file = (
+            self._config.workspace_file.resolve() if self._config.workspace_file is not None else None
+        )
+
+    def _herdr_current_path_sources(self) -> tuple[object, ...]:
+        """Copy lexical inputs to detect unsupported mutation without filesystem I/O."""
+        config = self._config
+        return (
+            self._workdir,
+            tuple(self._plugin_paths),
+            self._history_store.root if self._history_store is not None else None,
+            config.workdir if config is not None else None,
+            config.workspace_file if config is not None else None,
+            config.history_root if config is not None else None,
+            tuple(config.plugin_paths) if config is not None else (),
+        )
+
+    def _adopt_herdr_capture(
+        self,
+        *,
+        capture: Optional[HerdrRestoreCaptureDAO],
+        model_selection: bool = False,
+        reasoning_commit: bool = False,
+    ) -> None:
+        """Advance only exact configuration/eligibility identity, never display usage.
+
+        Args:
+            capture (Optional[HerdrRestoreCaptureDAO]): Committed policy or ineligibility.
+        """
+        try:
+            sources = self._herdr_current_policy_sources()
+            previous = self._herdr_policy_sources
+            unchanged = previous is None or (
+                sources is not None
+                and sources.permits_commit(
+                    previous=previous, model_selection=model_selection, reasoning_commit=reasoning_commit
+                )
+            )
+            if unchanged:
+                self._herdr_policy_sources = sources
+            else:
+                self._herdr_policy_invalidated = True
+                capture = None
+        except (ValueError, TypeError, AttributeError):
+            self._herdr_policy_invalidated = True
+            capture = None
+        if self._herdr_policy_invalidated:
+            capture = None
+        if capture == self._herdr_capture and self._session_id == self._herdr_capture_session_id:
+            return
+        self._herdr_configuration_generation += 1
+        self._herdr_capture = capture
+        self._herdr_capture_session_id = self._session_id
+
+    def _herdr_policy_sources_match(self, *, expected: Optional[HerdrPolicySourcesDAO]) -> bool:
+        """Fail closed at bootstrap boundaries without changing ordinary attachment results."""
+        try:
+            return self._herdr_current_policy_sources() == expected
+        except Exception:
+            self._herdr_policy_invalidated = True
+            return False
+
+    def _snapshot_herdr_policy_sources(self) -> Optional[HerdrPolicySourcesDAO]:
+        """Refuse malformed optional policy without interrupting ordinary construction.
+
+        Construction and bootstrap use this memory-only boundary. A refused snapshot
+        invalidates restore eligibility; it never substitutes a trusted empty policy.
+        """
+        try:
+            return self._herdr_current_policy_sources()
+        except Exception:
+            self._herdr_policy_invalidated = True
+            return None
+
+    def _herdr_current_policy_sources(self) -> Optional[HerdrPolicySourcesDAO]:
+        """Copy lexical/scalar policy at commit for memory-only mutation detection."""
+        config = self._config
+        if config is None:
+            return None
+        # Validate raw field values, not model_dump coercions or trusted model instances.
+        # The existing config contract remains the authority; this copy never mutates it.
+        SessionConfigDAO.model_validate(dict(config.__dict__), strict=True)
+        return HerdrPolicySourcesDAO(
+            model_name=config.model_name,
+            configured_reasoning=config.reasoning_level,
+            history_enabled=config.enable_history,
+            effective_reasoning=self._active_reasoning_level,
+            paths=self._herdr_current_path_sources(),
+            pool=self._capture_herdr_pool(pool=config.model_pool_dao),
+        )
+
+    def _withdraw_stale_herdr_capture(self) -> None:
+        """Revoke unsupported mutation on publication; never recapture it as committed."""
+        if self._herdr_policy_invalidated and self._herdr_capture is None:
+            return
+        if self._herdr_capture is None:
+            try:
+                if self._herdr_policy_sources != self._herdr_current_policy_sources():
+                    self._herdr_policy_invalidated = True
+            except (ValueError, TypeError, AttributeError):
+                self._herdr_policy_invalidated = True
+            return
+        try:
+            current = (
+                self._session_id == self._herdr_capture_session_id
+                and self._herdr_capture_eligible()
+                and self._herdr_policy_sources == self._herdr_current_policy_sources()
+            )
+        except (ValueError, TypeError, AttributeError):
+            current = False
+        if not current:
+            self._herdr_policy_invalidated = True
+            self._herdr_configuration_generation += 1
+            self._herdr_capture = None
+
+    def _herdr_capture_eligible(self) -> bool:
+        """Use established activation and persistence facts without filesystem work."""
+        return (
+            self._herdr_interactive
+            and not self._herdr_policy_invalidated
+            and not self._agent_is_injected
+            and self._enable_history
+            and self._config is not None
+            and self._config.enable_history is True
+            and (self._history_session_ensured or self._herdr_history_persisted)
+            and self._herdr_default_history
+            and self._herdr_path_sources == self._herdr_current_path_sources()
+            and is_canonical_uuid_session_id(value=self._session_id)
+            and self._herdr_policy_is_reproducible()
+        )
+
+    def _capture_herdr_restore(self) -> Optional[HerdrRestoreCaptureDAO]:
+        """Copy exact configured policy into private immutable data, or refuse it.
+
+        Returns:
+            Optional[HerdrRestoreCaptureDAO]: Memory-only policy, never an event payload.
+        """
+        if not self._herdr_capture_eligible():
+            return None
+        assert self._config is not None
+        try:
+            return HerdrRestoreCaptureDAO(
+                config=HerdrRestoreConfigDAO(
+                    session_id=self._session_id,
+                    model_name=self.active_model_name,
+                    model_pool_dao=self._capture_herdr_pool(pool=self._config.model_pool_dao),
+                    reasoning_level=self._active_reasoning_level,
+                    workdir=self._herdr_workdir,
+                    workspace_file=self._herdr_workspace_file,
+                    plugin_paths=self._herdr_plugin_paths,
+                )
+            )
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    @classmethod
+    def _capture_herdr_pool(cls, *, pool: Optional[ModelPoolDAO] = None) -> Optional[HerdrRestorePoolDAO]:
+        """Copy ordered configured scalars, revalidating mutable source policy.
+
+        Args:
+            pool (Optional[ModelPoolDAO]): Configured policy, never runtime cooldowns.
+
+        Returns:
+            Optional[HerdrRestorePoolDAO]: Independent frozen policy or None.
+
+        Raises:
+            ValueError: The mutable policy no longer satisfies its validators.
+        """
+        if pool is None:
+            return None
+        ModelPoolDAO.model_validate(dict(pool.__dict__), strict=True)
+        entries = tuple(cls._capture_herdr_pool_entry(entry=entry) for entry in pool.entries)
+        return HerdrRestorePoolDAO(entries=entries)
+
+    @classmethod
+    def _capture_herdr_pool_entry(cls, *, entry: ModelPoolEntryDAO) -> HerdrRestorePoolEntryDAO:
+        """Validate and freeze all five configured scalars without retaining aliases.
+
+        Args:
+            entry (ModelPoolEntryDAO): Potentially mutated configured entry.
+
+        Returns:
+            HerdrRestorePoolEntryDAO: Strict immutable scalar copy.
+
+        Raises:
+            ValueError: Scalar types or provider ownership are invalid.
+        """
+        frozen = HerdrRestorePoolEntryDAO(
+            model_name=entry.model_name,
+            provider=entry.provider,
+            priority=entry.priority,
+            cooldown_seconds=entry.cooldown_seconds,
+            rate_limit_cooldown_seconds=entry.rate_limit_cooldown_seconds,
+        )
+        ModelPoolEntryDAO.model_validate(frozen.model_dump())
+        return frozen
+
+    def _herdr_policy_is_reproducible(self) -> bool:
+        """Compare exact tool identities and prompt additions without I/O."""
+        config = self._config
+        if config is None or self._agent_is_injected or config.should_stop_after_turn_hook is not None:
+            return False
+        provenance = self._standard_orchestrator_attachment
+        if provenance is None:
+            return self._begin_standard_orchestrator_attachment()
+        tools = tuple(config.extra_tools or ())
+        return (
+            len(tools) == len(provenance.tools)
+            and all(left is right for left, right in zip(tools, provenance.tools))
+            and config.system_prompt == provenance.system_prompt
+            and config.append_system_prompt == provenance.append_system_prompt
+        )
+
     def attach_sub_agent_pool(
         self,
         *,
@@ -2118,11 +3089,27 @@ class SloAgentSession:
             ValueError: When neither ``spawn_tool`` nor ``spawn_tools`` supplies
                 at least one tool.
         """
+        self._attach_sub_agent_pool(pool=pool, spawn_tool=spawn_tool, spawn_tools=spawn_tools)
+        self._publish_herdr_snapshot()
+
+    def _attach_sub_agent_pool(
+        self,
+        *,
+        pool: "SubAgentPool",
+        spawn_tool: Optional[BaseTool] = None,
+        spawn_tools: Optional[list[BaseTool]] = None,
+    ) -> None:
+        """Apply tools without publishing an intermediate standard-bootstrap state.
+
+        General attachment publishes immediately through the public gateway;
+        standard bootstrap publishes only after its provenance identity proof.
+        """
         if self._agent is not None:
             raise RuntimeError(
                 "attach_sub_agent_pool() must be called before the first prompt. "
                 "The agent has already been built for this session."
             )
+        self._standard_orchestrator_attachment = None
         resolved_tools: list[BaseTool] = (
             list(spawn_tools) if spawn_tools is not None else ([spawn_tool] if spawn_tool is not None else [])
         )
@@ -2313,6 +3300,7 @@ class SloAgentSession:
             snapshot=snapshot,
         )
         assert self._config is not None
+        self._withdraw_stale_herdr_capture()
         self._config = self._config.model_copy(
             update={"model_name": model_name, "model_pool_dao": None, "fallback_notice": None}
         )
@@ -2320,6 +3308,7 @@ class SloAgentSession:
         self._catalog_snapshot = snapshot
         self._preparation_status = "ready"
         self._active_reasoning_level = resolved_reasoning_level
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore(), model_selection=True)
         self._agent = None
         self._context_window_dirty = True
         self._context_window_snapshot = None
@@ -2359,12 +3348,14 @@ class SloAgentSession:
         )
         if self._config is not None and self._config.model_pool_dao is not None:
             log_info(msg="model_switch_clears_pool", model_name=model_name)
+        self._withdraw_stale_herdr_capture()
         if self._config is not None:
             self._config = self._config.model_copy(
                 update={"model_name": model_name, "model_pool_dao": None, "fallback_notice": None}
             )
         self._active_model_name = model_name
         self._active_reasoning_level = resolved_reasoning_level
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore(), model_selection=True)
         self._agent = None
         # The new model may have a smaller context window than the one the
         # post-turn check last validated against; flag a one-shot pre-flight
@@ -2403,7 +3394,9 @@ class SloAgentSession:
         )
         if clamped_level == self._active_reasoning_level:
             return clamped_level
+        self._withdraw_stale_herdr_capture()
         self._active_reasoning_level = clamped_level
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore(), reasoning_commit=True)
         self._agent = None
         self._rebuild_usage_snapshot()
         return clamped_level
@@ -2459,6 +3452,8 @@ class SloAgentSession:
                 attempt failed and no retry plan is available.
         """
         if self._preparation_status != "ready":
+            if not self._is_running:
+                self.set_operator_attention(reason="Model preparation required")
             raise ModelPreparationRequiredError("Model preparation required; use /auth or /model refresh.")
         self._assert_no_prompt_in_flight()
         async with self._session_run_scope():
@@ -2548,16 +3543,46 @@ class SloAgentSession:
         """
         async with self._lock:
             self._is_running = True
+            self._clear_terminal_reporting_attention()
+            token = self._begin_reporting_operation()
             try:
                 await self._prepare_run_snapshot()
                 with CredentialResolver.bind_operation_credential(
                     credential=self._admitted_openrouter_credential
                 ):
                     yield
+            except ModelPreparationRequiredError:
+                self.set_operator_attention(reason="Model preparation required")
+                raise
+            except Exception:
+                self._set_terminal_reporting_failure()
+                raise
             finally:
+                self._refresh_final_reporting_usage()
                 self._admitted_run_snapshot = None
                 self._admitted_openrouter_credential = None
                 self._is_running = False
+                self._end_reporting_operation(token=token)
+
+    def _set_terminal_reporting_failure(self) -> None:
+        """Retain an explicit authentication requirement over a generic run failure."""
+        if self._operator_attention is not None:
+            if self._operator_attention.reason == "Authentication required":
+                return
+        self.set_operator_attention(reason="Run failed; review Slo")
+
+    def _clear_terminal_reporting_attention(self) -> None:
+        """A newly admitted submission clears only the previous terminal run failure."""
+        attention = self._operator_attention
+        if attention is not None and attention.reason == "Run failed; review Slo":
+            self.clear_operator_attention(token=attention.token)
+
+    def _refresh_final_reporting_usage(self) -> None:
+        """Refresh before settlement without replacing the original submission outcome."""
+        try:
+            self.refresh_usage_snapshot()
+        except Exception:
+            self._log_herdr_publication_failure()
 
     def _build_initial_attempt_plan(
         self,
@@ -3773,6 +4798,7 @@ class SloAgentSession:
                         "main agent stream produced no events for "
                         f"{stream_timeout_seconds:.0f}s; treated as hung"
                     ) from exc
+                self._sync_usage_snapshot_commit()
                 self._mirror_retry_cooldown(event=event)
                 await self._dispatch_event(event=event)
                 yield event
@@ -4139,8 +5165,10 @@ class SloAgentSession:
             snapshot=snapshot,
         )
         self._catalog_snapshot = snapshot
+        self._withdraw_stale_herdr_capture()
         self._admitted_run_snapshot = snapshot
         self._active_reasoning_level = reasoning_level
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore(), reasoning_commit=True)
         if changed:
             self._agent = None
             self._context_window_dirty = True
@@ -4186,7 +5214,7 @@ class SloAgentSession:
         )
         if not names:
             return
-        credential = CredentialResolver.require(provider=ProviderName.OPENAI)
+        credential = self._require_reporting_credential(provider=ProviderName.OPENAI)
         snapshot = self.catalog_snapshot
         for name in names:
             ModelCatalogService.entry_for_model(
@@ -4252,8 +5280,16 @@ class SloAgentSession:
             return
         store: CredentialStore = CredentialStore()
         for provider in self._pool_providers():
-            cred = CredentialResolver.require(provider=provider)
+            cred = self._require_reporting_credential(provider=provider)
             await refresh_if_stale(cred=cred, store=store)
+
+    def _require_reporting_credential(self, *, provider: ProviderName) -> CredentialDAO:
+        """Observe the existing auth requirement without adding credential lookups."""
+        try:
+            return CredentialResolver.require(provider=provider)
+        except ValueError:
+            self.set_operator_attention(reason="Authentication required")
+            raise
 
     # ---- History orchestration helpers -----------------------------------
 
@@ -4585,6 +5621,8 @@ class SloAgentSession:
             workspace_file=(self._config.workspace_file if self._config is not None else None),
         )
         self._history_session_ensured = True
+        self._adopt_herdr_capture(capture=self._capture_herdr_restore())
+        self._publish_herdr_snapshot()
 
     async def _load_message_history(
         self,
@@ -4938,6 +5976,18 @@ class SloAgentSession:
                     ),
                 ),
             )
+
+    async def _on_herdr_event(self, event: AgentStreamEventDAO) -> None:
+        """Observe parent route boundaries without interpreting content or adding usage."""
+        if event.is_sub_agent_event or event.kind.startswith("sub_agent_"):
+            return
+        if event.kind.endswith("_delta") or event.kind == "tool_output_update":
+            return
+        try:
+            if self.routed_model_name != self._usage_snapshot.active_model_name:
+                self._rebuild_usage_snapshot()
+        except Exception:
+            self._log_herdr_publication_failure()
 
     async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
         """Forward ``event`` to every registered subscriber (failure-isolated)."""

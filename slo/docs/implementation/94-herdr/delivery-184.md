@@ -107,11 +107,26 @@ Current branch HEAD is `aa0c9f2`. All three pushed commits (`687c1a7`,
 `204f785`, `aa0c9f2`) have green terminal pipelines on both the branch ref and
 the MR ref.
 
+## CI for the final record commit 3ad7aacec4458f2efdbc155d8663eadcb9cd70b3
+
+The final docs-only record update triggered one last pair of pipelines, polled
+to terminal (terminal ~20:40 UTC, 2026-10-20):
+
+| Pipeline | Ref / source | Status | Jobs | URL |
+|---|---|---|---|---|
+| 2967625970 | `feature-94-herdr-integration` (push) | **success** | pytest success (1326.6 s), secret_detection success (58.5 s) | https://gitlab.com/core-27/slo/-/pipelines/2967625970 |
+| 2967626451 | `refs/merge-requests/131/head` (merge_request_event) | **success** | same two jobs | https://gitlab.com/core-27/slo/-/pipelines/2967626451 |
+
+Current branch HEAD is `3ad7aac`. All four pushed commits (`687c1a7`,
+`204f785`, `aa0c9f2`, `3ad7aac`) have green terminal pipelines on both the
+branch ref and the MR ref. No further pushes were made after this commit; the
+record you are reading is the final pushed state.
+
 ## Blockers
 
 None. DELIVERED stands for the offline delivery scope: branch pushed
-(`687c1a7` + docs-records `204f785` and `aa0c9f2`), MR !131 updated in place,
-and CI green in a terminal state for the exact pushed SHAs. Live Herdr acceptance
+(`687c1a7` + docs-records `204f785`, `aa0c9f2`, `3ad7aac`), MR !131 updated in
+place, and CI green in a terminal state for the exact pushed SHAs. Live Herdr acceptance
 remains USER-DEFERRED; live compatibility UNVERIFIED; security finding 132 is
 separate and open; this MR must not be merged without an explicit operator
 decision (it remains Draft).

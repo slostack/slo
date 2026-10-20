@@ -13,6 +13,8 @@ change was performed or attempted.
 - Delivery commit: **`687c1a7b2f25a30c82365ead49d2995b063349b9`**
   `fix(94): review-driven lifetime cutoffs, audit-sensitivity repair, and turn-6 evidence`
   — 399 files changed, 11431 insertions, 78 deletions.
+- Delivery-record commit: **`204f7850d0f3f579a05b568a03ce2f221bf4ac10`**
+  `docs(94): delivery record 184` — this file (docs-only, 1 file).
 - Prior published commits on the same branch (pushed by the concurrent
   workflow before this dispatch): `bc98b76` (DRAFT feature snapshot) and
   `c2f9e56` (publication-handoff correction).
@@ -77,10 +79,24 @@ was hit. Monitoring method: `glab api projects/core-27%2Fslo/pipelines?sha=687c1
 and per-pipeline `jobs` polling at ~90–480 s intervals until both pipelines
 reached the terminal `success` state.
 
+## CI for the delivery-record commit 204f7850d0f3f579a05b568a03ce2f221bf4ac10
+
+The docs-only follow-up push triggered a second pair of pipelines, also polled
+to a terminal state (terminal ~19:50 UTC, 2026-10-20):
+
+| Pipeline | Ref / source | Status | Jobs | URL |
+|---|---|---|---|---|
+| 2967389607 | `feature-94-herdr-integration` (push) | **success** | pytest success (1338.2 s), secret_detection success (74.0 s) | https://gitlab.com/core-27/slo/-/pipelines/2967389607 |
+| 2967389997 | `refs/merge-requests/131/head` (merge_request_event) | **success** | same two jobs | https://gitlab.com/core-27/slo/-/pipelines/2967389997 |
+
+Current branch HEAD is `204f785`; both pushed commits have green terminal
+pipelines on both the branch and the MR ref.
+
 ## Blockers
 
-None. DELIVERED stands for the offline delivery scope: branch pushed, MR !131
-updated in place, CI green for the exact pushed SHA. Live Herdr acceptance
+None. DELIVERED stands for the offline delivery scope: branch pushed
+(`687c1a7` + docs-record `204f785`), MR !131 updated in place, and CI green in
+a terminal state for the exact pushed SHAs. Live Herdr acceptance
 remains USER-DEFERRED; live compatibility UNVERIFIED; security finding 132 is
 separate and open; this MR must not be merged without an explicit operator
 decision (it remains Draft).

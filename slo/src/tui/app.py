@@ -717,12 +717,15 @@ class SloTUI(App):
         subscribes so replay and live events cannot interleave.
 
         The session is captured at entry and revalidated after the real
-        replay read and after each real replay mount: ``on_mount`` is not yet
-        registered as ``_mount_runtime_task`` while it awaits this helper, so
-        public ``on_unmount`` may complete first. A closed or displaced owner
-        must not mount the next replay entry, update the summary, or scroll
-        after that cutoff (C7.13). A replay mount already admitted before the
-        cutoff remains owned and is never cancelled.
+        replay read, after each real replay mount, and after the real
+        summary mount: ``on_mount`` is not yet registered as
+        ``_mount_runtime_task`` while it awaits this helper, so public
+        ``on_unmount`` may complete first. A closed or displaced owner must
+        not mount the next replay entry, update the summary, or scroll after
+        that cutoff (C7.13). Replay mounts and the summary mount already
+        admitted before the cutoff remain owned and are never cancelled; the
+        final scroll is a new effect initiated after the summary await, so
+        it is gated by its own revalidation.
         """
         self._load_older_cursor = 0
         session = self._session
@@ -739,6 +742,8 @@ class SloTUI(App):
             if not self._runtime_may_start(session=session):
                 return
         await self._update_earlier_summary()
+        if not self._runtime_may_start(session=session):
+            return
         self._scroll_transcript_to_end()
 
     @staticmethod

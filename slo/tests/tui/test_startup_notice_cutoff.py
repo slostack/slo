@@ -10,6 +10,7 @@ or window is used.
 """
 
 import asyncio
+import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -28,6 +29,7 @@ from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.app import SloTUI
+import src.tui.app as app_module
 
 
 def _build_session(*, tmp_path: Path, session_id: str, enable_history: bool = True) -> SloAgentSession:
@@ -472,3 +474,116 @@ async def test_hydration_cutoff_accepts_absent_metadata_without_late_effects(tmp
         finally:
             release.set()
             await asyncio.gather(driver, return_exceptions=True)
+
+
+@pytest.mark.parametrize("cutoff", ["closing", "displaced"])
+async def test_hydration_summary_completion_cannot_initiate_late_scroll(tmp_path: Path, cutoff: str) -> None:
+    """Complete the real summary mount, seal the cutoff, then forbid a new scroll.
+
+    ``_update_earlier_summary()`` is itself a real Textual mount/removal
+    await, so shutdown or displacement can complete during it; the final
+    ``_scroll_transcript_to_end()`` is a *new* effect initiated after that
+    await and must revalidate the captured owner first (R178-1). A summary
+    mount already admitted before the cutoff remains owned. A real two-entry
+    seeded turn with the hydration limit forced to one guarantees the earlier
+    summary genuinely mounts; the scroll observer delegates to the real
+    scroll and attributes only calls initiated directly by
+    ``_hydrate_transcript_from_history`` (framework repaint callbacks are
+    excluded by walking past mock frames).
+    """
+    session = _build_session(tmp_path=tmp_path, session_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+    await _seed_complete_turn(session=session, prompt="summary boundary")
+    # Two actual history entries, one retained: the summary must really mount.
+    with patch.object(target=app_module, attribute="TRANSCRIPT_HYDRATION_ENTRY_LIMIT", new=1):
+        app = SloTUI(session=session)
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_summary = app._update_earlier_summary
+        original_scroll = app._scroll_transcript_to_end
+        late_scrolls: list[str] = []
+        admitted_scrolls: list[str] = []
+
+        async def summary() -> None:
+            """Preserve the actual summary body and its real Textual mount."""
+            await original_summary()
+            assert app._earlier_summary is not None
+            assert app._earlier_summary.is_mounted
+            entered.set()
+            await release.wait()
+
+        def scroll() -> None:
+            """Observe the new effect without replacing the real scroll implementation."""
+            frame = inspect.currentframe()
+            caller = frame.f_back if frame is not None else None
+            # Mock dispatch frames sit between this observer and the production caller.
+            while caller is not None and caller.f_code.co_filename.endswith("unittest/mock.py"):
+                caller = caller.f_back
+            caller_name = caller.f_code.co_name if caller is not None else "unknown"
+            if caller_name == "_hydrate_transcript_from_history":
+                if app._app_closing or app._session is not session:
+                    late_scrolls.append(caller_name)
+                else:
+                    admitted_scrolls.append(caller_name)
+            del frame, caller
+            original_scroll()
+
+        async def cut_off() -> None:
+            """Close publicly or replace selected identity before the summary returns."""
+            await asyncio.wait_for(fut=entered.wait(), timeout=5)
+            try:
+                if cutoff == "closing":
+                    await asyncio.wait_for(fut=app.on_unmount(), timeout=5)
+                    assert app._app_closing
+                else:
+                    app._session = _build_session(
+                        tmp_path=tmp_path, session_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+                    )
+            finally:
+                release.set()
+
+        with (
+            patch.object(app, "_update_earlier_summary", side_effect=summary),
+            patch.object(app, "_scroll_transcript_to_end", side_effect=scroll),
+        ):
+            driver = asyncio.create_task(coro=cut_off())
+            try:
+                async with app.run_test():
+                    await driver
+                    assert late_scrolls == []
+                    assert admitted_scrolls == []
+            finally:
+                release.set()
+                await asyncio.gather(driver, return_exceptions=True)
+
+
+async def test_hydration_open_path_summary_then_scroll_after_summary(tmp_path: Path) -> None:
+    """An open hydration mounts the summary first, then initiates exactly one scroll.
+
+    This is the positive control for the cutoff cases above: with no cutoff,
+    the admitted summary mount completes and the hydration continuation then
+    initiates exactly one scroll directly, proving the new summary-boundary
+    revalidation does not block the admitted path.
+    """
+    session = _build_session(tmp_path=tmp_path, session_id="ffffffff-ffff-4fff-8fff-ffffffffffff")
+    await _seed_complete_turn(session=session, prompt="summary open path")
+    with patch.object(target=app_module, attribute="TRANSCRIPT_HYDRATION_ENTRY_LIMIT", new=1):
+        app = SloTUI(session=session)
+        original_scroll = app._scroll_transcript_to_end
+        hydration_scrolls: list[str] = []
+
+        def scroll() -> None:
+            """Attribute only scrolls initiated directly by hydration."""
+            frame = inspect.currentframe()
+            caller = frame.f_back if frame is not None else None
+            while caller is not None and caller.f_code.co_filename.endswith("unittest/mock.py"):
+                caller = caller.f_back
+            caller_name = caller.f_code.co_name if caller is not None else "unknown"
+            if caller_name == "_hydrate_transcript_from_history":
+                hydration_scrolls.append(caller_name)
+            del frame, caller
+            original_scroll()
+
+        with patch.object(app, "_scroll_transcript_to_end", side_effect=scroll):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+        assert app._earlier_summary is not None
+        assert len(hydration_scrolls) == 1

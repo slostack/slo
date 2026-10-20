@@ -92,11 +92,26 @@ to a terminal state (terminal ~19:50 UTC, 2026-10-20):
 Current branch HEAD is `204f785`; both pushed commits have green terminal
 pipelines on both the branch and the MR ref.
 
+## CI for the record-correction commit aa0c9f2ce829333c3413af7a055f7391f35297f9
+
+The second docs-only record correction (`docs(94): delivery record 184 — add
+204f785 pipeline terminal results`) triggered a third pair of pipelines, also
+polled to terminal (terminal ~20:14 UTC, 2026-10-20):
+
+| Pipeline | Ref / source | Status | URL |
+|---|---|---|---|
+| 2967495388 | `feature-94-herdr-integration` (push) | **success** | https://gitlab.com/core-27/slo/-/pipelines/2967495388 |
+| 2967495948 | `refs/merge-requests/131/head` (merge_request_event) | **success** | https://gitlab.com/core-27/slo/-/pipelines/2967495948 |
+
+Current branch HEAD is `aa0c9f2`. All three pushed commits (`687c1a7`,
+`204f785`, `aa0c9f2`) have green terminal pipelines on both the branch ref and
+the MR ref.
+
 ## Blockers
 
 None. DELIVERED stands for the offline delivery scope: branch pushed
-(`687c1a7` + docs-record `204f785`), MR !131 updated in place, and CI green in
-a terminal state for the exact pushed SHAs. Live Herdr acceptance
+(`687c1a7` + docs-records `204f785` and `aa0c9f2`), MR !131 updated in place,
+and CI green in a terminal state for the exact pushed SHAs. Live Herdr acceptance
 remains USER-DEFERRED; live compatibility UNVERIFIED; security finding 132 is
 separate and open; this MR must not be merged without an explicit operator
 decision (it remains Draft).

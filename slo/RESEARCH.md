@@ -107,6 +107,39 @@ See historical [T6 docs/static diagnosis](docs/implementation/94-herdr/t6-docs-s
 - `skills/INDEX.md` is generated only by `make refresh-skills` or `make build-skill-index`. Packaging checks enumerate the current filesystem so untracked authored skills are included and deleted files excluded.
 - Active links to removed redirects must be distinguished from fixture paths, source examples, generated index text, and historical inventory/ledger records. Final integration evidence: `/root/Code/specifications/projects/slo/specifications/87-skills-reorganization/attempt-2/final-integration-ledger-20261011T185600Z.md`.
 
+## Feature 95 scoped skill maintenance
+
+- Workflow definitions and orchestration skills now live in `skills/orchestration/`;
+  names and runtime user/workflow override precedence are unchanged. In the
+  original relocation baseline, the six moved files retained base content except
+  frontmatter group and relocation references. Subsequently accepted mode-removal
+  and headless reasoning amendments intentionally changed five moved bodies:
+  the four workflow resources and the headless guide. The relocation-only claim
+  is historical, not a description of those final amended bodies.
+- The scheduled TUI skills are explicitly frozen except for the repaired headless
+  pointer to `skills/orchestration/headless-orchestration/SKILL.md`; reference
+  validation no longer exempts the old link. In
+  `tests/agents/skills/test_orchestration_relocation.py`, normalization covers
+  only that exact source/target pair: the repaired link is mapped back to its
+  old path before hashing, retaining the original historical hash rather than
+  repinning the changed body.
+- Context gathering is an on-request, language-neutral evidence companion;
+  unavailable sources are not empty findings. Solution-design's vertical addendum
+  refines its existing document contract without authorizing a design exercise.
+
+## Feature 94 TUI session controls
+
+- The native TUI shows owned workflow sessions in one "Ongoing workflow tasks" list below
+  the editor. Enter or click opens a 5-second live progress modal, and a confirmed
+  "Abort child…" stops one child. Herdr is excluded.
+- Single owners: `TaskPreview` labels, `ProcessRegistry.commit_terminal` terminal winners,
+  one `WorkflowProgressCoordinator` timer, `DetachedWorkflowAppService` as the list/progress
+  and abort gateway, and `SubAgentPool.abort_child` as the only child stopper. Execution
+  identity lives only in additive `*.v1.json` siblings, so released readers and rollback stay
+  safe.
+- Owner map, easy-to-break rules and rollback: [`docs/RESEARCH.md`](docs/RESEARCH.md)
+  "Feature 94 TUI session controls — owner map".
+
 ## Verification
 
 - Focused session-rate-limit coverage is under

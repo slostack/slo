@@ -11,6 +11,7 @@ from src.agents.slo_agent.orchestrator.context_dao import (
     SpawnContextDAO,
     dump_json_bytes,
 )
+from tests.agents.slo_agent.orchestrator.released_schemas import ReleasedSpawnContextDAO
 
 # ---------------------------------------------------------------------------
 # OrchestratorContextDAO
@@ -175,3 +176,47 @@ class TestDumpJsonBytes:
         restored = SpawnContextDAO.model_validate_json(raw)
         assert restored.task_id == dao.task_id
         assert restored.inactivity_timeout_seconds == dao.inactivity_timeout_seconds
+
+
+class TestSpawnContextExecutionIdentity:
+    """Spawn context keeps its released wire schema while carrying runtime identity."""
+
+    _EXECUTION_ID: str = "0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40"
+
+    def _build(self) -> SpawnContextDAO:
+        return SpawnContextDAO.build(
+            task_id="t",
+            prompt="p",
+            system_prompt="s",
+            inactivity_timeout_seconds=60.0,
+            model=None,
+            reasoning_level=None,
+            cwd=None,
+            execution_id=self._EXECUTION_ID,
+        )
+
+    def test_build_retains_runtime_execution_id(self) -> None:
+        """build() binds the registry-captured incarnation identity in memory."""
+        assert self._build().execution_id == self._EXECUTION_ID
+
+    def test_serialization_excludes_execution_id_for_released_readers(self) -> None:
+        """Written context bytes decode with the released closed spawn-context DAO."""
+        dao: SpawnContextDAO = self._build()
+
+        for raw in (dao.model_dump_json(indent=2), dump_json_bytes(dao).decode("utf-8")):
+            assert "execution_id" not in raw
+            assert ReleasedSpawnContextDAO.model_validate_json(raw).task_id == "t"
+
+    def test_rejects_non_uuid_execution_id(self) -> None:
+        """A malformed runtime identity is refused before any write."""
+        with pytest.raises(ValueError):
+            SpawnContextDAO.build(
+                task_id="t",
+                prompt="p",
+                system_prompt="s",
+                inactivity_timeout_seconds=60.0,
+                model=None,
+                reasoning_level=None,
+                cwd=None,
+                execution_id="bad",
+            )

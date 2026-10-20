@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.agents.reasoning_capabilities import ReasoningLevel
 from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
 from src.agents.slo_agent.orchestrator.process import (
     PER_TASK_OUTPUT_CAP,
@@ -50,7 +52,9 @@ def _make_process(
         collected.append(event)
 
     registry: ProcessRegistry = ProcessRegistry()
-    registry.register(
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
+    execution_id: str = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444",
         task_id=task_id,
         session_id=session_id,
         task=SubAgentTaskDAO(task_id=task_id, prompt=prompt),
@@ -61,6 +65,7 @@ def _make_process(
         model=None,
         relay=_relay,
         registry=registry,
+        execution_id=execution_id,
         parent_session_id=parent_session_id,
         slo_home=slo_home,
     )
@@ -88,19 +93,43 @@ def _make_stream_reader(
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("level", ["medium", None])
+def test_phase_reasoning_is_independent_of_orchestrator(
+    level: Optional[ReasoningLevel], tmp_path: Path
+) -> None:
+    """A high configured parent does not supply reasoning to a phase task."""
+    from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+    from src.agents.slo_agent.sessions.service import SloAgentSession
+
+    parent = SloAgentSession.build(
+        config=SessionConfigDAO(
+            workdir=tmp_path, model_name="gpt-5.4", reasoning_level="high", enable_history=False
+        )
+    )
+    process, _ = _make_process(parent_session_id=parent.session_id)
+    process._task = SubAgentTaskDAO(task_id="t1", prompt="phase", reasoning_level=level)
+    argv = process._build_argv()
+    assert parent.active_reasoning_level == "high"
+    if level is None:
+        assert "--reasoning" not in argv
+    else:
+        assert argv.count("--reasoning") == 1
+        assert argv[argv.index("--reasoning") + 1] == "medium"
+
+
 class TestSubAgentProcessArgvBuilding:
     """``_build_argv`` constructs the correct child command line."""
 
     def test_argv_includes_module_and_run_flags(self) -> None:
-        """Argv always uses ``sys.executable -m src.cli run --json -p <prompt>``."""
+        """Argv always uses ``sys.executable -I -m src.cli run --json -p <prompt>``."""
         import sys
 
         process, _ = _make_process(prompt="Analyse files.")
         argv: list[str] = process._build_argv()
 
         assert argv[0] == sys.executable
-        assert argv[1:4] == ["-m", "src.cli", "run"]
-        assert "-I" not in argv
+        assert argv[1:5] == ["-I", "-m", "src.cli", "run"]
+        assert argv.count("-I") == 1
         assert "--json" in argv
         assert "-p" in argv
         assert "Analyse files." in argv
@@ -182,6 +211,7 @@ class TestSubAgentProcessArgvBuilding:
 
         assert process._build_argv() == [
             sys.executable,
+            "-I",
             "-m",
             "src.cli",
             "run",
@@ -242,12 +272,14 @@ class TestSubAgentProcessInactivityTimeout:
                 "src.agents.slo_agent.orchestrator.process.CHILD_INACTIVITY_TIMEOUT_SECONDS",
                 0.05,
             ),
+            patch.object(process, "_terminate_for_inactivity", new=AsyncMock()) as mock_terminate,
             patch.object(process, "cancel", new=AsyncMock()) as mock_cancel,
         ):
             with pytest.raises(TimeoutError, match="no output"):
                 await process._pump_stdout(stream=reader)
 
-        mock_cancel.assert_awaited_once()
+        mock_terminate.assert_awaited_once()
+        mock_cancel.assert_not_awaited()
 
     def test_timeout_failure_result_prefers_bounded_stderr_tail(self) -> None:
         """Timeout failures retain the child stderr diagnostic for the orchestrator."""
@@ -497,14 +529,21 @@ class TestSubAgentProcessDurableFleetEvidence:
             target="src.agents.slo_agent.orchestrator.process.OrchestrationLayout.child_status_path",
             return_value=status_path,
         ) as child_status_path:
-            result: SubAgentResultDAO = process._terminal_result(exit_code=0)
+            result: SubAgentResultDAO = process._publish_terminal(
+                candidate=process._terminal_result(exit_code=0),
+                terminal_reason="completed",
+                terminated_by="natural",
+            )
 
         child_status_path.assert_called_once_with(
             history_root=slo_home / "sessions" / "history",
             parent_session_id="parent-1",
             child_session_id="child-1",
         )
-        assert SubAgentResultDAO.model_validate_json(status_path.read_text(encoding="utf-8")) == result
+        assert (
+            SubAgentResultDAO.model_validate_json(status_path.read_text(encoding="utf-8")).model_dump()
+            == result.model_dump()
+        )
 
     def test_child_status_write_failure_does_not_raise(self, tmp_path: Path) -> None:
         """A best-effort child status failure leaves the terminal result available."""
@@ -515,12 +554,17 @@ class TestSubAgentProcessDurableFleetEvidence:
         )
 
         with patch(
-            target="src.agents.slo_agent.orchestrator.process.AtomicFileWriter.write_json",
+            target="src.agents.slo_agent.orchestrator.process.AtomicFileWriter.write_text",
             side_effect=OSError("disk full"),
         ):
-            result: SubAgentResultDAO = process._terminal_result(exit_code=1)
+            result: SubAgentResultDAO = process._publish_terminal(
+                candidate=process._terminal_result(exit_code=1),
+                terminal_reason="failed",
+                terminated_by="natural",
+            )
 
         assert result.status == "failed"
+        assert process._terminal_result_built == result
 
     def test_failed_result_from_exception_writes_child_status_file(self, tmp_path: Path) -> None:
         """A post-spawn wrapper failure leaves durable terminal child evidence."""
@@ -531,12 +575,19 @@ class TestSubAgentProcessDurableFleetEvidence:
             slo_home=slo_home,
         )
 
-        result: SubAgentResultDAO = process._failed_result_from_exception(error=RuntimeError("stream failed"))
+        result: SubAgentResultDAO = process._publish_terminal(
+            candidate=process._failed_result_from_exception(error=RuntimeError("stream failed")),
+            terminal_reason="failed",
+            terminated_by="natural",
+        )
 
         status_path: Path = (
             slo_home / "sessions" / "history" / "parent-1" / "children" / "child-1" / "status.json"
         )
-        assert SubAgentResultDAO.model_validate_json(status_path.read_text(encoding="utf-8")) == result
+        assert (
+            SubAgentResultDAO.model_validate_json(status_path.read_text(encoding="utf-8")).model_dump()
+            == result.model_dump()
+        )
 
 
 class TestSubAgentProcessRunFailureIsolation:
@@ -585,8 +636,12 @@ class TestWriteSpawnContext:
         assert ctx.prompt == "Do something useful."
         assert ctx.system_prompt == "test-sys-prompt"
 
-    def test_write_spawn_context_is_idempotent(self, tmp_path: Path) -> None:
-        """Second call leaves the existing spawn_context.json unchanged."""
+    def test_write_spawn_context_replaces_earlier_incarnation(self, tmp_path: Path) -> None:
+        """A reused session path never keeps an earlier incarnation's context.
+
+        Supersedes the removed exists-and-skip guard (feature 94 D05): the new
+        incarnation atomically replaces the file and returns its exact digest.
+        """
         slo_home: Path = tmp_path / "slo_home"
         process, _ = _make_process(
             task_id="task-y",
@@ -597,16 +652,18 @@ class TestWriteSpawnContext:
         )
         process._system_prompt = "prompt-one"
 
-        process._write_spawn_context()
         spawn_path: Path = (
             slo_home / "sessions" / "history" / "parent-2" / "children" / "child-2" / "spawn_context.json"
         )
-        first_bytes: bytes = spawn_path.read_bytes()
+        spawn_path.parent.mkdir(parents=True)
+        spawn_path.write_text('{"task_id": "old-incarnation"}', encoding="utf-8")
 
-        process._write_spawn_context()
-        second_bytes: bytes = spawn_path.read_bytes()
+        digest = process._write_spawn_context()
 
-        assert first_bytes == second_bytes
+        written: bytes = spawn_path.read_bytes()
+        assert b"old-incarnation" not in written
+        assert b"prompt-one" in written
+        assert digest == hashlib.sha256(written).hexdigest()
 
     def test_write_spawn_context_handles_oserror(self, tmp_path: Path) -> None:
         """OSError while creating directories logs a warning and does not raise."""
@@ -770,10 +827,17 @@ class TestSubAgentProcessCancel:
         mock_proc.wait.assert_not_awaited()
 
     async def test_cancel_is_noop_when_no_process(self) -> None:
-        """``cancel()`` does nothing and does not raise when ``_proc`` is ``None``."""
+        """Before run entry ``cancel()`` latches, reports already_dead and starts no reaper."""
         process, _ = _make_process()
 
-        await process.cancel()  # no exception expected
+        with patch("src.agents.slo_agent.orchestrator.process.FleetReaper.reap") as reap:
+            outcome = await process.cancel()
+
+        assert outcome == "already_dead"
+        assert process._cancel_requested is True
+        assert process._cancel_task is None
+        assert process._cancel_settled.is_set()
+        reap.assert_not_called()
 
     async def test_cancel_is_noop_when_process_already_exited(self) -> None:
         """``cancel()`` is a no-op when ``returncode`` is already set."""
@@ -864,7 +928,7 @@ class TestSubAgentProcessStreamLimit:
         # This is a static check since actually spawning a subprocess in a
         # unit test is fragile — the integration path is covered by test_process.py's
         # spawn_failure test.
-        src = inspect.getsource(SubAgentProcess.run)
+        src = inspect.getsource(SubAgentProcess._run_to_candidate)
         assert "limit=_STDOUT_STREAM_LIMIT" in src, (
             "SubAgentProcess.run() must pass limit=_STDOUT_STREAM_LIMIT to "
             "create_subprocess_exec to prevent ValueError on large JSON lines"
@@ -1145,7 +1209,7 @@ class TestSubAgentProcessRunConcurrentPumping:
         import inspect
         from src.agents.slo_agent.orchestrator.process import SubAgentProcess
 
-        src = inspect.getsource(SubAgentProcess.run)
+        src = inspect.getsource(SubAgentProcess._run_to_candidate)
         assert "asyncio.gather" in src, (
             "SubAgentProcess.run() must use asyncio.gather to pump stdout and "
             "stderr concurrently and prevent pipe deadlock"
@@ -1234,8 +1298,15 @@ class TestSubAgentProcessCancellationRace:
         assert outcome == "killed"
 
     def test_terminal_result_is_cached_when_two_paths_finalize(self) -> None:
-        """Concurrent cleanup paths receive the identical already-built terminal result."""
+        """Competing publication paths receive the identical registry winner."""
         process, _ = _make_process()
-        first = process._terminal_result(exit_code=1)
-        second = process._terminal_result(exit_code=2)
+        first = process._publish_terminal(
+            candidate=process._terminal_result(exit_code=1), terminal_reason="failed", terminated_by="natural"
+        )
+        second = process._publish_terminal(
+            candidate=process._terminal_result(exit_code=2),
+            terminal_reason="operator_abort",
+            terminated_by="abort",
+        )
         assert first is second
+        assert process._terminal_result_built is first

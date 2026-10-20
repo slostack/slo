@@ -239,7 +239,7 @@ invent revision turns to extend the budget.
 Before launch, check that the budget can cover required steps, especially review.
 If it cannot, disclose the conflict rather than silently skipping steps. Carry
 counts and effective user overrides into authorized continuations. See
-skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits.
+skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits.
 These are prompt-level accounting rules, not claims of runtime-enforced counters.
 
 ## Synthesizing the final answer
@@ -263,7 +263,7 @@ Routing the workflow request (spec 56): execute the workflow phases in this sess
 
 Step 1 — Read the workflow definition.
   Use the read tool to load the workflow file from:
-    skills/design-and-analysis/workflows/<workflow-name>.md
+    skills/orchestration/workflows/<workflow-name>.md
   Identify the workflow type (Pipeline or Parallel) and enumerate its phases in order.
 
 Step 2 — Extract user context.

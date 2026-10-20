@@ -51,6 +51,29 @@ Use this guide when reviewing a feature implementation against its specification
 
 ---
 
+## Review scope and independence
+
+**Early integration feedback:** inspect the runnable journey, actual wiring, major
+architectural risks and remaining plan. This is bounded advisory feedback inside
+implementation, not final approval; only concrete blockers require immediate repair.
+Do not demand complete feature coverage from the first slice.
+
+**Final acceptance review:** execute the applicable review process below against the
+original specification, complete acceptance contract, implementation and evidence.
+Final review must be independent of authorship; early feedback does not replace it.
+Without an authorized independent reviewer, report the limitation, not solo approval.
+Neither mode grants permission to spawn sub-agents.
+
+Use stable IDs for findings. Each blocker cites a requirement/mandatory rule or
+concrete correctness/safety defect, exact path and evidence, consequence, proposed
+repair and closure condition. Preferences cannot become new requirements; changing
+a mandatory convention requires its authoritative owner or explicit approved exception.
+
+On re-review, verify fixes and affected boundaries, reuse unchanged valid evidence,
+and retain finding history. New concrete defects may block approval; cross-cutting
+changes require broader re-review. Do not restart unrelated audits by default or
+merely accept an author's claim that a finding is closed.
+
 ## Review Process
 
 ### Step 0: Identify the Stack(s)
@@ -147,15 +170,15 @@ Common disconnects to check:
 3. **Diagram**: Is the ASCII execution flow diagram present as a module-level comment block above the class definition?
 4. **Streaming**: If streaming is required, does `invoke_streaming()` exist and share `_build_initial_state()` with `invoke()`?
 
-Draw the flow as a pipeline diagram. Verify that **every component in the chain is actually wired to the next**.
+Trace the flow, using a pipeline diagram when it clarifies complexity. Verify that **every component in the chain is actually wired to the next**.
 
 ### Step 5: Test Coverage Analysis
 
-For each production file:
+For each changed behavior and affected boundary:
 
-1. Identify the corresponding test file(s).
-2. List every test method and what it asserts.
-3. Identify **untested production files** (zero coverage).
+1. Map the requirement to appropriate existing or new tests.
+2. Inspect what relevant assertions prove; do not inventory unrelated test methods.
+3. Identify **untested production behavior**, including disconnected delegation.
 4. Identify **missing test scenarios** within tested files:
    - Happy path covered?
    - Error/failure path covered?
@@ -200,7 +223,7 @@ Load their applicable language, application/domain, documentation and testing sk
 | `skills/languages/python/named-arguments-and-type-hints/SKILL.md` | Named args for 2+ params; type hints on all params and return values |
 | `skills/languages/python/method-docstrings/SKILL.md` | Google-style docstrings on all public methods |
 | `skills/design-and-analysis/ubiquitous-language/SKILL.md` | One concept, one canonical name across every layer — no synonyms anywhere in the diff |
-| `skills/coding/code-test-loop/SKILL.md` | Evidence that tests were written per unit during development, not after a 500-line dump |
+| `skills/coding/code-test-loop/SKILL.md` | Evidence of verified behavioral increments and required test ordering, not bulk unverified implementation |
 
 #### FastAPI / Python Conventions
 
@@ -272,44 +295,48 @@ Common violation patterns to catch:
 
 ### Step 8: Compile Findings
 
-Organize findings into three tiers:
+Organize findings into three tiers, classifying by consequence rather than label:
 
 #### Glaring Gaps (Must Fix)
-- Spec requirements that are entirely missing
-- Components that exist but are not wired together (dead code)
-- Production entry points with zero test coverage
-- Security or data integrity issues
-- Convention violations that are non-negotiable hard rules (ubiquitous language violations, missing `invoke()` gateway, Options API in Vue, missing service namespace prefix)
+- Missing specification requirements or disconnected production flows.
+- Missing evidence for required behavior, security, data integrity or critical lifecycle paths.
+- Concrete defects or violations of applicable mandatory conventions (cite the rule).
+- Weak assertions or missing edge cases when they leave a required or critical contract unproved.
+
+Every blocker needs evidence and a closure condition. No vague "improve robustness" requests.
 
 #### Nice-to-Haves (Should Fix)
-- Missing edge-case tests
-- Minor convention violations (missing docstrings, weak assertions)
-- Code that works but could be more robust
-- Unused helper code (e.g. test factories defined but never called)
+- Optional improvements, redundant additional cases and nonmandatory convention suggestions.
+- These remain visible but do not automatically restart implementation or block READY.
 
 #### Temporary Shortcuts (Acknowledged Technical Debt)
-- Workarounds that are pragmatically correct but not ideal
-- Assumptions that should be validated
-- Missing retry/resilience logic on specific operations
-- Configuration-dependent behavior that has no code-level guard
+- Pragmatically correct compromises with explicit limitations and follow-up ownership.
+- Acknowledgment does not excuse safety failures, missing required resilience or unmet
+  acceptance criteria. Required scope deferral needs explicit operator approval.
 
 ---
+
+
 
 ## Output Format
 
-Produce a markdown document with these sections:
+Return a compact review with:
 
-1. **Stack Summary** — which stacks this feature touches and which convention sets apply
-2. **Executive Summary** — 2-3 sentences on overall status
-3. **Feature Completeness Table** — Spec requirement vs implementation status
-4. **End-to-End Flow Verification** — Stack-specific pipeline diagram + verdict for each flow
-5. **Unit Tests Assessment** — Coverage table, untested files, missing scenarios
-6. **Convention Adherence** — Per-convention compliance with specific violations noted, organized by stack
-7. **Ubiquitous Language Audit** — Cross-layer name trace table; flag every synonym found
-8. **Findings Summary** — Three-tier findings (Glaring Gaps, Nice-to-Haves, Shortcuts)
-9. **Architecture Diagram** — Mermaid diagram showing implemented and missing components
+1. **Verdict and scope** — early feedback or final review; READY, REVISE or FAILED;
+   reviewer independence and stacks inspected. Early feedback cannot grant final READY.
+2. **Requirement/evidence map** — reconcile the original spec with implemented journeys,
+   boundary tests and current verification; distinguish inspected from executed evidence.
+3. **Blocking findings** — stable IDs, rule/source, path, consequence, evidence and closure condition.
+4. **Recommendations/debt** — nonblocking suggestions and explicitly approved exceptions.
+5. **Verification limitations** — commands/results, baseline dispositions and unavailable checks.
+
+Include architecture diagrams, cross-layer name tables and detailed inventories when
+they clarify the change; they are not mandatory presentation for every review.
+Do not omit the underlying applicable convention, wiring or assertion-quality checks.
 
 ---
+
+
 
 ## Tips
 

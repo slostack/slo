@@ -32,12 +32,10 @@ panes.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Optional
 
-from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -48,8 +46,9 @@ from textual.widgets import Footer, Header, ListView, ListItem, Label, RichLog
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.dao import build_cleanup_summary
-from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.tree_export_format import TreeExportFormat
+from src.tui.workflows.dao import SessionProgressSnapshotDAO, WorkflowSessionKeyDAO, WorkflowSessionRowDAO
+from src.tui.workflows.transcript_renderer import WorkflowTranscriptRenderer
 from src.tui.workflow_visualizer_loader import (
     ChildSessionSummaryDAO,
     HeadlessWorkflowVisualizerConfigDAO,
@@ -106,47 +105,6 @@ _FORMAT_LABEL: dict[TreeExportFormat, str] = {
     TreeExportFormat.MARKDOWN: "markdown",
     TreeExportFormat.HTML: "html (preview)",
 }
-
-
-class _LiveToolBuffers:
-    """Accumulate one live tool invocation until its result arrives."""
-
-    def __init__(self, *, tool_name: str) -> None:
-        """Create an empty buffer for one streamed tool call.
-
-        Args:
-            tool_name (str): Name reported by the tool-call start event.
-        """
-        self.tool_name: str = tool_name
-        self.arguments_chunks: list[str] = []
-
-    def append_arguments(self, *, delta: str) -> None:
-        """Record one incremental tool-arguments fragment.
-
-        Args:
-            delta (str): JSON/text fragment from a tool-call delta event.
-        """
-        self.arguments_chunks.append(delta)
-
-    def build_call_entry(self) -> TranscriptEntryDAO:
-        """Build the visible tool-call entry from buffered arguments.
-
-        Returns:
-            TranscriptEntryDAO: Tool-call entry matching capture projection.
-        """
-        raw_arguments: str = "".join(self.arguments_chunks)
-        try:
-            parsed_arguments: object = json.loads(raw_arguments)
-        except (json.JSONDecodeError, ValueError):
-            parsed_arguments = {"raw": raw_arguments}
-        tool_input: dict[str, object] = (
-            parsed_arguments if isinstance(parsed_arguments, dict) else {"raw": raw_arguments}
-        )
-        return TranscriptEntryDAO(
-            kind="tool",
-            tool_name=self.tool_name,
-            tool_input=tool_input,
-        )
 
 
 class HeadlessWorkflowVisualizer(App[None]):
@@ -296,10 +254,6 @@ class HeadlessWorkflowVisualizer(App[None]):
         self._detail_view: Literal["transcript", "invocation"] = "transcript"
         self._child_panel_width: int = _CHILD_PANEL_WIDTH_DEFAULT
         self._diag_height: int = _DIAG_HEIGHT_DEFAULT
-        self._live_entries: dict[str, list[TranscriptEntryDAO]] = {}
-        self._live_open_assistant: set[str] = set()
-        self._live_open_thinking: set[str] = set()
-        self._live_tools: dict[str, dict[str, _LiveToolBuffers]] = {}
 
     def compose(self) -> ComposeResult:
         """Lay out the three-pane interface with orchestrator context panel.
@@ -355,7 +309,7 @@ class HeadlessWorkflowVisualizer(App[None]):
     async def _do_refresh(self) -> None:
         """Reload workflow data from the loader and redraw all panes."""
         try:
-            self._workflow_data = await self._loader.load()
+            self._workflow_data = await self._load_snapshot()
         except Exception as exc:  # noqa: BLE001
             self._update_status_bar(f"[red]Load error: {exc}[/red]")
             return
@@ -367,6 +321,24 @@ class HeadlessWorkflowVisualizer(App[None]):
         self._rebuild_diagnostics_pane()
         self._rebuild_orchestrator_pane()
         self._update_status_bar_from_data()
+
+    async def _load_snapshot(self) -> WorkflowDataDAO:
+        """Load the next snapshot: one full load, then bounded observation.
+
+        WHAT: The first refresh runs the legacy full load, which resolves a name
+            reference and reads parent metadata. Every later follow tick reads
+            only the bounded observation group for the already-resolved parent
+            and carries the first load's metadata forward, so live polling never
+            re-reads the complete parent history.
+
+        Returns:
+            WorkflowDataDAO: Snapshot to render.
+        """
+        previous: Optional[WorkflowDataDAO] = self._workflow_data
+        if previous is None:
+            return await self._loader.load()
+        group: WorkflowDataDAO = await self._loader.load_observation_group()
+        return group.model_copy(update={"parent_metadata": previous.parent_metadata})
 
     def _update_app_header(self) -> None:
         """Set the app title and sub_title to show parent session metadata."""
@@ -383,16 +355,22 @@ class HeadlessWorkflowVisualizer(App[None]):
 
         Shows the overall run state followed by a coloured tally of sub-agents
         by status (running / completed / failed) so the operator sees fleet
-        health at a glance, mirroring the main TUI's status palette.
+        health at a glance, mirroring the main TUI's status palette. An
+        unavailable group shows its fixed notice instead of a misleading empty tally.
         """
         summary: Label = self.query_one("#workflow-summary", Label)
         if self._workflow_data is None:
             summary.update("Loading workflow …")
             return
-        counts: dict[str, int] = self._status_counts()
         state_markup: str = (
             "[green]● complete[/green]" if self._workflow_data.is_complete else "[yellow]● running[/yellow]"
         )
+        if self._workflow_data.notice is not None:
+            summary.update(
+                Text.assemble(Text.from_markup(state_markup), "   ", (self._workflow_data.notice, "red"))
+            )
+            return
+        counts: dict[str, int] = self._status_counts()
         total: int = len(self._workflow_data.children)
         parts: list[str] = [
             state_markup,
@@ -449,7 +427,9 @@ class HeadlessWorkflowVisualizer(App[None]):
             await list_view.append(
                 ListItem(Label(self._orchestrator_label(node=self._workflow_data.orchestrator)))
             )
-        if not self._workflow_data.children and self._workflow_data.orchestrator is None:
+        if self._workflow_data.notice is not None:
+            await list_view.append(ListItem(Label(Text(self._workflow_data.notice, style="red"))))
+        elif not self._workflow_data.children and self._workflow_data.orchestrator is None:
             await list_view.append(ListItem(Label("[dim]No sub-agents found[/dim]")))
             return
         for child in self._workflow_data.children:
@@ -465,7 +445,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             return
         orchestrator: Optional[OrchestratorNodeDAO] = self._current_orchestrator()
         if orchestrator is not None:
-            self._render_live_entries(detail_log=detail_log, session_id=orchestrator.session_id)
+            await self._render_progress(detail_log=detail_log, row=self._orchestrator_row(node=orchestrator))
             return
         child: Optional[ChildSessionSummaryDAO] = self._current_child()
         if child is None:
@@ -478,26 +458,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             )
             self._render_invocation(detail_log=detail_log, spawn=spawn)
             return
-        if child.status == "running":
-            self._render_live_entries(detail_log=detail_log, session_id=child.session_id)
-            return
-        entries = await self._loader.load_child_transcript_entries(
-            parent_session_id=self._workflow_data.parent_session_id,
-            child_session_id=child.session_id,
-        )
-        if not entries:
-            detail_log.write(f"[dim]No transcript entries for {child.session_id}.[/dim]")
-            return
-        for entry in entries:
-            if self._detail_format == TreeExportFormat.TEXTUAL:
-                self._write_entry_rich(detail_log=detail_log, entry=entry)
-            else:
-                detail_log.write(
-                    self._format_transcript_entry(
-                        entry=entry,
-                        fmt=self._detail_format,
-                    )
-                )
+        await self._render_progress(detail_log=detail_log, row=self._child_row(child=child))
 
     def _rebuild_diagnostics_pane(self) -> None:
         """Reload diagnostics for the selected child or orchestrator node."""
@@ -717,92 +678,81 @@ class HeadlessWorkflowVisualizer(App[None]):
             sys_preview += "…"
         detail_log.write(Text(sys_preview, style="dim italic"))
 
-    def _render_live_entries(self, *, detail_log: RichLog, session_id: str) -> None:
-        """Read and render the selected live node's newly captured stdout entries."""
-        self._append_live_stdout_events(session_id=session_id)
-        entries: list[TranscriptEntryDAO] = self._live_entries.get(session_id, [])
-        if not entries:
-            detail_log.write(f"[dim]No transcript entries for {session_id}.[/dim]")
-            return
-        for entry in entries:
-            self._write_entry_rich(detail_log=detail_log, entry=entry)
+    async def _render_progress(self, *, detail_log: RichLog, row: WorkflowSessionRowDAO) -> None:
+        """Render the selected node's bounded public progress from the shared loader.
 
-    def _append_live_stdout_events(self, *, session_id: str) -> None:
-        """Coalesce new text deltas from the loader's incremental stdout tail."""
-        lines: list[bytes] = self._loader.read_child_stdout_tail(session_id=session_id)
-        for line in lines:
-            try:
-                event: AgentStreamEventDAO = AgentStreamEventDAO.model_validate_json(line)
-            except ValueError:
-                continue
-            self._append_live_event(session_id=session_id, event=event)
-
-    def _append_live_event(self, *, session_id: str, event: AgentStreamEventDAO) -> None:
-        """Apply one captured stream event to a live node transcript.
+        WHAT: Asks the loader for one progress snapshot (live capture while running,
+            canonical replay when terminal), writes its fixed notice literally,
+            renders entries in the active detail format and keeps the pane's
+            existing tail-following behaviour.
+        WHO: Called by _rebuild_detail_pane for the orchestrator and child rows.
+        WHEN: On every refresh and selection change in transcript view.
 
         Args:
-            session_id (str): Session that owns the captured event.
-            event (AgentStreamEventDAO): Parsed stdout stream event.
+            detail_log (RichLog): The detail pane, already cleared.
+            row (WorkflowSessionRowDAO): Display row built from the loaded group.
         """
-        if event.kind == "thinking_delta" and event.delta:
-            self._append_live_thinking_delta(session_id=session_id, delta=event.delta)
+        snapshot: SessionProgressSnapshotDAO = await self._loader.load_session_progress(row=row)
+        if snapshot.notice:
+            detail_log.write(Text(snapshot.notice, style="dim"))
+        if not snapshot.entries:
+            detail_log.write(f"[dim]No transcript entries for {row.key.session_id}.[/dim]")
             return
-        if event.kind == "thinking_end":
-            self._live_open_thinking.discard(session_id)
-            return
-        if event.kind == "text_delta" and event.delta:
-            self._append_live_text_delta(session_id=session_id, delta=event.delta)
-            return
-        if event.kind == "tool_call_start" and event.block_id and event.tool_name:
-            self._live_tools.setdefault(session_id, {})[event.block_id] = _LiveToolBuffers(
-                tool_name=event.tool_name,
-            )
-            return
-        if event.kind == "tool_call_delta" and event.block_id and event.tool_arguments_delta:
-            buffers: Optional[_LiveToolBuffers] = self._live_tools.get(session_id, {}).get(event.block_id)
-            if buffers is not None:
-                buffers.append_arguments(delta=event.tool_arguments_delta)
-            return
-        if event.kind == "tool_call_end" and event.block_id:
-            buffers = self._live_tools.get(session_id, {}).get(event.block_id)
-            if buffers is not None:
-                self._live_entries.setdefault(session_id, []).append(buffers.build_call_entry())
-            return
-        if event.kind == "tool_result" and event.tool_call_id:
-            buffers = self._live_tools.get(session_id, {}).pop(event.tool_call_id, None)
-            if buffers is not None:
-                self._live_entries.setdefault(session_id, []).append(
-                    TranscriptEntryDAO(kind="tool", tool_name=buffers.tool_name, output=event.content)
-                )
-            return
-        if event.kind in ("text_end", "run_completed", "run_failed", "run_aborted"):
-            self._live_open_assistant.discard(session_id)
-            self._live_open_thinking.discard(session_id)
+        for entry in snapshot.entries:
+            self._write_detail_entry(detail_log=detail_log, entry=entry)
+        detail_log.scroll_end(animate=False)
 
-    def _append_live_thinking_delta(self, *, session_id: str, delta: str) -> None:
-        """Append one thinking delta to the open live thinking entry.
+    def _write_detail_entry(self, *, detail_log: RichLog, entry: TranscriptEntryDAO) -> None:
+        """Write one entry in the active detail format.
 
         Args:
-            session_id (str): Session that owns the visible thinking block.
-            delta (str): New thinking text.
+            detail_log (RichLog): The detail pane.
+            entry (TranscriptEntryDAO): Public entry to render.
         """
-        entries: list[TranscriptEntryDAO] = self._live_entries.setdefault(session_id, [])
-        if session_id not in self._live_open_thinking:
-            entries.append(TranscriptEntryDAO(kind="thinking", content=delta))
-            self._live_open_thinking.add(session_id)
+        if self._detail_format == TreeExportFormat.TEXTUAL:
+            WorkflowTranscriptRenderer.write_entry(log=detail_log, entry=entry)
             return
-        current: TranscriptEntryDAO = entries[-1]
-        entries[-1] = current.model_copy(update={"content": (current.content or "") + delta})
+        detail_log.write(self._format_transcript_entry(entry=entry, fmt=self._detail_format))
 
-    def _append_live_text_delta(self, *, session_id: str, delta: str) -> None:
-        """Append one text delta to the open assistant entry for a live node."""
-        entries: list[TranscriptEntryDAO] = self._live_entries.setdefault(session_id, [])
-        if session_id not in self._live_open_assistant:
-            entries.append(TranscriptEntryDAO(kind="assistant", answer=delta))
-            self._live_open_assistant.add(session_id)
-            return
-        current: TranscriptEntryDAO = entries[-1]
-        entries[-1] = current.model_copy(update={"answer": (current.answer or "") + delta})
+    def _orchestrator_row(self, *, node: OrchestratorNodeDAO) -> WorkflowSessionRowDAO:
+        """Build the parent's display row from the loaded group.
+
+        Args:
+            node (OrchestratorNodeDAO): Selected orchestrator node.
+
+        Returns:
+            WorkflowSessionRowDAO: Parent row; read-only, never abort authority.
+        """
+        parent_id: str = self._workflow_data.parent_session_id if self._workflow_data else node.session_id
+        return WorkflowSessionRowDAO(
+            key=WorkflowSessionKeyDAO(orchestrator_session_id=parent_id, session_id=parent_id),
+            role="orchestrator",
+            status=node.state,
+            dispatch_id=self._workflow_data.run_id if self._workflow_data else "",
+            task_text="Orchestrator",
+            task_text_complete=True,
+        )
+
+    def _child_row(self, *, child: ChildSessionSummaryDAO) -> WorkflowSessionRowDAO:
+        """Build one child's display row from the loaded group.
+
+        Args:
+            child (ChildSessionSummaryDAO): Selected child summary.
+
+        Returns:
+            WorkflowSessionRowDAO: Child row; read-only, never abort authority.
+        """
+        parent_id: str = self._workflow_data.parent_session_id if self._workflow_data else ""
+        return WorkflowSessionRowDAO(
+            key=WorkflowSessionKeyDAO(orchestrator_session_id=parent_id, session_id=child.session_id),
+            role="child",
+            task_id=child.task_id,
+            execution_id=child.execution_id,
+            dispatch_id=child.dispatch_id,
+            status=child.status,
+            task_text=child.task_text,
+            task_text_complete=child.task_text_complete,
+        )
 
     @staticmethod
     def _orchestrator_label(*, node: OrchestratorNodeDAO) -> Text:
@@ -859,44 +809,6 @@ class HeadlessWorkflowVisualizer(App[None]):
         return f"{max(0, int(time.monotonic() - last_stdout_at))}s ago"
 
     @staticmethod
-    def _write_entry_rich(*, detail_log: RichLog, entry: TranscriptEntryDAO) -> None:
-        """Write one transcript entry to the detail log as rich renderables.
-
-        Used by the default (TEXTUAL) detail format. Assistant answers and user
-        messages render through ``rich.markdown.Markdown`` so headings, lists,
-        and code blocks display the same way they do in the main TUI; reasoning
-        and thinking render as dim italic; tool entries show a bold header and a
-        truncated output block. A dim separator closes each entry.
-
-        Args:
-            detail_log (RichLog): Target detail log widget.
-            entry (TranscriptEntryDAO): Transcript entry to render.
-        """
-        if entry.kind == "user":
-            detail_log.write(Text("▶ User", style="bold cyan"))
-            if entry.content:
-                detail_log.write(Markdown(entry.content))
-        elif entry.kind == "assistant":
-            detail_log.write(Text("◀ Assistant", style="bold green"))
-            if entry.reasoning:
-                detail_log.write(Text("~ reasoning", style="bold dim"))
-                detail_log.write(Text(entry.reasoning[:2000], style="dim italic"))
-            body: str = entry.answer or entry.content or ""
-            if body:
-                detail_log.write(Markdown(body))
-        elif entry.kind == "thinking":
-            detail_log.write(Text("~ Thinking", style="bold dim"))
-            if entry.content:
-                detail_log.write(Text(entry.content[:2000], style="dim italic"))
-        elif entry.kind == "tool":
-            detail_log.write(Text(f"⚙ {entry.tool_name or 'tool'}", style="bold yellow"))
-            if entry.output:
-                detail_log.write(Text(str(entry.output)[:800], style="yellow"))
-        else:
-            detail_log.write(Text(str(entry)))
-        detail_log.write(Text("─" * 24, style="dim"))
-
-    @staticmethod
     def _format_transcript_entry(
         *,
         entry: TranscriptEntryDAO,
@@ -921,43 +833,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             return HeadlessWorkflowVisualizer._format_entry_markdown(entry=entry)
         if fmt == TreeExportFormat.HTML:
             return HeadlessWorkflowVisualizer._format_entry_html(entry=entry)
-        return HeadlessWorkflowVisualizer._format_entry_textual(entry=entry)
-
-    @staticmethod
-    def _format_entry_textual(*, entry: TranscriptEntryDAO) -> Text:
-        """Format a transcript entry with Rich colour styles (TEXTUAL mode).
-
-        Args:
-            entry (TranscriptEntryDAO): Entry to format.
-
-        Returns:
-            Text: Rich-styled text block.
-        """
-        t = Text()
-        if entry.kind == "user":
-            t.append("▶ User\n", style="bold cyan")
-            if entry.content:
-                t.append(entry.content + "\n", style="cyan")
-        elif entry.kind == "assistant":
-            t.append("◀ Assistant\n", style="bold green")
-            if entry.reasoning:
-                t.append("~ reasoning\n", style="bold dim")
-                t.append(entry.reasoning[:2000] + "\n", style="dim italic")
-            if entry.answer:
-                t.append(entry.answer + "\n", style="green")
-            elif entry.content:
-                t.append(entry.content + "\n", style="green")
-        elif entry.kind == "thinking":
-            t.append("~ Thinking\n", style="bold dim")
-            if entry.content:
-                t.append(entry.content[:2000] + "\n", style="dim italic")
-        elif entry.kind == "tool":
-            t.append(f"⚙ {entry.tool_name or 'tool'}\n", style="bold yellow")
-            if entry.output:
-                t.append(str(entry.output)[:500] + "\n", style="yellow")
-        else:
-            t.append(str(entry) + "\n")
-        return t
+        return WorkflowTranscriptRenderer.format_entry(entry=entry)
 
     @staticmethod
     def _format_entry_markdown(*, entry: TranscriptEntryDAO) -> Text:

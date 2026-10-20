@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +15,9 @@ from src.agents.slo_agent.orchestrator.dao import exit_code_for_terminal_kind
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO, StreamEventKind
 from src.cli.headless import HeadlessRunner
+
+_EXECUTION_ID: str = "0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40"
+"""Captured child incarnation carried by straggler-sweep commits."""
 
 
 def _make_config(tmp_path) -> SessionConfigDAO:
@@ -827,7 +831,7 @@ class TestHeadlessRunnerDrainGate:
         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
         registry: MagicMock = MagicMock()
         entry: SubAgentStatusDAO = SubAgentStatusDAO(
-            task_id="t1", session_id="child-1", status="running", pid=123
+            task_id="t1", session_id="child-1", status="running", pid=123, execution_id=_EXECUTION_ID
         )
         registry.snapshot.return_value = [entry]
         pool: MagicMock = MagicMock()
@@ -842,6 +846,7 @@ class TestHeadlessRunnerDrainGate:
 
         registry.mark_terminal.assert_called_once_with(
             session_id="child-1",
+            execution_id=_EXECUTION_ID,
             status="aborted",
             answer="reaped during terminal drain",
             exit_code=-9,
@@ -858,7 +863,9 @@ class TestHeadlessRunnerDrainGate:
         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
         registry: MagicMock = MagicMock()
         registry.snapshot.return_value = [
-            SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)
+            SubAgentStatusDAO(
+                task_id="t1", session_id="child-1", status="running", pid=123, execution_id=_EXECUTION_ID
+            )
         ]
         pool: MagicMock = MagicMock()
         pool.registry = registry
@@ -875,6 +882,7 @@ class TestHeadlessRunnerDrainGate:
         reap.assert_not_awaited()
         registry.mark_terminal.assert_called_once_with(
             session_id="child-1",
+            execution_id=_EXECUTION_ID,
             status="failed",
             answer="recorded pid belongs to a different process; not signalled",
             exit_code=1,
@@ -891,7 +899,9 @@ class TestHeadlessRunnerDrainGate:
         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
         registry: MagicMock = MagicMock()
         registry.snapshot.return_value = [
-            SubAgentStatusDAO(task_id="t1", session_id="child-1", status="running", pid=123)
+            SubAgentStatusDAO(
+                task_id="t1", session_id="child-1", status="running", pid=123, execution_id=_EXECUTION_ID
+            )
         ]
         pool: MagicMock = MagicMock()
         pool.registry = registry
@@ -1040,3 +1050,26 @@ class TestRunCommandNotifySessionFlag:
 
         assert result.exit_code == 0
         assert mock_run_headless.call_args.kwargs["notify_session_id"] is None
+
+
+class TestHeadlessOrchestratorOwnerComposition:
+    """Headless pool composition binds the launch owner, never a request value."""
+
+    @pytest.mark.parametrize(
+        ("notify_session_id", "expected_owner"), [("tui-owner", "tui-owner"), (None, None)]
+    )
+    def test_attach_passes_notify_session_as_owner(
+        self, tmp_path, notify_session_id: Optional[str], expected_owner: Optional[str]
+    ) -> None:
+        """The notifier launch owner (or None → session id) reaches the bootstrap."""
+        runner: HeadlessRunner = HeadlessRunner(
+            config=_make_config(tmp_path), notify_session_id=notify_session_id
+        )
+        session: MagicMock = MagicMock()
+
+        with patch(
+            "src.agents.slo_agent.orchestrator.bootstrap.OrchestratorSessionBootstrap.attach"
+        ) as attach:
+            runner._attach_orchestrator(session=session)
+
+        attach.assert_called_once_with(session=session, headless=True, owner_session_id=expected_owner)

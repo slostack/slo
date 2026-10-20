@@ -23,7 +23,7 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 - Persists a full-fidelity JSONL event log per session under `~/.slo/sessions/history/`.
 - Loads project instruction files (`SLO.md` / `AGENTS.md` / `CLAUDE.md`) from the
   working directory tree into the system prompt automatically.
-- Keeps 117 vendored convention skills (`skills/`) readable on demand via the `read` tool.
+- Keeps 187 vendored convention skills (`skills/`) readable on demand via the `read` tool.
 - Spawns and supervises headless sub-agents via `spawn_sub_agents` when promoted to
   orchestrator mode.
 
@@ -113,7 +113,9 @@ slo/
 │   │   │   │   ├── process_probe.py    # ProcessProbe — conservative shared PID liveness semantic
 │   │   │   │   ├── spawn_env.py        # Shared allowlisted headless-child env and capture opener
 │   │   │   │   ├── process.py          # SubAgentProcess — child spawn, stream relay, captures
-│   │   │   │   ├── pool.py             # SubAgentPool — bounded sub-agent dispatch
+│   │   │   │   ├── pool.py             # SubAgentPool — bounded sub-agent dispatch, explicit dispatch_id batches, abort_child
+│   │   │   │   ├── task_preview.py     # TaskPreview — the one 150-code-point task label (feature 94)
+│   │   │   │   ├── child_abort.py      # ChildAbortStore (versioned request/receipt files) + runner ChildAbortController
 │   │   │   │   ├── launch_tool.py      # launch_workflow — detached orchestrator spawn
 │   │   │   │   ├── relaunch.py          # WorkflowRelauncher — resume a dead detached workflow
 │   │   │   │   └── workflow_registry.py # WorkflowHandleStore and workflow commands
@@ -170,15 +172,21 @@ slo/
 │   │   ├── slash_suggestion_engine.py # SlashSuggestionEngine — prefix-match autocomplete
 │   │   ├── thinking_spinner.py        # ThinkingSpinner widget
 │   │   ├── headless_workflow_visualizer.py # `slo visualize` TUI — resizable panes, summary bar, markdown transcript
-│   │   ├── workflow_visualizer_loader.py   # WorkflowVisualizerLoader — reads parent/child session captures
+│   │   ├── workflow_visualizer_loader.py   # WorkflowVisualizerLoader — bounded parent/child capture + progress reads
+│   │   ├── jsonl_tail.py              # JsonlTail — the one bounded capture JSONL reader
 │   │   ├── visualizer_launcher.py     # VisualizerLauncher — opens `slo visualize` in a new OS terminal window
 │   │   ├── slodiff/                   # Clean-room extractable diff model + Textual widget
 │   │   ├── git_diff_content_service.py # Safe HEAD-versus-worktree content loader
 │   │   ├── git_diff_screen.py          # Focused /diff screen and controls
-│   │   ├── workflows/                 # Detached-workflow receive path (spec 57.a.5)
-│   │   │   ├── dao.py                 # Parsed lifecycle/launch DTOs, DetachedWorkflowUiEffectDAO
-│   │   │   ├── service.py             # DetachedWorkflowAppService — handles, state cache, typed effects
-│   │   │   └── renderer.py            # DetachedWorkflowRenderer — launch guard, notices (no Textual)
+│   │   ├── workflows/                 # Detached-workflow receive path (spec 57.a.5) + session observation (feature 94)
+│   │   │   ├── dao.py                 # Parsed lifecycle/launch DTOs, effects, session key/row/snapshot/progress/viewport DAOs
+│   │   │   ├── service.py             # DetachedWorkflowAppService — handles, typed effects, owner-scoped list/progress gateway, child-abort begin
+│   │   │   ├── renderer.py            # DetachedWorkflowRenderer — launch guard, notices (no Textual)
+│   │   │   ├── progress_coordinator.py # WorkflowProgressCoordinator — the one 5.0 s single-flight observation timer
+│   │   │   ├── session_progress_screen.py (+ .tcss) # SessionProgressScreen + ProgressLog — position-preserving progress modal
+│   │   │   ├── abort_confirmation_screen.py (+ .tcss) # AbortConfirmationScreen — exact-child confirmation (safe default)
+│   │   │   ├── abort_submission.py    # ChildAbortSubmission — tracked request, 30 s not-confirmed notice
+│   │   │   └── transcript_renderer.py # WorkflowTranscriptRenderer — shared entry formatter (modal + `slo visualize`)
 │   │   ├── model_catalog.py           # supported_models_by_provider()
 │   │   ├── authentication/            # AuthenticationScreen + widgets (api_key, oauth, …)
 │   │   └── widgets/
@@ -188,6 +196,8 @@ slo/
 │   │       ├── tool_execution_block.py   # ToolExecutionBlock — one tool call+result with panel surface styling
 │   │       ├── queued_prompt_block.py    # QueuedPromptBlock — one visible latest-wins held ordinary prompt
 │   │       ├── usage_status_bar.py       # UsageStatusBar — token/rate display
+│   │       ├── sub_agent_fleet_panel.py  # SubAgentFleetPanel + FleetSessionList — "Ongoing workflow tasks" list below PromptInput
+│   │       ├── sub_agent_fleet_row.py    # SubAgentFleetRow — one literal `[status] session-id: task` ListItem
 │   │       └── slash_suggestion_menu.py  # SlashSuggestionMenu — autocomplete dropdown
 │   └── exceptions.py
 ├── tests/
@@ -195,13 +205,19 @@ slo/
 │   │   └── slo_agent/                 # unit tests: agent loop, session, rate limits, usage
 │   ├── tui/                           # TUI tests: app, replay, slash, status bar, tool blocks
 │   │   └── workflows/                 # receive-path dao/service/renderer unit tests
-│   └── integration/                   # cross-component (future)
+│   └── integration/                   # cross-component composed flows (e.g. feature 94 list → progress → child abort)
 ├── plugins/
 │   └── bash_live_output/              # bundled Feature 75 consumer-only Bash live-output renderer
-├── skills/                            # 117 vendored SKILL.md files + INDEX.md
+├── skills/                            # 186 vendored SKILL.md files + INDEX.md
 │   ├── INDEX.md                       # regenerated by `make build-skill-index`
 │   ├── orientation/
 │   ├── design-and-analysis/
+│   ├── orchestration/
+│   ├── engineering/
+│   ├── languages/
+│   ├── presentation/
+│   ├── user-content/
+│   ├── samples/
 │   ├── coding/
 │   ├── git-ops/
 │   ├── cli/
@@ -366,9 +382,10 @@ caller loop; only the synchronous formatting leaf crosses the gateway, and
 
 Skills are vendored convention prompts that the agent reads on demand.
 
-- **Location:** `skills/<group>/<slug>/SKILL.md` — 117 skills across 10 groups:
+- **Location:** `skills/<group>/<slug>/SKILL.md` — 187 skills across 14 groups:
   `orientation/`, `design-and-analysis/`, `coding/`, `git-ops/`, `cli/`, `tui/`,
-  `integration-tests/`, `frontend-vue/`, `presentation/`, and `user-content/`.
+  `integration-tests/`, `frontend-vue/`, `presentation/`, `user-content/`,
+  `engineering/`, `languages/`, `samples/`, and `orchestration/`.
 - **Runtime access:** The system prompt points the agent at `skills/INDEX.md`
   (absolute path via `SKILLS_DIR`). The agent reads the index with the `read` tool,
   identifies the matching skill, then reads the full `SKILL.md`.
@@ -384,6 +401,17 @@ Skills are vendored convention prompts that the agent reads on demand.
 `SkillRegistry` (`src/agents/skills/registry.py`) parses individual `SKILL.md` files but
 is not yet wired into the session boot path.
 
+### Functionality explanations as HTML
+
+Use `skills/design-and-analysis/explain-with-html/SKILL.md` when asked to explain
+existing or proposed functionality as a programmer-facing HTML walkthrough. It
+requires reading `solution-design`, `coding-rules`, and `code-design-principles`
+before shaping the page. Present one concept per section, trace ownership and
+control flow through observable results, then finish with domain types, actual or
+explicitly proposed interfaces, and numbered code journeys matching the diagrams.
+Use `present-as-single-page` for rendering and offline syntax highlighting; the
+explanation skill does not authorize feature implementation or sub-agent dispatch.
+
 ### Workflows vs Skills — Critical Routing Rule
 
 The skills directory contains **two distinct kinds of artifacts**:
@@ -391,16 +419,16 @@ The skills directory contains **two distinct kinds of artifacts**:
 | Kind | Location pattern | Purpose |
 |---|---|---|
 | **Individual skill** | `skills/<group>/<slug>/SKILL.md` | Single-concern convention for one task type |
-| **Formal workflow** | `skills/design-and-analysis/workflows/<name>.md` | Multi-step pipeline sequencing several skills |
+| **Formal workflow** | `skills/orchestration/workflows/<name>.md` | Multi-step pipeline sequencing several skills |
 
-**When the user mentions "workflow" or names one explicitly, load from `skills/design-and-analysis/workflows/` — not from a skill with a similar name.**
+**When the user mentions "workflow" or names one explicitly, load from `skills/orchestration/workflows/` — not from a skill with a similar name.**
 
 Named workflows:
 
 | Workflow | File to read |
 |---|---|
-| Code-Test-Review | `skills/design-and-analysis/workflows/code-test-review.md` |
-| Specification Development | `skills/design-and-analysis/workflows/specification-development.md` |
+| Code-Test-Review | `skills/orchestration/workflows/code-test-review.md` |
+| Specification Development | `skills/orchestration/workflows/specification-development.md` |
 
 **Anti-pattern:** user says "use the code-test-review workflow" → agent loads `skills/coding/code-test-loop/SKILL.md`. This is wrong. `code-test-loop` is the coding cadence that forms Step 1 *inside* the Code-Test-Review workflow. Loading it instead of the workflow silently skips Step 2 (Code Review) and Step 3 (Completion Check). Always load the workflow `.md` from the `workflows/` folder when a workflow is requested.
 
@@ -492,8 +520,8 @@ ancestry, so home-prefix lookalikes stay absolute); the usage bar owns no cwd di
 
 `TranscriptProjector` owns parent `block_id` routing and mounts replay reasoning as a
 sealed thinking block immediately before its answer block (replay adjacency). `SloTUI`
-owns child/sub-agent events: child thinking updates fleet activity only and never mounts
-a foreground transcript block.
+owns child/sub-agent events: they never mount a foreground transcript block; child
+lifecycle events only request one coalesced session-list refresh (feature 94).
 
 **Queued prompt (spec 72.a.4 + input-adjacent anchoring):** an ordinary (non-slash) prompt
 submitted while a run is active is held in a one-deep, latest-wins app-owned slot
@@ -553,7 +581,8 @@ does prefix-match autocomplete; `SlashSuggestionMenu` renders the dropdown.
 
 Available slash commands include: `/help`, `/diff <repository-relative-path>`, `/new [session name]`, `/rename <session name>`,
 `/model <name>`, `/reasoning <level>`, `/context-window`, `/compact`, `/abort`, `/steer <text>`,
-`/clear`, `/auth`, `/quit` (and aliases), and `/workflows [abort|dismiss|resume] <workflow-id>`.
+`/clear`, `/auth`, `/quit` (and aliases), `/workflows [abort|dismiss|resume] <workflow-id>`, and
+`/workflows tui dismiss [<workflow-id>]` (hides finished groups from the TUI list in memory only).
 `/context-window` reports the routed model's capacity
 and projector-faithful durable replay estimate; `/compact` requests one lock-safe, transactional
 manual compaction and rejects while a prompt owns the session lock.
@@ -587,7 +616,8 @@ manual `slo visualize` command into the transcript. Only a non-secret `SLO_*` al
 forwarded into the new window. Disable with `SLO_AUTO_VISUALIZE=0`; pick the emulator with
 `SLO_VISUALIZER_TERMINAL_APP`. The visualizer TUI itself
 (`headless_workflow_visualizer.py`) has a workflow-summary bar, status-coloured sub-agent
-list, markdown transcript rendering matching the main TUI, and keyboard-resizable panes
+list, markdown transcript rendering through the shared `WorkflowTranscriptRenderer` (the same
+formatter as the in-app progress modal), and keyboard-resizable panes
 (`ctrl+←/→` for the sub-agent list width, `ctrl+↑/↓` for the diagnostics height).
 
 **Headless heartbeat and failure envelope (specs 70/71):** `HeadlessRunner` emits a stderr-only
@@ -601,7 +631,8 @@ SIGTERM → grace → SIGKILL → reap with one cached terminal result.
 **Detached workflow supervision:** workflow handles live at
 `<owner_session>/workflows/wf-*.json` (TUI-owned); each orchestrator session also has
 `orchestrator.json` (HeadlessRunner self-report), `fleet.json` (pool projection),
-`abort_request.json` (TUI durable abort channel), and each child has `status.json` (terminal result).
+`abort_request.json` (TUI durable whole-workflow abort channel), `child-control.v1/` (child-only
+abort requests/receipts, feature 94), and each child has `status.json` (terminal result).
 `/workflows resume <workflow-id>` relaunches a `stalled` or `failed` handle against its original
 orchestrator session with `--resume`; the dedicated flock-protected store transition returns it to
 `launching`, and fresh self-reported evidence advances it to `running`.
@@ -633,6 +664,34 @@ SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed H
 - **Strict app boundary:** `SloTUI` passes raw inbox kind/payload (or the raw
   `launch_workflow` tool-result text) to the service exactly once, then only executes the
   typed effects the service returned. The app never parses workflow payloads itself.
+
+**Workflow session list, progress modal and child abort (feature 94).** Spec family:
+`specifications/94-slo-tui-redesign/tui/`; runtime notes: `docs/RESEARCH.md` "Feature 94 TUI
+session controls — owner map".
+
+```
+SloTUI ── one WorkflowProgressCoordinator (5.0 s, single flight) ──> DetachedWorkflowAppService
+   ▲                                                                  │ load_session_snapshot (owner-scoped,
+   │ _WorkflowProgressSink (apply_sessions / apply_progress)          │  attached batch first, then detached)
+   │                                                                  │ load_session_progress (bounded loader)
+   ├── SubAgentFleetPanel ("Ongoing workflow tasks", below PromptInput, above UsageStatusBar)
+   ├── SessionProgressScreen (ProgressLog, Minimize, Abort child…)
+   └── AbortConfirmationScreen ──> service.begin_child_abort ──> attached: session.abort_child → pool
+                                                                detached: ChildAbortStore → runner ChildAbortController → pool
+```
+
+- `PromptInput` paints only top and bottom accent rules (`app.tcss`); editing, queue anchor,
+  history recall, Enter handling and min/max height 3/17 are unchanged.
+- Rows read `[status] session-id: task`, with the task from `TaskPreview` (150 code points
+  including `…`, rendered literally). Tab/Shift+Tab focus the list; Up/Down select without
+  wrapping; Enter or click opens the exact session. There is no workflow Ctrl+W binding.
+- The modal loads immediately and refreshes every 5 s. It preserves the reader's position (tail
+  follows only from the bottom; End resumes). Escape/Minimize keeps the viewport for reopen and
+  never cancels execution.
+- Abort child needs explicit confirmation and reports "Abort requested" until terminal evidence
+  arrives. It never resubmits, never signals a PID from the TUI, and never touches siblings, the
+  orchestrator or `abort_request.json`.
+- `/workflows tui dismiss [<id>]` hides finished groups in memory only.
 
 ---
 
@@ -824,8 +883,12 @@ its generated `slo-entry` trampoline. `install.sh` is the only wrapper writer;
 and before conditional shell finalization. Direct pipx mutations bypass this
 contract and recover by re-running the matching tagged public installer. `-I`
 protects initial CLI import resolution while preserving ordinary environment values.
-Headless source/module spawns remain sanitized-environment paths without `-I`, and
-the visualizer source fallback is trusted-source-only with no forwarded `PYTHONPATH`.
+Sub-agents, detached workflow orchestrators, and workflow resumes always use
+`sys.executable -I -m src.cli` with the existing sanitized child environment. Slo
+must be installed in that interpreter (an editable install is supported); a source
+checkout on cwd or `PYTHONPATH` alone is insufficient. Isolation applies to the
+agent interpreter, not project commands it launches. The visualizer source fallback
+remains trusted-source-only with no forwarded `PYTHONPATH`.
 
 ## 11. History / Persistence
 
@@ -837,9 +900,27 @@ tree.json       # SessionTreeDAO — turn-grouped event tree (new default)
 transcript.md   # derived; not authoritative
 orchestrator.json # detached-orchestrator self-report when applicable
 fleet.json        # durable child fleet projection when applicable
-abort_request.json # TUI-to-orchestrator abort channel when applicable
+abort_request.json # TUI-to-orchestrator whole-workflow abort channel when applicable
+child-control.v1/capability.json # runner child-abort capability (accepting while its controller runs)
+child-control.v1/<run_id>/{requests,receipts}/<request_id>.json # one child's abort request / settled receipt
 children/<child_session_id>/status.json # child terminal result when applicable
+children/<child_session_id>/execution.v1.json # child incarnation evidence (execution_id, dispatch_id, terminal binding)
+execution-index.v1.json # session_id → current execution_id projection beside fleet.json
 ```
+
+`status.json`, `fleet.json` and `spawn_context.json` keep their released closed
+shapes; execution identity lives only in the `*.v1.json` siblings, so older readers
+keep decoding. `ProcessRegistry.commit_terminal` decides the first-wins terminal winner
+before any cache or file projection. It is reached through `SubAgentProcess._publish_terminal`
+(wrapper results, including `finish_without_spawn`) and through `ProcessRegistry.mark_terminal`
+(`HeadlessRunner`'s straggler sweep); both share the same arbitration.
+
+Child abort never uses `abort_request.json` (an older runner would abort the whole
+workflow). `ChildAbortStore` owns bounded no-follow reads, immutable request IDs and
+the 256-request run capacity under a run-scoped `admission.lock`; `HeadlessRunner`
+starts `ChildAbortController` only for an attached pool with an explicit
+`--notify-session` owner and closes it before the final fleet drain. Requests and
+receipts are private audit state: never deleted, backfilled or migrated.
 
 The legacy flat store (`FilesystemSessionHistoryStore`) uses `events.jsonl` instead of
 `tree.json`. Both stores satisfy `SessionHistoryStoreProtocol` (`history/store_protocol.py`).
@@ -1043,7 +1124,7 @@ directly affect what every agent session sees and does.
 
 ## Workflow-turn counting
 
-Use `skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`
+Use `skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`
 for counting and stopping rules. One workflow turn is a complete pass through
 all required phases, not one agent dispatch. Track partial passes, phase retries
 and dispatch limits separately. Disclose a harness budget conflict before launch;

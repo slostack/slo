@@ -12,6 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from rich.color import Color
 from textual.geometry import Offset
+from textual.pilot import Pilot
 from textual.selection import SELECT_ALL, Selection
 from textual.style import Style as TextualStyle
 
@@ -42,6 +43,29 @@ def _selection_background(*, app: SloTUI) -> Color:
     style = TextualStyle.from_styles(app.screen.get_component_styles("screen--selection"))
     assert style.rich_style.bgcolor is not None
     return style.rich_style.bgcolor
+
+
+async def _await_follow_pin(*, pilot: Pilot[None], app: SloTUI) -> None:
+    """Wait until every queued follow pin has settled at the transcript bottom.
+
+    A fixed pause raced the pins: under load, a pin queued by an earlier write
+    landed after the test's explicit ``scroll_visible`` and scrolled the block
+    back out of view. Reaching the bottom once is not enough, because later pins
+    may still be queued, so the bottom must hold across several idle cycles.
+    """
+    scroll = app._transcript_scroll
+    assert scroll is not None
+    settled: int = 0
+    last_max: float = -1.0
+    for _ in range(100):
+        await pilot.pause()
+        await pilot.pause(delay=0.05)
+        pinned: bool = scroll.max_scroll_y > 0 and scroll.scroll_y == scroll.max_scroll_y
+        settled = settled + 1 if pinned and scroll.max_scroll_y == last_max else 0
+        last_max = scroll.max_scroll_y
+        if settled >= 4:
+            return
+    raise AssertionError("transcript follow pins never settled at the bottom")
 
 
 def _location_for_offset(*, app: SloTUI, body: Widget, target: Offset) -> tuple[int, int]:

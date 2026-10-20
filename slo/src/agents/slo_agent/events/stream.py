@@ -48,6 +48,7 @@ StreamEventKind = Literal[
     "run_aborted",
     "run_failed",
     # Sub-agent lifecycle (sub-spec 01-sub-agents 01.f):
+    "sub_agent_dispatch_started",  # pool admitted one batch; stream-only, never persisted (feature 94 a.2)
     "sub_agent_spawned",  # pool created a child agent process
     "sub_agent_completed",  # child process finished successfully (exit 0)
     "sub_agent_failed",  # child process failed or crashed (non-zero, non-abort)

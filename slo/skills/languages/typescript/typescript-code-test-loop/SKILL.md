@@ -1,9 +1,7 @@
 ---
 name: typescript-code-test-loop
-description: TypeScript code-test loop — the cycle of write code, identify decision points, write one
-  test per path, run the suite, fix failures, repeat.
-when_to_use: Use when implementing any TypeScript feature or fix to enforce the discipline of testing
-  each decision point before moving to the next unit of work.
+description: TypeScript behavioral increments with focused verification and project-scoped final gates.
+when_to_use: Use when implementing TypeScript features or fixes in verified behavioral increments.
 group: languages
 kind: skill
 ---
@@ -13,8 +11,8 @@ kind: skill
 ## Skill summary
 
 - **Name:** `typescript-code-test-loop`
-- **Description:** TypeScript code-test loop — the cycle of write code, identify decision points, write one test per path, run the suite, fix failures, repeat.
-- **When to use:** Use when implementing any TypeScript feature or fix to enforce the discipline of testing each decision point before moving to the next unit of work.
+- **Description:** TypeScript behavioral increments with focused verification and project-scoped final gates.
+- **When to use:** Implement TypeScript features or fixes in verified behavioral increments.
 - **Group:** `languages`
 - **Kind:** `skill`
 
@@ -31,19 +29,19 @@ kind: skill
 ### The loop in six steps
 
 ```
-1. Write or modify the production code
-2. Identify every decision point in what you just wrote
-3. Write one test per path BEFORE running the suite
-4. Run only the file you changed: pnpm vitest run path/to/file.test.ts
-5. Fix any failures — code or test — until all pass
-6. Run the full suite: pnpm vitest run
+1. Select one observable behavior and its existing/missing evidence
+2. Implement and test the increment in project/user-approved order
+3. Cover meaningful decisions and relevant failure paths
+4. Run focused tests using the project routing commands
+5. Diagnose failures against the contract; verify the correction
+6. Run affected suites at milestones and required full gates before acceptance
 ```
 
 Never leave a failing test behind. Never move to the next unit of work until the current one is green.
 
 ### Step 1: Write the production code
 
-Write the method or function. Keep it small and focused — one decision per method (see the declarative method structure convention). Resist the urge to run the tests first; write the code so you can identify what needs covering.
+Implement a small cohesive behavior, potentially across a few files. Preserve TypeScript declarative-method conventions; method boundaries need not define test increments. Implementation-first is permitted by the default cadence, but never overrides user/project test-first requirements. Follow `skills/coding/code-test-loop/SKILL.md`.
 
 ### Step 2: Identify every decision point
 
@@ -81,7 +79,7 @@ That means **4 tests beyond the happy path**, plus **1 happy path test** = **5 t
 
 ### Step 3: Write one test per path
 
-Write all tests before running any of them. This forces you to think about the design before verifying it.
+Add missing behavioral evidence and run focused tests promptly. Existing tests may already cover paths; one test can traverse multiple branches. The example illustrates meaningful outcomes, not a mandatory branch-to-test formula.
 
 ```typescript
 // tests/services/order.service.test.ts
@@ -190,7 +188,7 @@ This is fast. Run it immediately after writing the tests. You will often see fai
 
 Common failure categories and their fixes:
 
-**Test is wrong (most common when code is fresh):**
+**Incorrect test oracle (establish from the contract, not from current output):**
 ```bash
 AssertionError: expected "charge-98" to equal "charge-99"
 # → the mock returned the wrong fixture value; fix the mock
@@ -212,13 +210,13 @@ Never silently skip a failing test. Either fix the code or fix the test — but 
 
 ### Step 6: Run the full suite
 
-Before you declare the unit of work done:
+At coherent milestones run affected suites; before final acceptance run all required project gates. For a Vitest project, for example:
 
 ```bash
 pnpm vitest run
 ```
 
-A change that fixes five tests but breaks two others is not done. The suite must be fully green.
+Introduced regressions block acceptance. Required gates must pass; baseline exclusions require explicit approval, and blocked checks remain unverified.
 
 ### Vitest CLI reference
 
@@ -247,7 +245,7 @@ pnpm vitest run --reporter=verbose
 | Anti-pattern | Why it breaks the loop |
 |---|---|
 | Writing all code before any tests | You lose track of which decision points need coverage |
-| Running tests after every line | Context switching kills focus; write all tests for a method first |
+| Running tests after every line | Verify a coherent behavior rather than following a line-count ritual |
 | Skipping the full suite run | A local green does not mean no regressions |
 | Using `.skip` to silence a failure | The failure is still there — you just can't see it |
 | Writing "it ran" tests | `expect(result).toBeDefined()` doesn't test any decision |
@@ -255,9 +253,9 @@ pnpm vitest run --reporter=verbose
 
 ### Checklist before marking a unit of work complete
 
-- [ ] Every decision point in the changed code has a test
+- [ ] Meaningful changed decisions, required outcomes and critical failure paths have passing evidence
 - [ ] The targeted test file runs green: `pnpm vitest run <file>`
-- [ ] The full suite runs green: `pnpm vitest run`
+- [ ] Affected suites pass at milestones; required full gates pass before final acceptance
 - [ ] No `.skip` or `.todo` left without an explanatory comment
 - [ ] Test names describe the specific path, not just the method
 - [ ] Guard clause tests verify downstream mocks were NOT called

@@ -2708,7 +2708,7 @@
       "## Quick reference"
     ],
     "description": "Launch a named Slo workflow as a DETACHED headless orchestrator process \u2014 triggered only when the user adds an explicit detach qualifier (\"headless\" / \"detached\" / \"independent\" applied to a dynamic-workflows request or a named workflow, or detach wording \"in the background\" / \"without blocking\"). An unqualified \"dynamic workflows\" request runs in-session via spawn_sub_agents and does NOT trigger this skill. Sets the required timeout env vars, selects models per phase, dispatches phases serially or in parallel, and monitors child agents until the orchestrator reaches a terminal state. A detached orchestrator never calls launch_workflow.",
-    "destination": "skills/design-and-analysis/headless-orchestration/SKILL.md",
+    "destination": "skills/orchestration/headless-orchestration/SKILL.md",
     "status": "retained"
   },
   {
@@ -2816,7 +2816,7 @@
       "## Output Format"
     ],
     "description": "Gateway workflow that decides which skill or workflow to load next for the current task. Routes \"dynamic workflows\" / \"dyanmic workflows\" (no detach qualifier) to in-session multi-agent orchestration via spawn_sub_agents; routes a detach-qualified request (\"headless\" / \"detached\" / \"independent\" dynamic workflows, or a named workflow with \"in the background\" / \"without blocking\") to the headless-orchestration skill via launch_workflow. A detached orchestrator never calls launch_workflow.",
-    "destination": "skills/design-and-analysis/orchestrator/SKILL.md",
+    "destination": "skills/orchestration/orchestrator/SKILL.md",
     "status": "retained"
   },
   {
@@ -3053,18 +3053,17 @@
       "### Pipeline",
       "### Parallel",
       "## Invariants \u2014 These Always Hold",
-      "## Confirmation Behavior",
-      "### Manual Mode",
-      "### Auto Mode",
+      "## Progression and authorization",
       "## What Counts as a Step Completion",
       "## Context Passing Between Steps",
       "## How to Read a Workflow Prompt",
       "## Available Workflows",
       "## Adding New Workflows"
     ],
-    "description": "Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, confirmation behavior, the named workflows available for explicit use, and the routing rules: 'dynamic workflows' / 'dyanmic workflows' (no detach qualifier) = sync in-session execution via spawn_sub_agents; a detach-qualified request ('headless' / 'detached' / 'independent' dynamic workflows, or a named workflow with detach wording) = detached headless orchestrator via launch_workflow; a detached orchestrator never calls launch_workflow.",
-    "destination": "skills/design-and-analysis/workflows/SKILL.md",
-    "status": "retained"
+    "description": "Overview of Slo's formal workflow system: pipeline vs parallel execution, context handoff, evidence-gated progression, the named workflows available for explicit use, and the routing rules: 'dynamic workflows' / 'dyanmic workflows' (no detach qualifier) = sync in-session execution via spawn_sub_agents; a detach-qualified request ('headless' / 'detached' / 'independent' dynamic workflows, or a named workflow with detach wording) = detached headless orchestrator via launch_workflow; a detached orchestrator never calls launch_workflow.",
+    "destination": "skills/orchestration/workflows/SKILL.md",
+    "status": "retained",
+    "metadata_note": "Policy headings and description updated for current progression guidance; source and sha256 retain historical source provenance, not a current-content hash."
   },
   {
     "tier": "bundled",
@@ -3085,7 +3084,7 @@
       "## Quick Reference"
     ],
     "description": null,
-    "destination": "skills/design-and-analysis/workflows/code-test-review.md",
+    "destination": "skills/orchestration/workflows/code-test-review.md",
     "status": "retained"
   },
   {
@@ -3119,7 +3118,7 @@
       "## Quick Reference"
     ],
     "description": "Complete the Code-Test-Review implementation cycle while managing the GitLab issue lifecycle \u2014 pick an assigned issue, implement it with tests, open an MR, and close the issue on merge.",
-    "destination": "skills/design-and-analysis/workflows/gitlab-code-test-review.md",
+    "destination": "skills/orchestration/workflows/gitlab-code-test-review.md",
     "status": "retained"
   },
   {
@@ -3142,7 +3141,7 @@
       "## Quick Reference"
     ],
     "description": null,
-    "destination": "skills/design-and-analysis/workflows/specification-development.md",
+    "destination": "skills/orchestration/workflows/specification-development.md",
     "status": "retained"
   },
   {

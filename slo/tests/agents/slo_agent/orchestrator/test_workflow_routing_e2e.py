@@ -27,6 +27,10 @@ import pytest
 import config.cfg as cfg_module
 from src.agents.base import LLMBuildResult
 from src.agents.providers.faux import FauxChatModel
+from src.agents.reasoning_capabilities import ReasoningLevel
+from langchain_core.tools import BaseTool
+from src.agents.slo_agent.orchestrator.launch_tool import SpawnCallable
+from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
@@ -134,15 +138,17 @@ def build_orchestrator_session(
         *,
         owner_session_id: str,
         default_model: Optional[str],
-        handle_store: Any = None,
-        spawn: Optional[Any] = None,
+        default_reasoning_level: Optional[ReasoningLevel] = None,
+        handle_store: Optional[WorkflowHandleStore] = None,
+        spawn: Optional[SpawnCallable] = None,
         history_root: Optional[Path] = None,
-        **kw: Any,
-    ) -> Any:
+    ) -> BaseTool:
         """Wrap ``LaunchWorkflowTool.build`` injecting test spawn and root."""
         return original_build(
             owner_session_id=owner_session_id,
             default_model=default_model,
+            default_reasoning_level=default_reasoning_level,
+            handle_store=handle_store,
             spawn=launch_spawn or spawn,
             history_root=history_root or _injected_build._history_root,  # type: ignore[attr-defined]
         )
@@ -171,8 +177,8 @@ def build_orchestrator_session(
     # ---- Patch _build_agent to inject our FauxChatModel with baked tools ---
     # We must defer this until after bootstrap because bootstrap mutates
     # _config.extra_tools; the patch captures the post-bootstrap state.
+    assert session._config is not None
     config = session._config
-    assert config is not None
     _extra_tools = list(config.extra_tools or [])
     _all_tools = create_extended_tools() + _extra_tools
 
@@ -351,6 +357,67 @@ def monkeypatched_env(**env_vars: str):
 # ---------------------------------------------------------------------------
 
 
+async def test_invalid_launch_reasoning_returns_graph_observation(tmp_path: Path) -> None:
+    """The real executor passes safe validation JSON into the next model turn."""
+    from collections.abc import AsyncIterator
+    from langchain_core.messages import BaseMessage, ToolMessage
+    from langchain_core.outputs import ChatGenerationChunk
+    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+
+    recorded: dict[str, object] = {}
+    observations: list[str] = []
+    events: list[AgentStreamEventDAO] = []
+    original = FauxChatModel._astream
+
+    async def observe(
+        self: FauxChatModel,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: object,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Observe real model input while retaining the scripted streaming behavior."""
+        observations.extend(
+            message.content
+            for message in messages
+            if isinstance(message, ToolMessage) and isinstance(message.content, str)
+        )
+        async for chunk in original(self, messages=messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield chunk
+
+    session = build_orchestrator_session(
+        history_root=tmp_path,
+        responses=[
+            FauxChatModel.assistant_message(
+                tool_calls=[
+                    FauxChatModel.tool_call_dict(
+                        name="launch_workflow", args={"brief": "bounded", "reasoning_level": "HIGH"}
+                    )
+                ]
+            ),
+            FauxChatModel.assistant_message(content="Invalid launch observed."),
+        ],
+        launch_spawn=_recording_spawn(into=recorded, pid=4242),
+    )
+    try:
+        with patch.object(FauxChatModel, "_astream", new=observe):
+            async for event in session.invoke(text="Run detached with invalid input"):
+                events.append(event)
+    finally:
+        for patcher in getattr(session, "_test_patchers", []):
+            patcher.stop()
+    expected = {
+        "error": "invalid launch_workflow arguments; use brief, cwd, model and canonical reasoning_level"
+    }
+    assert any(json.loads(content) == expected for content in observations)
+    assert any(
+        event.kind == "tool_result" and event.content is not None and json.loads(event.content) == expected
+        for event in events
+    )
+    assert recorded == {}
+    assert list(tmp_path.glob("*/workflows/wf-*.json")) == []
+
+
 @pytest.mark.asyncio
 async def test_sync_dynamic_workflow_executes_in_session(tmp_path: Path) -> None:
     """A "dynamic workflows" turn runs via spawn_sub_agents inside the session.
@@ -428,6 +495,7 @@ async def test_headless_dynamic_workflow_detaches_without_blocking(
                         args={
                             "brief": "Run explain-how-it-works on /repo; write EXPLAINED.md",
                             "cwd": "/repo",
+                            "reasoning_level": "high",
                         },
                     )
                 ],
@@ -449,6 +517,8 @@ async def test_headless_dynamic_workflow_detaches_without_blocking(
     assert handle["pid"] == 4242
     argv: list[str] = recorded["argv"]
     assert "--orchestrator" in argv and "--notify-session" in argv  # inbox completion path wired
+    assert argv.count("--reasoning") == 1
+    assert argv[argv.index("--reasoning") + 1] == "high"
     assert recorded["env"]["SLO_WORKFLOW_ID"] == handle["workflow_id"]
 
     # The detached child is structurally recursion-free: promote a session the

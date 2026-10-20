@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import ANY, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
+from src.agents.reasoning_capabilities import ReasoningLevel
+from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -17,6 +21,7 @@ def _make_session(
     sub_agent_pool=None,
     session_id: str = "sess-001",
     active_model_name: str = "claude-sonnet-4-6",
+    active_reasoning_level: ReasoningLevel = "off",
     assembled_system_prompt: str = "child-system-prompt",
 ) -> MagicMock:
     """Build a minimal ``SloAgentSession`` mock.
@@ -26,6 +31,7 @@ def _make_session(
         sub_agent_pool: Value to return from ``_sub_agent_pool`` attribute.
         session_id (str): Session id for the mock.
         active_model_name (str): Active model name for the mock.
+        active_reasoning_level (ReasoningLevel): Concrete canonical snapshot.
         assembled_system_prompt (str): Value returned by ``_assembled_system_prompt``.
 
     Returns:
@@ -36,12 +42,136 @@ def _make_session(
     session._sub_agent_pool = sub_agent_pool
     session.session_id = session_id
     session.active_model_name = active_model_name
+    session.active_reasoning_level = active_reasoning_level
     session.event_relay = MagicMock()
+    session.history_root = Path("/history-root-for-test")
     session._assembled_system_prompt = MagicMock(return_value=assembled_system_prompt)
     return session
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
+
+
+async def test_pending_session_snapshot_is_not_effective_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offline startup adoption does not replace a provisional launch snapshot."""
+    from unittest.mock import AsyncMock
+    from src.agents.model_catalog.seed import SeedModelCatalog
+    from src.agents.model_catalog.service import ModelCatalogService
+    from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+    from src.agents.slo_agent.sessions.service import SloAgentSession
+    from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool
+
+    monkeypatch.setenv("SLO_PLUGINS_DISABLED", "1")
+    route = "openrouter:author/cold"
+    snapshot = SeedModelCatalog.load()
+    entry = snapshot.entries["gpt-5.4"].model_copy(update={"model_name": route})
+    snapshot = snapshot.model_copy(update={"entries": {**snapshot.entries, route: entry}})
+    session = SloAgentSession.build(
+        config=SessionConfigDAO(workdir=tmp_path, model_name=route, enable_history=False),
+        allow_pending_preparation=True,
+    )
+    assert session.active_reasoning_level == "off"
+    OrchestratorSessionBootstrap.attach(session=session)
+    launch = next(tool for tool in session.orchestration_tools if tool.name == "launch_workflow")
+    with patch.object(ModelCatalogService, "prepare_models", new=AsyncMock(return_value=snapshot)) as prepare:
+        await session.prepare_startup()
+        assert session.preparation_status == "ready"
+        prepare.assert_awaited_once()
+        prepare.reset_mock()
+        with patch.object(LaunchWorkflowTool, "_launch", new_callable=AsyncMock, return_value="{}") as invoke:
+            await launch.ainvoke({"brief": "bounded"})
+            assert invoke.call_args.kwargs["reasoning_level"] == "off"
+            await launch.ainvoke({"brief": "bounded", "reasoning_level": "high"})
+            assert invoke.call_args.kwargs["reasoning_level"] == "high"
+        prepare.assert_not_called()
+    assert session._config is not None and session._config.extra_tools is not None
+    assert any(tool is launch for tool in session._config.extra_tools)
+    assert session._sub_agent_pool is not None
+    await session._sub_agent_pool.abort_and_drain()
+
+
+async def test_reasoning_snapshot_survives_session_switches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real switching and lazy rebuilding retain the original tool object/defaults."""
+    from src.agents.base import LLMBuildResult
+    from src.agents.providers.faux import FauxChatModel
+    from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool
+    from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+    from src.agents.slo_agent.sessions.service import SloAgentSession
+    from unittest.mock import AsyncMock
+
+    from src.auth.credential_store import CredentialStore
+    from src.auth.credential_dao import CredentialDAO, ProviderName, AuthType
+
+    for provider in (ProviderName.OPENAI, ProviderName.KIMI_FOR_CODING):
+        CredentialStore().persist(
+            cred=CredentialDAO(
+                provider=provider, auth_type=AuthType.API_KEY, access_token="synthetic-test-key"
+            )
+        )
+    monkeypatch.setenv("SLO_PLUGINS_DISABLED", "1")
+    session = SloAgentSession.build(
+        config=SessionConfigDAO(
+            workdir=tmp_path, model_name="gpt-5.4", reasoning_level="low", enable_history=False
+        )
+    )
+    OrchestratorSessionBootstrap.attach(session=session)
+    launch = next(tool for tool in session.orchestration_tools if tool.name == "launch_workflow")
+    session.switch_reasoning_level(reasoning_level="high")
+    session.switch_model(model_name="kimi-k3")
+    with patch.object(LaunchWorkflowTool, "_launch", new_callable=AsyncMock, return_value="{}") as invoke:
+        await launch.ainvoke({"brief": "bounded"})
+        assert invoke.call_args.kwargs["model"] == "gpt-5.4"
+        assert invoke.call_args.kwargs["reasoning_level"] == "low"
+        await launch.ainvoke({"brief": "bounded", "model": "kimi-k3", "reasoning_level": "medium"})
+        assert invoke.call_args.kwargs["model"] == "kimi-k3"
+        assert invoke.call_args.kwargs["reasoning_level"] == "medium"
+    with patch(
+        "src.agents.slo_agent.graph.service.LLMFactory.create",
+        return_value=LLMBuildResult(llm=FauxChatModel(responses=[]), supports_explicit_caching=False),
+    ) as factory:
+        await session._ensure_agent_ready()
+    assert factory.call_args.kwargs["model_name"] == "kimi-k3"
+    assert factory.call_args.kwargs["reasoning_level"] == "high"
+    assert session._config is not None and session._config.extra_tools is not None
+    assert any(tool is launch for tool in session._config.extra_tools)
+    assert session._sub_agent_pool is not None
+    await session._sub_agent_pool.abort_and_drain()
+
+
+async def test_replacement_session_binds_new_reasoning_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual /new configuration path binds a new identity and active level."""
+    from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool
+    from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+    from src.agents.slo_agent.sessions.service import SloAgentSession
+    from src.tui.app import SloTUI
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("SLO_PLUGINS_DISABLED", "1")
+    old = SloAgentSession.build(
+        config=SessionConfigDAO(
+            workdir=tmp_path, model_name="gpt-5.4", reasoning_level="low", enable_history=False
+        )
+    )
+    OrchestratorSessionBootstrap.attach(session=old)
+    old.switch_reasoning_level(reasoning_level="high")
+    new = SloAgentSession.build(config=SloTUI._build_replacement_session_config(old_session=old))
+    OrchestratorSessionBootstrap.attach(session=new)
+    launch = next(tool for tool in new.orchestration_tools if tool.name == "launch_workflow")
+    assert new.session_id != old.session_id
+    assert all(tool is not launch for tool in old.orchestration_tools)
+    with patch.object(LaunchWorkflowTool, "_launch", new_callable=AsyncMock, return_value="{}") as invoke:
+        await launch.ainvoke({"brief": "bounded"})
+    assert invoke.call_args.kwargs["owner_session_id"] == new.session_id
+    assert invoke.call_args.kwargs["reasoning_level"] == new.active_reasoning_level == "high"
+    assert old._sub_agent_pool is not None and new._sub_agent_pool is not None
+    await old._sub_agent_pool.abort_and_drain()
+    await new._sub_agent_pool.abort_and_drain()
 
 
 class TestOrchestratorSessionBootstrapAttach:
@@ -89,8 +219,50 @@ class TestOrchestratorSessionBootstrapAttach:
             orchestrator_session_id="my-session",
             default_model="gpt-5.4",
             relay=session.event_relay,
+            owner_session_id="my-session",
+            run_id=ANY,
+            history_root=Path("/history-root-for-test"),
             child_system_prompt=session._assembled_system_prompt(),
         )
+        run_id: str = MockPool.call_args.kwargs["run_id"]
+        assert str(UUID(run_id)) == run_id
+
+    def test_attach_passes_explicit_headless_owner(self) -> None:
+        """Headless composition receives the notifier launch owner explicitly."""
+        session: MagicMock = _make_session(session_id="orch-session")
+
+        with (
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"),
+        ):
+            OrchestratorSessionBootstrap.attach(session=session, headless=True, owner_session_id="tui-owner")
+
+        assert MockPool.call_args.kwargs["owner_session_id"] == "tui-owner"
+
+    def test_attach_allocates_fresh_run_id_per_composition(self) -> None:
+        """Every pool composition, including a resumed runner, gets a new run id."""
+        with (
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"),
+        ):
+            OrchestratorSessionBootstrap.attach(session=_make_session(session_id="a"))
+            OrchestratorSessionBootstrap.attach(session=_make_session(session_id="a"))
+
+        first, second = (call.kwargs["run_id"] for call in MockPool.call_args_list)
+        assert first != second
+
+    def test_attach_uses_default_history_root_when_history_disabled(self) -> None:
+        """A no-history session composes its pool under the default history root."""
+        session: MagicMock = _make_session()
+        session.history_root = None
+
+        with (
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"),
+        ):
+            OrchestratorSessionBootstrap.attach(session=session)
+
+        assert MockPool.call_args.kwargs["history_root"] == default_history_root()
 
     def test_attach_is_noop_when_agent_already_built(self) -> None:
         """No pool is built when the session's lazy agent already exists."""
@@ -180,14 +352,22 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         session: MagicMock = _make_session(
             session_id="owner-1",
             active_model_name="gpt-5.4",
+            active_reasoning_level="medium",
         )
 
-        with patch("src.agents.slo_agent.orchestrator.launch_tool.LaunchWorkflowTool.build") as mock_build:
+        with (
+            patch("src.agents.slo_agent.orchestrator.launch_tool.LaunchWorkflowTool.build") as mock_build,
+            patch(
+                "src.agents.slo_agent.orchestrator.workflow_registry.WorkflowStatusTool.build"
+            ) as status_build,
+        ):
             mock_build.return_value = MagicMock(name="launch_workflow")
             OrchestratorSessionBootstrap._build_workflow_tools(session=session)
+        assert mock_build.call_args.kwargs["handle_store"] is status_build.call_args.kwargs["store"]
 
         assert mock_build.call_args.kwargs["owner_session_id"] == "owner-1"
         assert mock_build.call_args.kwargs["default_model"] == "gpt-5.4"
+        assert mock_build.call_args.kwargs["default_reasoning_level"] == "medium"
 
     def test_attach_headless_registers_only_spawn_tool(
         self,

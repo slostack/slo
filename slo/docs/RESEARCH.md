@@ -289,6 +289,14 @@ This concise index points maintainers to the runtime owners most relevant to Fea
   non-code families such as presentation. No `SLO_CODE_PROMPTS_DIR` is needed.
 - This is development-time maintenance only; runtime discovery and user override
   behavior remain unchanged. Regression coverage: `tests/agents/skills/test_refresh_skills.py`.
+- `skills/design-and-analysis/explain-with-html/SKILL.md` owns programmer-facing
+  functionality explanations: mandatory `solution-design`, `coding-rules`, and
+  `code-design-principles` reading before HTML design; one concept per section;
+  domain ownership and control-flow diagrams; final domain-type, interface, and
+  numbered code-journey sections. Existing source and proposed contracts remain
+  distinct. It composes with `present-as-single-page`, without changing runtime
+  behavior. Discovery, prerequisite links, section/code requirements, and generated
+  index freshness are covered by `tests/agents/skills/test_design_skill_additions.py`.
 
 ## Orchestrator limits
 
@@ -303,6 +311,170 @@ gates: chain checks execution status, not READY/REVISE. Process completion is no
 workflow acceptance. Stream, child-output and Bash defaults remain 10800, 7200
 and 1800 seconds. Shell exports must precede process launch; a Bash tool export
 cannot modify an already running parent process.
+
+### Child-only abort (feature 94 a.4, T09)
+
+`SubAgentPool.abort_child(request=...)` is the only way to stop a single child.
+The session facade (`SloAgentSession.abort_child`) and the later runner
+controller both call it; nothing else may signal a PID. Rules that are easy to
+break:
+
+- **Identity.** The pool rechecks owner, parent, run and the current
+  `execution_id`. Every synchronization map is keyed by
+  `(session_id, execution_id)`, never by session alone.
+- **Reservation.** The reservation and abort `Event` are set synchronously before
+  the first await. Child abort never sets `_sealed`, so siblings and later
+  dispatches keep running.
+- **Slot race.** `_acquire_child_slot` races the semaphore against the event,
+  joins both waiters, and only then decides with no await in between. A
+  cancelled `acquire` task never holds a permit: check `cancelled()` before
+  `exception()`.
+- **Pending publication.** A reserved pending child publishes through
+  `finish_without_spawn` and never waits `_cancel_settled`.
+- **Unresolved outcomes.** An `unresolved` or `recycled_pid` reap returns
+  `unresolved` at once. That result is retained, and later requests join it
+  without another reap until natural terminal evidence makes them
+  `already_terminal`.
+- **Observed outcomes only.** `aborted` is reported only when the canonical
+  winner is aborted. Outcome text comes from
+  `ChildAbortOutcomeDAO.for_request`, never from exception text.
+
+### Durable child-control protocol (feature 94 a.4, T10)
+
+A detached TUI reaches the owning pool only through files under
+`<parent>/child-control.v1/`. `ChildAbortStore` (`orchestrator/child_abort.py`)
+is a file adapter; `ChildAbortController` is the runner-owned consumer.
+
+- **Admission boundary.** `submit` returns `requested` only after the atomic
+  commit. A durability warning still means requested
+  (`ChildAbortOutcomeDAO.admitted`), so callers never resubmit.
+- **One run-scoped lock.** Capability recheck, immutable-ID check and the
+  256-request capacity count all happen under `<run_id>/admission.lock`. An
+  identical duplicate stays idempotent even at capacity. A conflicting payload
+  or a malformed file with that ID is refused and never overwritten.
+- **No-follow walk.** Every open is descriptor-relative with `O_NOFOLLOW` from
+  the trusted history root. Before each write the store proves the path still
+  names the held directory. Readers never mkdir or chmod. A TUI writer never
+  creates the control directory; only the runner's capability write does.
+- **Consumption.** The poll runs every `POLL_INTERVAL_SECONDS` (1.0) on its own
+  task, so a blocked dispatch never delays it. Each request ID gets one tracked
+  operation. A receipt-write failure retries only the write on later ticks. A
+  decodable request naming another run or parent gets an `unavailable` receipt
+  and never executes. Unaddressable files are skipped with no receipt.
+- **Lifecycle.** `HeadlessRunner` starts the controller only for an attached
+  pool with an explicit `--notify-session` owner. A start failure logs
+  `child_control_unavailable` and the run continues. `_close_child_control`
+  joins shutdown even across repeated cancellation, before the final fleet
+  drain. A fresh pool `run_id` per invocation means old requests never execute.
+
+### Clearing finished groups (feature 94 a.5, T13)
+
+`/workflows tui dismiss [<id>]` hides finished groups from the TUI session list.
+It is observation only: `DetachedWorkflowAppService.dismiss_from_list` writes no
+handle or history, signals nothing and never cancels or acknowledges an abort.
+
+- **Finished.** Every row of the group has a status in `TERMINAL_STATUSES`
+  (the same owner the abort path uses). Running, pending, stalled, launching and
+  unknown keep the group visible; stale or unavailable rows count by their last
+  known status. A targeted running group is refused with an abort hint.
+- **Keyed lifetimes, in memory only.** A detached group joins `_dismissed`
+  (shared with `/workflows dismiss`), so a successful resume re-shows it. The
+  attached batch is keyed by its members, `_hidden_attached_batch` (one
+  `(dispatch_id, session_id, execution_id)` per row), not by `dispatch_id` alone.
+  Chain mode registers each step into the same dispatch only when the step
+  starts, so between steps a batch can look finished. The batch stays hidden
+  only while its members equal the hidden set: a new step or incarnation in the
+  same dispatch shows it again (and it can be opened and aborted), and a new
+  dispatch shows normally. The next refresh that sees different members releases
+  the suppression, so it never re-applies. One predicate, `_hides_attached`,
+  serves the attached projection, the commit filter and the progress gateway.
+  `close()` (teardown and `/new`) drops both kinds.
+- **No resurrection.** `_commit_snapshot` filters hidden rows, so a refresh that
+  was already reading when the command ran cannot repaint them. The attached
+  projection also omits the hidden batch, so the progress gateway treats its keys
+  as removed.
+- **Routing.** The router routes `tui` before the history guard, because
+  attached groups exist without history. It returns a typed `tui_dismiss`
+  request with an empty `rendered`. The app writes the outcome's own line instead,
+  then requests one coalesced coordinator refresh.
+
+## Feature 94 TUI session controls — owner map
+
+Feature 94 adds horizontal prompt rules, a workflow session list below the
+editor, a live progress modal and a child-only abort to the native Slo TUI.
+Herdr is excluded. Each decision has one owner:
+
+| Concern | Sole owner |
+|---|---|
+| Prompt frame | `src/tui/app.tcss` `PromptInput` per-edge `border-top`/`border-bottom` only |
+| Task label (150 code points incl. `…`) | `orchestrator/task_preview.py` `TaskPreview` (registry, loader and row all call it) |
+| Execution identity and terminal winner | `ProcessRegistry.commit_terminal` (first wins). Two routes reach it: `SubAgentProcess._publish_terminal` for wrapper results (natural run, confirmed reap, `finish_without_spawn`), and `ProcessRegistry.mark_terminal` for `HeadlessRunner`'s straggler sweep. Only the wrapper route writes child `status.json` |
+| Dispatch membership | `SubAgentPool.attached_dispatch_snapshot` (explicit `dispatch_id`, never inferred from child events) |
+| Bounded history read for observation | `load_observation_window` on the existing history stores; `JsonlTail` for captures |
+| Progress loading and the shared formatter | `WorkflowVisualizerLoader` + `workflows/transcript_renderer.py` (used by `slo visualize` and the modal) |
+| Owner-scoped list and progress gateway | `DetachedWorkflowAppService` (`load_session_snapshot`, `load_session_progress`, `begin_child_abort`) |
+| Observation timer | `WorkflowProgressCoordinator` (one 5.0 s timer per owning session) |
+| Panel/modal presentation | `SubAgentFleetPanel`/`FleetSessionList`/`SubAgentFleetRow`, `SessionProgressScreen`, `AbortConfirmationScreen`, via the app's `_WorkflowProgressSink` |
+| Stopping one child | `SubAgentPool.abort_child`; detached requests through `ChildAbortStore` → `ChildAbortController` |
+
+### Rules that are easy to break
+
+- **Identity vocabulary.** `dispatch_id` (one admitted batch), `execution_id`
+  (one child incarnation), `run_id` (one pool invocation), `request_id` (one
+  child-abort request) and `owner_session_id`/`session_id` are distinct. The
+  list key is `(orchestrator_session_id, session_id)`; abort targets add the
+  `execution_id`, so a restarted child is never aborted through a stale row.
+- **Released files keep their shape.** `status.json`, `fleet.json` and
+  `spawn_context.json` decode with the released closed DAOs (the context's
+  `execution_id` is `exclude=True`). Identity lives only in
+  `children/<id>/execution.v1.json` and `execution-index.v1.json`.
+  `sub_agent_dispatch_started` is stream-only and never persisted.
+- **Observation never repairs.** Observation reads are byte- and event-bounded
+  (`HISTORY_OBSERVATION_MAX_BYTES`/`_EVENTS`, `PROGRESS_MAX_ENTRIES`,
+  `OBSERVATION_MAX_HANDLES` = 256; beyond it the list keeps its last known
+  membership with a stale notice, never a partial tuple). They do no
+  recovery, mkdir or chmod, and refuse symlink escapes. Inference replay and full
+  export keep the full-load path.
+- **One timer, single flight.** The coordinator loads immediately, then every
+  `REFRESH_INTERVAL_SECONDS` (5.0). At most one drain runs (at most two reads per
+  drain). Results apply only when the generation and selected key captured before
+  the read are still current, so `/new`, minimize and teardown discard late
+  results. Lifecycle stream events request one coalesced refresh; content deltas
+  request none. Prompt end no longer clears the list.
+- **Reading position.** `ProgressLog` writes with `scroll_end=False`. New output
+  follows only when the reader was at the bottom; `End` resumes following. Escape
+  or Minimize saves the viewport (64 most recent keys, `PROGRESS_VIEWPORT_CACHE_LIMIT`)
+  and never cancels execution.
+- **Horizontal pan scope.** `ProgressLog(wrap=False)` does not stop Markdown
+  answers from wrapping to the log width, so Left/Right pans only unwrapped entries
+  (tool output and other preformatted lines). Pan tests must use a long tool-output
+  line, not assistant text. This narrows a.3's "Left/Right pan long lines" and is
+  open for the human visual approver to accept or reject.
+- **Abort is a request.** The confirmation names child and orchestrator; Escape
+  and Keep running submit nothing. Confirm submits once through the service, and
+  the modal shows "Abort requested" until terminal evidence arrives. After
+  `ABORT_CONFIRMATION_WAIT_SECONDS` (30, monotonic) without settlement it shows a
+  fixed notice and keeps the request: it never resubmits and never signals a PID.
+  Closing the modal does not cancel an accepted submission; teardown joins it.
+- **No workflow Ctrl+W.** Tab/Shift+Tab reach the list; arrows in the editor keep
+  editing and history recall. The demo's Ctrl+W is prototype-only.
+- **Panel geometry.** Heading plus at most five rows, at most a quarter of the
+  screen, between `PromptInput` and `UsageStatusBar`. Below 60×20 the rows give
+  way to a resize notice. An empty list takes zero height.
+
+### Rollback and safe operation
+
+Rolling back restores the prior UI. Older binaries ignore the additive
+`*.v1.json` siblings and `child-control.v1/`; nothing is rewritten, backfilled or
+automatically deleted. Whole-workflow abort keeps `abort_request.json`, the
+headless watchdog and `cancel_all`. `/workflows dismiss|resume` keep their
+meaning, and `slo visualize --follow` auto-launch is unchanged (`SLO_AUTO_VISUALIZE=0`
+disables it). Do not smoke-test child abort against real operator-owned children
+without separate authorization.
+
+Composed proof: `tests/integration/test_workflow_progress_tui.py` (including the
+20-child `TestTwentyChildFleetJourney` in both themes at 60×20/80×24/120×40) and
+`tests/integration/test_workflow_child_abort_tui.py`.
 
 ## Runtime path
 
@@ -348,6 +520,7 @@ slo --plugin plugins/bash_live_output/plugin.py
 - `slo plugin install <url> --yes`, `list`, `uninstall <id>`, and `upgrade <id>` delegate through `TyperDispatch.plugin` to `PluginInstallerService`.
 - `/plugins`, `/plugins trust`, and `/plugins reload` are registered in `src/tui/slash_command_registry.py` and handled in `src/tui/slash_router.py`.
 - `src/tui/widgets/usage_status_bar.py` renders a plugin status segment from the dispatcher’s live status map when the app provides updates.
+- **Textual 8.2.8 screen dismissal (feature 94 T08):** `Screen.dismiss()` runs the result callback and then `app.pop_screen()`, which pops the *top* screen, not necessarily `self`. `ScreenResume` is a queued message, so a screen can receive it after it has already left the stack or after another screen was pushed above it. A screen that closes itself later (`SessionProgressScreen.retire`/`on_screen_resume`) must dismiss only while `self.is_active` and at most once. Otherwise it pops an unrelated modal or raises `ScreenStackError` on a base-only stack. `is_mounted` stays True after removal; use `is_mounted and is_attached` for delayed callbacks.
 
 ## Authentication (spec 78, fix 78.b.1)
 
@@ -596,7 +769,7 @@ credential freshness or complete Feature 86 readiness.
 
 - `install.sh` is the sole writer for both the user-facing pipx `slo` wrapper and managed shell state. It validates `PIPX_HOME`, `pipx runpip` metadata, venv identity, and generated `slo`/`slo-entry` scripts before atomically replacing only the recognized generated `slo` script with `<venv>/bin/python -I slo-entry`. A normal POSIX venv's `bin/python` may link to a base interpreter outside the venv; finalization retains that venv-side pathname and accepts it only when executing it reports `sys.prefix` exactly equal to the validated venv root. Outer venv-root links, malformed/cyclic chains, and unsafe user artifacts remain refused.
 - `slo update` invokes the packaged `install.sh --finalize-launcher` immediately after a successful pipx reinstall and before conditional shell-default work. Direct pipx mutations bypass this step; recovery is the matching tagged public installer.
-- The wrapper ignores hostile Python import configuration but preserves ordinary process environment for its initial CLI process, including `SLO_SKILLS_DIR` and `SLO_KB_DIR`. Headless children remain sanitized-environment module spawns without `-I`; visualizer source fallback is trusted-source-only and does not forward `PYTHONPATH`.
+- The wrapper ignores hostile Python import configuration but preserves ordinary process environment for its initial CLI process, including `SLO_SKILLS_DIR` and `SLO_KB_DIR`. Headless sub-agents and fresh/resumed workflow orchestrators use `sys.executable -I -m src.cli` with the existing sanitized environment; visualizer source fallback is trusted-source-only and does not forward `PYTHONPATH`.
 
 ## Installer/update GitHub outage fallback
 

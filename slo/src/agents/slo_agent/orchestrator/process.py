@@ -1,7 +1,7 @@
 """SubAgentProcess — manage one headless child ``slo run`` process.
 
 One process wrapper is created per task by ``SubAgentPool._run_one``. It
-spawns ``sys.executable -m src.cli run --json -p <prompt>`` via
+spawns ``sys.executable -I -m src.cli run --json -p <prompt>`` via
 ``asyncio.create_subprocess_exec`` (venv-portable), reads its JSONL stdout
 line by line, re-hydrates each line into an ``AgentStreamEventDAO``, tags it
 with identity fields, updates the ``ProcessRegistry``, enforces the per-task
@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import sys
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -48,7 +50,14 @@ from src.agents.model_catalog.prompt_clause import append_kimi_for_coding_clause
 from src.cli.headless_events import HeadlessLifecycleEventDAO, emit_lifecycle_event
 
 from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
-from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
+from src.agents.slo_agent.orchestrator.dao import (
+    StdoutCaptureIdentityDAO,
+    SubAgentResultDAO,
+    SubAgentTaskDAO,
+    TerminalReason,
+    TerminatedBy,
+    terminal_reason_for_status,
+)
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
@@ -173,9 +182,11 @@ class SubAgentProcess:
         model: Optional[str],
         relay: AgentEventSubscriber,
         registry: ProcessRegistry,
+        execution_id: str,
         system_prompt: str = "",
         parent_session_id: Optional[str] = None,
         slo_home: Optional[Path] = None,
+        history_root: Optional[Path] = None,
     ) -> None:
         """Bind the process wrapper to its task, identity, relay, and registry.
 
@@ -185,13 +196,18 @@ class SubAgentProcess:
             model (Optional[str]): Effective model name for the child process.
             relay (AgentEventSubscriber): Tagged-event relay from the pool.
             registry (ProcessRegistry): Pool-owned lifecycle registry.
+            execution_id (str): Incarnation returned by ``ProcessRegistry.register``;
+                every registry mutation and terminal candidate carries it.
             system_prompt (str): Assembled system prompt for the child session.
                 Written to ``spawn_context.json`` for visualizer inspection.
                 Defaults to empty string when not supplied (pre-54 compat).
             parent_session_id (Optional[str]): Orchestrator session id for capture
                 file path construction. ``None`` disables capture writing.
             slo_home (Optional[Path]): Slo home directory. ``None`` disables
-                capture writing.
+                capture writing unless ``history_root`` is supplied.
+            history_root (Optional[Path]): Session history root shared with the
+                pool's fleet projection. Takes precedence over ``slo_home`` so child
+                files and execution evidence always live under one root.
         """
         self._task: SubAgentTaskDAO = task
         self._session_id: str = session_id
@@ -201,9 +217,25 @@ class SubAgentProcess:
         self._system_prompt: str = system_prompt
         self._parent_session_id: Optional[str] = parent_session_id
         self._slo_home: Optional[Path] = slo_home
+        self._history_root: Optional[Path] = history_root
+        self._execution_id: str = execution_id
         self._proc: Optional[asyncio.subprocess.Process] = None
+        # Sticky single-use latch: set on run entry, before the first spawn await.
         self._spawn_in_progress: bool = False
         self._spawn_ready: asyncio.Event = asyncio.Event()
+        # Pre-run cancellation latch; run() then publishes a pending abort directly.
+        self._cancel_requested: bool = False
+        # One shared reaping worker per wrapper; every canceller joins it.
+        self._cancel_task: Optional[asyncio.Task[Optional[ReapOutcome]]] = None
+        # Cleared synchronously when the reaping worker starts, set when it ends.
+        # Spawned-run publication waits on it; pending publication never does.
+        self._cancel_settled: asyncio.Event = asyncio.Event()
+        self._cancel_settled.set()
+        self._stdout_capture: Optional[IO[bytes]] = None
+        # Digest of the winner's status.json bytes once written; None allows retry.
+        self._published_status_digest: Optional[str] = None
+        # Whether the terminal sibling bound to that digest committed; False retries it.
+        self._terminal_evidence_published: bool = False
         self._forwarded_bytes: int = 0
         self._answer: str = ""
         self._child_credential: bytes = b""
@@ -213,13 +245,42 @@ class SubAgentProcess:
         self._failure_envelope: dict[str, object] = {}
         self._terminal_result_built: Optional[SubAgentResultDAO] = None
 
-    def _write_spawn_context(self) -> None:
-        """Write spawn_context.json to the child capture directory.
+    @property
+    def session_id(self) -> str:
+        """Return the child session identifier this wrapper executes."""
+        return self._session_id
 
-        Uses an atomic temp-file + os.replace pattern so readers never see a
-        partial file. Guarded by an existence check so a second call (e.g. in
-        a retry scenario) does not overwrite the original record. Failures are
-        caught and logged; they must not propagate into ``run()``.
+    @property
+    def execution_id(self) -> str:
+        """Return the registry incarnation this wrapper captured at construction."""
+        return self._execution_id
+
+    @property
+    def task(self) -> SubAgentTaskDAO:
+        """Return the task definition this wrapper executes."""
+        return self._task
+
+    @property
+    def awaiting_pending_abort(self) -> bool:
+        """Return whether a pre-run cancellation latched and run was never entered.
+
+        Such a wrapper has no process or reaper; only a pending-abort publication
+        (``finish_without_spawn``) can end its incarnation.
+        """
+        return self._cancel_requested and not self._spawn_in_progress and self._proc is None
+
+    def _write_spawn_context(self) -> Optional[str]:
+        """Atomically replace spawn_context.json for this incarnation.
+
+        WHAT: Writes this incarnation's exact context bytes through the shared
+            atomic writer, replacing any earlier incarnation's file at the reused
+            session path, and returns the digest of those bytes.
+        WHO: Called once by ``run`` before the stdout capture is opened.
+        WHEN: After run entry, before spawn; failures are logged, never raised.
+
+        Returns:
+            Optional[str]: SHA-256 of the written bytes, or None when capture is
+                disabled or the write failed (the context is then untrusted).
         """
         from src.agents.slo_agent.orchestrator.context_dao import SpawnContextDAO  # noqa: PLC0415
 
@@ -230,22 +291,20 @@ class SubAgentProcess:
 
         capture_dir: Optional[Path] = self._capture_dir()
         if capture_dir is None:
-            return
+            return None
+        context: SpawnContextDAO = SpawnContextDAO.build(
+            task_id=self._task.task_id,
+            prompt=effective_prompt,
+            system_prompt=self._system_prompt,
+            inactivity_timeout_seconds=CHILD_INACTIVITY_TIMEOUT_SECONDS,
+            model=self._model,
+            reasoning_level=self._task.reasoning_level,
+            cwd=self._task.cwd,
+            execution_id=self._execution_id,
+        )
+        text: str = context.model_dump_json(indent=2)
         try:
-            capture_dir.mkdir(parents=True, exist_ok=True)
-            spawn_path: Path = capture_dir / "spawn_context.json"
-            if spawn_path.exists():
-                return
-            context: SpawnContextDAO = SpawnContextDAO.build(
-                task_id=self._task.task_id,
-                prompt=effective_prompt,
-                system_prompt=self._system_prompt,
-                inactivity_timeout_seconds=CHILD_INACTIVITY_TIMEOUT_SECONDS,
-                model=self._model,
-                reasoning_level=self._task.reasoning_level,
-                cwd=self._task.cwd,
-            )
-            AtomicFileWriter.write_json(path=spawn_path, model=context)
+            AtomicFileWriter.write_text(path=capture_dir / "spawn_context.json", text=text)
         except OSError as exc:
             log_warning(
                 msg="spawn_context_write_failed",
@@ -253,14 +312,17 @@ class SubAgentProcess:
                 session_id=self._session_id,
                 error=str(exc),
             )
+            return None
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def _build_argv(self) -> list[str]:
         """Build the headless child command line.
 
-        Uses ``sys.executable -m src.cli`` rather than a bare ``slo`` on PATH
+        Uses ``sys.executable -I -m src.cli`` rather than a bare ``slo`` on PATH
         so the child always runs under the same interpreter and virtualenv as
-        the orchestrator in both dev and installed layouts. The pool-assigned
-        session id and history flag are unconditional so child captures,
+        the orchestrator in installed and editable-install layouts, isolated from
+        project import paths. The pool-assigned session id and history flag are
+        unconditional so child captures,
         heartbeats, and history share one identity.
 
         Returns:
@@ -272,6 +334,7 @@ class SubAgentProcess:
         )
         argv: list[str] = [
             sys.executable,
+            "-I",
             "-m",
             "src.cli",
             "run",
@@ -305,13 +368,86 @@ class SubAgentProcess:
             Optional[Path]: Absolute capture directory path, or ``None`` when
                 either ``parent_session_id`` or ``slo_home`` is unset.
         """
-        if self._parent_session_id is None or self._slo_home is None:
+        history_root: Optional[Path] = self._resolved_history_root()
+        if self._parent_session_id is None or history_root is None:
             return None
         return OrchestrationLayout.child_capture_dir(
-            history_root=self._slo_home / "sessions" / "history",
+            history_root=history_root,
             parent_session_id=self._parent_session_id,
             child_session_id=self._session_id,
         )
+
+    def _resolved_history_root(self) -> Optional[Path]:
+        """Return the history root shared with the pool's fleet projection.
+
+        Returns:
+            Optional[Path]: Injected history root, else ``<slo_home>/sessions/history``,
+                else None when capture is not configured.
+        """
+        if self._history_root is not None:
+            return self._history_root
+        if self._slo_home is None:
+            return None
+        return self._slo_home / "sessions" / "history"
+
+    def _open_stdout_capture(self) -> Optional[StdoutCaptureIdentityDAO]:
+        """Open a fresh, empty stdout capture file for this incarnation.
+
+        WHAT: Replaces any earlier incarnation's capture at the reused path with a
+            newly created file (a new inode, never an in-place truncation) and
+            returns that file's exact (device, inode) identity.
+        WHO: Called once by ``run`` after the spawn context is written.
+        WHEN: Before spawn, so running evidence can name the capture before output.
+
+        Returns:
+            Optional[StdoutCaptureIdentityDAO]: Identity of the opened capture, or
+                None when capture is disabled or could not be opened.
+        """
+        capture_dir: Optional[Path] = self._capture_dir()
+        if capture_dir is None:
+            return None
+        try:
+            capture_dir.mkdir(parents=True, exist_ok=True)
+            self._stdout_capture = self._replace_with_new_file(path=capture_dir / "stdout.jsonl")
+            stat: os.stat_result = os.fstat(self._stdout_capture.fileno())
+        except OSError:
+            self._close_stdout_capture()
+            return None
+        return StdoutCaptureIdentityDAO(device=stat.st_dev, inode=stat.st_ino)
+
+    @staticmethod
+    def _replace_with_new_file(*, path: Path) -> IO[bytes]:
+        """Create a private file beside ``path`` and atomically move it into place.
+
+        The new file exists alongside any earlier file before the replace, so its
+        inode can never equal the earlier incarnation's; readers holding that
+        identity therefore reject this incarnation's bytes.
+
+        Args:
+            path (Path): Capture path to replace.
+
+        Returns:
+            IO[bytes]: Writable handle to the newly created, empty file.
+
+        Raises:
+            OSError: If the file cannot be created or moved into place; no
+                temporary file is left behind.
+        """
+        descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            os.replace(temporary, path)
+        except OSError:
+            os.close(descriptor)
+            os.unlink(temporary)
+            raise
+        return os.fdopen(descriptor, "wb")
+
+    def _close_stdout_capture(self) -> None:
+        """Close the stdout capture once; later calls are no-ops."""
+        capture: Optional[IO[bytes]] = self._stdout_capture
+        self._stdout_capture = None
+        if capture is not None:
+            capture.close()
 
     def _open_capture_file(self, *, name: str) -> Optional[IO[bytes]]:
         """Open a capture file for appending, creating the directory tree as needed.
@@ -353,25 +489,56 @@ class SubAgentProcess:
         return build_headless_child_env(extra=extra)
 
     async def run(self) -> SubAgentResultDAO:
-        """Spawn the child, stream its events, and return the terminal result.
+        """Spawn the child, stream its events, and return the canonical terminal winner.
+
+        WHAT: A cancellation latched before run entry publishes a pending abort
+            directly, without spawning or waiting. Otherwise the child is spawned and
+            streamed to a natural candidate (exit, spawn failure or inactivity
+            failure); run then waits for any active reaping worker to settle and
+            publishes through ``_publish_terminal`` with no await in between.
+        WHO: Called once by ``SubAgentPool._run_one`` after slot admission.
+        WHEN: Single use per wrapper. Never raises for child failures, so a sibling
+            process is never cancelled by this one's exception.
+
+        Returns:
+            SubAgentResultDAO: The registry winner shared by cache, status.json and fleet.
+        """
+        if self._cancel_requested:
+            return await self.finish_without_spawn(
+                result=self._aborted_candidate(answer="aborted by operator before child spawn"),
+                terminal_reason="operator_abort",
+                terminated_by="abort",
+            )
+        self._spawn_in_progress = True
+        candidate: SubAgentResultDAO = await self._run_to_candidate()
+        await self._cancel_settled.wait()
+        return self._publish_terminal(
+            candidate=candidate,
+            terminal_reason=terminal_reason_for_status(status=candidate.status),  # type: ignore[arg-type]
+            terminated_by="natural",
+        )
+
+    async def _run_to_candidate(self) -> SubAgentResultDAO:
+        """Spawn and stream the child, mapping every outcome to a natural candidate.
 
         Stdout and stderr are pumped concurrently via ``asyncio.gather`` to
         prevent pipe deadlock: a child that writes to both pipes can stall
         indefinitely if the parent only drains one at a time and the other
-        pipe buffer fills up. Never raises: a spawn or stream failure is caught
-        here and mapped to a ``failed`` result so a sibling process is never
-        cancelled by this one's exception.
+        pipe buffer fills up. Builds candidates only; nothing is cached or written.
 
         Returns:
-            SubAgentResultDAO: Terminal result for this sub-agent task.
+            SubAgentResultDAO: Natural exit candidate, or a failed candidate for a
+                spawn, stream or inactivity failure.
         """
         try:
-            child_env = self._build_child_spawn_env()
-            credential = CredentialResolver.resolve(provider=ProviderName.OPENROUTER)
-            self._child_credential = credential.access_token.encode("utf-8") if credential else b""
-            self._write_spawn_context()
-            self._spawn_in_progress = True
+            # Spawn entry is latched at run entry; every pre-spawn exit must release
+            # cancellers waiting on it, or a later cancel waits forever.
             try:
+                child_env = self._build_child_spawn_env()
+                credential = CredentialResolver.resolve(provider=ProviderName.OPENROUTER)
+                self._child_credential = credential.access_token.encode("utf-8") if credential else b""
+                spawn_context_sha256: Optional[str] = self._write_spawn_context()
+                stdout_identity: Optional[StdoutCaptureIdentityDAO] = self._open_stdout_capture()
                 self._proc = await asyncio.create_subprocess_exec(
                     *self._build_argv(),
                     stdout=asyncio.subprocess.PIPE,
@@ -382,8 +549,11 @@ class SubAgentProcess:
                 )
                 self._registry.mark_running(
                     session_id=self._session_id,
+                    execution_id=self._execution_id,
                     pid=self._proc.pid,
                     started_at=time.time(),
+                    stdout_identity=stdout_identity,
+                    spawn_context_sha256=spawn_context_sha256,
                 )
             finally:
                 self._spawn_ready.set()
@@ -401,35 +571,37 @@ class SubAgentProcess:
                 error=self._redact_child_output(raw=str(exc).encode("utf-8")).decode("utf-8"),
             )
             return self._failed_result_from_exception(error=exc)
+        finally:
+            self._close_stdout_capture()
 
     def _failed_result_from_exception(self, *, error: Exception) -> SubAgentResultDAO:
-        """Build a failed result while retaining bounded child diagnostics.
+        """Build a failed candidate while retaining bounded child diagnostics.
 
         WHAT: Returns retained stderr diagnostics, falling back to error text when
         there are no child diagnostics.
-        WHO: Called by ``run`` after a spawn, stream, or inactivity failure.
-        WHEN: Once when the wrapper maps an exception to a terminal result.
+        WHO: Called by ``_run_to_candidate`` after a spawn, stream, or inactivity failure.
+        WHEN: Once when the wrapper maps an exception to a terminal candidate; the
+            candidate is neither cached nor written until ``_publish_terminal``.
 
         Args:
             error (Exception): Failure raised during child execution.
 
         Returns:
-            SubAgentResultDAO: Failed result with bounded diagnostic output.
+            SubAgentResultDAO: Failed candidate with bounded diagnostic output.
         """
         answer: str = self._stderr_fallback_answer()
         if not answer:
             answer = self._redact_child_output(raw=f"{type(error).__name__}: {error}".encode("utf-8")).decode(
                 "utf-8"
             )
-        result: SubAgentResultDAO = SubAgentResultDAO(
+        return SubAgentResultDAO(
             task_id=self._task.task_id,
             session_id=self._session_id,
             status="failed",
             answer=answer,
             exit_code=1,
+            execution_id=self._execution_id,
         )
-        self._write_child_status(result=result)
-        return result
 
     async def _pump_stdout(
         self,
@@ -438,11 +610,10 @@ class SubAgentProcess:
     ) -> None:
         """Read JSONL lines from ``stream`` until EOF, handling each line.
 
-        Opens a capture file for this child's stdout when the process is
-        configured with ``parent_session_id`` and ``slo_home``. Lines are
-        written to the capture file before being parsed and relayed. The read
-        deadline is always the inactivity budget; heartbeat telemetry never
-        tightens it.
+        Writes each line to the incarnation's fresh stdout capture (opened by
+        ``run`` before spawn) before it is parsed and relayed, and closes that
+        capture at EOF. The read deadline is always the inactivity budget;
+        heartbeat telemetry never tightens it.
 
         Args:
             stream (Optional[asyncio.StreamReader]): The child's stdout reader.
@@ -450,7 +621,6 @@ class SubAgentProcess:
         """
         if stream is None:
             return
-        capture: Optional[IO[bytes]] = self._open_capture_file(name="stdout.jsonl")
         try:
             while True:
                 try:
@@ -459,7 +629,7 @@ class SubAgentProcess:
                         timeout=CHILD_INACTIVITY_TIMEOUT_SECONDS,
                     )
                 except asyncio.TimeoutError as exc:
-                    await self.cancel()
+                    await self._terminate_for_inactivity()
                     raise TimeoutError(self._inactivity_timeout_message()) from exc
                 if not raw:
                     return
@@ -467,15 +637,15 @@ class SubAgentProcess:
                 self._last_stdout_at = asyncio.get_running_loop().time()
                 self._registry.record_stdout(
                     session_id=self._session_id,
+                    execution_id=self._execution_id,
                     at_seconds=self._last_stdout_at,
                 )
-                if capture is not None:
-                    capture.write(raw)
-                    capture.flush()
+                if self._stdout_capture is not None:
+                    self._stdout_capture.write(raw)
+                    self._stdout_capture.flush()
                 await self._handle_line(raw=raw)
         finally:
-            if capture is not None:
-                capture.close()
+            self._close_stdout_capture()
 
     async def _pump_stderr(
         self,
@@ -605,6 +775,7 @@ class SubAgentProcess:
         if event.kind == "text_delta" and event.delta:
             self._registry.update_last_text(
                 session_id=self._session_id,
+                execution_id=self._execution_id,
                 text=event.delta,
             )
 
@@ -639,6 +810,7 @@ class SubAgentProcess:
         phase: object = lifecycle.payload.get("phase")
         self._registry.record_heartbeat(
             session_id=self._session_id,
+            execution_id=self._execution_id,
             phase=phase if isinstance(phase, str) else "unknown",
             at_seconds=self._last_heartbeat_at,
         )
@@ -665,20 +837,20 @@ class SubAgentProcess:
         }
 
     def _terminal_result(self, *, exit_code: int) -> SubAgentResultDAO:
-        """Map the child exit code and accumulated answer to a result DAO.
+        """Map the child exit code and accumulated answer to a natural candidate.
 
         Exit code semantics mirror ``HeadlessRunner``:
         ``0`` → ``completed``, ``2`` → ``aborted``, anything else → ``failed``.
+        Builds a candidate only; ``_publish_terminal`` decides the winner and is
+        the sole cache and status writer.
 
         Args:
             exit_code (int): Child process exit code.
 
         Returns:
-            SubAgentResultDAO: Terminal result DAO.
+            SubAgentResultDAO: Complete natural candidate for this incarnation.
         """
-        if self._terminal_result_built is not None:
-            return self._terminal_result_built
-        self._terminal_result_built = SubAgentResultDAO(
+        return SubAgentResultDAO(
             task_id=self._task.task_id,
             session_id=self._session_id,
             status=self._status_for(exit_code=exit_code),  # type: ignore[arg-type]
@@ -688,31 +860,136 @@ class SubAgentProcess:
             partial_output_committed=self._failure_envelope.get("partial_output_committed"),  # type: ignore[arg-type]
             attempts=self._failure_envelope.get("attempts"),  # type: ignore[arg-type]
             safe_message=self._failure_envelope.get("safe_message"),  # type: ignore[arg-type]
+            execution_id=self._execution_id,
         )
-        self._write_child_status(result=self._terminal_result_built)
-        return self._terminal_result_built
 
-    def _write_child_status(self, *, result: SubAgentResultDAO) -> None:
-        """Persist one terminal child result without interrupting the wrapper.
-
-        WHAT: Writes the immutable terminal result to the canonical child status path.
-        WHO: Called by _terminal_result and _failed_result_from_exception after they build a result.
-        WHEN: Once after a child exits or the wrapper maps a run-path exception to failure.
+    def _aborted_candidate(self, *, answer: str) -> SubAgentResultDAO:
+        """Build the complete aborted exit-2 candidate for this incarnation.
 
         Args:
-            result (SubAgentResultDAO): Terminal child result to persist.
+            answer (str): Fixed operator-facing abort description.
+
+        Returns:
+            SubAgentResultDAO: Aborted candidate carrying this execution identity.
+        """
+        return SubAgentResultDAO(
+            task_id=self._task.task_id,
+            session_id=self._session_id,
+            status="aborted",
+            answer=answer,
+            exit_code=2,
+            execution_id=self._execution_id,
+        )
+
+    def _publish_terminal(
+        self,
+        *,
+        candidate: SubAgentResultDAO,
+        terminal_reason: TerminalReason,
+        terminated_by: TerminatedBy,
+    ) -> SubAgentResultDAO:
+        """Publish the registry winner before caching or writing child evidence.
+
+        Called by run after settlement, the reaper after confirmed termination,
+        or finish_without_spawn after a pending abort prevented run entry.
+        This synchronous gateway never waits for settlement or pool completion.
+
+        Args:
+            candidate (SubAgentResultDAO): Complete result for this execution incarnation.
+            terminal_reason (TerminalReason): Candidate cause, not request admission.
+            terminated_by (TerminatedBy): Existing cleanup-owner vocabulary.
+
+        Returns:
+            SubAgentResultDAO: Immutable winner shared by status.json and fleet.
+
+        Raises:
+            StaleExecutionError: The candidate names a superseded incarnation.
+        """
+        winner: SubAgentResultDAO = self._registry.commit_terminal(
+            result=candidate,
+            terminal_reason=terminal_reason,
+            terminated_by=terminated_by,
+        )
+        self._terminal_result_built = winner
+        self._write_child_status(result=winner)
+        return winner
+
+    async def finish_without_spawn(
+        self,
+        *,
+        result: SubAgentResultDAO,
+        terminal_reason: TerminalReason,
+        terminated_by: TerminatedBy,
+    ) -> SubAgentResultDAO:
+        """Publish a pending-abort winner without waiting on cancellation settlement.
+
+        Called by the pool runner after reservation prevents run entry. No reaper
+        exists; the pool settles its completion future in finally after publication.
+
+        Args:
+            result (SubAgentResultDAO): Complete aborted exit-2 pending candidate.
+            terminal_reason (TerminalReason): operator_abort for targeted cancellation.
+            terminated_by (TerminatedBy): Existing cleanup-owner vocabulary.
+
+        Returns:
+            SubAgentResultDAO: Registry winner used by cache and durable projection.
+
+        Raises:
+            RuntimeError: The wrapper has already entered spawn or has a process.
+        """
+        if self._spawn_in_progress or self._proc is not None:
+            raise RuntimeError("pending publication after spawn entry")
+        return self._publish_terminal(
+            candidate=result,
+            terminal_reason=terminal_reason,
+            terminated_by=terminated_by,
+        )
+
+    def _write_child_status(self, *, result: SubAgentResultDAO) -> None:
+        """Project the winner to status.json, then bind it with terminal evidence.
+
+        WHAT: Writes the winner's exact old-shaped bytes once, then publishes the
+            terminal sibling carrying their digest. Each projection that fails logs
+            a fixed reason and is retried alone on a later publication of the same
+            winner; until then the sibling stays non-terminal (stale, never complete).
+        WHO: Called only by ``_publish_terminal``.
+        WHEN: After every winner commit; a no-op once both projections are on disk.
+
+        Args:
+            result (SubAgentResultDAO): Registry winner to persist.
         """
         status_path: Optional[Path] = self._child_status_path()
         if status_path is None:
             return
+        self._project_status_bytes(path=status_path, result=result)
+        self._project_terminal_evidence()
+
+    def _project_status_bytes(self, *, path: Path, result: SubAgentResultDAO) -> None:
+        """Write the winner's status.json once and retain the digest of its bytes.
+
+        Args:
+            path (Path): Canonical child status path.
+            result (SubAgentResultDAO): Registry winner to persist.
+        """
+        if self._published_status_digest is not None:
+            return
+        text: str = result.model_dump_json(indent=2)
         try:
-            AtomicFileWriter.write_json(path=status_path, model=result)
-        except OSError as exc:
-            log_warning(
-                msg="child_status_write_failed",
-                session_id=self._session_id,
-                error=str(exc),
-            )
+            AtomicFileWriter.write_text(path=path, text=text)
+        except OSError:
+            log_warning(msg="child_status_write_failed", session_id=self._session_id)
+            return
+        self._published_status_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _project_terminal_evidence(self) -> None:
+        """Publish the terminal sibling once status.json is on disk and not yet bound."""
+        if self._published_status_digest is None or self._terminal_evidence_published:
+            return
+        self._terminal_evidence_published = self._registry.record_terminal_evidence(
+            session_id=self._session_id,
+            execution_id=self._execution_id,
+            status_sha256=self._published_status_digest,
+        )
 
     def _child_status_path(self) -> Optional[Path]:
         """Return the canonical terminal status path when child capture is configured.
@@ -724,10 +1001,11 @@ class SubAgentProcess:
         Returns:
             Optional[Path]: Canonical status path, or None when capture is disabled.
         """
-        if self._parent_session_id is None or self._slo_home is None:
+        history_root: Optional[Path] = self._resolved_history_root()
+        if self._parent_session_id is None or history_root is None:
             return None
         return OrchestrationLayout.child_status_path(
-            history_root=self._slo_home / "sessions" / "history",
+            history_root=history_root,
             parent_session_id=self._parent_session_id,
             child_session_id=self._session_id,
         )
@@ -783,11 +1061,86 @@ class SubAgentProcess:
         return f"child exited without an answer; stderr tail:\n{tail_text}"
 
     async def cancel(self) -> Optional[ReapOutcome]:
+        """Request operator abort of this incarnation through the shared reaping worker.
+
+        WHAT: Before run entry, latches the cancellation so run publishes a pending
+            abort without spawning, and returns ``already_dead`` immediately (no
+            reaper, settlement untouched). Otherwise joins the single shared reaping
+            worker; a confirmed graceful/killed reap commits an aborted winner
+            before settlement unless a natural winner already exists.
+        WHO: Called by SubAgentPool.cancel_all (whole abort) and the child-abort path.
+        WHEN: Any time; concurrent callers share one worker and one outcome.
+
+        Returns:
+            Optional[ReapOutcome]: Shared reaper outcome, ``already_dead`` for a
+                never-entered wrapper, or None when no live child remained.
+        """
+        if self._proc is None and not self._spawn_in_progress:
+            self._cancel_requested = True
+            return "already_dead"
+        return await asyncio.shield(self._start_reaping_worker(commit_abort=True))
+
+    async def _terminate_for_inactivity(self) -> None:
+        """Join the shared reaping worker without claiming an operator abort.
+
+        WHO: Called by ``_pump_stdout`` when the inactivity budget expires.
+        WHEN: Once; run then publishes its inactivity-failure candidate after settlement.
+        """
+        await asyncio.shield(self._start_reaping_worker(commit_abort=False))
+
+    def _start_reaping_worker(self, *, commit_abort: bool) -> asyncio.Task[Optional[ReapOutcome]]:
+        """Start the single reaping worker once, or return the existing one.
+
+        WHAT: Clears the settlement event in the same synchronous step that creates
+            the worker, so run cannot publish while a reap is active; a done
+            callback sets it again on every completion path, including cancellation.
+        WHO: Called by ``cancel`` and ``_terminate_for_inactivity``.
+        WHEN: The first caller decides whether a confirmed reap commits an abort.
+
+        Args:
+            commit_abort (bool): Whether confirmed termination commits an aborted candidate.
+
+        Returns:
+            asyncio.Task[Optional[ReapOutcome]]: Shared worker task.
+        """
+        if self._cancel_task is None:
+            self._cancel_settled.clear()
+            self._cancel_task = asyncio.create_task(self._reap_and_commit(commit_abort=commit_abort))
+            self._cancel_task.add_done_callback(lambda _task: self._cancel_settled.set())
+        return self._cancel_task
+
+    async def _reap_and_commit(self, *, commit_abort: bool) -> Optional[ReapOutcome]:
+        """Reap the spawned child and commit an abort only on confirmed termination.
+
+        WHAT: Never awaits run or pool completion. Graceful/killed commits an
+            aborted exit-2 candidate (the existing winner is kept if natural
+            completion committed first); unresolved, recycled or already-dead
+            outcomes commit nothing so run's natural candidate wins.
+        WHO: Runs as the wrapper's single shared reaping task.
+        WHEN: Started by the first canceller; settlement is set when it finishes.
+
+        Args:
+            commit_abort (bool): Whether confirmed termination commits an aborted candidate.
+
+        Returns:
+            Optional[ReapOutcome]: Reaper outcome, or None when no live child remained.
+        """
+        outcome: Optional[ReapOutcome] = await self._reap_child()
+        if commit_abort and outcome in {"graceful", "killed"}:
+            self._publish_terminal(
+                candidate=self._aborted_candidate(answer="aborted by operator"),
+                terminal_reason="operator_abort",
+                terminated_by="abort",
+            )
+        return outcome
+
+    async def _reap_child(self) -> Optional[ReapOutcome]:
         """Terminate the child through FleetReaper and reap its process handle.
 
-        WHAT: Adapts the child process handle to the shared per-pid terminate protocol.
-        WHO: Called by SubAgentPool.cancel_all during an ordered abort.
-        WHEN: When an active child must stop; no-op when it already has no live handle.
+        WHAT: Adapts the child process handle to the shared per-pid terminate protocol,
+            waiting for an in-flight spawn and refusing unverified identities.
+        WHO: Called only by ``_reap_and_commit``.
+        WHEN: Once per wrapper.
 
         Returns:
             Optional[ReapOutcome]: Shared reaper outcome, or None when no child was running.

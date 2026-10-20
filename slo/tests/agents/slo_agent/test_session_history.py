@@ -9,6 +9,7 @@ import pytest
 from langchain_core.messages import AIMessageChunk
 
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.events.stream import StreamEventKind
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
@@ -408,6 +409,172 @@ class TestSubAgentHistoryPersistence:
         await session._on_stream_event_for_history(event=normal_event)
 
         store.append_event.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("stream_kind", "history_kind", "extra"),
+        [
+            ("sub_agent_spawned", "sub_agent_spawned", {}),
+            ("sub_agent_aborted", "sub_agent_completed", {"terminal_kind": "sub_agent_aborted"}),
+        ],
+        ids=["spawned", "terminal"],
+    )
+    async def test_lifecycle_audit_carries_dispatch_identity_and_stays_out_of_inference(
+        self, tmp_path: Path, stream_kind: StreamEventKind, history_kind: str, extra: dict[str, str]
+    ) -> None:
+        """Existing audit kinds gain dispatch_id/sequence and execution_id; inference still ignores them."""
+        from unittest.mock import AsyncMock
+
+        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+        from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+        from src.agents.slo_agent.history.projector import SessionHistoryProjector
+
+        store: AsyncMock = AsyncMock(spec=FilesystemSessionHistoryStore)
+        store.root = tmp_path / "hist"
+        session = SloAgentSession(
+            workdir=tmp_path,
+            session_id="sess-1",
+            agent=_build_agent_for_history_tests(workdir=tmp_path),
+            history_store=store,
+            enable_history=True,
+        )
+        identity = {
+            "dispatch_id": "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+            "dispatch_sequence": 4,
+            "execution_id": "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+        }
+
+        await session._on_stream_event_for_history(
+            event=AgentStreamEventDAO(
+                kind=stream_kind, sub_agent_id="child-abc", task_id="t1", metadata=identity
+            )
+        )
+
+        persisted = store.append_event.call_args.kwargs["event"]
+        assert persisted.kind == history_kind
+        assert persisted.payload.metadata == {
+            "sub_agent_id": "child-abc",
+            "task_id": "t1",
+            **extra,
+            **identity,
+        }
+        assert SessionHistoryProjector._event_to_message(event=persisted) is None
+
+    async def test_legacy_lifecycle_event_without_identity_keeps_old_metadata(self, tmp_path: Path) -> None:
+        """An event without dispatch metadata persists exactly the released keys."""
+        from unittest.mock import AsyncMock
+
+        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+        from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+
+        store: AsyncMock = AsyncMock(spec=FilesystemSessionHistoryStore)
+        store.root = tmp_path / "hist"
+        session = SloAgentSession(
+            workdir=tmp_path,
+            session_id="sess-1",
+            agent=_build_agent_for_history_tests(workdir=tmp_path),
+            history_store=store,
+            enable_history=True,
+        )
+
+        await session._on_stream_event_for_history(
+            event=AgentStreamEventDAO(kind="sub_agent_spawned", sub_agent_id="child-abc", task_id="t1")
+        )
+
+        persisted = store.append_event.call_args.kwargs["event"]
+        assert persisted.payload.metadata == {"sub_agent_id": "child-abc", "task_id": "t1"}
+
+    async def test_dispatch_started_is_stream_only(self, tmp_path: Path) -> None:
+        """The batch start event never writes history; no new history kind exists for it."""
+        from unittest.mock import AsyncMock
+
+        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+        from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+
+        store: AsyncMock = AsyncMock(spec=FilesystemSessionHistoryStore)
+        store.root = tmp_path / "hist"
+        session = SloAgentSession(
+            workdir=tmp_path,
+            session_id="sess-1",
+            agent=_build_agent_for_history_tests(workdir=tmp_path),
+            history_store=store,
+            enable_history=True,
+        )
+
+        await session._on_stream_event_for_history(
+            event=AgentStreamEventDAO(
+                kind="sub_agent_dispatch_started",
+                metadata={
+                    "orchestrator_session_id": "sess-1",
+                    "dispatch_id": "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+                    "dispatch_sequence": 1,
+                },
+            )
+        )
+
+        store.append_event.assert_not_called()
+
+    async def test_pool_dispatch_persists_identified_audit_and_no_start_record(self, tmp_path: Path) -> None:
+        """Composed: real pool → session relay → real filesystem history (temp root).
+
+        The admitted batch's start event is delivered to subscribers but never
+        persisted; spawned/completed audits carry the same dispatch identity and
+        the incarnation, and inference projection still ignores them.
+        """
+        from unittest.mock import patch
+
+        from src.agents.slo_agent.history.projector import SessionHistoryProjector
+        from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO, SubAgentTaskDAO
+        from src.agents.slo_agent.orchestrator.pool import SubAgentPool
+        from src.agents.slo_agent.orchestrator.process import SubAgentProcess
+
+        store = FilesystemSessionHistoryStore(root=tmp_path / "hist")
+        await store.ensure_session(session_id="orch-1", workdir=tmp_path, model_name=None)
+        session = SloAgentSession(
+            workdir=tmp_path,
+            session_id="orch-1",
+            agent=_build_agent_for_history_tests(workdir=tmp_path),
+            history_store=store,
+            enable_history=True,
+        )
+        pool = SubAgentPool(
+            orchestrator_session_id="orch-1",
+            default_model=None,
+            relay=session.event_relay,
+            owner_session_id="orch-1",
+            run_id="7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f",
+            history_root=tmp_path / "hist",
+        )
+
+        async def finish(process: SubAgentProcess) -> SubAgentResultDAO:
+            return process._publish_terminal(
+                candidate=SubAgentResultDAO(
+                    task_id=process.task.task_id,
+                    session_id=process.session_id,
+                    status="completed",
+                    exit_code=0,
+                    execution_id=process.execution_id,
+                ),
+                terminal_reason="completed",
+                terminated_by="natural",
+            )
+
+        with patch.object(SubAgentProcess, "run", new=finish):
+            await pool.dispatch(
+                mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id="child-1")]
+            )
+
+        snapshot = pool.attached_dispatch_snapshot()
+        identity = {
+            "dispatch_id": snapshot.dispatch_id,
+            "dispatch_sequence": 1,
+            "execution_id": snapshot.entries[0].execution_id,
+        }
+        events = await store.load_events(session_id="orch-1")
+        audits = [event for event in events if event.kind in {"sub_agent_spawned", "sub_agent_completed"}]
+        assert [event.kind for event in audits] == ["sub_agent_spawned", "sub_agent_completed"]
+        assert all({key: event.payload.metadata[key] for key in identity} == identity for event in audits)
+        assert not any("orchestrator_session_id" in event.payload.metadata for event in events)
+        assert all(SessionHistoryProjector._event_to_message(event=event) is None for event in audits)
 
     async def test_internal_subscriber_is_registered_when_history_enabled(self, tmp_path: Path) -> None:
         """The internal history subscriber is registered at construction when history=True."""

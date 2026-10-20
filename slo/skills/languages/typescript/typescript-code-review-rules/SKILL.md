@@ -300,9 +300,11 @@ router.delete(
 
 ## Section 4: Testing
 
-### 4.1 Every decision point has a test
+### 4.1 Meaningful decisions and required outcomes have passing evidence
 
-Each `if`, `switch` branch, early return, guard clause, and `try/catch` path must have at least one dedicated test. A test that only exercises the happy path is incomplete.
+Follow `skills/coding/test-verification-policy/SKILL.md` and `skills/languages/typescript/typescript-test-verification-policy/SKILL.md`. Cover distinct required outcomes, meaningful changed decisions, changed boundaries and critical failure paths; explicit specification matrices remain mandatory. Use `if`, `switch`, early returns, guards and `try/catch` paths to discover missing proof, not a test-count formula.
+
+One behavioral test may traverse several branches; parameterized cases may cover equivalent inputs. Reuse existing tests when they still prove the contract, and rerun them against the current change. Happy-path-only coverage is incomplete when required failure outcomes remain unproved. Required gates must pass without introduced regressions; baseline exceptions need explicit approval. Skipped or blocked checks remain unverified, never passing.
 
 ```typescript
 // Blocker: only the success path is tested
@@ -311,7 +313,7 @@ it("creates a user", async () => {
   expect(user.id).toBeDefined();
 });
 
-// Required: each decision point gets its own test
+// Required: prove validation, conflict and success outcomes, not a test per branch
 it("throws ValidationError when email is missing", async () => {
   await expect(userService.create({ email: "", name: "Alice" }))
     .rejects.toThrow(ValidationError);
@@ -328,6 +330,8 @@ it("returns the created user on success", async () => {
   expect(user).toMatchObject({ email: "a@b.com", name: "Alice" });
 });
 ```
+
+These scenarios illustrate distinct required outcomes, not a universal branch-to-test formula. Add assertions for relevant forbidden effects and further failure paths where the affected contract requires them.
 
 ### 4.2 No `.skip` or `.todo` without a removal comment
 
@@ -388,7 +392,9 @@ Copy this into a review comment to share findings systematically:
 - [ ] Auth/permissions applied as middleware, not inline
 
 ### Section 4 — Testing
-- [ ] Every decision point (if/switch/guard/catch) has a test
-- [ ] No .skip / .todo without a ticket comment
-- [ ] Assertions verify decision outcomes, not just "it ran"
+- [ ] Required outcomes, meaningful changed decisions, changed boundaries and critical failure paths have passing evidence, including explicit specification matrices
+- [ ] Behavioral tests may traverse several branches; existing tests are rerun where adequate
+- [ ] No .skip / .todo without a ticket comment; skipped or blocked checks remain unverified
+- [ ] Required gates pass without introduced regressions; baseline exceptions have explicit approval
+- [ ] Assertions verify decision outcomes and relevant forbidden effects, not just "it ran"
 ```

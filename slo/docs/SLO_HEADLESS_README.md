@@ -1081,7 +1081,7 @@ The injected prompt gives the orchestrator:
 | **Chain mode** | For sequential chains, the `{previous}` placeholder substitutes the previous sub-agent's answer into the next prompt. |
 | **Retry policy** | If a sub-agent fails or is aborted, retry once with corrected parameters (e.g., relaxed timeout, narrower scope). |
 | **Result synthesis** | After all tasks complete, collect every `answer` field, merge into a single coherent response, and never dump raw JSON at the user. |
-| **Named Slo workflows** | When the user mentions a workflow (e.g., "use the code-test-review workflow"), read the workflow file from `skills/design-and-analysis/workflows/<name>.md`, enumerate its phases, build self-contained per-phase prompts, and dispatch them in the correct order. |
+| **Named Slo workflows** | When the user mentions a workflow (e.g., "use the code-test-review workflow"), read the workflow file from `skills/orchestration/workflows/<name>.md`, enumerate its phases, build self-contained per-phase prompts, and dispatch them in the correct order. |
 | **Oversight** | The orchestrator is the oversight layer. If a phase aborts or crashes unexpectedly, retry it once with updated configuration. |
 
 ### What this means in practice
@@ -1562,7 +1562,7 @@ This is the whole picture. A headless orchestrator runs a full code-test-review 
 Since Slo 0.13.0 the `--orchestrator` flag injects a built-in identity prompt that already knows the workflow protocol. You do not need to explain orchestrator mechanics in your prompt — just describe the task and name the workflow.
 
 The workflow is:
-1. **Code agent** (`skills/design-and-analysis/workflows/code-test-review.md`, Phase 1): Implement the feature.
+1. **Code agent** (`skills/orchestration/workflows/code-test-review.md`, Phase 1): Implement the feature.
 2. **Review agent** (Phase 2): Review code and tests, return a verdict.
 
 The orchestrator reads the workflow file, builds self-contained per-phase prompts from your context, dispatches them sequentially, handles REVISE/FAILED verdicts, and synthesizes a final answer.
@@ -1588,7 +1588,7 @@ Use the code-test-review workflow to implement the feature described in:
 Repository root: /path/to/my-feature
 Current branch: feature/42-widget (already checked out)
 Git user email: you@example.com
-Workflow file: skills/design-and-analysis/workflows/code-test-review.md
+Workflow file: skills/orchestration/workflows/code-test-review.md
 
 When all phases are done, output exactly:
 WORKFLOW COMPLETE.
@@ -1767,7 +1767,7 @@ Use the code-test-review workflow to implement the feature described in:
 Repository root: $PROJECT
 Current branch: $BRANCH (already checked out)
 Git user email: $GIT_EMAIL
-Workflow file: skills/design-and-analysis/workflows/code-test-review.md
+Workflow file: skills/orchestration/workflows/code-test-review.md
 
 When all phases are complete, output exactly:
 WORKFLOW COMPLETE.

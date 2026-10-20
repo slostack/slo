@@ -47,14 +47,14 @@ def test_prompt_retry_and_dispatch_policy() -> None:
     "workflow", ["code-test-review", "specification-development", "gitlab-code-test-review"]
 )
 def test_workflow_failure_policy(workflow: str) -> None:
-    text = (ROOT / f"skills/design-and-analysis/workflows/{workflow}.md").read_text()
+    text = (ROOT / f"skills/orchestration/workflows/{workflow}.md").read_text()
     assert "up to three times" in text
     assert "Never retry an aborted task" in text
     assert "retried once" not in text
 
 
 def test_headless_skill_defaults_and_abort_policy() -> None:
-    text = (ROOT / "skills/design-and-analysis/headless-orchestration/SKILL.md").read_text()
+    text = (ROOT / "skills/orchestration/headless-orchestration/SKILL.md").read_text()
     assert "| `SLO_SUBAGENT_MAX_CONCURRENCY` | `6` | `6` |" in text
     assert "| `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` | `1800` | `1800` |" in text
     assert "Never retry an aborted task" in text
@@ -81,7 +81,7 @@ def test_verdict_gates_and_chain_restriction() -> None:
 
 
 def test_headless_completion_requires_verdict_and_artifacts() -> None:
-    text = (ROOT / "skills/design-and-analysis/headless-orchestration/SKILL.md").read_text()
+    text = (ROOT / "skills/orchestration/headless-orchestration/SKILL.md").read_text()
     assert "workflow done" not in text
     assert "execution success, not workflow acceptance" in text
     assert "phase verdicts and required artifacts" in text
@@ -91,7 +91,7 @@ def test_headless_completion_requires_verdict_and_artifacts() -> None:
     "source",
     (
         "src/agents/slo_agent/orchestrator/spawn_tool.py",
-        "skills/design-and-analysis/workflows/SKILL.md",
+        "skills/orchestration/workflows/SKILL.md",
     ),
 )
 def test_workflow_budget_defaults_and_user_override_contract(source: str) -> None:

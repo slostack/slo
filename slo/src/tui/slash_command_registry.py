@@ -10,12 +10,19 @@ __all__ = [
     "SlashArgumentMode",
     "SlashCommandRegistry",
     "SlashCommandSpecDAO",
+    "WORKFLOWS_USAGE",
     "build_default_registry",
 ]
 
 
 SlashArgumentMode = Literal["none", "free_text", "enumerated"]
 """Argument-behavior vocabulary for one slash command."""
+
+WORKFLOWS_USAGE: str = (
+    "/workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>"
+    " | tui dismiss [<workflow-id>]]"
+)
+"""``/workflows`` usage shared by the registry, ``/help`` and the router's usage line."""
 
 
 class SlashCommandSpecDAO(BaseModel):
@@ -198,11 +205,14 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
     ),
     SlashCommandSpecDAO(
         name="workflows",
-        description="list detached workflows; abort <id>; dismiss <id>; resume <id>",
+        description=(
+            "list detached workflows; abort <id>; dismiss <id>; resume <id>; "
+            "tui dismiss [<id>] clears finished groups from the list"
+        ),
         aliases=["wf"],
         argument_mode="enumerated",
-        usage="/workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>]",
-        argument_hint="abort <id> | dismiss <id> | resume <id>",
+        usage=WORKFLOWS_USAGE,
+        argument_hint="abort <id> | dismiss <id> | resume <id> | tui dismiss [<id>]",
         display_order=75,
     ),
     SlashCommandSpecDAO(

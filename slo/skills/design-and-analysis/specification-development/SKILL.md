@@ -29,12 +29,12 @@ source_prompt: workflows/specification-development.md
 This index entry is a pointer. The full, authoritative workflow lives in one
 place to avoid drift:
 
-> **Load and follow `skills/design-and-analysis/workflows/specification-development.md`.**
+> **Load and follow `skills/orchestration/workflows/specification-development.md`.**
 
 That file lists the sub-skills it sequences at the top, then defines the three
 pipeline steps (Authoring (gather/draft/self-check/revise) → Verification → Task breakdown), the
 spec-file naming rule (`specifications/<number>-<title>/overview.md`; never
-`request.md`), the manual vs. auto confirmation behavior, and the exit
+`request.md`), evidence-gated progression, and the exit
 condition. Do not re-derive the steps from this entry — read the workflow file
 and execute it.
 

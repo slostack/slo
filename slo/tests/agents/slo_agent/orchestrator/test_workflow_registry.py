@@ -1133,3 +1133,233 @@ class TestWorkflowIdPathSafety:
                 workflow_id="../evil",
                 state="failed",
             )
+
+
+_OBSERVATION_UNAVAILABLE: str = "workflow observation unavailable"
+
+
+def _write_raw_handle(*, tmp_path: Path, handle: WorkflowHandleDAO, name: str = "") -> Path:
+    """Write one handle file directly, bypassing the store's locks and transitions.
+
+    Args:
+        tmp_path (Path): Pytest-owned temporary root.
+        handle (WorkflowHandleDAO): Handle to serialize.
+        name (str, optional): File name override. Defaults to ``<workflow_id>.json``.
+
+    Returns:
+        Path: Written handle path.
+    """
+    workflows_dir: Path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows"
+    path: Path = workflows_dir / (name or f"{handle.workflow_id}.json")
+    _assert_within_tmp_path(tmp_path=tmp_path, path=path)
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(handle.model_dump_json(), encoding="utf-8")
+    return path
+
+
+def _directory_bytes(*, directory: Path) -> dict[str, bytes]:
+    """Snapshot every regular file below ``directory`` to prove zero mutation.
+
+    Args:
+        directory (Path): Directory to snapshot.
+
+    Returns:
+        dict[str, bytes]: File name to exact bytes.
+    """
+    return {path.name: path.read_bytes() for path in sorted(directory.iterdir()) if path.is_file()}
+
+
+class TestListObservation:
+    """Bounded, read-only, never-partial handle observation (feature 94 a.2)."""
+
+    async def test_lists_owned_handles_sorted_without_lock_or_temp_files(self, tmp_path: Path) -> None:
+        """Handles sort by start then id; lock and temp siblings are not handles."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        late: WorkflowHandleDAO = _build_handle(
+            workflow_id="wf-aaaa", started_at=datetime(2026, 7, 21, 13, 0, tzinfo=timezone.utc)
+        )
+        tie_b: WorkflowHandleDAO = _build_handle(workflow_id="wf-cccc")
+        tie_a: WorkflowHandleDAO = _build_handle(workflow_id="wf-bbbb")
+        for handle in (late, tie_b, tie_a):
+            await _seed_handle(store=store, handle=handle)
+        workflows_dir: Path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows"
+        (workflows_dir / "wf-dead.json.tmp").write_text("{partial", encoding="utf-8")
+
+        handles = await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+        assert isinstance(handles, tuple)
+        assert [handle.workflow_id for handle in handles] == ["wf-bbbb", "wf-cccc", "wf-aaaa"]
+
+    async def test_missing_directory_is_fresh_empty(self, tmp_path: Path) -> None:
+        """An owner that never launched a workflow observes an empty tuple."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+
+        assert await store.list_observation(owner_session_id="never-launched") == ()
+
+    async def test_limit_admits_256_handles(self, tmp_path: Path) -> None:
+        """Exactly 256 handles are the largest admitted group set."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        for index in range(256):
+            _write_raw_handle(tmp_path=tmp_path, handle=_build_handle(workflow_id=f"wf-{index:04d}"))
+
+        handles = await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+        assert len(handles) == 256
+
+    async def test_257th_handle_raises_fixed_error_never_partial(self, tmp_path: Path) -> None:
+        """AMBIGUOUS-2: the 257th name raises; no partial tuple or tuple-plus-flag."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        for index in range(257):
+            _write_raw_handle(tmp_path=tmp_path, handle=_build_handle(workflow_id=f"wf-{index:04d}"))
+
+        with pytest.raises(ValueError) as raised:
+            await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+        assert str(raised.value) == _OBSERVATION_UNAVAILABLE
+
+    async def test_directory_entry_budget_is_bounded(self, tmp_path: Path) -> None:
+        """A directory flooded with non-handle names is refused before reading handles."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        workflows_dir: Path = _write_raw_handle(tmp_path=tmp_path, handle=_build_handle()).parent
+        for index in range(1_028):
+            (workflows_dir / f"noise-{index}.lock").write_text("", encoding="utf-8")
+
+        with pytest.raises(ValueError, match=_OBSERVATION_UNAVAILABLE):
+            await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+    async def test_oversized_handle_raises_before_decode(self, tmp_path: Path) -> None:
+        """A handle above 64 KiB is refused without decoding it."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        oversized: WorkflowHandleDAO = _build_handle().model_copy(update={"brief": "x" * 65_536})
+        _write_raw_handle(tmp_path=tmp_path, handle=oversized)
+
+        with patch.object(WorkflowHandleDAO, "model_validate_json", side_effect=AssertionError("decoded")):
+            with pytest.raises(ValueError, match=_OBSERVATION_UNAVAILABLE):
+                await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+    async def test_handle_at_64_kib_is_admitted(self, tmp_path: Path) -> None:
+        """A handle of exactly 64 KiB stays within the per-handle budget."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        base: WorkflowHandleDAO = _build_handle()
+        padding: int = 65_536 - len(base.model_dump_json().encode("utf-8"))
+        _write_raw_handle(
+            tmp_path=tmp_path, handle=base.model_copy(update={"brief": base.brief + "y" * padding})
+        )
+
+        handles = await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+        assert [len(handle.model_dump_json().encode("utf-8")) for handle in handles] == [65_536]
+
+    @pytest.mark.parametrize(
+        "case",
+        ["malformed", "foreign_owner", "filename_mismatch"],
+    )
+    async def test_untrusted_handle_raises_fixed_error(self, tmp_path: Path, case: str) -> None:
+        """Malformed, foreign-owner and misnamed handles never silently vanish."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        _write_raw_handle(tmp_path=tmp_path, handle=_build_handle(workflow_id="wf-good"))
+        handle: WorkflowHandleDAO = _build_handle(workflow_id="wf-case")
+        if case == "foreign_owner":
+            handle = handle.model_copy(update={"owner_session_id": "someone-else"})
+        path: Path = _write_raw_handle(
+            tmp_path=tmp_path,
+            handle=handle,
+            name="wf-other.json" if case == "filename_mismatch" else "",
+        )
+        if case == "malformed":
+            path.write_text("{not json", encoding="utf-8")
+
+        with pytest.raises(ValueError) as raised:
+            await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+        assert str(raised.value) == _OBSERVATION_UNAVAILABLE
+
+    async def test_symlinked_handle_is_refused(self, tmp_path: Path) -> None:
+        """A handle symlinked to another temp-owned root is never followed."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        outside: Path = tmp_path / "outside" / "wf-link.json"
+        _assert_within_tmp_path(tmp_path=tmp_path, path=outside)
+        outside.parent.mkdir(parents=True)
+        outside.write_text(_build_handle(workflow_id="wf-link").model_dump_json(), encoding="utf-8")
+        workflows_dir: Path = _write_raw_handle(tmp_path=tmp_path, handle=_build_handle()).parent
+        (workflows_dir / "wf-link.json").symlink_to(outside)
+
+        with pytest.raises(ValueError, match=_OBSERVATION_UNAVAILABLE):
+            await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+    async def test_symlinked_owner_directory_is_refused(self, tmp_path: Path) -> None:
+        """An owner directory reached through a symlink escapes containment."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        real_owner: Path = tmp_path / "elsewhere" / "owner"
+        _assert_within_tmp_path(tmp_path=tmp_path, path=real_owner)
+        (real_owner / "workflows").mkdir(parents=True)
+        (tmp_path / "history").mkdir()
+        (tmp_path / "history" / _OWNER_SESSION_ID).symlink_to(real_owner)
+
+        with pytest.raises(ValueError, match=_OBSERVATION_UNAVAILABLE):
+            await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+    @pytest.mark.parametrize("owner_session_id", ["../escape", "a/b", "", "."])
+    async def test_unsafe_owner_is_refused(self, tmp_path: Path, owner_session_id: str) -> None:
+        """Owner ids are validated before any filesystem join."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+
+        with pytest.raises(ValueError, match=_OBSERVATION_UNAVAILABLE):
+            await store.list_observation(owner_session_id=owner_session_id)
+
+    async def test_observation_is_read_only_and_never_reconciles(self, tmp_path: Path) -> None:
+        """Observation writes nothing, takes no file locks and never reconciles."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path, pid_alive=False)
+        _write_raw_handle(tmp_path=tmp_path, handle=_build_handle(state="running"))
+        workflows_dir: Path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows"
+        before: dict[str, bytes] = _directory_bytes(directory=workflows_dir)
+
+        with patch.object(WorkflowHandleStore, "_reconcile_sync", side_effect=AssertionError("reconciled")):
+            handles = await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+        assert [handle.state for handle in handles] == ["running"]
+        assert _directory_bytes(directory=workflows_dir) == before
+
+    async def test_legacy_list_still_skips_corrupt_handles(self, tmp_path: Path) -> None:
+        """Legacy ``list`` semantics stay unchanged beside the strict observation API."""
+        store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
+        workflows_dir: Path = _write_raw_handle(
+            tmp_path=tmp_path, handle=_build_handle(workflow_id="wf-good")
+        ).parent
+        (workflows_dir / "wf-bad.json").write_text("{not json", encoding="utf-8")
+
+        handles: list[WorkflowHandleDAO] = await store.list(owner_session_id=_OWNER_SESSION_ID)
+
+        assert [handle.workflow_id for handle in handles] == ["wf-good"]
+        with pytest.raises(ValueError, match=_OBSERVATION_UNAVAILABLE):
+            await store.list_observation(owner_session_id=_OWNER_SESSION_ID)
+
+
+class TestIsLive:
+    """Current orchestrator liveness evidence for child-control authority (feature 94 a.4)."""
+
+    @pytest.mark.parametrize(
+        ("state", "pid", "alive", "expected"),
+        [
+            ("running", 4242, True, True),
+            ("running", 4242, False, False),
+            ("running", 0, True, False),
+            ("launching", 4242, True, False),
+            ("stalled", 4242, True, False),
+            ("completed", 4242, True, False),
+        ],
+    )
+    def test_requires_running_state_and_live_pid(
+        self, tmp_path: Path, state: WorkflowState, pid: int, alive: bool, expected: bool
+    ) -> None:
+        """Only a running handle whose positive pid the injected probe reports alive is live."""
+        probed: list[int] = []
+
+        def probe(candidate: int) -> bool:
+            probed.append(candidate)
+            return alive
+
+        store: WorkflowHandleStore = WorkflowHandleStore(history_root=tmp_path / "history", pid_alive=probe)
+
+        assert store.is_live(handle=_build_handle(state=state, pid=pid)) is expected
+        assert probed == ([pid] if state == "running" and pid > 0 else [])

@@ -2,7 +2,8 @@
 
 The tool mirrors the ``SpawnSubAgentsTool`` factory shape: a ``*SchemaDAO``
 args model, a ``build(...)`` classmethod returning a bound ``BaseTool``, and
-errors returned as JSON strings — never raised into the graph. Unlike
+operational and tool-validation errors returned as JSON strings. Direct schema
+construction and invalid factory defaults still raise validation errors. Unlike
 ``spawn_sub_agents`` it does not await the child: the orchestrator process is
 spawned with ``start_new_session=True`` (its own process group) and the tool
 returns the workflow handle JSON within seconds.
@@ -21,7 +22,9 @@ from typing import IO, Awaitable, Callable, Optional, Protocol
 from uuid import uuid4
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+
+from src.agents.reasoning_capabilities import ReasoningLevel
 
 import config.cfg as cfg_module
 from config.logger import log_info
@@ -49,11 +52,21 @@ SpawnCallable = Callable[..., Awaitable[_ProcessLike]]
 class LaunchWorkflowSchemaDAO(BaseModel):
     """Validated input schema for the ``launch_workflow`` LangChain tool."""
 
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
     brief: str = Field(
         description=(
             "Self-contained workflow brief for the detached orchestrator: the workflow "
             "name and file path, the feature context, repository paths, and output "
             "locations. The orchestrator receives ONLY this text as its prompt."
+        ),
+    )
+    reasoning_level: Optional[ReasoningLevel] = Field(
+        default=None,
+        description=(
+            "Canonical orchestrator reasoning override. Omitted/null uses the tool's "
+            "bootstrap-time default; child model policy may clamp. Does not configure "
+            "phase agents or persist across managed resume."
         ),
     )
     cwd: Optional[str] = Field(default=None, description="Working directory override.")
@@ -67,12 +80,13 @@ def _build_argv(
     owner_session_id: str,
     model: Optional[str],
     cwd: str,
+    reasoning_level: Optional[ReasoningLevel] = None,
 ) -> list[str]:
     """Build the detached headless orchestrator command line.
 
-    Mirrors ``SubAgentProcess._build_argv``: ``sys.executable -m src.cli``
+    Mirrors ``SubAgentProcess._build_argv``: ``sys.executable -I -m src.cli``
     keeps the child on the same interpreter and virtualenv as the parent in
-    both dev and installed layouts.
+    installed and editable-install layouts, isolated from project import paths.
 
     Args:
         brief (str): Workflow brief passed as the headless ``-p`` prompt.
@@ -80,12 +94,15 @@ def _build_argv(
         owner_session_id (str): TUI session whose inbox receives lifecycle notes.
         model (Optional[str]): Orchestrator model override; ``None`` omits the flag.
         cwd (str): Working directory the workflow operates in.
+        reasoning_level (Optional[ReasoningLevel]): Canonical request passed unchanged;
+            None omits the flag, preserving child preference/seed resolution.
 
     Returns:
         list[str]: Argv for ``create_subprocess_exec``.
     """
     argv: list[str] = [
         sys.executable,
+        "-I",
         "-m",
         "src.cli",
         "run",
@@ -103,6 +120,8 @@ def _build_argv(
     ]
     if model is not None:
         argv += ["--model", model]
+    if reasoning_level is not None:
+        argv += ["--reasoning", reasoning_level]
     return argv
 
 
@@ -110,7 +129,9 @@ class LaunchWorkflowTool:
     """Factory for the ``launch_workflow`` LangChain tool.
 
     Built once per TUI session by ``OrchestratorSessionBootstrap.attach`` and
-    injected into the session tool bundle next to ``spawn_sub_agents``.
+    injected into the session tool bundle next to ``spawn_sub_agents``. Model and
+    reasoning defaults are immutable construction snapshots, not live settings.
+    Child policy owns clamping; managed resume does not retain the request.
     """
 
     @classmethod
@@ -119,6 +140,7 @@ class LaunchWorkflowTool:
         *,
         owner_session_id: str,
         default_model: Optional[str],
+        default_reasoning_level: Optional[ReasoningLevel] = None,
         handle_store: Optional[WorkflowHandleStore] = None,
         spawn: Optional[SpawnCallable] = None,
         history_root: Optional[Path] = None,
@@ -127,7 +149,9 @@ class LaunchWorkflowTool:
 
         Args:
             owner_session_id (str): The TUI session that owns launched workflows.
-            default_model (Optional[str]): Model inherited when the call has no override.
+            default_model (Optional[str]): Construction-time model snapshot.
+            default_reasoning_level (Optional[ReasoningLevel]): Immutable reasoning fallback;
+                None preserves child preferences and model defaults.
             handle_store (Optional[WorkflowHandleStore]): Injectable store for tests.
             spawn (Optional[SpawnCallable]): Injectable process creator for tests.
                 ``None`` uses ``asyncio.create_subprocess_exec``.
@@ -136,7 +160,13 @@ class LaunchWorkflowTool:
 
         Returns:
             BaseTool: A bound LangChain tool the LLM can call.
+
+        Raises:
+            ValidationError: Invalid reasoning default, before dependencies are resolved.
         """
+        bound_reasoning_level: Optional[ReasoningLevel] = TypeAdapter(
+            Optional[ReasoningLevel]
+        ).validate_python(default_reasoning_level)
         _history_root: Path = history_root or default_history_root()
         _store: WorkflowHandleStore = handle_store or WorkflowHandleStore(history_root=_history_root)
         _spawn: SpawnCallable = spawn or asyncio.create_subprocess_exec  # type: ignore[assignment]
@@ -147,6 +177,7 @@ class LaunchWorkflowTool:
             brief: str,
             cwd: Optional[str] = None,
             model: Optional[str] = None,
+            reasoning_level: Optional[ReasoningLevel] = None,
         ) -> str:
             """Launch a dynamic workflow as a DETACHED headless orchestrator process.
 
@@ -168,61 +199,135 @@ class LaunchWorkflowTool:
                 cwd (Optional[str]): Working directory override; defaults to
                     the current directory.
                 model (Optional[str]): Orchestrator model override; defaults to
-                    the owning session's active model.
+                    the owning tool's construction-time model snapshot.
+                reasoning_level (Optional[ReasoningLevel]): Canonical override;
+                    omitted/null inherits the bootstrap snapshot. Child policy may
+                    clamp; this neither configures phases nor persists on resume.
 
             Returns:
                 str: Workflow handle JSON (``workflow_id``,
                     ``orchestrator_session_id``, ``pid``, ``state``, …), or an
-                    error JSON string — never an exception.
+                    operational or validation error JSON. A handle acknowledges
+                    spawn, not child admission or effective reasoning.
             """
-            enclosing_workflow_id: Optional[str] = os.environ.get("SLO_WORKFLOW_ID")
-            if enclosing_workflow_id:
-                return json.dumps(
-                    {
-                        "error": (
-                            f"refusing to launch: this session already runs inside "
-                            f"detached workflow {enclosing_workflow_id}; detached "
-                            f"orchestrators execute phases with spawn_sub_agents"
-                        )
-                    }
-                )
-            if not brief.strip():
-                return json.dumps({"error": "brief must not be blank"})
-            cap_refusal: Optional[str] = await cls._cap_refusal(
-                store=_store,
-                owner_session_id=owner_session_id,
-            )
-            if cap_refusal is not None:
-                return cap_refusal
-            history_warning: Optional[str] = cls._history_backing_warning(
-                history_root=_history_root,
-                owner_session_id=owner_session_id,
-            )
-            workflow_id: str = f"wf-{uuid4().hex[:4]}"
-            orchestrator_session_id: str = str(uuid4())
-            resolved_cwd: str = cwd or os.getcwd()
-            handle: WorkflowHandleDAO = WorkflowHandleDAO(
-                workflow_id=workflow_id,
-                owner_session_id=owner_session_id,
-                orchestrator_session_id=orchestrator_session_id,
-                pid=0,  # patched after spawn via model_copy + store rewrite
-                brief=brief,
-                cwd=resolved_cwd,
-            )
-            try:
-                await _store.write(handle=handle)
-            except (OSError, WorkflowStateTransitionError) as exc:
-                return json.dumps({"error": f"workflow launch failed: {exc}"})
-            return await cls._spawn_and_patch(
+            return await cls._launch(
                 store=_store,
                 spawn=_spawn,
                 history_root=_history_root,
-                handle=handle,
+                owner_session_id=owner_session_id,
+                brief=brief,
+                cwd=cwd,
                 model=model or _default_model,
-                history_warning=history_warning,
+                reasoning_level=cls._resolve_reasoning_level(
+                    reasoning_level=reasoning_level,
+                    default_reasoning_level=bound_reasoning_level,
+                ),
             )
 
+        launch_workflow.handle_validation_error = '{"error": "invalid launch_workflow arguments; use brief, cwd, model and canonical reasoning_level"}'
         return launch_workflow
+
+    @classmethod
+    async def _launch(
+        cls,
+        *,
+        store: WorkflowHandleStore,
+        spawn: SpawnCallable,
+        history_root: Path,
+        owner_session_id: str,
+        brief: str,
+        cwd: Optional[str],
+        model: Optional[str],
+        reasoning_level: Optional[ReasoningLevel],
+    ) -> str:
+        """Register an initial launch after the bound bridge validates and resolves inputs.
+
+        Existing depth/brief/cap guards precede handle reservation and capture/spawn.
+        Resource helpers retain partial-spawn cleanup; cancellation propagates.
+
+        Args:
+            store (WorkflowHandleStore): Shared owning-session registry.
+            spawn (SpawnCallable): Process creator.
+            history_root (Path): Handle and capture root.
+            owner_session_id (str): Notification destination.
+            brief (str): Workflow prompt, not configuration.
+            cwd (Optional[str]): Directory override or current directory.
+            model (Optional[str]): Already resolved model snapshot or override.
+            reasoning_level (Optional[ReasoningLevel]): Resolved canonical request.
+
+        Returns:
+            str: Handle JSON or existing guard/operational-error JSON; a handle
+                acknowledges spawn, not child admission or effective reasoning.
+        """
+        enclosing_workflow_id: Optional[str] = os.environ.get("SLO_WORKFLOW_ID")
+        if enclosing_workflow_id:
+            return json.dumps(
+                {
+                    "error": (
+                        f"refusing to launch: this session already runs inside "
+                        f"detached workflow {enclosing_workflow_id}; detached "
+                        f"orchestrators execute phases with spawn_sub_agents"
+                    )
+                }
+            )
+        if not brief.strip():
+            return json.dumps({"error": "brief must not be blank"})
+        cap_refusal: Optional[str] = await cls._cap_refusal(
+            store=store,
+            owner_session_id=owner_session_id,
+        )
+        if cap_refusal is not None:
+            return cap_refusal
+        history_warning: Optional[str] = cls._history_backing_warning(
+            history_root=history_root,
+            owner_session_id=owner_session_id,
+        )
+        workflow_id: str = f"wf-{uuid4().hex[:4]}"
+        orchestrator_session_id: str = str(uuid4())
+        resolved_cwd: str = cwd or os.getcwd()
+        handle: WorkflowHandleDAO = WorkflowHandleDAO(
+            workflow_id=workflow_id,
+            owner_session_id=owner_session_id,
+            orchestrator_session_id=orchestrator_session_id,
+            pid=0,  # patched after spawn via model_copy + store rewrite
+            brief=brief,
+            cwd=resolved_cwd,
+        )
+        try:
+            await store.write(handle=handle)
+        except (OSError, WorkflowStateTransitionError) as exc:
+            return json.dumps({"error": f"workflow launch failed: {exc}"})
+        return await cls._spawn_and_patch(
+            store=store,
+            spawn=spawn,
+            history_root=history_root,
+            handle=handle,
+            model=model,
+            reasoning_level=reasoning_level,
+            history_warning=history_warning,
+        )
+
+    @classmethod
+    def _resolve_reasoning_level(
+        cls,
+        *,
+        reasoning_level: Optional[ReasoningLevel],
+        default_reasoning_level: Optional[ReasoningLevel],
+    ) -> Optional[ReasoningLevel]:
+        """Select request data without parsing, model policy or shared-state mutation.
+
+        The validated bridge calls this once per invocation before launch I/O.
+
+        Args:
+            reasoning_level (Optional[ReasoningLevel]): Explicit override or None.
+            default_reasoning_level (Optional[ReasoningLevel]): Validated bound snapshot.
+
+        Returns:
+            Optional[ReasoningLevel]: Non-null override, otherwise the bound fallback.
+        """
+        if reasoning_level is not None:
+            return reasoning_level
+        return default_reasoning_level
 
     @classmethod
     async def _cap_refusal(
@@ -265,6 +370,7 @@ class LaunchWorkflowTool:
         handle: WorkflowHandleDAO,
         model: Optional[str],
         history_warning: Optional[str],
+        reasoning_level: Optional[ReasoningLevel] = None,
     ) -> str:
         """Spawn the detached orchestrator and patch the handle with its pid.
 
@@ -278,6 +384,9 @@ class LaunchWorkflowTool:
             history_root (Path): Root for orchestrator capture files.
             handle (WorkflowHandleDAO): Pre-spawn handle (state ``launching``).
             model (Optional[str]): Resolved orchestrator model, when any.
+            history_warning (Optional[str]): Existing owner-history warning.
+            reasoning_level (Optional[ReasoningLevel]): Unchanged canonical request;
+                None preserves the legacy no-flag path.
 
         Returns:
             str: Patched handle JSON, or an error JSON string on any failure —
@@ -325,6 +434,7 @@ class LaunchWorkflowTool:
                     owner_session_id=handle.owner_session_id,
                     model=model,
                     cwd=handle.cwd,
+                    reasoning_level=reasoning_level,
                 ),
                 start_new_session=True,
                 stdout=stdout_file,

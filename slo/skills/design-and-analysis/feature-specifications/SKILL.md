@@ -33,7 +33,7 @@ Do not skip checks because “we just wrote it”. A specification without the c
 bundle and clean self-check report is incomplete.
 
 This is an authoring skill, not a formal workflow. When the operator requests the
-Specification Development workflow, load `skills/design-and-analysis/workflows/specification-development.md`.
+Specification Development workflow, load `skills/orchestration/workflows/specification-development.md`.
 That workflow sequences this skill, independent verification, then task breakdown.
 Skim `feature-specification-verification` and `breakdown-feature-spec-to-tasks`
 unless the user asks otherwise; `gather-feature-context` remains an on-request
@@ -193,7 +193,7 @@ When this pass produces a technical sub-spec, build two additional inventories:
 1. **Current-state truths** — the exact symbols, method names, runtime behaviors, file paths, and constraints that are true in code today.
 2. **Stale or drifting prior design text** — older specs, parent-spec snippets, comments, or docs that are now inaccurate or incomplete and that the new sub-spec must correct explicitly.
 
-If the sub-spec is supposed to be standalone, identify which parent-spec facts must be restated locally so the implementer does not need to keep switching documents.
+Identify the local purpose and integration context needed to implement the slice without the parent overview. Link shared contracts to their canonical owners rather than copying them.
 
 ---
 
@@ -269,52 +269,14 @@ Anything noted here becomes a requirement the spec must address, either inline o
 
 ---
 
-### 7 — Plan the human-readable narrative sections
+### 7 — Plan the reader's route
 
-Per [Draft](#draft), every spec opens with narrative context before low-level implementation detail. Plan those sections during the context stage — they are not afterthoughts.
-
-The opening should read like an **O'Reilly technical book chapter**: start with the problem and the runtime or business story, orient the reader in the existing system, and only then descend into classes, files, and methods.
-
-For the spec you are about to write, decide:
-
-- **Changes vs Description** — which heading the spec should use, and why.
-- **Big Picture** — what just happened upstream, what this plan owns, and what downstream work depends on it.
-- **Existing structure we are extending** — what current tree the reader must see before implementation discussion starts.
-- **What this document changes** — runtime or product change first, then file-level change, then component-level change.
-- **Per-component prose** — every domain, service, router, worker, integration, component, or utility that must appear in prose before it appears later in code.
-- **Call-out plan** — which decisions belong together in one structured call-out.
-- **Journey** — whether the feature is part of a larger user or system journey.
-- **Control flows** — which orchestrations need step-by-step walkthroughs.
-- **Code-sample depth** — which classes need full examples with class docstring, main public method, and core helpers.
-
-### Extra planning requirements for the overview
-
-When this pass produces the overview, also plan:
-
-- the business problem framing,
-- the requirements / scope / non-goals split,
-- user/admin lifecycle or rollout sequencing,
-- cross-repo or stakeholder boundaries,
-- whether a later breakdown into engineering child specs is likely.
-
-### Extra planning requirements for a technical sub-spec
-
-When this pass produces a technical sub-spec, also plan:
-
-- the metadata header fields available (`Status`, `Owner`, `Last updated`, `Parent spec`, `Branch`, `Repo`, `Approx. size`),
-- the `Why` section — why this slice exists independently,
-- the `Current State` section — the live code truths the spec must record,
-- the `Proposed Approach` section — the concise design decision before code,
-- the `Domain Introductions` section — every new noun that needs conceptual introduction,
-- the `End-to-End Flow` section — the specific runtime slice this sub-spec owns,
-- implementation order,
-- verification commands,
-- manual smoke guidance,
-- what remains intentionally unchanged,
-- what stale parent-spec snippets or prior plan text must be corrected explicitly,
-- what facts must be restated locally to keep the sub-spec standalone.
-
----
+Plan a short purpose/scope explanation, current → proposed behavior, a useful flow
+or dependency diagram, and file-by-file contracts. Introduce unfamiliar terms where
+needed, not in a mandatory glossary. Put rationale beside the decision it explains.
+For the overview, plan the product journey, boundaries, acceptance and delivery map.
+For each child, identify exact owned changes, shared contracts to link, implementation
+order, verification commands, and unchanged behavior. Do not plan repeated introductions.
 
 ### 8 — Synthesize the context bundle
 
@@ -356,16 +318,13 @@ Before drafting the spec, produce a short synthesis block in the conversation. T
 **Open questions for the operator (if any):**
 - <question> — <why it blocks the spec>
 
-**Narrative plan:**
-- *Changes or Description:* <which heading the spec should use, and why>
-- *Big Picture:* <upstream → this → downstream>
-- *Existing structure to show:* <which current tree the reader needs>
-- *What this document changes:* <runtime/product first, then file-level, then component-level>
-- *Per-component prose to write:* <each domain/service/router/worker/component that needs prose before code>
-- *Decision call-out:* <which decisions should be grouped into one structured call-out>
-- *Journey context:* <if applicable>
-- *Control flows to walk through:* <if applicable>
-- *Code samples that must be full-detail:* <which classes / methods need low-ambiguity examples>
+**Reader's route:**
+- Purpose and scope: <short explanation>
+- Current → proposed behavior: <key differences>
+- Flow or dependency diagram: <if useful>
+- File-by-file contracts: <owning paths and interfaces>
+- Shared contracts to link: <canonical definitions and consumer usage>
+- Non-obvious algorithms needing bodies: <where signatures are insufficient>
 ```
 
 ### Additional required bundle content when producing a technical sub-spec
@@ -381,8 +340,8 @@ When this pass produces a technical sub-spec, extend the bundle with:
 - <old spec path or snippet> — <what is stale>
 - …
 
-**Standalone facts to restate locally:**
-- <parent-spec fact the child spec must repeat>
+**Local context and shared contract links:**
+- <local context to explain, or canonical shared definition to link>
 - …
 
 **Implementation-order / verification plan:**
@@ -404,114 +363,115 @@ The synthesis block above is the only artefact the context stage produces. The s
 
 ### One Specification, Product Framing *and* Engineering Detail Together
 
-> **There is a single specification shape.** It is **not** a choice between a "business" document and an "engineering" document — every feature needs both, and they live together as one family:
->
-> - an **`overview.md`** that carries the product/business framing and ends with a brief technical overview, and
-> - one or more **technical sub-specs** (`01.a.1`, `01.a.2`, …) that each own one implementation slice in full engineering detail.
->
-> Even a single-slice feature has an overview and a separate standalone engineering sub-spec. Keep the overview focused on product framing and put implementation-ready detail in numbered sub-specs — **never one without the other**.
->
-> **Write for two audiences at once.** The overview and the narrative must be plain enough for a human to follow with no prior context; the sub-specs must be precise enough for an implementation agent to build from with no follow-up questions. Simple language throughout. Gradual context. Introduce existing concepts before you change them.
->
-> **Both parts are mandatory.** A request to revise one file does not waive the other artifacts or permit an incomplete family to be marked READY.
->
-> **Open like an O'Reilly chapter.** Every specification — the overview and every child sub-spec — must begin with the problem and the runtime or business story, orient the reader inside the existing system, then progressively narrow into components and code. Do **not** jump straight into method names or low-level implementation details before the reader understands the change in plain English.
->
-> Use a mix of narrative, numbered steps, ASCII diagrams, and tables to orient the reader. Avoid silent code dumps or silent prose. Every behavioral claim must be grounded in a real code sample with a `file:line` citation. This document is for the user *and* the AI, so lay emphasis on readability and clarity.
+Every feature requires overview.md and separate standalone engineering sub-specs.
+Neither substitutes for the other, including for small features. Retain and check
+the complete family when revising one slice. Keep product framing in the overview
+and implementation contracts in the children.
 
----
-### Shared Opening Requirements
+### Overview structure
 
-### Mandatory opening section: `## Context`
+The overview is a feature map, not a combined engineering specification. Explain:
 
-The `## Context` block is always required. It must contain, in order:
+1. What we are building and why.
+2. The user or system journey, using a sketch or diagram where useful.
+3. Scope, non-goals, ownership and safety boundaries.
+4. Delivery map: child specifications and their dependencies.
+5. Acceptance, rollout/rollback and current evidence status.
 
-1. **`### Changes`** or **`### Description`** — use `Changes` when the plan modifies existing behavior; use `Description` when the plan introduces something new.
-2. **`### Big Picture`** — 1-2 paragraphs explaining where this work sits in the larger rollout, what just happened upstream, what this plan owns, and what downstream work depends on it.
-3. **`### Existing structure we are extending`** — show the surrounding file/folder layout that already exists today when structure matters. Prefer fuller trees over overly-truncated diagrams.
-4. **`### What this document changes`** — walk from broad change to narrow change: runtime or product behavior first, then file-level changes, then component-level changes.
+For independent workstreams, link their overviews and separate release gates.
+Reconcile stale parent summaries with current child scope and status, without
+promoting specification approval to implementation or runtime acceptance.
+Keep DTOs, service signatures and detailed algorithms in their owning sub-specs.
 
-When the plan resolves an ambiguity, stale design, or self-check finding, add a sub-section under `## Context` named:
+### Engineering sub-spec structure
 
-- `### Ambiguity #<n> resolution`
-- `### Bug #<n> resolution`
-- `### CRITICAL #<n> resolution`
+Use this default structure; require the information, not redundant headings:
 
-That section must explicitly state the issue and the chosen resolution.
+1. Purpose and scope
+2. Current → proposed behavior
+3. Design and flow
+4. File-by-file implementation contracts
+5. Implementation order and dependencies
+6. Tests and acceptance criteria
 
-### Additional mandatory opening rules
+Combine or rename sections when that improves readability. Add Open decisions or
+Operational constraints only when needed. Start with what changes, why it matters,
+and what the slice owns and excludes. Introduce unfamiliar concepts where needed;
+do not narrate every class or helper before showing its definition.
 
-- Use **one structured call-out** with bold labels instead of stacking several one-line call-outs back-to-back.
-- Do **not** use `§` references in prose. Prefer explicit headings, file paths, or short phrases like "in the builder example below".
-- Every named domain, service, router, worker, component, view, or utility that later appears in code must appear in prose first.
+Keep a compact metadata header with current status, owner, update date, parent and
+repository/branch when relevant. Preserve the repository's numbered title convention.
+Define requiredness, nullability, defaults, bounds and behavior explicitly. Include
+unit and functional/integration coverage appropriate to the actual entry point;
+mock-only tests do not prove database or transactional behavior.
 
----
+### File-by-file implementation contracts
 
-### Canonical Structure
+Start with an annotated target file tree showing added, changed, moved and removed
+files. Use exact repository-relative paths as subsection headings. For each file:
 
-Every feature specification progresses through the same arc: product intent → the existing landscape and its gaps → a walk-through of the change a human can follow → a brief technical map → the deep technical sub-specs. The overview owns the first four; the sub-specs own the fifth, one slice at a time.
+1. State its responsibility and change in one or two sentences.
+2. Show the relevant interfaces in syntax-highlighted code using the target language.
+3. Explain only behavior and constraints that the declarations do not express.
 
-### The `overview.md` — product framing and technical map
+Use one field per line, explicit types and defaults, complete public signatures,
+return types, exact enum/constant values, and imports needed to establish ownership.
+Do not replace fields, parameters, enum members, or defaults with ellipses.
+Method bodies may be omitted in explicitly labeled interface listings. Include
+implementation bodies for non-obvious algorithms, integration seams or ordering
+constraints; do not reproduce routine implementations merely to increase detail.
+Do not encode classes as semicolon-separated prose or dense table cells, or repeat
+a code declaration as a second field inventory. Record errors and resource/transaction
+ownership next to the interface. Unresolved material decisions block handoff;
+do not silently invent missing contracts during an editorial rewrite.
 
-1. **`## Overview`**
-   - Describe the business / product ask.
-   - Describe the entire feature being implemented and what it addresses.
-   - Say what the organization or team is building, and **why**.
+### Existing behavior versus proposed contracts
 
-2. **`## Overview — Existing Feature`**
-   - **What exists today and its challenges** — the current behavior and where it falls short.
-   - **What is needed** — the gap between today and the goal.
-   - **The changes required** — the shape of the work at a high level.
+For existing behavior, cite actual repository paths and symbols (line references
+when useful). Include faithful source excerpts only when they help explain the change;
+one citation may support related statements. Do not require a sample per sentence.
+For proposed behavior, label code as a proposed interface or implementation and name
+its target file. Never imply that proposed code already exists or has been executed.
 
-3. **`## Full Feature Walk Through`**
-   - Walk the reader through a simple journey, describing the control flow from a functional or visual perspective — what is going to happen, step by step.
-   - Use visual aids: ASCII diagrams, a numbered user journey, before/after sketches. User journeys are usually the best example vehicle.
-   - **Trace requirements.** When the request alludes to a JIRA / Confluence / project-management story, pull it in through the available connectors (or ask the operator for access) and tie the walk-through back to those requirements.
+### Single-source contracts
 
-4. **`## A Brief Technical Overview`**
-   - The things the sub-specs will cover in greater detail.
-   - A quick walk-through of all the changes, without granular detail.
-   - Highlight, at a **class or method level**, what gets changed to reach the goal — enough to map the feature onto the code, not enough to implement it yet.
-   - List the child sub-specs and the slice each one owns, in dependency order.
+Define each interface, invariant, algorithm and configuration rule once, with its
+owning component. Design explains why; declarations define shape; behavior rules
+supply semantics; tests verify the rules; acceptance states observable completion.
+Do not restate the complete contract in every section.
 
-### The technical sub-specs — one standalone engineering chapter per slice
+A standalone child explains its purpose, owned changes and integration boundaries
+without requiring the parent overview. It may link to canonical shared definitions
+rather than copying them. Consumers show the relevant import, call signature and
+usage; the full shared schema stays with its sole owner. Keep links precise and
+check them after restructuring.
 
-> Each sub-spec is a **standalone engineering chapter**. It must read like an O'Reilly implementation guide: why this slice exists, what is true in the code today, what earlier design text is stale, what this sub-spec changes, the end-to-end flow it owns, and the concrete code and tests needed to land it. Use the simplest language. Design it for humans *and* for the specificity agents need.
+### Revision and evidence hygiene
 
-Each technical sub-spec (`01.a.1` … `01.a.n`) is a child of the overview and covers **one** technical slice. It must:
+The specification describes the current proposed contract, not its drafting history.
+Resolve findings by updating the owning section in place and removing superseded
+wording. Preserve findings and resolutions in review reports, not corrective appendices.
+Keep workflow IDs, turn/dispatch/retry counters, PRE/POST reports, historical approval
+narratives and tool logs outside the specification body. Preserve that evidence in
+conversation, PR descriptions or linked review artifacts; do not delete it to shorten
+the spec. Keep current status, unresolved decisions and actionable authorization or
+safety constraints in the spec. Do not infer runtime evidence from author readiness.
 
-- describe **how it fits into the larger solution** and what the outcome will be when this slice is done;
-- state the **architectural boundary** it owns in clear terms;
-- carry the actual change — a refactor, deletion, wiring change, runtime-behavior shift, or implementation phase — with **code-level implementation detail** that honors the conventions in the applicable skills and leaves **no ambiguity** for the implementing agent;
-- be directly implementable by an engineer without flipping back to the parent overview;
-- follow the repo's numbering scheme (e.g. `02.a.1` … `02.a.6` under `specifications/02-slo-tui-cli/`).
+### Presentation rules
 
-**Required metadata header.** Begin each sub-spec with a compact metadata line under the H1, including when known: `Status`, `Owner`, `Last updated`, `Parent spec`, `Branch`, `Repo`, `Approx. size`.
+Optimize for comprehension, not character count. Use short paragraphs with one main
+idea, concrete verbs, descriptive headings and inline code for symbols/paths/literals.
+Avoid compressed notation, unexplained abbreviations and section-number shorthand
+such as `§`; use descriptive Markdown links. There is no arbitrary word limit.
+Remove repetition before removing detail; split responsibilities, not page counts.
 
-**Required title format.** Either form is acceptable — do not force `Step N - ...` if the repo already uses `02.a.1`:
+- Code: interfaces, schemas, constants and configuration.
+- Tables: comparisons, state transitions and compact test matrices.
+- Diagrams: dependencies, ownership and transaction boundaries.
+- Prose: intent, rationale and exceptions.
 
-- `Step 02.a.1 — Owning One Agent Session Per Process`
-- `02.a.1 — Owning One Agent Session Per Process`
-
-**Required numbered structure** (unless the operator explicitly asks for a different one):
-
-1. `## 1. Context`
-2. `## 2. Why` — why this slice exists and what it unlocks.
-3. `## 3. Current State` — what is true in code **today**: real symbols, real file paths, current constraints, and any live deltas from older design text. If earlier specs or snippets are stale, say so explicitly and correct them here.
-4. `## 4. Proposed Approach` — the design decision in plain English before any code appears.
-5. `## 5. Domain Introductions` — define each new noun conceptually before it is used in the flow or code.
-6. `## 6. End-to-End Flow` — walk the reader through the runtime slice this sub-spec owns.
-7. `## 7. Implementation Details` — code-level detail, implementation order, verification commands, and manual smoke guidance where applicable. Honor the conventions in the applicable skills.
-8. `## 8. Tests` — see the test requirements below.
-9. `## 9. Acceptance Criteria`
-10. `## 10. Dependencies` — what blocks this slice and what it blocks downstream.
-
-**Tests a sub-spec must specify:**
-
-- **Unit tests** that verify a single behavior in isolation.
-- **Functional tests** that exercise the whole workflow this slice owns, starting from wherever the journey actually begins — a controller, a worker, or a CLI invocation — and driving it end to end, creating the right state for each assertion and asserting on the real output. A shallow mock-only test is not a functional test where project conventions require integration, transactional, or end-to-end verification.
-
----
+Do not put entire schemas or multi-paragraph algorithms into table cells. Diagrams
+should replace repetitive explanation rather than add another version of it.
 
 ### DRY Design: No Redundant Artefacts, Entities, or Domains
 
@@ -534,113 +494,22 @@ The self-check stage runs a mandatory consolidation pass over the entities and d
 
 ### Journey and Flow Sections
 
-### `## Full Feature Walk Through` and the journey it owns
-
-The overview's `## Full Feature Walk Through` covers the full surrounding journey. When a sub-spec owns only a slice of a larger user-facing or system-facing journey, restate the surrounding journey briefly and call out which slice this sub-spec owns. Numbered steps or an ASCII diagram are both acceptable.
-
-Skip the journey framing only when the work is purely cross-cutting (e.g. logging utility, base controller, tiny internal helper).
-
-### `## Control Flow: <hot-path-name> (Step-by-Step)`
-
-For each non-trivial request path or workflow the plan ships, give a step-by-step ASCII or numbered walkthrough. Name every middleware, every private helper, every commit boundary, and every external call. End with a one-sentence atomicity or consistency guarantee.
-
-This section is mandatory for any non-trivial orchestration. Domain-only specs may omit it.
-
----
-### Ideal Behavior First, Then the Problem — With Real Code
-
-This principle is not confined to bug specs. **Every** specification must walk the reader through the ideal behavior of the system before (or alongside) describing the problem or change: a detailed, plain-English narrative of how the components should interact when everything works correctly. Establish the ideal, *then* describe the problem or change against it.
-
-Both the ideal-behavior walkthrough and the problem/change description must embed **real code samples taken from the actual codebase**, with `file:line` references — not pseudocode or invented signatures. The reader must see the concrete code the narrative is about.
-
-For a bug report specifically, use these three ordered sections:
-
-1. **Describe the bug** — lead with the observed symptom and concise defect plus a one-sentence cause. Never open with the broken control flow in isolation.
-2. **Ideal behavior** — a detailed walkthrough of how the components should have interacted, with real code samples.
-3. **Reiterate the problem** — pinpoint the exact step, boundary or line where actual behavior diverges from the ideal, showing the real code.
-
----
+The overview owns the full journey; a child briefly identifies its slice. For
+non-trivial orchestration show ordered calls, external operations, resource ownership,
+commit/rollback boundaries and failure exits. Use a diagram or numbered walkthrough,
+not both unless each adds information. Pure helpers need no artificial user journey.
+For bugs, explain the symptom, expected behavior and actual divergence with relevant
+source references; do not repeat the whole walkthrough under multiple headings.
 
 ### `## Code Reference` Rules
 
-Every code block in `## Code Reference` (and in a sub-spec's `## 7. Implementation Details`) must be preceded by 1-3 sentences of plain English explaining what the snippet does and why it is shaped that way. Silent code dumps are banned. Silent prose is banned too — behavioral claims need a code sample. Every substantive claim about runtime behavior must be grounded in a **real code sample copied faithfully from the actual source, with a `file:line` citation**. This applies everywhere a spec describes how code behaves, and in a bug spec it applies in **both** the ideal-behavior walkthrough and the problem sections. Prose-only descriptions of control flow are not sufficient — show the actual code.
-
-If a class is central to the feature, do **not** show only a stub signature. Show:
-
-- the class docstring,
-- the main public entry point,
-- the core helper methods that define its behavior.
-
-Helper-method docstrings must explain:
-
-- **what** the method does,
-- **who** usually invokes it,
-- **when** it is used in the flow.
-
-Code examples must be low-ambiguity and implementation-ready. Use:
-
-- named arguments at Python call sites (Go named-field structs / context-first calls and TypeScript named options objects follow their own conventions),
-- explicit types on every signature,
-- declarative method structure,
-- Python Google-style docstrings; Go godoc; TypeScript JSDoc, following applicable language skills,
-- real identifiers and realistic values.
-
-In a technical sub-spec, embed the **full corrected example locally** rather than assuming the reader will consult the parent overview.
-
----
-
-### Writing Style
-
-### Tone & voice
-
-- Professional but conversational
-- Direct and declarative
-- Use first-person plural (`we`) when it improves readability
-- Explain technical terms when introduced
-- Make the opening read like an O'Reilly technical book chapter
-- Prefer explicit headings and file paths over shorthand references
-
-### Sentence structure
-
-- Use active voice predominantly
-- Keep sentences scannable
-- Mix explanatory sentences with short, punchy ones
-- Use transition phrases to connect concepts
-
-### Clarity techniques
-
-- Use concrete examples with real paths, values, and identifiers
-- Show before/after states when relevant
-- Use parenthetical clarifications only when they genuinely reduce ambiguity
-- Break sequence-heavy paragraphs into bullets
-
-### Call-outs
-
-- Use call-outs for important notes, decisions, warnings, or background
-- Prefer **one grouped call-out** with bold labels over many stacked micro call-outs
-- Example labels: `**Runtime strategy:**`, `**Documentation strategy:**`, `**Testing posture:**`
-
----
-
-### Visual Aids & Formatting
-
-Use:
-
-- inline code for file paths, identifiers, and literal values,
-- sufficiently full file trees when structure matters,
-- numbered workflows with nested sub-steps where needed,
-- tables for inventories, decision logs, or field specifications,
-- fenced code blocks with language identifiers,
-- file paths before or inside code blocks.
-
-When the surrounding structure matters, show both:
-
-- the existing structure before the change,
-- the target structure after the change.
-
-Do not over-truncate trees if that makes the reader lose orientation.
-
----
+Apply the file-by-file contract rules above. Introduce each block with a short
+explanation of its purpose; avoid silent code dumps and prose that restates each line.
+Use repository conventions: Python keyword arguments, Go context-first calls/named-field
+structs, TypeScript options objects; explicit types and real identifiers. Use
+Python Google-style docstrings, Go godoc, and TypeScript JSDoc as appropriate.
+Document public and important helper contracts, including errors and caller ownership.
+Full bodies are conditional on ambiguity, not on a class being central to the feature.
 
 ### Implementation Guidance
 
@@ -676,7 +545,7 @@ Technical sub-specs should also state:
 
 **Formatting:**
 
-- field specifications: `field_name (Type): constraints`
+- field specifications: target-language declarations, one field per line; prose only for additional semantics
 - file paths: `src/path/to/file.py`
 - dates: `YYYY-MM-DD` unless the surrounding context requires another format
 - IDs: always specify concrete type
@@ -688,43 +557,22 @@ Technical sub-specs should also state:
 
 ---
 
-### Key Principles
+### Implementation contract completeness
 
-1. **Completeness** — every implementation detail a developer needs.
-2. **Clarity** — technical precision without ambiguity.
-3. **Context** — explain why decisions were made, not just what to build.
-4. **Practicality** — real code, real file paths, real examples.
-5. **Traceability** — clear connections between related components and upstream asks.
-6. **Scannability** — structure that supports quick navigation.
-7. **Progressiveness** — move from simple to complex, broad to narrow.
-8. **Progressive disclosure** — runtime or business story first, then structure, then components, then code.
-9. **Low-ambiguity code samples** — code examples are part of the implementation brief, not decoration.
-10. **Both halves together** — product framing and engineering detail ship as one family; the overview sets the story, the sub-specs make each slice implementable.
-11. **Standalone engineering slices** — each technical sub-spec must stand on its own.
-12. **Drift correction** — when older spec text is stale, say so explicitly and correct it.
-13. **Code samples as grounding** — every behavioral claim is backed by real source, copied faithfully with a `file:line` citation. Silent prose is banned as surely as silent code dumps.
-14. **Ideal before break** — bug and analysis specs walk the correct design end to end before pinpointing where it fails.
-15. **DRY design** — never add an artefact, entity, or domain that duplicates work the code already does. Consolidate by deleting and replacing, encapsulating, or re-designing the existing component.
-16. **Single, isolated responsibilities** — one owner per responsibility, with distinguishable boundaries documented in the comments and explicit interfaces to adjacent responsibilities.
+Read the packaged [granularity sample](../../samples/implementation-details-granularity.md)
+before drafting or reviewing non-trivial contracts. It illustrates depth, not a
+requirement to reproduce its technology or length.
 
----
+Every slice must identify exact files, symbols and call sites added, changed, moved,
+removed or rewired; current versus target behavior; dependencies and implementation
+order; input/output contracts, state, errors, configuration, edge cases and unchanged
+behavior. Preserve single ownership and explicitly schedule consolidation/deletions.
 
-### Important: Implementation Details Are the Implementation Contract
-
-> **This is the most important part of an engineering specification. Do not skim it or treat it as a casual summary.** `## 7. Implementation Details` is the implementation contract for the coding agent: it must provide a granular, code-level representation of how the feature will look and behave, while honoring all applicable repository conventions. An implementing agent must not need to infer file placement, symbol ownership, behavior, error handling, or the tests that prove the change works.
-
-Read the packaged [`implementation-details-granularity.md`](../../samples/implementation-details-granularity.md) sample before drafting or reviewing non-trivial implementation details. It ships with the Slo skill bundle, so this reference is available in both repository checkouts and installed `pipx` environments. Follow its pattern of stating implementation order, identifying exact files and symbols, documenting current versus target behavior, showing full implementation-ready examples where a change is non-obvious, and naming the precise test changes required.
-
-For every implementation slice, this section must explicitly state, as applicable:
-
-- **Where code belongs:** the full repository-relative path of every file to create, modify, move, or delete; the containing folder or package; and why that location is the established owner under the application structure and coding conventions.
-- **What changes in each file:** the exact classes, functions, methods, constants, models, types, templates, registrations, and call sites involved. State whether a symbol is added, changed, removed, renamed, or rewired, and identify the adjacent interfaces that must change with it.
-- **How the code behaves:** ordered control flow; input, output, and type contracts; state transitions; data ownership; configuration; error and boundary behavior; ordering and idempotency rules; and intentionally unchanged behavior. Resolve every meaningful branch or edge case rather than leaving it for the implementer to decide.
-- **How the code should be shaped:** implementation order, signatures and realistic values where they eliminate uncertainty, and complete or before/after code examples for non-trivial changes. Examples must be consistent with the repository's naming, typing, docstring, layering, dependency-injection, and test conventions — they are a build brief, not illustrative pseudocode.
-- **What existing code is affected:** real `file:line` references for the current implementation, explicit replacements for stale behavior, and the exact consolidation or deletion required to keep a single owner for each responsibility.
-- **How the feature is validated:** exact test file paths; existing tests to update, replace, or remove; new test names or cases; fixtures and setup; the behavior and assertions each test covers; required unit, integration, functional, CLI, or end-to-end coverage as appropriate; and scoped format, lint, type-check, and test commands. Include manual smoke steps when automation cannot fully validate the runtime behavior.
-
-A statement such as “update the service,” “add tests,” or “handle errors” is insufficient. Replace it with the concrete file, symbol, behavior, expected result, and test assertion. If a competent implementing agent could reasonably make two different architectural or behavioral choices from the text, the implementation details are incomplete and the specification must be revised before hand-off.
+Specify exact test files, named cases, fixtures/setup, assertions, required levels,
+existing tests to update/remove, scoped verification commands and manual smoke where
+needed. "Update the service", "handle errors" and "add tests" are insufficient.
+Do not leave material placement, API, behavior, failure or test decisions to inference.
+Completeness means complete contracts, not exhaustive routine implementation listings.
 
 ## Self-check
 
@@ -781,65 +629,28 @@ If the draft is missing a required part, or a document uses the wrong structure 
 A structure mismatch, or a missing required part, is an automatic **REVISE**.
 
 ---
-### Check 1.5 — Human-readable narrative and structure audit (mandatory)
+### Check 1.5 — Readability and semantic preservation audit (mandatory)
 
-Per [Draft](#draft), every spec and every broken-down child spec must open with the human-readable narrative sections before low-level implementation detail.
+Use the Draft presentation rules for both overview and children. Accept combined or
+renamed sections when the required information is easy to locate. Do not demand prose
+merely to fill a template. Verify purpose, changed files, interfaces, flow, failure
+behavior, ownership, dependencies and acceptance can be found quickly.
 
-### Shared opening audit (overview and every sub-spec)
+Check that contracts use production-language syntax and each rule has one authority.
+Resolve competing definitions and move historical commentary to evidence artifacts.
+Check links and reconcile stale family summaries without overstating approval.
 
-Confirm each of these is present and non-trivial:
+When shortening, compare against the source requirements and prior contract:
+- Types, requiredness, nullability, defaults and bounds.
+- Validation and cross-field invariants.
+- Ordering, atomicity, concurrency and idempotency.
+- Errors, cancellation, recovery and resource ownership.
+- Security, authorization, operational limits and compatibility/migrations.
+- Tests, acceptance coverage and intentionally unchanged behavior.
 
-| Section | Required | What "present" means |
-|---|---|---|
-| `## Context` → `### Changes` **or** `### Description` | Always | Uses `Changes` when existing behavior is being modified and `Description` when something new is being introduced. Explains in plain English what should be different after the feature lands. |
-| `## Context` → `### Big Picture` | Always | 1-2 paragraphs naming upstream and downstream work. Not a 1-line stub. |
-| `## Context` → `### Existing structure we are extending` | When applicable | Shows enough current structure to orient the reader. |
-| `## Context` → `### What this document changes` | Always | Walks from broad runtime or product change to file-level change to component-level change. Every named artefact in `## Code Reference` later must appear here first in prose. |
-| `## Context` → `### <Ambiguity #|Bug #|CRITICAL #> resolution` | When applicable | If the draft is correcting stale design text or self-check findings, the resolution is named explicitly. |
-| Opening structured call-out | When applicable | Uses one grouped call-out with bold labels for related decisions. No stack of one-line call-outs. |
-| Prose intro before every code block in `## Code Reference` | Always | 1-3 sentences in plain English per code block. Silent code dumps are a gap. |
-| Full-detail class examples where central | When applicable | Central classes include class docstring, main public method, and core helpers. Helper-method docstrings explain what the method does, who invokes it, and when it runs. |
-
-### Overview audit — product framing
-
-If the draft is the **overview**, also confirm:
-
-- the opening reads like an O'Reilly textbook chapter led by product or business framing,
-- the surrounding journey is explained when the feature is user-facing,
-- scope / goals / non-goals are explicit,
-- broad feature behavior is explained before technical implementation detail,
-- the document does not read like a narrow engineering child slice unless that was intended.
-
-### Technical sub-spec audit — engineering structure
-
-If the draft is a **technical sub-spec**, all of the following are mandatory unless the operator explicitly asked for a different structure:
-
-| Section | Required | What "present" means |
-|---|---|---|
-| Metadata header under the H1 | Always | Includes available fields like `Status`, `Owner`, `Last updated`, `Parent spec`, `Branch`, `Repo`, `Approx. size`. |
-| `## 2. Why` | Always | Explains why this slice exists independently and why it is separated from sibling work. |
-| `## 3. Current State` | Always | Records live code truths: real symbols, file paths, runtime behaviors, and constraints that are true today. |
-| `## 4. Proposed Approach` | Always | Explains the design decision in plain English before code appears. |
-| `## 5. Domain Introductions` | When new nouns exist | Introduces each new concept before the flow or code sections use it. |
-| `## 6. End-to-End Flow` | Always for non-trivial slices | Walks the runtime slice this sub-spec owns from start to finish. |
-| `## 7. Implementation Details` | Always | Contains full corrected examples, implementation order, and verification guidance where applicable. |
-| `## 8. Tests` | Always | Maps tests to the actual logic introduced. |
-| `## 9. Acceptance Criteria` | Always | Independently verifiable. |
-| `## 10. Dependencies` | Always | States blockers and downstream dependents. |
-| Standalone readability | Always | The implementer should not need to keep opening the parent spec to decode the slice. |
-| Drift correction | When applicable | If older spec text is stale, the new spec says so explicitly and corrects it. |
-
-For every missing, stub-only, or wrong-structure section, record:
-
-```markdown
-**NARRATIVE GAP:** <section> — <what is missing>
-- Where in the spec: <heading path>
-- What to add: <concrete prose or structure change>
-```
-
-If **any** mandatory section is missing or stub-only, the verdict is automatically **REVISE**.
-
----
+Record missing context or obstructive organization as **NARRATIVE GAP**, misplaced
+artifact roles as **STRUCTURE GAP**, and missing material contracts as critical gaps.
+All require correction; absent decorative headings alone are not gaps.
 
 ### Check 2 — Cross-check the spec against the code-convention prompts
 
@@ -936,51 +747,23 @@ If no split is needed, record **Granularity: OK — fits in a single spec**.
 
 ---
 
-### Check 4 — Example richness audit
+### Check 4 — Contract examples audit
 
-A developer should be able to implement directly from the spec without follow-up questions. Walk the spec and verify that examples are present and convention-compliant.
-
-For every section that introduces code or schema, the spec must show sufficiently full examples for the artefact being written.
+Verify every proposed interface is complete and belongs to an exact target file.
+Check faithful source citations for existing behavior and explicit labels for target
+code. Signatures may omit bodies; fields/defaults/parameters may not be hidden.
+Require algorithm bodies only when needed to remove behavioral or ordering ambiguity.
 
 ### Shared example expectations
 
-- realistic identifiers and values,
-- real file paths,
-- imports when needed for understanding,
-- language-appropriate named inputs (Python keyword arguments, Go named-field structs, TypeScript options objects),
-- explicit types,
-- Python Google-style docstrings, Go godoc, TypeScript JSDoc on public and important helper methods, following applicable language skills,
-- prose before every code block.
+Use realistic identifiers, explicit types, relevant imports and language-appropriate
+calls. Follow Python Google-style docstrings, Go godoc, and TypeScript JSDoc. Explain
+each block briefly without duplicating its declaration. Check canonical shared links
+and consumer usage. Overviews need journeys and delivery maps, not DTO listings.
+Record missing or ambiguous examples as **EXAMPLE GAP**, with the exact contract or
+algorithm to supply. Do not request full listings solely to make a spec longer.
 
-### Overview emphasis
 
-For the **overview**, examples should be broad enough to make the system change concrete:
-
-- domain models,
-- DAOs,
-- representative app-service or endpoint examples,
-- workflow or API examples,
-- test examples where they anchor acceptance criteria.
-
-### Technical sub-spec emphasis
-
-For a **technical sub-spec**, examples should be implementation-brief quality:
-
-- full corrected class listings for central classes,
-- explicit current-state corrections when earlier snippets are stale,
-- implementation-order notes,
-- verification commands,
-- manual smoke steps when runtime behavior matters,
-- enough local detail that the parent spec does not need to be open side-by-side.
-
-For every missing or weak example, record:
-
-```markdown
-**EXAMPLE GAP:** <section> — <what is missing>
-- Suggested fill: <code stub, structure block, or prose addition>
-```
-
----
 
 ### Check 5 — Test coverage validation
 
@@ -1036,7 +819,7 @@ Rules:
 - Any non-zero **Narrative gap** count is automatic **REVISE**.
 - Any non-zero **Redundancy gap** count is automatic **REVISE**.
 - Any **structure mismatch**, or a missing required part, is automatic **REVISE**.
-- Any missing mandatory technical-sub-spec section is automatic **REVISE**.
+- Missing material contract information is automatic **REVISE**; combined or renamed sections are valid.
 - Any missing prose before code blocks is automatic **REVISE**.
 
 Then:

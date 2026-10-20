@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, get_args, cast
+from unittest.mock import AsyncMock, patch
+from pydantic import BaseModel, ValidationError
+from langchain_core.tools import BaseTool
+
+from langchain_core.messages import ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from src.agents.reasoning_capabilities import ReasoningLevel
 
 import pytest
 
@@ -104,7 +111,8 @@ def _build_tool(
     spawn: _FakeSpawn,
     store: Optional[WorkflowHandleStore] = None,
     default_model: Optional[str] = None,
-):
+    default_reasoning_level: Optional[ReasoningLevel] = None,
+) -> BaseTool:
     """Build a ``launch_workflow`` tool wired to a tmp store and fake spawn.
 
     Args:
@@ -112,6 +120,7 @@ def _build_tool(
         spawn (_FakeSpawn): Recording spawn callable.
         store (Optional[WorkflowHandleStore]): Store override.
         default_model (Optional[str]): Session default model.
+        default_reasoning_level (Optional[ReasoningLevel]): Bound reasoning snapshot.
 
     Returns:
         BaseTool: Bound ``launch_workflow`` tool.
@@ -119,10 +128,206 @@ def _build_tool(
     return LaunchWorkflowTool.build(
         owner_session_id=_OWNER_SESSION_ID,
         default_model=default_model,
+        default_reasoning_level=default_reasoning_level,
         handle_store=store or _build_store(tmp_path=tmp_path),
         spawn=spawn,
         history_root=tmp_path / "history",
     )
+
+
+_VALIDATION_ERROR = {
+    "error": "invalid launch_workflow arguments; use brief, cwd, model and canonical reasoning_level"
+}
+
+
+class TestReasoningTransport:
+    """Canonical requests travel unchanged; defaults never acquire call-local state."""
+
+    @pytest.mark.parametrize("level", get_args(ReasoningLevel))
+    async def test_launch_passes_each_explicit_reasoning_level(
+        self, tmp_path: Path, level: ReasoningLevel
+    ) -> None:
+        """Explicit off and all other canonical tokens win over the bound high default."""
+        spawn = _FakeSpawn()
+        launch = _build_tool(tmp_path=tmp_path, spawn=spawn, default_reasoning_level="high")
+        result = await launch.ainvoke({"brief": "bounded", "reasoning_level": level})
+        handle = WorkflowHandleDAO.model_validate_json(result)
+        assert spawn.call_count == 1
+        assert spawn.argv is not None
+        assert spawn.argv.count("--reasoning") == 1
+        assert spawn.argv[spawn.argv.index("--reasoning") + 1] == level
+        assert spawn.argv[spawn.argv.index("--session-id") + 1] == handle.orchestrator_session_id
+        assert spawn.argv[spawn.argv.index("-p") + 1] == "bounded"
+
+    @pytest.mark.parametrize("arguments", [{}, {"reasoning_level": None}])
+    async def test_launch_inherits_default_when_omitted_or_null(
+        self, tmp_path: Path, arguments: dict[str, object]
+    ) -> None:
+        """Both absent and null inherit medium, rather than bypassing the snapshot."""
+        spawn = _FakeSpawn()
+        launch = _build_tool(tmp_path=tmp_path, spawn=spawn, default_reasoning_level="medium")
+        payload: dict[str, object] = {"brief": "bounded", **arguments}
+        await launch.ainvoke(payload)
+        assert spawn.argv is not None
+        assert spawn.argv.count("--reasoning") == 1
+        assert spawn.argv is not None
+        assert spawn.argv[-2:] == ("--reasoning", "medium")
+
+    @pytest.mark.parametrize("arguments", [{}, {"reasoning_level": None}])
+    @pytest.mark.parametrize("defaults", [{}, {"default_reasoning_level": None}])
+    async def test_launch_omits_reasoning_without_factory_default(
+        self, tmp_path: Path, arguments: dict[str, object], defaults: dict[str, None]
+    ) -> None:
+        """Both legacy factory forms retain the child preference/seed path."""
+        spawn = _FakeSpawn()
+        launch = LaunchWorkflowTool.build(
+            owner_session_id=_OWNER_SESSION_ID,
+            default_model="gpt-5.4",
+            spawn=spawn,
+            history_root=tmp_path,
+            handle_store=_build_store(tmp_path=tmp_path),
+            **defaults,
+        )
+        payload: dict[str, object] = {"brief": "bounded", "cwd": str(tmp_path), "model": "", **arguments}
+        await launch.ainvoke(payload)
+        assert spawn.argv is not None
+        assert "--reasoning" not in spawn.argv
+        assert spawn.argv is not None
+        assert spawn.argv[-2:] == ("--model", "gpt-5.4")
+
+    async def test_explicit_override_does_not_mutate_default(self, tmp_path: Path) -> None:
+        """A subsequent omitted invocation still uses the construction snapshot."""
+        spawn = _FakeSpawn()
+        launch = _build_tool(tmp_path=tmp_path, spawn=spawn, default_reasoning_level="medium")
+        first = json.loads(await launch.ainvoke({"brief": "first", "reasoning_level": "high"}))
+        assert spawn.argv is not None
+        assert spawn.argv[-2:] == ("--reasoning", "high")
+        second = json.loads(await launch.ainvoke({"brief": "second"}))
+        assert spawn.argv is not None
+        assert spawn.argv[-2:] == ("--reasoning", "medium")
+        assert first["workflow_id"] != second["workflow_id"]
+        assert spawn.call_count == 2
+
+
+class TestReasoningDefaults:
+    """Validate immutable construction defaults before resolving dependencies."""
+
+    @pytest.mark.parametrize("invalid", ["HIGH", " high ", "", True, 1, 1.5, [], {}])
+    def test_invalid_bound_default_fails_before_tool_publication(self, invalid: object) -> None:
+        """Programmer errors fail before even resolving the history-root dependency."""
+        with (
+            patch("src.agents.slo_agent.orchestrator.launch_tool.default_history_root") as root,
+            patch("src.agents.slo_agent.orchestrator.launch_tool.WorkflowHandleStore") as store,
+        ):
+            with pytest.raises(ValidationError):
+                LaunchWorkflowTool.build(
+                    owner_session_id="owner",
+                    default_model=None,
+                    default_reasoning_level=cast(ReasoningLevel, invalid),
+                )
+        root.assert_not_called()
+        store.assert_not_called()
+
+    @pytest.mark.parametrize("level", [None, *get_args(ReasoningLevel)])
+    def test_canonical_bound_defaults_publish(self, tmp_path: Path, level: Optional[ReasoningLevel]) -> None:
+        """Every canonical default and legacy None publishes a real tool."""
+        assert (
+            _build_tool(tmp_path=tmp_path, spawn=_FakeSpawn(), default_reasoning_level=level).name
+            == "launch_workflow"
+        )
+
+
+class TestReasoningSchema:
+    """Separate runtime rejection from provider-visible field projection."""
+
+    def test_schema_exposes_canonical_optional_reasoning(self, tmp_path: Path) -> None:
+        """The runtime schema advertises nullable canonical input and forbids extras."""
+        launch = _build_tool(tmp_path=tmp_path, spawn=_FakeSpawn())
+        assert isinstance(launch.args_schema, type) and issubclass(launch.args_schema, BaseModel)
+        schema = launch.args_schema.model_json_schema()
+        field = schema["properties"]["reasoning_level"]
+        assert field["anyOf"] == [
+            {"enum": list(get_args(ReasoningLevel)), "type": "string"},
+            {"type": "null"},
+        ]
+        assert field["default"] is None
+        assert "reasoning_level" not in schema["required"]
+        assert "reasoning" not in schema["properties"]
+        assert schema["additionalProperties"] is False
+
+    def test_provider_projection_exposes_optional_canonical_reasoning(self, tmp_path: Path) -> None:
+        """The actual provider converter retains the field, not necessarily extra policy."""
+        launch = _build_tool(tmp_path=tmp_path, spawn=_FakeSpawn())
+        schema = convert_to_openai_tool(launch)["function"]["parameters"]
+        field = schema["properties"]["reasoning_level"]
+        assert field["anyOf"] == [
+            {"enum": list(get_args(ReasoningLevel)), "type": "string"},
+            {"type": "null"},
+        ]
+        assert field["default"] is None
+        assert "reasoning_level" not in schema["required"]
+        assert "reasoning" not in schema["properties"]
+
+    @pytest.mark.parametrize("invalid", ["", " ", "HIGH", " high ", "bogus", True, 1, 1.5, [], {}])
+    async def test_invalid_reasoning_has_no_launch_side_effects(
+        self, tmp_path: Path, invalid: object
+    ) -> None:
+        """Reject malformed inputs before reconciliation, registration, captures or spawn."""
+        store = _build_store(tmp_path=tmp_path)
+        spawn = _FakeSpawn()
+        launch = _build_tool(tmp_path=tmp_path, spawn=spawn, store=store)
+        with (
+            patch.object(store, "reconcile", new_callable=AsyncMock) as reconcile,
+            patch.object(store, "write", new_callable=AsyncMock) as write,
+            patch("src.agents.slo_agent.orchestrator.launch_tool.open_capture_file_append") as capture,
+        ):
+            result = await launch.ainvoke({"brief": "bounded", "reasoning_level": invalid})
+        assert json.loads(result) == _VALIDATION_ERROR
+        reconcile.assert_not_called()
+        write.assert_not_called()
+        capture.assert_not_called()
+        assert spawn.call_count == 0
+        assert not (tmp_path / "history").exists()
+
+    @pytest.mark.parametrize(
+        "extras",
+        [
+            {"reasoning": "high"},
+            {"reasoning": "high", "reasoning_level": "low"},
+            {"other": "secret-sentinel"},
+        ],
+    )
+    async def test_unknown_launch_key_is_rejected(self, tmp_path: Path, extras: dict[str, str]) -> None:
+        """Unknown keys cannot silently launch with unintended settings."""
+        spawn = _FakeSpawn()
+        launch = _build_tool(tmp_path=tmp_path, spawn=spawn)
+        with patch.object(LaunchWorkflowTool, "_cap_refusal", new_callable=AsyncMock) as cap:
+            payload: dict[str, object] = {"brief": "bounded", **extras}
+            result = await launch.ainvoke(payload)
+        assert json.loads(result) == _VALIDATION_ERROR
+        cap.assert_not_called()
+        assert spawn.call_count == 0
+        assert not (tmp_path / "history").exists()
+
+    async def test_reasoning_validation_toolcall_envelope(self, tmp_path: Path) -> None:
+        """LangChain preserves call identity/error status without reflecting invalid input."""
+        spawn = _FakeSpawn()
+        launch = _build_tool(tmp_path=tmp_path, spawn=spawn)
+        result = await launch.ainvoke(
+            {
+                "type": "tool_call",
+                "name": "launch_workflow",
+                "id": "invalid-95",
+                "args": {"brief": "b", "reasoning_level": "private-sentinel"},
+            }
+        )
+        assert isinstance(result, ToolMessage)
+        assert result.tool_call_id == "invalid-95"
+        assert result.status == "error"
+        assert isinstance(result.content, str)
+        assert json.loads(result.content) == _VALIDATION_ERROR
+        assert spawn.call_count == 0
+        assert not (tmp_path / "history").exists()
 
 
 class TestBuildArgv:
@@ -138,8 +343,8 @@ class TestBuildArgv:
             cwd="/repo",
         )
 
-        assert argv[:4] == [sys.executable, "-m", "src.cli", "run"]
-        assert "-I" not in argv
+        assert argv[:5] == [sys.executable, "-I", "-m", "src.cli", "run"]
+        assert argv.count("-I") == 1
         assert "--orchestrator" in argv
         assert "--json" in argv
         assert "--enable-history" in argv
@@ -551,7 +756,7 @@ class TestLaunchNeverRaisesIntoGraph:
         )
         spawn: _FakeSpawn = _FakeSpawn()
         store: WorkflowHandleStore = _build_store(tmp_path=tmp_path)
-        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn, store=store)
+        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn, store=store, default_reasoning_level="high")
 
         result: str = await launch_tool.ainvoke({"brief": "run the workflow"})
         parsed: dict = json.loads(result)
@@ -587,6 +792,7 @@ class TestLaunchNeverRaisesIntoGraph:
             tmp_path=tmp_path,
             spawn=_StateFlippingSpawn(pid=6001),
             store=store,
+            default_reasoning_level="high",
         )
 
         result: str = await launch_tool.ainvoke({"brief": "run the workflow"})
@@ -606,7 +812,7 @@ class TestLaunchNeverRaisesIntoGraph:
             raise RuntimeError("store exploded")
 
         monkeypatch.setattr(store, "update_state", _broken_update_state)
-        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn, store=store)
+        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn, store=store, default_reasoning_level="high")
 
         result: str = await launch_tool.ainvoke({"brief": "run the workflow"})
         parsed: dict = json.loads(result)
@@ -648,7 +854,7 @@ class TestLaunchNeverRaisesIntoGraph:
             _stderr_fails,
         )
         spawn: _FakeSpawn = _FakeSpawn()
-        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn)
+        launch_tool = _build_tool(tmp_path=tmp_path, spawn=spawn, default_reasoning_level="high")
 
         result: str = await launch_tool.ainvoke({"brief": "run the workflow"})
 
@@ -694,6 +900,7 @@ class TestLaunchNeverRaisesIntoGraph:
             tmp_path=tmp_path,
             spawn=_AbortingSpawn(pid=6002),
             store=store,
+            default_reasoning_level="high",
         )
 
         result: str = await launch_tool.ainvoke({"brief": "run the workflow"})

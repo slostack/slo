@@ -340,7 +340,7 @@ def test_changed_identity_during_bootstrap_cannot_certify(tmp_path: Path) -> Non
         )
     )
 
-    def change_identity(*, session: SloAgentSession) -> object:
+    def change_identity(*, session: SloAgentSession, owner_session_id: str) -> object:
         session._session_id = "changed"
         from unittest.mock import MagicMock
 

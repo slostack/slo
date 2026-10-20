@@ -21,12 +21,17 @@ from src.agents.slo_agent.history.dao import (
 )
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.tree_export_format import TreeExportFormat
+from src.tui.workflows.dao import SessionProgressSnapshotDAO, WorkflowSessionRowDAO
+from src.tui.workflows.transcript_renderer import WorkflowTranscriptRenderer
+from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.tui.workflow_visualizer_loader import (
     ChildSessionSummaryDAO,
     OrchestratorNodeDAO,
     HeadlessWorkflowVisualizerConfigDAO,
     WorkflowDataDAO,
     WorkflowVisualizerLoader,
+    _ObservationLimitError,
+    _ObservationReader,
 )
 
 # ---------------------------------------------------------------------------
@@ -150,6 +155,35 @@ def _mock_store(
     store.session_exists = AsyncMock(return_value=child_exists)
     store.root = root or Path("/tmp/test-store")
     return store
+
+
+def _stub_progress(
+    *, loader: MagicMock, entries: tuple[TranscriptEntryDAO, ...], notice: Optional[str] = None
+) -> None:
+    """Make a mock loader answer ``load_session_progress`` for whichever row it is asked.
+
+    Args:
+        loader (MagicMock): Mock loader used by the viewer under test.
+        entries (tuple[TranscriptEntryDAO, ...]): Entries every snapshot carries.
+        notice (Optional[str]): Fixed notice every snapshot carries.
+    """
+
+    async def _progress(*, row: WorkflowSessionRowDAO) -> SessionProgressSnapshotDAO:
+        return SessionProgressSnapshotDAO(
+            key=row.key,
+            execution_id=row.execution_id,
+            entries=entries,
+            revision="r",
+            source_generation="g",
+            availability="available" if entries else "empty",
+            observed_at="2026-10-18T00:00:00+00:00",
+            notice=notice,
+            task_text=row.task_text,
+            task_text_complete=row.task_text_complete,
+            status=row.status,
+        )
+
+    loader.load_session_progress = AsyncMock(side_effect=_progress)
 
 
 # ---------------------------------------------------------------------------
@@ -338,73 +372,71 @@ class TestDiscoverChildrenFromEvents:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowVisualizerLoader — _discover_children_from_capture_dirs
+# Child directory discovery (bounded observation path)
 # ---------------------------------------------------------------------------
 
 
-class TestDiscoverChildrenFromCaptureDirs:
-    """Child discovery from capture directory scan."""
+def _observation_loader(*, root: Path, parent: str = "parent-x") -> WorkflowVisualizerLoader:
+    """Build a loader over a real store that observes ``parent`` by exact id."""
+    return WorkflowVisualizerLoader(
+        config=_config(session_reference=parent),
+        store=FilesystemSessionHistoryStore(root=root),
+    )
 
-    def test_returns_empty_when_children_dir_missing(self, tmp_path: Path) -> None:
-        """No children/ directory → empty result."""
-        store = _mock_store(root=tmp_path)
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
 
-        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
-            parent_session_id="parent-x",
-        )
+class TestChildDirectoryDiscovery:
+    """Directory-only children come from the bounded ``children/`` scan of the group."""
 
-        assert result == []
+    async def test_returns_no_children_when_children_dir_missing(self, tmp_path: Path) -> None:
+        """No children/ directory → an available group with no children."""
+        (tmp_path / "parent-x").mkdir()
 
-    def test_finds_capture_directory_entries(self, tmp_path: Path) -> None:
-        """One child capture directory → one ChildSessionSummaryDAO."""
-        child_id: str = str(uuid4())
-        child_dir: Path = tmp_path / "parent-x" / "children" / child_id
-        child_dir.mkdir(parents=True)
+        group: WorkflowDataDAO = await _observation_loader(root=tmp_path).load_observation_group()
 
-        store = _mock_store(root=tmp_path)
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
+        assert (group.availability, group.children) == ("available", [])
 
-        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
-            parent_session_id="parent-x",
-        )
+    async def test_lists_capture_directories_sorted(self, tmp_path: Path) -> None:
+        """Each child capture directory becomes one summary, sorted by name."""
+        for child_id in ("child-b", "child-a"):
+            (tmp_path / "parent-x" / "children" / child_id).mkdir(parents=True)
 
-        assert len(result) == 1
-        assert result[0].session_id == child_id
+        group: WorkflowDataDAO = await _observation_loader(root=tmp_path).load_observation_group()
 
-    def test_capture_presence_flags_set_when_files_exist(self, tmp_path: Path) -> None:
-        """has_stdout_capture and has_stderr_capture are set from file existence."""
-        child_id: str = str(uuid4())
-        child_dir: Path = tmp_path / "parent-x" / "children" / child_id
-        child_dir.mkdir(parents=True)
-        (child_dir / "stdout.jsonl").write_text("", encoding="utf-8")
-        (child_dir / "stderr.jsonl").write_text("", encoding="utf-8")
+        assert [child.session_id for child in group.children] == ["child-a", "child-b"]
 
-        store = _mock_store(root=tmp_path)
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
+    async def test_capture_presence_flags_follow_files(self, tmp_path: Path) -> None:
+        """Legacy capture flags are set only when the capture files exist."""
+        with_files: Path = tmp_path / "parent-x" / "children" / "child-a"
+        with_files.mkdir(parents=True)
+        (with_files / "stdout.jsonl").write_text("", encoding="utf-8")
+        (with_files / "stderr.jsonl").write_text("", encoding="utf-8")
+        (tmp_path / "parent-x" / "children" / "child-b").mkdir()
 
-        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
-            parent_session_id="parent-x",
-        )
+        group: WorkflowDataDAO = await _observation_loader(root=tmp_path).load_observation_group()
 
-        assert result[0].has_stdout_capture is True
-        assert result[0].has_stderr_capture is True
+        flags = [(child.has_stdout_capture, child.has_stderr_capture) for child in group.children]
+        assert flags == [(True, True), (False, False)]
 
-    def test_capture_presence_flags_false_when_files_absent(self, tmp_path: Path) -> None:
-        """has_stdout_capture and has_stderr_capture are False when files do not exist."""
-        child_id: str = str(uuid4())
-        child_dir: Path = tmp_path / "parent-x" / "children" / child_id
-        child_dir.mkdir(parents=True)
+    def test_child_names_skip_symlinks_files_and_unsafe_names(self, tmp_path: Path) -> None:
+        """Only real subdirectories with safe identifiers are child names."""
+        children: Path = tmp_path / "parent-x" / "children"
+        (children / "real").mkdir(parents=True)
+        (children / "plain-file").write_text("", encoding="utf-8")
+        (children / "bad name").mkdir()
+        (children / "linked").symlink_to(children / "real", target_is_directory=True)
 
-        store = _mock_store(root=tmp_path)
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
+        names = _ObservationReader(root=tmp_path).child_names(directory=children)
 
-        result: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
-            parent_session_id="parent-x",
-        )
+        assert names == ("real",)
 
-        assert result[0].has_stdout_capture is False
-        assert result[0].has_stderr_capture is False
+    def test_child_names_refuse_more_than_the_limit(self, tmp_path: Path) -> None:
+        """More than 2,000 entries raise instead of returning a truncated list."""
+        children: Path = tmp_path / "parent-x" / "children"
+        for index in range(2_001):
+            (children / f"c{index:04d}").mkdir(parents=True)
+
+        with pytest.raises(_ObservationLimitError):
+            _ObservationReader(root=tmp_path).child_names(directory=children)
 
 
 # ---------------------------------------------------------------------------
@@ -495,83 +527,6 @@ class TestDetectWorkflowComplete:
         )
 
         assert result is False
-
-
-# ---------------------------------------------------------------------------
-# WorkflowVisualizerLoader — load_child_transcript_entries
-# ---------------------------------------------------------------------------
-
-
-class TestLoadChildTranscriptEntries:
-    """Transcript loading — canonical history vs stdout capture fallback."""
-
-    @pytest.mark.asyncio
-    async def test_uses_canonical_history_when_child_session_exists(self, tmp_path: Path) -> None:
-        """When the child has canonical history, transcript comes from there."""
-        child_id: str = str(uuid4())
-        child_event = _event(kind="user_message")
-        child_event = child_event.model_copy(update={"session_id": child_id})
-
-        store = _mock_store(
-            root=tmp_path,
-            child_exists=True,
-        )
-        store.load_events = AsyncMock(return_value=[child_event])
-
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
-
-        entries: list[TranscriptEntryDAO] = await loader.load_child_transcript_entries(
-            parent_session_id="parent",
-            child_session_id=child_id,
-        )
-
-        store.session_exists.assert_called_once_with(session_id=child_id)
-        store.load_events.assert_called_once_with(session_id=child_id)
-        assert isinstance(entries, list)
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_stdout_capture_when_no_canonical_history(self, tmp_path: Path) -> None:
-        """When child has no canonical history, stdout.jsonl capture is used."""
-        from src.agents.slo_agent.events.stream import AgentStreamEventDAO  # noqa: PLC0415
-
-        child_id: str = str(uuid4())
-        capture_dir: Path = tmp_path / "parent" / "children" / child_id
-        capture_dir.mkdir(parents=True)
-
-        event_line: str = AgentStreamEventDAO(
-            kind="text_delta",
-            delta="hello from child",
-        ).model_dump_json()
-        end_line: str = AgentStreamEventDAO(kind="run_completed").model_dump_json()
-        (capture_dir / "stdout.jsonl").write_text(
-            event_line + "\n" + end_line + "\n",
-            encoding="utf-8",
-        )
-
-        store = _mock_store(root=tmp_path, child_exists=False)
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
-
-        entries: list[TranscriptEntryDAO] = await loader.load_child_transcript_entries(
-            parent_session_id="parent",
-            child_session_id=child_id,
-        )
-
-        assert len(entries) == 1
-        assert entries[0].kind == "assistant"
-        assert entries[0].answer == "hello from child"
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_when_no_history_and_no_capture(self, tmp_path: Path) -> None:
-        """No canonical history and no capture file → empty transcript."""
-        store = _mock_store(root=tmp_path, child_exists=False)
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
-
-        entries: list[TranscriptEntryDAO] = await loader.load_child_transcript_entries(
-            parent_session_id="parent",
-            child_session_id="ghost-child",
-        )
-
-        assert entries == []
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +812,50 @@ class TestFollowTimerLifecycle:
             assert app._refresh_timer is None
 
 
+class TestFollowRefreshObservation:
+    """Follow ticks after the first refresh use only the bounded observation group."""
+
+    @pytest.mark.asyncio
+    async def test_follow_refresh_never_loads_full_parent_history(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A follow tick shows a new child and keeps metadata without full history or name resolution."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        store = FilesystemSessionHistoryStore(root=tmp_path / "history")
+        await store.ensure_session(session_id="parent-session", workdir=tmp_path, model_name=None)
+        await store.rename_session(session_id="parent-session", session_name="nightly run")
+        await store.append_event(event=_event())
+        config = _config(session_reference="nightly run", follow=True, refresh_seconds=60.0)
+        app = HeadlessWorkflowVisualizer(
+            config=config, loader=WorkflowVisualizerLoader(config=config, store=store)
+        )
+        forbidden_calls: list[str] = []
+
+        def _forbid(name: str) -> object:
+            def _raise(*_args: object, **_kwargs: object) -> None:
+                forbidden_calls.append(name)
+                raise AssertionError(f"{name} used by a follow refresh")
+
+            return _raise
+
+        async with app.run_test() as pilot:
+            first = app._workflow_data
+            for name in ("load_events", "_load_events_sync", "resolve_session_reference"):
+                monkeypatch.setattr(FilesystemSessionHistoryStore, name, _forbid(name))
+            await store.append_event(event=_spawned_event(child_id="child-1"))
+
+            await app._on_timer()
+            await pilot.pause(0)
+
+            refreshed = app._workflow_data
+        assert first is not None and first.children == []
+        assert refreshed is not None and [child.session_id for child in refreshed.children] == ["child-1"]
+        assert refreshed.parent_metadata is not None
+        assert refreshed.parent_metadata.session_name == "nightly run"
+        assert forbidden_calls == []
+
+
 # ---------------------------------------------------------------------------
 # WorkflowVisualizerLoader — load_orchestrator_context (sub-spec 54.a.4)
 # ---------------------------------------------------------------------------
@@ -938,21 +937,21 @@ class TestChildCapturePath:
             child_session_id="child",
         )
 
-    def test_discovery_delegates_children_directory_to_orchestration_layout(self, tmp_path: Path) -> None:
-        """Child discovery uses the shared children-directory vocabulary."""
-        store: MagicMock = _mock_store(root=tmp_path)
-        loader = WorkflowVisualizerLoader(config=_config(), store=store)
+    async def test_discovery_delegates_children_directory_to_orchestration_layout(
+        self, tmp_path: Path
+    ) -> None:
+        """Group discovery uses the shared children-directory vocabulary."""
+        (tmp_path / "parent").mkdir()
+        loader = _observation_loader(root=tmp_path, parent="parent")
         canonical_dir: Path = tmp_path / "canonical-children"
 
         with patch(
             "src.tui.workflow_visualizer_loader.OrchestrationLayout.children_dir",
             return_value=canonical_dir,
         ) as children_dir:
-            summaries: list[ChildSessionSummaryDAO] = loader._discover_children_from_capture_dirs(
-                parent_session_id="parent",
-            )
+            group: WorkflowDataDAO = await loader.load_observation_group()
 
-        assert summaries == []
+        assert group.children == []
         children_dir.assert_called_once_with(
             history_root=tmp_path,
             parent_session_id="parent",
@@ -1059,14 +1058,14 @@ class TestBuildChildSummaryPromptPreview:
         assert summary.prompt_preview == "Short prompt."
 
     def test_preview_long_prompt_truncated_with_ellipsis(self, tmp_path: Path) -> None:
-        """Prompt longer than 60 chars is truncated to 60 chars + '…'."""
+        """A long prompt uses the shared 150-code-point TaskPreview; the full task stays available."""
         from src.agents.slo_agent.orchestrator.context_dao import SpawnContextDAO
 
         parent = "p"
         child = "c"
         child_dir = tmp_path / parent / "children" / child
         child_dir.mkdir(parents=True)
-        long_prompt = "x" * 80
+        long_prompt = "x" * 200
         dao = SpawnContextDAO.build(
             task_id="t1",
             prompt=long_prompt,
@@ -1088,7 +1087,8 @@ class TestBuildChildSummaryPromptPreview:
         )
 
         assert summary.has_spawn_context is True
-        assert summary.prompt_preview == "x" * 60 + "…"
+        assert summary.prompt_preview == "x" * 149 + "…"
+        assert (summary.task_text, summary.task_text_complete) == (long_prompt, True)
 
     def test_no_spawn_context_has_empty_preview(self, tmp_path: Path) -> None:
         """When spawn_context.json is absent, flags and preview are default."""
@@ -1129,19 +1129,19 @@ class TestWorkflowDataDAOOrchestratorContext:
 
 
 # ---------------------------------------------------------------------------
-# HeadlessWorkflowVisualizer — _format_entry_textual thinking/reasoning (54.a.5)
+# WorkflowTranscriptRenderer.format_entry thinking/reasoning (54.a.5; shared since 94.a.3)
 # ---------------------------------------------------------------------------
 
 
 class TestFormatEntryTextualUpgrades:
-    """``_format_entry_textual`` handles thinking kind and reasoning field."""
+    """The shared textual formatter handles thinking kind and reasoning field."""
 
     def test_thinking_entry_renders_header(self) -> None:
         """A thinking entry renders a '~ Thinking' header and content."""
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         entry = TranscriptEntryDAO(kind="thinking", content="I considered X then Y.")
-        text = HeadlessWorkflowVisualizer._format_entry_textual(entry=entry)
+        text = WorkflowTranscriptRenderer.format_entry(entry=entry)
         plain = text.plain
         assert "Thinking" in plain
         assert "I considered X then Y." in plain
@@ -1155,7 +1155,7 @@ class TestFormatEntryTextualUpgrades:
             reasoning="my reasoning here",
             answer="final answer",
         )
-        text = HeadlessWorkflowVisualizer._format_entry_textual(entry=entry)
+        text = WorkflowTranscriptRenderer.format_entry(entry=entry)
         plain = text.plain
         assert "reasoning" in plain
         assert "my reasoning here" in plain
@@ -1291,6 +1291,7 @@ class TestVisualizerOrchestratorAndStreaming:
                 children=[ChildSessionSummaryDAO(session_id="child")],
             )
         )
+        _stub_progress(loader=loader, entries=())
         app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
 
         async with app.run_test() as pilot:
@@ -1358,110 +1359,70 @@ class TestVisualizerOrchestratorAndStreaming:
         assert "exit 7" in label.plain
         assert "sweep" in label.plain
 
-    def test_append_live_event_when_tool_call_ends_appends_the_buffered_call(self) -> None:
-        """A completed live tool call renders its buffered JSON input."""
-        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
-
-        app = HeadlessWorkflowVisualizer(config=_config(), loader=MagicMock())
-
-        app._append_live_event(
-            session_id="child",
-            event=AgentStreamEventDAO(kind="tool_call_start", block_id="call", tool_name="bash"),
-        )
-        app._append_live_event(
-            session_id="child",
-            event=AgentStreamEventDAO(
-                kind="tool_call_delta", block_id="call", tool_arguments_delta='{"command":'
-            ),
-        )
-        app._append_live_event(
-            session_id="child",
-            event=AgentStreamEventDAO(kind="tool_call_delta", block_id="call", tool_arguments_delta='"pwd"}'),
-        )
-        app._append_live_event(
-            session_id="child",
-            event=AgentStreamEventDAO(kind="tool_call_end", block_id="call"),
-        )
-
-        entry = app._live_entries["child"][0]
-        assert entry.kind == "tool"
-        assert entry.tool_name == "bash"
-        assert entry.tool_input == {"command": "pwd"}
-
-    def test_append_live_event_when_tool_result_matches_call_appends_result(self) -> None:
-        """A matching live tool result renders after its call entry."""
-        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
-
-        app = HeadlessWorkflowVisualizer(config=_config(), loader=MagicMock())
-
-        app._append_live_event(
-            session_id="child",
-            event=AgentStreamEventDAO(kind="tool_call_start", block_id="call", tool_name="bash"),
-        )
-        app._append_live_event(
-            session_id="child",
-            event=AgentStreamEventDAO(kind="tool_call_end", block_id="call"),
-        )
-        app._append_live_event(
-            session_id="child",
-            event=AgentStreamEventDAO(kind="tool_result", tool_call_id="call", content="/repo"),
-        )
-
-        entry = app._live_entries["child"][1]
-        assert entry.kind == "tool"
-        assert entry.tool_name == "bash"
-        assert entry.output == "/repo"
-
     @pytest.mark.asyncio
-    async def test_detail_pane_coalesces_text_deltas(self) -> None:
-        """Appends consecutive live text deltas into one assistant entry."""
-        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+    async def test_detail_pane_renders_shared_progress_for_selected_child(self) -> None:
+        """The detail pane asks the loader for the child's progress row and paints its entries."""
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
+        execution_id: str = "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9"
         loader: MagicMock = MagicMock()
         loader.load = AsyncMock(
             return_value=WorkflowDataDAO(
-                parent_session_id="parent", children=[ChildSessionSummaryDAO(session_id="child")]
+                parent_session_id="parent",
+                children=[
+                    ChildSessionSummaryDAO(
+                        session_id="child",
+                        execution_id=execution_id,
+                        task_text="Task",
+                        task_text_complete=True,
+                    )
+                ],
             )
         )
-        loader.read_child_stdout_tail = MagicMock(
-            return_value=[
-                AgentStreamEventDAO(kind="text_delta", delta="hello ").model_dump_json().encode(),
-                AgentStreamEventDAO(kind="text_delta", delta="world").model_dump_json().encode(),
-            ]
+        _stub_progress(
+            loader=loader,
+            entries=(TranscriptEntryDAO(kind="assistant", answer="hello world"),),
+            notice="Earlier output omitted from this view.",
         )
         app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert len(app._live_entries["child"]) == 1
-            assert app._live_entries["child"][0].answer == "hello world"
+            row = loader.load_session_progress.await_args.kwargs["row"]
+            text = "\n".join(line.text for line in app.query_one("#detail-log", RichLog).lines)
+
+        assert (row.key.orchestrator_session_id, row.key.session_id) == ("parent", "child")
+        assert (row.execution_id, row.status, row.task_text) == (execution_id, "running", "Task")
+        assert "hello world" in text
+        assert "Earlier output omitted from this view." in text
 
     @pytest.mark.asyncio
-    async def test_detail_pane_closes_block_on_terminal_event(self) -> None:
-        """Clears the active live assistant block after a terminal capture event."""
-        from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+    async def test_detail_pane_uses_selected_format_and_reports_empty_progress(self) -> None:
+        """Markdown mode formats progress entries; an empty snapshot shows the fixed empty line."""
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         loader: MagicMock = MagicMock()
-        loader.load = AsyncMock(
-            return_value=WorkflowDataDAO(
-                parent_session_id="parent", children=[ChildSessionSummaryDAO(session_id="child")]
-            )
+        group = WorkflowDataDAO(
+            parent_session_id="parent",
+            children=[ChildSessionSummaryDAO(session_id="child", status="completed")],
         )
-        loader.read_child_stdout_tail = MagicMock(
-            return_value=[
-                AgentStreamEventDAO(kind="text_delta", delta="answer").model_dump_json().encode(),
-                AgentStreamEventDAO(kind="run_completed").model_dump_json().encode(),
-            ]
+        loader.load = AsyncMock(return_value=group)
+        loader.load_observation_group = AsyncMock(return_value=group)
+        _stub_progress(loader=loader, entries=(TranscriptEntryDAO(kind="user", content="question"),))
+        app = HeadlessWorkflowVisualizer(
+            config=_config(detail_format=TreeExportFormat.MARKDOWN), loader=loader
         )
-        app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert "child" not in app._live_open_assistant
+            markdown = "\n".join(line.text for line in app.query_one("#detail-log", RichLog).lines)
+            _stub_progress(loader=loader, entries=())
+            await app.action_refresh()
+            await pilot.pause()
+            empty = "\n".join(line.text for line in app.query_one("#detail-log", RichLog).lines)
+
+        assert "## User" in markdown and "question" in markdown
+        assert "No transcript entries for child." in empty
 
     @pytest.mark.asyncio
     async def test_summary_bar_shows_cleanup_line(self) -> None:
@@ -1557,7 +1518,7 @@ class TestVisualizerOrchestratorAndStreaming:
                 orchestrator=OrchestratorNodeDAO(session_id="parent", state="running"),
             )
         )
-        loader.read_child_stdout_tail = MagicMock(return_value=[])
+        _stub_progress(loader=loader, entries=())
         loader.load_node_stderr_lines = MagicMock(return_value=["orchestrator error"])
         app = HeadlessWorkflowVisualizer(config=_config(), loader=loader)
 
@@ -1617,3 +1578,49 @@ class TestDetailViewToggle:
             await pilot.press("v")
             await pilot.pause()
             assert app._detail_view == "transcript"
+
+
+# ---------------------------------------------------------------------------
+# HeadlessWorkflowVisualizer — unavailable group (94 a.3, R11)
+# ---------------------------------------------------------------------------
+
+
+class TestUnavailableGroup:
+    """An unavailable group shows its fixed notice instead of an empty running workflow."""
+
+    async def test_oversized_fleet_paints_notice_and_keeps_parent_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Oversized fleet.json: notice painted, orchestrator row kept, completion from parent events."""
+        from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
+
+        parent: str = "parent-x"
+        session_dir: Path = tmp_path / parent
+        session_dir.mkdir()
+        events: list[SessionHistoryEventDAO] = [
+            _event(kind="run_started", session_id=parent),
+            _event(kind="run_completed", session_id=parent),
+        ]
+        (session_dir / "events.jsonl").write_bytes(
+            b"".join(event.model_dump_json().encode() + b"\n" for event in events)
+        )
+        (session_dir / "fleet.json").write_bytes(b"{" + b" " * (2 * 1024 * 1024) + b"}")
+        monkeypatch.setattr(
+            FilesystemSessionHistoryStore, "resolve_session_reference", AsyncMock(return_value=parent)
+        )
+        cfg = _config(session_reference=parent, follow=True, refresh_seconds=60.0)
+        loader = WorkflowVisualizerLoader(config=cfg, store=FilesystemSessionHistoryStore(root=tmp_path))
+        app = HeadlessWorkflowVisualizer(config=cfg, loader=loader)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            summary: str = str(app.query_one("#workflow-summary", Label).render())
+            rows: list[str] = [str(label.render()) for label in app.query("#child-list Label").results(Label)]
+
+        notice: str = "Workflow group unavailable; retrying on the next refresh."
+        assert notice in summary
+        assert "complete" in summary and "running" not in summary
+        assert any("orchestrator" in row for row in rows)
+        assert any(notice in row for row in rows)
+        assert not any("No sub-agents found" in row for row in rows)
+        assert app._refresh_timer is None

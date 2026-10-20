@@ -160,7 +160,7 @@ def test_go_canonical_skills_do_not_collide_with_imported_legacy_names() -> None
 
 def test_shared_workflow_routes_without_python_commands() -> None:
     for name in ("code-test-review", "gitlab-code-test-review"):
-        text = (SKILLS / f"design-and-analysis/workflows/{name}.md").read_text()
+        text = (SKILLS / f"orchestration/workflows/{name}.md").read_text()
         assert "engineering-routing" in text
         assert "engineering-testing" in text
         assert "poetry run pytest" not in text
@@ -360,8 +360,8 @@ def test_language_specific_verification_requirements_remain_in_language_owners()
 
 def test_code_test_workflows_handoff_generic_prerequisite_before_implementation() -> None:
     workflow_paths = (
-        SKILLS / "design-and-analysis/workflows/code-test-review.md",
-        SKILLS / "design-and-analysis/workflows/gitlab-code-test-review.md",
+        SKILLS / "orchestration/workflows/code-test-review.md",
+        SKILLS / "orchestration/workflows/gitlab-code-test-review.md",
     )
     for path in workflow_paths:
         text = path.read_text()
@@ -381,6 +381,6 @@ def test_code_test_workflows_handoff_generic_prerequisite_before_implementation(
 
     for path in (
         SKILLS / "design-and-analysis/implement-feature-request/SKILL.md",
-        SKILLS / "design-and-analysis/orchestrator/SKILL.md",
+        SKILLS / "orchestration/orchestrator/SKILL.md",
     ):
         assert "skills/coding/coding-rules/SKILL.md" in path.read_text()

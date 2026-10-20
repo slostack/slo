@@ -379,9 +379,14 @@ This is import isolation, not environment scrubbing: ordinary `os.environ` value
 including `SLO_*` configuration and credentials, remain available to the initial
 wrapped CLI process. Slo never requires, reads, or changes a target project's `.envrc`.
 
-The installed scheduler consumes that same wrapper. This guarantee does not extend
-unchanged to internal headless module launches: those use a **sanitized child
-environment** and intentionally do not add `-I`. Likewise, the visualizer's
+The installed scheduler consumes that same wrapper. Internal sub-agent, detached
+workflow, and workflow-resume launches use `sys.executable -I -m src.cli` with a
+**sanitized child environment**. They retain the parent interpreter while ignoring
+project import paths. Slo must be installed in that interpreter; for development,
+use an editable install rather than relying on cwd or `PYTHONPATH`. The `-I` flag
+does not propagate to project interpreters launched by agent tools, so commands
+such as `PYTHONPATH=/project poetry run python script.py` retain their own import
+configuration. Existing `SLO_*` timeout forwarding is unchanged. The visualizer's
 **trusted source fallback** is checkout-only and does not forward `PYTHONPATH`; it
 is not a replacement for the installed product wrapper.
 

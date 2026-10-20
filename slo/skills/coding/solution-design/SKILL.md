@@ -1,6 +1,6 @@
 ---
 name: solution-design
-description: Prepare a self-contained design document before implementation by investigating callers, choosing a deep module and real seam, defining its whole interface, comparing authorized alternatives, and saving design.md.
+description: Prepare a self-contained design document before implementation by investigating callers, choosing a deep module and real seam, defining its whole interface, comparing authorized alternatives, and saving design.md, and design complete vertical solutions domain-first.
 when_to_use: Use when a coding agent is asked to investigate and design a solution document before implementation, not to implement the solution.
 group: coding
 kind: skill
@@ -13,6 +13,7 @@ kind: skill
 - Investigate actual callers, variation, and ownership before proposing a design.
 - Define the complete interface, lifecycle, failure, and testing contract before implementation.
 - Compare alternatives only within the user's authorization and preserve unresolved decisions.
+- Design complete vertical slices domain-first and present them journey-first; see `## Vertical solution design`.
 
 ## Examples
 
@@ -166,6 +167,266 @@ Explain the invariants, ownership, duplicate-request behaviour, cancellation, an
 outcomes around these sketches; do not pretend the signatures alone define the
 interface. Do not require Python, Go, TypeScript, or any framework in the design.
 
+## Vertical solution design
+
+- Always design a complete solution involving all the components in the systems.
+- For instance if the system contains a
+  - frontend, backend, task worker, database, and service
+  - And if a feature touches all the components, your solution should be structure as completely deliverable chunks.
+  - Designing and executing just the backend is a horizontal chunk and can lead to gaps in the interfaces and seams.
+  - Always plan for a full vertical slice of self contained work when relevant.
+
+**Design order:** understand current state and intended outcome → identify
+state-owning domains and data contracts → complete workflows, interfaces and
+steps → tests → detailed implementation.
+**Presentation order:** current state and end-to-end journey first → domains,
+workflows/application services and interfaces → implementation and verification.
+Do not confuse the order of decisions with the order of explanation.
+
+### Always explain the current state
+
+Explain how the journey works today, which components own state and behavior,
+what is missing, incorrect, duplicated or unnecessarily complicated, and what
+will be reused, extended, replaced or removed. Cite verified paths and symbols;
+separate observations from assumptions. State explicitly when work is greenfield.
+Search for existing responsibility owners by behavior, not proposed feature
+terminology. Never create a second owner for an existing responsibility; apply
+[code design principles](../code-design-principles/SKILL.md).
+
+### First design step: domains and intuitive data structures
+
+A domain is a cohesive responsibility that creates, mutates, manages or publishes
+state, identified by its concept and rules, not a table, method or screen.
+State includes in-memory buffers/collections/caches; files, persisted records and
+configuration; sessions and UI state; queued work, progress, checkpoints and
+lifecycle status; messages buffered/flushed to a bus and their delivery outcomes.
+Message flushing is an operation of the message-delivery domain, not a domain.
+
+| Item | Required explanation |
+|---|---|
+| Meaning | What the concept represents |
+| Ownership | State and behavior owned, and explicitly not owned |
+| Representation | Named, typed data structures |
+| Identity and lifetime | Identity and duration |
+| Rules | Valid values, relationships, invariants |
+| Operations | Creation, mutation, reading, publication, removal |
+| Authority | Authoritative, derived, or cached state |
+
+Define named intuitive DTO/DAO structures before bodies; use repository terminology
+consistently. No anonymous maps, positional tuples or long unrelated parameter
+lists for meaningful boundary data. Data objects carry data; domain services own
+behavior (validation and mechanical conversion may live with structures).
+For every attribute state name, type, meaning, required/optional, default and
+constraints/units. Distinguish absent vs null vs empty when meanings differ.
+Separate request/stored-state/result structures when contracts differ, but do not
+duplicate identical data under new names. Static types do not validate external
+input: name runtime validation boundaries. Standardize meaning and contracts,
+not physical layout across languages.
+
+Equivalent boundary data (all attributes required, no defaults; units not applicable):
+
+| Attribute | Type | Required | Meaning / constraint |
+|---|---|---|---|
+| message_id | String | Yes | Stable delivery correlation identity; non-empty |
+| destination | String | Yes | Logical destination; non-empty |
+| body | String | Yes | Message content; empty allowed |
+
+```python
+class OutboundMessageDAO(BaseModel):
+    """One message submitted for delivery."""
+
+    message_id: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+    body: str
+```
+
+```go
+// OutboundMessageDAO carries one message submitted for delivery.
+// MessageID and Destination must be non-empty; Body may be empty.
+// Validate this contract at the receiving boundary.
+type OutboundMessageDAO struct {
+    MessageID   string `json:"message_id"`
+    Destination string `json:"destination"`
+    Body        string `json:"body"`
+}
+```
+
+```typescript
+/** One message submitted for delivery.
+ * Validate non-empty messageId and destination at runtime boundaries.
+ */
+interface OutboundMessageDAO {
+  readonly messageId: string
+  readonly destination: string
+  readonly body: string
+}
+```
+
+### Identify workflows end to end
+
+A workflow runs from initiating action to observable outcome. Include CLI, API,
+controllers/routers, UI, worker tasks, schedules and events as relevant entry
+points. Design the complete vertical slice, not disconnected horizontal pieces.
+
+```text
+User action
+    ↓
+UI component → Client state / API client
+    ↓
+Controller / Router
+    ↓
+Application service
+    ├─ Domain service → Database tables
+    ├─ Another application service
+    └─ Message-bus adapter → Worker
+                                ↓
+                         Application service
+                                ↓
+                         Persisted outcome
+                                ↓
+                      API / event → UI update
+```
+
+Arrows show handoffs toward an observed result. Include only necessary
+participants; do not invent a frontend for a CLI-only workflow.
+For each workflow describe trigger/input, preconditions/authorization, ordered
+operations, state changes and external effects, successful outcome, failure
+outcomes/recovery and how the caller observes completion. Cross-service handoffs
+must name contracts, ownership, correlation and consistency. An acknowledgement
+that work was queued is not journey completion.
+
+### Define interfaces before implementation bodies
+
+Inventory entry-point requests/responses, application-service inputs/results,
+domain operations, persistence/external-service boundaries, events/messages/worker
+payloads, and frontend state/component contracts where relevant. Document what
+each does, who calls it, inputs/outputs, state changes/side effects, errors and
+guarantees, and lifetime/ordering/concurrency where relevant. Comments explain
+behavior, never merely restate symbol names. Apply the whole-interface checklist
+in §3 at every boundary.
+
+```text
+PublishMessages.execute(PublishMessagesRequest) → PublishMessagesResult
+
+Caller:
+  CLI command or worker task.
+Behavior:
+  Validate the batch, submit eligible messages, and record delivery outcomes.
+Guarantees:
+  Return one outcome per submitted message.
+  Do not report broker acceptance as downstream processing completion.
+Failures:
+  Reject invalid input before publication.
+  Represent partial publication explicitly in the result.
+```
+
+### Application services: one public workflow entry point
+
+Expose one primary execution entry point (`execute`, `invoke`, or the repository's
+established equivalent). Internal steps remain private, never exposed publicly:
+
+```text
+execute(request)
+    1. validate_request
+    2. load_required_state
+    3. prepare_changes
+    4. apply_changes
+    5. publish_effects
+    6. build_result
+```
+
+A step may call a domain-service method, another application service through its
+public entry point, an integration adapter or a focused internal calculation.
+Unrelated workflows belong in separate application services; no circular calls
+or collections of unrelated operations masquerading as one service.
+Make transaction boundaries, ordering, retries, idempotency, concurrency and
+partial-failure behavior explicit. Database update plus message publication is
+never implied atomic unless the proposed mechanism guarantees it.
+
+### Design tests alongside the contracts
+
+| Level | Invocation | Verification |
+|---|---|---|
+| End-to-end journey | Actual initiating boundary | Complete observable outcome across the vertical |
+| Application service | Public execution entry point directly | Coordination, sequencing, results, errors, effects |
+| Domain service | Domain operations directly | Invariants, transitions, persistence behavior |
+| Focused unit test | Individual methods where relevant | Non-trivial calculations and isolated decisions |
+| Boundary / contract test | API, message, storage, or UI boundary | Validation, serialization, interoperability |
+
+```text
+Journey test:             Entry point ──────────────→ Observable outcome
+Application-service test:       Workflow execution → Result and effects
+Domain-service test:                State operation → Rules and transitions
+Focused method test:                   Calculation → Specific behavior
+```
+
+Arrows show the scope each test proves. Specify setup, invocation and observable
+assertions, including meaningful failures. A mock-only application-service test
+does not replace a full-journey test. For asynchronous work verify the eventual outcome,
+not task submission. Avoid private implementation coupling unless the
+method contains independently significant behavior.
+
+### Present specifications top down; implementation details last
+
+1. Current state.
+2. Intended end-to-end journey.
+3. Solution diagram (participants and handoffs).
+4. Domains and data contracts.
+5. Workflows/application services.
+6. Interfaces.
+7. Implementation details (files, symbols, migrations, wiring, compatibility, rollout).
+8. Tests and acceptance criteria.
+
+Introduce concepts in prose before code. This ordering governs explanation inside
+design content; it integrates with, never replaces, the document contract in §5
+or the repository's [feature-specification family](../../design-and-analysis/feature-specifications/SKILL.md).
+
+Describe database changes as migrations, not only a desired final schema: tables,
+columns, constraints and indexes added/changed; backfill; nullability/defaults;
+deployment compatibility and ordering; rollback/recovery limitations.
+Python uses SQLAlchemy schema declarations accompanied by explicit migration
+operations. Go and TypeScript use pure SQL migration definitions even when
+runtime code uses an ORM or query builder.
+
+```python
+delivery_messages = sa.Table(
+    "delivery_messages",
+    metadata,
+    sa.Column("message_id", sa.String(64), primary_key=True),
+    sa.Column("destination", sa.Text(), nullable=False),
+    sa.Column("body", sa.Text(), nullable=False),
+)
+```
+
+```sql
+CREATE TABLE delivery_messages (
+    message_id VARCHAR(64) PRIMARY KEY,
+    destination TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+```
+
+These equivalent declarations alone are not a migration plan. For a new empty
+table, specify the create operation before deploying writers and removal only
+when no dependent reader/writer remains. Existing rows require an explicit
+backfill and constraint-validation sequence. State where validation constraints
+are enforced: boundary validation rejects empty identity/destination; storage
+limits message_id to 64 characters, so the boundary must enforce that limit too.
+Keep schema and boundary contracts compatible; document any destructive rollback.
+
+### Keep the result readable and concise
+
+Use simple language, outcome first rather than a file catalog, short paragraphs,
+contract tables and focused examples. Use one overview diagram; add sequence or
+state diagrams only when they clarify behavior. Explain decisions and guarantees,
+not generic architecture lectures. Do not repeat contracts across sections.
+Mark irrelevant concerns "not applicable" instead of inventing components.
+Add detail where ambiguity would force guessing, not to lengthen the document.
+
+**Design completion rule:** a reader can follow the whole journey, identify the
+owner of every state change, understand each boundary contract, and see which
+tests prove the outcome.
+
 ## 4. Design it twice only with explicit consent
 
 Explore alternatives with sub-agents **only when the user explicitly requests
@@ -228,9 +489,20 @@ be fewer than 20 lines, use the same vocabulary as the document, and explain the
 arrows. Include facts, recommendations, assumptions, unresolved decisions, and source
 links without pretending that design approval or implementation has happened.
 
+When the design covers a full vertical slice, apply the presentation order in
+`## Vertical solution design`: its sections refine this document's Approach,
+Modules and seams, and Main journeys rather than replacing this contract.
+
 ## 6. Verification before saving and reporting
 
 Before saving, check all of the following:
+
+- Current state is explained with verified paths before proposed changes.
+- Every state change has an identified owning domain.
+- Interfaces and their behavioral documentation precede implementation bodies.
+- Each application service exposes one primary public execution entry point.
+- Journey, application-service, domain, focused, and boundary tests are identified with setup and assertions.
+- Database changes are described as migrations.
 
 - The interface hides meaningful complexity and the governing question has been answered.
 - Depth is demonstrated with behaviour examples, not LOC.

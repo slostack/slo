@@ -27,7 +27,7 @@ See `AGENTS.md` for the layered skill structure.
 
 ## Workflow-turn counting
 
-Use `skills/design-and-analysis/workflows/SKILL.md#workflow-turns-and-limits`
+Use `skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`
 for counting and stopping rules. One workflow turn is a complete pass through
 all required phases, not one agent dispatch. Track partial passes, phase retries
 and dispatch limits separately. Disclose a harness budget conflict before launch;
@@ -40,7 +40,7 @@ gates; process completion alone does not establish workflow acceptance.
 ## Workflow and testing rules
 
 - **Named workflows come from the `workflows/` folder.** When the user names a
-  workflow, load `skills/design-and-analysis/workflows/<name>.md` — never a skill
+  workflow, load `skills/orchestration/workflows/<name>.md` — never a skill
   with a similar-sounding name. `code-test-loop` is Step 1 *inside* the
   Code-Test-Review workflow, not the workflow itself; loading it silently skips
   the review and completion-check steps.
@@ -69,7 +69,8 @@ gates; process completion alone does not establish workflow acceptance.
   splitting phases so no single blocking call exceeds the parent guard. See
   `AGENTS.md` and KB `slo/headless-workflow-orchestration.md`.
 
-- **Verify before you claim.** Every code change needs a passing test covering
-  each decision point it touches, and the full non-e2e suite must be green
-  before the work is called done. Report failures with their output rather than
-  summarising them away.
+- **Verify before you claim.** Follow `skills/engineering/engineering-testing/SKILL.md`
+  and `skills/coding/test-verification-policy/SKILL.md` for meaningful behavior,
+  boundary and critical failure-path evidence. Run the full non-e2e suite before
+  acceptance; baseline exemptions need explicit approval. Report failures and
+  blocked checks honestly, never as passing.

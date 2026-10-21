@@ -121,8 +121,9 @@ it to: start the container, run migrations, expose a shared `*gorm.DB`, run the
 tests, then tear everything down.
 
 Put `TestMain` in the package whose tests need the database. A common pattern is one
-per integration-style package; unit tests that mock the repository need no container
-at all.
+per integration-style package. Only pure isolated-unit tests (no repository, no
+database) need no container. Never mock the repository to avoid one
+(`skills/coding/test-verification-policy/SKILL.md`).
 
 ```go
 // internal/domain/user/main_test.go
@@ -559,9 +560,12 @@ Factory rules:
 
 ## Section 7 — Guarding cost: skip container tests when Docker is absent
 
-`testcontainers-go` needs a Docker daemon. Keep pure unit tests (mocked repos, per
-`go-test-domain-services`) runnable without Docker, and gate container-backed tests
-so `go test ./...` degrades gracefully on machines/CI without Docker.
+`testcontainers-go` needs a Docker daemon. Keep pure isolated-unit tests (no
+database) runnable without Docker, and gate container-backed tests so
+`go test ./...` degrades gracefully on machines/CI without Docker. A skipped
+container test is unverified evidence, not a pass. Projects on an embedded store
+(for example SloAtlas SQLite via `storage.NewStore(ctx, t.TempDir())`) need no
+Docker gate at all.
 
 ```go
 // In TestMain, before starting the container:
@@ -618,5 +622,5 @@ a blocker.
 - [ ] `internal/testutil` is imported only by `_test.go` files.
 - [ ] Container-backed tests are gated so `go test ./...` degrades gracefully
       without Docker.
-- [ ] Unit-level tests (mocked repos) need **no** container — see
-      `go-test-domain-services`.
+- [ ] Only pure isolated-unit tests skip the container; no test mocks the
+      repository (`skills/coding/test-verification-policy/SKILL.md`).

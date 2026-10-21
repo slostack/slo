@@ -208,8 +208,9 @@ Cross-cutting policies are named, owned steps. A policy must never be hidden in 
 
 ## 11. Test requirements
 
-Tests prove boundaries and behavior—not just statements:
+Tests prove boundaries and behavior—not just statements. How to test (levels, doubles, end-to-end scope) is owned by `skills/coding/test-verification-policy/SKILL.md`:
 
+- journey and application-service tests against a real store first; mocks only for third-party APIs;
 - one decision point per table row;
 - named DAO construction at test call sites;
 - sentinel assertions with `require.ErrorIs`/`errors.Is` and exact boundary rendering where required;

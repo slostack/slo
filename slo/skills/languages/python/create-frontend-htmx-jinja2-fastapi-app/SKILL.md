@@ -1429,6 +1429,7 @@ dev = [
     "pytest-cov",
     "black",
     "freezegun",          # Time mocking
+    "aioresponses",       # Fakes the backend API at the aiohttp boundary
     "memory-profiler",    # Performance testing
 ]
 ```
@@ -1449,32 +1450,88 @@ tests/
 
 ### Testing a Router
 
+- Follow `skills/coding/test-verification-policy/SKILL.md`.
+- This app has no database. The backend API is its external boundary, reached only through `ApiClientService` (aiohttp).
+- Keep routers, domain services and `ApiClientService` real. Fake only the backend HTTP responses with `aioresponses`.
+- Never `@patch` a domain service (`VendorService.list`) or `ApiClientService.get`.
+
 ```python
+import re
+
 import pytest
-from unittest.mock import patch, AsyncMock
-from httpx import AsyncClient
+from aioresponses import aioresponses
+from httpx import AsyncClient, Response
+
+from config.cfg import cfg
+
+VENDORS_URL: re.Pattern[str] = re.compile(rf"{re.escape(cfg('ORDERS_API_URL'))}/cc/api/v1/vendors(\?.*)?$")
+
+
+def envelope(*, data: object) -> dict[str, object]:
+    """Encode the backend response envelope."""
+    return {"data": data, "api_version": "1.0", "errors": {"msg": [], "code": None}}
 
 
 class TestVendorsController:
     @pytest.mark.asyncio
-    @patch("src.domains.vendors.service.VendorService.list", new_callable=AsyncMock)
-    async def test_list_vendors(self, mock_list, async_client: AsyncClient):
-        mock_list.return_value = [VendorDAO(id=1, name="Test")]
-        response = await async_client.get("/ca/vendors")
+    async def test_list_vendors_renders_backend_vendors_when_the_full_page_is_requested(
+        self, async_client: AsyncClient
+    ) -> None:
+        """Full-page route renders vendors returned by the backend API inside the base layout."""
+        with aioresponses() as backend:
+            backend.get(VENDORS_URL, payload=envelope(data=[{"id": 1, "name": "Acme Supplies"}]))
+            response: Response = await async_client.get("/ca/vendors")
+
         assert response.status_code == 200
-        assert "Test" in response.text
+        assert "Acme Supplies" in response.text
+        assert "<html" in response.text
+
+    @pytest.mark.asyncio
+    async def test_list_vendors_partial_renders_rows_only_when_htmx_requests_it(
+        self, async_client: AsyncClient
+    ) -> None:
+        """HTMX partial route renders the vendor rows without the base layout."""
+        with aioresponses() as backend:
+            backend.get(VENDORS_URL, payload=envelope(data=[{"id": 1, "name": "Acme Supplies"}]))
+            response: Response = await async_client.get("/ca/vendors/_list", headers={"HX-Request": "true"})
+
+        assert response.status_code == 200
+        assert "Acme Supplies" in response.text
+        assert "<html" not in response.text
 ```
 
 ### Testing a Domain Service
 
 ```python
+from src.exceptions import ApiException
+
+
 class TestVendorService:
     @pytest.mark.asyncio
-    @patch("src.clients.ApiClientService.get", new_callable=AsyncMock)
-    async def test_get_vendor(self, mock_get):
-        mock_get.return_value = ApiResponseDAO(data={"id": 1, "name": "Test"})
-        vendor = await VendorService.get(vendor_id=1)
-        assert vendor.name == "Test"
+    async def test_get_returns_vendor_when_backend_finds_it(self) -> None:
+        """A backend 200 envelope is validated into a VendorDAO."""
+        with aioresponses() as backend:
+            backend.get(
+                f"{cfg('ORDERS_API_URL')}/cc/api/v1/vendors/1",
+                payload=envelope(data={"id": 1, "name": "Acme Supplies"}),
+            )
+            vendor: VendorDAO = await VendorService.get(vendor_id=1)
+
+        assert (vendor.id, vendor.name) == (1, "Acme Supplies")
+
+    @pytest.mark.asyncio
+    async def test_get_raises_api_exception_when_backend_returns_not_found(self) -> None:
+        """A backend error envelope surfaces as ApiException with the backend message and status."""
+        with aioresponses() as backend:
+            backend.get(
+                f"{cfg('ORDERS_API_URL')}/cc/api/v1/vendors/404",
+                status=404,
+                payload={"data": None, "errors": {"msg": ["Vendor not found"], "code": "not_found"}},
+            )
+            with pytest.raises(ApiException) as raised:
+                await VendorService.get(vendor_id=404)
+
+        assert (raised.value.msg, raised.value.http_error_code) == ("Vendor not found", 404)
 ```
 
 ### Running Tests

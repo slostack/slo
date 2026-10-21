@@ -308,17 +308,34 @@ log_error(msg="Failed to enqueue articles", error=str(e))
 
 Tests for a tool live at `tests/agents/tools/test_<tool_name>.py`.
 
+- Follow `skills/coding/test-verification-policy/SKILL.md`: behavior-first tests through `invoke`, mocks only for third-party APIs, injected stubs for everything else.
+
 ### 9.1 No live API calls
 
-All external service calls must be mocked. The three mocking targets for `pubmed.py` are:
+- No test calls a live external service.
+- Never `patch()` module names or `patch.object` private methods. Pass doubles in through keyword parameters whose default is the production implementation:
 
-| Target | How to mock |
-|---|---|
-| `PubMedFetcher` | `patch("src.agents.tools.pubmed.PubMedFetcher")` |
-| `PubmedCrawlerAppService` | `patch("src.agents.tools.pubmed.PubmedCrawlerAppService")` |
-| DBOS client | Pass a `MagicMock(spec=DBOSClient)` via the injectable `dbos_client` parameter |
+```python
+class PubmedSearchTool:
+    @classmethod
+    async def invoke(
+        cls,
+        query: str,
+        max_results: int = 15,
+        fetcher: Optional[PubMedFetcher] = None,
+        crawler_factory: Optional[Callable[..., PubmedCrawlerAppService]] = None,
+        dbos_client: Optional[DBOSClient] = None,
+    ) -> list[PubMedArticleDAO]:
+        fetcher = fetcher or PubMedFetcher()
+        crawler_factory = crawler_factory or PubmedCrawlerAppService
+        ...
+```
 
-Always patch at the **import site** (where the name is used), not at the definition site.
+| Dependency | Kind | Test double |
+|---|---|---|
+| `PubMedFetcher` | Third-party API (metapub / NCBI) | `ScriptedPubMedFetcher` passed through `fetcher=` |
+| `PubmedCrawlerAppService` | Internal service crawling PMC | `ScriptedCrawler` stub returned by `crawler_factory=` |
+| DBOS client | Internal workflow engine | `RecordingDbosClient` stub passed through `dbos_client=` |
 
 ### 9.2 Builder helpers
 
@@ -365,7 +382,7 @@ TestFetchArticleFromPmid      # _fetch_article_from_pmid
 TestFetchFullTextForArticle   # _fetch_full_text_for_article
 TestFindArticleAndLinkParsedArticle  # _find_article_and_link_parsed_article
 TestPersistArticles           # _persist_articles
-TestInvoke                    # invoke (end-to-end orchestration)
+TestInvoke                    # invoke (journey: primary behavior test)
 ```
 
 ### 9.4 Async tests
@@ -383,51 +400,71 @@ class TestPopulateArticle:
 
 ### 9.5 Mocking async callables
 
-Use `AsyncMock` for any method that returns a coroutine:
+- Write hand-written stubs, not `MagicMock` / `AsyncMock`.
+- A stub implements only the methods the tool calls; `async def` methods return canned values.
+- Record calls on a public list when the test asserts on them.
+- Name stubs after their behavior.
 
 ```python
-from unittest.mock import AsyncMock, MagicMock
+class ScriptedPubMedFetcher:
+    """Third-party stub: answers metapub lookups from canned data."""
 
-mock_client = MagicMock(spec=DBOSClient)
-mock_client.enqueue_async = AsyncMock(return_value=MagicMock())
-```
+    def __init__(self, *, pmids: list[str], articles: dict[str, PubMedArticleDAO]) -> None:
+        self._pmids: list[str] = pmids
+        self._articles: dict[str, PubMedArticleDAO] = articles
 
-For service-level async `invoke` methods on objects created inside the tool:
+    def pmids_for_query(self, query: str, retmax: int = 15) -> list[str]:
+        return self._pmids
 
-```python
-with patch("src.agents.tools.pubmed.PubmedCrawlerAppService") as MockCrawler:
-    mock_crawler_instance = MockCrawler.return_value
-    mock_crawler_instance.invoke = AsyncMock(return_value=[crawl_result])
+    def article_by_pmid(self, pmid: str) -> PubMedArticleDAO:
+        return self._articles[pmid]
+
+
+class ScriptedCrawler:
+    """Internal-service stub: returns canned crawl results."""
+
+    def __init__(self, *, results: list[PubMedParsedArticleDAO]) -> None:
+        self._results: list[PubMedParsedArticleDAO] = results
+
+    async def invoke(self) -> list[PubMedParsedArticleDAO]:
+        return self._results
+
+
+class RecordingDbosClient:
+    """Internal queue stub: records every enqueue instead of mocking DBOSClient."""
+
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[dict, dict]] = []
+
+    async def enqueue_async(self, options: dict, **kwargs: object) -> object:
+        self.enqueued.append((options, kwargs))
+        return object()
 ```
 
 ### 9.6 End-to-end orchestration test
 
-Always include a `TestInvoke` class that tests the full `invoke` flow with all external services mocked. This is your integration-level smoke test:
+Always include a `TestInvoke` class that drives the full `invoke` flow with the stubs from 9.5 passed in. This is the tool's journey test, not a gated end-to-end test. Assert the returned DAOs **and** what was enqueued for persistence:
 
 ```python
 class TestInvoke:
     @pytest.mark.asyncio
-    async def test_full_workflow(self):
-        raw_article = _build_article(pmid="12345", pmc="6789", title="AI in Diagnostics")
-        crawl_result = _build_crawl_result(pmcid="PMC6789", title="AI in Diagnostics")
+    async def test_invoke_returns_crawled_article_and_enqueues_it_when_pubmed_finds_a_match(self) -> None:
+        """A matching PMID is returned with its crawled full text and enqueued for persistence once."""
+        raw_article: PubMedArticleDAO = _build_article(pmid="12345", pmc="6789", title="AI in Diagnostics")
+        crawl_result: PubMedParsedArticleDAO = _build_crawl_result(pmcid="PMC6789", title="AI in Diagnostics")
+        dbos_client: RecordingDbosClient = RecordingDbosClient()
 
-        with patch("src.agents.tools.pubmed.PubMedFetcher") as MockFetcher:
-            mock_fetcher = MockFetcher.return_value
-            mock_fetcher.pmids_for_query.return_value = ["12345"]
-            mock_fetcher.article_by_pmid.return_value = raw_article
+        result: list[PubMedArticleDAO] = await PubmedSearchTool.invoke(
+            query="AI diagnostics",
+            max_results=1,
+            fetcher=ScriptedPubMedFetcher(pmids=["12345"], articles={"12345": raw_article}),
+            crawler_factory=lambda **_: ScriptedCrawler(results=[crawl_result]),
+            dbos_client=dbos_client,
+        )
 
-            with patch("src.agents.tools.pubmed.PubmedCrawlerAppService") as MockCrawler:
-                mock_crawler = MockCrawler.return_value
-                mock_crawler.invoke = AsyncMock(return_value=[crawl_result])
-
-                with patch.object(PubmedSearchTool, "_persist_articles", new=AsyncMock()):
-                    result = await PubmedSearchTool.invoke(
-                        query="AI diagnostics", max_results=1
-                    )
-
-        assert isinstance(result, list)
-        assert result[0].title == "AI in Diagnostics"
-        assert result[0].parsed_article.pmcid == "PMC6789"
+        assert [(a.title, a.parsed_article.pmcid) for a in result] == [("AI in Diagnostics", "PMC6789")]
+        assert [options["queue_name"] for options, _ in dbos_client.enqueued] == ["document_persist_queue"]
+        assert [d["title"] for d in dbos_client.enqueued[0][1]["articles"]] == ["AI in Diagnostics"]
 ```
 
 ### 9.7 Error and edge-case coverage

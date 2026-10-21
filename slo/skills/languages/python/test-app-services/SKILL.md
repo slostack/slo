@@ -28,6 +28,12 @@ source_prompt: test-app-services.md
 
 **Applicability:** Python only; framework-specific sections apply only when that stack is in the project. Load `skills/languages/python/python-conventions/SKILL.md` and `skills/engineering/engineering-testing/SKILL.md` for shared obligations and test-category selection.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers Python fixtures and syntax only.
+
+- This recipe is level 2 (application-service workflow), and the journey test for worker-initiated flows in the policy's test levels.
+- Doubles: real database; mocks only for third-party API clients; stubs for internal collaborators, passed in through constructors.
+- Coverage: follow the policy's "What Must Be Tested". Do not restate it here.
+
 How to write transactional integration tests for **application services** in the
 standard service layer style. Application services live in
 `src/services/<area>/service.py` (and
@@ -77,7 +83,7 @@ It does **not** exercise:
 | API-side service tests | `tests/services/api/<area>/test_<workflow>_api_service.py` mirroring `src/services/api/<area>/service.py` |
 | Test class | `class Test<Workflow>AppService:` (one class per service file) |
 | Test method names | `test_<entry_method>_when_<condition>` — `test_create`, `test_create_when_campaign_is_not_active`, `test_create_when_campaign_is_not_owned_by_user`, `test_toggle`, `test_list_coupons` |
-| Granularity | One test per `_check_*` / guard call inside the orchestrator, plus a happy-path test for each entry method |
+| Granularity | Per the policy's "What Must Be Tested": each distinct outcome of the entry method, including each guard |
 
 ---
 
@@ -497,14 +503,12 @@ arrangement — the savepoint still rolls back the row at test end.
 
 For each entry method on the application service, write at minimum:
 
-| Branch | Test |
-|---|---|
-| Happy path | One test that constructs valid params and asserts on the persisted result |
-| Each `_check_*` / guard `raise` in the orchestrator | One test per guard, asserting the exact exception class (and `code` / `http_error_code` for `*Exception` types) |
-| Each conditional inside the orchestrator (e.g. `if not is_active`) | One test per branch — see `skills/coding/test-verification-policy/SKILL.md` |
-| Each public attribute the service mutates on `self` | Asserted in at least one happy-path test |
-| Multi-step flows (claim → redeem) | One test per terminal state (claimed, redeemed, voided) |
-| Limit / pagination methods | Build state above and below the boundary; assert both sides |
+- Coverage follows the policy's "What Must Be Tested". Python-specific assertions:
+  - Happy path: assert the persisted result, read back through the domain service.
+  - Guards: `pytest.raises(<ExactClass>)`, plus `code` / `http_error_code` for `*Exception` types.
+  - Public attributes the service mutates on `self`: assert them in a happy-path test.
+  - Multi-step flows (claim → redeem): assert each terminal state.
+  - Limits and pagination: build state on both sides of the boundary.
 
 ---
 
@@ -527,10 +531,9 @@ suite before opening a PR — see `skills/coding/test-verification-policy/SKILL.
 
 - **Module-level imports of `src.services` / models / factories**
   — see §7.
-- **Mocking sibling domain services** — application service tests are
-  integration tests against the real DB. The whole point is to verify
-  the orchestration uses the real domain services correctly. Patching
-  hides drift between the app service and its collaborators.
+- **Mocking the database or sibling domain services** — forbidden by the
+  policy's "Test doubles". Use real domain services; stub only third-party
+  clients, passed in through the constructor.
 - **Going through HTTP** — that is a controller test, not an app service
   test. If you need to assert response wrappers or middleware, write the
   controller test instead.
@@ -578,5 +581,5 @@ Before marking an application service test complete:
       `http_error_code` checks for domain exceptions
 - [ ] No `commit()` calls except where reproducing a parent-row
       precondition for a guard (per §12)
-- [ ] One test per guard / `_check_*` step in the orchestrator and per
-      conditional branch in the entry method
+- [ ] Coverage and doubles pass the checklist in
+      `skills/coding/test-verification-policy/SKILL.md`

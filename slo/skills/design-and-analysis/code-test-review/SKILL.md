@@ -38,10 +38,12 @@ steps from this entry — read the workflow file and execute it.
 Sub-skills the workflow sequences (loaded on demand per step):
 
 - Step 1 — `skills/coding/code-test-loop/SKILL.md`
+  - How to test — `skills/coding/test-verification-policy/SKILL.md`: journey tests per
+    sub-spec, real persistence, mocks only for third-party APIs, end-to-end only as the
+    final feature check.
 - Step 2 — `skills/design-and-analysis/review-feature-code/SKILL.md`
 - Step 3 — `skills/design-and-analysis/is-the-feature-completed/SKILL.md`
 - Always-on — `named-arguments-and-type-hints`, `declarative-method-structure`,
   `method-docstrings`, `test-verification-policy` (all under `skills/coding/`)
-- Prerequisite baseline — read `skills/coding/coding-rules/SKILL.md`, then route to
-  the applicable language root and feature/framework guidance before implementation;
+- Prerequisite baseline — read `skills/coding/coding-rules/SKILL.md`, and `/root/Code/slo-runnable-core-specifications/slo/skills/coding/solution-design/SKILL.md` then route to the applicable language root and feature/framework guidance before implementation;
   applicable specifics override generic defaults on the affected point.

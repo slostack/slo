@@ -1164,7 +1164,7 @@ class SloTUI(App):
         session = self._session
         owner_id = self._session_owner_id
         self._delivery_quiescing = True
-        if not self._replacement_delivery_safe:
+        if not self._replacement_delivery_safe or not self._session_supports_inbox_delivery():
             return
         try:
             self._build_session_delivery(session=session)

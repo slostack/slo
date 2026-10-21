@@ -2623,8 +2623,11 @@ class TestSloTUICopy:
     """Clipboard-oriented TUI behavior."""
 
     @pytest.mark.asyncio
-    async def test_copy_binding_copies_visible_transcript_when_prompt_has_no_selection(self) -> None:
+    async def test_copy_binding_copies_visible_transcript_when_prompt_has_no_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """``Cmd+C`` / ``Ctrl+Shift+C`` copies the transcript as plain text."""
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
         session: SloAgentSession = _build_session(
             responses=[AIMessage(content="hi")],
         )

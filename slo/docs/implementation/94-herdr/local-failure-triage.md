@@ -1,0 +1,21 @@
+# Sequential local failure triage — 2026-10-21
+
+Base: merged commit ef700fe. Changes below are uncommitted and not independently reviewed. No full-suite/CI success is claimed.
+
+User requested sequential reproduction/fixes and explicitly authorized reading neighboring Herdr pane w19:p8. Pane was read only; no input, focus, interruption or process termination was sent to that pane. Its running pytest process retains modules imported before these edits. No second full suite was launched.
+
+Environment: approved slo-harness Python 3.11.7, sourced existing environments/tests.env after checking its fields; SLO_ROOT_DIR/SLO_APP_DIR point at this worktree. Explicit SLO_HERDR_DISABLED=1, SLO_AUTO_VISUALIZE=0, PYTHONPATH=$PWD for focused runs. Operator test default is gpt-6.1-sol; it was not changed. Black checks for all seven changed Python files pass; git diff --check clean; dpkg -V coreutils silent. Existing deprecation and AsyncMock warnings remain reported.
+
+## Verified failures and corrections
+
+1. `test_rollback_preserves_successor_after_release`: bounded diagnostic run hung, async stacks showed mount waiting on patched release event. Observer constructor omitted newly required `attached_snapshot`; exception bypassed event release, while outer finally was unreachable until run_test yielded. Move event release to observer finally FIRST: now deterministic TypeError in 1.74s, not a hang. Add real session snapshot callback: original ownership assertions pass, call 0.19s. Same defect found and reproduced in service-mutation branch; corrected with finally and callback.
+2. `test_mount_phase_order_and_preparation_branch[False-False]` and `[True-False]`: reproduced unwanted inbox timer in history-disabled session. Upstream creates observation service even without history; service presence cannot authorize delivery timers. Restore explicit history eligibility at `_initialize_session_delivery`; verify both separately and all seven init-branch tests, 1.95s.
+3. Construction test and captured-absent-store / binding tests: premerge assumption that `_build_session_delivery` also constructs workflow service is obsolete. Explicit inert `_build_workflow_service` setup, preserve service returned by mounted observation through factory patch; preserve no-I/O, storage identity, rollback, successor invariants. All 41 init-ownership cases pass in 9.40s, slowest call0.35s.
+4. Pane-observed invalid saved model fallback: local RED actualgpt-6.1-sol versus expectedgpt-5.4. Patching SLO_DEFAULT_MODEL_NAME after import does not alter cfg short-key cache. Patch actual dynamic DEFAULT_MODEL_NAME boundary; parameterize two defaults, assert exact chosen default in notice. Preference class8passed; entire CLI dispatch module38passed (existing AsyncMock warnings retained).
+5. Pane-observed mixed-version resume tree/flat: reproduced tree default mismatch. Released subprocess pinsgpt-5.4 but current half inherited operator model. Pin current cfg short-key too, retain all exact history/metadata assertions. Tree and flat individually green (~4.5scall each); complete mixed-version module12passed35.62s.
+6. Pane-observed owner replacement during apply_sessions: reproduced retained old rows. Added precondition proved stub successor history_rootNone while selectedsession owns tmp/history; production correctly refused invalid candidate. Construct successor with real same-root history store, retain root assertion and existing row/session assertions; finally releases held apply on failure. Single testgreen0.67scall; containing TestOwnedWorkflowListToProgress11passed27.95s.
+7. Pane-observed clipboard transcript: reproduced expectedgpt-5.4/high vs actualgpt-6.1-sol/medium. Pin config default in this exact-text presentation test; do not change production or expected transcript. TestSloTUICopy2passed2.42s.
+
+## Pending
+
+User full-suite pane still running at last read, through test_herdr_activation_faults. Old-process failures are not fresh failures of edits. Need continue observing final summary, independently review local corrections, focused static checks and integrated regression/full-suite verification after actual remaining failures are resolved. No commit/push or CI retry performed during this triage.

@@ -14,8 +14,9 @@ from src.tui.app import PromptInput, SloTUI
 def test_delivery_construction_is_inert_and_reuses_stores(tmp_path: Path) -> None:
     """Construct twice without creating history, tasks, leases or timers.
 
-    The unmounted app owns these collaborators; real initialization and teardown
-    are exercised separately by the mounted ownership suite.
+    Workflow observation now owns service construction independently of delivery.
+    Both builders remain inert; delivery must reuse the observation-owned stores.
+    Real initialization and teardown are exercised by the mounted ownership suite.
     """
     history_root = tmp_path / "history"
     session = SloAgentSession.build(config=SessionConfigDAO(workdir=tmp_path, history_root=history_root))
@@ -23,6 +24,9 @@ def test_delivery_construction_is_inert_and_reuses_stores(tmp_path: Path) -> Non
     assert not history_root.exists()
     with patch.object(app, "set_interval") as interval:
         app._build_session_delivery(session=session)
+        assert app._lease_store is not None and app._inbox_store is not None
+        assert app._workflow_handle_store is None and app._workflow_app_service is None
+        app._workflow_app_service = app._build_workflow_service()
         stores = (app._lease_store, app._inbox_store, app._workflow_handle_store, app._workflow_app_service)
         assert all(store is not None for store in stores)
         app._build_session_delivery(session=session)

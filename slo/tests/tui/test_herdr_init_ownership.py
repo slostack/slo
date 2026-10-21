@@ -133,16 +133,22 @@ async def test_rollback_preserves_successor_after_release(tmp_path: Path) -> Non
 
     async def displace() -> None:
         """Install real successor collaborators at the post-release boundary."""
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        assert app._workflow_handle_store is not None
-        assert app._workflow_renderer is not None
-        app._workflow_app_service = DetachedWorkflowAppService(
-            workflow_handle_store=app._workflow_handle_store, owner_session_id="successor"
-        )
-        app._workflow_renderer = copy(app._workflow_renderer)
-        successor_service = app._workflow_app_service
-        successor_renderer = app._workflow_renderer
-        resume.set()
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert app._workflow_handle_store is not None
+            assert app._workflow_renderer is not None
+            app._workflow_app_service = DetachedWorkflowAppService(
+                workflow_handle_store=app._workflow_handle_store,
+                owner_session_id="successor",
+                attached_snapshot=session.attached_dispatch_snapshot,
+            )
+            app._workflow_renderer = copy(app._workflow_renderer)
+            successor_service = app._workflow_app_service
+            successor_renderer = app._workflow_renderer
+        finally:
+            # Mount waits for this release before run_test can yield to its caller.
+            # A failed observer must unblock mount so its exception can be reported.
+            resume.set()
         assert app._mount_runtime_task is not None
         await asyncio.shield(app._mount_runtime_task)
         assert app._workflow_app_service is successor_service
@@ -171,8 +177,7 @@ async def test_captured_absent_store_does_not_release_successor(tmp_path: Path) 
     )
     app = SloTUI(session=session)
     app._build_session_delivery(session=session)
-    service = app._workflow_app_service
-    assert service is not None
+    service = app._build_workflow_service()
     app._lease_store = None
     successor = SessionOwnershipLeaseStore(history_root=tmp_path / "successor")
     await successor.acquire(session_id=session.session_id, owner_id=app._session_owner_id, ttl_seconds=60)
@@ -185,6 +190,7 @@ async def test_captured_absent_store_does_not_release_successor(tmp_path: Path) 
 
     with (
         patch.object(app, "_build_session_delivery"),
+        patch.object(app, "_build_workflow_service", return_value=service),
         patch.object(service, "reconcile_snapshot", side_effect=reconcile),
     ):
         async with app.run_test() as pilot:
@@ -316,7 +322,7 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
     store = app._lease_store
     assert store is not None
     inbox_store = app._inbox_store
-    service = app._workflow_app_service
+    service = app._build_workflow_service()
     session_id = session.session_id
     successor_store = SessionOwnershipLeaseStore(history_root=tmp_path / "successor")
     entered, resume = asyncio.Event(), asyncio.Event()
@@ -350,8 +356,15 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
     }[phase]
 
     async def displace() -> None:
+        """Release initialization even when the observer fails before displacement."""
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            displace_binding()
+        finally:
+            resume.set()
+
+    def displace_binding() -> None:
         """Change precisely one captured dimension while initialization is suspended."""
-        await asyncio.wait_for(entered.wait(), timeout=5)
         if mutation == "owner":
             app._session_owner_id = "successor-owner"
         elif mutation == "session_id":
@@ -370,11 +383,15 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
         else:
             assert app._workflow_handle_store is not None
             app._workflow_app_service = DetachedWorkflowAppService(
-                workflow_handle_store=app._workflow_handle_store, owner_session_id="successor-session"
+                workflow_handle_store=app._workflow_handle_store,
+                owner_session_id="successor-session",
+                attached_snapshot=session.attached_dispatch_snapshot,
             )
-        resume.set()
 
-    with patch.object(target, name, side_effect=boundary):
+    with (
+        patch.object(app, "_build_workflow_service", return_value=service),
+        patch.object(target, name, side_effect=boundary),
+    ):
         observer = asyncio.create_task(coro=displace())
         try:
             async with app.run_test() as pilot:

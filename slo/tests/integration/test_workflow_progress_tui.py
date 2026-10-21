@@ -873,8 +873,11 @@ class TestOwnedWorkflowListToProgress:
             agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="ok")])),
             workdir=tmp_path,
             session_id=str(uuid4()),
+            history_store=FilesystemSessionHistoryStore(root=world.root),
+            enable_history=True,
         )
         replacement.attached_dispatch_snapshot = AttachedDispatchSnapshotDAO.empty  # type: ignore[method-assign]
+        assert replacement.history_root == world.session.history_root
         app: SloTUI = SloTUI(session=world.session)
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -895,15 +898,20 @@ class TestOwnedWorkflowListToProgress:
             world.append(start=3, lines=1)
             world.supplier.publish(status="running")
             _coordinator(app=app).request_refresh()
-            await entered.wait()
-            with patch("src.tui.app.SloAgentSession.build", return_value=replacement):
-                replacing: asyncio.Task[None] = asyncio.create_task(
-                    app._start_new_session(requested_name=None)
-                )
-                await asyncio.sleep(0)
-                assert not replacing.done()
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+                with patch("src.tui.app.SloAgentSession.build", return_value=replacement):
+                    replacing: asyncio.Task[None] = asyncio.create_task(
+                        app._start_new_session(requested_name=None)
+                    )
+                    try:
+                        await asyncio.sleep(0)
+                        assert not replacing.done()
+                    finally:
+                        gate.set()
+                        await replacing
+            finally:
                 gate.set()
-                await replacing
             await _settle(app=app, pilot=pilot)
 
             assert list(panel.query(SubAgentFleetRow)) == []

@@ -204,6 +204,9 @@ const runId = ref<string>('')         // snake: run_id → camelCase: runId
 - [ ] Tests assert **decision points**, not just that the function runs.
       A test that calls `invoke()` and asserts `result is not None` is not
       a test.
+- [ ] Tests follow `skills/coding/test-verification-policy/SKILL.md`: journey
+      tests first, real persistence, mocks only for third-party APIs,
+      injected stubs instead of `patch()`.
 - [ ] No test is marked `@pytest.mark.skip`, `xfail`, or `TODO` without an
       accompanying tracking comment explaining when it will be removed.
 
@@ -213,12 +216,21 @@ async def test_trigger_runs(self):
     result = await self.service.invoke()
     assert result is not None  # proves nothing about behaviour
 
-# Good — each test covers one decision point
-async def test_invoke_raises_when_no_query(self):
-    service = WorkflowExecutorService(query=None)
+# Good — each test covers one decision point (asserting an observable outcome)
+async def test_invoke_raises_when_no_query(self, async_db_session):
+    service = WorkflowExecutorService(query=None, db_session=async_db_session)
     with pytest.raises(ValueError, match="No query for workflow run"):
         await service.invoke()
 
+async def test_invoke_records_clickhouse_run_when_engine_is_clickhouse(self, async_db_session, clickhouse_client):
+    query = await QueryService.build_and_create(
+        db_session=async_db_session, engine=Engine.CLICKHOUSE, sql="SELECT 1",
+    )
+    service = WorkflowExecutorService(query=query, db_session=async_db_session, clickhouse_client=clickhouse_client)
+    run = await service.invoke()
+    assert (run.engine, run.row_count) == (Engine.CLICKHOUSE, 1)
+
+# Bad — patches a private method; proves wiring to a mock, not behaviour
 async def test_invoke_dispatches_clickhouse_for_clickhouse_engine(self):
     service = WorkflowExecutorService(query=Mock(engine=Engine.CLICKHOUSE))
     with patch.object(service, "_run_clickhouse") as mock:
@@ -294,7 +306,8 @@ async def create(
 - [ ] Application service has a **single public method: `invoke()`**.
 - [ ] `invoke()` is **orchestration only** — it calls private `_step_*`
       methods; no inline SQL, no direct external I/O.
-- [ ] Each private step method is independently testable with a mock.
+- [ ] Each step's behavior is testable through `invoke()` with real persistence
+      and injected stubs (`skills/coding/test-verification-policy/SKILL.md`).
 - [ ] No business logic inline in `invoke()`.
 
 ```python

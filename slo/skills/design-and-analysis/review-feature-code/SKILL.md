@@ -53,16 +53,11 @@ Use this guide when reviewing a feature implementation against its specification
 
 ## Review scope and independence
 
-**Early integration feedback:** inspect the runnable journey, actual wiring, major
-architectural risks and remaining plan. This is bounded advisory feedback inside
-implementation, not final approval; only concrete blockers require immediate repair.
-Do not demand complete feature coverage from the first slice.
-
 **Final acceptance review:** execute the applicable review process below against the
 original specification, complete acceptance contract, implementation and evidence.
-Final review must be independent of authorship; early feedback does not replace it.
+Final review must be independent of authorship.
 Without an authorized independent reviewer, report the limitation, not solo approval.
-Neither mode grants permission to spawn sub-agents.
+This review does not grant permission to spawn sub-agents.
 
 Use stable IDs for findings. Each blocker cites a requirement/mandatory rule or
 concrete correctness/safety defect, exact path and evidence, consequence, proposed
@@ -322,8 +317,8 @@ Every blocker needs evidence and a closure condition. No vague "improve robustne
 
 Return a compact review with:
 
-1. **Verdict and scope** — early feedback or final review; READY, REVISE or FAILED;
-   reviewer independence and stacks inspected. Early feedback cannot grant final READY.
+1. **Verdict and scope** — READY, REVISE or FAILED; reviewer independence and
+   stacks inspected.
 2. **Requirement/evidence map** — reconcile the original spec with implemented journeys,
    boundary tests and current verification; distinguish inspected from executed evidence.
 3. **Blocking findings** — stable IDs, rule/source, path, consequence, evidence and closure condition.

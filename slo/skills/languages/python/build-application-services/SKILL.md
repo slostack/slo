@@ -248,35 +248,45 @@ class SignupAppService:
 ```
 
 
-And the corressponding test file for this would look like under `tests/services/signup/test_signup_app_service.py`
+And the corresponding test file for this would look like under `tests/services/signup/test_signup_app_service.py`
+
+- Follow `skills/coding/test-verification-policy/SKILL.md`: real `async_db_session`, real domain services, persisted state read back.
+- `EmailService` wraps the third-party email provider, so it is the client boundary. Replace it with a hand-written `RecordingEmailService` passed through the `email_service=` constructor parameter. No `AsyncMock`, no `patch`.
 
 ```python
-from unittest.mock import AsyncMock
+from string import Template
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from config.cfg import cfg
+from src.domains.email.templates import SIGNUP_BODY_TEMPLATE, SIGNUP_TITLE
+from src.domains.user.service import User, UserService
+from src.domains.verifications.dao import DEFAULT_EXPIRES_AT_IN_MINUTES, VERIFICATION_TYPES
+from src.domains.verifications.service import Verification, VerificationService
+from src.services.signup.dao import SignupDAO
+from src.services.signup.signup_app_service import SignupAppService
+
+
+class RecordingEmailService:
+    """Third-party boundary stub: records every email instead of calling the provider."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, object]] = []
+
+    async def send_email(self, *, to_addresses: list[dict[str, str]], subject: str, html_body: str) -> dict[str, str]:
+        """Record the email and return a canned provider response."""
+        self.sent.append({"to_addresses": to_addresses, "subject": subject, "html_body": html_body})
+        return {"status": "queued"}
 
 
 class TestSignupAppService:
     @pytest.mark.asyncio
-    async def test_invoke_success(self, async_db_session: AsyncSession):
-        """Test the successful invoke of the SignupAppService.
-
-        This test ensures that when a valid user params are provided
-        to the SignupAppService
-        it successfully creates a user record
-            and singup verification record
-            and triggers email service
-        """
-        from src.services.signup.signup_app_service import SignupAppService
-        from src.services.signup.dao import SignupDAO
-        from src.domains.verifications.dao import VERIFICATION_TYPES
-        from src.domains.email.service import EmailService
-        from config.cfg import cfg
-        from string import Template
-        from src.domains.email.templates import SIGNUP_TITLE, SIGNUP_BODY_TEMPLATE
-        from src.domains.verifications.dao import DEFAULT_EXPIRES_AT_IN_MINUTES
-
-        singup_params: SignupDAO = SignupDAO(
+    async def test_invoke_persists_user_and_verification_and_sends_email_when_params_are_valid(
+        self, async_db_session: AsyncSession
+    ) -> None:
+        """Valid signup persists a user and a signup verification, then emails the verification link."""
+        signup_params: SignupDAO = SignupDAO(
             db_session=async_db_session,
             email="ada.lovelace@example.com",
             password="password",
@@ -284,52 +294,38 @@ class TestSignupAppService:
             first_name="ada",
             last_name="lovelace",
         )
+        email_service: RecordingEmailService = RecordingEmailService()
 
-        # mocking email service
-        mock_email_service = AsyncMock(spec=EmailService)
-        mock_email_service.send_email.return_value = "Email send success"
-
-        # calling the SignupAppService
-        scv: SignupAppService = SignupAppService(
-            params=singup_params,
+        await SignupAppService(
+            params=signup_params,
             db_session=async_db_session,
-            email_service=mock_email_service,
+            email_service=email_service,
+        ).invoke()
+
+        # Then the user and verification can be read back through the domain services
+        user: User = await UserService.get_by_email(email="ada.lovelace@example.com", db_session=async_db_session)
+        assert (user.first_name, user.last_name) == ("ada", "lovelace")
+        verification: Verification = await VerificationService.get_by_user_id(
+            user_id=user.id, db_session=async_db_session
         )
-        await scv.invoke()
+        assert verification.verification_type == VERIFICATION_TYPES["SIGNUP"]
 
-        # confirms a user is created
-        assert scv.user is not None
-        assert scv.user.email == "ada.lovelace@example.com"
-        assert scv.user.first_name == "ada"
-
-        # confirms the verification code is created
-        assert scv.verification is not None
-        assert scv.verification.verification_type == VERIFICATION_TYPES["SIGNUP"]
-        assert scv.verification.user == scv.user
-
-        # confirms the email service is triggered
-        user_email: str = scv.user.email
-        user_name: str = scv.user.first_name
-        app_name: str = cfg("APP_NAME")
-        domain: str = cfg("FRONTEND_DOMAIN_NAME")
-        token: str = scv.verification.token
-        protocol = "https" if cfg("ENV") in ["prod"] else "http"
-
-        assert scv.email_response == "Email send success"
-
-        # and with expected args
-        mock_email_service.send_email.assert_called_once_with(
-            to_addresses=[{"address": user_email, "name": user_name}],
-            subject=Template(SIGNUP_TITLE).substitute({"app_name": app_name}),
-            html_body=Template(SIGNUP_BODY_TEMPLATE).substitute(
-                {
-                    "app_name": app_name,
-                    "user_name": user_name,
-                    "verification_link": f"{protocol}://{domain}/signup_verification/{token}",
-                    "expiration_time": DEFAULT_EXPIRES_AT_IN_MINUTES,
-                }
-            ),
-        )
+        # And exactly one email carrying the persisted token reached the provider boundary
+        protocol: str = "https" if cfg("ENV") in ["prod"] else "http"
+        assert email_service.sent == [
+            {
+                "to_addresses": [{"address": user.email, "name": user.first_name}],
+                "subject": Template(SIGNUP_TITLE).substitute({"app_name": cfg("APP_NAME")}),
+                "html_body": Template(SIGNUP_BODY_TEMPLATE).substitute(
+                    {
+                        "app_name": cfg("APP_NAME"),
+                        "user_name": user.first_name,
+                        "verification_link": f"{protocol}://{cfg('FRONTEND_DOMAIN_NAME')}/signup_verification/{verification.token}",
+                        "expiration_time": DEFAULT_EXPIRES_AT_IN_MINUTES,
+                    }
+                ),
+            }
+        ]
 ```
 
 ### Triggering Events

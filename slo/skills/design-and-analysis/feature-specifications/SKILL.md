@@ -156,7 +156,7 @@ Map feature surface → folder (illustrative for an order-management platform; u
 | SMS/email notifications, provider integrations | `notifications_service/` |
 | Vue 3 SPA, Pinia, `useAgentStream` | `admin_ui/` |
 | Coding conventions / structure | `conventions/` |
-| Tests (pytest async, mocks) | `testing/` |
+| Tests (pytest async, test doubles) | `testing/` |
 | Feature → plan → wiki workflow | `workflow/` |
 | Deploy, secrets, infra | `deployment/` |
 
@@ -168,13 +168,26 @@ Use Glob / Grep / Read to enumerate the code the spec will touch or sit next to.
 
 Cover, at minimum, whichever of these layers the feature touches:
 
-- **Domains** — `src/domains/<area>/{model,dao,service}.py`
-- **Application services** — `src/services/<area>/*_app_service.py`
-- **Routers / API surface** — `src/controllers/**` or equivalent FastAPI routers
-- **Workers / schedulers / events** — `src/tasks/**`, DBOS workflows, Celery registration, event handlers
-- **Agents / tools** — `src/agents/**`
+- **Domains**
+  - Python: `src/domains/<area>/{model,dao,service}.py`
+  - Go: `internal/domain/<area>/{model,dto,repository,service}.go`
+  - TypeScript: `src/domains/<area>/{entity,dto,service}.ts`
+- **Application services**
+  - Python: `src/services/<area>/*_app_service.py`
+  - Go: `internal/app/**` (`Execute()` services)
+  - TypeScript: `src/services/app/**`
+- **Routers / API surface**
+  - Python: `src/controllers/**` or equivalent FastAPI routers
+  - Go: Gin handlers and route groups (`internal/http/**` or equivalent)
+  - TypeScript: Express / Hono routes (`src/routes/**`)
+- **Workers / schedulers / events**
+  - Python: `src/tasks/**`, DBOS workflows, Celery registration, event handlers
+  - Go: asynq workers and schedulers, Temporal workflows, NATS JetStream handlers
+  - TypeScript: event buses and handlers
+- **Entry points and lifecycle** — Go `cmd/**`, runtime assembly, CLI configuration; Python Typer CLIs; Textual / Bubble Tea TUIs
+- **Agents / tools** — `src/agents/**`, LangGraph (Python or TypeScript)
 - **Frontend** — Vue components, composables, stores
-- **Database** — Alembic versions, ClickHouse DDL, indexes
+- **Database** — Alembic versions, goose migrations, ClickHouse DDL, indexes
 - **Integrations** — `src/integrations/**`
 - **Deployment** — `deployment/**`, stack files, Makefile targets, env vars
 - **Existing specifications** — parent specs, sibling specs, or earlier plan files if this feature is being added in phases
@@ -224,7 +237,16 @@ If nothing overlaps, say so explicitly — "no existing owner found for X" is a 
 
 Once you know the surface area, read **every** matching rule under `skills/coding/`. Err toward reading more rather than fewer — a missed convention is the most common source of spec rework.
 
-Common mappings (read all that apply):
+Start with the language gateway, then add the layer recipes. Use `skills/engineering/engineering-routing/SKILL.md` to select a small sufficient set when the feature spans languages.
+
+| Language | Gateway (always read) |
+|---|---|
+| Python | `skills/languages/python/python-conventions/SKILL.md` |
+| Go | `skills/languages/go/go-conventions/SKILL.md` |
+| TypeScript | `skills/languages/typescript/typescript-conventions/SKILL.md` |
+| Any | `skills/coding/test-verification-policy/SKILL.md` (how to test) |
+
+**Python mappings** (read all that apply):
 
 - application services → `skills/languages/python/build-application-services/SKILL.md`
 - domain features → `skills/languages/python/build-domain-features/SKILL.md`
@@ -245,7 +267,47 @@ Common mappings (read all that apply):
 - dependencies / tests → `skills/languages/python/setup-dependencies-and-tests/SKILL.md`
 - always-on style → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/languages/python/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/languages/python/application-structure/SKILL.md`
 
-For Vue / TS work, also read the relevant `skills/frontend-vue/` convention files.
+**Go mappings** (read all that apply; all paths under `skills/languages/go/`):
+
+- application services → `go-build-application-services/SKILL.md`
+- domain features → `go-build-domain-features/SKILL.md`
+- HTTP handlers → `go-build-http-handlers/SKILL.md`
+- middleware → `go-build-middleware/SKILL.md`
+- auth / security → `go-auth-security/SKILL.md`
+- event handlers → `go-build-event-handlers/SKILL.md`
+- partitioned events → `go-build-partitioned-events/SKILL.md`
+- workers → `go-build-workers/SKILL.md`
+- schedulers → `go-build-schedulers/SKILL.md`
+- durable workflows → `go-build-workflow-orchestration/SKILL.md`
+- runtime lifecycle → `go-build-lifecycle/SKILL.md`
+- API clients → `go-build-clients/SKILL.md`
+- TCP protocols → `go-build-tcp-codec/SKILL.md`
+- TUIs → `go-build-tuis/SKILL.md`
+- ClickHouse features → `go-build-clickhouse-features/SKILL.md`
+- API docs / response envelope → `go-recipe-api-documentation/SKILL.md`, `go-recipe-api-response-conventions/SKILL.md`
+- migrations → `go-recipe-database-migrations/SKILL.md`
+- CLI configuration → `go-recipe-cli-configuration/SKILL.md`
+- modules / imports → `go-recipe-modules-and-imports/SKILL.md`
+- dependencies / tests → `go-recipe-setup-dependencies-and-tests/SKILL.md`
+- tests by layer → `go-test-handlers/SKILL.md`, `go-test-application-services/SKILL.md`, `go-test-domain-services/SKILL.md`, `go-test-orchestration/SKILL.md`, `go-test-lifecycle/SKILL.md`
+- always-on style → `go-declarative-method-structure/SKILL.md`, `go-recipe-code-test-loop/SKILL.md`
+
+**TypeScript mappings** (read all that apply; all paths under `skills/languages/typescript/`):
+
+- application structure → `typescript-application-structure/SKILL.md`
+- domain features → `typescript-build-domain-features/SKILL.md`
+- routers → `typescript-build-routers/SKILL.md`
+- middleware → `typescript-build-middleware/SKILL.md`
+- auth / security → `typescript-auth-security-patterns/SKILL.md`
+- event handlers → `typescript-build-event-handlers/SKILL.md`
+- LangGraph → `typescript-build-langgraph/SKILL.md`
+- API clients → `typescript-build-clients/SKILL.md`
+- API docs / response envelope → `typescript-build-api-documentation/SKILL.md`, `typescript-api-response-conventions/SKILL.md`
+- dependencies / tests → `typescript-setup-dependencies-and-tests/SKILL.md`
+- tests by layer → `typescript-test-controllers/SKILL.md`, `typescript-test-app-services/SKILL.md`, `typescript-test-domain-services/SKILL.md`
+- always-on style → `typescript-named-arguments-and-type-hints/SKILL.md`, `typescript-declarative-method-structure/SKILL.md`, `typescript-method-docstrings/SKILL.md`
+
+For Vue work, also read the relevant `skills/frontend-vue/` convention files.
 
 ---
 
@@ -401,9 +463,10 @@ do not narrate every class or helper before showing its definition.
 
 Keep a compact metadata header with current status, owner, update date, parent and
 repository/branch when relevant. Preserve the repository's numbered title convention.
-Define requiredness, nullability, defaults, bounds and behavior explicitly. Include
-unit and functional/integration coverage appropriate to the actual entry point;
-mock-only tests do not prove database or transactional behavior.
+Define requiredness, nullability, defaults, bounds and behavior explicitly. Name the
+behavior tests that prove each contract from the actual entry point, per
+`skills/coding/test-verification-policy/SKILL.md`; mock-only tests do not prove
+database or transactional behavior.
 
 ### File-by-file implementation contracts
 
@@ -658,15 +721,16 @@ For every layer the spec touches, open the matching rule file under `skills/codi
 
 Audit checklist:
 
-- application services — `invoke()` orchestration, declarative structure, DB-session semantics
-- domain features — `model.py`, `dao.py`, `service.py`, relationships, indexes, Pydantic conventions
-- routers — request/response schemas, auth, registration
-- workers / DBOS — registration, idempotency, retry, payload shape, schedule
+- application services — Python `invoke()` / Go `Execute()` / TypeScript `invoke()` orchestration, declarative structure, transaction and DB-session ownership
+- domain features — Python `model.py` / `dao.py` / `service.py` with Pydantic; Go `model.go` / `dto.go` / `repository.go` / `service.go` with sentinel errors; TypeScript `entity.ts` / `dto.ts` / `service.ts` with Zod; relationships, indexes
+- routers / handlers — FastAPI, Gin or Express / Hono request/response schemas, auth, registration, response envelope
+- workers / workflows — DBOS, Celery, asynq or Temporal registration, idempotency, retry, payload shape, schedule
+- Go lifecycle — context ownership, startup rollback, graceful shutdown (`go-build-lifecycle`)
 - events — type constant, payload schema, publisher + subscriber
 - agents / tools — tool-per-file, prompt separation, gateway conventions
 - clients / integrations — auth, retry, errors, config
-- Alembic — revision script expectations, model registration
-- always-on style — language-appropriate named inputs and explicit types; Python Google-style docstrings, Go godoc, TypeScript JSDoc; declarative methods and one test per decision branch
+- migrations — Alembic revision scripts and model registration; goose up/down SQL
+- always-on style — language-appropriate named inputs and explicit types; Python Google-style docstrings, Go godoc, TypeScript JSDoc; declarative methods and tests per `skills/coding/test-verification-policy/SKILL.md`
 - logging / observability — helper usage, structured fields, correlation IDs
 
 For each violation, record:
@@ -771,9 +835,9 @@ Open the spec's test section and every section that introduces logic. Verify the
 
 For every new or modified method introduced by the spec, the spec must enumerate:
 
-- each decision point,
-- one test per branch,
-- fixture / mock strategy,
+- each decision point and the behavior test that proves its outcome,
+- the test level (journey, application service, domain service) per `skills/coding/test-verification-policy/SKILL.md`,
+- test doubles: real persistence; mocks only for third-party APIs; injected stubs otherwise,
 - negative paths where relevant.
 
 Additionally verify:

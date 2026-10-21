@@ -60,7 +60,7 @@ Load these on demand as each step calls for them — also load the scoped langua
 
 | Step | Skill |
 |---|---|
-| 1 — Code + Test Loop | `skills/coding/code-test-loop/SKILL.md` |
+| 1 — Code + Test Loop | `skills/coding/code-test-loop/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md` (how to test) |
 | 2 — Code Review | `skills/design-and-analysis/review-feature-code/SKILL.md` |
 | 3 — Completion Check | `skills/design-and-analysis/is-the-feature-completed/SKILL.md` |
 | Always-on conventions | `skills/engineering/engineering-ownership/SKILL.md`, `skills/engineering/engineering-testing/SKILL.md`, plus selected language roots |
@@ -118,6 +118,16 @@ Consume the acceptance contract, current routing record and
 respecting dependency order within a vertical slice rather than completing every
 lower layer before wiring its consumers. Follow language/user test ordering.
 
+### Testing strategy
+
+How to test is owned by `skills/coding/test-verification-policy/SKILL.md`. Apply it in every sub-spec cycle:
+
+- **Behavior first.** Each acceptance criterion is proven by a journey test: real entry point (controller, CLI, TUI, worker, task, scheduler or event) → application service → domain service → persisted state read back.
+- **More behavior tests, fewer method tests.** Add workflow, domain or unit tests only for branches the journey test cannot reach cheaply.
+- **Real persistence.** Never mock databases, file stores or internal engines.
+- **Mocks only for third-party APIs**, at their client boundary. Use stubs passed in through constructors, factories or parameters for everything else.
+- **No end-to-end suite per sub-spec.** End-to-end tests cover only integration-layer scenarios (frontend, full install or run cycle, multi-process or multi-node). They run once, as the final check for the feature.
+
 ### Runnable
 
 Make the first milestone the smallest representative user journey: real entry point
@@ -130,14 +140,20 @@ If a genuine prerequisite prevents the slice, identify it and its closure target
 
 ### Early integration feedback
 
-After the runnable milestone, obtain bounded independent feedback on wiring,
-architecture and the remaining risk plan using the early mode of
-`skills/design-and-analysis/review-feature-code/SKILL.md`. This checkpoint remains
-inside Step 1, not formal phase progression or a completed workflow turn. It is
-advisory except for concrete blockers; it must not demand final coverage prematurely.
-Use only authorized reviewers/sub-agents. If independent feedback is unavailable,
-report that limitation and request the needed review/authorization; do not claim a
-self-check is independent or silently substitute it. Final review remains required.
+After the runnable milestone, get a bounded, independent **agent review**. This section is its full checklist;
+`skills/design-and-analysis/review-feature-code/SKILL.md` governs only the Step 2 final review.
+
+- **What it is:** a read-only review by an agent. The reviewer reads the specification, the code and the tests.
+- **What it does not do:** it does not run tests, integration suites or end-to-end checks. Test execution belongs to the implementer in Step 1.
+- **What it checks**, for each behavior the specification states:
+  - Is it implemented, and wired from the real entry point?
+  - Is it covered by a test that follows `skills/coding/test-verification-policy/SKILL.md`?
+  - Do the architecture and the remaining plan carry any major risk?
+- **What it returns:** a short list of stated behaviors that are missing, unwired or untested, with spec section, file path and closure condition.
+- **Status:** advisory, except for concrete blockers. It stays inside Step 1; it is not formal phase progression or a completed workflow turn.
+- **Scope:** do not demand final coverage from the first slice.
+- **Independence:** use only authorized reviewers or sub-agents. If none is available, report the limitation and request the needed review or authorization. Do not call a self-check independent or silently substitute one.
+- Final review in Step 2 remains required.
 
 ### Acceptance-ready
 
@@ -145,7 +161,9 @@ Extend the slice to all required journeys and critical failure paths. Apply the
 requirement-and-risk map in `skills/engineering/engineering-testing/SKILL.md` and
 adequacy gate in `skills/coding/test-verification-policy/SKILL.md`.
 Run focused tests per increment, affected suites at milestones, and all agreed
-full-suite/static/build/race gates before Step 2. Baseline exceptions need explicit
+full-suite/static/build/race gates before Step 2. Run end-to-end tests only at
+the end of the feature, after the last sub-spec cycle, and only where the policy
+calls for them. Baseline exceptions need explicit
 approval; unavailable checks are unverified. No disabled tests to manufacture green.
 
 **Output:** implementing files, acceptance-to-evidence map, exact commands/results,
@@ -225,6 +243,7 @@ The following rules remain in effect throughout this workflow:
 ```text
 Acceptance contract + routing + baseline
 Step 1: Runnable slice → early integration feedback → acceptance-ready hardening + gates
+        (journey tests per sub-spec; end-to-end only as the final feature check)
 Step 2: Independent final review → bounded repairs through Step 1 when needed
 Step 3: Completion check against the original specification and current evidence
 ```

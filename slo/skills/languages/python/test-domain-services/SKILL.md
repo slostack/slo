@@ -27,6 +27,12 @@ source_prompt: test-domain-services.md
 
 **Applicability:** Python only; framework-specific sections apply only when that stack is in the project. Load `skills/languages/python/python-conventions/SKILL.md` and `skills/engineering/engineering-testing/SKILL.md` for shared obligations and test-category selection.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers Python fixtures and syntax only.
+
+- This recipe is level 3 (domain service against the real database) in the policy's test levels.
+- Doubles: real database; mocks only for third-party API clients; stubs for internal collaborators, passed in through constructors.
+- Coverage: follow the policy's "What Must Be Tested". Do not restate it here.
+
 How to write transactional unit tests for **domain services** in the
 standard service layer style — the per-domain `<DomainService>` class that lives in
 `src/domains/<domain>/service.py` and exposes static `build`,
@@ -68,7 +74,7 @@ It does **not** exercise:
 | Test file location | `tests/domains/<domain>/test_<entity>_service.py` mirroring `src/domains/<domain>/service.py` |
 | Test class | `class Test<Entity>Service:` (one class per service file) |
 | Test method names | `test_<method>_when_<condition>` — `test_build_and_create`, `test_build_and_create_with_constraints`, `test_duplicate_coupon_for_same_campaign`, `test_update_constraints` |
-| Granularity | One test per decision point in the service method (each branch, each guard, each raised exception) — see `skills/coding/test-verification-policy/SKILL.md` |
+| Granularity | Per the policy's "What Must Be Tested": each distinct outcome, guard and raised exception |
 
 ---
 
@@ -415,7 +421,7 @@ For each public method on the domain service, write at minimum:
 | Each defaulted argument | Tests that prove the default is applied when omitted |
 | Each validation guard / raise | One test per `raise` statement in the method, asserting the exception class and (for `*Exception` types) `code` and `http_error_code` |
 | Each filter clause in a list/query | One test that proves the filter includes a matching row, plus one that proves it excludes a non-matching one |
-| Each conditional branch (`if x is None`, `if customer_id`, etc.) | One test per branch — see `skills/coding/test-verification-policy/SKILL.md` |
+| Each conditional branch (`if x is None`, `if customer_id`, etc.) | Each distinct outcome, per the policy's "What Must Be Tested" |
 | DAO round-trip for any JSON-column field | `<Entity>DAO.from_orm(model)` and assert the parsed structure |
 
 ---
@@ -443,17 +449,13 @@ before opening a PR.
 - **Building parent rows with raw `db_session.add(Model(...))`** — always
   go through `<DomainService>.build_and_create(...)` so you exercise the
   same code path production uses.
-- **Mocking the database** — domain service tests are integration tests
-  against PostgreSQL. If you find yourself mocking `AsyncSession`, you're
-  writing a test that proves nothing. Mocks belong in narrowly-scoped
-  application service tests where an external dependency is being
-  replaced (and even there, prefer real services).
+- **Mocking the database** — forbidden by the policy's "Test doubles".
+  A mocked `AsyncSession` proves nothing.
 - **Asserting the SQLAlchemy model and skipping the DAO round-trip** for
   fields stored as JSON / encoded structures — that hides a class of
   serialization bugs.
-- **Reusing one test to cover three branches** — see
-  `skills/coding/test-verification-policy/SKILL.md`. One branch, one test, one assertion
-  cluster.
+- **Hiding distinct outcomes in one test** — give each distinct outcome
+  its own assertion cluster, per the policy's "What Must Be Tested".
 
 ---
 
@@ -475,4 +477,5 @@ Before marking a domain service test complete:
 - [ ] Exception paths use `pytest.raises(<ExactClass>)` and assert on
       `code` / `http_error_code` for domain exceptions
 - [ ] No `commit()` calls; only `flush()` and `refresh()`
-- [ ] One test per decision point in the method under test
+- [ ] Coverage and doubles pass the checklist in
+      `skills/coding/test-verification-policy/SKILL.md`

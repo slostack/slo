@@ -44,7 +44,7 @@ SKILLS = ROOT / "skills"
         ),
         (
             "design-and-analysis/review-feature-code/SKILL.md",
-            ("closure condition", "stable IDs", "Early integration feedback"),
+            ("closure condition", "stable IDs"),
         ),
         (
             "orchestration/workflows/SKILL.md",

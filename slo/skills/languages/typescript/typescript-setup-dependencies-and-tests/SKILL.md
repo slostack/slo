@@ -27,6 +27,11 @@ kind: skill
 
 **Scope:** TypeScript; load `skills/languages/typescript/typescript-conventions/SKILL.md`. Framework examples apply only to the declared stack. This is a vendored snapshot; installed same-name user skills still override it in the runtime manifest.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers TypeScript test-stack setup only.
+
+- Tests run against a real, disposable test database (`DATABASE_URL` in the test environment). Never mock `@/connectors/db`, repositories or internal services.
+- `msw` is for third-party HTTP only.
+
 ### Why Vitest over Jest
 
 Vitest is preferred for TypeScript projects because:
@@ -44,12 +49,11 @@ pnpm add -D vitest @vitest/coverage-v8
 # HTTP route testing (works with Express, Fastify, Hono, etc.)
 pnpm add -D supertest @types/supertest
 
-# External HTTP mocking
+# Third-party HTTP mocking (vendor APIs only)
 pnpm add -D msw
-
-# Optional: in-memory Postgres for integration tests
-pnpm add -D @databases/pg-test
 ```
+
+- Run a disposable Postgres for tests (Docker Compose service or CI service container) and apply migrations before the suite, for example `DATABASE_URL=$TEST_DATABASE_URL pnpm prisma migrate deploy`.
 
 ### Step 2 — vitest.config.ts
 
@@ -76,6 +80,9 @@ export default defineConfig({
 
     // Timeout for async tests (ms)
     testTimeout: 10_000,
+
+    // Test files share one test database; run them one at a time so resets do not collide
+    fileParallelism: false,
 
     coverage: {
       provider: 'v8',
@@ -108,23 +115,43 @@ export default defineConfig({
 Global setup that runs before every test file:
 
 ```typescript
-import { vi, afterEach, beforeAll, afterAll } from 'vitest';
+import { afterAll, beforeAll } from 'vitest';
 import { db } from '@/connectors/db';
 
-beforeAll(async () => {
-  // Any one-time global setup (e.g., run migrations against test DB)
+beforeAll((): void => {
+  // Refuse to run against anything but the test database
+  if (!process.env.DATABASE_URL?.includes('_test')) {
+    throw new Error('DATABASE_URL must point at the disposable test database');
+  }
 });
 
-afterEach(() => {
-  // Reset all mocks between tests — critical to prevent test pollution
-  vi.clearAllMocks();
-  vi.restoreAllMocks();
-});
-
-afterAll(async () => {
+afterAll(async (): Promise<void> => {
   // Close DB connection pool so the process can exit cleanly
   await db.$disconnect();
 });
+```
+
+### Step 3b — tests/helpers/db.ts
+
+- `resetTestDatabase()` truncates every application table in the test database from `DATABASE_URL`.
+- Call it in `beforeEach` of every test that touches persistence. `typescript-test-domain-services`, `typescript-test-app-services` and `typescript-test-controllers` use it.
+
+```typescript
+// tests/helpers/db.ts
+import { db } from '@/connectors/db';
+
+/** Truncate every application table in the test database so each test starts empty. */
+export async function resetTestDatabase(): Promise<void> {
+  const tables: Array<{ tablename: string }> = await db.$queryRaw<Array<{ tablename: string }>>`
+    SELECT tablename FROM pg_tables
+    WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'
+  `;
+  if (tables.length === 0) {
+    return;
+  }
+  const tableList: string = tables.map(({ tablename }): string => `"public"."${tablename}"`).join(', ');
+  await db.$executeRawUnsafe(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`);
+}
 ```
 
 ### Step 4 — tests/helpers/factories.ts
@@ -156,55 +183,50 @@ export function buildCreateUserDto(overrides: Partial<CreateUserDto> = {}): Crea
 
 ### Step 5 — Writing a Domain Service Test
 
+- Use the real repository against the test database. See `typescript-test-domain-services` for the full recipe.
+
 ```typescript
 // tests/domains/user/user.service.test.ts
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { UserService } from '@/domains/user/service';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '@/connectors/db';
-import { buildCreateUserDto, buildUser } from '../../helpers/factories';
+import { UserRepository } from '@/domains/user/repository';
+import { UserService } from '@/domains/user/service';
+import { buildCreateUserDto } from '../../helpers/factories';
+import { resetTestDatabase } from '../../helpers/db';
 
-vi.mock('@/connectors/db', () => ({
-  db: {
-    user: {
-      findUnique: vi.fn(),
-      create:     vi.fn(),
-      update:     vi.fn(),
-      delete:     vi.fn(),
-    },
-  },
-}));
+describe('UserService', (): void => {
+  let repo: UserRepository;
+  let service: UserService;
 
-describe('UserService', () => {
-  describe('getById', () => {
-    it('returns the user when found', async () => {
-      const user = buildUser();
-      vi.mocked(db.user.findUnique).mockResolvedValueOnce(user);
+  beforeEach(async (): Promise<void> => {
+    await resetTestDatabase();
+    repo = new UserRepository({ db });
+    service = new UserService({ repo });
+  });
 
-      const result = await UserService.getById(user.id);
+  describe('getById', (): void => {
+    it('returns the stored user when the user exists', async (): Promise<void> => {
+      const stored: User = await repo.create({ input: buildCreateUserDto() });
 
-      expect(result).toEqual(user);
-      expect(db.user.findUnique).toHaveBeenCalledWith({ where: { id: user.id } });
+      const result: User | null = await service.getById({ userId: stored.id });
+
+      expect(result).toMatchObject({ id: stored.id, email: stored.email });
     });
 
-    it('returns null when not found', async () => {
-      vi.mocked(db.user.findUnique).mockResolvedValueOnce(null);
-
-      const result = await UserService.getById('non-existent-id');
+    it('returns null when the user does not exist', async (): Promise<void> => {
+      const result: User | null = await service.getById({ userId: 'non-existent-id' });
 
       expect(result).toBeNull();
     });
   });
 
-  describe('create', () => {
-    it('creates and returns the new user', async () => {
-      const dto   = buildCreateUserDto();
-      const saved = buildUser({ email: dto.email, fullName: dto.fullName });
-      vi.mocked(db.user.create).mockResolvedValueOnce(saved);
+  describe('create', (): void => {
+    it('persists the new user when input is valid', async (): Promise<void> => {
+      const dto: CreateUserDto = buildCreateUserDto();
 
-      const result = await UserService.create(dto);
+      const created: User = await service.create({ input: dto });
 
-      expect(result).toEqual(saved);
-      expect(db.user.create).toHaveBeenCalledWith({ data: dto });
+      expect(await repo.findById({ id: created.id })).toMatchObject({ email: dto.email, fullName: dto.fullName });
     });
   });
 });
@@ -212,47 +234,61 @@ describe('UserService', () => {
 
 ### Step 6 — Writing an HTTP Route Test with Supertest
 
+- Drive the real app: real middleware, real services, test database. See `typescript-test-controllers` for auth helpers and the full recipe.
+
 ```typescript
 // tests/routers/user.router.test.ts
-import { describe, it, expect, vi } from 'vitest';
-import request from 'supertest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import request, { type Response } from 'supertest';
+import type { Express } from 'express';
 import { createApp } from '@/app';
-import { UserService } from '@/domains/user/service';
-import { buildUser } from '../helpers/factories';
+import { db } from '@/connectors/db';
+import { UserRepository } from '@/domains/user/repository';
+import { buildCreateUserDto } from '../helpers/factories';
+import { createTestSession, type TestSession } from '../helpers/auth';
+import { resetTestDatabase } from '../helpers/db';
 
-vi.mock('@/domains/user/service');
+const app: Express = createApp();
 
-const app = createApp();
+describe('POST /users', (): void => {
+  let session: TestSession;
 
-describe('POST /users', () => {
-  it('creates a user and returns 201', async () => {
-    const user = buildUser();
-    vi.mocked(UserService.getByEmail).mockResolvedValueOnce(null);
-    vi.mocked(UserService.create).mockResolvedValueOnce(user);
-
-    const response = await request(app)
-      .post('/users')
-      .send({ email: user.email, fullName: user.fullName })
-      .set('Accept', 'application/json');
-
-    expect(response.status).toBe(201);
-    expect(response.body).toMatchObject({ id: user.id, email: user.email });
+  beforeEach(async (): Promise<void> => {
+    await resetTestDatabase();
+    session = await createTestSession();
   });
 
-  it('returns 409 when email is already taken', async () => {
-    const user = buildUser();
-    vi.mocked(UserService.getByEmail).mockResolvedValueOnce(user);
+  it('returns 201 and persists the user when the email is new', async (): Promise<void> => {
+    const dto: CreateUserDto = buildCreateUserDto();
 
-    const response = await request(app)
+    const response: Response = await request(app)
       .post('/users')
-      .send({ email: user.email, fullName: 'Someone Else' });
+      .set('Authorization', session.authorizationHeader)
+      .send(dto);
+
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({ data: { email: dto.email } });
+    expect(await new UserRepository({ db }).findByEmail({ email: dto.email })).not.toBeNull();
+  });
+
+  it('returns 409 and keeps one row when the email is already taken', async (): Promise<void> => {
+    const dto: CreateUserDto = buildCreateUserDto();
+    await new UserRepository({ db }).create({ input: dto });
+
+    const response: Response = await request(app)
+      .post('/users')
+      .set('Authorization', session.authorizationHeader)
+      .send({ ...dto, fullName: 'Someone Else' });
 
     expect(response.status).toBe(409);
+    expect(await db.user.count({ where: { email: dto.email } })).toBe(1);
   });
 });
 ```
 
 ### Step 7 — Mocking External HTTP with msw
+
+- Use `msw` only for third-party APIs (payment, email, SMS, LLM vendors). Never for internal services.
 
 ```typescript
 // tests/helpers/msw-server.ts
@@ -322,9 +358,10 @@ pnpm vitest run --update-snapshots
 
 ### Key Rules
 
-1. **Never import from `src/config/cfg.ts` in tests** — mock the connector, not the config.
-2. **Always call `vi.clearAllMocks()` in `afterEach`** — failure to do so causes tests to bleed into each other.
-3. **Factory functions use named overrides** — `buildUser({ email: 'x@y.com' })`, never positional.
-4. **Mock at the module boundary** — mock `@/connectors/db`, not individual ORM methods inline.
-5. **Supertest creates the real Express app** — don't mock the router layer; test it.
-6. **msw intercepts at the network level** — use it for external services, not internal modules.
+1. **Never import from `src/config/cfg.ts` in tests** — set test values through the test environment (`DATABASE_URL`, API keys) instead.
+2. **Use the real test database** — never `vi.mock('@/connectors/db')`, repositories or internal services.
+3. **Reset state with `resetTestDatabase()` in `beforeEach`** — each test starts from empty tables.
+4. **Factory functions use named overrides** — `buildUser({ email: 'x@y.com' })`, never positional.
+5. **Supertest drives the real app** — real router, middleware and services; authenticate with a real test session.
+6. **msw intercepts at the network level** — use it for third-party services, not internal modules.
+7. **Inject other collaborators** — clocks, ID generators and third-party clients are passed in through options objects as stubs or fakes; nothing is patched.

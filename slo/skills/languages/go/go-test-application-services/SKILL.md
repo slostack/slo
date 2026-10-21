@@ -45,6 +45,12 @@ kind: skill
 
 **Test category:** database-backed integration. Keep real domain collaborators here; use go-test-orchestration recording fakes for isolated order/cutoff behavior. A skip because Docker is unavailable is unverified integration evidence, not a passing gate.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers Go mechanics only.
+
+- This recipe is level 2 (application-service workflow) in the policy's test levels.
+- Doubles: real database or store; mocks (testify/mock or `httptest`) only for third-party API clients; hand-written stubs for internal collaborators, passed in through constructors or struct fields.
+- Coverage: follow the policy's "What Must Be Tested". Do not restate it here.
+
 **Scope and authority:** Go; read `skills/languages/go/go-conventions/SKILL.md` first. This recipe is a reconciled snapshot of installed guidance, not permission to adopt a dependency. Framework-specific examples apply only to a project already using that stack. Select the test category with `skills/engineering/engineering-testing/SKILL.md`.
 
 An application service test sits **between** a domain-service test
@@ -323,7 +329,7 @@ func seedActiveCampaign(t *testing.T, tx *gorm.DB) fixtures {
 The service under test: `CreateCouponService` orchestrates the coupon-creation
 workflow — guard checks, then persist the coupon, then charge the merchant's plan
 via the external payment client, then enqueue a notification job. Real domain
-services, real DB, **mocked payment client and mocked asynq queue**.
+services, real DB, **mocked third-party payment client and a recording stub for the internal asynq queue**.
 
 ```go
 package createcoupon
@@ -338,14 +344,14 @@ import (
     "github.com/stretchr/testify/require"
 )
 
-// mockEnqueuer records enqueued asynq tasks so the test can assert the job
-// side effect without a live Redis.
-type mockEnqueuer struct{ mock.Mock }
+// recordingEnqueuer is a stub for the internal asynq queue. It records enqueued
+// tasks so the test can assert the job side effect without a live Redis.
+// Internal engines get recording stubs, not testify mocks (test-verification-policy).
+type recordingEnqueuer struct{ tasks []*asynq.Task }
 
-func (m *mockEnqueuer) Enqueue(task *asynq.Task, opts ...asynq.Option) (*asynq.TaskInfo, error) {
-    args := m.Called(task, opts)
-    info, _ := args.Get(0).(*asynq.TaskInfo)
-    return info, args.Error(1)
+func (r *recordingEnqueuer) Enqueue(task *asynq.Task, _ ...asynq.Option) (*asynq.TaskInfo, error) {
+    r.tasks = append(r.tasks, task)
+    return &asynq.TaskInfo{ID: "task_1"}, nil
 }
 
 func TestService_Execute(t *testing.T) {
@@ -361,9 +367,7 @@ func TestService_Execute(t *testing.T) {
             return p.AccountID == fx.user.AccountID && p.Amount == 150
         })).Return(&Charge{ID: "chg_1", Amount: 150}, nil).Once()
 
-        queue := &mockEnqueuer{}
-        queue.On("Enqueue", mock.Anything, mock.Anything).
-            Return(&asynq.TaskInfo{ID: "task_1"}, nil).Once()
+        queue := &recordingEnqueuer{}
 
         // ── Arrange: construct the service exactly as the handler would ───
         svc := NewService(
@@ -397,9 +401,9 @@ func TestService_Execute(t *testing.T) {
         require.NoError(t, err)
         assert.Equal(t, "SUMMER_OFF_20", persisted.Code)
 
-        // ── Assert: side effects on the mocked clients ───────────────────
+        // ── Assert: side effects on the third-party mock and internal stub ─
         payment.AssertExpectations(t) // charged once, with the matched args
-        queue.AssertExpectations(t)   // notification enqueued exactly once
+        require.Len(t, queue.tasks, 1) // notification enqueued exactly once
     })
 }
 ```
@@ -508,7 +512,7 @@ t.Run("returns error when campaign is not active", func(t *testing.T) {
     tx := newTx(t)
     fx := seedInactiveCampaign(t, tx)
     svc := NewService(couponRepo(tx), campaign.NewService(campaign.NewRepository(tx)),
-        &mockPaymentClient{}, &mockEnqueuer{})
+        &mockPaymentClient{}, &recordingEnqueuer{})
 
     _, err := svc.Execute(context.Background(), validParamsFor(fx))
 
@@ -556,7 +560,7 @@ payment.On("Charge", mock.Anything, mock.Anything).
 _, err := svc.Execute(ctx, validParamsFor(fx))
 
 require.Error(t, err)
-queue.AssertNotCalled(t, "Enqueue", mock.Anything, mock.Anything)
+assert.Empty(t, queue.tasks)
 ```
 
 ---
@@ -582,7 +586,7 @@ it while keeping the original campaign:
 other := seedAccount(t, tx, "Company2")
 svc := NewService(couponRepo(tx),
     campaign.NewService(campaign.NewRepository(tx)),
-    &mockPaymentClient{}, &mockEnqueuer{})
+    &mockPaymentClient{}, &recordingEnqueuer{})
 
 _, err := svc.Execute(ctx, CreateCouponParams{
     CampaignID: fx.campaign.ID, // belongs to the original account
@@ -629,9 +633,9 @@ parallel and must delete what it committed in `t.Cleanup`.
 
 ## 12. Anti-patterns (do NOT do these)
 
-- **Mocking sibling domain services.** App-service tests are integration tests
-  against a real DB; the whole point is to verify the orchestration uses the *real*
-  domain services correctly. Mocking them hides drift.
+- **Mocking the database, sibling domain services or internal queues.** Forbidden
+  by the policy's "Test doubles". Use real domain services; mock only third-party
+  clients; use recording stubs for internal queues.
 - **Hand-written `INSERT`s to seed state.** Seed through the real domain services
   so the test reflects what production writes and reads.
 - **Going through Gin / HTTP.** Asserting binding, middleware, auth, or the response
@@ -658,7 +662,7 @@ For each public entry method on the application service, write at minimum:
 |---|---|
 | Happy path | Constructs valid params; asserts returned result **+** DB read-back **+** external side effects |
 | Each `check*` / guard `return err` in the orchestrator | One sub-test per guard, asserting the exact error via `errors.Is` / `errors.As` (and typed-error fields the handler reads) |
-| Each conditional branch inside the orchestrator | One sub-test per branch |
+| Each conditional branch inside the orchestrator | Each distinct outcome, per the policy's "What Must Be Tested" |
 | "No side effect on failure" | For each pre-external guard, assert the external client is `AssertNotCalled`; for a failing later step, assert no downstream job/row |
 | External client error | Assert the wrapped error propagates and no downstream side effect fires |
 | Multi-step flows (claim → redeem → void) | One sub-test per terminal state |

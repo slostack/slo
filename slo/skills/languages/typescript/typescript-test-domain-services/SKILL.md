@@ -1,7 +1,6 @@
 ---
 name: typescript-test-domain-services
-description: TypeScript domain service test conventions — test the service layer in isolation using mocked
-  repositories, with factory helpers and canonical fixture names.
+description: TypeScript domain service test conventions — test business rules against the real test database through the real repository, with factory helpers and canonical fixture names.
 when_to_use: Use when writing tests for domain service classes or functions that contain business logic
   and depend on a repository or DAO layer.
 group: languages
@@ -13,72 +12,63 @@ kind: skill
 ## Skill summary
 
 - **Name:** `typescript-test-domain-services`
-- **Description:** TypeScript domain service test conventions — test the service layer in isolation using mocked repositories, with factory helpers and canonical fixture names.
+- **Description:** TypeScript domain service test conventions — test business rules against the real test database through the real repository, with factory helpers and canonical fixture names.
 - **When to use:** Use when writing tests for domain service classes or functions that contain business logic and depend on a repository or DAO layer.
 - **Group:** `languages`
 - **Kind:** `skill`
 
 ## Examples
 
-- "Write unit tests for the UserService"
+- "Write tests for the UserService"
 - "Add tests for the domain service methods"
-- "Test the create and update methods in isolation"
+- "Test the create and update rules against the database"
 
 ## Guidance
 
 **Scope:** TypeScript; load `skills/languages/typescript/typescript-conventions/SKILL.md`. Framework examples apply only to the declared stack. This is a vendored snapshot; installed same-name user skills still override it in the runtime manifest.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers TypeScript mechanics only.
+
+- This recipe is level 3 (domain service) in the policy's test levels.
+- Prefer journey tests (`typescript-test-controllers`) and application-service tests (`typescript-test-app-services`) for most coverage. Use this level for dense business rules.
+- Coverage follows the policy's "What Must Be Tested".
+
 ### Core rule
 
-Domain service tests do NOT hit the database. The repository/DAO layer is fully mocked. The goal is to test the business logic of the service in complete isolation — every assertion is about what the service *decided* to do, not about what the database returned.
+- Domain service tests **use the real repository against the real test database**.
+- Never `vi.mock` the repository, the database client (`@/connectors/db`) or the ORM.
+- Assert on what the service decided **and** on what was persisted, read back through the repository.
+- The only doubles allowed here are third-party API clients, intercepted with `msw` or passed in as fakes, and internal collaborators such as a clock, passed in through the constructor.
 
 ### Structure
 
-- One `describe` block per service method
-- Tests nested inside `describe` blocks for sub-cases
-- Factory helpers at the top of the test file (not inline)
-- `beforeEach` resets mocks and re-instantiates the service
-- Test file next to the source: `src/domains/user/user.service.test.ts`
+- One `describe` block per service method, with `it` blocks for each distinct outcome.
+- Factory helpers live in `tests/helpers/factories.ts`, not inline.
+- `beforeEach` calls `resetTestDatabase()` (from `typescript-setup-dependencies-and-tests`) and builds a fresh service.
+- Test file location: `tests/domains/<domain>/<entity>.service.test.ts`.
 
 ### What to test per method
 
-- **Success path** — the main flow with valid input
-- **Not-found path** — when a repository lookup returns null
-- **Validation error path** — when the service enforces a business rule and throws
-- **Constraint error path** — when a uniqueness or integrity check fails
-- **Guard clause path** — every early return
+- **Success:** valid input; assert the returned value and the persisted row.
+- **Not found:** the row does not exist.
+- **Validation error:** a business rule rejects the input; assert nothing was written.
+- **Constraint error:** a uniqueness or integrity rule fails, using a real row that causes the conflict.
+- **Guard clauses:** each early return.
 
 ### Factory helpers: use canonical production names
 
-Factory parameters must use the same names as production code. No shorthands.
+- Factory parameters use the same names as production code. No shorthands.
 
 ```typescript
 // Bad — shorthand names that don't match production fields
 const buildUser = (id = '1', name = 'Alice') => ({ id, name })
 
 // Good — canonical names that match the domain model exactly
-const buildUser = (overrides: Partial<UserDAO> = {}): UserDAO => ({
-  id: 'user-1',
+export const buildCreateUserInput = (overrides: Partial<CreateUserInput> = {}): CreateUserInput => ({
   name: 'Alice',
-  email: 'alice@example.com',
+  email: `alice-${randomUUID()}@example.com`,
   role: 'member',
-  createdAt: new Date('2024-01-01'),
   ...overrides,
-})
-```
-
-### Mocking a repository
-
-```typescript
-import { vi } from 'vitest'
-import type { UserRepository } from '../repositories/user.repository'
-
-const makeUserRepo = (): UserRepository => ({
-  findById: vi.fn(),
-  findByEmail: vi.fn(),
-  create: vi.fn(),
-  update: vi.fn(),
-  delete: vi.fn(),
 })
 ```
 
@@ -86,182 +76,108 @@ const makeUserRepo = (): UserRepository => ({
 
 ```typescript
 // src/domains/user/user.service.ts
-import type { UserRepository } from '../repositories/user.repository'
+import type { UserRepository } from './user.repository'
 import { NotFoundError, ConflictError, ValidationError } from '../../errors'
 
 export class UserService {
-  constructor(private readonly repo: UserRepository) {}
+  constructor(private readonly options: { repo: UserRepository }) {}
 
-  async getById(userId: string): Promise<UserDAO> {
-    const user = await this.repo.findById(userId)
+  async getById({ userId }: { userId: string }): Promise<UserDAO> {
+    const user: UserDAO | null = await this.options.repo.findById({ id: userId })
     if (!user) {
       throw new NotFoundError(`User ${userId} not found`)
     }
     return user
   }
 
-  async create(input: CreateUserInput): Promise<UserDAO> {
+  async create({ input }: { input: CreateUserInput }): Promise<UserDAO> {
     if (!input.email.includes('@')) {
       throw new ValidationError('email must be a valid email address')
     }
-
-    const existing = await this.repo.findByEmail(input.email)
+    const existing: UserDAO | null = await this.options.repo.findByEmail({ email: input.email })
     if (existing) {
       throw new ConflictError(`A user with email ${input.email} already exists`)
     }
-
-    return this.repo.create(input)
-  }
-
-  async updateRole(userId: string, role: UserRole): Promise<UserDAO> {
-    const user = await this.repo.findById(userId)
-    if (!user) {
-      throw new NotFoundError(`User ${userId} not found`)
-    }
-    return this.repo.update(userId, { role })
+    return this.options.repo.create({ input })
   }
 }
 ```
 
 ```typescript
-// src/domains/user/user.service.test.ts
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { UserService } from './user.service'
-import { NotFoundError, ConflictError, ValidationError } from '../../errors'
-import type { UserRepository } from '../repositories/user.repository'
+// tests/domains/user/user.service.test.ts
+import { beforeEach, describe, expect, it } from 'vitest'
+import { db } from '@/connectors/db'
+import { UserRepository } from '@/domains/user/user.repository'
+import { UserService } from '@/domains/user/user.service'
+import { ConflictError, NotFoundError, ValidationError } from '@/errors'
+import { buildCreateUserInput } from '../../helpers/factories'
+import { resetTestDatabase } from '../../helpers/db'
 
-// Factory helpers — canonical names matching production UserDAO
-const buildUser = (overrides: Partial<UserDAO> = {}): UserDAO => ({
-  id: 'user-1',
-  name: 'Alice',
-  email: 'alice@example.com',
-  role: 'member',
-  createdAt: new Date('2024-01-01'),
-  ...overrides,
-})
-
-const buildCreateInput = (overrides: Partial<CreateUserInput> = {}): CreateUserInput => ({
-  name: 'Alice',
-  email: 'alice@example.com',
-  role: 'member',
-  ...overrides,
-})
-
-// Repository mock factory
-const makeRepo = (): UserRepository => ({
-  findById: vi.fn(),
-  findByEmail: vi.fn(),
-  create: vi.fn(),
-  update: vi.fn(),
-  delete: vi.fn(),
-})
-
-describe('UserService', () => {
+describe('UserService', (): void => {
   let repo: UserRepository
   let service: UserService
 
-  beforeEach(() => {
-    repo = makeRepo()
-    service = new UserService(repo)
+  beforeEach(async (): Promise<void> => {
+    await resetTestDatabase()
+    repo = new UserRepository({ db })
+    service = new UserService({ repo })
   })
 
-  describe('getById', () => {
-    it('returns the user when found', async () => {
-      const user = buildUser({ id: 'user-42' })
-      vi.mocked(repo.findById).mockResolvedValue(user)
+  describe('create', (): void => {
+    it('persists the user when input is valid', async (): Promise<void> => {
+      const input: CreateUserInput = buildCreateUserInput()
 
-      const result = await service.getById('user-42')
+      const created: UserDAO = await service.create({ input })
 
-      expect(result).toEqual(user)
-      expect(repo.findById).toHaveBeenCalledWith('user-42')
+      expect(await repo.findById({ id: created.id })).toMatchObject({ email: input.email, role: 'member' })
     })
 
-    it('throws NotFoundError when user does not exist', async () => {
-      vi.mocked(repo.findById).mockResolvedValue(null)
+    it('rejects an invalid email and writes nothing when email has no @', async (): Promise<void> => {
+      const input: CreateUserInput = buildCreateUserInput({ email: 'not-an-email' })
 
-      await expect(service.getById('missing')).rejects.toThrow(NotFoundError)
-      await expect(service.getById('missing')).rejects.toThrow('User missing not found')
-    })
-  })
+      await expect(service.create({ input })).rejects.toThrow(ValidationError)
 
-  describe('create', () => {
-    it('creates and returns the user when input is valid', async () => {
-      const input = buildCreateInput()
-      const created = buildUser()
-      vi.mocked(repo.findByEmail).mockResolvedValue(null)
-      vi.mocked(repo.create).mockResolvedValue(created)
-
-      const result = await service.create(input)
-
-      expect(result).toEqual(created)
-      expect(repo.findByEmail).toHaveBeenCalledWith('alice@example.com')
-      expect(repo.create).toHaveBeenCalledWith(input)
+      expect(await db.user.count()).toBe(0)
     })
 
-    it('throws ValidationError when email is invalid', async () => {
-      const input = buildCreateInput({ email: 'not-an-email' })
+    it('rejects a duplicate when a user with that email already exists', async (): Promise<void> => {
+      const input: CreateUserInput = buildCreateUserInput()
+      await service.create({ input })
 
-      await expect(service.create(input)).rejects.toThrow(ValidationError)
-      await expect(service.create(input)).rejects.toThrow('email must be a valid email address')
+      await expect(service.create({ input })).rejects.toThrow(ConflictError)
 
-      // Guard: repo should never be called when validation fails
-      expect(repo.findByEmail).not.toHaveBeenCalled()
-      expect(repo.create).not.toHaveBeenCalled()
-    })
-
-    it('throws ConflictError when a user with that email already exists', async () => {
-      const input = buildCreateInput()
-      vi.mocked(repo.findByEmail).mockResolvedValue(buildUser())
-
-      await expect(service.create(input)).rejects.toThrow(ConflictError)
-      await expect(service.create(input)).rejects.toThrow('already exists')
-
-      expect(repo.create).not.toHaveBeenCalled()
+      expect(await db.user.count({ where: { email: input.email } })).toBe(1)
     })
   })
 
-  describe('updateRole', () => {
-    it('updates and returns the user when found', async () => {
-      const existing = buildUser({ role: 'member' })
-      const updated = buildUser({ role: 'admin' })
-      vi.mocked(repo.findById).mockResolvedValue(existing)
-      vi.mocked(repo.update).mockResolvedValue(updated)
-
-      const result = await service.updateRole('user-1', 'admin')
-
-      expect(result.role).toBe('admin')
-      expect(repo.update).toHaveBeenCalledWith('user-1', { role: 'admin' })
-    })
-
-    it('throws NotFoundError when the user does not exist', async () => {
-      vi.mocked(repo.findById).mockResolvedValue(null)
-
-      await expect(service.updateRole('missing', 'admin')).rejects.toThrow(NotFoundError)
-      expect(repo.update).not.toHaveBeenCalled()
+  describe('getById', (): void => {
+    it('throws NotFoundError when the user does not exist', async (): Promise<void> => {
+      await expect(service.getById({ userId: 'missing' })).rejects.toThrow(NotFoundError)
     })
   })
 })
 ```
 
-### Testing async error propagation
+### Testing infrastructure failures
+
+- Do not mock the repository to simulate "DB timeout".
+- If a failure must be proven, inject a stub that implements the repository interface and throws. Use it only in that one test, and pass it through the constructor:
 
 ```typescript
-it('propagates unexpected repository errors', async () => {
-  vi.mocked(repo.create).mockRejectedValue(new Error('DB timeout'))
+it('propagates a repository failure when the store is unavailable', async (): Promise<void> => {
+  const unavailableRepo: UserRepository = new UnavailableUserRepository() // implements UserRepository; every call throws
+  const failingService: UserService = new UserService({ repo: unavailableRepo })
 
-  await expect(
-    service.create(buildCreateInput())
-  ).rejects.toThrow('DB timeout')
+  await expect(failingService.create({ input: buildCreateUserInput() })).rejects.toThrow('store unavailable')
 })
 ```
 
 ### Rules checklist before finishing domain service tests
 
-- [ ] No real database or external I/O in any test
-- [ ] Repository is fully mocked via `vi.fn()` factory — never via partial mocks
-- [ ] Factory helpers use canonical production field names (no shorthands)
-- [ ] One `describe` per method
-- [ ] Success, not-found, validation-error, and constraint-error paths each have a test
-- [ ] Guard clause paths verify that the repository is NOT called
-- [ ] Test names follow `it('<expected outcome> when <condition>', ...)`
-- [ ] `beforeEach` resets mocks with `vi.clearAllMocks()` or re-instantiates the repo
+- [ ] The real repository runs against the test database; `resetTestDatabase()` runs in `beforeEach`.
+- [ ] No `vi.mock` of the repository, database client or ORM.
+- [ ] Success paths assert the persisted row, read back through the repository.
+- [ ] Rejection paths assert that nothing was written.
+- [ ] Factory helpers use canonical production field names.
+- [ ] Test names follow `it('<expected outcome> when <condition>', ...)`.
+- [ ] Coverage and doubles pass the checklist in `skills/coding/test-verification-policy/SKILL.md`.

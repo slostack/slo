@@ -192,6 +192,9 @@ issue or MR lifecycle.
 Follow the canonical workflow's Acceptance contract and Step 1 milestones:
 Runnable slice → early integration feedback → Acceptance-ready hardening and gates.
 Use its baseline approval, test cadence and evidence rules without duplicating them.
+Apply its Testing strategy: journey tests per sub-spec, real persistence, mocks only
+for third-party APIs, end-to-end only as the final feature check
+(`skills/coding/test-verification-policy/SKILL.md`).
 Keep all applicable coding conventions and GitLab issue lifecycle requirements.
 
 **READY condition:** the canonical Step 1 evidence gate is met, including all required

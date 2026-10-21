@@ -1,9 +1,9 @@
 ---
 name: engineering-testing
-description: Shared verification obligations and distinct unit, orchestration, adapter integration and
-  end-to-end test categories; no framework is assumed.
-when_to_use: Shared verification obligations and distinct unit, orchestration, adapter integration and
-  end-to-end test categories; no framework is assumed.
+description: Shared verification obligations — continuous verification, evidence reporting, baselines,
+  environment safety and the requirement-and-risk map. Test levels and doubles live in test-verification-policy.
+when_to_use: Use before implementing or reviewing to apply shared evidence, baseline and safety obligations;
+  load test-verification-policy for how to test.
 group: engineering
 kind: skill
 ---
@@ -12,7 +12,7 @@ kind: skill
 
 ## Skill summary
 
-Shared verification obligations and distinct unit, orchestration, adapter integration and end-to-end test categories; no framework is assumed.
+Shared verification obligations: continuous verification, evidence reporting, baselines, environment safety and the requirement-and-risk map. How to test (levels, doubles, end-to-end scope) is owned by `skills/coding/test-verification-policy/SKILL.md`.
 
 ## Examples
 
@@ -26,16 +26,16 @@ Work in small behavioral increments, respecting dependencies within a runnable s
 
 Cover each meaningful decision, failure cutoff, boundary and regression; assert observable effects and forbidden effects, not just non-null results. Cover input validation, error translation, cancellation, cleanup, atomicity, retries/idempotency, ordering and compatibility where affected. Skips require a reason and removal condition; report them as unverified, not passing.
 
-## Categories and collaborators
+## Test levels and doubles
 
-| Category | Purpose | Collaborators / evidence |
-|---|---|---|
-| Isolated unit | deterministic domain decision or pure transformation | inputs and result/error assertions; no infrastructure required |
-| Orchestration unit | delegation order, arguments, failure cutoffs, lifecycle ownership | injected recording fakes at consumer boundaries; assert later calls did not happen |
-| Adapter/database integration | driver/schema/transaction/protocol behavior | actual relevant adapter and disposable real dependency; apply migrations, assert persistence/rollback/constraints and cleanup |
-| End-to-end | composed externally observable flow | deployed/booted stack with declared controlled external boundaries; assert ingress to terminal effects |
-
-A recording fake cannot prove SQL rollback. A database test cannot reliably replace a deterministic lifecycle-order test. A Python recipe historically calling database tests 'unit' is still integration by this taxonomy. Do not turn one category's mock policy into a universal ban or universal requirement.
+- **Authority:** [`test-verification-policy`](../../coding/test-verification-policy/SKILL.md) owns test levels, priority, test doubles, journey discovery and end-to-end scope. Do not restate them here or in language recipes.
+- In short:
+  - journey tests first: entry point → application service → domain service → real persistence;
+  - real databases and files;
+  - mocks only for third-party APIs;
+  - injected stubs for internal collaborators;
+  - end-to-end tests only as a sparing final check.
+- A recording stub cannot prove SQL rollback. A database test cannot reliably replace a deterministic lifecycle-order test. Pick the level that proves the claim.
 
 ## Evidence and safety
 

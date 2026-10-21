@@ -45,10 +45,16 @@ kind: skill
 
 **Test category:** database-backed integration. Keep real domain collaborators here; use go-test-orchestration recording fakes for isolated order/cutoff behavior. A skip because Docker is unavailable is unverified integration evidence, not a passing gate.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers Go mechanics only.
+
+- This recipe is level 3 (domain service against the real database) in the policy's test levels.
+- Doubles: real database or store; mocks (testify/mock or `httptest`) only for third-party API clients; hand-written stubs for internal collaborators, passed in through constructors or struct fields.
+- Coverage: follow the policy's "What Must Be Tested". Do not restate it here.
+
 **Scope and authority:** Go; read `skills/languages/go/go-conventions/SKILL.md` first. This recipe is a reconciled snapshot of installed guidance, not permission to adopt a dependency. Framework-specific examples apply only to a project already using that stack. Select the test category with `skills/engineering/engineering-testing/SKILL.md`.
 
 This skill is the Go translation of the Python `test-domain-services` prompt.
-The principles survive verbatim — one branch per test, real database not mocks,
+The principles survive verbatim — distinct outcomes per test, real database not mocks,
 assert on the persisted round-trip, typed error assertions — but the mechanics
 are idiomatic Go: `testing` + `testify`, `testcontainers-go` for the real
 Postgres, GORM for models, and `errors.Is` in place of `pytest.raises`.
@@ -92,7 +98,7 @@ The Go analog of "the lowest persistence-aware layer" is the `Service` +
 | Test file location | `internal/domain/<domain>/service_test.go` (alongside the code it tests, same package or `<domain>_test`) |
 | Top-level test func | `func TestCouponService_Create(t *testing.T)` — one top-level func per method under test |
 | Sub-test names | `t.Run("succeeds with valid params", ...)` / `t.Run("returns ErrDuplicateCode on duplicate", ...)` — one sub-test per decision point |
-| Granularity | One table case (or one `t.Run`) per branch, guard, and returned error — mirror `test-verification-policy` |
+| Granularity | Per the policy's "What Must Be Tested": each distinct outcome, guard and returned error |
 
 Use table-driven tests as the **default** for any method with more than one branch
 (see `go-conventions`). Reserve a flat sequence of `t.Run` blocks
@@ -587,7 +593,7 @@ For each public method on the domain service, write at minimum:
 | Each defaulted field | Omit it → prove the service applied the default |
 | Each guard / returned error | One case per `return ..., Err*` path, asserted with `errors.Is` (or `errors.As` for typed errors, checking `Code`/`HTTPStatus`) |
 | Each filter clause in a list/query | An include case and an exclude case |
-| Each conditional branch (`if x == nil`, `if customerID != ""`) | One case per branch — see `test-verification-policy` |
+| Each conditional branch (`if x == nil`, `if customerID != ""`) | Each distinct outcome, per the policy's "What Must Be Tested" |
 | Any JSON/JSONB or custom-scanner column | Re-read round-trip asserting the parsed structure |
 
 ---
@@ -613,10 +619,8 @@ amortizes it across the whole package.
 
 ## 12. Anti-patterns (do NOT do these)
 
-- **Mocking the database.** Domain-service tests are integration tests against
-  real Postgres. If you are mocking the `Repository` here, you are writing a test
-  that proves nothing — mocks belong in application-service tests where an
-  *external* dependency is replaced.
+- **Mocking the database or the `Repository`.** Forbidden by the policy's
+  "Test doubles". A mocked repository proves nothing.
 - **Calling `tx.Commit()` in a test** — releases the rollback boundary and leaks
   rows into the shared container. Re-read with a fresh query instead.
 - **Building parent rows with raw `tx.Create(&Model{...})`** — bypasses the
@@ -628,8 +632,8 @@ amortizes it across the whole package.
   the repository should translate to a domain sentinel; assert on the sentinel.
 - **`require.ErrorContains(t, err, "duplicate")`** for a known failure — brittle;
   use `errors.Is` against the sentinel.
-- **One test case covering three branches** — one branch, one case, one assertion
-  cluster (see `test-verification-policy`).
+- **Hiding distinct outcomes in one case** — give each distinct outcome its own
+  case and assertion cluster (policy: "What Must Be Tested").
 - **A bare `require.NoError` + `require.NotNil`** with no behavioural assertion —
   proves the function ran, not that it is correct (see `go-conventions`
   §1.5).
@@ -668,5 +672,5 @@ Before marking a domain-service test complete:
 - `go-recipe-setup-dependencies-and-tests` — the shared testcontainers-go bootstrap,
   goose migration wiring, and `TestMain` conventions these tests depend on.
 - `go-test-application-services` — the next layer up (orchestration across
-  services; where selective mocking is permitted).
+  services; third-party clients are the only mocks).
 - `go-test-handlers` — full-stack handler tests with `httptest`.

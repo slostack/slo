@@ -1751,7 +1751,14 @@ class DetachedWorkflowAppService:
             handle.orchestrator_session_id
         )
         if previous is not None:
-            return self._mark_stale(rows=previous)
+            return tuple(
+                row.model_copy(
+                    update={"status": self._detached_parent_status(handle=handle, reported=row.status)}
+                )
+                if row.role == "orchestrator"
+                else row
+                for row in self._mark_stale(rows=previous)
+            )
         return (
             WorkflowSessionRowDAO(
                 key=WorkflowSessionKeyDAO(
@@ -1809,7 +1816,25 @@ class DetachedWorkflowAppService:
         return (self._detached_parent_row(handle=handle, group=group), *children)
 
     @staticmethod
-    def _detached_parent_row(*, handle: WorkflowHandleDAO, group: WorkflowDataDAO) -> WorkflowSessionRowDAO:
+    def _detached_parent_status(*, handle: WorkflowHandleDAO, reported: str) -> str:
+        """Resolve fresh or retained parent status without undoing an explicit abort.
+
+        Called during list projection; the durable abort wins even if the runner
+        exited before updating its self-report. Child execution evidence is separate.
+
+        Args:
+            handle (WorkflowHandleDAO): Latest owned workflow control state.
+            reported (str): Runner self-report or retained parent status.
+
+        Returns:
+            str: Confirmed abort, otherwise the known report or handle fallback.
+        """
+        if handle.state == "aborted" or reported == "unknown":
+            return handle.state
+        return reported
+
+    @classmethod
+    def _detached_parent_row(cls, *, handle: WorkflowHandleDAO, group: WorkflowDataDAO) -> WorkflowSessionRowDAO:
         """Choose parent display evidence after group validation, during projection.
 
         The parent row carries the current run identity in ``dispatch_id``: a
@@ -1821,8 +1846,8 @@ class DetachedWorkflowAppService:
             group (WorkflowDataDAO): Bounded observation with optional self-report.
 
         Returns:
-            WorkflowSessionRowDAO: Parent record; an absent or ``unknown``
-                self-report keeps the handle state.
+            WorkflowSessionRowDAO: Parent record; a confirmed abort wins over
+                any self-report. An absent or unknown report uses the handle state.
         """
         reported: str = group.orchestrator.state if group.orchestrator is not None else "unknown"
         return WorkflowSessionRowDAO(
@@ -1832,7 +1857,7 @@ class DetachedWorkflowAppService:
             ),
             workflow_id=handle.workflow_id,
             role="orchestrator",
-            status=handle.state if reported == "unknown" else reported,
+            status=cls._detached_parent_status(handle=handle, reported=reported),
             task_text=handle.brief,
             task_text_complete=True,
             dispatch_id=group.run_id,

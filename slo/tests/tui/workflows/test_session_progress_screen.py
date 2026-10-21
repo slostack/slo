@@ -626,6 +626,49 @@ class TestNavigationWins:
             assert log.scroll_x == panned_x
 
 
+class TestSubtleScrollbars:
+    """Modal scrollbars remain usable at the minimum nonzero cell size."""
+
+    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("size", [(60, 20), (120, 40)])
+    @pytest.mark.parametrize("status", ["running", "completed"])
+    async def test_minimum_dimensions_and_both_scroll_axes(
+        self, theme: Theme, size: tuple[int, int], status: str
+    ) -> None:
+        """Both themes keep subtle bars and real keyboard scrolling for all statuses."""
+        app = _ScreenHost()
+        async with app.run_test(size=size) as pilot:
+            app.theme = theme.name
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=_entries(count=80), status=status))
+            log = _log(app=app)
+            task_scroll = app.screen_under_test.query_one("#task-scroll")
+            for widget in (log, task_scroll):
+                assert widget.styles.scrollbar_size_vertical == 1
+                assert widget.styles.scrollbar_size_horizontal == 1
+                assert 0 < widget.styles.scrollbar_color.a <= 0.25
+                assert widget.styles.scrollbar_color_hover.a > widget.styles.scrollbar_color.a
+            assert log.show_vertical_scrollbar and log.show_horizontal_scrollbar
+            assert log.vertical_scrollbar.size.width == 1
+            assert log.horizontal_scrollbar.size.height == 1
+            await pilot.press("home", "pagedown", "right", "right")
+            await pilot.wait_for_scheduled_animations()
+            assert log.scroll_y > 0
+            assert log.scroll_x > 0
+            await pilot.press("end")
+            await pilot.wait_for_scheduled_animations()
+            assert log.scroll_y == log.max_scroll_y
+
+    async def test_external_log_keeps_framework_scrollbar_dimensions(self) -> None:
+        """The modal stylesheet must not change the external RichLog renderer."""
+        app = _LogHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            log = app.fill()
+            await pilot.pause()
+            assert log.styles.scrollbar_size_vertical == 2
+            assert log.styles.scrollbar_size_horizontal == 1
+            assert log.styles.scrollbar_color.a > 0.25
+
+
 class TestControls:
     """Escape/Minimize emit intent only; Abort follows the snapshot's target."""
 

@@ -42,6 +42,20 @@ SessionProgressScreen {
     border: none;
 }
 
+/* One terminal cell is the minimum usable thickness on either axis.
+   Keep the thumb quiet at rest, with a modest hover/drag affordance. */
+SessionProgressScreen #session-log,
+SessionProgressScreen #task-scroll {
+    scrollbar-size: 1 1;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-color: $text 18%;
+    scrollbar-color-hover: $text 30%;
+    scrollbar-color-active: $text 40%;
+    scrollbar-corner-color: $surface;
+}
+
 SessionProgressScreen .hint {
     height: 1;
     color: $text-muted;

@@ -640,6 +640,61 @@ class _FakeLoader:
         return self.progress_result
 
 
+class TestAbortedWorkflowStatus:
+    """Confirmed workflow aborts override parent reports, not child evidence."""
+
+    @pytest.mark.parametrize("reported", [None, "unknown", "running", "completed", "failed"])
+    def test_aborted_handle_overrides_parent_self_report(self, reported: Optional[str]) -> None:
+        """A confirmed abort cannot be resurrected by an older parent report."""
+        service = _service(root=None)
+        handle = _HANDLE_A.model_copy(update={"state": "aborted"})
+        group = _group(
+            orchestrator_state=reported,
+            children=(_child(session_id="done", status="completed"), _child(session_id="active")),
+        )
+
+        rows = service._project_group(handle=handle, group=group)
+
+        assert [row.status for row in rows] == ["aborted", "completed", "running"]
+        assert group.orchestrator is None or group.orchestrator.state == reported
+
+    @pytest.mark.parametrize("failure", [OSError("gone"), ValueError("corrupt")])
+    async def test_abort_updates_cached_parent_during_read_failure(
+        self, files: _Files, failure: Exception
+    ) -> None:
+        """Unreadable group files preserve history without preserving a running parent."""
+        service = _service(root=files.root)
+        good = _group(orchestrator_state="running", children=(_child(session_id="done", status="completed"),))
+        service._loaders[_ORCH_A] = _FakeLoader(groups=[good, failure])  # type: ignore[assignment]
+        fresh = await service._load_group(handle=_HANDLE_A)
+
+        rows = await service._load_group(handle=_HANDLE_A.model_copy(update={"state": "aborted"}))
+
+        assert [row.status for row in rows] == ["aborted", "completed"]
+        assert all(row.availability == "stale" for row in rows)
+        assert [row.key for row in rows] == [row.key for row in fresh]
+        assert [row.task_text for row in rows] == [row.task_text for row in fresh]
+        assert fresh[0].status == "running"
+
+    async def test_snapshot_refresh_and_resume_observe_abort(self, files: _Files) -> None:
+        """A persisted abort updates an existing list and a newly resumed service."""
+        await files.handle(handle=_HANDLE_A)
+        service = _service(root=files.root)
+        group = _group(orchestrator_state="running")
+        service._loaders[_ORCH_A] = _FakeLoader(groups=[group])  # type: ignore[assignment]
+        assert (await service.load_session_snapshot()).rows[0].status == "running"
+        await WorkflowHandleStore(history_root=files.root).update_state(
+            owner_session_id=_OWNER, workflow_id="wf-a", state="aborted"
+        )
+        before = _tree_bytes(root=files.root)
+
+        assert (await service.load_session_snapshot()).rows[0].status == "aborted"
+        resumed = _service(root=files.root)
+        resumed._loaders[_ORCH_A] = _FakeLoader(groups=[group])  # type: ignore[assignment]
+        assert (await resumed.load_session_snapshot()).rows[0].status == "aborted"
+        assert _tree_bytes(root=files.root) == before
+
+
 class TestRetainFailedGroup:
     """``_load_group``/``_retain_failed_group``: unreadable files are never deletion."""
 

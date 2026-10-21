@@ -32,7 +32,7 @@ from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
-from src.tui.workflows.dao import WorkflowSessionSnapshotDAO
+from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, WorkflowSessionSnapshotDAO
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
 
 # ---------------------------------------------------------------------------
@@ -752,9 +752,7 @@ class TestHistoryGatedLaunchEffects:
 
         with (
             patch.object(session, "attached_dispatch_snapshot", new=supplier),
-            patch(
-                "src.tui.workflows.renderer.DetachedWorkflowRenderer.apply_effects"
-            ) as renderer_launch,
+            patch("src.tui.workflows.renderer.DetachedWorkflowRenderer.apply_effects") as renderer_launch,
         ):
             app: SloTUI = SloTUI(session=session)
             async with app.run_test(size=(120, 40)) as pilot:
@@ -777,11 +775,12 @@ class TestHistoryGatedLaunchEffects:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             assert app._workflow_app_service is not None
-            outcome: str = app._workflow_app_service.advance_from_launch_result(
+            outcome: HandleAdvanceOutcomeDAO = app._workflow_app_service.advance_from_launch_result(
                 result_text='{"workflow_id": "wf-1", "orchestrator_session_id": "orch-1", "state": "running"}'
             )
 
-            assert outcome != "ignored"
+            assert outcome.workflow_id == "wf-1"
+            assert [effect.effect for effect in outcome.effects] == ["launch_visualizer"]
             assert app._live_workflow_labels() == []
             assert app._resume_command_hint() == f"Resume this session: slo --resume {session.session_id}"
 

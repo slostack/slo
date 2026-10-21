@@ -1,5 +1,14 @@
 # Slo Codebase Index
 
+CI repair fan-in (2026-10-21): [integrated gates](implementation/94-herdr/ci-repair-integrated-gates.md).
+Offline Code+Test gates pass (full10508/smoke296/lint852/Black17); independent
+Review/Completion and exact-SHA CI remain pending. Fixture inputs must not assume
+the local default matches CI: `DEFAULT_MODEL_NAME` is dynamically resolved while
+`SLO_DEFAULT_MODEL_NAME` supplies the imported fallback. Exact Rich CLI message
+assertions need an explicit terminal width; picker first-window and rate-window
+scenarios need an explicit active model/policy. Do not change operator tests.env.
+
+
 Acquisition170: [bounded correction](implementation/94-herdr/acquisition-owner-170.md).
 Failed pane acquisition can retain a lease without usable admission. Reporter final
 cleanup/evidence now reads sequence-owner truth, not `_lease_held`. Native-lock/load

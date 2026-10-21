@@ -589,6 +589,12 @@ class SloTUI(App):
         # adapter, rebuilt together with the service for every owning session.
         self._workflow_progress_coordinator: Optional[WorkflowProgressCoordinator] = None
         self._workflow_progress_sink: Optional[_WorkflowProgressSink] = None
+        # Session the observation trio is bound to; None while unbound. Recorded
+        # only after the coordinator's no-await start completes, and cleared first
+        # on close, so a matching session ID alone never proves a healthy binding:
+        # rollback and rebind require coordinator, service and sink to be present
+        # and unclosed for that exact identity.
+        self._workflow_observation_session_id: Optional[str] = None
         self._workflow_renderer: Optional[DetachedWorkflowRenderer] = None
         self._inbox_store: Optional[SessionInboxStore] = inbox_store
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
@@ -687,6 +693,9 @@ class SloTUI(App):
         if not self._runtime_may_start(session=session):
             return
         self._session.subscribe(handler=self._render_event)
+        # The initial owner's observation binds here, once; the mount runtime
+        # task below (and every later adoption) goes through the guarded
+        # ``_ensure_workflow_observation_bound`` re-entry point instead.
         await self._bind_workflow_observation()
         self._mount_runtime_task = asyncio.create_task(coro=self._initialize_mounted_delivery())
         cancelled = await HerdrTaskJoin.wait(task=self._mount_runtime_task)
@@ -1227,13 +1236,55 @@ class SloTUI(App):
                 )
             finally:
                 if binding is not None:
-                    if self._workflow_app_service is binding.service:
-                        self._workflow_app_service = None
                     if self._workflow_renderer is binding.renderer:
                         self._workflow_renderer = None
+                    if self._workflow_app_service is binding.service:
+                        await self._close_captured_observation_owner(binding=binding)
                 elif self._session is session and self._session_owner_id == owner_id:
                     self._workflow_app_service = None
                     self._workflow_renderer = None
+
+    async def _close_captured_observation_owner(self, *, binding: _DeliveryInitialization) -> None:
+        """Retire the still-published owner captured by a failed delivery initialization.
+
+        WHAT: When rollback runs for a binding whose captured service is still
+            the app's published observation service, the whole captured
+            coordinator → service → sink trio is closed and the panel reset
+            once, in the canonical teardown order, so a failed inbox/timer setup
+            never orphans a live reader the app can no longer reach. When any
+            successor binding (rebind, adoption or an earlier close) displaced
+            the capture, nothing is touched: a displaced successor owns its own
+            close, and clearing or closing after the lease-release await is
+            forbidden.
+        WHO: ``_rollback_session_delivery`` only, after the captured lease
+            release has been joined.
+        WHEN: While the captured identity is still the selected one; a matching
+            session ID without the surviving trio is never treated as the
+            captured owner.
+
+        Args:
+            binding (_DeliveryInitialization): Captured initialization whose
+                service is still published.
+        """
+        coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        sink: Optional[_WorkflowProgressSink] = self._workflow_progress_sink
+        if not (
+            self._workflow_observation_session_id == binding.session_id
+            and self._session is binding.session
+            and coordinator is not None
+            and service is not None
+            and sink is not None
+        ):
+            return
+        self._workflow_observation_session_id = None
+        self._workflow_progress_coordinator = None
+        self._workflow_app_service = None
+        self._workflow_progress_sink = None
+        await coordinator.close()
+        await service.close()
+        sink.dispose()
+        await self._reset_session_list()
 
     def _build_session_delivery(self, *, session: SloAgentSession) -> None:
         """Build inert delivery collaborators before initialization captures ownership.
@@ -1351,6 +1402,28 @@ class SloTUI(App):
             schedule=self._schedule_workflow_refresh,
         )
         self._workflow_progress_coordinator.start()
+        self._workflow_observation_session_id = self._session.session_id
+
+    async def _ensure_workflow_observation_bound(self) -> None:
+        """Rebind observation only when the selected session lost or never had it.
+
+        WHAT: Mount and ``/new`` adoption both converge on runtime delivery;
+            rebinding the identical already-bound owner would tear down and
+            recreate the one five-second timer, so an intact, unclosed binding
+            for the selected session is kept and only a missing, mid-teardown
+            or foreign one is rebuilt. A coordinator/service pair whose
+            ``close`` already started is always rebuilt, never reused.
+        WHO: ``_finish_replacement_runtime`` for the current session.
+        WHEN: At every runtime delivery point, mount or replacement.
+        """
+        if (
+            self._workflow_observation_session_id == self._session.session_id
+            and self._workflow_progress_coordinator is not None
+            and self._workflow_app_service is not None
+            and self._workflow_progress_sink is not None
+        ):
+            return
+        await self._bind_workflow_observation()
 
     async def _close_workflow_observation(self) -> None:
         """Join the current owner's observation in the fixed teardown order.
@@ -1361,16 +1434,24 @@ class SloTUI(App):
             shielded row application before clearing. Never cancels execution.
         WHO: ``_bind_workflow_observation`` before adopting a new owner, and
             ``on_unmount``.
-        WHEN: Once per owner replacement or app teardown; a no-op when unbound.
+        WHEN: Once per owner replacement or app teardown. Genuinely inert when
+            unbound: with no coordinator, service or sink left to retire there
+            is no owner whose panel rows must be cleared, so the panel is not
+            reset again.
         """
+        self._workflow_observation_session_id = None
         coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
         self._workflow_progress_coordinator = None
-        if coordinator is not None:
-            await coordinator.close()
-        if self._workflow_app_service is not None:
-            await self._workflow_app_service.close()
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        self._workflow_app_service = None
         sink: Optional[_WorkflowProgressSink] = self._workflow_progress_sink
         self._workflow_progress_sink = None
+        if coordinator is None and service is None and sink is None:
+            return
+        if coordinator is not None:
+            await coordinator.close()
+        if service is not None:
+            await service.close()
         if sink is not None:
             sink.dispose()
         await self._reset_session_list()
@@ -2685,10 +2766,18 @@ class SloTUI(App):
         except Exception:
             outcome = HerdrReporterCloseOutcomeDAO(replacement="uncertain", resources="retained")
         self._adopt_replacement_session(old_session=old_session, candidate=candidate, outcome=outcome)
+        await self._close_workflow_observation()
         await self._finish_replacement_ui()
 
     async def _transfer_replacement_delivery(self, *, old_session: SloAgentSession) -> None:
         """Release the captured old binding before establishing any successor lease.
+
+        WHAT: Stops delivery timers and releases the old inbox lease. The old
+            owner's workflow observation stays bound until adoption, then
+            ``_finish_replacement_commit`` closes it through the canonical
+            coordinator → service → sink → panel teardown so no rows, caches
+            or timers cross sessions.
+        WHO: ``_finish_replacement_commit`` before reporter close/adoption.
 
         Args:
             old_session (SloAgentSession): Predecessor captured before adoption.
@@ -2696,7 +2785,6 @@ class SloTUI(App):
         self._delivery_quiescing = True
         self._stop_delivery_timers()
         await self._release_replaced_session_lease(session=old_session)
-        self._workflow_app_service = None
         self._workflow_renderer = None
 
     def _stop_delivery_timers(self, *, timers: Optional[tuple[Timer, ...]] = None) -> None:
@@ -2820,7 +2908,7 @@ class SloTUI(App):
         session = self._session
         if not self._runtime_may_start(session=session):
             return
-        await self._bind_workflow_observation()
+        await self._ensure_workflow_observation_bound()
         if not self._runtime_may_start(session=session):
             return
         try:

@@ -1,5 +1,12 @@
 # Slo Codebase Index
 
+CI repair fan-in (2026-10-21): [integrated gates](docs/implementation/94-herdr/ci-repair-integrated-gates.md).
+Full10508/smoke296/lint852/Black17 pass; independent Review/Completion and CI pending.
+Pin model-policy and terminal-width inputs in affected fixtures, not operator
+environment files. Explicitly select `VIRTUAL_ENV` for Poetry: `pyenv which python`
+alone does not prove which interpreter `poetry run` uses. Live Herdr remains deferred.
+
+
 Acquisition170: [bounded correction](docs/implementation/94-herdr/acquisition-owner-170.md).
 Failed pane acquisition can retain a lease without usable admission. Reporter final
 cleanup/evidence now reads sequence-owner truth, not `_lease_held`. Native-lock/load

@@ -26,6 +26,12 @@ SESSION_ID = "12345678-1234-1234-1234-123456789abc"
 REFERENCE = "r1-" + "a" * 32
 
 
+@pytest.fixture(autouse=True)
+def _restore_cli_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep exact safe-message assertions independent of the host terminal width."""
+    monkeypatch.setenv("COLUMNS", "120")
+
+
 @pytest.mark.parametrize(
     "resume",
     [

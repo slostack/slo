@@ -638,8 +638,19 @@ class TestSloAgentSessionActiveModelState:
         assert session._agent is None
         mock_agent_cls.assert_not_called()
 
-    def test_switch_model_updates_active_model_and_clears_lazy_agent(self, tmp_path: Path) -> None:
+    def test_switch_model_updates_active_model_and_clears_lazy_agent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Switching models invalidates the cached lazy-built agent."""
+        # cfg resolves the short key dynamically; the ambient SLO_DEFAULT_MODEL_NAME
+        # is captured at config.cfg import, before this test's patch.
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
+        monkeypatch.setattr(
+            "src.agents.slo_agent.sessions.service.CredentialResolver.require",
+            lambda *, provider: CredentialDAO(
+                provider=provider, auth_type=AuthType.API_KEY, access_token="fixture"
+            ),
+        )
         config: SessionConfigDAO = SessionConfigDAO(
             workdir=tmp_path,
             model_name="gpt-5.4",
@@ -661,8 +672,19 @@ class TestSloAgentSessionActiveModelState:
         assert session.active_reasoning_level == "high"
         assert session._agent is None
 
-    def test_switch_model_marks_context_window_dirty(self, tmp_path: Path) -> None:
+    def test_switch_model_marks_context_window_dirty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Switching models flags a pre-flight compaction check for the next turn."""
+        # cfg resolves the short key dynamically; the ambient SLO_DEFAULT_MODEL_NAME
+        # is captured at config.cfg import, before this test's patch.
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
+        monkeypatch.setattr(
+            "src.agents.slo_agent.sessions.service.CredentialResolver.require",
+            lambda *, provider: CredentialDAO(
+                provider=provider, auth_type=AuthType.API_KEY, access_token="fixture"
+            ),
+        )
         config: SessionConfigDAO = SessionConfigDAO(
             workdir=tmp_path,
             model_name="gpt-5.4",
@@ -1716,6 +1738,29 @@ class TestIterationRetryPolicy:
 
 
 class TestSwitchModelClearsPool:
+    """Pool-clearing ``switch_model`` paths.
+
+    Every case switches to ``claude-sonnet-4-6``; ``switch_model`` validates the
+    selection credential through ``CredentialResolver.require``. The ambient
+    environment may not carry Anthropic credentials, so each test pins the
+    default model and stubs the Anthropic selection credential.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _pin_default_and_anthropic_credential(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pin the global default and stub Anthropic selection credentials.
+
+        cfg resolves the short key dynamically; the ambient SLO_DEFAULT_MODEL_NAME
+        is captured at config.cfg import, before this fixture's patch.
+        """
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
+        monkeypatch.setattr(
+            "src.agents.slo_agent.sessions.service.CredentialResolver.require",
+            lambda *, provider: CredentialDAO(
+                provider=provider, auth_type=AuthType.API_KEY, access_token="fixture"
+            ),
+        )
+
     def test_switch_model_when_reasoning_clamp_fails_preserves_existing_state(self, tmp_path: Path) -> None:
         """A failed synchronous selection derives values before mutating session state."""
         session = _session_with_pool(_two_member_dao(), workdir=tmp_path)

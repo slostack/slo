@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from collections.abc import Callable
-from typing import Optional
+from typing import Optional, cast
 from textual.timer import Timer, TimerCallback
 from unittest.mock import patch
 
@@ -14,7 +14,10 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import SloTUI
+from src.tui.app import SloTUI, _WorkflowProgressSink
+from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
+from src.tui.workflows.service import DetachedWorkflowAppService
+from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 
 
 @pytest.mark.parametrize("new_stop_fails", [False, True])
@@ -317,3 +320,57 @@ async def test_mount_setup_failure_rolls_back(tmp_path: Path, failure: str) -> N
             assert app._workflow_app_service is None
             assert app._lease_store is not None
             assert await app._lease_store.read(session_id=session.session_id) is None
+
+
+async def test_rollback_closes_captured_observation_owner(tmp_path: Path) -> None:
+    """Inbox-init failure closes the captured observation owner exactly once; unmount is inert."""
+    session = SloAgentSession.build(
+        config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
+    )
+    app = SloTUI(session=session)
+    captured: dict[str, Optional[object]] = {}
+    original_inbox = SessionInboxStore.ensure_session_inbox
+
+    async def inbox(self: SessionInboxStore, *, session_id: str) -> None:
+        """Capture the real observation owner, then fail real inbox initialization."""
+        captured["service"] = app._workflow_app_service
+        captured["coordinator"] = app._workflow_progress_coordinator
+        captured["sink"] = app._workflow_progress_sink
+        await original_inbox(self, session_id=session_id)
+        raise RuntimeError("injected inbox failure")
+
+    with (
+        patch.object(SessionInboxStore, "ensure_session_inbox", new=inbox),
+        patch(
+            "src.agents.slo_agent.graph.service.LLMFactory.create",
+            return_value=LLMBuildResult(
+                llm=FauxChatModel(responses=[AIMessage(content="unused")]),
+                supports_explicit_caching=False,
+            ),
+        ),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            service: DetachedWorkflowAppService = cast(DetachedWorkflowAppService, captured["service"])
+            coordinator: WorkflowProgressCoordinator = cast(
+                WorkflowProgressCoordinator, captured["coordinator"]
+            )
+            sink: _WorkflowProgressSink = cast(_WorkflowProgressSink, captured["sink"])
+            # The rollback retired the captured owner through its full close path.
+            assert coordinator._closed is True and coordinator._task is None and coordinator._timer is None
+            assert service._closed is True
+            assert sink._viewports == {}
+            # The failed delivery keeps its app slots absent.
+            assert app._workflow_app_service is None
+            assert app._workflow_progress_coordinator is None
+            assert app._workflow_progress_sink is None
+            assert app._workflow_observation_session_id is None
+            assert app._delivery_quiescing and not app._replacement_delivery_safe
+            panel: Optional[SubAgentFleetPanel] = app._fleet_panel
+            assert panel is not None
+            with patch.object(panel, "reset") as reset:
+                await app._close_workflow_observation()
+            reset.assert_not_called()
+        # Unmount never re-closes or leaks the retired owner.
+        assert service._closed is True
+        assert coordinator._closed is True and coordinator._task is None

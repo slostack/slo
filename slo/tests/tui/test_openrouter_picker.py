@@ -202,7 +202,9 @@ async def test_tui_when_auth_has_no_landing_model_primes_cached_model_search() -
     ],
 )
 async def test_mounted_picker_paints_reasoning_disable_evidence(
-    size: tuple[int, int], reasoning: dict[str, object], expected: str,
+    size: tuple[int, int],
+    reasoning: dict[str, object],
+    expected: str,
 ) -> None:
     """Require real normal-path paint, then prove hidden render text cannot satisfy it."""
     from src.agents.model_catalog.seed import SeedModelCatalog
@@ -224,6 +226,7 @@ async def test_mounted_picker_paints_reasoning_disable_evidence(
             assert app._input is not None
             app._input.load_text("/model openrouter")
             await pilot.pause()
+            assert app._suggestion_menu is not None
             widget = app._suggestion_menu.query_one(".slash-suggestion-lines")
             assert_widget_painted(app=app, widget=widget, text=expected)
             try:
@@ -242,14 +245,17 @@ async def test_mounted_picker_paints_reasoning_disable_evidence(
 @pytest.mark.parametrize(
     "reasoning,expected",
     [
-        ({"supported_efforts": ["none"], "mandatory": False},
-         "supported: off (reasoning disable supported)"),
-        ({"supported_efforts": ["low", "high"]},
-         "supported: low, high (provider default; disable unavailable)"),
+        ({"supported_efforts": ["none"], "mandatory": False}, "supported: off (reasoning disable supported)"),
+        (
+            {"supported_efforts": ["low", "high"]},
+            "supported: low, high (provider default; disable unavailable)",
+        ),
     ],
 )
 async def test_mounted_reasoning_router_paints_converted_controls(
-    size: tuple[int, int], reasoning: dict[str, object], expected: str,
+    size: tuple[int, int],
+    reasoning: dict[str, object],
+    expected: str,
 ) -> None:
     """Paint the real bare-command result using the normal transcript adapter."""
     from src.agents.model_catalog.seed import SeedModelCatalog

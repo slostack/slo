@@ -11,6 +11,133 @@ command (`src/cli/update.py`).
 
 ---
 
+## Optional Herdr integration
+
+**Compatibility is UNPROVEN.** Herdr 0.9.2+ is the native-restore target only.
+Do not treat the implementation, fake CLI tests, or a successful pane-run response
+as a live compatibility or visual-acceptance claim.
+
+### Setup and privacy
+
+Use the installed plain `slo` command on PATH inside a Herdr-owned pane. Herdr
+supplies `HERDR_ENV=1`, `HERDR_PANE_ID`, absolute `HERDR_BIN_PATH`, and optionally
+`HERDR_SOCKET_PATH`. Do not copy another pane's identity. Slo captures configuration
+for its integration lifetime. `SLO_HERDR_METADATA_PROFILE` defaults to `compact`;
+`detail` is explicit opt-in. Invalid profile values fall back to compact with a
+fixed diagnostic. Missing/invalid enabled configuration refuses integration;
+outside Herdr or explicitly disabled, normal Slo continues without Herdr work.
+
+Metadata contains generated numeric telemetry and fixed lifecycle/reasoning values,
+not prompts, answers, thinking, tools, credentials, raw errors, arbitrary model,
+provider or session labels, or absolute private paths. Both profiles obey this rule.
+Usage comes from the existing session snapshot, not a second counter. Two-second
+refresh/five-second TTL and explicit clears bound stale display; TTL is not atomic
+ownership. Remote failure may leave stale state or an old exact restore reference.
+
+### Native restore is exact configuration, not a history checkpoint
+
+The advertised command is exactly
+`slo --resume <canonical-UUID> --herdr-restore r1-<32-lowercase-hex>`.
+The same `SLO_HOME`, default history root and an installed plain `slo` on PATH
+must remain available across restart. Do not substitute a name/slug, add workdir,
+`--workspace` or `--plugin`, or invent interactive model/reasoning flags.
+Ordinary resume remains available separately and may use current preferences.
+
+Eligibility requires a persisted, history-enabled, canonical-UUID interactive
+session on default history with reproducible configured policy. Injected/custom
+agent policy, nonstandard mutations and headless/background runs do not acquire
+native restore merely by matching tool names. Saved policy includes the configured
+model, full ordered pool policy, committed reasoning, resolved workdir/workspace
+and ordered plugin paths. Ambient model/pool preferences do not replace that
+capture. Current capability and plugin-trust checks still apply: saved configuration
+does not freeze plugin bytes, credentials or provider availability.
+
+Private immutable records live in
+`$SLO_HOME/integrations/herdr/restore-v1/r1-<32-lowercase-hex>.json`, with a separate
+`restore-v1.lock`. Directories are private (0700), files 0600. They contain allowed
+configuration paths, not conversation or credential copies. Keep them private in
+backups and diagnostic bundles. Sequence/lease state is separate from history;
+there is no history migration or mutable latest-reference pointer.
+
+Limits: 65,536 bytes per record, 1,024 records and 67,108,864 total bytes. New saves
+refuse at capacity; **no automatic GC or eviction**. Orphans and retained revisions
+are intentional. Never overwrite a reference: an old reference always means its
+old configuration plus the session's current history. Missing, manually deleted,
+unsafe, corrupt or mismatched records fail closed before runtime construction.
+Manual deletion can break a still-advertised command; retention cleanup is not
+an implicit installation/update operation. A successful graceful release clears
+remote restore information, not these local immutable records. Server restart and
+graceful exit therefore require different acceptance tests.
+
+### Viewer and inbox limitations
+
+Both attached and detached workflows use one destination selector. Herdr gets at
+most one automatic split/run attempt per parent in an adapter lifetime, including
+uncertain responses. Existing panes remain user-owned after completion. Repeated
+requests give manual selection/recovery guidance, not automatic focus, pane query,
+replacement or close. A `submitted` outcome proves queue submission only; actual
+viewer paint is a separate gate. Enabled-but-unavailable Herdr never falls back
+to an OS window; outside/disabled retains the existing platform path and
+`SLO_AUTO_VISUALIZE=0` disables automatic viewing.
+
+Shutdown may retain an inbox item in claimed storage without ack. Investigate the
+private item, durable workflow state and whether execution was already registered
+before **explicit resubmission**. There is no automatic reclaim/replay/requeue;
+acknowledgement itself does not prove execution completed. Failed local resource
+drain retains its owner and can leave graceful teardown pending rather than
+abandoning work. Remote uncertainty with local resources drained is distinct.
+
+### Disablement and rollback
+
+Set `SLO_HERDR_DISABLED=1` before **restarting Slo**. It is not hot disablement and
+does not remove remote commands, local records, history or panes. Do not assume an
+older Slo accepts `--herdr-restore`: explicitly remove the saved Herdr restore
+command (with separate authorization) or launch ordinary resume when rolling back.
+Retain history and references; deleting records while commands remain advertised
+causes safe refusal, not fallback to ambient configuration.
+
+### Release evidence — pending, not a green checklist
+
+No live actions are authorized by this guide. Before any action on this host, read
+`/root/Code/KnowledgeBase/KB/os/ROLE.md`, then `os/README.md` and applicable detail
+rules. Obtain explicit permission for a **disposable named `slo-herdr-smoke`
+session**, restart of **only that named server**, and cleanup of **only resources
+created by that smoke**. Never restart the user's server or disturb
+`herdr-agents.scope`. No package/global configuration changes are included.
+
+Use a disposable repo, temporary SLO_HOME retained across restart, installed plain
+Slo and synthetic/Faux providers. After authorization, use the target release's
+documented commands, not invented restart flags. Record this template with actual
+redacted receipts; every row is currently **PENDING / UNPROVEN**:
+
+| Evidence | Required receipt |
+|---|---|
+| Authorization and identity | Approved scope, exact Herdr/Slo versions, named server, temp resource inventory |
+| Metadata | Idle/working/auth-blocked, passive cooldown, numeric fallback, omitted labels, clear/TTL and documented agent-wait behavior |
+| Native restart | Captured argv, same SLO_HOME/default history, exact saved policy/current history, no prompt/tool resubmission |
+| Graceful release | Separate release/clear proof, retained local immutable records |
+| Attached/detached viewer | Correct parent/sibling, no focus theft, one-shot/manual reuse, retention; actual painted viewer independently observed |
+| Failure/disabled parity | Slo remains usable; no disabled Herdr operations; fake stalls/failures do not block progress |
+| Cleanup | Only created panes/processes/temp data removed; no unrelated resources touched |
+| Approval | Operator pane acceptance, independent review and fresh completion; all required automated/static gates green |
+
+### Safe checkout verification
+
+Use `make test-env` to distinguish a reviewed local `environments/tests.env` from
+the tracked Makefile fallback. Never assume that gitignored file ships or source
+development settings. The fallback sets non-secret test values, a synthetic
+credential placeholder, `SLO_AUTO_VISUALIZE=0` and `SLO_HERDR_DISABLED=1`.
+Root fixtures additionally strip inherited Herdr settings and enforce fake-only
+transport/window boundaries. The approved existing Python 3.11.7 environment for
+this checkout is `slo-harness`; verify `PYENV_VERSION=slo-harness pyenv which python`.
+No interpreter/package installation is part of this verification.
+
+`make test` is the full non-E2E gate; `make smoke` is smoke-only; `make lint` checks
+`src/ tests/`. For targeted tests use the same reviewed fallback in a subprocess,
+not global shell changes. Test stubs and captures must be contained in their own
+temporary roots; after command-stubbing suites `dpkg -V coreutils` must be silent.
+No real providers, terminals or Herdr server belong in the default suite.
+
 ## 1. Mental model
 
 Slo installs as an **isolated [pipx](https://pipx.pypa.io) application**, built

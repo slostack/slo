@@ -1,0 +1,13 @@
+    async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Forward ``event`` to every registered subscriber (failure-isolated)."""
+        if self._plugin_dispatcher is not None:
+            await self._plugin_dispatcher.emit(event)
+        for subscriber in list(self._subscribers):
+            try:
+                await subscriber(event)
+            except Exception as exc:  # noqa: BLE001 — protect the stream
+                log_error(
+                    msg=f"SloAgentSession: subscriber {subscriber!r} raised",
+                    e=exc,
+                    stack_trace=False,
+                )

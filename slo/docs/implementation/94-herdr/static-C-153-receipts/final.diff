@@ -1,0 +1,530 @@
+diff --git a/slo/src/agents/providers/anthropic_claude_code.py b/slo/src/agents/providers/anthropic_claude_code.py
+index 52693c1..4417d7d 100644
+--- a/slo/src/agents/providers/anthropic_claude_code.py
++++ b/slo/src/agents/providers/anthropic_claude_code.py
+@@ -170,7 +170,7 @@ class ClaudeCodeChatAnthropic(_ThinkingPatchedChatAnthropic):
+         if not isinstance(message, AIMessage) or not message.tool_calls:
+             return result
+ 
+-        available_tool_names: list[str] = self._tool_name_candidates()
++        available_tool_names: list[str] = self._tool_name_candidates(tools=kwargs.get("tools"))
+         normalized_tool_calls: list[dict[str, Any]] = []
+         for tool_call in message.tool_calls:
+             normalized_tool_call: dict[str, Any] = dict(tool_call)
+@@ -240,19 +240,18 @@ class ClaudeCodeChatAnthropic(_ThinkingPatchedChatAnthropic):
+         )
+         return canonicalized_tool
+ 
+-    def _tool_name_candidates(self) -> list[str]:
+-        """Return the currently bound Slo tool names.
++    def _tool_name_candidates(self, *, tools: object) -> list[str]:
++        """Read original tool names from the current RunnableBinding invocation.
++
++        Args:
++            tools: Request-local schemas forwarded by ChatAnthropic to output formatting.
+ 
+         Returns:
+-            list[str]: Tool names available on the model instance.
++            list[str]: Bound names, or no candidates for an unbound invocation.
+         """
+-        tool_payloads: list[dict[str, Any]] = cast(
+-            list[dict[str, Any]],
+-            getattr(self, "tools", None) or self.kwargs.get("tools", []) or [],
+-        )
+-        return [
+-            str(tool.get("name")) for tool in tool_payloads if isinstance(tool, dict) and tool.get("name")
+-        ]
++        if not isinstance(tools, list):
++            return []
++        return [str(tool["name"]) for tool in tools if isinstance(tool, dict) and tool.get("name")]
+ 
+     def _normalize_inbound_tool_name(
+         self,
+diff --git a/slo/src/agents/providers/faux.py b/slo/src/agents/providers/faux.py
+index 7b0a8e9..ff76639 100644
+--- a/slo/src/agents/providers/faux.py
++++ b/slo/src/agents/providers/faux.py
+@@ -10,6 +10,7 @@ Per parent spec §5.9 and sub-spec 01.b §4.2.
+ from __future__ import annotations
+ 
+ from collections import deque
++from collections.abc import Callable
+ from typing import Any, AsyncIterator, Iterator, Optional, Sequence
+ from uuid import uuid4
+ 
+@@ -21,7 +22,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
+ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+ from langchain_core.tools import BaseTool
+-from pydantic import ConfigDict
++from pydantic import ConfigDict, Field
+ 
+ __all__ = ["FauxScriptUnderrun", "FauxChatModel"]
+ 
+@@ -46,9 +47,11 @@ class FauxChatModel(BaseChatModel):
+ 
+     model_config = ConfigDict(arbitrary_types_allowed=True)
+ 
+-    queue: deque[AIMessage]
+-    chunk_queue: deque[list[AIMessageChunk]]
+-    bound_tools: list[BaseTool] = []
++    queue: deque[AIMessage] = Field(default_factory=deque)
++    chunk_queue: deque[list[AIMessageChunk]] = Field(default_factory=deque)
++    bound_tools: list[dict[str, object] | type | Callable[..., object] | BaseTool] = Field(
++        default_factory=list
++    )
+     model_name: str = "faux"
+     _call_count: int = 0
+ 
+@@ -70,26 +73,31 @@ class FauxChatModel(BaseChatModel):
+                 streamed as one single chunk containing the full content.
+             **data (Any): Pydantic/BaseChatModel passthrough.
+         """
+-        super().__init__(
+-            queue=deque(responses),
+-            chunk_queue=deque(
+-                [list(script) for script in chunk_scripts]
+-                if chunk_scripts is not None
+-                else [self._default_chunks(response=response) for response in responses]
+-            ),
+-            **data,
++        super().__init__(**data)
++        self.queue = deque(responses)
++        self.chunk_queue = deque(
++            [list(script) for script in chunk_scripts]
++            if chunk_scripts is not None
++            else [self._default_chunks(response=response) for response in responses]
+         )
+ 
+     @property
+     def _llm_type(self) -> str:
+         return "faux"
+ 
+-    def bind_tools(self, tools: Sequence[BaseTool], **kwargs: Any) -> "FauxChatModel":
++    def bind_tools(
++        self,
++        tools: Sequence[dict[str, object] | type | Callable[..., object] | BaseTool],
++        *,
++        tool_choice: Optional[str] = None,
++        **kwargs: object,
++    ) -> "FauxChatModel":
+         """Return a clone preserving both responses and chunk scripts.
+ 
+         Args:
+-            tools (Sequence[BaseTool]): Tools to bind.
+-            **kwargs (Any): Unused LangChain passthrough.
++            tools: Upstream-supported tool schemas, classes, callables or tools.
++            tool_choice: Unused upstream tool-choice option.
++            **kwargs: Unused LangChain passthrough.
+ 
+         Returns:
+             FauxChatModel: Cloned model with identical scripted behavior.
+diff --git a/slo/src/agents/providers/openai_codex.py b/slo/src/agents/providers/openai_codex.py
+index 7e06311..65146f6 100644
+--- a/slo/src/agents/providers/openai_codex.py
++++ b/slo/src/agents/providers/openai_codex.py
+@@ -31,6 +31,7 @@ import json
+ from typing import Any, Optional
+ 
+ from langchain_openai import ChatOpenAI
++from pydantic import SecretStr
+ 
+ from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
+ from src.auth.credential_dao import CredentialDAO
+@@ -178,8 +179,8 @@ def build_chatgpt_backed_chat_openai(
+     account_id: str = extract_chatgpt_account_id(access_token=cred.access_token)
+     return ChatOpenAI(
+         model=model_name,
+-        api_key=cred.access_token,
+-        openai_api_base=_CHATGPT_BACKEND_BASE_URL,
++        api_key=SecretStr(cred.access_token),
++        base_url=_CHATGPT_BACKEND_BASE_URL,
+         default_headers={
+             "chatgpt-account-id": account_id,
+             "originator": _ORIGINATOR,
+diff --git a/slo/src/agents/slo_agent/assistant_chunk_normalizer.py b/slo/src/agents/slo_agent/assistant_chunk_normalizer.py
+index 0a3be39..155b340 100644
+--- a/slo/src/agents/slo_agent/assistant_chunk_normalizer.py
++++ b/slo/src/agents/slo_agent/assistant_chunk_normalizer.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import json
++from collections.abc import Mapping
+ from typing import Any, Optional
+ 
+ from langchain_core.messages import AIMessage, AIMessageChunk
+@@ -324,7 +325,7 @@ class AssistantChunkNormalizer:
+         Returns:
+             list[AgentStreamEventDAO]: Zero or more tool-call events.
+         """
+-        raw_tool_calls: list[dict[str, Any]] = []
++        raw_tool_calls: list[Mapping[str, object]] = []
+         tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
+         if isinstance(tool_call_chunks, list):
+             raw_tool_calls.extend(item for item in tool_call_chunks if isinstance(item, dict))
+diff --git a/slo/tests/agents/providers/test_anthropic_claude_code.py b/slo/tests/agents/providers/test_anthropic_claude_code.py
+index 06e3a35..027f9bd 100644
+--- a/slo/tests/agents/providers/test_anthropic_claude_code.py
++++ b/slo/tests/agents/providers/test_anthropic_claude_code.py
+@@ -108,7 +108,7 @@ class TestClaudeCodePayloadShaping:
+ 
+     def test_canonicalizes_shared_tool_names_on_outbound_payload(self) -> None:
+         """Shared Slo tool names are title-cased to Claude Code's naming."""
+-        bound: RunnableBinding = build_claude_code_backed_chat_anthropic(
++        bound = build_claude_code_backed_chat_anthropic(
+             model_name="claude-sonnet-4-6",
+             cred=_oauth_cred(),
+         ).bind_tools(
+@@ -125,7 +125,9 @@ class TestClaudeCodePayloadShaping:
+                 },
+             ]
+         )
+-        chat: ClaudeCodeChatAnthropic = bound.bound
++        assert isinstance(bound, RunnableBinding)
++        chat = bound.bound
++        assert isinstance(chat, ClaudeCodeChatAnthropic)
+ 
+         payload: dict[str, Any] = chat._get_request_payload(
+             input_=[HumanMessage(content="use tools")],
+@@ -235,6 +237,10 @@ class TestClaudeCodeOutputNormalization:
+         ):
+             result = chat._format_output(response)
+ 
+-        message: AIMessage = result.generations[0].message
++        message = result.generations[0].message
++        assert isinstance(message, AIMessage)
+         assert message.tool_calls[0]["name"] == "read"
+-        assert message.content[0]["name"] == "read"
++        assert isinstance(message.content, list)
++        block = message.content[0]
++        assert isinstance(block, dict)
++        assert block["name"] == "read"
+diff --git a/slo/tests/agents/providers/test_anthropic_reasoning.py b/slo/tests/agents/providers/test_anthropic_reasoning.py
+index 9ce6257..751fcac 100644
+--- a/slo/tests/agents/providers/test_anthropic_reasoning.py
++++ b/slo/tests/agents/providers/test_anthropic_reasoning.py
+@@ -53,7 +53,7 @@ class TestAnthropicReasoningPayloads:
+ 
+     def test_anthropic_thinking_payload_returns_adaptive_type(self) -> None:
+         """Resolved reasoning config produces an adaptive thinking payload."""
+-        payload: dict[str, Any] = anthropic_thinking_payload(
++        payload = anthropic_thinking_payload(
+             reasoning=_enabled_reasoning(provider_effort="medium"),
+         )
+ 
+diff --git a/slo/tests/agents/providers/test_credit_exhaustion_policy.py b/slo/tests/agents/providers/test_credit_exhaustion_policy.py
+index 1f5e3ca..fe62785 100644
+--- a/slo/tests/agents/providers/test_credit_exhaustion_policy.py
++++ b/slo/tests/agents/providers/test_credit_exhaustion_policy.py
+@@ -21,6 +21,15 @@ from src.auth.credential_dao import ProviderName
+ # ---------------------------------------------------------------------------
+ 
+ 
++class _HeaderError(RuntimeError):
++    """Synthetic provider failure carrying explicitly owned response headers."""
++
++    def __init__(self, *, headers: dict[str, object]) -> None:
++        """Build a rate-limit failure with test-owned header values."""
++        super().__init__("429 rate limit")
++        self.headers = headers
++
++
+ def _status_error(*, status_code: int) -> MagicMock:
+     """Build a mock exception with a ``status_code`` attribute.
+ 
+@@ -149,9 +158,7 @@ class TestCreditExhaustionPolicyAnthropic:
+ 
+     def test_credit_balance_body_is_credit_exhausted(self) -> None:
+         """Error message mentioning credit balance → CREDIT_EXHAUSTED."""
+-        err: MagicMock = MagicMock()
+-        err.status_code = None
+-        err.__str__ = lambda s: "Your credit balance is too low to make this request"
++        err = RuntimeError("Your credit balance is too low to make this request")
+         assert (
+             CreditExhaustionPolicy.classify(
+                 error=err,
+@@ -291,8 +298,7 @@ class TestProviderErrorInspection:
+     )
+     def test_inspect_rejects_nonfinite_or_nonpositive_retry_after(self, header_value: object) -> None:
+         """Invalid Retry-After values do not leak into a retry plan."""
+-        error = RuntimeError("429 rate limit")
+-        setattr(error, "headers", {"Retry-After": header_value})
++        error = _HeaderError(headers={"Retry-After": header_value})
+ 
+         signal = ProviderErrorClassifier.inspect(error=error, provider=ProviderName.OPENAI)
+ 
+@@ -300,12 +306,13 @@ class TestProviderErrorInspection:
+ 
+     def test_inspect_keeps_only_safe_positive_rate_limit_headers(self) -> None:
+         """Only positive decimal request and token limits are retained in the signal."""
+-        error = RuntimeError("429 rate limit")
+-        error.headers = {
+-            "X-RateLimit-Limit-Requests": "20",
+-            "X-RateLimit-Limit-Tokens": "4000",
+-            "Authorization": "secret",
+-        }  # type: ignore[attr-defined]
++        error = _HeaderError(
++            headers={
++                "X-RateLimit-Limit-Requests": "20",
++                "X-RateLimit-Limit-Tokens": "4000",
++                "Authorization": "secret",
++            }
++        )
+ 
+         signal = ProviderErrorClassifier.inspect(error=error, provider=ProviderName.OPENAI)
+ 
+diff --git a/slo/tests/agents/providers/test_faux.py b/slo/tests/agents/providers/test_faux.py
+index ab5eb86..56d7fc2 100644
+--- a/slo/tests/agents/providers/test_faux.py
++++ b/slo/tests/agents/providers/test_faux.py
+@@ -3,7 +3,7 @@
+ from __future__ import annotations
+ 
+ import pytest
+-from langchain_core.messages import AIMessageChunk, HumanMessage
++from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+ from langchain_core.tools import tool
+ 
+ from src.agents.providers import (
+@@ -30,6 +30,7 @@ async def test_faux_supports_tool_calls() -> None:
+         ]
+     )
+     first = await model.ainvoke([HumanMessage(content="run echo")])
++    assert isinstance(first, AIMessage)
+     assert first.tool_calls[0]["name"] == "echo"
+     assert first.tool_calls[0]["args"] == {"text": "x"}
+ 
+@@ -66,6 +67,7 @@ async def test_astream_yields_default_single_chunk() -> None:
+     )
+     chunks: list[str] = []
+     async for chunk in model.astream([HumanMessage(content="x")]):
++        assert isinstance(chunk.content, str)
+         chunks.append(chunk.content)
+     assert "".join(chunks) == "streamed"
+ 
+@@ -85,6 +87,7 @@ async def test_astream_yields_scripted_multiple_chunks_in_order() -> None:
+ 
+     chunks: list[str] = []
+     async for chunk in model.astream([HumanMessage(content="x")]):
++        assert isinstance(chunk.content, str)
+         chunks.append(chunk.content)
+ 
+     assert chunks == ["part 1 ", "part 2"]
+@@ -107,6 +110,7 @@ async def test_bind_tools_preserves_chunk_scripts_on_clone() -> None:
+     bound = base.bind_tools(tools=[example_tool])
+     chunks: list[str] = []
+     async for chunk in bound.astream([HumanMessage(content="x")]):
++        assert isinstance(chunk.content, str)
+         chunks.append(chunk.content)
+ 
+     assert bound.bound_tools == [example_tool]
+@@ -124,3 +128,39 @@ def test_fake_tool_call_shape() -> None:
+ def test_fake_tool_call_explicit_id() -> None:
+     call = FauxChatModel.tool_call_dict(name="x", args={}, call_id="custom-id")
+     assert call["id"] == "custom-id"
++
++
++@pytest.mark.parametrize("tool_choice", [None, "auto", "required"])
++def test_binding_accepts_upstream_forms_without_consuming_scripts(tool_choice: str | None) -> None:
++    """Schema, class, callable and BaseTool inputs retain independent clone queues."""
++    from pydantic import BaseModel
++
++    class InputSchema(BaseModel):
++        """Offline callable input."""
++
++        text: str
++
++    def echo(text: str) -> str:
++        """Return the supplied text."""
++        return text
++
++    decorated = tool(echo)
++    schema: dict[str, object] = {"name": "echo", "parameters": {"type": "object"}}
++    original = FauxChatModel(
++        responses=[AIMessage(content="done")],
++        chunk_scripts=[[AIMessageChunk(content="do"), AIMessageChunk(content="ne")]],
++    )
++    clone = original.bind_tools(tools=[schema, InputSchema, echo, decorated], tool_choice=tool_choice)
++    assert clone.bound_tools == [schema, InputSchema, echo, decorated]
++    assert original.bound_tools == []
++    assert clone.queue is not original.queue
++    assert clone.chunk_queue is not original.chunk_queue
++    assert clone.chunk_queue[0] is not original.chunk_queue[0]
++    assert [chunk.content for chunk in clone.stream("go")] == ["do", "ne"]
++    with pytest.raises(FauxScriptUnderrun):
++        list(clone.stream("again"))
++    assert original.invoke("go").content == "done"
++    other = FauxChatModel(responses=[])
++    assert other.queue is not original.queue
++    assert other.chunk_queue is not original.chunk_queue
++    assert other.bound_tools is not original.bound_tools
+diff --git a/slo/tests/agents/providers/test_openrouter_nonstream_boundary.py b/slo/tests/agents/providers/test_openrouter_nonstream_boundary.py
+index 7b8b61b..42ed581 100644
+--- a/slo/tests/agents/providers/test_openrouter_nonstream_boundary.py
++++ b/slo/tests/agents/providers/test_openrouter_nonstream_boundary.py
+@@ -103,7 +103,9 @@ async def test_nonstream_reasoning_tool_continuation_strips_visible_reasoning_wi
+         )
+ 
+     assert first_response.content == original_content
+-    assistant = requests[1]["messages"][1]
++    messages = requests[1]["messages"]
++    assert isinstance(messages, list)
++    assistant = messages[1]
+     assert isinstance(assistant, dict)
+     assert assistant["content"] == [{"type": "text", "text": "ordinary answer"}]
+     assert assistant["reasoning_details"] == [{"type": "encrypted", "data": "private-anchor"}]
+diff --git a/slo/tests/agents/providers/test_pool_fallback_integration.py b/slo/tests/agents/providers/test_pool_fallback_integration.py
+index e96f9d9..8c603b5 100644
+--- a/slo/tests/agents/providers/test_pool_fallback_integration.py
++++ b/slo/tests/agents/providers/test_pool_fallback_integration.py
+@@ -94,7 +94,7 @@ def _pool(
+     )
+ 
+ 
+-_MESSAGES: list[HumanMessage] = [HumanMessage(content="hello")]
++_MESSAGES: list[BaseMessage] = [HumanMessage(content="hello")]
+ 
+ 
+ def _classify_side_effect(*, error: Exception, provider: ProviderName) -> ProviderErrorKind:
+@@ -142,14 +142,15 @@ class TestPoolPrimarySucceeds:
+         )
+         result = pool._generate(messages=_MESSAGES)
+         assert result.generations[0].message.content == "I am the primary"
+-        assert pool._models["gpt-secondary"]._call_count == 0
++        secondary = pool._models["gpt-secondary"]
++        assert isinstance(secondary, FauxChatModel)
++        assert secondary._call_count == 0
+ 
+ 
+ class TestPoolFallback:
+     def test_secondary_used_when_primary_exhausted(self) -> None:
+         """Credit exhaustion on primary routes the call to secondary."""
+         primary: FauxChatModel = FauxChatModel(responses=[])
+-        primary._generate = lambda *a, **kw: (_ for _ in ()).throw(_CreditError())
+ 
+         secondary: FauxChatModel = _faux(responses=["from secondary"])
+         dao: ModelPoolDAO = ModelPoolDAO(
+@@ -173,14 +174,14 @@ class TestPoolFallback:
+             models={"claude-primary": primary, "gpt-secondary": secondary},
+         )
+ 
+-        result = pool._generate(messages=_MESSAGES)
++        with patch.object(primary, "_generate", side_effect=_CreditError()):
++            result = pool._generate(messages=_MESSAGES)
+         assert result.generations[0].message.content == "from secondary"
+         assert "claude-primary" in pool._cooldowns
+ 
+     def test_primary_is_cooled_after_exhaustion(self) -> None:
+         """Primary cooldown timestamp is in the future after credit exhaustion."""
+         primary: FauxChatModel = FauxChatModel(responses=[])
+-        primary._generate = lambda *a, **kw: (_ for _ in ()).throw(_CreditError())
+         secondary: FauxChatModel = _faux(responses=["ok"])
+ 
+         dao: ModelPoolDAO = ModelPoolDAO(
+@@ -203,7 +204,8 @@ class TestPoolFallback:
+             pool_dao=dao,
+             models={"claude-primary": primary, "gpt-secondary": secondary},
+         )
+-        pool._generate(messages=_MESSAGES)
++        with patch.object(primary, "_generate", side_effect=_CreditError()):
++            pool._generate(messages=_MESSAGES)
+         assert pool._cooldowns.get("claude-primary", 0) > time.monotonic()
+ 
+ 
+@@ -221,7 +223,6 @@ class TestPoolTransientProviderFailure:
+     def test_switches_to_fallback_when_primary_returns_http_503(self) -> None:
+         """A switchable transient 503 cools the primary model and uses the fallback."""
+         primary: FauxChatModel = FauxChatModel(responses=[])
+-        primary._generate = lambda *a, **kw: (_ for _ in ()).throw(_NetworkError())
+         secondary: FauxChatModel = _faux(responses=["never"])
+ 
+         dao: ModelPoolDAO = ModelPoolDAO(
+@@ -242,7 +243,8 @@ class TestPoolTransientProviderFailure:
+             pool_dao=dao,
+             models={"claude-primary": primary, "gpt-secondary": secondary},
+         )
+-        result = pool._generate(messages=_MESSAGES)
++        with patch.object(primary, "_generate", side_effect=_NetworkError()):
++            result = pool._generate(messages=_MESSAGES)
+ 
+         assert result.generations[0].message.content == "never"
+         assert pool._cooldowns.get("claude-primary", 0) > time.monotonic()
+diff --git a/slo/tests/agents/test_base.py b/slo/tests/agents/test_base.py
+index 1513ed5..408e8c5 100644
+--- a/slo/tests/agents/test_base.py
++++ b/slo/tests/agents/test_base.py
+@@ -250,7 +250,7 @@ class TestLLMFactoryAnthropicRouting:
+             LLMFactory.create(model_name="claude-sonnet-4-6")
+ 
+         mock_builder.assert_called_once()
+-        kwargs: dict = mock_builder.call_args.kwargs
++        kwargs = mock_builder.call_args.kwargs
+         assert kwargs["model_name"] == "claude-sonnet-4-6"
+         assert kwargs["cred"].auth_type is AuthType.OAUTH
+ 
+@@ -337,7 +337,7 @@ class TestLLMFactoryOpenAIRouting:
+             )
+ 
+         mock_builder.assert_called_once()
+-        kwargs: dict = mock_builder.call_args.kwargs
++        kwargs = mock_builder.call_args.kwargs
+         assert kwargs["model_name"] == "gpt-5"
+         assert kwargs["cred"].auth_type is AuthType.OAUTH
+         assert kwargs["session_id"] == "sess-routed"
+@@ -403,6 +403,7 @@ class TestLLMFactoryReasoningRouting:
+                 reasoning_level="xhigh",
+             )
+ 
++        assert isinstance(result.llm, ChatOpenAI)
+         assert result.llm.reasoning == {"effort": "xhigh", "summary": "auto"}
+         assert result.llm.use_responses_api is True
+         assert result.llm.output_version == "responses/v1"
+@@ -425,6 +426,7 @@ class TestLLMFactoryReasoningRouting:
+                 reasoning_level="xhigh",
+             )
+ 
++        assert isinstance(result.llm, ChatAnthropic)
+         assert result.llm.thinking == {"type": "adaptive"}
+         assert result.llm.model_kwargs.get("output_config") == {"effort": "high"}
+         assert result.llm.temperature is None
+@@ -454,6 +456,7 @@ class TestLLMFactoryReasoningRouting:
+         )
+         tool_msg = ToolMessage(content="file.txt", tool_call_id="call_1", name="bash")
+ 
++        assert isinstance(result.llm, _ThinkingPatchedChatAnthropic)
+         payload = result.llm._get_request_payload(
+             input_=[HumanMessage(content="go"), ai_msg, tool_msg],
+         )
+@@ -499,6 +502,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
+         ):
+             result = LLMFactory.create(model_name="claude-opus-4-8-1m-context")
+ 
++        assert isinstance(result.llm, ChatAnthropic)
+         assert result.llm.model == "claude-opus-4-8"
+ 
+     def test_api_key_lane_haiku_sends_dated_api_model_id(self) -> None:
+@@ -509,6 +513,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
+         ):
+             result = LLMFactory.create(model_name="claude-haiku-4-5")
+ 
++        assert isinstance(result.llm, ChatAnthropic)
+         assert result.llm.model == "claude-haiku-4-5-20251001"
+ 
+     def test_api_key_lane_sonnet_1m_sends_base_api_model_id(self) -> None:
+@@ -519,6 +524,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
+         ):
+             result = LLMFactory.create(model_name="claude-sonnet-4-6-1m-context")
+ 
++        assert isinstance(result.llm, ChatAnthropic)
+         assert result.llm.model == "claude-sonnet-4-6"
+ 
+     def test_api_key_lane_identity_entry_sends_canonical_name(self) -> None:
+@@ -529,6 +535,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
+         ):
+             result = LLMFactory.create(model_name="claude-opus-4-8")
+ 
++        assert isinstance(result.llm, ChatAnthropic)
+         assert result.llm.model == "claude-opus-4-8"
+ 
+     def test_oauth_lane_1m_variant_sends_base_api_model_id(self) -> None:

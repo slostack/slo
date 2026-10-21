@@ -1,0 +1,1 @@
+python -m black --check src/tui/app.py src/agents/slo_agent/sessions/service.py tests/tui/test_startup_notice_cutoff.py tests/cli/test_headless.py tests/implementation_checks/test_conventions_audit_paths.py docs/implementation/94-herdr/conventions-revision-159-receipts/audit.py 

@@ -1,0 +1,1 @@
+python -m black --check src/agents/slo_agent/herdr/service.py src/agents/slo_agent/sessions/service.py tests/agents/slo_agent/herdr/test_session_lifetime.py tests/tui/test_herdr_activation_composed.py tests/tui/test_herdr_activation_faults.py 

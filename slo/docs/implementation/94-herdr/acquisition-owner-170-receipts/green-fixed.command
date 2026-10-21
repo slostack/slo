@@ -1,0 +1,1 @@
+python -m pytest -q tests/agents/slo_agent/herdr/test_failed_acquisition_ownership.py tests/agents/slo_agent/herdr/test_sequence_store.py tests/agents/slo_agent/herdr/test_lease_cleanup_matrix.py tests/agents/slo_agent/herdr/test_reporter.py 

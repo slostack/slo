@@ -1,0 +1,22 @@
+CWD /root/Code/slo-94-herdr-integration/slo
+All final harness gates used:
+export VIRTUAL_ENV=/root/.pyenv/versions/slo-harness PYENV_VERSION=slo-harness PATH=/root/.pyenv/versions/slo-harness/bin:$PATH
+Safe pytest fallback (no env file sourced):
+export SLO_ENV=test SLO_ROOT_DIR="$PWD" SLO_APP_DIR="$PWD" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_HERDR_DISABLED=1 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40 PYTHONPATH="$PWD"
+
+red-lint: PYENV_VERSION=slo-harness make lint (INVALID environment evidence: VIRTUAL_ENV/PATH not bound; retained, not acceptance)
+red-loader: poetry run mypy --no-incremental src/agents/slo_agent/skills/service.py
+red-harness-lint: make lint
+candidate: Python urllib HTTPS GET https://pypi.org/pypi/types-PyYAML/json; retain selected metadata/URLs in candidate.json
+lock: poetry --no-cache lock
+wheel: Python urllib GET candidate.json bdist_wheel URL; verify SHA256 against PyPI and lock; ZipFile member audit (wheel-audit.txt)
+install: python -m pip --isolated install --no-index --no-deps --no-compile --no-cache-dir --disable-pip-version-check docs/implementation/94-herdr/static-E-152-receipts/types_pyyaml-6.0.12.20260906-py3-none-any.whl
+Full installed distribution names/versions compared before/after using importlib.metadata.distributions; full lock package records compared using tomllib, not only versions.
+tests: poetry run pytest -m 'not e2e' tests/agents/slo_agent/test_skills_loader.py tests/cli/test_declared_dependencies.py
+coreutils: /usr/bin/dpkg -V coreutils
+green-loader: poetry run mypy --no-incremental src/agents/slo_agent/skills/service.py
+lint: make lint
+lock-check: poetry check --lock
+black: poetry run black --check src/agents/slo_agent/skills/service.py tests/agents/slo_agent/test_skills_loader.py tests/cli/test_declared_dependencies.py
+diff: git diff --check
+Each named gate retains .log and .exit. No full suite in this dispatch.

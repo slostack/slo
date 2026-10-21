@@ -1,0 +1,8 @@
+A-projector 4 present and frozen
+B-fixtures 5 present and frozen
+C-provider 11 present and frozen
+D-local-types 37 present and frozen
+E-yaml 1 present and frozen
+authorized addition src/auth/oauth_flow.py
+authorized addition tests/agents/providers/test_anthropic_binding_regression.py
+authorized addition tests/agents/providers/test_codex_wire_regression.py

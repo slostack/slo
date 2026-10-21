@@ -26,7 +26,6 @@ __all__ = [
     "DetachedWorkflowUiEffectDAO",
     "HandleAdvanceOutcomeDAO",
     "LiveWorkflowLabelDAO",
-    "LaunchResultOutcome",
     "ParsedFleetUpdateDAO",
     "ParsedLaunchResultDAO",
     "ParsedWorkflowLifecycleMessageDAO",
@@ -68,9 +67,6 @@ _WORKFLOW_KIND_TO_TARGET: dict[str, WorkflowLifecycleTarget] = {
     "workflow_failed": "terminal",
 }
 """Claimed workflow lifecycle note kind → lifecycle side-effect target."""
-
-LaunchResultOutcome: TypeAlias = Literal["launched", "ignored"]
-"""Outcome of translating one ``launch_workflow`` tool-result text."""
 
 DetachedWorkflowUiEffect: TypeAlias = Literal["launch_visualizer", "reset_launch_guard"]
 """A typed UI effect the renderer knows how to execute.
@@ -727,7 +723,11 @@ class ProgressViewportDAO(BaseModel):
 
         WHAT: A following viewport jumps to the new end and keeps the current
             horizontal offset; otherwise both saved offsets are clamped to the
-            current scrollable range.
+            current scrollable range. Before the log's first resize, writes
+            queue as deferred renders: strips exist in ``lines`` but are blank,
+            so the scrollable range is provisional and clamping to it would
+            discard a saved pan; the restore stays pending for the layout that
+            renders the deferred writes into measurable lines.
         WHO: SessionProgressScreen, only while its paint and user-navigation
             revisions still match the delivery that captured this value.
         WHEN: After the layout that follows a paint.
@@ -743,6 +743,19 @@ class ProgressViewportDAO(BaseModel):
             # x_axis=False keeps a horizontal pan while following the tail.
             log.scroll_end(animate=False, immediate=True, x_axis=False)
             return True
+        if not log._size_known or log._deferred_renders:
+            # The log's first layout has not run or renders are still deferred;
+            # written content is provisional and the scrollable range is not
+            # final, so landing now would lose the saved position.
+            return False
+        if self.x > 0 and log.max_scroll_x > 0 and not log.allow_horizontal_scroll:
+            # A horizontal pan lands only once the horizontal scrollbar is
+            # permitted; while it is not yet shown, scroll_to silently drops
+            # x (allow_horizontal_scroll is False), so stay pending for the
+            # layout that shows it. A settled zero horizontal range is a
+            # valid layout, not a race: x clamps to zero below while the
+            # reachable vertical offset still restores.
+            return False
         reachable: bool = self.x <= log.max_scroll_x and self.y <= log.max_scroll_y
         log.scroll_to(
             x=min(self.x, log.max_scroll_x),

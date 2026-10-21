@@ -1,0 +1,396 @@
+## src/agents/providers/anthropic_claude_code.py (1)
+src/agents/providers/anthropic_claude_code.py:251: error: "ClaudeCodeChatAnthropic" has no attribute "kwargs"  [attr-defined]
+
+## src/agents/providers/faux.py (3)
+src/agents/providers/faux.py:73: error: Unexpected keyword argument "queue" for "__init__" of "BaseChatModel"  [call-arg]
+src/agents/providers/faux.py:73: error: Unexpected keyword argument "chunk_queue" for "__init__" of "BaseChatModel"  [call-arg]
+src/agents/providers/faux.py:87: error: Signature of "bind_tools" incompatible with supertype "langchain_core.language_models.chat_models.BaseChatModel"  [override]
+
+## src/agents/providers/openai_codex.py (2)
+src/agents/providers/openai_codex.py:179: error: Unexpected keyword argument "openai_api_base" for "ChatOpenAI"  [call-arg]
+src/agents/providers/openai_codex.py:181: error: Argument "api_key" to "ChatOpenAI" has incompatible type "str"; expected "SecretStr | None"  [arg-type]
+
+## src/agents/skills/registry.py (1)
+src/agents/skills/registry.py:209: error: Argument "kind" to "Skill" has incompatible type "str"; expected "Literal['skill', 'workflow']"  [arg-type]
+
+## src/agents/slo_agent/assistant_chunk_normalizer.py (1)
+src/agents/slo_agent/assistant_chunk_normalizer.py:332: error: Generator has incompatible item type "ToolCall"; expected "dict[str, Any]"  [misc]
+
+## src/agents/slo_agent/skills/service.py (1)
+src/agents/slo_agent/skills/service.py:13: error: Library stubs not installed for "yaml"  [import-untyped]
+
+## src/tui/transcript_projector.py (1)
+src/tui/transcript_projector.py:340: error: Argument "tool_name" to "ToolOutputUpdateDAO" has incompatible type "str | None"; expected "str"  [arg-type]
+
+## tests/agents/model_catalog/test_model_catalog_store.py (1)
+tests/agents/model_catalog/test_model_catalog_store.py:134: error: "object" has no attribute "flock"  [attr-defined]
+
+## tests/agents/model_catalog/test_openrouter_admission_security.py (2)
+tests/agents/model_catalog/test_openrouter_admission_security.py:280: error: Argument 1 has incompatible type "object"; expected "def (*object, **object) -> object"  [arg-type]
+tests/agents/model_catalog/test_openrouter_admission_security.py:372: error: Argument 1 has incompatible type "object"; expected "def (*object, **object) -> object"  [arg-type]
+
+## tests/agents/model_catalog/test_openrouter_budget_evidence.py (1)
+tests/agents/model_catalog/test_openrouter_budget_evidence.py:122: error: Item "None" of "ModelCapabilitiesDAO | None" has no attribute "supports_max_tokens"  [union-attr]
+
+## tests/agents/model_catalog/test_openrouter_final_read_race.py (1)
+tests/agents/model_catalog/test_openrouter_final_read_race.py:80: error: Argument 1 has incompatible type "object"; expected "def (*object, **object) -> object"  [arg-type]
+
+## tests/agents/model_catalog/test_openrouter_real_store_recovery.py (2)
+tests/agents/model_catalog/test_openrouter_real_store_recovery.py:62: error: Need type annotation for "result"  [var-annotated]
+tests/agents/model_catalog/test_openrouter_real_store_recovery.py:62: error: Argument 1 has incompatible type "object"; expected "def (*object, **object) -> Never"  [arg-type]
+
+## tests/agents/providers/test_anthropic_claude_code.py (4)
+tests/agents/providers/test_anthropic_claude_code.py:111: error: Incompatible types in assignment (expression has type "Runnable[PromptValue | str | Sequence[BaseMessage | list[str] | tuple[str, str] | str | dict[str, Any]], BaseMessage]", variable has type "RunnableBinding[Any, Any]")  [assignment]
+tests/agents/providers/test_anthropic_claude_code.py:128: error: Incompatible types in assignment (expression has type "Runnable[Any, Any]", variable has type "ClaudeCodeChatAnthropic")  [assignment]
+tests/agents/providers/test_anthropic_claude_code.py:238: error: Incompatible types in assignment (expression has type "BaseMessage", variable has type "AIMessage")  [assignment]
+tests/agents/providers/test_anthropic_claude_code.py:240: error: Invalid index type "str" for "str"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
+
+## tests/agents/providers/test_anthropic_reasoning.py (1)
+tests/agents/providers/test_anthropic_reasoning.py:56: error: Incompatible types in assignment (expression has type "dict[str, Any] | None", variable has type "dict[str, Any]")  [assignment]
+
+## tests/agents/providers/test_credit_exhaustion_policy.py (4)
+tests/agents/providers/test_credit_exhaustion_policy.py:154: error: Cannot assign to a method  [method-assign]
+tests/agents/providers/test_credit_exhaustion_policy.py:154: error: Cannot infer type of lambda  [misc]
+tests/agents/providers/test_credit_exhaustion_policy.py:154: error: Incompatible types in assignment (expression has type "Callable[[Any], str]", variable has type "Callable[[], str]")  [assignment]
+tests/agents/providers/test_credit_exhaustion_policy.py:304: error: "RuntimeError" has no attribute "headers"  [attr-defined]
+
+## tests/agents/providers/test_faux.py (5)
+tests/agents/providers/test_faux.py:33: error: "BaseMessage" has no attribute "tool_calls"  [attr-defined]
+tests/agents/providers/test_faux.py:34: error: "BaseMessage" has no attribute "tool_calls"  [attr-defined]
+tests/agents/providers/test_faux.py:69: error: Argument 1 to "append" of "list" has incompatible type "str | list[str | dict[Any, Any]]"; expected "str"  [arg-type]
+tests/agents/providers/test_faux.py:88: error: Argument 1 to "append" of "list" has incompatible type "str | list[str | dict[Any, Any]]"; expected "str"  [arg-type]
+tests/agents/providers/test_faux.py:110: error: Argument 1 to "append" of "list" has incompatible type "str | list[str | dict[Any, Any]]"; expected "str"  [arg-type]
+
+## tests/agents/providers/test_openrouter_nonstream_boundary.py (1)
+tests/agents/providers/test_openrouter_nonstream_boundary.py:106: error: Value of type "object" is not indexable  [index]
+
+## tests/agents/providers/test_pool_fallback_integration.py (9)
+tests/agents/providers/test_pool_fallback_integration.py:143: error: Argument "messages" to "_generate" of "ModelPool" has incompatible type "list[HumanMessage]"; expected "list[BaseMessage]"  [arg-type]
+tests/agents/providers/test_pool_fallback_integration.py:145: error: "BaseChatModel" has no attribute "_call_count"  [attr-defined]
+tests/agents/providers/test_pool_fallback_integration.py:152: error: Cannot assign to a method  [method-assign]
+tests/agents/providers/test_pool_fallback_integration.py:176: error: Argument "messages" to "_generate" of "ModelPool" has incompatible type "list[HumanMessage]"; expected "list[BaseMessage]"  [arg-type]
+tests/agents/providers/test_pool_fallback_integration.py:183: error: Cannot assign to a method  [method-assign]
+tests/agents/providers/test_pool_fallback_integration.py:206: error: Argument "messages" to "_generate" of "ModelPool" has incompatible type "list[HumanMessage]"; expected "list[BaseMessage]"  [arg-type]
+tests/agents/providers/test_pool_fallback_integration.py:217: error: Argument "messages" to "_generate" of "ModelPool" has incompatible type "list[HumanMessage]"; expected "list[BaseMessage]"  [arg-type]
+tests/agents/providers/test_pool_fallback_integration.py:224: error: Cannot assign to a method  [method-assign]
+tests/agents/providers/test_pool_fallback_integration.py:245: error: Argument "messages" to "_generate" of "ModelPool" has incompatible type "list[HumanMessage]"; expected "list[BaseMessage]"  [arg-type]
+
+## tests/agents/skills/test_orchestrator_limit_rules.py (1)
+tests/agents/skills/test_orchestrator_limit_rules.py:25: error: Argument "body" to "Expression" has incompatible type "expr | None"; expected "expr"  [arg-type]
+
+## tests/agents/slo_agent/compaction/test_compacted_session_updater.py (27)
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:110: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:111: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:125: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:126: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:140: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:141: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:156: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:157: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:176: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:177: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:195: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:196: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:211: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:212: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:226: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:227: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:241: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:242: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:257: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:258: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:262: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:263: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:288: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:289: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:305: error: Argument "result" to "update" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:306: error: Argument "store" to "update" of "CompactedSessionUpdater" has incompatible type "_InMemoryStore"; expected "SessionHistoryStoreProtocol"  [arg-type]
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py:325: error: Argument "result" to "_build_payload" of "CompactedSessionUpdater" has incompatible type "_CompactionResult"; expected "CompactionResult"  [arg-type]
+
+## tests/agents/slo_agent/history/test_projector.py (1)
+tests/agents/slo_agent/history/test_projector.py:191: error: Set comprehension has incompatible type Set[str | None]; expected Set[str]  [misc]
+
+## tests/agents/slo_agent/history/test_projector_compaction.py (3)
+tests/agents/slo_agent/history/test_projector_compaction.py:83: error: Item "list[str | dict[Any, Any]]" of "str | list[str | dict[Any, Any]]" has no attribute "startswith"  [union-attr]
+tests/agents/slo_agent/history/test_projector_compaction.py:243: error: Item "list[str | dict[Any, Any]]" of "str | list[str | dict[Any, Any]]" has no attribute "startswith"  [union-attr]
+tests/agents/slo_agent/history/test_projector_compaction.py:338: error: Item "list[str | dict[Any, Any]]" of "str | list[str | dict[Any, Any]]" has no attribute "strip"  [union-attr]
+
+## tests/agents/slo_agent/history/test_tree_builder.py (1)
+tests/agents/slo_agent/history/test_tree_builder.py:187: error: Item "None" of "SessionTreeNode | None" has no attribute "kind"  [union-attr]
+
+## tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py (1)
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:494: error: "object" has no attribute "fileno"  [attr-defined]
+
+## tests/agents/slo_agent/orchestrator/test_default_orchestrator_prompt.py (3)
+tests/agents/slo_agent/orchestrator/test_default_orchestrator_prompt.py:152: error: Item "None" of "SessionConfigDAO | None" has no attribute "system_prompt"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_default_orchestrator_prompt.py:166: error: Item "None" of "SessionConfigDAO | None" has no attribute "system_prompt"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_default_orchestrator_prompt.py:182: error: Item "None" of "SessionConfigDAO | None" has no attribute "append_system_prompt"  [union-attr]
+
+## tests/agents/slo_agent/orchestrator/test_pool.py (2)
+tests/agents/slo_agent/orchestrator/test_pool.py:532: error: Cannot assign to a method  [method-assign]
+tests/agents/slo_agent/orchestrator/test_pool.py:548: error: Cannot assign to a method  [method-assign]
+
+## tests/agents/slo_agent/orchestrator/test_relaunch.py (1)
+tests/agents/slo_agent/orchestrator/test_relaunch.py:249: error: Argument "opener" to "_close_late_capture_result" of "WorkflowRelauncher" has incompatible type "Task[Endpoint]"; expected "Task[IO[bytes]]"  [arg-type]
+
+## tests/agents/slo_agent/orchestrator/test_spawn_tool.py (6)
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:201: error: Item "dict[str, Any]" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_fields"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:201: error: Item "None" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_fields"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:201: error: Incompatible types in assignment (expression has type "str | Any | None", variable has type "str")  [assignment]
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:347: error: Unsupported right operand type for in ("str | None")  [operator]
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:529: error: Item "None" of "str | None" has no attribute "lower"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:530: error: Item "None" of "str | None" has no attribute "lower"  [union-attr]
+
+## tests/agents/slo_agent/orchestrator/test_spawn_tool_schema.py (6)
+tests/agents/slo_agent/orchestrator/test_spawn_tool_schema.py:31: error: Item "dict[str, Any]" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_json_schema"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool_schema.py:31: error: Item "None" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_json_schema"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool_schema.py:38: error: Item "dict[str, Any]" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_json_schema"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool_schema.py:38: error: Item "None" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_json_schema"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool_schema.py:44: error: Item "dict[str, Any]" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_json_schema"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_spawn_tool_schema.py:44: error: Item "None" of "type[BaseModel] | dict[str, Any] | None" has no attribute "model_json_schema"  [union-attr]
+
+## tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py (3)
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:174: error: Item "None" of "SessionConfigDAO | None" has no attribute "extra_tools"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:187: error: Item "None" of "SessionConfigDAO | None" has no attribute "system_prompt"  [union-attr]
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:188: error: Item "None" of "SessionConfigDAO | None" has no attribute "append_system_prompt"  [union-attr]
+
+## tests/agents/slo_agent/test_agent_image_history.py (1)
+tests/agents/slo_agent/test_agent_image_history.py:78: error: Invalid index type "str" for "str"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
+
+## tests/agents/slo_agent/test_agent_recovery.py (3)
+tests/agents/slo_agent/test_agent_recovery.py:114: error: Unexpected keyword argument "responses" for "_FailOnceFaux"  [call-arg]
+tests/agents/slo_agent/test_agent_recovery.py:138: error: Unexpected keyword argument "responses" for "_AlwaysFailFaux"  [call-arg]
+tests/agents/slo_agent/test_agent_recovery.py:168: error: Unexpected keyword argument "responses" for "_FailNFaux"  [call-arg]
+
+## tests/agents/slo_agent/test_agent_runtime_event.py (1)
+tests/agents/slo_agent/test_agent_runtime_event.py:20: error: Function "builtins.callable" is not valid as a type  [valid-type]
+
+## tests/agents/slo_agent/test_cache_control.py (2)
+tests/agents/slo_agent/test_cache_control.py:83: error: Incompatible types in assignment (expression has type "BaseMessage", variable has type "SystemMessage")  [assignment]
+tests/agents/slo_agent/test_cache_control.py:103: error: Incompatible types in assignment (expression has type "BaseMessage", variable has type "SystemMessage")  [assignment]
+
+## tests/agents/slo_agent/test_pending_direct_recovery.py (1)
+tests/agents/slo_agent/test_pending_direct_recovery.py:49: error: Item "None" of "SessionConfigDAO | None" has no attribute "model_pool_dao"  [union-attr]
+
+## tests/agents/slo_agent/test_pool_fallback_e2e.py (2)
+tests/agents/slo_agent/test_pool_fallback_e2e.py:246: error: Incompatible return value type (got "SessionHistoryStoreProtocol", expected "FilesystemSessionHistoryStore")  [return-value]
+tests/agents/slo_agent/test_pool_fallback_e2e.py:452: error: Name "AgentStreamEventDAO" is not defined  [name-defined]
+
+## tests/agents/slo_agent/test_refresh_catalog_notice.py (1)
+tests/agents/slo_agent/test_refresh_catalog_notice.py:90: error: Argument "status" to "CatalogRefreshResultDAO" has incompatible type "str"; expected "Literal['refreshed', 'fresh', 'failed', 'credential_changed']"  [arg-type]
+
+## tests/agents/slo_agent/test_session_manual_compaction.py (5)
+tests/agents/slo_agent/test_session_manual_compaction.py:178: error: Cannot assign to a method  [method-assign]
+tests/agents/slo_agent/test_session_manual_compaction.py:179: error: Cannot assign to a method  [method-assign]
+tests/agents/slo_agent/test_session_manual_compaction.py:180: error: Cannot assign to a method  [method-assign]
+tests/agents/slo_agent/test_session_manual_compaction.py:192: error: Cannot assign to a method  [method-assign]
+tests/agents/slo_agent/test_session_manual_compaction.py:197: error: Item "None" of "_Call | None" has no attribute "kwargs"  [union-attr]
+
+## tests/agents/slo_agent/tool_execution/test_executors.py (3)
+tests/agents/slo_agent/tool_execution/test_executors.py:201: error: Invalid index type "str" for "str"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
+tests/agents/slo_agent/tool_execution/test_executors.py:202: error: Invalid index type "str" for "str"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
+tests/agents/slo_agent/tool_execution/test_executors.py:241: error: Invalid index type "str" for "str"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
+
+## tests/agents/test_base.py (14)
+tests/agents/test_base.py:253: error: Incompatible types in assignment (expression has type "Mapping[str, Any] | Any", variable has type "dict[Any, Any]")  [assignment]
+tests/agents/test_base.py:340: error: Incompatible types in assignment (expression has type "Mapping[str, Any] | Any", variable has type "dict[Any, Any]")  [assignment]
+tests/agents/test_base.py:406: error: "BaseChatModel" has no attribute "reasoning"  [attr-defined]
+tests/agents/test_base.py:407: error: "BaseChatModel" has no attribute "use_responses_api"  [attr-defined]
+tests/agents/test_base.py:408: error: "BaseChatModel" has no attribute "output_version"  [attr-defined]
+tests/agents/test_base.py:409: error: "BaseChatModel" has no attribute "temperature"  [attr-defined]
+tests/agents/test_base.py:428: error: "BaseChatModel" has no attribute "thinking"  [attr-defined]
+tests/agents/test_base.py:429: error: "BaseChatModel" has no attribute "model_kwargs"  [attr-defined]
+tests/agents/test_base.py:430: error: "BaseChatModel" has no attribute "temperature"  [attr-defined]
+tests/agents/test_base.py:457: error: "BaseChatModel" has no attribute "_get_request_payload"  [attr-defined]
+tests/agents/test_base.py:502: error: "BaseChatModel" has no attribute "model"  [attr-defined]
+tests/agents/test_base.py:512: error: "BaseChatModel" has no attribute "model"  [attr-defined]
+tests/agents/test_base.py:522: error: "BaseChatModel" has no attribute "model"  [attr-defined]
+tests/agents/test_base.py:532: error: "BaseChatModel" has no attribute "model"  [attr-defined]
+
+## tests/agents/tools/test_read.py (2)
+tests/agents/tools/test_read.py:58: error: Item "None" of "str | None" has no attribute "startswith"  [union-attr]
+tests/agents/tools/test_read.py:103: error: Item "None" of "str | None" has no attribute "startswith"  [union-attr]
+
+## tests/auth/providers/test_openai_codex_device_authorization.py (2)
+tests/auth/providers/test_openai_codex_device_authorization.py:29: error: "AbstractServer" has no attribute "sockets"  [attr-defined]
+tests/auth/providers/test_openai_codex_device_authorization.py:30: error: "AbstractServer" has no attribute "sockets"  [attr-defined]
+
+## tests/auth/test_oauth_flow.py (6)
+tests/auth/test_oauth_flow.py:348: error: Item "None" of "_Call | None" has no attribute "kwargs"  [union-attr]
+tests/auth/test_oauth_flow.py:349: error: Item "None" of "_Call | None" has no attribute "kwargs"  [union-attr]
+tests/auth/test_oauth_flow.py:381: error: Argument "timeout_seconds" to "OAuthFlow" has incompatible type "float"; expected "int | None"  [arg-type]
+tests/auth/test_oauth_flow.py:396: error: Argument "timeout_seconds" to "OAuthFlow" has incompatible type "float"; expected "int | None"  [arg-type]
+tests/auth/test_oauth_flow.py:414: error: Argument "manual_timeout_seconds" to "OAuthFlow" has incompatible type "float"; expected "int | None"  [arg-type]
+tests/auth/test_oauth_flow.py:745: error: Item "None" of "_Call | None" has no attribute "kwargs"  [union-attr]
+
+## tests/cli/test_openrouter_terminal_lifetime.py (2)
+tests/cli/test_openrouter_terminal_lifetime.py:48: error: Argument "kind" to "AgentStreamEventDAO" has incompatible type "str"; expected "Literal['thinking_start', 'thinking_delta', 'thinking_end', 'text_start', 'text_delta', 'text_end', 'tool_call_start', 'tool_call_delta', 'tool_call_end', 'tool_output_update', 'tool_result', 'steering_applied', 'run_retrying', 'preflight_bypassed', 'stream_reconnecting', 'compaction_started', 'compaction_completed', 'compaction_failed', 'compaction_retrying', 'compaction_advised', 'recovery_started', 'recovery_succeeded', 'recovery_exhausted', 'run_completed', 'run_aborted', 'run_failed', 'sub_agent_spawned', 'sub_agent_completed', 'sub_agent_failed', 'sub_agent_aborted', 'sub_agent_reaped']"  [arg-type]
+tests/cli/test_openrouter_terminal_lifetime.py:115: error: Argument 1 to "set" of "ContextVar" has incompatible type "CredentialDAO"; expected "None"  [arg-type]
+
+## tests/integrations/openrouter/test_harness_contract.py (8)
+tests/integrations/openrouter/test_harness_contract.py:138: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "dict[str, str]"  [arg-type]
+tests/integrations/openrouter/test_harness_contract.py:138: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "Callable[[], CredentialDAO]"  [arg-type]
+tests/integrations/openrouter/test_harness_contract.py:138: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "FixtureRequestHandler"  [arg-type]
+tests/integrations/openrouter/test_harness_contract.py:138: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "str | None"  [arg-type]
+tests/integrations/openrouter/test_harness_contract.py:144: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "dict[str, str]"  [arg-type]
+tests/integrations/openrouter/test_harness_contract.py:144: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "Callable[[], CredentialDAO]"  [arg-type]
+tests/integrations/openrouter/test_harness_contract.py:144: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "FixtureRequestHandler"  [arg-type]
+tests/integrations/openrouter/test_harness_contract.py:144: error: Argument 1 to "invoke_fixture" of "OpenRouterLiveHarness" has incompatible type "**dict[str, object]"; expected "str | None"  [arg-type]
+
+## tests/integrations/openrouter/test_live_openrouter.py (2)
+tests/integrations/openrouter/test_live_openrouter.py:151: error: "BaseMessage" has no attribute "tool_calls"  [attr-defined]
+tests/integrations/openrouter/test_live_openrouter.py:158: error: "BaseMessage" has no attribute "tool_calls"  [attr-defined]
+
+## tests/tui/authentication/test_auth_screen.py (15)
+tests/tui/authentication/test_auth_screen.py:98: error: Unexpected keyword argument "provider"  [call-arg]
+tests/tui/authentication/test_auth_screen.py:98: error: Unexpected keyword argument "login_method"  [call-arg]
+tests/tui/authentication/test_auth_screen.py:98: error: Unexpected keyword argument "browser_present"  [call-arg]
+tests/tui/authentication/test_auth_screen.py:98: error: Unexpected keyword argument "device_present"  [call-arg]
+tests/tui/authentication/test_auth_screen.py:98: error: Unexpected keyword argument "receiver"  [call-arg]
+tests/tui/authentication/test_auth_screen.py:98: error: Unexpected keyword argument "callback_unavailable"  [call-arg]
+tests/tui/authentication/test_auth_screen.py:317: error: Incompatible types in assignment (expression has type "Screen[object]", variable has type "AuthenticationScreen")  [assignment]
+tests/tui/authentication/test_auth_screen.py:339: error: Cannot infer type of lambda  [misc]
+tests/tui/authentication/test_auth_screen.py:386: error: Argument "build_flow" to "_FauxOAuthFactory" has incompatible type "def _raise_type_error(**_: object) -> Never"; expected "Callable[[ProviderName, OAuthLoginMethod, Callable[[AuthorizationPresentationDAO], None], Callable[[DeviceAuthorizationPresentationDAO], None], Callable[[], Awaitable[str]] | None, Callable[[], None]], OAuthAuthenticationFlow]"  [arg-type]
+tests/tui/authentication/test_auth_screen.py:405: error: Argument "build_flow" to "_FauxOAuthFactory" has incompatible type "def _raise_type_error(**_: object) -> Never"; expected "Callable[[ProviderName, OAuthLoginMethod, Callable[[AuthorizationPresentationDAO], None], Callable[[DeviceAuthorizationPresentationDAO], None], Callable[[], Awaitable[str]] | None, Callable[[], None]], OAuthAuthenticationFlow]"  [arg-type]
+tests/tui/authentication/test_auth_screen.py:414: error: Incompatible types in assignment (expression has type "Screen[object]", variable has type "AuthenticationScreen")  [assignment]
+tests/tui/authentication/test_auth_screen.py:423: error: Argument "build_flow" to "_FauxOAuthFactory" has incompatible type "def _raise_type_error(**_: object) -> Never"; expected "Callable[[ProviderName, OAuthLoginMethod, Callable[[AuthorizationPresentationDAO], None], Callable[[DeviceAuthorizationPresentationDAO], None], Callable[[], Awaitable[str]] | None, Callable[[], None]], OAuthAuthenticationFlow]"  [arg-type]
+tests/tui/authentication/test_auth_screen.py:428: error: Incompatible types in assignment (expression has type "Screen[object]", variable has type "AuthenticationScreen")  [assignment]
+tests/tui/authentication/test_auth_screen.py:443: error: Argument "build_flow" to "_FauxOAuthFactory" has incompatible type "def _raise_type_error(**_: object) -> Never"; expected "Callable[[ProviderName, OAuthLoginMethod, Callable[[AuthorizationPresentationDAO], None], Callable[[DeviceAuthorizationPresentationDAO], None], Callable[[], Awaitable[str]] | None, Callable[[], None]], OAuthAuthenticationFlow]"  [arg-type]
+tests/tui/authentication/test_auth_screen.py:448: error: Incompatible types in assignment (expression has type "Screen[object]", variable has type "AuthenticationScreen")  [assignment]
+
+## tests/tui/authentication/test_authentication_headless_e2e.py (3)
+tests/tui/authentication/test_authentication_headless_e2e.py:90: error: "def _faux_oauth_factory(*, provider: ProviderName, login_method: OAuthLoginMethod, present_browser_authorization: Callable[[AuthorizationPresentationDAO], None], present_device_authorization: Callable[[DeviceAuthorizationPresentationDAO], None], authorization_response_receiver: Callable[[], Awaitable[str]] | None, present_callback_unavailable: Callable[[], None] = ...) -> OAuthAuthenticationFlow" has no attribute "supported_login_methods"  [attr-defined]
+tests/tui/authentication/test_authentication_headless_e2e.py:107: error: Argument "oauth_factory" to "AuthenticationScreen" has incompatible type "def _faux_oauth_factory(*, provider: ProviderName, login_method: OAuthLoginMethod, present_browser_authorization: Callable[[AuthorizationPresentationDAO], None], present_device_authorization: Callable[[DeviceAuthorizationPresentationDAO], None], authorization_response_receiver: Callable[[], Awaitable[str]] | None, present_callback_unavailable: Callable[[], None] = ...) -> OAuthAuthenticationFlow"; expected "OAuthFactory | None"  [arg-type]
+tests/tui/authentication/test_authentication_headless_e2e.py:143: error: "Widget" has no attribute "content"  [attr-defined]
+
+## tests/tui/selection_observer.py (1)
+tests/tui/selection_observer.py:112: error: Item "None" of "Any | None" has no attribute "was_following"  [union-attr]
+
+## tests/tui/slodiff/test_view.py (5)
+tests/tui/slodiff/test_view.py:140: error: Item "ConsoleRenderable" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "_spans"  [union-attr]
+tests/tui/slodiff/test_view.py:140: error: Item "RichCast" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "_spans"  [union-attr]
+tests/tui/slodiff/test_view.py:140: error: Item "str" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "_spans"  [union-attr]
+tests/tui/slodiff/test_view.py:140: error: Item "SupportsVisual" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "_spans"  [union-attr]
+tests/tui/slodiff/test_view.py:140: error: Item "Visual" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "_spans"  [union-attr]
+
+## tests/tui/test_openrouter_picker.py (1)
+tests/tui/test_openrouter_picker.py:227: error: Item "None" of "SlashSuggestionMenu | None" has no attribute "query_one"  [union-attr]
+
+## tests/tui/test_plugins_slash_command.py (6)
+tests/tui/test_plugins_slash_command.py:81: error: Unsupported right operand type for in ("str | None")  [operator]
+tests/tui/test_plugins_slash_command.py:82: error: Unsupported right operand type for in ("str | None")  [operator]
+tests/tui/test_plugins_slash_command.py:96: error: Item "None" of "str | None" has no attribute "lower"  [union-attr]
+tests/tui/test_plugins_slash_command.py:115: error: Unsupported right operand type for in ("str | None")  [operator]
+tests/tui/test_plugins_slash_command.py:134: error: Item "None" of "str | None" has no attribute "lower"  [union-attr]
+tests/tui/test_plugins_slash_command.py:135: error: Unsupported right operand type for in ("str | None")  [operator]
+
+## tests/tui/test_recovery_ux.py (5)
+tests/tui/test_recovery_ux.py:77: error: Argument "host" to "TranscriptProjector" has incompatible type "_FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_recovery_ux.py:91: error: Argument "host" to "TranscriptProjector" has incompatible type "_FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_recovery_ux.py:105: error: Argument "host" to "TranscriptProjector" has incompatible type "_FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_recovery_ux.py:119: error: Argument "host" to "TranscriptProjector" has incompatible type "_FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_recovery_ux.py:130: error: Argument "host" to "TranscriptProjector" has incompatible type "_FakeHost"; expected "TranscriptMountHost"  [arg-type]
+
+## tests/tui/test_selection_copy.py (13)
+tests/tui/test_selection_copy.py:103: error: Item "tuple[str, ...]" of "Binding | tuple[str, str] | tuple[str, str, str]" has no attribute "key"  [union-attr]
+tests/tui/test_selection_copy.py:103: error: Item "tuple[str, ...]" of "Binding | tuple[str, str] | tuple[str, str, str]" has no attribute "action"  [union-attr]
+tests/tui/test_selection_copy.py:118: error: Incompatible types in assignment (expression has type "AssistantStreamThinkingBlock", variable has type "AssistantStreamBlock")  [assignment]
+tests/tui/test_selection_copy.py:119: error: "AssistantStreamBlock" has no attribute "set_thinking"  [attr-defined]
+tests/tui/test_selection_copy.py:120: error: "AssistantStreamBlock" has no attribute "_body"  [attr-defined]
+tests/tui/test_selection_copy.py:122: error: Incompatible types in assignment (expression has type "UserMessageBlock", variable has type "AssistantStreamBlock")  [assignment]
+tests/tui/test_selection_copy.py:123: error: "AssistantStreamBlock" has no attribute "_body"  [attr-defined]
+tests/tui/test_selection_copy.py:137: error: Incompatible types in assignment (expression has type "ToolExecutionBlock", variable has type "PromptInput | None")  [assignment]
+tests/tui/test_selection_copy.py:139: error: Incompatible types in assignment (expression has type "Static", variable has type "PromptInput | None")  [assignment]
+tests/tui/test_selection_copy.py:140: error: Argument 1 to "mount" of "App" has incompatible type "PromptInput | None"; expected "Widget"  [arg-type]
+tests/tui/test_selection_copy.py:142: error: Incompatible types in assignment (expression has type "Static", variable has type "PromptInput | None")  [assignment]
+tests/tui/test_selection_copy.py:143: error: Argument 1 to "mount" of "App" has incompatible type "PromptInput | None"; expected "Widget"  [arg-type]
+tests/tui/test_selection_copy.py:181: error: "Vertical" has no attribute "get_raw_markdown_for_copy"  [attr-defined]
+
+## tests/tui/test_startup_notice.py (1)
+tests/tui/test_startup_notice.py:91: error: Item "None" of "SessionHistoryStoreProtocol | None" has no attribute "read_metadata"  [union-attr]
+
+## tests/tui/test_tool_block_partial.py (9)
+tests/tui/test_tool_block_partial.py:72: error: Argument "host" to "TranscriptProjector" has incompatible type "_PartialHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_tool_block_partial.py:88: error: "FakeToolBlock" has no attribute "partials"  [attr-defined]
+tests/tui/test_tool_block_partial.py:89: error: "FakeToolBlock" has no attribute "partials"  [attr-defined]
+tests/tui/test_tool_block_partial.py:90: error: "FakeToolBlock" has no attribute "partials"  [attr-defined]
+tests/tui/test_tool_block_partial.py:99: error: Argument "host" to "TranscriptProjector" has incompatible type "_PartialHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_tool_block_partial.py:111: error: "FakeToolBlock" has no attribute "partials"  [attr-defined]
+tests/tui/test_tool_block_partial.py:118: error: Argument "host" to "TranscriptProjector" has incompatible type "_PartialHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_tool_block_partial.py:149: error: Argument "host" to "TranscriptProjector" has incompatible type "_PartialHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_tool_block_partial.py:162: error: "FakeToolBlock" has no attribute "partials"  [attr-defined]
+
+## tests/tui/test_transcript_projector.py (66)
+tests/tui/test_transcript_projector.py:223: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:242: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:257: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:291: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:356: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:393: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:429: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:469: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:486: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:503: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:517: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:532: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:549: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:569: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:582: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:607: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:623: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:639: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:655: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:680: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:712: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:713: error: Dict entry 0 has incompatible type "int": "FakeAssistantBlock"; expected "int": "AssistantStreamBlock"  [dict-item]
+tests/tui/test_transcript_projector.py:714: error: Dict entry 0 has incompatible type "str": "FakeToolBlock"; expected "str": "ToolExecutionBlock"  [dict-item]
+tests/tui/test_transcript_projector.py:735: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:759: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:777: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:795: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:817: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:839: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:857: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:879: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:899: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:929: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:948: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:970: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:994: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1007: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1027: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1054: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1099: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1123: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1141: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1167: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1191: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1209: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1230: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1250: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1260: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1275: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1285: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1302: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1319: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1330: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1345: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1359: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1376: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1401: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1413: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1425: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1437: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1455: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1467: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1484: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1501: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1527: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+tests/tui/test_transcript_projector.py:1547: error: Argument "host" to "TranscriptProjector" has incompatible type "FakeHost"; expected "TranscriptMountHost"  [arg-type]
+
+## tests/tui/test_user_message_block.py (5)
+tests/tui/test_user_message_block.py:69: error: Item "ConsoleRenderable" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "spans"  [union-attr]
+tests/tui/test_user_message_block.py:69: error: Item "RichCast" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "spans"  [union-attr]
+tests/tui/test_user_message_block.py:69: error: Item "str" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "spans"  [union-attr]
+tests/tui/test_user_message_block.py:69: error: Item "SupportsVisual" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "spans"  [union-attr]
+tests/tui/test_user_message_block.py:69: error: Item "Visual" of "ConsoleRenderable | RichCast | str | SupportsVisual | Visual" has no attribute "spans"  [union-attr]

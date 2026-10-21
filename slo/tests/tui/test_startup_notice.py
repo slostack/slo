@@ -88,6 +88,7 @@ class TestStartupNotice:
             assert app._adapter is not None
             assert any("/help" in content for content, _classes in app._adapter.lines)
 
+        assert session.history_store is not None
         metadata = await session.history_store.read_metadata(session_id=session_id)
         assert metadata.startup_notice_shown_at is not None
 

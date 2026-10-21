@@ -1,0 +1,1 @@
+python -m pytest -q tests/implementation_checks tests/cli/test_headless.py tests/cli/test_headless_events.py tests/cli/test_headless_exclusions.py tests/cli/test_headless_herdr.py tests/cli/test_headless_logging.py tests/cli/test_headless_parity.py tests/cli/test_headless_request.py tests/cli/test_headless_retained.py tests/cli/test_headless_watchdog.py 

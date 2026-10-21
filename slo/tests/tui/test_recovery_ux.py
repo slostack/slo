@@ -6,64 +6,12 @@ the ``saw_failed_event`` suppression on the ``recovery_exhausted`` path.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import pytest
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.transcript_projector import TranscriptProjector
 
-# ── minimal fake host ─────────────────────────────────────────────────────────
-
-
-class _FakeHost:
-    """Minimal transcript host double for recovery-notice tests."""
-
-    def __init__(self) -> None:
-        self.lines: list[tuple[str, str]] = []
-        self.blocks: list = []
-        self.tool_blocks: dict = {}
-        self.user_blocks: list = []
-        self.separators: int = 0
-
-    def write_transcript_line(self, *, content: str, classes: str) -> None:
-        """Record a transcript notice line.
-
-        Args:
-            content (str): Line text.
-            classes (str): CSS class string.
-        """
-        self.lines.append((content, classes))
-
-    def record_transcript_line(self, *, content: str, classes: str) -> None:
-        """Record a logical line (no-op for these tests).
-
-        Args:
-            content (str): Line text.
-            classes (str): CSS class string.
-        """
-
-    def mount_turn_separator_if_needed(self) -> None:
-        """No-op separator stub."""
-
-    async def mount_assistant_block(self, *, title_prefix: Optional[str] = None):
-        """Stub — no blocks needed for notice tests."""
-        from unittest.mock import MagicMock
-
-        return MagicMock()
-
-    async def mount_tool_execution_block(self, *, tool_call_id: str, tool_name: str):
-        """Stub."""
-        from unittest.mock import MagicMock
-
-        return MagicMock()
-
-    async def mount_user_message_block(self, *, text: str):
-        """Stub."""
-        from unittest.mock import MagicMock
-
-        return MagicMock()
-
+from tests.tui.test_transcript_projector import FakeHost
 
 # ── projector notice tests ────────────────────────────────────────────────────
 
@@ -73,7 +21,7 @@ class TestRecoveryNoticeLines:
 
     async def test_recovery_started_writes_notice_line(self) -> None:
         """``recovery_started`` writes the recovering notice and returns early."""
-        host = _FakeHost()
+        host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(
@@ -87,7 +35,7 @@ class TestRecoveryNoticeLines:
 
     async def test_recovery_succeeded_writes_notice_line(self) -> None:
         """``recovery_succeeded`` writes the recovered notice and returns early."""
-        host = _FakeHost()
+        host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(
@@ -101,7 +49,7 @@ class TestRecoveryNoticeLines:
 
     async def test_recovery_exhausted_writes_notice_line(self) -> None:
         """``recovery_exhausted`` writes the could-not-recover notice and returns early."""
-        host = _FakeHost()
+        host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(
@@ -115,7 +63,7 @@ class TestRecoveryNoticeLines:
 
     async def test_recovery_started_does_not_mount_assistant_block(self) -> None:
         """``recovery_started`` writes only a transcript line — no assistant block is mounted."""
-        host = _FakeHost()
+        host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(
@@ -126,7 +74,7 @@ class TestRecoveryNoticeLines:
 
     async def test_recovery_three_events_write_three_notice_lines(self) -> None:
         """Three recovery events produce exactly three distinct notice lines in order."""
-        host = _FakeHost()
+        host = FakeHost()
         projector = TranscriptProjector(host=host)
 
         await projector.project(

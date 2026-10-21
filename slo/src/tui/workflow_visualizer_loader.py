@@ -47,6 +47,7 @@ from src.agents.slo_agent.history.transcript import (
     ReplayEntryProjector,
     TranscriptEntryDAO,
 )
+from src.agents.slo_agent.orchestrator.context_reader import OrchestratorContextReader
 from src.agents.slo_agent.orchestrator.context_dao import (
     OrchestratorContextDAO,
     SpawnContextDAO,
@@ -545,8 +546,9 @@ class WorkflowVisualizerLoader:
             Optional[OrchestratorContextDAO]: Parsed DAO, or ``None`` when the
                 file does not exist or cannot be read safely.
         """
-        path: Path = self._store.root / parent_session_id / "orchestrator_context.json"
-        return self._read_optional_model(path=path, model=OrchestratorContextDAO)
+        return OrchestratorContextReader.load(
+            history_root=self._store.root, parent_session_id=parent_session_id
+        )
 
     def load_spawn_context(
         self,

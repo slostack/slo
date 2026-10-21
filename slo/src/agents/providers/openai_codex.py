@@ -31,6 +31,7 @@ import json
 from typing import Any, Optional
 
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
 from src.auth.credential_dao import CredentialDAO
@@ -178,8 +179,8 @@ def build_chatgpt_backed_chat_openai(
     account_id: str = extract_chatgpt_account_id(access_token=cred.access_token)
     return ChatOpenAI(
         model=model_name,
-        api_key=cred.access_token,
-        openai_api_base=_CHATGPT_BACKEND_BASE_URL,
+        api_key=SecretStr(cred.access_token),
+        base_url=_CHATGPT_BACKEND_BASE_URL,
         default_headers={
             "chatgpt-account-id": account_id,
             "originator": _ORIGINATOR,

@@ -572,6 +572,49 @@ class TestObservationLifecycle:
         if trigger == "unmount":
             assert order == ["coordinator", "service", "sink", "panel"]
 
+    @pytest.mark.asyncio
+    async def test_unbound_close_is_inert_and_replacement_stays_bound(self, tmp_path: Path) -> None:
+        """An unbound close touches nothing; after ``/new`` the successor stays fully bound."""
+        app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app=app, pilot=pilot)
+            panel: Optional[SubAgentFleetPanel] = app._fleet_panel
+            assert panel is not None
+            with patch.object(panel, "reset") as reset:
+                await app._close_workflow_observation()
+                await app._close_workflow_observation()
+            reset.assert_called_once()
+            assert app._workflow_app_service is None
+            assert app._workflow_progress_coordinator is None
+            assert app._workflow_progress_sink is None
+
+            # The shutdown-suppressed successor keeps the panel free of a second reset.
+            with patch("src.tui.app.SloAgentSession.build", return_value=_build_session(workdir=tmp_path)):
+                app._app_closing = True
+                try:
+                    await app._start_new_session(requested_name=None)
+                finally:
+                    app._app_closing = False
+            reset.assert_called_once()
+
+            # A healthy adopted successor binds once and survives a later unbound close.
+            with patch("src.tui.app.SloAgentSession.build", return_value=_build_session(workdir=tmp_path)):
+                await app._start_new_session(requested_name=None)
+            await _settle(app=app, pilot=pilot)
+            successor_service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
+            successor_coordinator: Optional[WorkflowProgressCoordinator] = app._workflow_progress_coordinator
+            assert successor_service is not None and successor_coordinator is not None
+            assert successor_service._closed is False and successor_coordinator._closed is False
+            await app._ensure_workflow_observation_bound()
+            assert app._workflow_app_service is successor_service
+            assert app._workflow_progress_coordinator is successor_coordinator
+            reset.assert_called_once()
+
+        assert app._workflow_app_service is None
+        assert successor_service._closed is True
+        assert successor_coordinator._closed is True and successor_coordinator._task is None
+
 
 class TestProgressSelection:
     """Mouse and Enter open the exact session; Escape minimizes without aborting."""

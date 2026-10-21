@@ -1,0 +1,1 @@
+poetry run pytest -q -m not\ e2e tests/agents/slo_agent/test_session_usage.py tests/tui/test_usage_status_bar.py tests/agents/slo_agent/orchestrator/test_bootstrap.py tests/cli/test_headless_request.py tests/tui/test_visualizer_launcher.py tests/tui/test_workflow_visualizer_loader.py tests/tui/test_subagent_event_routing.py 

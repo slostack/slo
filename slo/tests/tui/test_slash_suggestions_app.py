@@ -145,8 +145,12 @@ class TestSloTUISlashSuggestions:
                 assert all(not row.label.startswith("/") for row in app._slash_suggestion_state.rows)
 
     @pytest.mark.asyncio
-    async def test_model_menu_renders_bounded_window_and_total_match_count(self) -> None:
+    async def test_model_menu_renders_bounded_window_and_total_match_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The visible ``/model`` menu paints only its bounded initial window."""
+        # The active model is promoted into the first window; specify that input.
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
         app: SloTUI = SloTUI(session=_build_session())
 
         with patch(

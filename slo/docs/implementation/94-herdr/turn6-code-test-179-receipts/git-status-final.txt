@@ -1,0 +1,50 @@
+ M slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/run.sh
+ M slo/src/tui/app.py
+ M slo/tests/implementation_checks/test_conventions_audit_paths.py
+ M slo/tests/tui/test_startup_notice_cutoff.py
+?? slo/docs/implementation/94-herdr/independent-review-wiring-178.md
+?? slo/docs/implementation/94-herdr/review-wiring-178-receipts/
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/B26-black.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/B26-black.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/B26-black.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/B26-black.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/C31-black.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/C31-black.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/C31-black.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/C31-black.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/D09-black.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/D09-black.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/D09-black.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/D09-black.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/black-changed.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/black-changed.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/black-changed.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/black-changed.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/diff-check.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/diff-check.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/diff-check.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/diff-check.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/full.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/full.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/full.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/full.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/lint-slo-harness.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/lint-slo-harness.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/lint-slo-harness.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/lint.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/lint.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/lint.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/lint.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/manifest.txt
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/recheck-boundaries-now.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/recheck-boundaries-now.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/recheck-boundaries-now.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/recheck-boundaries-now.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/smoke.command
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/smoke.coreutils
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/smoke.coreutils.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176-receipts/smoke.exit
+?? slo/docs/implementation/94-herdr/turn6-code-test-176.md
+?? slo/docs/implementation/94-herdr/turn6-code-test-177-receipts/
+?? slo/docs/implementation/94-herdr/turn6-code-test-177.md
+?? slo/docs/implementation/94-herdr/turn6-code-test-179-receipts/

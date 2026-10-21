@@ -1,0 +1,161 @@
+--- docs/implementation/94-herdr/t6-122-headless-before.txt	2026-10-19 10:53:53.322558436 +0700
++++ tests/cli/test_headless.py	2026-10-19 10:55:08.827962615 +0700
+@@ -4,12 +4,14 @@
+ 
+ import asyncio
+ import json
++from collections.abc import AsyncIterator, Mapping
++from pathlib import Path
+ from unittest.mock import AsyncMock, MagicMock, patch
+ 
+ import pytest
+ 
+ from src.agents.slo_agent.orchestrator.dao import exit_code_for_terminal_kind
+-from src.agents.slo_agent.sessions.dao import SessionConfigDAO
++from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
+ from src.agents.slo_agent.events.stream import AgentStreamEventDAO, StreamEventKind
+ from src.cli.headless import HeadlessRunner
+ 
+@@ -41,12 +43,19 @@
+     """
+     session_mock: AsyncMock = AsyncMock()
+     session_mock.session_id = "test-session-id-mock"
+-    session_mock._subscribers: list = []
+-    session_mock.subscribe = lambda handler: session_mock._subscribers.append(handler)
++    subscribers: list[AgentEventSubscriber] = []
++    session_mock._subscribers = subscribers
+ 
+-    async def _fake_invoke(*, text: str):
++    def subscribe(*, handler: AgentEventSubscriber) -> None:
++        """Register the runner's event callback for this fake invocation."""
++        subscribers.append(handler)
++
++    session_mock.subscribe = subscribe
++
++    async def _fake_invoke(*, text: str) -> AsyncIterator[AgentStreamEventDAO]:
++        """Dispatch scripted events to subscribers before yielding each event."""
+         for ev in events:
+-            for subscriber in session_mock._subscribers:
++            for subscriber in subscribers:
+                 await subscriber(ev)
+             yield ev
+ 
+@@ -265,7 +274,7 @@
+         """The ``run`` command is listed in the Typer app's command registry."""
+         from src.cli.app import app
+ 
+-        command_names: set[str] = {cmd.name for cmd in app.registered_commands}
++        command_names: set[str] = {cmd.name for cmd in app.registered_commands if cmd.name is not None}
+ 
+         assert "run" in command_names
+ 
+@@ -284,7 +293,8 @@
+             result = runner.invoke(app, ["run", "-p", "hello world", "--json"])
+ 
+         mock_run_headless.assert_called_once()
+-        call_kwargs: dict = mock_run_headless.call_args.kwargs
++        assert mock_run_headless.call_args is not None
++        call_kwargs: Mapping[str, object] = mock_run_headless.call_args.kwargs
+         assert call_kwargs["prompt"] == "hello world"
+         assert call_kwargs["as_json"] is True
+         assert result.exit_code == 0
+@@ -789,24 +799,26 @@
+         """Fleet drain completes before the terminal status store is written."""
+         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+         runner._status_store = MagicMock()
+-        runner._drain_fleet = AsyncMock()
++        drain_fleet: AsyncMock = AsyncMock(spec=runner._drain_fleet, return_value=True)
++        with patch.object(target=runner, attribute="_drain_fleet", new=drain_fleet):
++            await runner._write_terminal_status()
+ 
+-        await runner._write_terminal_status()
+-
+-        runner._drain_fleet.assert_awaited_once()
++        drain_fleet.assert_awaited_once()
+         runner._status_store.write_terminal.assert_called_once()
+ 
+     async def test_write_terminal_status_withholds_unresolved_fleet(self, tmp_path) -> None:
+         """Terminal evidence is withheld while a live fleet entry is unresolved."""
+         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+         runner._status_store = MagicMock()
+-        runner._drain_fleet = AsyncMock(return_value=False)
+-
+-        await runner._write_terminal_status()
++        drain_fleet: AsyncMock = AsyncMock(spec=runner._drain_fleet, return_value=False)
++        with patch.object(target=runner, attribute="_drain_fleet", new=drain_fleet):
++            await runner._write_terminal_status()
+ 
+         runner._status_store.write_terminal.assert_not_called()
+ 
+-    async def test_drain_records_reaped_orphan_for_straggler(self, tmp_path, monkeypatch) -> None:
++    async def test_drain_records_reaped_orphan_for_straggler(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
+         """A verified running child becomes a sweep-owned reaped orphan."""
+         from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
+ 
+@@ -818,7 +830,7 @@
+         registry.snapshot.return_value = [entry]
+         pool: MagicMock = MagicMock()
+         pool.registry = registry
+-        runner._attached_pool = lambda: pool
++        monkeypatch.setattr(target=runner, name="_attached_pool", value=MagicMock(return_value=pool))
+         monkeypatch.setattr(
+             "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "matching"
+         )
+@@ -835,7 +847,9 @@
+             terminated_by="sweep",
+         )
+ 
+-    async def test_drain_never_signals_recycled_pid(self, tmp_path, monkeypatch) -> None:
++    async def test_drain_never_signals_recycled_pid(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
+         """A running entry with foreign argv is never passed to the reaper."""
+         from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
+ 
+@@ -846,7 +860,7 @@
+         ]
+         pool: MagicMock = MagicMock()
+         pool.registry = registry
+-        runner._attached_pool = lambda: pool
++        monkeypatch.setattr(target=runner, name="_attached_pool", value=MagicMock(return_value=pool))
+         monkeypatch.setattr(
+             "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "recycled_pid"
+         )
+@@ -866,7 +880,9 @@
+             terminated_by="sweep",
+         )
+ 
+-    async def test_drain_leaves_unreadable_live_pid_unresolved(self, tmp_path, monkeypatch) -> None:
++    async def test_drain_leaves_unreadable_live_pid_unresolved(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
+         """Unreadable live argv withholds terminal status instead of signaling blindly."""
+         from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
+ 
+@@ -877,7 +893,7 @@
+         ]
+         pool: MagicMock = MagicMock()
+         pool.registry = registry
+-        runner._attached_pool = lambda: pool
++        monkeypatch.setattr(target=runner, name="_attached_pool", value=MagicMock(return_value=pool))
+         monkeypatch.setattr(
+             "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "unreadable"
+         )
+@@ -893,11 +909,11 @@
+     async def test_write_terminal_status_noops_without_store(self, tmp_path) -> None:
+         """A plain headless run skips drain work without workflow status storage."""
+         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+-        runner._drain_fleet = AsyncMock()
+-
+-        await runner._write_terminal_status()
++        drain_fleet: AsyncMock = AsyncMock(spec=runner._drain_fleet, return_value=True)
++        with patch.object(target=runner, attribute="_drain_fleet", new=drain_fleet):
++            await runner._write_terminal_status()
+ 
+-        runner._drain_fleet.assert_not_awaited()
++        drain_fleet.assert_not_awaited()
+ 
+ 
+ class TestHeadlessNotifyEndToEnd:

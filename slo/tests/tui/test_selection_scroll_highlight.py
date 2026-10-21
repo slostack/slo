@@ -26,6 +26,7 @@ from src.tui.widgets.assistant_stream_thinking_block import (
     AssistantThinkingBody,
 )
 from src.tui.widgets.user_message_block import UserMessageBlock
+from tests.tui.selection_fixture_fence import SelectionFixtureFence
 
 
 def _build_session() -> SloAgentSession:
@@ -148,11 +149,12 @@ class TestPilotVisibleSelection:
     @pytest.mark.parametrize("kind", ["answer", "thinking", "user"])
     @pytest.mark.parametrize("theme_name", ["slo-default", "slo-dark"])
     async def test_selection_paint_and_scroll_remain_native_for_every_visible_body_and_theme(
-        self, kind: str, theme_name: str
+        self, kind: str, theme_name: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Native selection paint and range state remain scroll-attached in both Slo themes."""
         app = SloTUI(session=_build_session())
         async with app.run_test(size=(80, 24)) as pilot:
+            fence = SelectionFixtureFence(app=app, monkeypatch=monkeypatch)
             app.theme = theme_name
             for index in range(20):
                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
@@ -174,18 +176,17 @@ class TestPilotVisibleSelection:
                 body = user_block._body
             for index in range(20, 40):
                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
-            await _await_follow_pin(pilot=pilot, app=app)
-            block.scroll_visible(animate=False)
-            await pilot.pause(delay=1.0)  # Wait for the queued mount's follow pin and layout refresh.
-            if kind == "user":
-                block.scroll_visible(top=True, animate=False)
-                await pilot.pause(delay=0.1)
+            await fence.fixture_completed()
+            block.scroll_visible(top=kind == "user", animate=False)
+            await fence.paint_committed()
             start = _location_for_offset(app=app, body=body, target=Offset(x=6, y=0))
             end = _location_for_offset(app=app, body=body, target=Offset(x=10, y=0))
             await pilot.mouse_down(offset=start)
             await pilot.hover(offset=end)
             await pilot.mouse_up(offset=end)
             await pilot.pause()
+            assert app.screen.get_selected_text() == "bravo"
+            assert app._clipboard == "bravo"
             background = _selection_background(app=app)
             assert app.screen.get_style_at(x=start[0], y=start[1]).bgcolor == background
             assert app._transcript_scroll is not None

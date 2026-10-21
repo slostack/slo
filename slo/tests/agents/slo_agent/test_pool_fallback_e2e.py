@@ -16,6 +16,9 @@ Audit kinds are diagnostic-only and must never project into model context.
 
 from __future__ import annotations
 
+from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from unittest.mock import AsyncMock, patch
@@ -239,7 +242,7 @@ async def _collect_response(*, session: SloAgentSession, text: str) -> str:
     return completed[-1].content or ""
 
 
-def _store(session: SloAgentSession) -> FilesystemSessionHistoryStore:
+def _store(session: SloAgentSession) -> SessionHistoryStoreProtocol:
     """Return the session's history store, asserting it is enabled (test sessions)."""
     store = session.history_store
     assert store is not None

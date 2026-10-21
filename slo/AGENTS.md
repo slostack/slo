@@ -23,7 +23,7 @@ One-line framing: *pi is the teacher; Slo is the student we own.*
 - Persists a full-fidelity JSONL event log per session under `~/.slo/sessions/history/`.
 - Loads project instruction files (`SLO.md` / `AGENTS.md` / `CLAUDE.md`) from the
   working directory tree into the system prompt automatically.
-- Keeps 187 vendored convention skills (`skills/`) readable on demand via the `read` tool.
+- Keeps 188 vendored convention skills (`skills/`) readable on demand via the `read` tool.
 - Spawns and supervises headless sub-agents via `spawn_sub_agents` when promoted to
   orchestrator mode.
 
@@ -381,7 +381,7 @@ caller loop; only the synchronous formatting leaf crosses the gateway, and
 
 Skills are vendored convention prompts that the agent reads on demand.
 
-- **Location:** `skills/<group>/<slug>/SKILL.md` — 187 skills across 14 groups:
+- **Location:** `skills/<group>/<slug>/SKILL.md` — 188 skills across 14 groups:
   `orientation/`, `design-and-analysis/`, `coding/`, `git-ops/`, `cli/`, `tui/`,
   `integration-tests/`, `frontend-vue/`, `presentation/`, `user-content/`,
   `engineering/`, `languages/`, `samples/`, and `orchestration/`.

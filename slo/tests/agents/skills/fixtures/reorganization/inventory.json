@@ -5041,7 +5041,7 @@
       "## Deliberately not ported"
     ],
     "description": null,
-    "destination": "docs/skills-reorganization/user-content.md",
+    "destination": "tests/agents/skills/fixtures/reorganization/user-content.md",
     "status": "retained-user-owned-not-replaced"
   },
   {
@@ -5461,7 +5461,7 @@
       "### 12. Anti-patterns"
     ],
     "description": "Produce rich split-pane diff displays inside the Slo TUI \u2014 before/after panels with language-aware syntax highlighting for every file type, plus git/branch/file comparison output \u2014 whenever the user asks to see what changed, review a diff, or compare files.",
-    "destination": "docs/skills-reorganization/user-content.md",
+    "destination": "tests/agents/skills/fixtures/reorganization/user-content.md",
     "status": "retained-user-owned-not-replaced"
   },
   {
@@ -5844,7 +5844,7 @@
       "## Definition of done"
     ],
     "description": "Produce a beautiful, print-ready PDF that looks like an O'Reilly field guide \u2014 a navy full-bleed cover, a dotted-leader table of contents, part dividers, chapter/section pages with eyebrow kickers and rust underlines, callout boxes, accent quotes, clean captioned SVG diagrams, and running footers \u2014 rendered with WeasyPrint using local book fonts (Baskerville, PT Serif, Helvetica Neue, JetBrains Mono). Works for ANY subject (portfolio, report, briefing, whitepaper, explainer, proposal, field guide), not just portfolios. Encodes the full design system, the render pipeline, the diagram conventions, and the exact witty-but-technical writing voice.",
-    "destination": "docs/skills-reorganization/user-content.md",
+    "destination": "tests/agents/skills/fixtures/reorganization/user-content.md",
     "status": "retained-user-owned-not-replaced"
   },
   {

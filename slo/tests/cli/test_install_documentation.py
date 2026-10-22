@@ -5,31 +5,31 @@ from __future__ import annotations
 from pathlib import Path
 
 REPOSITORY_ROOT: Path = Path(__file__).resolve().parents[2]
-RESEARCH: Path = REPOSITORY_ROOT / "RESEARCH.md"
+README: Path = REPOSITORY_ROOT / "README.md"
 
 
-def _research_text() -> str:
-    """Return RESEARCH.md with whitespace collapsed so wrapped bullets compare as one line."""
-    return " ".join(RESEARCH.read_text(encoding="utf-8").split())
+def _readme_text() -> str:
+    """Return README.md with whitespace collapsed so wrapped prose compares as one line."""
+    return " ".join(README.read_text(encoding="utf-8").split())
 
 
 def test_install_guide_describes_launcher_finalization_and_no_envrc_requirement() -> None:
-    """The operator reference names the supported repair boundary and excludes target ``.envrc`` changes."""
-    content: str = _research_text()
+    """The install chapter names the supported repair boundary and excludes target ``.envrc`` changes."""
+    content: str = _readme_text()
 
-    assert "--finalize-launcher" in content
-    assert "re-run matching tagged public installer" in content
-    assert "Direct `pipx install|upgrade|reinstall`" in content
-    assert "unsupported as repair" in content
-    assert "Slo never reads/changes a project's `.envrc`" in content
+    assert "install.sh --finalize-launcher" in content
+    assert "matching tagged public installer" in content
+    assert "Direct `pipx install`, `upgrade`, or `reinstall`" in content
+    assert "It is not a supported repair path" in content
+    assert "Slo never requires, reads, or changes a target project's `.envrc`" in content
 
 
 def test_install_guide_distinguishes_initial_wrapper_environment_from_child_sanitation() -> None:
-    """The reference makes no false claim that ``-I`` scrubs process environment or child launches."""
-    content: str = _research_text()
+    """The install chapter makes no false claim that ``-I`` scrubs process environment or child launches."""
+    content: str = _readme_text()
 
-    assert "Import isolation only: `os.environ` (incl. `SLO_*`, credentials) remains" in content
+    assert "it is import isolation, not environment scrubbing" in content
     assert "sanitized child environment" in content
     assert "sys.executable -I -m src.cli" in content
-    assert "`-I` does not propagate to project interpreters" in content
-    assert "trusted source fallback" in content
+    assert "Isolation applies to the agent interpreter, not to project commands the agent launches" in content
+    assert "visualizer source fallback remains trusted-source-only" in content

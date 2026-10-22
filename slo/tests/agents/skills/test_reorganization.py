@@ -134,7 +134,9 @@ def test_routing_contract_covers_positive_and_negative_scenarios() -> None:
         "override",
     ):
         assert phrase in text
-    scenarios = json.loads((ROOT / "tests/agents/skills/fixtures/reorganization/routing-scenarios.json").read_text())
+    scenarios = json.loads(
+        (ROOT / "tests/agents/skills/fixtures/reorganization/routing-scenarios.json").read_text()
+    )
     assert len(scenarios) >= 5
     for case in scenarios:
         for path in case["required"]:

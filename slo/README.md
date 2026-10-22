@@ -15,8 +15,8 @@
   at the end: the maintained repository layout, style rules, testing rules,
   commit/branch conventions, specification conventions, and the rule for
   keeping this README current. Exact values (timeouts, env-var defaults,
-  caps, on-disk layouts, step-by-step how-tos) live in the repository's
-  root `RESEARCH.md`.
+  caps, on-disk layouts, step-by-step how-tos) live in the knowledge base at
+  KB `slo/operational-reference.md`. The root `RESEARCH.md` is a gitignored, local project-memory file.
 - Every code excerpt cites its source as `path/to/file.py:line-line`. Open
   the file in your editor; the citation is the contract.
 
@@ -41,7 +41,7 @@ specifications under `specifications/` and the Knowledge Base under
 This README is the single maintained reference for the codebase (it
 replaces the former `AGENTS.md`). The repository instruction file that
 Slo auto-loads into every agent session is `SLO.md`; durable,
-value-level project knowledge lives in `RESEARCH.md`.
+value-level project knowledge lives in KB `slo/operational-reference.md`.
 
 ### What Slo is
 
@@ -178,7 +178,9 @@ marked POSIX wrapper. The wrapper invokes the pinned pipx interpreter as
 foreign `src` or `config` modules before the Typer app starts. This installed
 path is distinct from trusted development source execution, which may run
 `python -m src.cli`. `install.sh` is the only wrapper writer; `-I` protects
-initial CLI import resolution while preserving ordinary environment values.
+initial CLI import resolution while preserving ordinary environment values:
+it is import isolation, not environment scrubbing. Slo never requires, reads,
+or changes a target project's `.envrc`.
 
 The same isolation applies to the processes Slo starts itself (spec 82.a):
 sub-agents, detached workflow orchestrators, and workflow resumes always run
@@ -1180,7 +1182,7 @@ a different default, or to `0` to disable that default ceiling. An explicit
 tool-call timeout still takes precedence. For the complete headless and
 orchestrator timeout reference, including reconnect, heartbeat, and child
 inactivity settings, see KB `slo/headless-guide.md`; the exact values are
-also collected in `RESEARCH.md`.
+also collected in KB `slo/operational-reference.md`.
 
 **Provider stream disconnection (spec 70).** `StreamRecoveryService`
 (`src/agents/providers/stream_recovery/`) is the sole registry of concrete
@@ -2079,7 +2081,7 @@ tool export inside a running session cannot change the running
 orchestrator's environment (the orchestrator prompt in `spawn_tool.py` says
 so explicitly); prefer splitting phases so no single blocking call outlives
 the parent guard. Defaults and the exact export lines are in
-`RESEARCH.md`; background is in KB `slo/headless-workflow-orchestration.md`
+KB `slo/operational-reference.md`; background is in KB `slo/headless-workflow-orchestration.md`
 → "Long-running phases / slow test suites".
 
 **Workflow-turn counting.** Counting and stopping rules live in
@@ -2089,7 +2091,8 @@ dispatch. Track partial passes, phase retries and dispatch limits
 separately; disclose a harness budget conflict before launch; never claim
 repeated writing attempts were complete writing-and-review cycles. The
 default budgets (turns per task, dispatches per turn, failed-task retries)
-are prompt rules, not runtime counters — the numbers are in `RESEARCH.md`.
+are prompt rules, not runtime counters — the numbers are in
+`skills/orchestration/workflows/SKILL.md` and KB `slo/operational-reference.md`.
 Explicit user instructions override those budgets (higher, lower or
 unlimited); record the effective limits and keep consumed counts. Resume and
 takeover preserve counts; aborted tasks are never retried. Runtime caps,
@@ -2315,8 +2318,10 @@ On any host other than macOS/Windows with `DISPLAY`, `WAYLAND_DISPLAY` and
 Elsewhere they open the browser off the event loop, and `OAuthFlow` opens it
 concurrently with the callback/paste race. Tests inject `browser_host=`
 instead of patching the environment. The callback, browser/manual attempt,
-and device attempt deadlines each have their own environment variable (names
-and defaults in `RESEARCH.md`).
+and device attempt deadlines each have their own environment variable:
+`SLO_OAUTH_TIMEOUT_SECONDS` (loopback callback, default `60`),
+`SLO_OAUTH_MANUAL_TIMEOUT_SECONDS` (whole browser/manual attempt including paste,
+default `900`) and `SLO_OAUTH_DEVICE_TIMEOUT_SECONDS` (device attempt, default `900`).
 
 Concrete provider configuration (endpoints, client_id, scopes) lives
 in `src/auth/providers/anthropic_provider.py` and
@@ -2630,7 +2635,7 @@ without switching, because retrying it on another member would not help.
 classifier** for all three failure paths: `ModelPool` route switching,
 `RecoveryPolicy`, and the session's iteration retry. Classification is
 per provider (Anthropic, OpenAI, Kimi For Coding each have their own
-status-code and error-code mapping — the full table is in `RESEARCH.md`).
+status-code and error-code mapping — the full table is in KB `slo/operational-reference.md`).
 When no HTTP status settles the kind, a shared message-text fallback maps
 `"rate limit"` / `"429"` in the message to `RATE_LIMITED`, preserving the
 former provider-agnostic heuristic. Transport disconnects are classified by
@@ -3191,7 +3196,7 @@ per-run request capacity under a run-scoped `admission.lock`.
 an explicit `--notify-session` owner, and closes it before the final fleet
 drain. Requests and receipts are private audit state: never deleted,
 backfilled or migrated. Exact intervals, caps and timeouts are in
-`RESEARCH.md`.
+KB `slo/operational-reference.md`.
 
 **Feature 94 — optional Herdr runtime (not live-certified).**
 
@@ -3764,8 +3769,8 @@ User: "analyse in parallel"
 This part is the maintained reference for anyone — human or AI — changing
 the codebase. It absorbs the former `AGENTS.md`. Narrative explanations
 live in the chapters above; exact values (timeouts, env-var defaults, caps,
-status-code tables, budgets, on-disk file lists, how-tos) live in the
-repository's root `RESEARCH.md`.
+status-code tables, budgets, on-disk file lists, how-tos) live in
+KB `slo/operational-reference.md`.
 
 ### Everyday commands
 
@@ -3956,7 +3961,6 @@ slo/
 ├── specifications -> ../specifications  # symlink to the canonical spec root
 ├── pyproject.toml
 ├── README.md       ← this file: the maintained codebase reference
-├── RESEARCH.md     # distilled project specifics (values, layouts, how-tos)
 └── SLO.md          # repository instruction file Slo auto-loads into every agent session
 ```
 
@@ -4152,4 +4156,4 @@ Keep [§5.3](#53-the-system-prompt-builder) (system prompt assembly) and
 [§5.4](#54-tools) (tool bundle) accurate — they directly affect what every
 agent session sees and does. When a change alters an exact value (a
 timeout, default, cap, budget, status-code mapping, file name, or command),
-update `RESEARCH.md` as well.
+update KB `slo/operational-reference.md` as well.

@@ -2,8 +2,9 @@
 
 - Read `README.md` first for any code, architecture, workflow, or testing task in
   this repository. It is the authoritative reference for module layout, the
-  runtime chain, the tool bundle, and the style rules. `RESEARCH.md` holds the
-  exact operational specifics (timeouts, limits, commands, how-tos).
+  runtime chain, the tool bundle, and the style rules. KB `slo/operational-reference.md`
+  holds the exact operational specifics (timeouts, limits, commands, how-tos);
+  the root `RESEARCH.md`, when present, is a gitignored local project-memory file.
 
 ## Skills maintenance
 
@@ -68,7 +69,7 @@ gates; process completion alone does not establish workflow acceptance.
   `TimeoutError: main agent stream produced no events ...; treated as hung`.
   Keep parent > child, export both before starting the orchestrator, and prefer
   splitting phases so no single blocking call exceeds the parent guard. See
-  `RESEARCH.md` and KB `slo/headless-workflow-orchestration.md`.
+  KB `slo/operational-reference.md` and KB `slo/headless-workflow-orchestration.md`.
 
 - **Verify before you claim.** Follow `skills/engineering/engineering-testing/SKILL.md`
   and `skills/coding/test-verification-policy/SKILL.md` for meaningful behavior,

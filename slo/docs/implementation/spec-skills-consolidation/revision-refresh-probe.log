@@ -1,5 +1,0 @@
-Manifest source: workflows/code-test-review.md; output group: design-and-analysis
-Pointer preserved byte-for-byte: True
-Pointer-only guidance remains: True
-Workflow procedure copied into SKILL.md: False
-Source checkout files were read only; all writes were inside the owned temporary root.

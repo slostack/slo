@@ -1,6 +1,0 @@
-Skipping virtualenv creation, as specified in config file.
-Manifest source: workflows/code-test-review.md; output group: design-and-analysis
-Pointer preserved byte-for-byte: False
-Pointer-only guidance remains: False
-Workflow procedure copied into SKILL.md: True
-Source checkout files were read only; all writes were inside the owned temporary root.

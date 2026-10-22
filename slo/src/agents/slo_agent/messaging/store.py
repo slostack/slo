@@ -1499,13 +1499,15 @@ class MessageStore:
             return None
         lane = "kind IN ('context_note','transcript_note')" if note else "kind = 'agent_input'"
         existing = self._connection.execute(
-            "SELECT m.message_id, m.history_event_id FROM messages m"
+            "SELECT m.message_id, m.history_event_id, m.state FROM messages m"
             f" WHERE m.run_id = ? AND m.boundary_index = ? AND {lane}"
             " AND m.retained = 0 AND m.execution_generation = ?",
             (boundary.run_id, boundary.boundary_index, self._target.generation),
         ).fetchone()
         if existing is not None:
-            message_id, history_event_id = existing
+            message_id, history_event_id, state = existing
+            if state != "applying":
+                return None
             return self._delivery_for(message_id=message_id, history_event_id=history_event_id)
         candidate = self._connection.execute(
             "SELECT message_id FROM messages"
@@ -2134,6 +2136,8 @@ class MessageStore:
             raise MessageStoreError()
 
         def _read() -> QueueStateDAO:
+            if self._meta_value(key=_LIFECYCLE_KEY) != _LIFECYCLE_ACCEPTING:
+                return QueueStateDAO(eligible_inputs=0, eligible_notes=0, urgent_high_water=0)
             generation = self._meta_value(key=_GENERATION_KEY)
             inputs = self._connection.execute(
                 "SELECT COUNT(*), COALESCE(MAX(CASE priority WHEN 'urgent' THEN sequence END), 0)"
@@ -2143,7 +2147,7 @@ class MessageStore:
             ).fetchone()
             notes = self._connection.execute(
                 "SELECT COUNT(*) FROM messages WHERE state = 'accepted' AND retained = 0"
-                " AND kind != 'agent_input' AND execution_generation = ?",
+                " AND kind IN ('context_note','transcript_note') AND execution_generation = ?",
                 (generation,),
             ).fetchone()
             return QueueStateDAO(

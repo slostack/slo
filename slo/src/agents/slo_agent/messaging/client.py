@@ -92,7 +92,12 @@ class SessionMessagingClient(Protocol):
 
 
 class LocalSessionMessagingClient:
-    """Borrow an already-started session and its registered local authority."""
+    """Unimplemented local client contract; not wired into session execution.
+
+    Submission and receipt lookup raise NotImplementedError until the session
+    integration slice implements this adapter. Construction and close remain
+    inert skeletons; neither acquires resources nor claims runtime readiness.
+    """
 
     def __init__(
         self,
@@ -118,20 +123,30 @@ class LocalSessionMessagingClient:
         *,
         submission: MessageSubmissionDAO,
     ) -> MessageReceiptDAO | MessageErrorDAO:
-        """Delegate once to session admission under its construction-time deadline.
+        """Refuse submission until the session integration slice is implemented.
 
-        Starts one session-tracked task and awaits it shielded; a timeout
-        returns unknown_outcome and the caller queries the original ID.
+        Args:
+            submission (MessageSubmissionDAO): Input reserved for future admission.
+
+        Raises:
+            NotImplementedError: Local session admission is not implemented.
         """
-        ...
+        raise NotImplementedError("Local session messaging is not implemented.")
 
     async def get_receipt(
         self,
         *,
         message_id: str,
     ) -> MessageReceiptDAO | MessageErrorDAO:
-        """Delegate to the same session authorization policy as admission."""
-        ...
+        """Refuse receipt lookup until the session integration slice is implemented.
+
+        Args:
+            message_id (str): Original ID reserved for future authorized lookup.
+
+        Raises:
+            NotImplementedError: Local session receipt lookup is not implemented.
+        """
+        raise NotImplementedError("Local session messaging is not implemented.")
 
     async def close(self) -> None:
         """Join tracked calls once, without cancelling admitted execution or session resources."""

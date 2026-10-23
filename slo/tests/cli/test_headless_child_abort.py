@@ -614,7 +614,13 @@ class _DispatchingSession:
 
     async def invoke(self, *, text: str):  # type: ignore[no-untyped-def]
         tasks = [
-            SubAgentTaskDAO(task_id=f"t-{sid}", prompt=text, session_id=sid) for sid in self._session_ids
+            SubAgentTaskDAO(
+                task_summary="Observe the child cancellation boundary",
+                task_id=f"t-{sid}",
+                prompt=text,
+                session_id=sid,
+            )
+            for sid in self._session_ids
         ]
         if tasks:
             await self._sub_agent_pool.dispatch(mode="parallel", tasks=tasks)

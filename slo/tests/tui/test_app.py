@@ -42,6 +42,7 @@ from src.tui.app import (
 from src.tui.authentication import AuthenticationScreen
 from src.tui.git_diff_content_service import GitDiffContentDAO, GitDiffContentError
 from src.tui.git_diff_screen import GitDiffScreen
+from src.tui.slash_router import SlashCommandResultDAO
 from src.tui.slodiff.model import FileStateKind
 from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 from src.tui.thinking_spinner import _BRAILLE_FRAMES, ThinkingSpinner
@@ -419,7 +420,7 @@ class TestSloTUIActiveModelState:
             await pilot.pause()
             with patch(
                 "src.tui.app.SlashRouter.dispatch",
-                return_value=MagicMock(
+                return_value=SlashCommandResultDAO(
                     rendered="reasoning changed high -> off",
                     should_clear=False,
                     open_auth_modal=False,

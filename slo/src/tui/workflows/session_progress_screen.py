@@ -63,7 +63,9 @@ class ProgressLog(RichLog):
 
     def __init__(self) -> None:
         """Build the screen's non-wrapping, manually followed log."""
-        super().__init__(wrap=False, markup=False, auto_scroll=False, id="session-log")
+        # Markdown must fit narrow modals rather than RichLog's default 78-cell floor.
+        # Plain tool output remains unwrapped and horizontally scrollable.
+        super().__init__(min_width=1, wrap=False, markup=False, auto_scroll=False, id="session-log")
 
     def on_resize(self, event: events.Resize) -> None:
         """Render deferred lines natively, then report the new layout to the screen.

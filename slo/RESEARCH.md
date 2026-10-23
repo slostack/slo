@@ -72,3 +72,13 @@ document before planning or changing a feature.
   `tests/agents/slo_agent/test_session_rate_limits.py` and
   `tests/agents/slo_agent/test_session.py`.
 - Use `make test` for the non-E2E suite and `make lint` for static checking.
+
+## Feature 98
+
+See docs/RESEARCH.md “current command and observation ownership” for reversible
+visibility, authored-summary compatibility and Thinking loss boundaries. Step1
+current full non-E2E receipt is turn4-dispatch1.md (8427 passed,19 deselected,
+455 warnings,exit0). FR01–04 independently closed. C98-01 original authored
+fixtures evidenced; C98-02 manual synthetic smoke blocked on an established safe
+interactive mechanism, not substituted by Pilot. Independent affected review and
+completion remain pending; NOT Step1READY. Earlier receipts are historical.

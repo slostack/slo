@@ -313,6 +313,65 @@ class _DeferredRestores:
             callback(**kwargs)
 
 
+class TestThinkingFormatting:
+    """Readable reasoning survives mounted refresh, replay projection and reopen."""
+
+    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("size", [(60, 20), (120, 40)])
+    async def test_markdown_spacing_wrap_refresh_and_reopen(
+        self, theme: Theme, size: tuple[int, int]
+    ) -> None:
+        """RichLog paints spaced wrapped prose, styled text and exact fenced indentation."""
+        source = (
+            "**Readable thinking** with spaces between every word " * 4
+            + "\n\nSecond paragraph.  \nHard break.\n\n```text\n    x  =  1\n```"
+        )
+        thinking = TranscriptEntryDAO(kind="thinking", content=source)
+        answer = TranscriptEntryDAO(kind="assistant", answer="Assistant keeps spaces.")
+        app = _ScreenHost(viewport=ProgressViewportDAO(following=False))
+        async with app.run_test(size=size) as pilot:
+            app.theme = theme.name
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(thinking, answer)))
+            log = _log(app=app)
+            painted = [line.text for line in log.lines]
+            assert sum("Readable thinking" in line for line in painted) >= 2
+            assert all(len(line.rstrip()) <= log.scrollable_content_region.width for line in painted), (
+                log.scrollable_content_region.width,
+                painted,
+            )
+            assert any("    x  =  1" in line for line in painted)
+            assert any("Assistant keeps spaces." in line for line in painted)
+            assert any(
+                segment.style and segment.style.bold and "Readable" in segment.text
+                for line in log.lines
+                for segment in line
+            )
+            assert "**" not in "\n".join(painted)
+            assert any(not line.strip() for line in painted)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(thinking, answer)))
+            assert [line.text for line in log.lines] == painted
+            # Canonical replay carries reasoning on an assistant entry rather than a thinking entry.
+            replay = TranscriptEntryDAO(kind="assistant", reasoning=source, answer=answer.answer)
+            await _paint(
+                app=app,
+                pilot=pilot,
+                snapshot=_snapshot(entries=(replay,), revision="replay", source_generation="canonical:1"),
+            )
+            replay_lines = [line.text for line in log.lines]
+            assert sum("x  =  1" in line for line in replay_lines) == 1
+            assert sum("Assistant keeps spaces." in line for line in replay_lines) == 1
+            app.screen_under_test.dismiss()
+            await pilot.pause()
+            app.screen_under_test = SessionProgressScreen(
+                key=_KEY, viewport=ProgressViewportDAO(following=False)
+            )
+            await app.push_screen(app.screen_under_test)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(replay,), revision="reopen"))
+            assert [line.text.rstrip() for line in _log(app=app).lines] == [
+                line.rstrip() for line in replay_lines
+            ]
+
+
 class TestFirstPaint:
     """First paint honours the saved viewport; an empty first paint follows the first append."""
 

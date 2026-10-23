@@ -1,5 +1,81 @@
 # Slo Codebase Index
 
+## Feature 98 — current command and observation ownership
+
+`/workflows tui dismiss [<id>]` hides any matching owned group, including running
+work; `/workflows tui show` restores all hidden groups immediately from retained
+rows, stale until a new observation succeeds. Neither command changes execution
+or files. `/clear` preserves visibility; `/new` and teardown reset it.
+`DetachedWorkflowAppService._list_groups` is the single visibility owner; hidden
+membership continues observing, while retained obsolete attached batches never
+acquire new output or abort authority. Durable `/workflows dismiss <id>` still
+means stalled → failed; successful `/workflows resume <id>` clears that same
+visibility record only after durable adoption, not merely after spawning.
+
+`SloTUI(workflow_resume_launcher=...)` forwards an optional typed launch-lifetime
+boundary through SlashRouter to WorkflowCommandService. The default remains
+WorkflowRelauncher.spawn_for_adoption. Reservation, PID adoption, activation,
+rollback and safe errors remain command/store-owned. The finite mounted test
+proves successful adoption and pre-adoption failure without launching a process.
+
+New dispatch requires authored `task_summary` (512 raw / 96 normalized characters).
+TaskPreview owns validation, tagged released-string transport and bounded legacy
+Task/Goal/Objective extraction; independent build remains capped at 150. This is
+an input compatibility change, not a saved-file migration. Actual BASE closed
+readers decode new fleet/status/context bytes. Full prompt detail stays separate.
+Modern labels require matching execution evidence; missing index is not legacy,
+and an older fleet publication cannot authorize a newer index incarnation.
+
+Thinking whitespace loss belongs to AssistantChunkNormalizer extraction: preserve
+exact fragments, including space-only chunks. Do not guess spaces in the renderer.
+Contentless replay ends stay open for authoritative repair; narrow RichLog Markdown
+uses a reduced minimum width. Mounted synthetic tests cover both themes, restored
+rows and original detail; they are not live-provider or human visual approval.
+
+Current receipt: implementation/98-tui-polished-messages-workflows/turn4-dispatch1.md.
+Full standard non-E2E:8427 passed,19 deselected,455 warnings,exit0. FR01–04
+independently closed. C98-01 original S1 authored fixtures now evidenced through
+admission/codec, with exact prompts and boilerplate invariance; no runtime edit.
+C98-02 manual synthetic smoke remains blocked on an established safe interactive
+mechanism. Automated Pilot is not a substitute. NOT Step1READY; independent
+affected review/completion follow. Approved static debt is not green. Older
+receipts below are historical.
+
+
+## Feature98 mounted visibility evidence — dispatch13
+
+`SloTUI` now accepts optional `workflow_coordinator_factory`, defaulting to the
+real coordinator and passing its existing source/sink/schedule interfaces. This
+allows mounted sink failure/owner replacement proof without replacing live private
+dependencies. Attached display-group rows reject detached workflow IDs. Final
+837-test affected gate passes; successful durable resume-to-display integration
+still lacks a finite injected launch boundary and is not claimed complete. See
+`implementation/98-tui-polished-messages-workflows/dispatch13.md`.
+
+## Feature 98 visibility retention — bounded dispatch 11
+
+Visibility projection treats a readable owned fleet as membership authority even
+when old capture directories remain. Lost fleet evidence retains prior children
+stale rather than admitting directory discoveries. Previously complete child detail
+survives lost capture evidence, but never crosses execution identity. Stale list
+rows cannot load new progress until a fresh list observation restores them; accepted
+abort receipt settlement remains in observation. Standalone visualizer discovery
+is unchanged. See `implementation/98-tui-polished-messages-workflows/dispatch11.md`
+for 827-test affected evidence and remaining acceptance gaps (not full approval).
+
+## Feature 98 R1 — thinking whitespace (bounded Step 1)
+
+Streamed summary fragments must not use completed-prose cleanup:
+`AssistantChunkNormalizer._visible_reasoning_text` preserves exact substrings,
+including whitespace-only chunks. Capture accumulation already concatenates them.
+`WorkflowTranscriptRenderer` renders thinking and canonical reasoning as dim
+Markdown; Assistant answers and literal tool output keep their existing paths.
+`ProgressLog` removes RichLog's 78-cell minimum width so narrow modal Markdown
+fits. Replay `_ThinkingSegment` keeps contentless ends open for authoritative
+late repair, matching the parent widget. No guessed spaces or capture backfill.
+Evidence: `implementation/98-tui-polished-messages-workflows/dispatch10.md`;
+759 affected tests pass. Independent/full-feature acceptance remains pending.
+
 ## Feature 89 runtime owners and offline acceptance
 
 `src/agents/providers/openai_platform.py` owns strict nonmutating caller-option
@@ -804,3 +880,52 @@ audit before upstream refresh. Runtime descriptions must match body routing: the
 extended context companion is on-request and shares canonical artifact precedence.
 See `revision-evidence.md` in the consolidation evidence directory; independent
 re-review and completion remain pending.
+
+## Feature 98 b.1 — authored task labels (Step 1)
+
+New `SubAgentTaskDAO` inputs require `task_summary`; native and legacy JSON batches
+validate completely before dispatch. Summary errors use one fixed safe tool error.
+`TaskPreview` owns the 512-raw/96-normalized validation and `Task summary v1: `
+carrier. Its existing `build` remains an independent 150-code-point formatter.
+Registry and pool encode the authored field, never the substituted chain prompt.
+Fleet/status/context schemas are unchanged; loaded fleet entries recover runtime
+execution identity from the existing index before projecting labels. The loader
+keeps original task text/completeness separate, and matching tagged summaries win
+over complete context. Transient row/visualizer fields carry prepared literal text;
+widgets do not summarize. Legacy files use bounded explicit labels or the fixed
+unavailable description. No inference, backfill or external skill migration.
+
+`SubAgentDispatcher` is the tool's typed batch seam; `SubAgentProcessFactory` is
+an optional pool constructor seam whose default remains the concrete wrapper.
+Finite tests override public `run` and use real registry/file publication, not real
+process transport. Step-1 receipts and remaining S proofs are in
+`implementation/98-tui-polished-messages-workflows/dispatch9.md`; this is not full
+feature approval or a claim of complete compatibility/visibility coverage.
+
+## Feature 98 revision turn2 — author closure, independent gates pending
+
+Lost modern identity (surviving execution sibling without whole index or exact child
+mapping) is unavailable, never legacy or merely waiting: empty execution ID is not
+fabricated authority. Loader list/detail/progress share classification and recover
+read-only when matching evidence returns. Verified pending remains waiting.
+Completed observations evict hidden detached adapters unless a visible current group
+shares the parent. Show reads nothing; hidden receipt settlement remains independent.
+Refusal feedback survives failed paint; only changed outcomes claim saved visibility.
+Observation gathering uses candidate-local detached/attached named steps, preserving
+invalidation and cooperative yields before synchronous commit.
+Evidence: implementation/98-tui-polished-messages-workflows/turn2-dispatch2.md.
+Latest full standard gate: 8418 passed,19 deselected,455 warnings,exit0; scoped64-file
+Black passes. Approved whole-tree static debt is waived, not green. Independent
+re-review/completion remain pending; no commit or human/live-provider approval.
+
+## Feature 98 retained-row identity loss — revision turn3
+
+The existing loader classifies absent whole index or exact child mapping as
+missing modern identity even when the caller retains a previously verified nonempty
+execution ID. Direct progress is unavailable (retained task text is not erased);
+service existing-key refusal remains stale and content-free. Matching restoration
+recovers read-only; pending/legacy paths retain their existing behavior.
+Chronological tests cover loss both before and after successful list/detail reads.
+See implementation/98-tui-polished-messages-workflows/turn3-dispatch1.md:
+post-correction full8420/19deselected/455warnings/exit0, affected845; independent
+residual re-review and completion pending. Earlier gates remain historical.

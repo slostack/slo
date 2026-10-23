@@ -11,16 +11,13 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.widgets import ListItem, Static
 
-from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
+from src.agents.slo_agent.orchestrator.task_preview import TASK_SUMMARY_FALLBACK
 from src.tui.workflows.dao import WorkflowSessionRowDAO
 
 __all__ = ["SubAgentFleetRow"]
 
 ORCHESTRATOR_LABEL: str = "Orchestrator"
 """Exact label of the parent row; its task text is never shown in the list."""
-
-TASK_FALLBACK_LABEL: str = "Task details unavailable"
-"""Label for a child whose task text has nothing displayable after normalization."""
 
 
 class SubAgentFleetRow(ListItem):
@@ -71,5 +68,5 @@ class SubAgentFleetRow(ListItem):
                 the fixed fallback when nothing displayable remains.
         """
         if row.role == "orchestrator":
-            return ORCHESTRATOR_LABEL
-        return TaskPreview.build(task_text=row.task_text) or TASK_FALLBACK_LABEL
+            return ORCHESTRATOR_LABEL + (" [retained batch]" if row.retained_batch else "")
+        return row.task_summary or TASK_SUMMARY_FALLBACK

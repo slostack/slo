@@ -150,7 +150,11 @@ async def test_feature89_headless_routes_use_shared_admission(
                 level = "low"
             elif entry == "child":
                 task = SubAgentTaskDAO(
-                    task_id="child89", prompt="offline", model=model_name, reasoning_level="off"
+                    task_summary="Check model request compatibility",
+                    task_id="child89",
+                    prompt="offline",
+                    model=model_name,
+                    reasoning_level="off",
                 )
                 model, level = task.model, task.reasoning_level
             else:

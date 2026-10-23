@@ -59,7 +59,9 @@ class _Harness:
         )
         self.registry: ProcessRegistry = ProcessRegistry(fleet_store=self.store)
         self.registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
-        self.task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="do the work")
+        self.task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Verify terminal publication arbitration", task_id="t1", prompt="do the work"
+        )
         self.execution_id: str = self.registry.register(
             dispatch_id="44444444-4444-4444-8444-444444444444",
             task_id="t1",
@@ -900,7 +902,15 @@ class TestPendingAdmissionThroughPool:
         ):
             dispatch = asyncio.create_task(
                 pool.dispatch(
-                    mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id=_CHILD)]
+                    mode="single",
+                    tasks=[
+                        SubAgentTaskDAO(
+                            task_summary="Exercise child output transport",
+                            task_id="t1",
+                            prompt="x",
+                            session_id=_CHILD,
+                        )
+                    ],
                 )
             )
             await _wait_for(lambda: bool(pool._semaphore._waiters))

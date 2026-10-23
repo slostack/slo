@@ -1092,3 +1092,74 @@ Neither command imports upstream prompts, rewrites skill bodies, or removes
 workflow definitions, samples or assets. `SLO_CODE_PROMPTS_DIR` is no longer used. See
 `docs/skills-reorganization/overview.md` and `preservation-map.md` for authority,
 source inventory, migrations, verification and limitations.
+
+### Feature 98 visibility composition seam
+
+`SloTUI(workflow_coordinator_factory=...)` optionally constructs the coordinator
+with the existing service/sink/schedule interfaces; the default is unchanged.
+The app retains lifecycle ownership of its real sink. Mounted failure tests inject
+a delegating sink through this construction seam, never replace live dependencies.
+
+## Feature 98 b.1 — authored summary input
+
+New dispatch tasks require `task_summary`, independently of the full `prompt`.
+`TaskPreview.validate_summary/encode_summary/project_summary` own validation,
+released-preview string transport and bounded legacy extraction; `build` retains
+its independent 150-code-point contract. Registry/pool encode the same authored
+label, including chain steps. Loader and row `task_summary` fields are transient;
+matching tagged fleet labels win over full context while detail remains original.
+The literal row widget never clips or infers task meaning. Saved closed shapes
+remain unchanged. `SubAgentDispatcher` and optional `SubAgentProcessFactory`
+provide typed test seams without changing default production execution.
+
+## Feature 98 — current command and observation ownership
+
+`/workflows tui dismiss [<id>]` hides any matching owned group, including running
+work; `/workflows tui show` restores all hidden groups immediately from retained
+rows, stale until a new observation succeeds. Neither command changes execution
+or files. `/clear` preserves visibility; `/new` and teardown reset it.
+`DetachedWorkflowAppService._list_groups` is the single visibility owner; hidden
+membership continues observing, while retained obsolete attached batches never
+acquire new output or abort authority. Durable `/workflows dismiss <id>` still
+means stalled → failed; successful `/workflows resume <id>` clears that same
+visibility record only after durable adoption, not merely after spawning.
+
+`SloTUI(workflow_resume_launcher=...)` forwards an optional typed launch-lifetime
+boundary through SlashRouter to WorkflowCommandService. The default remains
+WorkflowRelauncher.spawn_for_adoption. Reservation, PID adoption, activation,
+rollback and safe errors remain command/store-owned. The finite mounted test
+proves successful adoption and pre-adoption failure without launching a process.
+
+New dispatch requires authored `task_summary` (512 raw / 96 normalized characters).
+TaskPreview owns validation, tagged released-string transport and bounded legacy
+Task/Goal/Objective extraction; independent build remains capped at 150. This is
+an input compatibility change, not a saved-file migration. Actual BASE closed
+readers decode new fleet/status/context bytes. Full prompt detail stays separate.
+Modern labels require matching execution evidence; missing index is not legacy,
+and an older fleet publication cannot authorize a newer index incarnation.
+
+Thinking whitespace loss belongs to AssistantChunkNormalizer extraction: preserve
+exact fragments, including space-only chunks. Do not guess spaces in the renderer.
+Contentless replay ends stay open for authoritative repair; narrow RichLog Markdown
+uses a reduced minimum width. Mounted synthetic tests cover both themes, restored
+rows and original detail; they are not live-provider or human visual approval.
+
+Step1 receipt: implementation/98-tui-polished-messages-workflows/dispatch16.md.
+Final standard non-E2E gate: 8405 passed, 19 deselected, exit0. Independent review
+and completion remain pending; approved whole-tree static debt is not green.
+
+## Feature 98 revision turn2 — author closure, independent gates pending
+
+Lost modern identity (surviving execution sibling without whole index or exact child
+mapping) is unavailable, never legacy or merely waiting: empty execution ID is not
+fabricated authority. Loader list/detail/progress share classification and recover
+read-only when matching evidence returns. Verified pending remains waiting.
+Completed observations evict hidden detached adapters unless a visible current group
+shares the parent. Show reads nothing; hidden receipt settlement remains independent.
+Refusal feedback survives failed paint; only changed outcomes claim saved visibility.
+Observation gathering uses candidate-local detached/attached named steps, preserving
+invalidation and cooperative yields before synchronous commit.
+Evidence: implementation/98-tui-polished-messages-workflows/turn2-dispatch2.md.
+Latest full standard gate: 8418 passed,19 deselected,455 warnings,exit0; scoped64-file
+Black passes. Approved whole-tree static debt is waived, not green. Independent
+re-review/completion remain pending; no commit or human/live-provider approval.

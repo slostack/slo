@@ -630,6 +630,90 @@ def _text(*, snapshot: SessionProgressSnapshotDAO) -> str:
     return "".join(entry.model_dump_json() for entry in snapshot.entries)
 
 
+class TestThinkingChunkSpacing:
+    """Provider fragments survive the real capture observation boundary."""
+
+    @pytest.mark.parametrize("shape", ["summary_list", "summary", "thinking", "text", "content"])
+    async def test_stream_fragments_keep_exact_whitespace(self, layout: _Layout, shape: str) -> None:
+        """No chunk trimming, space inference, or capture reread duplication is permitted."""
+        from langchain_core.messages import AIMessageChunk
+        from src.agents.slo_agent.assistant_chunk_normalizer import AssistantChunkNormalizer
+
+        fragments = [
+            "I",
+            " ",
+            "need",
+            " to",
+            " sort",
+            " out",
+            " re",
+            "main",
+            "ing",
+            "\n\n",
+            "**Next**",
+            "  \n",
+            "    literal  code\n",
+        ]
+        normalizer = AssistantChunkNormalizer(iteration=1)
+        events: list[dict[str, object]] = []
+        for fragment in fragments:
+            block: dict[str, object] = {"type": "reasoning"}
+            if shape == "summary_list":
+                block["summary"] = [{"type": "summary_text", "text": fragment}]
+            else:
+                block[shape] = fragment
+            events.extend(
+                event.model_dump(mode="json")
+                for event in normalizer.absorb_chunk(chunk=AIMessageChunk(content=[block]))
+            )
+        events.extend(
+            event.model_dump(mode="json")
+            for event in normalizer.absorb_chunk(chunk=AIMessageChunk(content="Assistant keeps spaces."))
+        )
+        evidence = layout.running_child(child="child-a", execution_id=_EXEC_A, prompt="TASK")
+        layout.capture(child="child-a", events=events)
+        layout.fleet(entries=[_status(child="child-a", execution_id=_EXEC_A)])
+        loader = _observer(root=layout.root)
+        first = await loader.load_session_progress(row=_row())
+        again = await loader.load_session_progress(row=_row())
+        reopened = await _observer(root=layout.root).load_session_progress(row=_row())
+
+        assert first.entries[0].content == "".join(fragments)
+        assert first.entries[1].answer == "Assistant keeps spaces."
+        assert again.entries == reopened.entries == first.entries
+        # Completed history carries the normalizer's authoritative thinking_end content.
+        history = [
+            _event(
+                session_id="child-a",
+                sequence=index + 1,
+                kind="assistant_delta",
+                delta_kind=event["kind"],
+                delta=event.get("delta"),
+                block_id=event.get("block_id"),
+            )
+            for index, event in enumerate(events)
+        ]
+        history.extend(
+            [
+                _event(
+                    session_id="child-a",
+                    sequence=len(history) + 1,
+                    kind="assistant_delta",
+                    delta_kind="thinking_end",
+                    block_id="thinking:1:0",
+                    content="".join(fragments),
+                ),
+                _event(session_id="child-a", sequence=len(history) + 2, kind="run_completed"),
+            ]
+        )
+        layout.history(session_id="child-a", events=history)
+        _terminal(layout=layout, evidence=evidence)
+        replay = await loader.load_session_progress(row=_row(status="completed"))
+        assert len(replay.entries) == 1
+        assert replay.entries[0].reasoning == "".join(fragments)
+        assert replay.entries[0].answer == "Assistant keeps spaces."
+
+
 class TestLoadSessionProgress:
     """``load_session_progress`` picks one safe source and never concatenates."""
 
@@ -1251,3 +1335,33 @@ async def test_group_completion_follows_the_newest_run_boundary(
     group = await _observer(root=layout.root).load_observation_group()
 
     assert group.is_complete is complete
+
+
+async def test_tagged_summary_wins_over_complete_context(tmp_path: Path) -> None:
+    """Matching fleet label wins while exact original detail remains read-only."""
+    layout = _Layout(root=tmp_path)
+    prompt = "Read AGENTS.md.\nTask: Review different legacy instructions\nDo not commit."
+    label = "Compare [branch] naming rules with repository policy"
+    layout.running_child(child="summary-child", execution_id=_EXEC_A, prompt=prompt)
+    layout.fleet(
+        entries=[
+            SubAgentStatusDAO(
+                task_id="task",
+                session_id="summary-child",
+                status="running",
+                execution_id=_EXEC_A,
+                prompt_preview="Task summary v1: " + label,
+            )
+        ]
+    )
+    loader = WorkflowVisualizerLoader(
+        config=HeadlessWorkflowVisualizerConfigDAO(session_reference=_PARENT, follow=False),
+        store=FilesystemSessionHistoryStore(root=tmp_path),
+    )
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    group = await loader.load_observation_group()
+    child = next(child for child in group.children if child.session_id == "summary-child")
+    assert child.task_summary == label
+    assert child.task_text == prompt
+    assert child.task_text_complete is True
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

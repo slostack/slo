@@ -171,8 +171,12 @@ async def test_hidden_loader_lifetime_follows_committed_groups(tmp_path: Path, s
         request=WorkflowListVisibilityRequestDAO(action="dismiss", target_id="wf-a")
     )
     await service.load_session_snapshot()
+    if not shared_visible:
+        await _wait_for_released_loaders(references=references)
     assert (references[0]() is not None) == shared_visible
     await service.load_session_snapshot()
+    if not shared_visible:
+        await _wait_for_released_loaders(references=references)
     assert sum(reference() is not None for reference in references) == int(shared_visible)
     constructions = len(references)
     before = tree_state(root)
@@ -186,7 +190,23 @@ async def test_hidden_loader_lifetime_follows_committed_groups(tmp_path: Path, s
     assert len(references) == constructions + int(not shared_visible)
     assert (await service.load_session_progress(key=row.key)).entries
     await service.close()
+    await _wait_for_released_loaders(references=references)
     assert all(reference() is None for reference in references)
+
+
+async def _wait_for_released_loaders(*, references: list[weakref.ReferenceType["CountingLoader"]]) -> None:
+    """Wait for completed executor work items to drop their bound loader references.
+
+    Future completion wakes its awaiter before the worker necessarily deletes its
+    work item. This bounded wait still fails for an adapter retained by the service;
+    it does not force collection or clear any production reference.
+
+    Args:
+        references: Weak references to adapters whose owning groups were released.
+    """
+    async with asyncio.timeout(5):
+        while any(reference() is not None for reference in references):
+            await asyncio.sleep(0.001)
 
 
 class CountingHandleStore(WorkflowHandleStore):

@@ -127,6 +127,24 @@ class TestProgressViewport:
             ProgressViewportDAO(x=10_000.0, y=10_000.0, following=False).restore(log=log)
             assert (log.scroll_x, log.scroll_y) == (log.max_scroll_x, log.max_scroll_y)
 
+    async def test_restore_waits_for_horizontal_scrolling_to_be_enabled(self) -> None:
+        """A reachable saved pan is not restored before Textual enables its scrollbar."""
+        app: _LogHost = _LogHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            log: RichLog = app.fill()
+            await pilot.pause()
+            viewport: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+            assert log.max_scroll_x >= viewport.x
+
+            # Content measurement can precede the scrollbar-visibility layout pass.
+            log.show_horizontal_scrollbar = False
+            assert viewport.restore(log=log) is False
+            assert (log.scroll_x, log.scroll_y) == (0.0, 5.0)
+
+            log.show_horizontal_scrollbar = True
+            assert viewport.restore(log=log) is True
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
+
     def test_viewport_is_frozen_and_defaults_to_following(self) -> None:
         """A fresh viewport is the tail-following initial intent and cannot be mutated."""
         viewport: ProgressViewportDAO = ProgressViewportDAO()
@@ -997,6 +1015,27 @@ class TestRestoreConvergence:
             assert ProgressViewportDAO(x=0.0, y=3.0, following=True).restore(log=log) is True
             assert ProgressViewportDAO(x=5.0, y=30.0, following=False).restore(log=log) is True
             assert ProgressViewportDAO(x=10_000.0, y=10_000.0, following=False).restore(log=log) is False
+
+    async def test_saved_pan_retries_after_scrollbar_visibility_changes(self) -> None:
+        """A reopened modal keeps its saved pan while scrollbar layout catches up."""
+        saved: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+        app: _ScreenHost = _ScreenHost(viewport=saved)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen: SessionProgressScreen = app.screen_under_test
+            deferred: _DeferredRestores = _DeferredRestores(screen=screen)
+            screen.apply_snapshot(snapshot=_snapshot(entries=_entries(count=40)))
+            await pilot.pause()
+            log: ProgressLog = _log(app=app)
+            assert log.max_scroll_x >= saved.x
+
+            log.show_horizontal_scrollbar = False
+            deferred.run_all()
+            assert (log.scroll_x, log.scroll_y) == (0.0, 5.0)
+            log.show_horizontal_scrollbar = True
+            await pilot.pause()
+
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
 
     async def test_clamped_restore_retries_when_the_log_is_laid_out(self) -> None:
         """Reopening before wide lines are laid out must not lose the saved pan."""

@@ -795,11 +795,12 @@ class ProgressViewportDAO(BaseModel):
             # x_axis=False keeps a horizontal pan while following the tail.
             log.scroll_end(animate=False, immediate=True, x_axis=False)
             return True
-        reachable: bool = self.x <= log.max_scroll_x and self.y <= log.max_scroll_y
         log.scroll_to(
             x=min(self.x, log.max_scroll_x),
             y=min(self.y, log.max_scroll_y),
             animate=False,
             immediate=True,
         )
-        return reachable
+        # Measured content can be scrollable before Textual enables its scrollbar.
+        # In that interval scroll_to ignores the axis despite an in-range target.
+        return log.scroll_x == self.x and log.scroll_y == self.y

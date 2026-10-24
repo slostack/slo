@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -44,6 +44,42 @@ from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
     default_history_root,
 )
+
+
+class SubAgentProcessFactory(Protocol):
+    """Construct an unstarted wrapper; the pool retains lifecycle ownership."""
+
+    def __call__(
+        self,
+        *,
+        task: SubAgentTaskDAO,
+        session_id: str,
+        model: Optional[str],
+        relay: AgentEventSubscriber,
+        registry: ProcessRegistry,
+        execution_id: str,
+        system_prompt: str,
+        parent_session_id: str,
+        history_root: Path,
+    ) -> SubAgentProcess:
+        """Bind the existing wrapper inputs without starting a process.
+
+        Args:
+            task: Validated task including its authored summary.
+            session_id: Child session identity.
+            model: Optional model override.
+            relay: Event subscriber.
+            registry: Pool-owned execution registry.
+            execution_id: Current incarnation identity.
+            system_prompt: Child system instructions.
+            parent_session_id: Owning parent identity.
+            history_root: Existing history root.
+
+        Returns:
+            SubAgentProcess: Unstarted wrapper; the pool owns its lifecycle.
+        """
+        ...
+
 
 __all__ = ["SubAgentPool", "MAX_CONCURRENCY", "MAX_PARALLEL_TASKS"]
 
@@ -157,6 +193,7 @@ class SubAgentPool:
         run_id: str,
         history_root: Path,
         child_system_prompt: str = "",
+        process_factory: Optional[SubAgentProcessFactory] = None,
     ) -> None:
         """Initialise the pool with its identity, model, relay, and fresh registry.
 
@@ -178,6 +215,7 @@ class SubAgentPool:
                 processes. Written to ``spawn_context.json`` via each
                 ``SubAgentProcess``. Defaults to empty string for backwards compat.
         """
+        self._process_factory: SubAgentProcessFactory = process_factory or SubAgentProcess
         self._orchestrator_session_id: str = orchestrator_session_id
         self._default_model: Optional[str] = default_model
         self._relay: AgentEventSubscriber = relay
@@ -566,7 +604,7 @@ class SubAgentPool:
         execution_id: str = self._registry.register(
             dispatch_id=dispatch.dispatch_id, task_id=task.task_id, session_id=session_id, task=task
         )
-        process: SubAgentProcess = SubAgentProcess(
+        process: SubAgentProcess = self._process_factory(
             task=task,
             session_id=session_id,
             model=task.model or self._default_model,
@@ -585,7 +623,7 @@ class SubAgentPool:
                 task_id=task.task_id,
                 session_id=session_id,
                 metadata=dispatch.lifecycle_metadata(execution_id=execution_id),
-                prompt_preview=TaskPreview.build(task_text=task.prompt),
+                prompt_preview=TaskPreview.encode_summary(task_summary=task.task_summary),
             )
             winner = await self._run_with_slot(process=process, task=task)
             await self._emit_lifecycle(

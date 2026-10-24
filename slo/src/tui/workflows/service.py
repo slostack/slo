@@ -11,11 +11,15 @@ modules.
 
 from __future__ import annotations
 
+from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
+
 import asyncio
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, List, Optional, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Callable, List, Optional, Protocol, Literal
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from config.logger import log_info, log_warning
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
@@ -47,7 +51,10 @@ from src.tui.workflows.dao import (
     ParsedWorkflowLifecycleMessageDAO,
     SessionProgressAvailability,
     SessionProgressSnapshotDAO,
-    WorkflowListDismissOutcomeDAO,
+    WorkflowListGroupDAO,
+    WorkflowListGroupKeyDAO,
+    WorkflowListVisibilityRequestDAO,
+    WorkflowListVisibilityOutcomeDAO,
     WorkflowSessionKeyDAO,
     WorkflowSessionRowDAO,
     WorkflowSessionSnapshotDAO,
@@ -76,9 +83,6 @@ SESSION_REMOVED_NOTICE: str = "Session removed from current workflow."
 
 _ABORTABLE_STATUSES: frozenset[str] = frozenset({"pending", "running"})
 """Child statuses that may still be aborted; every other status is terminal or unknown."""
-
-_AttachedBatchMembers: TypeAlias = frozenset[tuple[str, str, str]]
-"""Identity of one attached batch: one (dispatch_id, session_id, execution_id) triple per row."""
 
 _READABLE_PROGRESS: frozenset[str] = frozenset({"available", "empty"})
 """Progress availabilities whose status comes from a fresh, readable source."""
@@ -115,6 +119,74 @@ class AttachedChildAbort(Protocol):
         """
 
 
+class WorkflowObservationLoader(Protocol):
+    """Bounded read adapter borrowed by one observation owner."""
+
+    async def load_observation_group(self) -> WorkflowDataDAO:
+        """Read bounded parent and child membership without repairing files.
+
+        Returns:
+            WorkflowDataDAO: Bounded observation evidence.
+        """
+
+    async def enrich_task_row(self, *, row: WorkflowSessionRowDAO) -> WorkflowSessionRowDAO:
+        """Enrich only the supplied current incarnation.
+
+        Args:
+            row: Authorized current row.
+
+        Returns:
+            WorkflowSessionRowDAO: Row with matching task detail.
+        """
+
+    async def load_session_progress(self, *, row: WorkflowSessionRowDAO) -> SessionProgressSnapshotDAO:
+        """Read bounded progress for the authorized incarnation.
+
+        Args:
+            row: Authorized current row.
+
+        Returns:
+            SessionProgressSnapshotDAO: Bounded progress evidence.
+        """
+
+
+class WorkflowObservationLoaderFactory(Protocol):
+    """Construct the bounded file adapter only when observation needs it."""
+
+    def __call__(
+        self, *, parent_session_id: str, history_store: SessionHistoryStoreProtocol
+    ) -> WorkflowObservationLoader:
+        """Return an adapter bound to the authorized parent and history root.
+
+        Args:
+            parent_session_id: Authorized parent identity.
+            history_store: Borrowed bounded history adapter.
+
+        Returns:
+            WorkflowObservationLoader: Lazy read-only adapter.
+        """
+
+
+class _OwnedHandlesCandidateDAO(BaseModel):
+    """Carry bounded ownership evidence without publishing membership."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    handles: tuple[WorkflowHandleDAO, ...] = Field(description="Owned union of retained and fresh handles.")
+    fresh_ids: frozenset[str] = Field(default=frozenset(), description="IDs admitted by this complete read.")
+    notice: Optional[str] = Field(default=None, description="Fixed retention warning.")
+
+
+class _ObservationCandidateDAO(BaseModel):
+    """Carry a complete unpublished observation transaction."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    visibility_revision: int = Field(ge=0, description="Revision captured before reading.")
+    attached: AttachedDispatchSnapshotDAO = Field(description="Deep captured registry evidence.")
+    handles: _OwnedHandlesCandidateDAO = Field(description="Unpublished ownership admission.")
+    groups: tuple[WorkflowListGroupDAO, ...] = Field(description="Complete retained group candidates.")
+    next_group_order: int = Field(ge=0, description="Unpublished ordering counter.")
+
+
 class DetachedWorkflowAppService:
     """Coordinate detached-workflow lifecycle for one owning TUI session.
 
@@ -126,7 +198,7 @@ class DetachedWorkflowAppService:
 
     Feature 94 adds owner-scoped observation to the same service: session-list
     snapshots of the attached batch plus owned detached groups, explicit
-    dismissal suppression, in-memory clearing of finished groups (a.5), and
+    reversible in-memory visibility for running and finished groups, and
     the selected session's progress gateway.
     Observation is read-only: it never reconciles, sweeps or advances durable
     state, and unreadable files are retained as stale, never treated as removal.
@@ -142,6 +214,8 @@ class DetachedWorkflowAppService:
         attached_abort: Optional[AttachedChildAbort] = None,
         attached_capability: Optional[Callable[[], Optional[ChildControlCapabilityDAO]]] = None,
         monotonic: Callable[[], float] = time.monotonic,
+        loader_factory: Optional[WorkflowObservationLoaderFactory] = None,
+        control_store_factory: Callable[..., ChildAbortStore] = ChildAbortStore,
     ) -> None:
         """Bind the service to one owning session's adapters without starting I/O.
 
@@ -163,10 +237,18 @@ class DetachedWorkflowAppService:
             attached_capability (Optional[Callable[[], Optional[ChildControlCapabilityDAO]]], optional):
                 Attached child-control capability supplier; None means unavailable.
                 Defaults to None.
+            loader_factory (Optional[WorkflowObservationLoaderFactory]): Lazy bounded-loader
+                construction seam; None selects the production adapter.
+            control_store_factory: Existing child-control adapter constructor; tests may
+                inject a gated real-file adapter. Defaults to ChildAbortStore.
             monotonic (Callable[[], float], optional): Clock for the 30-second
                 abort-confirmation notice; tests inject a fake. Defaults to
                 ``time.monotonic``.
         """
+        self._control_store_factory = control_store_factory
+        self._loader_factory: WorkflowObservationLoaderFactory = (
+            loader_factory or self._build_observation_loader
+        )
         self._store: Optional[WorkflowHandleStore] = workflow_handle_store
         self._owner_session_id: str = owner_session_id
         self._workflow_states: dict[str, WorkflowState] = {}
@@ -177,19 +259,17 @@ class DetachedWorkflowAppService:
         self._attached_capability: Optional[Callable[[], Optional[ChildControlCapabilityDAO]]] = (
             attached_capability
         )
-        self._group_rows: dict[str, tuple[WorkflowSessionRowDAO, ...]] = {}
-        self._loaders: dict[str, WorkflowVisualizerLoader] = {}
+        self._list_groups: dict[WorkflowListGroupKeyDAO, WorkflowListGroupDAO] = {}
+        self._next_group_order: int = 0
+        self._visibility_revision: int = 0
+        self._observation_lock = asyncio.Lock()
+        self._loaders: dict[str, WorkflowObservationLoader] = {}
         self._handles: dict[str, WorkflowHandleDAO] = {}
-        # Detached workflow ids hidden by /workflows dismiss or tui dismiss; resume clears one.
-        self._dismissed: set[str] = set()
         self._attached_dispatch_id: str = ""
-        # Members of the attached batch hidden by tui dismiss; None hides nothing.
-        # A chain step registering in the same dispatch changes the members, so
-        # the batch shows again while that step runs; a new dispatch shows normally.
-        self._hidden_attached_batch: Optional[_AttachedBatchMembers] = None
         self._observation_notice: Optional[str] = None
         self._rows: dict[WorkflowSessionKeyDAO, WorkflowSessionRowDAO] = {}
         self._closed: bool = False
+        self._close_task: Optional[asyncio.Task[None]] = None
         self._monotonic: Callable[[], float] = monotonic
         # One request per confirmed target, allocated before any await; kept while pending.
         self._abort_requests: dict[ChildAbortTargetDAO, ChildAbortRequestDAO] = {}
@@ -437,7 +517,8 @@ class DetachedWorkflowAppService:
 
         WHAT: Reads the attached supplier afresh (so a missed dispatch-start event
             is repaired by the next poll), the bounded owned handle list and each
-            visible detached group, then returns attached-first, detached-by-start
+            owned detached group (including hidden membership), then projects visible
+            attached-first, detached-by-start
             rows with duplicate keys removed. It never reconciles, sweeps, lists
             workflow text or loads full history, and has no process side effects.
         WHO: The a.3 refresh coordinator (immediate and five-second ticks).
@@ -447,23 +528,196 @@ class DetachedWorkflowAppService:
             WorkflowSessionSnapshotDAO: Fresh rows, or explicitly stale retained rows
                 with a fixed notice; empty once closed.
         """
-        if self._closed:
-            return WorkflowSessionSnapshotDAO()
-        attached: AttachedDispatchSnapshotDAO = self._attached_snapshot()
-        self._adopt_dispatch(attached=attached)
-        self._release_attached_suppression(attached=attached)
-        attached_rows: tuple[WorkflowSessionRowDAO, ...] = await self._project_attached_group(
-            attached=attached
+        async with self._observation_lock:
+            if self._closed:
+                return WorkflowSessionSnapshotDAO()
+            candidate = await self._gather_observation(
+                visibility_revision=self._visibility_revision,
+                retained=tuple(self._list_groups.values()),
+            )
+            if candidate is not None:
+                self._commit_observation(candidate=candidate)
+            self._release_hidden_detached_loaders()
+            evidence = tuple(
+                row
+                for group in self._list_groups.values()
+                if not group.retained_only
+                for row in group.rows
+                if row.availability == "available"
+            )
+        await self._observe_abort_submissions(rows=evidence)
+        return self.current_list_snapshot()
+
+    def _observation_invalid(self, *, revision: int) -> bool:
+        """Reject work captured before a local change or disposal."""
+        return self._closed or revision != self._visibility_revision
+
+    async def _gather_observation(
+        self, *, visibility_revision: int, retained: tuple[WorkflowListGroupDAO, ...]
+    ) -> Optional[_ObservationCandidateDAO]:
+        """Gather local records only; invalidated reads never publish partial state."""
+        attached = self._attached_snapshot().model_copy(deep=True)
+        groups = {group.key: group for group in retained}
+        order = self._next_group_order
+        attached_rows = await self._project_attached_group(attached=attached)
+        if self._observation_invalid(revision=visibility_revision):
+            return None
+        handles = await self._read_owned_handles()
+        if self._observation_invalid(revision=visibility_revision):
+            return None
+        order = await self._gather_detached_groups(
+            groups=groups, order=order, admission=handles, visibility_revision=visibility_revision
         )
-        handles: tuple[WorkflowHandleDAO, ...] = await self._read_owned_handles()
-        detached_rows: tuple[WorkflowSessionRowDAO, ...] = await self._project_detached_groups(
-            handles=handles
+        if order is None:
+            return None
+        order = self._gather_attached_group(groups=groups, order=order, attached=attached, rows=attached_rows)
+        return _ObservationCandidateDAO(
+            visibility_revision=visibility_revision,
+            attached=attached,
+            handles=handles,
+            groups=tuple(groups.values()),
+            next_group_order=order,
         )
-        snapshot: WorkflowSessionSnapshotDAO = self._commit_snapshot(
-            rows=self._unique_rows(rows=(*attached_rows, *detached_rows))
-        )
-        await self._observe_abort_submissions(rows=snapshot.rows)
-        return snapshot
+
+    async def _gather_detached_groups(
+        self,
+        *,
+        groups: dict[WorkflowListGroupKeyDAO, WorkflowListGroupDAO],
+        order: int,
+        admission: _OwnedHandlesCandidateDAO,
+        visibility_revision: int,
+    ) -> Optional[int]:
+        """Gather detached records in owned-handle order without publishing them.
+
+        Args:
+            groups: Candidate-local records; never the committed visibility map.
+            order: Next unallocated first-seen ordinal.
+            admission: Captured ownership and freshness evidence.
+            visibility_revision: Revision checked after each asynchronous read.
+        Returns:
+            Optional[int]: Next ordinal, or None when gathering was invalidated.
+        """
+        for handle in admission.handles:
+            key = WorkflowListGroupKeyDAO(kind="detached", group_id=handle.workflow_id)
+            previous = groups.get(key)
+            if previous is None:
+                previous = WorkflowListGroupDAO(key=key, first_seen=order)
+                order += 1
+            rows = await self._gather_detached_rows(
+                handle=handle,
+                admission=admission,
+                retained=previous.rows,
+                visibility_revision=visibility_revision,
+            )
+            if rows is None:
+                return None
+            groups[key] = previous.model_copy(
+                update={
+                    "orchestrator_session_id": handle.orchestrator_session_id,
+                    "started_at": handle.started_at,
+                    "rows": rows,
+                }
+            )
+        return order
+
+    def _gather_attached_group(
+        self,
+        *,
+        groups: dict[WorkflowListGroupKeyDAO, WorkflowListGroupDAO],
+        order: int,
+        attached: AttachedDispatchSnapshotDAO,
+        rows: tuple[WorkflowSessionRowDAO, ...],
+    ) -> int:
+        """Merge the captured attached batch into unpublished candidate records.
+
+        Args:
+            groups: Candidate-local records, retaining existing visibility flags.
+            order: Next unallocated first-seen ordinal.
+            attached: Deep-copied registry evidence captured before any await.
+            rows: Enrichment of that captured batch, never a later supplier read.
+        Returns:
+            int: Next ordinal after allocating a previously unseen batch.
+        """
+        if attached.dispatch_id:
+            key = WorkflowListGroupKeyDAO(kind="attached", group_id=attached.dispatch_id)
+            previous = groups.get(key)
+            if previous is None:
+                previous = WorkflowListGroupDAO(
+                    key=key, first_seen=order, orchestrator_session_id=self._owner_session_id
+                )
+                order += 1
+            groups[key] = previous.model_copy(
+                update={
+                    "orchestrator_session_id": self._owner_session_id,
+                    "rows": rows,
+                    "retained_only": False,
+                }
+            )
+        return order
+
+    async def _gather_detached_rows(
+        self,
+        *,
+        handle: WorkflowHandleDAO,
+        admission: _OwnedHandlesCandidateDAO,
+        retained: tuple[WorkflowSessionRowDAO, ...],
+        visibility_revision: int,
+    ) -> Optional[tuple[WorkflowSessionRowDAO, ...]]:
+        """Load fresh ownership or retain stale rows, abandoning invalidated reads.
+
+        Args:
+            handle: Captured owned workflow identity.
+            admission: Bounded ownership read and its freshness evidence.
+            retained: Previously committed rows for this group.
+            visibility_revision: Revision whose candidate is being gathered.
+        Returns:
+            Optional[tuple[WorkflowSessionRowDAO, ...]]: Unpublished rows, or None
+                when a local operation or close invalidated the read.
+        """
+        if handle.workflow_id not in admission.fresh_ids:
+            return self._mark_stale(rows=retained)
+        rows = await self._load_group(handle=handle, retained=retained)
+        if self._observation_invalid(revision=visibility_revision):
+            return None
+        await asyncio.sleep(0)
+        return None if self._observation_invalid(revision=visibility_revision) else rows
+
+    def _commit_observation(self, *, candidate: _ObservationCandidateDAO) -> None:
+        """Publish all observation state synchronously after the final authority check."""
+        if self._observation_invalid(revision=candidate.visibility_revision):
+            return
+        latest = self._attached_snapshot().model_copy(deep=True)
+        self._list_groups = {group.key: group for group in candidate.groups}
+        self._next_group_order = candidate.next_group_order
+        if latest != candidate.attached and latest.dispatch_id:
+            self._remember_group(
+                key=WorkflowListGroupKeyDAO(kind="attached", group_id=latest.dispatch_id),
+                parent=self._owner_session_id,
+                rows=self._batch_rows(attached=latest),
+            )
+        self._adopt_dispatch(attached=latest)
+        self._handles = {handle.workflow_id: handle for handle in candidate.handles.handles}
+        self._set_observation_notice(notice=candidate.handles.notice)
+        self.current_list_snapshot()
+
+    def _release_hidden_detached_loaders(self) -> None:
+        """Release completed-read adapters using committed visibility, never candidate flags.
+
+        Shared parents remain cached while any visible current group needs them;
+        hidden membership and accepted receipt observation continue independently.
+        """
+        hidden_parents = {
+            group.orchestrator_session_id
+            for group in self._list_groups.values()
+            if group.key.kind == "detached" and group.hidden
+        }
+        visible_parents = {
+            group.orchestrator_session_id
+            for group in self._list_groups.values()
+            if not group.hidden and not group.retained_only
+        }
+        for parent in hidden_parents - visible_parents:
+            self._loaders.pop(parent, None)
 
     async def close(self) -> None:
         """Join submissions, clear observation caches and refuse new observation work.
@@ -477,252 +731,195 @@ class DetachedWorkflowAppService:
         WHO: SloTUI teardown, after the refresh coordinator is closed.
         WHEN: On ``/new`` session adoption and on unmount.
         """
-        self._closed = True
+        if self._close_task is None:
+            self._closed = True
+            self._visibility_revision += 1
+            self._close_task = asyncio.create_task(self._close_submissions())
+        cancelled: bool = False
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not self._close_task.cancelled():
+                self._close_task.exception()
+            raise asyncio.CancelledError()
+        self._close_task.result()
+
+    async def _close_submissions(self) -> None:
+        """Join accepted operations once before dropping observation references."""
         for submission in tuple(self._abort_submissions.values()):
             await submission.join()
         self._abort_submissions.clear()
         self._abort_requests.clear()
         self._control_stores.clear()
-        self._group_rows.clear()
+        self._list_groups.clear()
         self._loaders.clear()
         self._handles.clear()
         self._rows.clear()
-        self._dismissed.clear()
-        self._hidden_attached_batch = None
 
-    def dismiss_group(self, *, workflow_id: str) -> None:
-        """Suppress one explicitly dismissed workflow group for this TUI lifetime.
-
-        WHAT: In-memory observation suppression only; the durable handle stays
-            (dismissal itself is the durable ``stalled → failed`` transition).
-            Drops the group's cached rows and loader.
-        WHO: SloTUI, from a typed successful ``/workflows dismiss`` result.
-        WHEN: Right after the slash command reports a successful dismissal.
+    def apply_list_visibility(
+        self, *, request: WorkflowListVisibilityRequestDAO
+    ) -> WorkflowListVisibilityOutcomeDAO:
+        """Commit local flags without I/O; the app paints before acknowledging.
 
         Args:
-            workflow_id (str): Dismissed workflow.
-        """
-        self._dismissed.add(workflow_id)
-        handle: Optional[WorkflowHandleDAO] = self._handles.get(workflow_id)
-        if handle is None:
-            return
-        self._forget_group(orchestrator_session_id=handle.orchestrator_session_id)
-
-    def resume_group(self, *, workflow_id: str) -> None:
-        """Clear observation suppression after an explicit successful resume.
-
-        Clears both a durable dismissal's and a ``tui dismiss`` suppression,
-        because both share ``_dismissed``.
-
-        Args:
-            workflow_id (str): Resumed workflow.
-        """
-        self._dismissed.discard(workflow_id)
-
-    def dismiss_from_list(self, *, target_id: Optional[str]) -> WorkflowListDismissOutcomeDAO:
-        """Hide finished groups from the session list for this TUI lifetime (feature 94 a.5).
-
-        WHAT: Classifies the groups of the last committed snapshot. Without a
-            target it hides every finished group; with one it hides that group
-            only when finished, else refuses it as running or unknown. Hiding is
-            in-memory observation suppression: it writes no handle or history,
-            signals nothing and never cancels or acknowledges an abort.
-        WHO: SloTUI, from a typed ``/workflows tui dismiss [<id>]`` slash result.
-        WHEN: Synchronously on the UI loop, before the app requests one coalesced
-            refresh; suppression lives until resume, a change of the attached batch's
-            members (a new dispatch or chain step) or ``close``.
-
-        Args:
-            target_id (Optional[str]): Detached workflow id or orchestrator session
-                id of one group; None clears every finished group.
-
+            request: Validated display command.
         Returns:
-            WorkflowListDismissOutcomeDAO: What was hidden or refused; it owns the
-                transcript line.
-        """
-        groups: dict[str, tuple[WorkflowSessionRowDAO, ...]] = self._committed_groups()
-        if target_id is None:
-            return self._clear_finished_groups(groups=groups)
-        return self._clear_named_group(groups=groups, target_id=target_id)
-
-    def _committed_groups(self) -> dict[str, tuple[WorkflowSessionRowDAO, ...]]:
-        """Group the committed membership by orchestrator, in list order.
-
-        Returns:
-            dict[str, tuple[WorkflowSessionRowDAO, ...]]: Rows per orchestrator id,
-                parent first; empty when nothing is listed.
-        """
-        groups: dict[str, list[WorkflowSessionRowDAO]] = {}
-        for row in self._rows.values():
-            groups.setdefault(row.key.orchestrator_session_id, []).append(row)
-        return {orchestrator: tuple(rows) for orchestrator, rows in groups.items()}
-
-    def _clear_finished_groups(
-        self, *, groups: dict[str, tuple[WorkflowSessionRowDAO, ...]]
-    ) -> WorkflowListDismissOutcomeDAO:
-        """Hide every finished group and count the ones still running.
-
-        Args:
-            groups (dict[str, tuple[WorkflowSessionRowDAO, ...]]): Committed groups.
-
-        Returns:
-            WorkflowListDismissOutcomeDAO: Untargeted outcome.
-        """
-        finished: list[tuple[WorkflowSessionRowDAO, ...]] = [
-            rows for rows in groups.values() if self._group_is_finished(rows=rows)
-        ]
-        return WorkflowListDismissOutcomeDAO(
-            cleared=tuple(self._hide_group(rows=rows) for rows in finished),
-            still_running=len(groups) - len(finished),
-        )
-
-    def _clear_named_group(
-        self, *, groups: dict[str, tuple[WorkflowSessionRowDAO, ...]], target_id: str
-    ) -> WorkflowListDismissOutcomeDAO:
-        """Hide the one named group if it is listed and finished.
-
-        Args:
-            groups (dict[str, tuple[WorkflowSessionRowDAO, ...]]): Committed groups.
-            target_id (str): Workflow id or orchestrator session id.
-
-        Returns:
-            WorkflowListDismissOutcomeDAO: Targeted clear, running refusal or unknown.
-        """
-        rows: Optional[tuple[WorkflowSessionRowDAO, ...]] = next(
-            (
-                rows
-                for orchestrator, rows in groups.items()
-                if target_id in (orchestrator, rows[0].workflow_id)
-            ),
-            None,
-        )
-        if rows is None:
-            return WorkflowListDismissOutcomeDAO(target_id=target_id, unknown=target_id)
-        if not self._group_is_finished(rows=rows):
-            return WorkflowListDismissOutcomeDAO(target_id=target_id, refused_running=target_id)
-        return WorkflowListDismissOutcomeDAO(target_id=target_id, cleared=(self._hide_group(rows=rows),))
-
-    @staticmethod
-    def _group_is_finished(*, rows: tuple[WorkflowSessionRowDAO, ...]) -> bool:
-        """Return whether every row's last known status is terminal.
-
-        Uses the shared ``TERMINAL_STATUSES`` owner, so pending, running (including
-        an abort still pending), stalled, launching and unknown are unfinished.
-        Stale and unavailable rows are judged by their last known status.
-
-        Args:
-            rows (tuple[WorkflowSessionRowDAO, ...]): One group's parent and children.
-
-        Returns:
-            bool: True when the whole group is terminal.
-        """
-        return all(row.status in TERMINAL_STATUSES for row in rows)
-
-    def _hide_group(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> str:
-        """Suppress one finished group and forget its cached observation.
-
-        Args:
-            rows (tuple[WorkflowSessionRowDAO, ...]): Committed rows of the group.
-
-        Returns:
-            str: The group's name in the outcome: its workflow id, or the owner
-                session id for the attached batch.
-        """
-        row: WorkflowSessionRowDAO = rows[0]
-        self._forget_group(orchestrator_session_id=row.key.orchestrator_session_id)
-        if row.workflow_id is None:
-            # Only the owner's attached batch lacks a workflow id; its suppression
-            # holds only while the batch keeps exactly the members judged finished.
-            self._hidden_attached_batch = self._batch_members(rows=rows)
-            return row.key.orchestrator_session_id
-        self._dismissed.add(row.workflow_id)
-        return row.workflow_id
-
-    def _forget_group(self, *, orchestrator_session_id: str) -> None:
-        """Drop one group's cached rows, loader and gateway membership.
-
-        WHO: ``dismiss_group`` and ``_hide_group``, after recording the suppression.
-        WHEN: Immediately, so a stale key can no longer open a progress view.
-
-        Args:
-            orchestrator_session_id (str): Group whose caches are dropped.
-        """
-        self._group_rows.pop(orchestrator_session_id, None)
-        self._loaders.pop(orchestrator_session_id, None)
-        self._rows = {
-            key: row
-            for key, row in self._rows.items()
-            if key.orchestrator_session_id != orchestrator_session_id
-        }
-
-    @staticmethod
-    def _batch_members(*, rows: tuple[WorkflowSessionRowDAO, ...]) -> _AttachedBatchMembers:
-        """Return the identity of an attached batch's rows.
-
-        Args:
-            rows (tuple[WorkflowSessionRowDAO, ...]): Attached parent and children.
-
-        Returns:
-            _AttachedBatchMembers: One (dispatch, session, execution) triple per row.
-        """
-        return frozenset((row.dispatch_id, row.key.session_id, row.execution_id) for row in rows)
-
-    def _hides_attached(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> bool:
-        """Return whether attached rows are still exactly the batch judged finished.
-
-        The single suppression predicate for the attached projection, the commit
-        filter and the progress gateway; a new member or incarnation fails it.
-
-        Args:
-            rows (tuple[WorkflowSessionRowDAO, ...]): Attached parent and children.
-
-        Returns:
-            bool: True only while the members equal the hidden batch.
-        """
-        return self._hidden_attached_batch == self._batch_members(rows=rows)
-
-    def _release_attached_suppression(self, *, attached: AttachedDispatchSnapshotDAO) -> None:
-        """Drop the attached suppression once the registry batch no longer matches it.
-
-        WHO: ``load_session_snapshot``, right after capturing the registry batch.
-        WHEN: Every refresh, so a batch that grew never hides again if it shrinks.
-
-        Args:
-            attached (AttachedDispatchSnapshotDAO): Captured registry batch.
-        """
-        if not self._hides_attached(rows=self._batch_rows(attached=attached)):
-            self._hidden_attached_batch = None
-
-    def _visible_rows(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> tuple[WorkflowSessionRowDAO, ...]:
-        """Drop the rows of the hidden attached batch and of dismissed workflows.
-
-        Args:
-            rows (tuple[WorkflowSessionRowDAO, ...]): Freshly projected rows.
-
-        Returns:
-            tuple[WorkflowSessionRowDAO, ...]: Rows of groups still shown, in order.
-        """
-        attached: tuple[WorkflowSessionRowDAO, ...] = tuple(
-            row for row in rows if self._is_attached(key=row.key)
-        )
-        hidden: tuple[WorkflowSessionRowDAO, ...] = attached if self._hides_attached(rows=attached) else ()
-        return tuple(row for row in rows if row not in hidden and row.workflow_id not in self._dismissed)
-
-    def _commit_snapshot(self, *, rows: tuple[WorkflowSessionRowDAO, ...]) -> WorkflowSessionSnapshotDAO:
-        """Publish rows as the membership the progress gateway validates against.
-
-        Args:
-            rows (tuple[WorkflowSessionRowDAO, ...]): Ordered unique rows.
-
-        Returns:
-            WorkflowSessionSnapshotDAO: Snapshot, or empty if closed while reading.
+            WorkflowListVisibilityOutcomeDAO: Committed projection or fixed refusal.
         """
         if self._closed:
-            return WorkflowSessionSnapshotDAO()
-        # Suppression may have changed while this refresh was reading; never resurrect.
-        visible: tuple[WorkflowSessionRowDAO, ...] = self._visible_rows(rows=rows)
-        self._rows = {row.key: row for row in visible}
-        return WorkflowSessionSnapshotDAO(rows=visible, notice=self._observation_notice)
+            return self._visibility_outcome(request=request, outcome="unavailable")
+        groups = self._visibility_targets(request=request)
+        if request.target_id is not None and not groups:
+            return self._visibility_outcome(request=request, outcome="unknown")
+        if self._ambiguous_targets(request=request, groups=groups):
+            return self._visibility_outcome(request=request, outcome="ambiguous")
+        hidden: bool = request.action == "dismiss"
+        changed = tuple(group for group in groups if group.hidden != hidden)
+        for group in changed:
+            self._list_groups[group.key] = group.model_copy(
+                update={
+                    "hidden": hidden,
+                    "restored": group.restored or not hidden,
+                    "rows": group.rows if hidden else self._mark_stale(rows=group.rows),
+                }
+            )
+        if changed:
+            self._visibility_revision += 1
+        return self._visibility_outcome(
+            request=request, outcome="changed" if changed else "unchanged", count=len(changed)
+        )
+
+    def _visibility_targets(
+        self, *, request: WorkflowListVisibilityRequestDAO
+    ) -> tuple[WorkflowListGroupDAO, ...]:
+        """Resolve exact workflow identity before parent aliases, without mutation."""
+        groups = tuple(self._list_groups.values())
+        if request.action == "show":
+            return tuple(group for group in groups if group.hidden)
+        if request.target_id is None:
+            return tuple(group for group in groups if group.rows and not group.hidden)
+        exact = self._list_groups.get(WorkflowListGroupKeyDAO(kind="detached", group_id=request.target_id))
+        if exact is not None:
+            return (exact,)
+        return tuple(group for group in groups if group.orchestrator_session_id == request.target_id)
+
+    @staticmethod
+    def _ambiguous_targets(
+        *, request: WorkflowListVisibilityRequestDAO, groups: tuple[WorkflowListGroupDAO, ...]
+    ) -> bool:
+        """Multiple attached batches intentionally share the owner alias."""
+        return (
+            request.target_id is not None
+            and len(groups) > 1
+            and any(group.key.kind == "detached" for group in groups)
+        )
+
+    def _visibility_outcome(
+        self,
+        *,
+        request: WorkflowListVisibilityRequestDAO,
+        outcome: Literal["changed", "unchanged", "unknown", "ambiguous", "unavailable"],
+        count: int = 0,
+    ) -> WorkflowListVisibilityOutcomeDAO:
+        """Project the committed flags into the command result."""
+        return WorkflowListVisibilityOutcomeDAO(
+            action=request.action,
+            outcome=outcome,
+            changed_groups=count,
+            target_id=request.target_id,
+            snapshot=self.current_list_snapshot(),
+        )
+
+    def current_list_snapshot(self) -> WorkflowSessionSnapshotDAO:
+        """Return retained visible rows without reads; empty after close.
+
+        Returns:
+            WorkflowSessionSnapshotDAO: Current owner-scoped projection.
+        """
+        rows = (
+            ()
+            if self._closed
+            else self._unique_rows(
+                rows=tuple(row for group in self._ordered_groups() if not group.hidden for row in group.rows)
+            )
+        )
+        self._rows = {row.key: row for row in rows}
+        return WorkflowSessionSnapshotDAO(rows=rows, notice=self._observation_notice)
+
+    def _ordered_groups(self) -> tuple[WorkflowListGroupDAO, ...]:
+        """Project current attached, retained attached, then chronological detached groups."""
+
+        def order(group: WorkflowListGroupDAO) -> tuple[int, datetime, str]:
+            """Keep pending durable identities after timestamped detached groups."""
+            if group.key.kind == "attached":
+                rank = 0 if group.key.group_id == self._attached_dispatch_id else 1
+                return (rank, datetime.min.replace(tzinfo=timezone.utc), f"{group.first_seen:020d}")
+            return (
+                2 if group.started_at is not None else 3,
+                group.started_at or datetime.max.replace(tzinfo=timezone.utc),
+                group.key.group_id,
+            )
+
+        return tuple(sorted(self._list_groups.values(), key=order))
+
+    def dismiss_group(self, *, workflow_id: str) -> None:
+        """Retain a successfully durably dismissed identity in the same display owner."""
+        self._set_durable_visibility(workflow_id=workflow_id, hidden=True)
+
+    def resume_group(self, *, workflow_id: str) -> None:
+        """Restore the same record after a successful durable resume."""
+        self._set_durable_visibility(workflow_id=workflow_id, hidden=False)
+
+    def _set_durable_visibility(self, *, workflow_id: str, hidden: bool) -> None:
+        """Apply a lifecycle display signal without altering durable state."""
+        if self._closed:
+            return
+        key = WorkflowListGroupKeyDAO(kind="detached", group_id=workflow_id)
+        group = self._list_groups.get(key)
+        if group is None:
+            group = WorkflowListGroupDAO(key=key, first_seen=self._next_group_order)
+            self._next_group_order += 1
+        self._list_groups[key] = group.model_copy(
+            update={
+                "hidden": hidden,
+                "rows": self._mark_stale(rows=group.rows),
+            }
+        )
+        self._visibility_revision += 1
+        self.current_list_snapshot()
+
+    def _remember_group(
+        self,
+        *,
+        key: WorkflowListGroupKeyDAO,
+        parent: str,
+        rows: tuple[WorkflowSessionRowDAO, ...],
+        started_at: Optional[datetime] = None,
+    ) -> None:
+        """Adopt observed display rows while preserving the group's visibility flags."""
+        group = self._list_groups.get(key)
+        if group is None:
+            group = WorkflowListGroupDAO(
+                key=key, first_seen=self._next_group_order, orchestrator_session_id=parent
+            )
+            self._next_group_order += 1
+        self._list_groups[key] = group.model_copy(
+            update={
+                "orchestrator_session_id": parent,
+                "rows": rows,
+                "started_at": started_at,
+            }
+        )
+
+    def _retained_rows(self, *, workflow_id: str) -> tuple[WorkflowSessionRowDAO, ...]:
+        """Read last committed detached rows from the single retention owner."""
+        group = self._list_groups.get(WorkflowListGroupKeyDAO(kind="detached", group_id=workflow_id))
+        return () if group is None else group.rows
 
     @staticmethod
     def _unique_rows(*, rows: tuple[WorkflowSessionRowDAO, ...]) -> tuple[WorkflowSessionRowDAO, ...]:
@@ -764,11 +961,63 @@ class DetachedWorkflowAppService:
         row: Optional[WorkflowSessionRowDAO] = None if self._closed else self._rows.get(key)
         if row is None:
             return self._progress_notice(key=key, removed=True)
-        snapshot, current = await self._read_member_progress(row=row)
-        return await self._with_abort_control(snapshot=snapshot, current=current)
+        if row.retained_batch:
+            return SessionProgressSnapshotDAO(
+                key=row.key,
+                execution_id=row.execution_id,
+                dispatch_id=row.dispatch_id,
+                entries=(),
+                revision="",
+                source_generation="",
+                availability="unavailable",
+                observed_at=datetime.now(tz=timezone.utc).isoformat(),
+                status=row.status,
+                task_text=row.task_text,
+                task_text_complete=row.task_text_complete,
+                notice=f"Retained batch; live progress unavailable. Dispatch: {row.dispatch_id}",
+            )
+        if row.availability != "available":
+            return self._progress_notice(key=row.key, row=row, availability=row.availability)
+        revision: int = self._visibility_revision
+        snapshot, current = await self._read_member_progress(row=row, revision=revision)
+        refused = self._progress_invalidation(row=row, revision=revision)
+        if refused is not None:
+            return refused
+        controlled = await self._with_abort_control(snapshot=snapshot, current=current)
+        return self._progress_invalidation(row=row, revision=revision) or controlled
+
+    def _progress_invalidation(
+        self, *, row: WorkflowSessionRowDAO, revision: int
+    ) -> Optional[SessionProgressSnapshotDAO]:
+        """Refuse old content when visibility, projected ownership or scope changed.
+
+        Args:
+            row: Visible identity captured before reading.
+            revision: Visibility revision captured with that identity.
+        Returns:
+            Optional[SessionProgressSnapshotDAO]: Fixed refusal, or None while current.
+        """
+        visible = None if self._closed else self._rows.get(row.key)
+        if visible is None:
+            return self._progress_notice(key=row.key, removed=True)
+        if (
+            revision != self._visibility_revision
+            or visible.workflow_id != row.workflow_id
+            or visible.execution_id != row.execution_id
+            or visible.dispatch_id != row.dispatch_id
+            or visible.retained_batch
+        ):
+            return self._progress_notice(key=row.key, row=row)
+        if self._is_attached(key=row.key):
+            current = self._current_attached_row(key=row.key)
+            if current is None:
+                return self._progress_notice(key=row.key, removed=True)
+            if current.execution_id != row.execution_id or current.status != row.status:
+                return self._progress_notice(key=row.key, row=row)
+        return None
 
     async def _read_member_progress(
-        self, *, row: WorkflowSessionRowDAO
+        self, *, row: WorkflowSessionRowDAO, revision: int
     ) -> tuple[SessionProgressSnapshotDAO, Optional[WorkflowSessionRowDAO]]:
         """Read one member's progress and its re-read current row, before abort control.
 
@@ -787,7 +1036,13 @@ class DetachedWorkflowAppService:
             snapshot: SessionProgressSnapshotDAO = await self._loader(
                 parent_session_id=row.key.orchestrator_session_id
             ).load_session_progress(row=row)
+            refused = self._progress_invalidation(row=row, revision=revision)
+            if refused is not None:
+                return refused, None
             current: Optional[WorkflowSessionRowDAO] = await self._current_progress_row(key=row.key)
+            refused = self._progress_invalidation(row=row, revision=revision)
+            if refused is not None:
+                return refused, None
         except (OSError, ValueError):
             return self._progress_notice(key=row.key, row=row), None
         return self._accept_progress(row=row, current=current, snapshot=snapshot), current
@@ -832,7 +1087,7 @@ class DetachedWorkflowAppService:
         Returns:
             bool: True when the owner session is the key's orchestrator.
         """
-        return key.orchestrator_session_id == self._owner_session_id
+        return bool(key.attached_dispatch_id) and key.orchestrator_session_id == self._owner_session_id
 
     async def _current_detached_row(self, *, key: WorkflowSessionKeyDAO) -> Optional[WorkflowSessionRowDAO]:
         """Re-read one owned, undismissed detached group through the bounded loader.
@@ -848,14 +1103,21 @@ class DetachedWorkflowAppService:
             OSError: When the group cannot be read.
             ValueError: When the group is unavailable or untrusted.
         """
-        handle: Optional[WorkflowHandleDAO] = self._visible_handle(
-            orchestrator_session_id=key.orchestrator_session_id
-        )
-        if handle is None:
+        row = self._rows.get(key)
+        handle = None if row is None else self._handles.get(row.workflow_id)
+        if handle is None or row is None:
             return None
+        revision: int = self._visibility_revision
+        admission = await self._read_owned_handles()
+        if self._progress_invalidation(row=row, revision=revision) is not None:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+        if handle.workflow_id not in admission.fresh_ids:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
         group: WorkflowDataDAO = await self._loader(
             parent_session_id=handle.orchestrator_session_id
         ).load_observation_group()
+        if self._progress_invalidation(row=row, revision=revision) is not None:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
         return self._authoritative_row(
             rows=self._project_group(handle=handle, group=group), group=group, key=key
         )
@@ -902,7 +1164,7 @@ class DetachedWorkflowAppService:
                 handle
                 for handle in self._handles.values()
                 if handle.orchestrator_session_id == orchestrator_session_id
-                and handle.workflow_id not in self._dismissed
+                and any(row.workflow_id == handle.workflow_id for row in self._rows.values())
             ),
             None,
         )
@@ -1203,11 +1465,14 @@ class DetachedWorkflowAppService:
         assert capability is not None  # narrowed by _accepts
         return capability.run_id
 
-    async def _detached_run_id(self, *, parent: str) -> str:
+    async def _detached_run_id(
+        self, *, parent: str, progress_row: Optional[WorkflowSessionRowDAO] = None
+    ) -> str:
         """Return the run a live owned orchestrator currently accepts requests for.
 
         Args:
             parent (str): Detached orchestrator session.
+            progress_row: Optional progress identity requiring a post-await cutoff.
 
         Returns:
             str: Accepting capability's run UUID.
@@ -1217,10 +1482,15 @@ class DetachedWorkflowAppService:
                 without live evidence or a matching accepting capability.
             OSError: The capability read failed.
         """
+        revision: int = self._visibility_revision
         self._live_owned_handle(parent=parent)
         capability: Optional[ChildControlCapabilityDAO] = await self._control_store(
             parent=parent
         ).load_capability()
+        if self._observation_invalid(revision=revision):
+            raise ChildAbortRefused(outcome="unavailable")
+        if progress_row is not None and self._progress_invalidation(row=progress_row, revision=revision):
+            raise ChildAbortRefused(outcome="unavailable")
         if not self._accepts(capability=capability, parent=parent):
             raise ChildAbortRefused(outcome="unavailable")
         assert capability is not None  # narrowed by _accepts
@@ -1321,7 +1591,7 @@ class DetachedWorkflowAppService:
         """
         if self._history_store is None:
             raise ChildAbortRefused(outcome="unavailable")
-        store: ChildAbortStore = self._control_stores.get(parent) or ChildAbortStore(
+        store: ChildAbortStore = self._control_stores.get(parent) or self._control_store_factory(
             history_root=self._history_store.root, orchestrator_session_id=parent
         )
         if not self._closed:
@@ -1392,7 +1662,7 @@ class DetachedWorkflowAppService:
         if current is None or not self._abortable(row=current, snapshot=snapshot):
             return None
         try:
-            run_id: str = await self._accepting_run_id(key=current.key)
+            run_id: str = await self._accepting_run_id(row=current)
         except (ChildAbortRefused, OSError, ValueError):
             return None
         return ChildAbortTargetDAO(key=current.key, run_id=run_id, execution_id=current.execution_id)
@@ -1420,11 +1690,11 @@ class DetachedWorkflowAppService:
         )
         return current and (self._is_attached(key=row.key) or snapshot.availability in _READABLE_PROGRESS)
 
-    async def _accepting_run_id(self, *, key: WorkflowSessionKeyDAO) -> str:
+    async def _accepting_run_id(self, *, row: WorkflowSessionRowDAO) -> str:
         """Return the run currently accepting requests for the key's owner.
 
         Args:
-            key (WorkflowSessionKeyDAO): Child key.
+            row (WorkflowSessionRowDAO): Captured child identity.
 
         Returns:
             str: Accepting run UUID; for detached groups it must match the listed index run.
@@ -1433,10 +1703,13 @@ class DetachedWorkflowAppService:
             ChildAbortRefused: not_owned or unavailable.
             OSError: The capability read failed.
         """
-        if self._is_attached(key=key):
+        if self._is_attached(key=row.key):
             return self._attached_run_id()
-        parent: str = key.orchestrator_session_id
-        run_id: str = await self._detached_run_id(parent=parent)
+        revision: int = self._visibility_revision
+        parent: str = row.key.orchestrator_session_id
+        run_id: str = await self._detached_run_id(parent=parent, progress_row=row)
+        if self._progress_invalidation(row=row, revision=revision) is not None:
+            raise ChildAbortRefused(outcome="unavailable")
         parent_row: Optional[WorkflowSessionRowDAO] = self._rows.get(
             WorkflowSessionKeyDAO(orchestrator_session_id=parent, session_id=parent)
         )
@@ -1478,9 +1751,8 @@ class DetachedWorkflowAppService:
         """
         for submission in tuple(self._abort_submissions.values()):
             row: Optional[WorkflowSessionRowDAO] = self._find_row(rows=rows, key=submission.target.key)
-            if row is None or not submission.concerns(row=row):
-                continue
-            submission.observe_row(row=row)
+            if row is not None and row.availability == "available" and submission.concerns(row=row):
+                submission.observe_row(row=row)
             if submission.awaits_receipt:
                 submission.observe_receipt(receipt=await self._load_receipt(request=submission.request))
 
@@ -1532,7 +1804,7 @@ class DetachedWorkflowAppService:
                 previews; empty when the batch has no entries or is still hidden.
         """
         rows: tuple[WorkflowSessionRowDAO, ...] = self._batch_rows(attached=attached)
-        return () if self._hides_attached(rows=rows) else rows
+        return rows
 
     def _batch_rows(self, *, attached: AttachedDispatchSnapshotDAO) -> tuple[WorkflowSessionRowDAO, ...]:
         """Map a captured batch to its parent and registry children, ignoring suppression.
@@ -1564,6 +1836,7 @@ class DetachedWorkflowAppService:
             key=WorkflowSessionKeyDAO(
                 orchestrator_session_id=self._owner_session_id,
                 session_id=self._owner_session_id,
+                attached_dispatch_id=attached.dispatch_id,
             ),
             role="orchestrator",
             status=self._batch_status(entries=attached.entries),
@@ -1602,7 +1875,9 @@ class DetachedWorkflowAppService:
         """
         return WorkflowSessionRowDAO(
             key=WorkflowSessionKeyDAO(
-                orchestrator_session_id=self._owner_session_id, session_id=entry.session_id
+                orchestrator_session_id=self._owner_session_id,
+                session_id=entry.session_id,
+                attached_dispatch_id=dispatch_id,
             ),
             role="child",
             task_id=entry.task_id,
@@ -1610,6 +1885,7 @@ class DetachedWorkflowAppService:
             dispatch_id=dispatch_id,
             status=entry.status,
             task_text=entry.prompt_preview,
+            task_summary=TaskPreview.project_summary(prompt_preview=entry.prompt_preview),
             task_text_complete=False,
         )
 
@@ -1629,13 +1905,19 @@ class DetachedWorkflowAppService:
         """
         if self._history_store is None:
             return rows
-        loader: WorkflowVisualizerLoader = self._loader(parent_session_id=self._owner_session_id)
-        return tuple([await self._enrich_attached_row(loader=loader, row=row) for row in rows])
+        revision: int = self._visibility_revision
+        loader: WorkflowObservationLoader = self._loader(parent_session_id=self._owner_session_id)
+        enriched: list[WorkflowSessionRowDAO] = []
+        for row in rows:
+            enriched.append(await self._enrich_attached_row(loader=loader, row=row))
+            if self._observation_invalid(revision=revision):
+                return ()
+        return tuple(enriched)
 
     @staticmethod
     async def _enrich_attached_row(
         *,
-        loader: WorkflowVisualizerLoader,
+        loader: WorkflowObservationLoader,
         row: WorkflowSessionRowDAO,
     ) -> WorkflowSessionRowDAO:
         """Keep the registry row when its storage cannot be read.
@@ -1652,100 +1934,96 @@ class DetachedWorkflowAppService:
         except (OSError, ValueError):
             return row
 
-    def _loader(self, *, parent_session_id: str) -> WorkflowVisualizerLoader:
-        """Reuse the bounded loader for one group at observation time.
-
-        Args:
-            parent_session_id (str): Already authorized exact parent, never a name.
-
-        Returns:
-            WorkflowVisualizerLoader: Same-root cached adapter; after ``close`` an
-                uncached one, so in-flight work cannot repopulate the cache.
-
-        Raises:
-            ValueError: No history adapter is available for this session.
-        """
+    @staticmethod
+    def _build_observation_loader(
+        *, parent_session_id: str, history_store: SessionHistoryStoreProtocol
+    ) -> WorkflowObservationLoader:
+        """Construct the real read adapter lazily, avoiding the CLI/TUI import cycle."""
         from src.tui.workflow_visualizer_loader import (
             HeadlessWorkflowVisualizerConfigDAO,
             WorkflowVisualizerLoader,
         )
 
+        return WorkflowVisualizerLoader(
+            config=HeadlessWorkflowVisualizerConfigDAO(session_reference=parent_session_id),
+            store=history_store,
+        )
+
+    def _loader(self, *, parent_session_id: str) -> WorkflowObservationLoader:
+        """Reuse a bounded read adapter; never construct one without history.
+
+        Args:
+            parent_session_id: Authorized exact parent identity.
+        Returns:
+            WorkflowObservationLoader: Cached adapter, or uncached after close.
+        Raises:
+            ValueError: No history adapter is available.
+        """
         if self._history_store is None:
             raise ValueError("observation storage unavailable")
-        loader: WorkflowVisualizerLoader = self._loaders.get(parent_session_id) or WorkflowVisualizerLoader(
-            config=HeadlessWorkflowVisualizerConfigDAO(session_reference=parent_session_id),
-            store=self._history_store,
-        )
+        loader = self._loaders.get(parent_session_id)
+        if loader is None:
+            loader = self._loader_factory(
+                parent_session_id=parent_session_id, history_store=self._history_store
+            )
         if not self._closed:
             self._loaders[parent_session_id] = loader
         return loader
 
     # ── feature 94 observation: detached projection and retention ───────────
 
-    async def _load_group(self, *, handle: WorkflowHandleDAO) -> tuple[WorkflowSessionRowDAO, ...]:
-        """Read one owned detached group, keeping last-good rows when discovery fails.
-
-        Args:
-            handle (WorkflowHandleDAO): Previously validated owned handle.
-
-        Returns:
-            tuple[WorkflowSessionRowDAO, ...]: Fresh group, or stale/unavailable retention.
-        """
+    async def _load_group(
+        self, *, handle: WorkflowHandleDAO, retained: tuple[WorkflowSessionRowDAO, ...]
+    ) -> tuple[WorkflowSessionRowDAO, ...]:
+        """Project read evidence without publishing rows or ownership."""
         try:
-            group: WorkflowDataDAO = await self._loader(
+            group = await self._loader(
                 parent_session_id=handle.orchestrator_session_id
             ).load_observation_group()
-            rows: tuple[WorkflowSessionRowDAO, ...] = self._project_group(handle=handle, group=group)
+            rows = self._project_group(handle=handle, group=group)
         except (OSError, ValueError):
-            return self._retain_failed_group(handle=handle)
-        return self._cache_group(
-            handle=handle, rows=self._retain_unconfirmed_children(handle=handle, group=group, rows=rows)
+            return self._retain_failed_group(handle=handle, retained=retained)
+        if group.fleet_snapshot is None and retained:
+            return (rows[0], *self._mark_stale(rows=retained[1:]))
+        previous_by_key = {row.key: row for row in retained}
+        children_by_id = {child.session_id: child for child in group.children}
+        return tuple(
+            self._retain_missing_child_capture(
+                row=row, previous=previous_by_key.get(row.key), child=children_by_id.get(row.key.session_id)
+            )
+            for row in rows
         )
 
-    def _retain_unconfirmed_children(
-        self,
+    @staticmethod
+    def _retain_missing_child_capture(
         *,
-        handle: WorkflowHandleDAO,
-        group: WorkflowDataDAO,
-        rows: tuple[WorkflowSessionRowDAO, ...],
-    ) -> tuple[WorkflowSessionRowDAO, ...]:
-        """Keep known children a group without fleet evidence no longer shows, marked stale.
-
-        Only a present, valid fleet replaces child membership (a.2): a missing
-        ``fleet.json`` or a vanished directory-only child is a missing file, not
-        a deletion.
+        row: WorkflowSessionRowDAO,
+        previous: Optional[WorkflowSessionRowDAO],
+        child: Optional[ChildSessionSummaryDAO],
+    ) -> WorkflowSessionRowDAO:
+        """Keep known detail stale when its previously observed capture disappears.
 
         Args:
-            handle (WorkflowHandleDAO): Group owner.
-            group (WorkflowDataDAO): Fresh available group.
-            rows (tuple[WorkflowSessionRowDAO, ...]): Its fresh projection.
-
+            row: Newly projected fleet member.
+            previous: Last observed member, if any.
+            child: Bounded child capture evidence.
         Returns:
-            tuple[WorkflowSessionRowDAO, ...]: Fresh rows, then retained stale children.
+            WorkflowSessionRowDAO: Fresh row or retained stale detail.
         """
-        if group.fleet_snapshot is not None:
-            return rows
-        fresh_keys: set[WorkflowSessionKeyDAO] = {row.key for row in rows}
-        previous: tuple[WorkflowSessionRowDAO, ...] = self._group_rows.get(handle.orchestrator_session_id, ())
-        return (*rows, *self._mark_stale(rows=tuple(row for row in previous if row.key not in fresh_keys)))
+        if (
+            previous is None
+            or child is None
+            or not previous.task_text_complete
+            or row.execution_id != previous.execution_id
+        ):
+            return row
+        if child.has_spawn_context or child.has_stdout_capture or child.has_stderr_capture:
+            return row
+        return previous.model_copy(update={"availability": "stale"})
 
-    def _cache_group(
-        self, *, handle: WorkflowHandleDAO, rows: tuple[WorkflowSessionRowDAO, ...]
+    def _retain_failed_group(
+        self, *, handle: WorkflowHandleDAO, retained: tuple[WorkflowSessionRowDAO, ...]
     ) -> tuple[WorkflowSessionRowDAO, ...]:
-        """Remember last-good group rows unless the service closed during the read.
-
-        Args:
-            handle (WorkflowHandleDAO): Group owner.
-            rows (tuple[WorkflowSessionRowDAO, ...]): Rows to retain for later failures.
-
-        Returns:
-            tuple[WorkflowSessionRowDAO, ...]: The same rows.
-        """
-        if not self._closed:
-            self._group_rows[handle.orchestrator_session_id] = rows
-        return rows
-
-    def _retain_failed_group(self, *, handle: WorkflowHandleDAO) -> tuple[WorkflowSessionRowDAO, ...]:
         """Never translate unreadable files into deletion during service refresh.
 
         Args:
@@ -1755,16 +2033,16 @@ class DetachedWorkflowAppService:
             tuple[WorkflowSessionRowDAO, ...]: Retained rows marked stale, or one
                 unavailable parent row when no last-good rows exist.
         """
-        previous: Optional[tuple[WorkflowSessionRowDAO, ...]] = self._group_rows.get(
-            handle.orchestrator_session_id
-        )
-        if previous is not None:
+        previous = retained
+        if previous:
             return tuple(
-                row.model_copy(
-                    update={"status": self._detached_parent_status(handle=handle, reported=row.status)}
+                (
+                    row.model_copy(
+                        update={"status": self._detached_parent_status(handle=handle, reported=row.status)}
+                    )
+                    if row.role == "orchestrator"
+                    else row
                 )
-                if row.role == "orchestrator"
-                else row
                 for row in self._mark_stale(rows=previous)
             )
         return (
@@ -1818,8 +2096,15 @@ class DetachedWorkflowAppService:
         """
         if group.parent_session_id != handle.orchestrator_session_id or group.availability == "unavailable":
             raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+        fleet_ids = (
+            None
+            if group.fleet_snapshot is None
+            else {entry.session_id for entry in group.fleet_snapshot.entries}
+        )
         children: tuple[WorkflowSessionRowDAO, ...] = tuple(
-            self._detached_child_row(handle=handle, child=child) for child in group.children
+            self._detached_child_row(handle=handle, child=child)
+            for child in group.children
+            if fleet_ids is None or child.session_id in fleet_ids
         )
         return (self._detached_parent_row(handle=handle, group=group), *children)
 
@@ -1842,7 +2127,9 @@ class DetachedWorkflowAppService:
         return reported
 
     @classmethod
-    def _detached_parent_row(cls, *, handle: WorkflowHandleDAO, group: WorkflowDataDAO) -> WorkflowSessionRowDAO:
+    def _detached_parent_row(
+        cls, *, handle: WorkflowHandleDAO, group: WorkflowDataDAO
+    ) -> WorkflowSessionRowDAO:
         """Choose parent display evidence after group validation, during projection.
 
         The parent row carries the current run identity in ``dispatch_id``: a
@@ -1895,6 +2182,7 @@ class DetachedWorkflowAppService:
             dispatch_id=child.dispatch_id,
             status=child.status,
             task_text=child.task_text,
+            task_summary=child.task_summary,
             task_text_complete=child.task_text_complete,
         )
 
@@ -1909,61 +2197,45 @@ class DetachedWorkflowAppService:
         if attached.dispatch_id == self._attached_dispatch_id:
             return
         self._attached_dispatch_id = attached.dispatch_id
-        self._group_rows.pop(self._owner_session_id, None)
+        self._list_groups = {
+            key: group
+            for key, group in self._list_groups.items()
+            if key.kind != "attached"
+            or group.hidden
+            or group.restored
+            or key.group_id == attached.dispatch_id
+        }
+        for key, group in tuple(self._list_groups.items()):
+            if key.kind == "attached" and key.group_id != attached.dispatch_id:
+                self._list_groups[key] = group.model_copy(
+                    update={
+                        "retained_only": True,
+                        "rows": tuple(
+                            row.model_copy(update={"retained_batch": True})
+                            for row in self._mark_stale(rows=group.rows)
+                        ),
+                    }
+                )
         self._loaders.pop(self._owner_session_id, None)
 
-    async def _read_owned_handles(self) -> tuple[WorkflowHandleDAO, ...]:
-        """Read owned handles through the bounded API, retaining membership on failure.
-
-        Returns:
-            tuple[WorkflowHandleDAO, ...]: Admitted handles sorted by start then id;
-                empty for a no-history session.
-        """
+    async def _read_owned_handles(self) -> _OwnedHandlesCandidateDAO:
+        """Read bounded ownership without mutating the committed union or notice."""
+        retained = tuple(self._handles.values())
         if self._history_store is None or self._store is None:
-            return ()
+            return _OwnedHandlesCandidateDAO(handles=())
         try:
-            handles: tuple[WorkflowHandleDAO, ...] = await self._store.list_observation(
-                owner_session_id=self._owner_session_id
-            )
+            fresh = await self._store.list_observation(owner_session_id=self._owner_session_id)
         except (OSError, ValueError):
-            return self._retained_handles()
-        return self._admit_handles(handles=handles)
-
-    def _admit_handles(self, *, handles: tuple[WorkflowHandleDAO, ...]) -> tuple[WorkflowHandleDAO, ...]:
-        """Merge a complete fresh listing; a vanished known handle is retention, not removal.
-
-        Args:
-            handles (tuple[WorkflowHandleDAO, ...]): Complete bounded owned listing.
-
-        Returns:
-            tuple[WorkflowHandleDAO, ...]: Admitted handles, sorted; empty once closed.
-        """
-        if self._closed:
-            return ()
-        admitted: dict[str, WorkflowHandleDAO] = {**self._handles, **{h.workflow_id: h for h in handles}}
+            return _OwnedHandlesCandidateDAO(handles=retained, notice=LIST_UNAVAILABLE_NOTICE)
+        admitted = {**self._handles, **{handle.workflow_id: handle for handle in fresh}}
         if len(admitted) > OBSERVATION_MAX_HANDLES:
-            return self._retained_handles()
-        self._handles = admitted
-        self._set_observation_notice(notice=LIST_UNAVAILABLE_NOTICE if len(admitted) > len(handles) else None)
-        return self._sorted_handles()
-
-    def _retained_handles(self) -> tuple[WorkflowHandleDAO, ...]:
-        """Keep last-known membership and flag the snapshot as stale.
-
-        Returns:
-            tuple[WorkflowHandleDAO, ...]: Previously admitted handles, sorted.
-        """
-        self._set_observation_notice(notice=LIST_UNAVAILABLE_NOTICE)
-        return self._sorted_handles()
-
-    def _sorted_handles(self) -> tuple[WorkflowHandleDAO, ...]:
-        """Return admitted handles in detached group order.
-
-        Returns:
-            tuple[WorkflowHandleDAO, ...]: Sorted by ``started_at`` then ``workflow_id``.
-        """
-        return tuple(
-            sorted(self._handles.values(), key=lambda handle: (handle.started_at, handle.workflow_id))
+            return _OwnedHandlesCandidateDAO(handles=retained, notice=LIST_UNAVAILABLE_NOTICE)
+        return _OwnedHandlesCandidateDAO(
+            handles=tuple(
+                sorted(admitted.values(), key=lambda handle: (handle.started_at, handle.workflow_id))
+            ),
+            fresh_ids=frozenset(handle.workflow_id for handle in fresh),
+            notice=LIST_UNAVAILABLE_NOTICE if len(admitted) > len(fresh) else None,
         )
 
     def _set_observation_notice(self, *, notice: Optional[str]) -> None:
@@ -1978,36 +2250,3 @@ class DetachedWorkflowAppService:
                 owner_session_id=self._owner_session_id,
             )
         self._observation_notice = notice
-
-    async def _project_detached_groups(
-        self,
-        *,
-        handles: tuple[WorkflowHandleDAO, ...],
-    ) -> tuple[WorkflowSessionRowDAO, ...]:
-        """Read visible owned groups serially, yielding to the UI loop between groups.
-
-        Args:
-            handles (tuple[WorkflowHandleDAO, ...]): Admitted owner handles in order.
-
-        Returns:
-            tuple[WorkflowSessionRowDAO, ...]: Parent-first groups; dismissed groups omitted.
-        """
-        rows: list[WorkflowSessionRowDAO] = []
-        for handle in (handle for handle in handles if handle.workflow_id not in self._dismissed):
-            rows.extend(await self._observe_group(handle=handle))
-            await asyncio.sleep(0)
-        return tuple(rows)
-
-    async def _observe_group(self, *, handle: WorkflowHandleDAO) -> tuple[WorkflowSessionRowDAO, ...]:
-        """Load one group and mark it stale while owned membership is retained.
-
-        Args:
-            handle (WorkflowHandleDAO): Visible owned handle.
-
-        Returns:
-            tuple[WorkflowSessionRowDAO, ...]: Group rows; none once closed (no new reads).
-        """
-        if self._closed:
-            return ()
-        rows: tuple[WorkflowSessionRowDAO, ...] = await self._load_group(handle=handle)
-        return rows if self._observation_notice is None else self._mark_stale(rows=rows)

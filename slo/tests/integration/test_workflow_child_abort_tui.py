@@ -223,7 +223,12 @@ class _DetachedWorld:
         """
         await _bounded(self.controller.start())
         tasks = [
-            SubAgentTaskDAO(task_id=f"t-{sid}", prompt=f"task for {sid}", session_id=sid)
+            SubAgentTaskDAO(
+                task_summary="Observe the child cancellation boundary",
+                task_id=f"t-{sid}",
+                prompt=f"task for {sid}",
+                session_id=sid,
+            )
             for sid in (_TARGET, _SIBLING)
         ]
         dispatch: asyncio.Task[OrchestratorResultDAO] = asyncio.create_task(

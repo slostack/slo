@@ -65,7 +65,7 @@ from src.agents.slo_agent.orchestrator.dao import (
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.process import CHILD_INACTIVITY_TIMEOUT_SECONDS
-from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
+from src.agents.slo_agent.orchestrator.task_preview import TaskPreview, TASK_SUMMARY_FALLBACK
 from src.tui.jsonl_tail import JsonlTail
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.workflows.dao import (
@@ -172,6 +172,9 @@ class ChildSessionSummaryDAO(BaseModel):
     has_stderr_capture: bool = False
     has_spawn_context: bool = False
     prompt_preview: str = ""
+    task_summary: str = Field(
+        default="", description="Prepared literal work label; never original task text."
+    )
     task_text: str = ""
     task_text_complete: bool = False
     execution_id: str = ""
@@ -282,11 +285,14 @@ class _ChildIncarnationDAO(BaseModel):
 
     execution_id: str = ""
     evidence: Optional[ChildExecutionEvidenceDAO] = None
+    modern_identity_missing: bool = Field(
+        default=False, description="Versioned child evidence survives without an exact index mapping."
+    )
 
     @property
     def is_legacy(self) -> bool:
         """Whether the child predates execution identity."""
-        return self.execution_id == ""
+        return self.execution_id == "" and not self.modern_identity_missing
 
     @property
     def trusts_capture(self) -> bool:
@@ -337,7 +343,7 @@ class _ProgressSourceDAO(BaseModel):
         identity (str): Execution id, else dispatch/run id; empty for legacy rows.
         dispatch_id (str): Dispatch or run identity for the snapshot.
         status (str): Display status from verified evidence or the row.
-        mode (Literal["waiting", "live", "terminal"]): Which read applies.
+        mode (Literal["waiting", "unavailable", "live", "terminal"]): Which read applies.
         capture_path (Optional[Path]): Trusted capture path; None when untrusted.
         evidence (Optional[ChildExecutionEvidenceDAO]): Evidence re-checked after reads.
         task_text (str): Full task from matching context, else the row text.
@@ -351,7 +357,7 @@ class _ProgressSourceDAO(BaseModel):
     identity: str
     dispatch_id: str
     status: str
-    mode: Literal["waiting", "live", "terminal"]
+    mode: Literal["waiting", "unavailable", "live", "terminal"]
     capture_path: Optional[Path] = None
     evidence: Optional[ChildExecutionEvidenceDAO] = None
     task_text: str
@@ -491,7 +497,17 @@ class WorkflowVisualizerLoader:
         context: Optional[SpawnContextDAO] = await asyncio.to_thread(self._row_context, row=row)
         if context is None:
             return row
-        return row.model_copy(update={"task_text": context.prompt, "task_text_complete": True})
+        return row.model_copy(
+            update={
+                "task_text": context.prompt,
+                "task_text_complete": True,
+                "task_summary": (
+                    row.task_summary
+                    if row.task_summary and row.task_summary != TASK_SUMMARY_FALLBACK
+                    else TaskPreview.project_summary(prompt_preview="", task_text=context.prompt)
+                ),
+            }
+        )
 
     async def load_session_progress(self, *, row: WorkflowSessionRowDAO) -> SessionProgressSnapshotDAO:
         """Read bounded public progress for one member row from exactly one source.
@@ -703,19 +719,38 @@ class WorkflowVisualizerLoader:
             _ChildIncarnationDAO: Legacy, unverified or verified incarnation.
         """
         if not execution_id:
-            return _LEGACY_INCARNATION
-        evidence: Optional[ChildExecutionEvidenceDAO] = (
-            FleetStore.verify_execution(
-                history_root=self._store.root,
-                orchestrator_session_id=parent_session_id,
-                child_session_id=child_session_id,
-                index=index,
+            return _ChildIncarnationDAO(
+                modern_identity_missing=self._has_modern_sibling(
+                    parent_session_id=parent_session_id, child_session_id=child_session_id
+                )
             )
-            if index is not None
-            else None
+        if index is None or child_session_id not in index.executions:
+            return _ChildIncarnationDAO(execution_id=execution_id, modern_identity_missing=True)
+        evidence: Optional[ChildExecutionEvidenceDAO] = FleetStore.verify_execution(
+            history_root=self._store.root,
+            orchestrator_session_id=parent_session_id,
+            child_session_id=child_session_id,
+            index=index,
         )
         matching: bool = evidence is not None and evidence.execution_id == execution_id
         return _ChildIncarnationDAO(execution_id=execution_id, evidence=evidence if matching else None)
+
+    def _has_modern_sibling(self, *, parent_session_id: str, child_session_id: str) -> bool:
+        """Classify surviving versioned evidence without granting it execution authority.
+
+        Args:
+            parent_session_id: Parent owning the capture directory.
+            child_session_id: Child whose legacy eligibility is being checked.
+
+        Returns:
+            bool: Whether the versioned sibling exists, including a dangling link.
+        """
+        path = self._child_capture_path(
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+            filename="execution.v1.json",
+        )
+        return path.exists() or path.is_symlink()
 
     def _resolve_row_incarnation(self, *, row: WorkflowSessionRowDAO) -> _ChildIncarnationDAO:
         """Resolve one child row's incarnation against a fresh bounded index read.
@@ -838,6 +873,8 @@ class WorkflowVisualizerLoader:
                 update={"capture_path": self._parent_capture_path(session_id=row.key.session_id)}
             )
         incarnation: _ChildIncarnationDAO = self._resolve_row_incarnation(row=row)
+        if incarnation.modern_identity_missing:
+            return self._row_source(row=row, mode="unavailable")
         if self._awaits_incarnation(incarnation=incarnation):
             return self._row_source(row=row, mode="waiting")
         return self._child_source(row=row, incarnation=incarnation)
@@ -901,13 +938,13 @@ class WorkflowVisualizerLoader:
 
     @staticmethod
     def _row_source(
-        *, row: WorkflowSessionRowDAO, mode: Literal["waiting", "live", "terminal"]
+        *, row: WorkflowSessionRowDAO, mode: Literal["waiting", "unavailable", "live", "terminal"]
     ) -> _ProgressSourceDAO:
         """Build a source that carries only the row's own identity and task text.
 
         Args:
             row (WorkflowSessionRowDAO): Validated member row.
-            mode (Literal["waiting", "live", "terminal"]): Read to apply.
+            mode (Literal["waiting", "unavailable", "live", "terminal"]): Read to apply.
 
         Returns:
             _ProgressSourceDAO: Source without capture or evidence.
@@ -956,6 +993,8 @@ class WorkflowVisualizerLoader:
         Returns:
             _ProgressContentDAO: Bounded content, possibly stale or unavailable.
         """
+        if source.mode == "unavailable":
+            return _ProgressContentDAO(availability="unavailable", notices=(PROGRESS_WAITING_NOTICE,))
         if source.mode == "waiting":
             return _ProgressContentDAO(availability="empty", notices=(PROGRESS_WAITING_NOTICE,))
         if source.mode == "live":
@@ -1296,7 +1335,18 @@ class WorkflowVisualizerLoader:
             ],
         )
         fleet_entries: dict[str, SubAgentStatusDAO] = (
-            {entry.session_id: entry for entry in sources.fleet.entries} if sources.fleet else {}
+            {
+                entry.session_id: entry.model_copy(
+                    update={
+                        "execution_id": (
+                            sources.index.executions.get(entry.session_id, "") if sources.index else ""
+                        )
+                    }
+                )
+                for entry in sources.fleet.entries
+            }
+            if sources.fleet
+            else {}
         )
         by_id: dict[str, ChildSessionSummaryDAO] = {child.session_id: child for child in discovered}
         ordered: list[ChildSessionSummaryDAO] = [
@@ -1313,10 +1363,36 @@ class WorkflowVisualizerLoader:
         ordered.extend(child for child in discovered if child.session_id not in fleet_entries)
         return [
             self._overlay_fleet(
-                child=child, entry=fleet_entries.get(child.session_id), parent_session_id=parent_session_id
+                child=child,
+                entry=fleet_entries.get(child.session_id),
+                parent_session_id=parent_session_id,
+                admit_summary=self._summary_fleet_is_current(
+                    sources=sources, parent_session_id=parent_session_id, child_session_id=child.session_id
+                ),
             )
             for child in ordered
         ]
+
+    def _summary_fleet_is_current(
+        self, *, sources: _GroupSourcesDAO, parent_session_id: str, child_session_id: str
+    ) -> bool:
+        """Refuse old labels during index-first publication or loss of modern identity.
+
+        Args:
+            sources: Bounded fleet and index from this observation.
+            parent_session_id: Owning parent.
+            child_session_id: Child whose label would be admitted.
+
+        Returns:
+            bool: Whether the fleet can supply this child's label.
+        """
+        if sources.index is None or child_session_id not in sources.index.executions:
+            return not self._has_modern_sibling(
+                parent_session_id=parent_session_id, child_session_id=child_session_id
+            )
+        if sources.fleet is None:
+            return False
+        return sources.fleet.updated_at >= sources.index.updated_at
 
     def _overlay_fleet(
         self,
@@ -1324,6 +1400,7 @@ class WorkflowVisualizerLoader:
         child: ChildSessionSummaryDAO,
         entry: Optional[SubAgentStatusDAO],
         parent_session_id: str,
+        admit_summary: bool = True,
     ) -> ChildSessionSummaryDAO:
         """Merge matching fleet and terminal status evidence into one child summary.
 
@@ -1335,6 +1412,7 @@ class WorkflowVisualizerLoader:
             child (ChildSessionSummaryDAO): Summary produced by child discovery.
             entry (Optional[SubAgentStatusDAO]): This child's fleet entry, if any.
             parent_session_id (str): Parent owning the child's status file.
+            admit_summary (bool): Whether this observation binds the fleet label to its index.
 
         Returns:
             ChildSessionSummaryDAO: Original summary without a matching entry, or
@@ -1365,7 +1443,7 @@ class WorkflowVisualizerLoader:
                 "exit_code": result.exit_code if result is not None else entry.exit_code,
                 "terminal_reason": entry.terminal_reason,
                 "terminated_by": entry.terminated_by,
-                **self._registry_preview(child=child, entry=entry),
+                **(self._registry_preview(child=child, entry=entry) if admit_summary else {}),
             }
         )
 
@@ -1380,9 +1458,16 @@ class WorkflowVisualizerLoader:
         Returns:
             dict[str, object]: Task-text update fields, empty when not needed.
         """
-        if child.task_text or not entry.prompt_preview:
+        if child.execution_id != entry.execution_id:
             return {}
+        summary = TaskPreview.project_summary(
+            prompt_preview=entry.prompt_preview,
+            task_text=child.task_text if child.task_text_complete else None,
+        )
+        if child.task_text or not entry.prompt_preview:
+            return {"task_summary": summary}
         return {
+            "task_summary": summary,
             "task_text": entry.prompt_preview,
             "task_text_complete": False,
             "prompt_preview": TaskPreview.build(task_text=entry.prompt_preview),
@@ -1641,7 +1726,9 @@ class WorkflowVisualizerLoader:
             index=index,
         )
         spawn: Optional[SpawnContextDAO] = self._matching_context(
-            parent_session_id=parent_session_id, child_session_id=child_session_id, incarnation=incarnation
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+            incarnation=incarnation,
         )
         task_text: str = spawn.prompt if spawn is not None else ""
         evidence: Optional[ChildExecutionEvidenceDAO] = incarnation.evidence
@@ -1663,6 +1750,9 @@ class WorkflowVisualizerLoader:
             has_spawn_context=spawn is not None,
             prompt_preview=TaskPreview.build(task_text=task_text) if task_text else "",
             task_text=task_text,
+            task_summary=TaskPreview.project_summary(
+                prompt_preview="", task_text=spawn.prompt if spawn else None
+            ),
             task_text_complete=spawn is not None,
             execution_id=incarnation.execution_id,
             dispatch_id=(evidence.dispatch_id or "") if evidence is not None else "",

@@ -516,7 +516,7 @@ command. The router is in `src/tui/slash_router.py:32`:
 | `/diff <repository-relative-path>` | Open the focused HEAD-versus-worktree diff screen for one file |
 | `/context-window` | Report the routed model's capacity and the projector-faithful durable replay estimate |
 | `/compact` | Request one lock-safe, transactional manual compaction (rejected while a prompt owns the session lock) |
-| `/workflows` `/wf` | List detached workflows; `abort <id>` SIGTERMs the workflow's process group (SIGKILL after 5 s); `dismiss <id>` acknowledges a stalled one; `tui dismiss [<id>]` clears finished groups from the TUI session list (in memory only; running groups stay) |
+| `/workflows` `/wf` | List detached workflows; `abort <id>` SIGTERMs the workflow's process group (SIGKILL after 5 s); `dismiss <id>` acknowledges a stalled one; `tui dismiss [<id>]` hides matching running or finished groups locally; `tui show` restores hidden groups without affecting execution |
 
 The router is **Textual-free**: every handler returns a
 `SlashCommandResultDAO` (`src/tui/slash_router.py:17`) carrying flags
@@ -3173,8 +3173,8 @@ SloTUI ── one WorkflowProgressCoordinator (single flight) ──> DetachedWo
   editing, queue anchor, history recall, Enter handling and its min/max
   height are unchanged.
 - Rows (`SubAgentFleetRow` in `FleetSessionList`) read
-  `[status] session-id: task`, with the task from `TaskPreview` (truncated
-  with `…`, rendered literally). Tab/Shift+Tab focus the list; Up/Down select
+  `[status] session-id: task`, with an authored summary prepared by `TaskPreview`
+  and rendered literally. Full task details remain separate. Tab/Shift+Tab focus the list; Up/Down select
   without wrapping; Enter or click opens the exact session. There is no
   workflow Ctrl+W binding.
 - `SessionProgressScreen` (+ `ProgressLog`) loads immediately and refreshes
@@ -3188,7 +3188,34 @@ SloTUI ── one WorkflowProgressCoordinator (single flight) ──> DetachedWo
   not-confirmed notice after a timeout. It never resubmits, never signals a
   PID from the TUI, and never touches siblings, the orchestrator or
   `abort_request.json` (an older runner would abort the whole workflow).
-- `/workflows tui dismiss [<id>]` hides finished groups in memory only.
+- `/workflows tui dismiss [<id>]` hides running or finished owned groups in
+  memory only; `/workflows tui show` restores retained rows immediately, even
+  offline. Observation refreshes membership without changing execution. `/clear`
+  preserves visibility, while `/new` and teardown reset it.
+
+**Polished workflow messages (feature 98).** `DetachedWorkflowAppService` owns
+visibility in one group map. Candidate-local reads and coordinator paint revisions
+prevent old observations from undoing local commands; teardown joins observation
+before adopting a replacement session. Retained obsolete attached batches carry
+no new progress or abort authority. Hidden detached adapters are released unless
+a visible current group shares their parent; show itself performs no reads.
+
+New dispatch tasks require an authored `task_summary` alongside the complete
+`prompt`. `TaskPreview` validates and encodes the label in the existing preview
+string, while matching loaders prepare a literal row summary independently of
+full detail. Registry and pool use the same carrier, including chain steps;
+legacy explicit Task/Goal/Objective labels have a bounded fallback. Closed saved
+fleet/status/context shapes are unchanged. This is a dispatch-input compatibility
+change, not a saved-file migration. Exact bounds and operational details live in
+KB `slo/feature-94-tui-session-controls.md`.
+
+`AssistantChunkNormalizer` preserves exact thinking fragments, including whitespace-
+only chunks; the renderer never guesses missing spaces. Contentless replay ends
+remain open for authoritative repair. The shared `WorkflowTranscriptRenderer`
+preserves Markdown formatting, and `ProgressLog` fits narrow modals while leaving
+literal tool output horizontally scrollable. Saved viewport restoration waits for
+deferred rendering and scrollbar readiness, then confirms the offsets actually
+landed; user navigation still cancels a delayed restore.
 
 `ChildAbortStore` owns bounded no-follow reads, immutable request IDs and a
 per-run request capacity under a run-scoped `admission.lock`.

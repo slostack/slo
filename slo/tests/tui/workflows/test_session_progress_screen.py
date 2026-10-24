@@ -128,6 +128,24 @@ class TestProgressViewport:
             ProgressViewportDAO(x=10_000.0, y=10_000.0, following=False).restore(log=log)
             assert (log.scroll_x, log.scroll_y) == (log.max_scroll_x, log.max_scroll_y)
 
+    async def test_restore_waits_for_horizontal_scrolling_to_be_enabled(self) -> None:
+        """A reachable saved pan is not restored before Textual enables its scrollbar."""
+        app: _LogHost = _LogHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            log: RichLog = app.fill()
+            await pilot.pause()
+            viewport: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+            assert log.max_scroll_x >= viewport.x
+
+            # Content measurement can precede the scrollbar-visibility layout pass.
+            log.show_horizontal_scrollbar = False
+            assert viewport.restore(log=log) is False
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+
+            log.show_horizontal_scrollbar = True
+            assert viewport.restore(log=log) is True
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
+
     def test_viewport_is_frozen_and_defaults_to_following(self) -> None:
         """A fresh viewport is the tail-following initial intent and cannot be mutated."""
         viewport: ProgressViewportDAO = ProgressViewportDAO()
@@ -312,6 +330,65 @@ class _DeferredRestores:
         callbacks, self.callbacks = self.callbacks, []
         for callback, kwargs in callbacks:
             callback(**kwargs)
+
+
+class TestThinkingFormatting:
+    """Readable reasoning survives mounted refresh, replay projection and reopen."""
+
+    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("size", [(60, 20), (120, 40)])
+    async def test_markdown_spacing_wrap_refresh_and_reopen(
+        self, theme: Theme, size: tuple[int, int]
+    ) -> None:
+        """RichLog paints spaced wrapped prose, styled text and exact fenced indentation."""
+        source = (
+            "**Readable thinking** with spaces between every word " * 4
+            + "\n\nSecond paragraph.  \nHard break.\n\n```text\n    x  =  1\n```"
+        )
+        thinking = TranscriptEntryDAO(kind="thinking", content=source)
+        answer = TranscriptEntryDAO(kind="assistant", answer="Assistant keeps spaces.")
+        app = _ScreenHost(viewport=ProgressViewportDAO(following=False))
+        async with app.run_test(size=size) as pilot:
+            app.theme = theme.name
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(thinking, answer)))
+            log = _log(app=app)
+            painted = [line.text for line in log.lines]
+            assert sum("Readable thinking" in line for line in painted) >= 2
+            assert all(len(line.rstrip()) <= log.scrollable_content_region.width for line in painted), (
+                log.scrollable_content_region.width,
+                painted,
+            )
+            assert any("    x  =  1" in line for line in painted)
+            assert any("Assistant keeps spaces." in line for line in painted)
+            assert any(
+                segment.style and segment.style.bold and "Readable" in segment.text
+                for line in log.lines
+                for segment in line
+            )
+            assert "**" not in "\n".join(painted)
+            assert any(not line.strip() for line in painted)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(thinking, answer)))
+            assert [line.text for line in log.lines] == painted
+            # Canonical replay carries reasoning on an assistant entry rather than a thinking entry.
+            replay = TranscriptEntryDAO(kind="assistant", reasoning=source, answer=answer.answer)
+            await _paint(
+                app=app,
+                pilot=pilot,
+                snapshot=_snapshot(entries=(replay,), revision="replay", source_generation="canonical:1"),
+            )
+            replay_lines = [line.text for line in log.lines]
+            assert sum("x  =  1" in line for line in replay_lines) == 1
+            assert sum("Assistant keeps spaces." in line for line in replay_lines) == 1
+            app.screen_under_test.dismiss()
+            await pilot.pause()
+            app.screen_under_test = SessionProgressScreen(
+                key=_KEY, viewport=ProgressViewportDAO(following=False)
+            )
+            await app.push_screen(app.screen_under_test)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(replay,), revision="reopen"))
+            assert [line.text.rstrip() for line in _log(app=app).lines] == [
+                line.rstrip() for line in replay_lines
+            ]
 
 
 class TestFirstPaint:
@@ -939,6 +1016,27 @@ class TestRestoreConvergence:
             assert ProgressViewportDAO(x=0.0, y=3.0, following=True).restore(log=log) is True
             assert ProgressViewportDAO(x=5.0, y=30.0, following=False).restore(log=log) is True
             assert ProgressViewportDAO(x=10_000.0, y=10_000.0, following=False).restore(log=log) is False
+
+    async def test_saved_pan_retries_after_scrollbar_visibility_changes(self) -> None:
+        """A reopened modal keeps its saved pan while scrollbar layout catches up."""
+        saved: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+        app: _ScreenHost = _ScreenHost(viewport=saved)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen: SessionProgressScreen = app.screen_under_test
+            deferred: _DeferredRestores = _DeferredRestores(screen=screen)
+            screen.apply_snapshot(snapshot=_snapshot(entries=_entries(count=40)))
+            await pilot.pause()
+            log: ProgressLog = _log(app=app)
+            assert log.max_scroll_x >= saved.x
+
+            log.show_horizontal_scrollbar = False
+            deferred.run_all()
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+            log.show_horizontal_scrollbar = True
+            await pilot.pause()
+
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
 
     async def test_clamped_restore_retries_when_the_log_is_laid_out(self) -> None:
         """Reopening before wide lines are laid out must not lose the saved pan."""

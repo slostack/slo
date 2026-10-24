@@ -37,7 +37,9 @@ class TestSubAgentTaskDAO:
 
     def test_required_fields_accepted(self) -> None:
         """Minimal construction with only required fields succeeds."""
-        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="Do something.")
+        task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility", task_id="t1", prompt="Do something."
+        )
 
         assert task.task_id == "t1"
         assert task.prompt == "Do something."
@@ -47,6 +49,7 @@ class TestSubAgentTaskDAO:
     def test_optional_overrides_accepted(self) -> None:
         """``cwd`` and ``model`` fields are stored correctly when supplied."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t2",
             prompt="Do {previous}.",
             cwd="/tmp/work",
@@ -59,11 +62,12 @@ class TestSubAgentTaskDAO:
     def test_rejects_extra_fields(self) -> None:
         """Extra fields raise ``ValidationError`` due to ``extra='forbid'``."""
         with pytest.raises(ValidationError):
-            SubAgentTaskDAO(task_id="t1", prompt="x", unexpected="y")  # type: ignore[call-arg]
+            SubAgentTaskDAO(task_summary="Check model request compatibility", task_id="t1", prompt="x", unexpected="y")  # type: ignore[call-arg]
 
     def test_reasoning_level_accepted(self) -> None:
         """``reasoning_level`` stores a valid ``ReasoningLevel`` literal."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model reasoning compatibility",
             task_id="t3",
             prompt="Think deeply.",
             reasoning_level="high",
@@ -73,13 +77,16 @@ class TestSubAgentTaskDAO:
 
     def test_reasoning_level_defaults_to_none(self) -> None:
         """``reasoning_level`` defaults to ``None`` when not provided."""
-        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t1", prompt="x")
+        task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility", task_id="t1", prompt="x"
+        )
 
         assert task.reasoning_level is None
 
     def test_resume_session_reference_accepted(self) -> None:
         """``resume_session_reference`` stores the session reference string."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t4",
             prompt="Continue.",
             resume_session_reference="my-session-ref",
@@ -90,6 +97,7 @@ class TestSubAgentTaskDAO:
     def test_session_id_accepted(self) -> None:
         """``session_id`` stores the explicit id string."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t5",
             prompt="Run.",
             session_id="my-child-sess-01",
@@ -101,6 +109,7 @@ class TestSubAgentTaskDAO:
         """``enable_history`` stores True, False, and None correctly."""
         for value in (True, False, None):
             task: SubAgentTaskDAO = SubAgentTaskDAO(
+                task_summary="Check model request compatibility",
                 task_id="t6",
                 prompt="Run.",
                 enable_history=value,
@@ -111,6 +120,7 @@ class TestSubAgentTaskDAO:
         """Supplying both ``resume_session_reference`` and ``session_id`` raises ``ValidationError``."""
         with pytest.raises(ValidationError, match="mutually exclusive"):
             SubAgentTaskDAO(
+                task_summary="Check model request compatibility",
                 task_id="t7",
                 prompt="Run.",
                 resume_session_reference="ref-abc",
@@ -124,6 +134,7 @@ class TestSubAgentTaskDAOHistoryCoercion:
     def test_enable_history_coerced_to_true_when_resume_reference_set(self) -> None:
         """``enable_history`` is forced to ``True`` when ``resume_session_reference`` is set."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t8",
             prompt="Resume.",
             resume_session_reference="my-session-ref",
@@ -134,6 +145,7 @@ class TestSubAgentTaskDAOHistoryCoercion:
     def test_enable_history_false_coerced_to_true_when_resume_reference_set(self) -> None:
         """``enable_history=False`` is upgraded to ``True`` when ``resume_session_reference`` is set."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t9",
             prompt="Resume.",
             resume_session_reference="my-session-ref",
@@ -145,6 +157,7 @@ class TestSubAgentTaskDAOHistoryCoercion:
     def test_existing_true_enable_history_preserved_when_resume_reference_set(self) -> None:
         """``enable_history=True`` is preserved unchanged when ``resume_session_reference`` is set."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t10",
             prompt="Resume.",
             resume_session_reference="my-session-ref",
@@ -156,6 +169,7 @@ class TestSubAgentTaskDAOHistoryCoercion:
     def test_enable_history_not_coerced_when_no_resume_reference(self) -> None:
         """``enable_history`` is left as ``None`` when ``resume_session_reference`` is not set."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t11",
             prompt="Run.",
         )
@@ -165,6 +179,7 @@ class TestSubAgentTaskDAOHistoryCoercion:
     def test_enable_history_false_preserved_when_no_resume_reference(self) -> None:
         """``enable_history=False`` is left unchanged when ``resume_session_reference`` is not set."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t12",
             prompt="Run.",
             enable_history=False,
@@ -428,6 +443,7 @@ class TestSubAgentTaskDAOSystemPrompt:
     def test_sub_agent_task_dao_accepts_system_prompt(self) -> None:
         """``system_prompt`` field is stored when supplied."""
         task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility",
             task_id="t-sp1",
             prompt="Run.",
             system_prompt="You are a test-writing agent.",
@@ -436,13 +452,16 @@ class TestSubAgentTaskDAOSystemPrompt:
 
     def test_sub_agent_task_dao_system_prompt_defaults_to_none(self) -> None:
         """``system_prompt`` defaults to ``None`` when not provided."""
-        task: SubAgentTaskDAO = SubAgentTaskDAO(task_id="t-sp2", prompt="Run.")
+        task: SubAgentTaskDAO = SubAgentTaskDAO(
+            task_summary="Check model request compatibility", task_id="t-sp2", prompt="Run."
+        )
         assert task.system_prompt is None
 
     def test_sub_agent_task_dao_extra_forbid_still_applies(self) -> None:
         """``extra='forbid'`` still rejects unknown fields after adding ``system_prompt``."""
         with pytest.raises(ValidationError):
             SubAgentTaskDAO(
+                task_summary="Check model request compatibility",
                 task_id="t-sp3",
                 prompt="Run.",
                 unknown_extra_field="oops",  # type: ignore[call-arg]
@@ -879,7 +898,7 @@ class TestDispatchDAOs:
 
     def test_resolved_task_keeps_task_and_safe_session(self) -> None:
         """Resolution pairs the original task with its single resolved session."""
-        task = SubAgentTaskDAO(task_id="t1", prompt="x")
+        task = SubAgentTaskDAO(task_summary="Check model request compatibility", task_id="t1", prompt="x")
 
         resolved = ResolvedDispatchTaskDAO(task=task, session_id="child-1")
 
@@ -889,7 +908,12 @@ class TestDispatchDAOs:
     def test_resolved_task_rejects_unsafe_session(self, session_id: str) -> None:
         """A resolved session must be a safe path component before admission."""
         with pytest.raises(ValidationError):
-            ResolvedDispatchTaskDAO(task=SubAgentTaskDAO(task_id="t1", prompt="x"), session_id=session_id)
+            ResolvedDispatchTaskDAO(
+                task=SubAgentTaskDAO(
+                    task_summary="Check model request compatibility", task_id="t1", prompt="x"
+                ),
+                session_id=session_id,
+            )
 
     def test_empty_attached_snapshot_denotes_no_dispatch(self) -> None:
         """The explicit empty value has no identity, sequence zero and no entries."""

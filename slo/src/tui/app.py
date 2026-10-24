@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Optional, cast
+from typing import Optional, Protocol, cast
 
 from rich.markdown import Markdown
 from textual import events
@@ -26,7 +26,7 @@ from config.logger import log_error
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO, VisualizerLaunchOutcomeDAO
 from src.agents.slo_agent.herdr.service import HerdrTaskJoin
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
+from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore, WorkflowResumeLauncher
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.dao import SessionOwnershipLeaseDAO
@@ -71,15 +71,74 @@ from src.tui.workflows.dao import (
     LiveWorkflowLabelDAO,
     ProgressViewportDAO,
     SessionProgressSnapshotDAO,
-    WorkflowListDismissOutcomeDAO,
-    WorkflowListDismissRequestDAO,
+    WorkflowListVisibilityOutcomeDAO,
+    WorkflowListVisibilityRequestDAO,
     WorkflowSessionKeyDAO,
     WorkflowSessionSnapshotDAO,
 )
-from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
+from src.tui.workflows.progress_coordinator import (
+    WorkflowProgressCoordinator,
+    WorkflowProgressSink,
+    WorkflowProgressSource,
+)
 from src.tui.workflows.renderer import DetachedWorkflowRenderer
-from src.tui.workflows.service import DetachedWorkflowAppService
+from src.tui.workflows.service import AttachedChildAbort, DetachedWorkflowAppService
+from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
+from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, ChildControlCapabilityDAO
 from src.tui.workflows.session_progress_screen import SessionProgressScreen
+
+
+class WorkflowCoordinatorFactory(Protocol):
+    """Construct one coordinator with the app-owned source, sink and timer."""
+
+    def __call__(
+        self,
+        *,
+        service: WorkflowProgressSource,
+        sink: WorkflowProgressSink,
+        schedule: Callable[[float, Callable[[], None]], Timer],
+    ) -> WorkflowProgressCoordinator:
+        """Bind observation without starting another timer or owner.
+
+        Args:
+            service: Current observation source.
+            sink: App-owned presentation sink.
+            schedule: App-owned timer registration.
+
+        Returns:
+            WorkflowProgressCoordinator: Unstarted coordinator borrowing these boundaries.
+        """
+        ...
+
+
+class WorkflowAppServiceFactory(Protocol):
+    """Compose a fresh real workflow observation owner for each mounted session."""
+
+    def __call__(
+        self,
+        *,
+        workflow_handle_store: Optional[WorkflowHandleStore],
+        owner_session_id: str,
+        attached_snapshot: Callable[[], AttachedDispatchSnapshotDAO],
+        history_store: Optional[SessionHistoryStoreProtocol],
+        attached_abort: Optional[AttachedChildAbort],
+        attached_capability: Optional[Callable[[], Optional[ChildControlCapabilityDAO]]],
+    ) -> DetachedWorkflowAppService:
+        """Bind the supplied owner and borrowed adapters without starting reads.
+
+        Args:
+            workflow_handle_store: Optional durable handle adapter.
+            owner_session_id: Current session identity.
+            attached_snapshot: Current pool membership supplier.
+            history_store: Optional bounded history source.
+            attached_abort: Optional pool child-abort gateway.
+            attached_capability: Optional current abort capability supplier.
+
+        Returns:
+            DetachedWorkflowAppService: Fresh session-owned observation service.
+        """
+        ...
+
 
 __all__ = ["SloTUI", "PromptInput"]
 
@@ -489,6 +548,9 @@ class SloTUI(App):
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
         workflow_handle_store: Optional[WorkflowHandleStore] = None,
         browser_host: Optional[BrowserHost] = None,
+        workflow_service_factory: Optional[WorkflowAppServiceFactory] = None,
+        workflow_coordinator_factory: Optional[WorkflowCoordinatorFactory] = None,
+        workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -510,8 +572,21 @@ class SloTUI(App):
             browser_host (Optional[BrowserHost]): Optional injected host that
                 decides whether link clicks may open a browser. ``None`` uses
                 ``BrowserHost.current()``.
+            workflow_resume_launcher: Optional workflow process/capture launch boundary.
+            workflow_service_factory: Optional real-service composition boundary.
+            workflow_coordinator_factory: Optional coordinator composition boundary;
+                defaults to the production coordinator with the app-owned sink.
         """
         super().__init__()
+        self._workflow_resume_launcher = workflow_resume_launcher
+        self._workflow_service_factory: WorkflowAppServiceFactory = (
+            workflow_service_factory or DetachedWorkflowAppService
+        )
+        self._workflow_coordinator_factory: WorkflowCoordinatorFactory = (
+            workflow_coordinator_factory or WorkflowProgressCoordinator
+        )
+        self._workflow_visibility_lock: asyncio.Lock = asyncio.Lock()
+        self._workflow_observation_close_task: Optional[asyncio.Task[None]] = None
         self._browser_host: BrowserHost = browser_host or BrowserHost.current()
         self.register_theme(SLO_DEFAULT_THEME)
         self.register_theme(SLO_DARK_THEME)
@@ -1394,9 +1469,10 @@ class SloTUI(App):
         WHEN: Once per owning session, so no rows, caches or timers cross sessions.
         """
         await self._close_workflow_observation()
+        self._workflow_observation_close_task = None
         self._workflow_app_service = self._build_workflow_service()
         self._workflow_progress_sink = _WorkflowProgressSink(tui=self)
-        self._workflow_progress_coordinator = WorkflowProgressCoordinator(
+        self._workflow_progress_coordinator = self._workflow_coordinator_factory(
             service=self._workflow_app_service,
             sink=self._workflow_progress_sink,
             schedule=self._schedule_workflow_refresh,
@@ -1439,22 +1515,45 @@ class SloTUI(App):
             is no owner whose panel rows must be cleared, so the panel is not
             reset again.
         """
+        if self._workflow_observation_close_task is None:
+            self._workflow_observation_close_task = asyncio.create_task(self._dispose_workflow_observation())
+        task = self._workflow_observation_close_task
+        cancelled: bool = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError()
+        task.result()
+
+    async def _dispose_workflow_observation(self) -> None:
+        """Invalidate old references, join owned work, dispose the sink, then reset."""
         self._workflow_observation_session_id = None
         coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
-        self._workflow_progress_coordinator = None
         service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
-        self._workflow_app_service = None
         sink: Optional[_WorkflowProgressSink] = self._workflow_progress_sink
+        self._workflow_progress_coordinator = None
+        self._workflow_app_service = None
         self._workflow_progress_sink = None
         if coordinator is None and service is None and sink is None:
             return
-        if coordinator is not None:
-            await coordinator.close()
-        if service is not None:
-            await service.close()
-        if sink is not None:
-            sink.dispose()
-        await self._reset_session_list()
+        try:
+            if coordinator is not None:
+                await coordinator.close()
+        finally:
+            try:
+                if service is not None:
+                    await service.close()
+            finally:
+                if sink is not None:
+                    sink.dispose()
+                await self._reset_session_list()
 
     def _build_workflow_service(self) -> DetachedWorkflowAppService:
         """Build the owner-scoped workflow service for the current session.
@@ -1469,7 +1568,7 @@ class SloTUI(App):
             self._workflow_handle_store = WorkflowHandleStore(
                 history_root=cast(Path, self._session.history_root)
             )
-        return DetachedWorkflowAppService(
+        return self._workflow_service_factory(
             workflow_handle_store=self._workflow_handle_store if history_backed else None,
             owner_session_id=self._session.session_id,
             attached_snapshot=self._session.attached_dispatch_snapshot,
@@ -2586,7 +2685,9 @@ class SloTUI(App):
         mounted_activity: bool = await self._mount_slash_activity(line=line)
         previous_model = self._session.active_model_name
         try:
-            result = await SlashRouter.dispatch(line=line, session=self._session)
+            result = await SlashRouter.dispatch(
+                line=line, session=self._session, workflow_resume_launcher=self._workflow_resume_launcher
+            )
             if self._session.active_model_name != previous_model:
                 self._suggestion_engine.record_selection(model_name=self._session.active_model_name)
             if line.strip() == "/model refresh":
@@ -2613,11 +2714,13 @@ class SloTUI(App):
         if git_diff_path is not None:
             await self._open_git_diff(path=git_diff_path)
             return
-        tui_dismiss: Optional[WorkflowListDismissRequestDAO] = (
-            result.tui_dismiss if isinstance(result.tui_dismiss, WorkflowListDismissRequestDAO) else None
+        tui_visibility: Optional[WorkflowListVisibilityRequestDAO] = (
+            result.tui_visibility
+            if isinstance(result.tui_visibility, WorkflowListVisibilityRequestDAO)
+            else None
         )
-        if tui_dismiss is not None:
-            self._clear_finished_workflow_groups(request=tui_dismiss)
+        if tui_visibility is not None:
+            await self._apply_workflow_list_visibility(request=tui_visibility)
             return
         if result.rendered is not None:
             self._write_adapter_line(content=result.rendered, classes="tool-result")
@@ -2765,16 +2868,16 @@ class SloTUI(App):
             outcome = await old_session.close_external_reporting()
         except Exception:
             outcome = HerdrReporterCloseOutcomeDAO(replacement="uncertain", resources="retained")
-        self._adopt_replacement_session(old_session=old_session, candidate=candidate, outcome=outcome)
         await self._close_workflow_observation()
+        self._adopt_replacement_session(old_session=old_session, candidate=candidate, outcome=outcome)
         await self._finish_replacement_ui()
 
     async def _transfer_replacement_delivery(self, *, old_session: SloAgentSession) -> None:
         """Release the captured old binding before establishing any successor lease.
 
         WHAT: Stops delivery timers and releases the old inbox lease. The old
-            owner's workflow observation stays bound until adoption, then
-            ``_finish_replacement_commit`` closes it through the canonical
+            owner's workflow observation stays bound until predecessor retirement;
+            ``_finish_replacement_commit`` closes it before adoption through the canonical
             coordinator → service → sink → panel teardown so no rows, caches
             or timers cross sessions.
         WHO: ``_finish_replacement_commit`` before reporter close/adoption.
@@ -3158,29 +3261,37 @@ class SloTUI(App):
             service.resume_group(workflow_id=result.resumed_workflow_id)
         self._request_workflow_refresh()
 
-    def _clear_finished_workflow_groups(self, *, request: WorkflowListDismissRequestDAO) -> None:
-        """Apply ``/workflows tui dismiss [<id>]`` to observation and render its outcome.
-
-        WHAT: The service hides finished groups from its membership first; the
-            outcome's own line is written as a normal slash result; then one
-            coalesced refresh repaints the list through the coordinator (the
-            panel is never mutated here). Without observation nothing is listed,
-            so the nothing-to-clear line is rendered.
-        WHO: ``_dispatch_slash_command`` for a result carrying ``tui_dismiss``,
-            in place of writing the result's empty ``rendered`` text.
-        WHEN: Immediately after the router returns.
+    async def _apply_workflow_list_visibility(self, *, request: WorkflowListVisibilityRequestDAO) -> None:
+        """Commit and paint local visibility before acknowledging the command.
 
         Args:
-            request (WorkflowListDismissRequestDAO): Validated list-clearing request.
+            request: Router-validated display operation, never execution control.
         """
-        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
-        outcome: WorkflowListDismissOutcomeDAO = (
-            WorkflowListDismissOutcomeDAO()
-            if service is None
-            else service.dismiss_from_list(target_id=request.target_id)
-        )
-        self._write_adapter_line(content=outcome.rendered, classes="tool-result")
-        self._request_workflow_refresh()
+        async with self._workflow_visibility_lock:
+            service = self._workflow_app_service
+            coordinator = self._workflow_progress_coordinator
+            if service is None or coordinator is None:
+                self._write_adapter_line(
+                    content="Workflow list unavailable in this session.", classes="tool-result"
+                )
+                return
+            outcome = service.apply_list_visibility(request=request)
+            try:
+                painted = await coordinator.apply_local_snapshot(snapshot=outcome.snapshot)
+            except Exception:
+                painted = False
+            if (
+                service is not self._workflow_app_service
+                or coordinator is not self._workflow_progress_coordinator
+            ):
+                return
+            content = (
+                "Workflow visibility saved; display refresh pending."
+                if not painted and outcome.outcome == "changed"
+                else outcome.rendered
+            )
+            self._write_adapter_line(content=content, classes="tool-result")
+            coordinator.request_refresh()
 
     async def _apply_session_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
         """Apply a snapshot to the panel and return focus if its list vanished.

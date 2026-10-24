@@ -1087,12 +1087,9 @@ class TestClearFinishedGroupsInRealApp:
             await _tick(app=app, pilot=pilot)
 
             visible = [item.row.key for item in app._fleet_panel.query(SubAgentFleetRow)]
-            assert [(key.orchestrator_session_id, key.session_id) for key in visible] == [
-                ("orch-live", "orch-live"),
-                ("orch-live", "child-wf-live"),
-            ]
+            assert visible == []
             assert (
-                "cleared 2 finished workflow group(s) from the list; 1 still running",
+                "Hidden 3 workflow group(s). Execution continues. Use /workflows tui show to restore.",
                 "tool-result",
             ) in app._adapter.lines
             assert _tree_state(root=world.root) == before
@@ -1122,7 +1119,7 @@ def _publish_fleet(*, world: _World, target_status: str) -> None:
             task_id=f"task-{index:02d}",
             session_id=f"sibling-{index:02d}",
             status="running",
-            prompt_preview=f"{index:02d} {_LONG_TASK}",
+            prompt_preview=f"Task summary v1: Verify workflow list sibling {index:02d}",
         )
         for index in range(_SIBLINGS)
     )
@@ -1248,7 +1245,7 @@ class TestTwentyChildFleetJourney:
             sibling: SubAgentFleetRow = next(
                 item for item in panel.query(SubAgentFleetRow) if item.row.key.session_id == "sibling-00"
             )
-            capped: str = f"00 {_LONG_TASK}"[: TASK_PREVIEW_MAX_CODE_POINTS - 1] + "…"
+            capped: str = "Verify workflow list sibling 00"
             assert str(sibling.query_one(Static).render()) == f"[running] sibling-00: {capped}"
             assert sibling.region.height <= 1
             _capture(app=app, views=views, name=f"{stem}-1-list-multiline")

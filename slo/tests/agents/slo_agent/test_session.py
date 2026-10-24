@@ -1079,10 +1079,26 @@ class TestSloAgentSessionAttachedDispatchSnapshot:
 
         with patch.object(SubAgentProcess, "run", new=finish):
             await pool.dispatch(
-                mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id="a")]
+                mode="single",
+                tasks=[
+                    SubAgentTaskDAO(
+                        task_summary="Verify session child delegation",
+                        task_id="t1",
+                        prompt="x",
+                        session_id="a",
+                    )
+                ],
             )
             await pool.dispatch(
-                mode="single", tasks=[SubAgentTaskDAO(task_id="t2", prompt="y", session_id="b")]
+                mode="single",
+                tasks=[
+                    SubAgentTaskDAO(
+                        task_summary="Verify session child delegation",
+                        task_id="t2",
+                        prompt="y",
+                        session_id="b",
+                    )
+                ],
             )
 
         snapshot = session.attached_dispatch_snapshot()

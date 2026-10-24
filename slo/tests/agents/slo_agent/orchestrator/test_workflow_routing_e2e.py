@@ -439,7 +439,7 @@ async def test_sync_dynamic_workflow_executes_in_session(tmp_path: Path) -> None
                         name="spawn_sub_agents",
                         args={
                             "mode": "single",
-                            "tasks_json": '[{"task_id": "phase-1", "prompt": "explain HEAD"}]',
+                            "tasks_json": '[{"task_id": "phase-1", "task_summary": "Exercise child dispatch transport", "prompt": "explain HEAD"}]',
                         },
                     )
                 ],
@@ -551,7 +551,16 @@ async def test_sync_dynamic_workflow_dispatches_native_tasks(tmp_path: Path) -> 
                 tool_calls=[
                     FauxChatModel.tool_call_dict(
                         name="spawn_sub_agents",
-                        args={"mode": "single", "tasks": [{"task_id": "phase-1", "prompt": "explain HEAD"}]},
+                        args={
+                            "mode": "single",
+                            "tasks": [
+                                {
+                                    "task_id": "phase-1",
+                                    "task_summary": "Exercise child dispatch transport",
+                                    "prompt": "explain HEAD",
+                                }
+                            ],
+                        },
                     )
                 ],
             ),
@@ -582,7 +591,7 @@ async def test_sync_dynamic_workflow_recovers_corrupt_tasks_json(tmp_path: Path)
                         name="spawn_sub_agents",
                         args={
                             "mode": "single",
-                            "tasks_json": '[{"task_id": "phase-1", "prompt": "x"}]  // note',
+                            "tasks_json": '[{"task_id": "phase-1", "task_summary": "Exercise child dispatch transport", "prompt": "x"}]  // note',
                         },
                     )
                 ],

@@ -76,7 +76,9 @@ class TestSpawnSubAgentsToolDispatch:
         )
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "Do it."}]
+        )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
@@ -102,7 +104,10 @@ class TestSpawnSubAgentsToolDispatch:
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="parallel"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         tasks_json: str = json.dumps(
-            [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
+            [
+                {"task_id": f"t{i}", "task_summary": "Exercise child dispatch transport", "prompt": "x"}
+                for i in range(MAX_PARALLEL_TASKS + 1)
+            ]
         )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": tasks_json})
@@ -128,7 +133,14 @@ class TestSpawnSubAgentsToolDispatch:
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         tasks_json: str = json.dumps(
-            [{"task_id": "synthesize", "prompt": "Do it.", "model": "claude-sonnet-4-5"}]
+            [
+                {
+                    "task_id": "synthesize",
+                    "task_summary": "Exercise child dispatch transport",
+                    "prompt": "Do it.",
+                    "model": "claude-sonnet-4-5",
+                }
+            ]
         )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
@@ -144,7 +156,16 @@ class TestSpawnSubAgentsToolDispatch:
         """A supported ``model`` clears validation and reaches ``dispatch``."""
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it.", "model": "claude-sonnet-4-6"}])
+        tasks_json: str = json.dumps(
+            [
+                {
+                    "task_id": "t1",
+                    "task_summary": "Exercise child dispatch transport",
+                    "prompt": "Do it.",
+                    "model": "claude-sonnet-4-6",
+                }
+            ]
+        )
 
         await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
 
@@ -154,7 +175,9 @@ class TestSpawnSubAgentsToolDispatch:
         """A task without a ``model`` inherits the pool default and is not rejected."""
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "Do it."}]
+        )
 
         await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
 
@@ -168,6 +191,7 @@ class TestSpawnSubAgentsToolDispatch:
             [
                 {
                     "task_id": "t1",
+                    "task_summary": "Exercise child dispatch transport",
                     "prompt": "Do it.",
                     "model": "claude-sonnet-4-6",
                     "reasoning_level": "medium",
@@ -183,7 +207,16 @@ class TestSpawnSubAgentsToolDispatch:
         """The wrong key ``reasoning`` (not ``reasoning_level``) is rejected without dispatch."""
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it.", "reasoning": "medium"}])
+        tasks_json: str = json.dumps(
+            [
+                {
+                    "task_id": "t1",
+                    "task_summary": "Exercise child dispatch transport",
+                    "prompt": "Do it.",
+                    "reasoning": "medium",
+                }
+            ]
+        )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
@@ -347,7 +380,10 @@ class TestSpawnSubAgentsSchemaDAO:
         """``SpawnSubAgentsSchemaDAO`` accepts a valid mode and tasks_json."""
         from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsSchemaDAO
 
-        dao = SpawnSubAgentsSchemaDAO(mode="parallel", tasks_json='[{"task_id":"t1","prompt":"x"}]')
+        dao = SpawnSubAgentsSchemaDAO(
+            mode="parallel",
+            tasks_json='[{"task_id":"t1","task_summary": "Exercise child dispatch transport", "prompt":"x"}]',
+        )
         assert dao.mode == "parallel"
         assert dao.tasks_json is not None
         assert "task_id" in dao.tasks_json
@@ -377,7 +413,9 @@ class TestSpawnSubAgentsToolInvocationPaths:
         result: OrchestratorResultDAO = OrchestratorResultDAO(mode="parallel", all_completed=True)
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "Do it."}]
+        )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
@@ -395,7 +433,9 @@ class TestSpawnSubAgentsToolInvocationPaths:
         result: OrchestratorResultDAO = OrchestratorResultDAO(mode="single", all_completed=True)
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it."}])
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "Do it."}]
+        )
         tool_call_input: dict = {
             "name": "spawn_sub_agents",
             "args": {"mode": "single", "tasks_json": tasks_json},
@@ -417,7 +457,9 @@ class TestSpawnSubAgentsToolInvocationPaths:
         )
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Step 1."}])
+        tasks_json: str = json.dumps(
+            [{"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "Step 1."}]
+        )
 
         raw: str = await tool_obj.arun(tool_input={"mode": "chain", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)
@@ -432,8 +474,16 @@ class TestSpawnSubAgentsToolInvocationPaths:
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         tasks_json: str = json.dumps(
             [
-                {"task_id": "t1", "prompt": "Analyse imports."},
-                {"task_id": "t2", "prompt": "Run tests."},
+                {
+                    "task_id": "t1",
+                    "task_summary": "Exercise child dispatch transport",
+                    "prompt": "Analyse imports.",
+                },
+                {
+                    "task_id": "t2",
+                    "task_summary": "Exercise child dispatch transport",
+                    "prompt": "Run tests.",
+                },
             ]
         )
 
@@ -464,7 +514,10 @@ class TestSpawnSubAgentsToolInvocationPaths:
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="parallel"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         oversized: str = json.dumps(
-            [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
+            [
+                {"task_id": f"t{i}", "task_summary": "Exercise child dispatch transport", "prompt": "x"}
+                for i in range(MAX_PARALLEL_TASKS + 1)
+            ]
         )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": oversized})
@@ -496,7 +549,14 @@ class TestSpawnSubAgentsNativeTasks:
         pool: MagicMock = _make_pool_mock(result=result)
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
-        await tool_obj.ainvoke(input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "Do it."}]})
+        await tool_obj.ainvoke(
+            input={
+                "mode": "single",
+                "tasks": [
+                    {"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "Do it."}
+                ],
+            }
+        )
 
         pool.dispatch.assert_awaited_once()
         dispatched = pool.dispatch.await_args.kwargs["tasks"]
@@ -510,8 +570,10 @@ class TestSpawnSubAgentsNativeTasks:
         await tool_obj.ainvoke(
             input={
                 "mode": "single",
-                "tasks": [{"task_id": "native", "prompt": "x"}],
-                "tasks_json": '[{"task_id": "legacy", "prompt": "y"}]',
+                "tasks": [
+                    {"task_id": "native", "task_summary": "Exercise child dispatch transport", "prompt": "x"}
+                ],
+                "tasks_json": '[{"task_id": "legacy", "task_summary": "Exercise child dispatch transport", "prompt": "y"}]',
             }
         )
 
@@ -524,7 +586,14 @@ class TestSpawnSubAgentsNativeTasks:
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
         with patch("src.agents.slo_agent.orchestrator.spawn_tool.log_warning") as mock_warn:
-            await tool_obj.ainvoke(input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x"}]})
+            await tool_obj.ainvoke(
+                input={
+                    "mode": "single",
+                    "tasks": [
+                        {"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "x"}
+                    ],
+                }
+            )
 
         mock_warn.assert_not_called()
 
@@ -545,7 +614,9 @@ class TestSpawnSubAgentsTolerantTasksJson:
         """A valid array plus trailing prose dispatches the recovered tasks."""
         pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        corrupt: str = '[{"task_id": "t1", "prompt": "x"}]  // dispatch phase 1'
+        corrupt: str = (
+            '[{"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "x"}]  // dispatch phase 1'
+        )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": corrupt})
 
@@ -556,7 +627,9 @@ class TestSpawnSubAgentsTolerantTasksJson:
         """A salvaged payload emits one structured recovery warning."""
         pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        corrupt: str = '[{"task_id": "t1", "prompt": "x"}]  trailing'
+        corrupt: str = (
+            '[{"task_id": "t1", "task_summary": "Exercise child dispatch transport", "prompt": "x"}]  trailing'
+        )
 
         with patch("src.agents.slo_agent.orchestrator.spawn_tool.log_warning") as mock_warn:
             await tool_obj.ainvoke(input={"mode": "single", "tasks_json": corrupt})
@@ -593,7 +666,17 @@ class TestSpawnSubAgentsResolutionErrors:
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
         raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x", "bogus": 1}]}
+            input={
+                "mode": "single",
+                "tasks": [
+                    {
+                        "task_id": "t1",
+                        "task_summary": "Exercise child dispatch transport",
+                        "prompt": "x",
+                        "bogus": 1,
+                    }
+                ],
+            }
         )
 
         assert "Invalid task definition" in json.loads(raw)["error"]
@@ -603,7 +686,10 @@ class TestSpawnSubAgentsResolutionErrors:
         """A native batch above MAX_PARALLEL_TASKS returns an error, no dispatch."""
         pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="parallel"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        oversized = [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
+        oversized = [
+            {"task_id": f"t{i}", "task_summary": "Exercise child dispatch transport", "prompt": "x"}
+            for i in range(MAX_PARALLEL_TASKS + 1)
+        ]
 
         raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks": oversized})
 
@@ -615,7 +701,10 @@ class TestSpawnSubAgentsResolutionErrors:
         pool: MagicMock = _make_pool_mock(result=OrchestratorResultDAO(mode="parallel"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         oversized_json: str = json.dumps(
-            [{"task_id": f"t{i}", "prompt": "x"} for i in range(MAX_PARALLEL_TASKS + 1)]
+            [
+                {"task_id": f"t{i}", "task_summary": "Exercise child dispatch transport", "prompt": "x"}
+                for i in range(MAX_PARALLEL_TASKS + 1)
+            ]
         )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "parallel", "tasks_json": oversized_json})
@@ -629,7 +718,17 @@ class TestSpawnSubAgentsResolutionErrors:
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
 
         raw: str = await tool_obj.ainvoke(
-            input={"mode": "single", "tasks": [{"task_id": "t1", "prompt": "x", "model": "no-such-model"}]}
+            input={
+                "mode": "single",
+                "tasks": [
+                    {
+                        "task_id": "t1",
+                        "task_summary": "Exercise child dispatch transport",
+                        "prompt": "x",
+                        "model": "no-such-model",
+                    }
+                ],
+            }
         )
 
         assert "error" in json.loads(raw)
@@ -647,6 +746,7 @@ class TestSpawnToolCanonicalMax:
             [
                 {
                     "task_id": "t1",
+                    "task_summary": "Exercise child dispatch transport",
                     "prompt": "Do it.",
                     "model": "gpt-6-astra",
                     "reasoning_level": "max",
@@ -662,7 +762,16 @@ class TestSpawnToolCanonicalMax:
         """An unknown reasoning token is rejected without dispatch."""
         pool: MagicMock = _make_pool_mock(OrchestratorResultDAO(mode="single"))
         tool_obj: BaseTool = SpawnSubAgentsTool.build(pool=pool)
-        tasks_json: str = json.dumps([{"task_id": "t1", "prompt": "Do it.", "reasoning_level": "ultra"}])
+        tasks_json: str = json.dumps(
+            [
+                {
+                    "task_id": "t1",
+                    "task_summary": "Exercise child dispatch transport",
+                    "prompt": "Do it.",
+                    "reasoning_level": "ultra",
+                }
+            ]
+        )
 
         raw: str = await tool_obj.ainvoke(input={"mode": "single", "tasks_json": tasks_json})
         parsed: dict = json.loads(raw)

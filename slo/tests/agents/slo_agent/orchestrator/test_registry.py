@@ -64,7 +64,7 @@ def _task(
     Returns:
         SubAgentTaskDAO: Minimal task for use in registry tests.
     """
-    return SubAgentTaskDAO(task_id=task_id, prompt=prompt)
+    return SubAgentTaskDAO(task_summary="Track child execution publication", task_id=task_id, prompt=prompt)
 
 
 class TestProcessRegistryRegister:
@@ -82,18 +82,18 @@ class TestProcessRegistryRegister:
         assert entry.task_id == "t1"
         assert entry.session_id == "s1"
 
-    def test_prompt_preview_uses_task_preview_150_cap(self) -> None:
-        """``prompt_preview`` keeps 149 normalized code points plus an ellipsis (A2-F02)."""
+    def test_prompt_preview_uses_authored_summary_not_long_prompt(self) -> None:
+        """The released preview field carries the authored label, not a clipped prompt."""
         reg: ProcessRegistry = _registry()
         reg.register(dispatch_id=_DISPATCH_ID, task_id="t1", session_id="s1", task=_task(prompt="x" * 200))
 
         entry = reg.get(session_id="s1")
 
         assert entry is not None
-        assert entry.prompt_preview == "x" * 149 + "…"
+        assert entry.prompt_preview == "Task summary v1: Track child execution publication"
 
-    def test_prompt_preview_normalizes_before_measuring(self) -> None:
-        """Controls are stripped and whitespace collapsed; short results stay intact."""
+    def test_prompt_controls_cannot_change_authored_summary(self) -> None:
+        """Prompt formatting cannot replace the independently authored summary."""
         reg: ProcessRegistry = _registry()
         reg.register(
             dispatch_id=_DISPATCH_ID,
@@ -105,7 +105,7 @@ class TestProcessRegistryRegister:
         entry = reg.get(session_id="s1")
 
         assert entry is not None
-        assert entry.prompt_preview == "Short [2Jtask."
+        assert entry.prompt_preview == "Task summary v1: Track child execution publication"
 
 
 class TestProcessRegistryTransitions:

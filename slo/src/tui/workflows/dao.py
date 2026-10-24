@@ -9,6 +9,7 @@ consumes the effect objects.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Literal, Optional, TypeAlias, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -33,8 +34,10 @@ __all__ = [
     "SessionProgressAvailability",
     "SessionProgressSnapshotDAO",
     "WorkflowLifecycleTarget",
-    "WorkflowListDismissOutcomeDAO",
-    "WorkflowListDismissRequestDAO",
+    "WorkflowListGroupKeyDAO",
+    "WorkflowListGroupDAO",
+    "WorkflowListVisibilityOutcomeDAO",
+    "WorkflowListVisibilityRequestDAO",
     "WorkflowSessionAvailability",
     "WorkflowSessionKeyDAO",
     "WorkflowSessionRole",
@@ -387,6 +390,13 @@ class WorkflowSessionKeyDAO(BaseModel):
 
     orchestrator_session_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    attached_dispatch_id: str = Field(default="", description="Transient attached batch scope, never a path.")
+
+    @field_validator("attached_dispatch_id")
+    @classmethod
+    def _validate_attached_dispatch(cls, value: str) -> str:
+        """Accept an unscoped detached key or canonical attached dispatch UUID."""
+        return canonical_uuid(value=value) if value else value
 
     @property
     def is_parent(self) -> bool:
@@ -425,9 +435,13 @@ class WorkflowSessionRowDAO(BaseModel):
     dispatch_id: str = ""
     role: WorkflowSessionRole
     status: str = Field(min_length=1)
+    task_summary: str = Field(
+        default="", description="Prepared literal work label; never original task text."
+    )
     task_text: str
     task_text_complete: bool
     availability: WorkflowSessionAvailability = "available"
+    retained_batch: bool = Field(default=False, description="Display-only obsolete attached batch.")
 
     @field_validator("execution_id", "dispatch_id")
     @classmethod
@@ -470,102 +484,140 @@ class WorkflowSessionSnapshotDAO(BaseModel):
     notice: Optional[str] = None
 
 
-class WorkflowListDismissRequestDAO(BaseModel):
-    """Operator request to clear finished groups from the session list (feature 94 a.5).
-
-    Built by ``SlashRouter`` for ``/workflows tui dismiss [<id>]`` and applied by
-    the app through ``DetachedWorkflowAppService.dismiss_from_list``. Transient;
-    clearing is in-memory observation suppression, never a durable change.
-
-    Attributes:
-        target_id (Optional[str]): Detached ``workflow_id`` or orchestrator session
-            id naming one group; None clears every finished group.
-    """
+class WorkflowListGroupKeyDAO(BaseModel):
+    """Identify a display group, never execution authority."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+    kind: Literal["attached", "detached"] = Field(description="Membership source.")
+    group_id: str = Field(min_length=1, description="Dispatch UUID or workflow ID.")
 
-    target_id: Optional[str] = None
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "WorkflowListGroupKeyDAO":
+        """Validate source-qualified identity before retention."""
+        if self.kind == "attached":
+            canonical_uuid(value=self.group_id)
+        else:
+            safe_identifier(value=self.group_id)
+        return self
+
+
+class WorkflowListGroupDAO(BaseModel):
+    """Retain observed display rows for one mounted owner only."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    key: WorkflowListGroupKeyDAO = Field(description="Source-qualified group identity.")
+    orchestrator_session_id: Optional[str] = Field(
+        default=None, description="Known parent, absent before observation."
+    )
+    rows: tuple[WorkflowSessionRowDAO, ...] = Field(default=(), description="Parent-first observed rows.")
+    restored: bool = Field(default=False, description="Explicitly restored for this owner lifetime.")
+    started_at: Optional[datetime] = Field(default=None, description="Detached ordering timestamp.")
+    first_seen: int = Field(ge=0, description="Service-local ordering index.")
+    hidden: bool = Field(default=False, description="Local display suppression.")
+    retained_only: bool = Field(default=False, description="Absent from current readable membership.")
+
+    @model_validator(mode="after")
+    def _validate_structure(self) -> "WorkflowListGroupDAO":
+        """Require parent-first rows from one source-qualified group.
+
+        Returns:
+            WorkflowListGroupDAO: Validated retained record.
+        Raises:
+            ValueError: Pending identity, parent or row scope is inconsistent.
+        """
+        if self.orchestrator_session_id is None:
+            if self.key.kind != "detached" or self.rows or self.started_at is not None:
+                raise ValueError("only pending detached groups may omit their parent")
+            return self
+        safe_identifier(value=self.orchestrator_session_id)
+        if not self.rows:
+            return self
+        if not self.rows[0].key.is_parent:
+            raise ValueError("group rows must start with their parent")
+        for row in self.rows:
+            if row.key.orchestrator_session_id != self.orchestrator_session_id:
+                raise ValueError("group rows must share their parent")
+            if self.key.kind == "attached":
+                if row.key.attached_dispatch_id != self.key.group_id or row.workflow_id is not None:
+                    raise ValueError("attached row must share group dispatch without a detached workflow")
+            elif row.key.attached_dispatch_id or row.workflow_id != self.key.group_id:
+                raise ValueError("detached row must share group workflow")
+        return self
+
+
+class WorkflowListVisibilityRequestDAO(BaseModel):
+    """Request local visibility, never a lifecycle mutation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    action: Literal["dismiss", "show"] = Field(description="Display operation.")
+    target_id: Optional[str] = Field(default=None, description="Exact dismiss alias, or all groups.")
 
     @field_validator("target_id")
     @classmethod
-    def _validate_target_id(cls, value: Optional[str]) -> Optional[str]:
-        """Accept no target or one safe identifier."""
+    def _validate_target(cls, value: Optional[str]) -> Optional[str]:
+        """Accept only a safe exact alias."""
         return None if value is None else safe_identifier(value=value)
 
+    @model_validator(mode="after")
+    def _validate_action(self) -> "WorkflowListVisibilityRequestDAO":
+        """Show always restores all hidden groups."""
+        if self.action == "show" and self.target_id is not None:
+            raise ValueError("show accepts no target")
+        return self
 
-class WorkflowListDismissOutcomeDAO(BaseModel):
-    """Result of one list-clearing request; owns its transcript line (feature 94 a.5).
 
-    Exactly one shape holds: an untargeted clear (``target_id`` None, no refusal),
-    a targeted clear (``cleared`` names one group), a running refusal or an
-    unknown target. ``cleared`` holds each hidden group's workflow id, or the
-    orchestrator session id for an attached group.
-
-    Attributes:
-        target_id (Optional[str]): Requested group; None for clear-all.
-        cleared (tuple[str, ...]): Groups hidden by this request, in list order.
-        still_running (int): Visible groups left unfinished by a clear-all.
-        refused_running (Optional[str]): Target refused because it still runs.
-        unknown (Optional[str]): Target that names no group in the list.
-    """
+class WorkflowListVisibilityOutcomeDAO(BaseModel):
+    """Carry committed projection and fixed feedback to the app."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+    action: Literal["dismiss", "show"] = Field(description="Requested operation.")
+    outcome: Literal["changed", "unchanged", "unknown", "ambiguous", "unavailable"] = Field(
+        description="Closed result."
+    )
+    changed_groups: int = Field(default=0, ge=0, description="Changed flags, not rows.")
+    target_id: Optional[str] = Field(default=None, description="Validated alias.")
+    snapshot: WorkflowSessionSnapshotDAO = Field(description="Immediate visible projection.")
 
-    target_id: Optional[str] = None
-    cleared: tuple[str, ...] = ()
-    still_running: int = Field(default=0, ge=0)
-    refused_running: Optional[str] = None
-    unknown: Optional[str] = None
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target(cls, value: Optional[str]) -> Optional[str]:
+        """Keep feedback aliases within the shared safe-identifier contract."""
+        return None if value is None else safe_identifier(value=value)
 
     @model_validator(mode="after")
-    def _validate_single_shape(self) -> "WorkflowListDismissOutcomeDAO":
-        """Reject outcomes that mix results or describe a group other than the target.
-
-        Returns:
-            WorkflowListDismissOutcomeDAO: Self after validation.
-
-        Raises:
-            ValueError: If both refusals are set, a refusal lacks the matching
-                target or clears something, or a targeted clear hides anything
-                but one group.
-        """
-        if self.refused_running is not None and self.unknown is not None:
-            raise ValueError("a target is either running or unknown, never both")
-        refusal: Optional[str] = self.refused_running or self.unknown
-        if refusal is not None and (refusal != self.target_id or self.cleared):
-            raise ValueError("a refusal names only the requested target and clears nothing")
-        if self.target_id is not None and refusal is None and len(self.cleared) != 1:
-            raise ValueError("a targeted clear hides exactly one group")
+    def _validate_outcome(self) -> "WorkflowListVisibilityOutcomeDAO":
+        """Require truthful changed counts and explicit refusal targets."""
+        if (self.outcome == "changed") != (self.changed_groups > 0):
+            raise ValueError("only changed outcomes have positive changed_groups")
+        if self.outcome in {"unknown", "ambiguous"} and self.target_id is None:
+            raise ValueError("unknown and ambiguous outcomes require a target")
         return self
 
     @property
     def rendered(self) -> str:
-        """Return the transcript line for this outcome.
-
-        Returns:
-            str: Fixed operator line from the a.5 behaviour table.
-        """
-        if self.refused_running is not None:
-            return (
-                f"workflow {self.refused_running} is still running — "
-                f"wait for it or use /workflows abort {self.refused_running}"
-            )
-        if self.unknown is not None:
-            return f"no workflow {self.unknown} in the list"
+        """Return visibility-only feedback after the projection is painted."""
+        if self.outcome == "unavailable":
+            return "Workflow list unavailable in this session."
+        if self.outcome == "unknown":
+            return f"No workflow {self.target_id} in this session list."
+        if self.outcome == "ambiguous":
+            return f"Workflow {self.target_id} is ambiguous; use its workflow ID."
+        if self.outcome == "changed":
+            return self._changed_line()
+        if self.action == "show":
+            return "No hidden workflow groups to show."
         if self.target_id is not None:
-            return f"cleared workflow {self.target_id} from the list"
-        return self._clear_all_line()
+            return f"Workflow {self.target_id} is already hidden."
+        return "No visible workflow groups to hide."
 
-    def _clear_all_line(self) -> str:
-        """Return the clear-all summary, mentioning running groups only when some remain.
-
-        Returns:
-            str: Summary line, or the nothing-to-clear line when no group was hidden.
-        """
-        if not self.cleared:
-            return "no finished workflow groups to clear"
-        running: str = f"; {self.still_running} still running" if self.still_running else ""
-        return f"cleared {len(self.cleared)} finished workflow group(s) from the list{running}"
+    def _changed_line(self) -> str:
+        """Describe changed groups without claiming execution changed."""
+        if self.action == "show":
+            return f"Shown {self.changed_groups} previously hidden workflow group(s). Retained rows may be stale."
+        return (
+            f"Hidden {self.changed_groups} workflow group(s). Execution continues. "
+            "Use /workflows tui show to restore."
+        )
 
 
 SessionProgressAvailability: TypeAlias = Literal["available", "empty", "stale", "unavailable"]
@@ -756,11 +808,12 @@ class ProgressViewportDAO(BaseModel):
             # valid layout, not a race: x clamps to zero below while the
             # reachable vertical offset still restores.
             return False
-        reachable: bool = self.x <= log.max_scroll_x and self.y <= log.max_scroll_y
         log.scroll_to(
             x=min(self.x, log.max_scroll_x),
             y=min(self.y, log.max_scroll_y),
             animate=False,
             immediate=True,
         )
-        return reachable
+        # Measured content can be scrollable before Textual enables its scrollbar.
+        # In that interval scroll_to ignores the axis despite an in-range target.
+        return log.scroll_x == self.x and log.scroll_y == self.y

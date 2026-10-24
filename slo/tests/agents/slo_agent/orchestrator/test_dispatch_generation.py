@@ -115,7 +115,9 @@ def _pool(
 
 def _task(*, task_id: str, session_id: str, prompt: str = "do it") -> SubAgentTaskDAO:
     """Build one task bound to an explicit child session."""
-    return SubAgentTaskDAO(task_id=task_id, prompt=prompt, session_id=session_id)
+    return SubAgentTaskDAO(
+        task_summary="Exercise child output transport", task_id=task_id, prompt=prompt, session_id=session_id
+    )
 
 
 async def _until(predicate: Callable[[], bool]) -> None:
@@ -204,7 +206,7 @@ class TestStartEvent:
             )
 
         spawned = next(event for event in relayed if event.kind == "sub_agent_spawned")
-        assert spawned.content == " ".join(["y"] * 100)[:149] + "…"
+        assert spawned.content == "Task summary v1: Exercise child output transport"
 
 
 class TestBatchReplacement:

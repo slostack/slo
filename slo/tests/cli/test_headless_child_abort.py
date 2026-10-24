@@ -22,6 +22,7 @@ from uuid import uuid4
 import pytest
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.orchestrator import child_abort
 from src.agents.slo_agent.orchestrator.child_abort import ChildAbortController, ChildAbortStore
 from src.agents.slo_agent.orchestrator.dao import (
@@ -590,6 +591,15 @@ class _DispatchingSession:
         self.session_id: str = _PARENT
         self.history_root: Optional[Path] = None
         self.abort: MagicMock = MagicMock()
+        # Reporting seam: explicit None activation result and real typed safe/drained
+        # close outcomes for this resource-free fixture (never bare auto-mocks).
+        self.start_external_reporting: AsyncMock = AsyncMock(return_value=None)
+        self.close_external_reporting: AsyncMock = AsyncMock(
+            return_value=HerdrReporterCloseOutcomeDAO(replacement="safe", resources="drained")
+        )
+        self.finish_retired_reporting_cleanup: AsyncMock = AsyncMock(
+            return_value=HerdrReporterCloseOutcomeDAO(replacement="safe", resources="drained")
+        )
         self._subscribers: list[Callable[[AgentStreamEventDAO], Awaitable[None]]] = []
         self._session_ids: list[str] = session_ids
         self._sub_agent_pool: SubAgentPool = SubAgentPool(
@@ -759,6 +769,10 @@ class TestHeadlessRunnerChildControl:
         assert capability.owner_session_id == _TUI_OWNER
         assert drained_with_capability and drained_with_capability[0] is not None
         assert drained_with_capability[0].accepting is False  # closed before the final fleet drain
+        # Reporting lifetime was genuinely joined at the normal exit boundary.
+        harness.session.start_external_reporting.assert_awaited_once_with()
+        harness.session.close_external_reporting.assert_awaited_once_with()
+        harness.session.finish_retired_reporting_cleanup.assert_awaited_once_with()
         assert not (tmp_path / _PARENT / "abort_request.json").exists()
         for path in harness.control_files():
             assert _SECRET_SENTINEL not in path.read_text(encoding="utf-8")
@@ -864,6 +878,10 @@ class TestHeadlessRunnerChildControl:
             await _until(lambda: not harness.session.pool._active_by_session_id)
 
         assert receipt.outcome == "aborted"
+        # Runner cancellation still awaited activation and both close gateways.
+        harness.session.start_external_reporting.assert_awaited_once_with()
+        harness.session.close_external_reporting.assert_awaited_once_with()
+        harness.session.finish_retired_reporting_cleanup.assert_awaited_once_with()
 
     async def test_restarted_runner_refuses_old_run_request(self, tmp_path: Path) -> None:
         """A committed-but-unadmitted request from a previous run is never executed by the next run."""

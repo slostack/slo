@@ -178,7 +178,7 @@ class TestOrchestratorSessionBootstrapAttach:
     """``OrchestratorSessionBootstrap.attach`` promotes sessions to orchestrator mode."""
 
     def test_attach_calls_session_attach_sub_agent_pool(self) -> None:
-        """Successful attach calls ``session.attach_sub_agent_pool`` with the tool list."""
+        """Successful attach calls ``session._attach_sub_agent_pool`` with the tool list."""
         session: MagicMock = _make_session()
 
         with (
@@ -197,7 +197,7 @@ class TestOrchestratorSessionBootstrapAttach:
 
             OrchestratorSessionBootstrap.attach(session=session)
 
-        session.attach_sub_agent_pool.assert_called_once_with(
+        session._attach_sub_agent_pool.assert_called_once_with(
             pool=mock_pool,
             spawn_tools=[mock_spawn_tool],
         )
@@ -273,7 +273,7 @@ class TestOrchestratorSessionBootstrapAttach:
             OrchestratorSessionBootstrap.attach(session=session)
 
         MockPool.assert_not_called()
-        session.attach_sub_agent_pool.assert_not_called()
+        session._attach_sub_agent_pool.assert_not_called()
 
     def test_attach_is_noop_when_pool_already_attached(self) -> None:
         """No pool is built when ``_sub_agent_pool`` is already set."""
@@ -284,7 +284,7 @@ class TestOrchestratorSessionBootstrapAttach:
             OrchestratorSessionBootstrap.attach(session=session)
 
         MockPool.assert_not_called()
-        session.attach_sub_agent_pool.assert_not_called()
+        session._attach_sub_agent_pool.assert_not_called()
 
     def test_attach_builds_spawn_tool_from_pool(self) -> None:
         """``SpawnSubAgentsTool.build`` is called with the freshly created pool."""
@@ -318,7 +318,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
-        spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == [
             "spawn_sub_agents",
             "launch_workflow",
@@ -338,7 +338,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
-        spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == ["spawn_sub_agents"]
 
     def test_workflow_tools_bound_to_session_identity(
@@ -387,7 +387,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session, headless=True)
 
-        spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools: list = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == ["spawn_sub_agents"]
 
     def test_attach_tui_default_keeps_three_tools(
@@ -408,7 +408,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
-        spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools: list = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == [
             "spawn_sub_agents",
             "launch_workflow",

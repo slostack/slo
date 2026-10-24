@@ -1,0 +1,37 @@
+tests/agents/slo_agent/herdr/test_cli_transport.py:139 test_spawn_boundary_refuses_unregistered: untyped=['tmp_path', 'monkeypatch']; missing_return=False
+tests/agents/slo_agent/herdr/test_cli_transport.py:157 test_registered_spawn_is_real_and_environment_is_allowlisted: untyped=['fake_herdr', 'tmp_path']; missing_return=False
+tests/agents/slo_agent/herdr/test_cli_transport.py:210 test_collect_result: untyped=['fake_herdr', 'tmp_path']; missing_return=False
+tests/agents/slo_agent/herdr/test_cli_transport.py:230 test_terminate_and_reap: untyped=['fake_herdr', 'tmp_path']; missing_return=False
+tests/agents/slo_agent/herdr/test_cli_transport.py:249 test_observe_and_drain_spawn: untyped=['fake_herdr', 'tmp_path']; missing_return=False
+tests/agents/slo_agent/herdr/test_cli_transport.py:277 test_finish_accounts_once_after_drain: untyped=['fake_herdr', 'tmp_path']; missing_return=False
+tests/agents/slo_agent/herdr/test_cli_transport.py:298 test_close_seals_and_caches_drain: untyped=['fake_herdr', 'tmp_path']; missing_return=False
+tests/agents/slo_agent/herdr/test_cli_transport.py:322 test_invoke_admission: untyped=['fake_herdr', 'tmp_path']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:37 test_missing_plain_slo_withdraws_installed_reference: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:531 test_real_send_claim: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:552 test_report_steps: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:576 test_bootstrap_batch: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:603 test_shutdown_release: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:655 test_activation: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:676 test_usage_update_during_identical_config_save_reuses_reference: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:730 test_viewer_lock_waiter_superseded_report_never_spawns: untyped=['fake_herdr', 'monkeypatch']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:819 test_close_transport_cancel_still_unlocks: untyped=['monkeypatch']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:862 test_public_service_export_and_fixed_diagnostic: untyped=['caplog', 'monkeypatch']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:932 test_lease_close_order: untyped=['monkeypatch']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter.py:768 observed: untyped=['command', 'admission']; missing_return=True
+tests/agents/slo_agent/herdr/test_reporter.py:830 delayed: untyped=[]; missing_return=True
+tests/agents/slo_agent/herdr/test_reporter.py:873 broken: untyped=['*args', '**kwargs']; missing_return=True
+tests/agents/slo_agent/herdr/test_reporter.py:943 seal: untyped=[]; missing_return=True
+tests/agents/slo_agent/herdr/test_reporter_compositions.py:19 test_already_admitted_a_accounts_without_followup: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter_compositions.py:81 test_failed_save_uncertain_release_blocks_replacement: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter_shutdown_closure.py:13 test_counter_activation_refuses_without_send: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_reporter_shutdown_closure.py:44 test_shutdown_and_patch_cutoffs: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_restore_save.py:108 substitute: untyped=[]; missing_return=True
+tests/agents/slo_agent/herdr/test_t2_remaining.py:134 test_actual_spawn_substitution_refused: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_t2_remaining.py:182 test_ordinary_operation_currentness: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_t2_remaining.py:257 test_changed_capture_save_barrier: untyped=['fake_herdr']; missing_return=False
+tests/agents/slo_agent/herdr/test_transport_lifetime.py:197 broken_warning: untyped=['msg', '*args', '**kwargs']; missing_return=False
+tests/agents/slo_agent/herdr/test_transport_lifetime.py:193 complete: untyped=['result']; missing_return=False
+tests/tui/test_herdr_init_ownership.py:314 boundary: untyped=['**kwargs']; missing_return=True
+tests/tui/test_herdr_init_ownership.py:395 record_close: untyped=[]; missing_return=True
+tests/tui/test_herdr_init_ownership.py:400 record_release: untyped=['**kwargs']; missing_return=False
+tests/tui/test_herdr_init_rollback.py:112 interval: untyped=['**kwargs']; missing_return=False

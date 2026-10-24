@@ -1,0 +1,66 @@
+diff --git a/slo/tests/tui/test_selection_scroll_highlight.py b/slo/tests/tui/test_selection_scroll_highlight.py
+index 60f1306..eaa24c4 100644
+--- a/slo/tests/tui/test_selection_scroll_highlight.py
++++ b/slo/tests/tui/test_selection_scroll_highlight.py
+@@ -6,6 +6,7 @@ from pathlib import Path
+ from typing import Optional
+ 
+ from textual.widget import Widget
++from textual.message import Message
+ from uuid import uuid4
+ 
+ import pytest
+@@ -51,7 +52,11 @@ def _location_for_offset(*, app: SloTUI, body: Widget, target: Offset) -> tuple[
+             widget, offset = app.screen.get_widget_and_offset_at(x=x, y=y)
+             if widget is body and offset == target:
+                 return x, y
+-    raise AssertionError(f"offset {target} was not visible")
++    raise AssertionError(
++        f"offset {target} was not visible; body={body.region}, "
++        f"scroll={app._transcript_scroll.scroll_y if app._transcript_scroll else None}, "
++        f"follow_pending={app._force_following_until_layout}"
++    )
+ 
+ 
+ class TestVisibleBufferSelection:
+@@ -123,13 +128,25 @@ class TestPilotVisibleSelection:
+     @pytest.mark.asyncio
+     @pytest.mark.parametrize("kind", ["answer", "thinking", "user"])
+     @pytest.mark.parametrize("theme_name", ["slo-default", "slo-dark"])
++    @pytest.mark.parametrize("defer_rendered", [False, True])
+     async def test_selection_paint_and_scroll_remain_native_for_every_visible_body_and_theme(
+-        self, kind: str, theme_name: str
++        self, kind: str, theme_name: str, defer_rendered: bool, monkeypatch: pytest.MonkeyPatch
+     ) -> None:
+         """Native selection paint and range state remain scroll-attached in both Slo themes."""
+         app = SloTUI(session=_build_session())
+         async with app.run_test(size=(80, 24)) as pilot:
+             app.theme = theme_name
++            pending_rendered: list[tuple[Widget, Message]] = []
++            original_post = Widget.post_message
++
++            def post_message(widget: Widget, message: Message) -> bool:
++                """Hold only real render notifications until the controlled delivery boundary."""
++                if defer_rendered and isinstance(message, AssistantStreamBlock.Rendered):
++                    pending_rendered.append((widget, message))
++                    return True
++                return original_post(widget, message)
++
++            monkeypatch.setattr(target=Widget, name="post_message", value=post_message)
+             for index in range(20):
+                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
+             if kind == "answer":
+@@ -153,6 +170,13 @@ class TestPilotVisibleSelection:
+             await pilot.pause(delay=0.1)
+             block.scroll_visible(animate=False)
+             await pilot.pause(delay=1.0)  # Wait for the queued mount's follow pin and layout refresh.
++            for sender, message in pending_rendered:
++                print("DELAYED", kind, theme_name, message.was_following, body.region, app._transcript_scroll.scroll_y)
++                original_post(sender, message)
++            await pilot.pause()
++            await pilot.pause()
++            await pilot.pause()
++            print("AFTER", kind, theme_name, body.region, app._transcript_scroll.scroll_y)
+             if kind == "user":
+                 block.scroll_visible(top=True, animate=False)
+                 await pilot.pause(delay=0.1)

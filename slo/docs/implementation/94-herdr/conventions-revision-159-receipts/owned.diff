@@ -1,0 +1,523 @@
+--- src/agents/providers/faux.py before159
++++ src/agents/providers/faux.py after159
+@@ -47,10 +47,15 @@
+ 
+     model_config = ConfigDict(arbitrary_types_allowed=True)
+ 
+-    queue: deque[AIMessage] = Field(default_factory=deque)
+-    chunk_queue: deque[list[AIMessageChunk]] = Field(default_factory=deque)
++    queue: deque[AIMessage] = Field(
++        default_factory=deque, description="Remaining scripted completed responses in consumption order."
++    )
++    chunk_queue: deque[list[AIMessageChunk]] = Field(
++        default_factory=deque,
++        description="Remaining per-response streaming chunk scripts in consumption order.",
++    )
+     bound_tools: list[dict[str, object] | type | Callable[..., object] | BaseTool] = Field(
+-        default_factory=list
++        default_factory=list, description="Tool definitions captured on the clone returned by bind_tools."
+     )
+     model_name: str = "faux"
+     _call_count: int = 0
+--- tests/agents/slo_agent/herdr/test_cli_transport.py before159
++++ tests/agents/slo_agent/herdr/test_cli_transport.py after159
+@@ -136,7 +136,7 @@
+     assert not task._log_traceback
+ 
+ 
+-async def test_spawn_boundary_refuses_unregistered(tmp_path, monkeypatch) -> None:
++async def test_spawn_boundary_refuses_unregistered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+     """Environment activation alone never grants executable permission."""
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+     from src.agents.slo_agent.herdr.dao import HerdrReporterConfigDAO, HerdrCliCommandDAO
+@@ -154,7 +154,9 @@
+         await transport._spawn(command=HerdrCliCommandDAO(argv=("pane", "split")))
+ 
+ 
+-async def test_registered_spawn_is_real_and_environment_is_allowlisted(fake_herdr, tmp_path) -> None:
++async def test_registered_spawn_is_real_and_environment_is_allowlisted(
++    fake_herdr: FakeHerdrFixture, tmp_path: Path
++) -> None:
+     """Actual subprocess entry uses only the registered new regular executable."""
+     import json
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+@@ -207,7 +209,7 @@
+ 
+ 
+ @pytest.mark.parametrize(argnames="capture_json", argvalues=[False, True])
+-async def test_collect_result(fake_herdr, tmp_path, capture_json: bool) -> None:
++async def test_collect_result(fake_herdr: FakeHerdrFixture, tmp_path: Path, capture_json: bool) -> None:
+     """Real pipes are concurrently joined and only successful stdout is retained."""
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+     from src.agents.slo_agent.herdr.dao import HerdrReporterConfigDAO, HerdrCliCommandDAO
+@@ -227,7 +229,7 @@
+ 
+ 
+ @pytest.mark.parametrize(argnames="running", argvalues=[False, True])
+-async def test_terminate_and_reap(fake_herdr, tmp_path, running: bool) -> None:
++async def test_terminate_and_reap(fake_herdr: FakeHerdrFixture, tmp_path: Path, running: bool) -> None:
+     """The owned new-session process is reaped whether running or already exited."""
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+     from src.agents.slo_agent.herdr.dao import HerdrReporterConfigDAO, HerdrCliCommandDAO
+@@ -246,7 +248,7 @@
+ 
+ 
+ @pytest.mark.parametrize(argnames="failure", argvalues=[False, True])
+-async def test_observe_and_drain_spawn(fake_herdr, tmp_path, failure: bool) -> None:
++async def test_observe_and_drain_spawn(fake_herdr: FakeHerdrFixture, tmp_path: Path, failure: bool) -> None:
+     """Definitive spawn refusal is distinct from admitted remote uncertainty."""
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+     from src.agents.slo_agent.herdr.dao import HerdrReporterConfigDAO, HerdrCliCommandDAO
+@@ -274,7 +276,7 @@
+     assert "private-spawn-sentinel" not in repr(terminal)
+ 
+ 
+-async def test_finish_accounts_once_after_drain(fake_herdr, tmp_path) -> None:
++async def test_finish_accounts_once_after_drain(fake_herdr: FakeHerdrFixture, tmp_path: Path) -> None:
+     """Terminal accounting follows real reap and clears owned slots."""
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+     from src.agents.slo_agent.herdr.dao import HerdrReporterConfigDAO, HerdrCliCommandDAO
+@@ -295,7 +297,7 @@
+     assert transport._active is None and transport._spawn_task is None
+ 
+ 
+-async def test_close_seals_and_caches_drain(fake_herdr, tmp_path) -> None:
++async def test_close_seals_and_caches_drain(fake_herdr: FakeHerdrFixture, tmp_path: Path) -> None:
+     """Local close cannot reopen transport or issue remote commands."""
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+     from src.agents.slo_agent.herdr.dao import HerdrReporterConfigDAO, HerdrCliCommandDAO
+@@ -319,7 +321,7 @@
+ 
+ 
+ @pytest.mark.parametrize(argnames="allowed", argvalues=[True, False])
+-async def test_invoke_admission(fake_herdr, tmp_path, allowed: bool) -> None:
++async def test_invoke_admission(fake_herdr: FakeHerdrFixture, tmp_path: Path, allowed: bool) -> None:
+     """Real invocation has mandatory owner admission and terminal local evidence."""
+     from src.agents.slo_agent.herdr.service import HerdrCliTransport
+     from src.agents.slo_agent.herdr.dao import HerdrReporterConfigDAO, HerdrCliCommandDAO
+--- tests/agents/slo_agent/herdr/test_reporter.py before159
++++ tests/agents/slo_agent/herdr/test_reporter.py after159
+@@ -3,9 +3,15 @@
+ from pathlib import Path
+ 
+ import pytest
++
++from tests.state_isolation import FakeHerdrFixture
+ 
+ from src.agents.slo_agent.herdr.dao import (
+     HerdrReportOperation,
++    HerdrCliCommandDAO,
++    HerdrCommandAdmission,
++    HerdrCommandResultDAO,
++    HerdrReporterCloseOutcomeDAO,
+     HerdrPublicationDAO,
+     HerdrReportSnapshotDAO,
+     HerdrReporterConfigDAO,
+@@ -35,7 +41,11 @@
+ 
+ @pytest.mark.parametrize("path_state", ["missing", "nonexecutable", "directory", "probe_error"])
+ async def test_missing_plain_slo_withdraws_installed_reference(
+-    fake_herdr, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, plain_slo: Path, path_state: str
++    fake_herdr: FakeHerdrFixture,
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++    plain_slo: Path,
++    path_state: str,
+ ) -> None:
+     """PATH loss releases an installed reference before identity-only replacement."""
+     import json
+@@ -528,7 +538,7 @@
+     assert not bridge.try_admit()
+ 
+ 
+-async def test_real_send_claim(fake_herdr, tmp_path: Path) -> None:
++async def test_real_send_claim(fake_herdr: FakeHerdrFixture, tmp_path: Path) -> None:
+     """Real registered execution crosses durable reserve, admission and accounting."""
+     import json
+ 
+@@ -549,7 +559,7 @@
+         owner._sequence_store.close()
+ 
+ 
+-async def test_report_steps(fake_herdr, tmp_path: Path) -> None:
++async def test_report_steps(fake_herdr: FakeHerdrFixture, tmp_path: Path) -> None:
+     """Claim, semantic deduplication and two empty-display patches compose for real."""
+     import json
+ 
+@@ -573,7 +583,7 @@
+         owner._sequence_store.close()
+ 
+ 
+-async def test_bootstrap_batch(fake_herdr, tmp_path: Path, plain_slo: Path) -> None:
++async def test_bootstrap_batch(fake_herdr: FakeHerdrFixture, tmp_path: Path, plain_slo: Path) -> None:
+     """Bootstrap installs restore before display and never retries it in the same pass."""
+     import json
+ 
+@@ -600,7 +610,7 @@
+         owner._sequence_store.close()
+ 
+ 
+-async def test_shutdown_release(fake_herdr, tmp_path: Path) -> None:
++async def test_shutdown_release(fake_herdr: FakeHerdrFixture, tmp_path: Path) -> None:
+     """Successful shutdown release permits exactly two reserved inventory clears."""
+     import asyncio
+     import json
+@@ -652,7 +662,7 @@
+     assert await owner.drain_retained_external_resources() is final
+ 
+ 
+-async def test_activation(fake_herdr, tmp_path: Path) -> None:
++async def test_activation(fake_herdr: FakeHerdrFixture, tmp_path: Path) -> None:
+     """Activation withdraws retained claims exactly once before granting authority."""
+     import json
+ 
+@@ -674,7 +684,7 @@
+ 
+ 
+ async def test_usage_update_during_identical_config_save_reuses_reference(
+-    fake_herdr, tmp_path: Path, plain_slo: Path
++    fake_herdr: FakeHerdrFixture, tmp_path: Path, plain_slo: Path
+ ) -> None:
+     """G1 blocks the real off-loop store and sends newest display with its exact save."""
+     import asyncio
+@@ -728,7 +738,11 @@
+ @pytest.mark.parametrize("changed_generation", [False, True])
+ @pytest.mark.parametrize("cutoff", ["superseded", "close", "cancel", "timeout"])
+ async def test_viewer_lock_waiter_superseded_report_never_spawns(
+-    fake_herdr, tmp_path: Path, changed_generation: bool, monkeypatch, cutoff: str
++    fake_herdr: FakeHerdrFixture,
++    tmp_path: Path,
++    changed_generation: bool,
++    monkeypatch: pytest.MonkeyPatch,
++    cutoff: str,
+ ) -> None:
+     """G2 uses an actual viewer child, transport lock, durable A gap and newer B."""
+     import asyncio
+@@ -765,7 +779,9 @@
+     queued = asyncio.Event()
+     original = owner._transport.invoke
+ 
+-    async def observed(*, command, admission):
++    async def observed(
++        *, command: HerdrCliCommandDAO, admission: HerdrCommandAdmission
++    ) -> HerdrCommandResultDAO:
+         """Signal after durable reservation, immediately before actual lock wait."""
+         queued.set()
+         return await original(command=command, admission=admission)
+@@ -816,7 +832,7 @@
+         owner._sequence_store.close()
+ 
+ 
+-async def test_close_transport_cancel_still_unlocks(tmp_path: Path, monkeypatch) -> None:
++async def test_close_transport_cancel_still_unlocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+     """Cancellation of final-close caller cannot strand a drained lease."""
+     import asyncio
+ 
+@@ -827,7 +843,7 @@
+     entered, release = asyncio.Event(), asyncio.Event()
+     original = owner._transport.close
+ 
+-    async def delayed():
++    async def delayed() -> HerdrReporterCloseOutcomeDAO:
+         """Pause the transport seal for deterministic caller cancellation."""
+         entered.set()
+         await release.wait()
+@@ -859,7 +875,9 @@
+     assert not owner.retains_external_resources
+ 
+ 
+-def test_public_service_export_and_fixed_diagnostic(tmp_path: Path, caplog, monkeypatch) -> None:
++def test_public_service_export_and_fixed_diagnostic(
++    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
++) -> None:
+     """Service exposes the sole reporter and isolates fixed diagnostic sink failures."""
+     import logging
+     from src.agents.slo_agent.herdr.service import HerdrReporter as Exported
+@@ -870,7 +888,7 @@
+     owner.record_publication_failure()
+     assert sum(record.message == "herdr_publication_failed" for record in caplog.records) == 1
+ 
+-    def broken(*args, **kwargs):
++    def broken(*args: object, **kwargs: object) -> None:
+         """Simulate an unavailable diagnostic sink."""
+         raise RuntimeError("private")
+ 
+@@ -929,7 +947,7 @@
+ 
+ 
+ @pytest.mark.parametrize("case", ["retained", "late_drain", "unlock_error"])
+-async def test_lease_close_order(tmp_path: Path, case: str, monkeypatch) -> None:
++async def test_lease_close_order(tmp_path: Path, case: str, monkeypatch: pytest.MonkeyPatch) -> None:
+     """A failed local drain retains lease; final drain cannot erase uncertainty."""
+     from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
+ 
+@@ -940,7 +958,7 @@
+     drained = case == "unlock_error"
+     monkeypatch.setattr(HerdrCliTransport, "resources_drained", property(lambda self: drained))
+ 
+-    async def seal():
++    async def seal() -> HerdrReporterCloseOutcomeDAO:
+         """Model transport quarantine while recording actual seal state."""
+         owner._transport._closed = True
+         return HerdrReporterCloseOutcomeDAO(
+--- tests/agents/slo_agent/herdr/test_reporter_compositions.py before159
++++ tests/agents/slo_agent/herdr/test_reporter_compositions.py after159
+@@ -5,6 +5,8 @@
+ from pathlib import Path
+ 
+ import pytest
++
++from tests.state_isolation import FakeHerdrFixture
+ 
+ from src.agents.slo_agent.herdr.dao import (
+     HerdrDisplayTokenDAO,
+@@ -17,7 +19,7 @@
+ 
+ @pytest.mark.parametrize("changed_generation", [False, True])
+ async def test_already_admitted_a_accounts_without_followup(
+-    fake_herdr, tmp_path: Path, changed_generation: bool
++    fake_herdr: FakeHerdrFixture, tmp_path: Path, changed_generation: bool
+ ) -> None:
+     """A finishes its actual claim but cannot acknowledge B or send stale display."""
+     assert fake_herdr.executable.resolve().parent == tmp_path.resolve()
+@@ -79,7 +81,7 @@
+ 
+ 
+ async def test_failed_save_uncertain_release_blocks_replacement(
+-    fake_herdr, tmp_path: Path, plain_slo: Path
++    fake_herdr: FakeHerdrFixture, tmp_path: Path, plain_slo: Path
+ ) -> None:
+     """Installed old reference survives uncertain withdrawal; no replacement leaks."""
+     owner = reporter(root=tmp_path)
+--- tests/agents/slo_agent/herdr/test_reporter_shutdown_closure.py before159
++++ tests/agents/slo_agent/herdr/test_reporter_shutdown_closure.py after159
+@@ -6,11 +6,15 @@
+ 
+ import pytest
+ 
++from tests.state_isolation import FakeHerdrFixture
++
+ from tests.agents.slo_agent.herdr.test_reporter import publication, reporter
+ 
+ 
+ @pytest.mark.parametrize("case", ["corrupt", "overflow", "unsafe_mode"])
+-async def test_counter_activation_refuses_without_send(fake_herdr, tmp_path: Path, case: str) -> None:
++async def test_counter_activation_refuses_without_send(
++    fake_herdr: FakeHerdrFixture, tmp_path: Path, case: str
++) -> None:
+     """Invalid persisted counters disable activation without reset or executable entry."""
+     owner = reporter(root=tmp_path)
+     owner._config = owner._config.model_copy(update={"binary_path": fake_herdr.executable})
+@@ -41,7 +45,7 @@
+ 
+ 
+ @pytest.mark.parametrize("case", ["release_timeout", "first_clear_failure", "stale_between_patches"])
+-async def test_shutdown_and_patch_cutoffs(fake_herdr, tmp_path: Path, case: str) -> None:
++async def test_shutdown_and_patch_cutoffs(fake_herdr: FakeHerdrFixture, tmp_path: Path, case: str) -> None:
+     """Actual command entry stops on timeout, first clear failure or supersession."""
+     owner = reporter(root=tmp_path)
+     owner._transport._config = owner._config.model_copy(update={"binary_path": fake_herdr.executable})
+--- tests/agents/slo_agent/herdr/test_restore_save.py before159
++++ tests/agents/slo_agent/herdr/test_restore_save.py after159
+@@ -10,7 +10,7 @@
+ 
+ from src.agents.slo_agent.herdr.dao import HerdrRestoreUnavailableError
+ 
+-from src.agents.slo_agent.herdr.dao import HerdrRestoreConfigDAO
++from src.agents.slo_agent.herdr.dao import HerdrRestoreConfigDAO, HerdrRestoreRecordDAO
+ from src.agents.slo_agent.herdr.restore import HerdrRestoreStore
+ 
+ SESSION_ID = "12345678-1234-1234-1234-123456789abc"
+@@ -105,7 +105,7 @@
+     store = HerdrRestoreStore(state_root=tmp_path)
+     original = store._allocate_record
+ 
+-    def substitute(*, config: HerdrRestoreConfigDAO):
++    def substitute(*, config: HerdrRestoreConfigDAO) -> HerdrRestoreRecordDAO:
+         """Replace only a contained regular lock at the allocation boundary."""
+         record = original(config=config)
+         lock = tmp_path / "restore-v1.lock"
+--- tests/agents/slo_agent/herdr/test_t2_remaining.py before159
++++ tests/agents/slo_agent/herdr/test_t2_remaining.py after159
+@@ -5,6 +5,8 @@
+ from typing import Optional
+ 
+ import pytest
++
++from tests.state_isolation import FakeHerdrFixture
+ 
+ from src.agents.slo_agent.herdr.dao import (
+     HerdrSavedRestoreDAO,
+@@ -131,7 +133,9 @@
+         "hardlink",
+     ],
+ )
+-async def test_actual_spawn_substitution_refused(fake_herdr, tmp_path: Path, case: str) -> None:
++async def test_actual_spawn_substitution_refused(
++    fake_herdr: FakeHerdrFixture, tmp_path: Path, case: str
++) -> None:
+     """The installed spawn guard refuses substitutions before real process creation."""
+     import os
+     from src.agents.slo_agent.herdr.dao import HerdrCliCommandDAO
+@@ -180,7 +184,7 @@
+     ["current", "revision_changed", "generation_changed", "closing", "disabled", "no_latest", "revoked"],
+ )
+ async def test_ordinary_operation_currentness(
+-    fake_herdr, tmp_path: Path, operation: HerdrReportOperation, cutoff: str
++    fake_herdr: FakeHerdrFixture, tmp_path: Path, operation: HerdrReportOperation, cutoff: str
+ ) -> None:
+     """Every ordinary ticket crosses real lock admission; stale work never spawns."""
+     from src.agents.slo_agent.herdr.dao import HerdrRemoteBindingDAO
+@@ -255,7 +259,7 @@
+     "case", ["pool", "eligibility", "session", "generation", "name", "closed", "disabled"]
+ )
+ async def test_changed_capture_save_barrier(
+-    fake_herdr, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
++    fake_herdr: FakeHerdrFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+ ) -> None:
+     """An owned off-loop save cannot publish old policy after a boundary change."""
+     import threading
+--- tests/agents/slo_agent/herdr/test_transport_lifetime.py before159
++++ tests/agents/slo_agent/herdr/test_transport_lifetime.py after159
+@@ -6,7 +6,7 @@
+ 
+ import pytest
+ 
+-from src.agents.slo_agent.herdr.dao import HerdrCliCommandDAO, HerdrReporterConfigDAO
++from src.agents.slo_agent.herdr.dao import HerdrCliCommandDAO, HerdrReporterConfigDAO, HerdrCommandResultDAO
+ from src.agents.slo_agent.herdr.service import HerdrCliTransport
+ from tests.agents.slo_agent.herdr.test_cli_transport import RecordingAdmission
+ from tests.state_isolation import FakeHerdrFixture
+@@ -190,11 +190,11 @@
+     class BrokenAdmission(RecordingAdmission):
+         """Fail once at the mandatory terminal callback."""
+ 
+-        def complete(self, *, result) -> None:
++        def complete(self, *, result: HerdrCommandResultDAO) -> None:
+             super().complete(result=result)
+             raise ValueError("private-accounting-sentinel")
+ 
+-    def broken_warning(self, msg, *args, **kwargs) -> None:
++    def broken_warning(self: logging.Logger, msg: str, *args: object, **kwargs: object) -> None:
+         """Record fixed text then simulate a diagnostic sink failure."""
+         categories.append(msg)
+         raise OSError("private-logging-sentinel")
+--- tests/tui/test_herdr_init_ownership.py before159
++++ tests/tui/test_herdr_init_ownership.py after159
+@@ -4,6 +4,9 @@
+ import threading
+ from copy import copy
+ from pathlib import Path
++from typing import ParamSpec, Protocol, TypeVar
++
++from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
+ 
+ from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+ from unittest.mock import PropertyMock, patch
+@@ -19,6 +22,19 @@
+ from src.agents.slo_agent.sessions.service import SloAgentSession
+ from src.tui.app import SloTUI
+ from src.tui.workflows.service import DetachedWorkflowAppService
++
++BoundaryParameters = ParamSpec("BoundaryParameters")
++BoundaryResult = TypeVar("BoundaryResult", covariant=True)
++
++
++class AsyncBoundary(Protocol[BoundaryParameters, BoundaryResult]):
++    """Preserve each real initialization operation's arguments and awaited result."""
++
++    async def __call__(
++        self, *args: BoundaryParameters.args, **kwargs: BoundaryParameters.kwargs
++    ) -> BoundaryResult:
++        """Delegate one captured initialization operation."""
++        ...
+ 
+ 
+ async def test_preparation_notice_failure_still_registers_task(tmp_path: Path) -> None:
+@@ -309,14 +325,29 @@
+         "acquire": (store, "acquire"),
+         "inbox": (inbox_store, "ensure_session_inbox"),
+     }[phase]
+-    original = getattr(target, name)
+-
+-    async def boundary(**kwargs):
+-        """Hold the actual operation's completed result at its continuation boundary."""
+-        result = await original(**kwargs)
+-        entered.set()
+-        await resume.wait()
+-        return result
++
++    def hold_boundary(
++        original: AsyncBoundary[BoundaryParameters, BoundaryResult],
++    ) -> AsyncBoundary[BoundaryParameters, BoundaryResult]:
++        """Keep the concrete operation contract while suspending its continuation."""
++
++        async def boundary(
++            *args: BoundaryParameters.args, **kwargs: BoundaryParameters.kwargs
++        ) -> BoundaryResult:
++            """Hold the actual operation's completed result at its continuation boundary."""
++            result = await original(*args, **kwargs)
++            entered.set()
++            await resume.wait()
++            return result
++
++        return boundary
++
++    assert service is not None and inbox_store is not None
++    boundary = {
++        "reconcile": hold_boundary(service.reconcile_snapshot),
++        "acquire": hold_boundary(store.acquire),
++        "inbox": hold_boundary(inbox_store.ensure_session_inbox),
++    }[phase]
+ 
+     async def displace() -> None:
+         """Change precisely one captured dimension while initialization is suspended."""
+@@ -392,15 +423,15 @@
+         initialize = app._initialize_session_delivery
+         clear = app._clear_transcript_and_prompt_queue
+ 
+-        async def record_close():
++        async def record_close() -> HerdrReporterCloseOutcomeDAO:
+             """Observe real reporter close after old delivery retirement."""
+             events.append("close")
+             return await close()
+ 
+-        async def record_release(**kwargs) -> None:
++        async def record_release(*, session: SloAgentSession) -> None:
+             """Observe actual captured lease release."""
+             events.append("release")
+-            await release(**kwargs)
++            await release(session=session)
+ 
+         async def record_initialize() -> None:
+             """Observe real successor delivery initialization."""
+--- tests/tui/test_herdr_init_rollback.py before159
++++ tests/tui/test_herdr_init_rollback.py after159
+@@ -3,7 +3,7 @@
+ from pathlib import Path
+ from collections.abc import Callable
+ from typing import Optional
+-from textual.timer import Timer
++from textual.timer import Timer, TimerCallback
+ from unittest.mock import patch
+ 
+ import pytest
+@@ -109,9 +109,16 @@
+         successors.extend(original_interval(interval=60, callback=lambda: None) for _ in range(2))
+         app._lease_timer, app._inbox_timer = successors
+ 
+-    def interval(interval: float, callback: Optional[Callable] = None, **kwargs) -> Timer:
++    def interval(
++        interval: float,
++        callback: Optional[TimerCallback] = None,
++        *,
++        name: Optional[str] = None,
++        repeat: int = 0,
++        pause: bool = False,
++    ) -> Timer:
+         """Capture each actually created delivery timer before displacing its slots."""
+-        timer = original_interval(interval=interval, callback=callback, **kwargs)
++        timer = original_interval(interval=interval, callback=callback, name=name, repeat=repeat, pause=pause)
+         if callback in (app._renew_session_lease, app._poll_session_inbox):
+             created.append(timer)
+             if phase == f"timer{len(created)}":

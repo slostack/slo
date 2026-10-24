@@ -1,0 +1,350 @@
+tests/state_isolation.py:59:class FakeHerdrSpawnGuard:
+tests/state_isolation.py:108:    guard: FakeHerdrSpawnGuard
+tests/agents/slo_agent/test_history_dao.py:47:    def test_sub_agent_spawned_kind_accepted(self) -> None:
+tests/agents/slo_agent/test_history_dao.py:48:        """``sub_agent_spawned`` is a valid ``HistoryEventKind``."""
+tests/agents/slo_agent/test_history_dao.py:51:            kind="sub_agent_spawned",
+tests/agents/slo_agent/test_history_dao.py:54:        assert event.kind == "sub_agent_spawned"
+tests/agents/slo_agent/test_history_dao.py:69:            kind="sub_agent_spawned",
+tests/conftest.py:10:    FakeHerdrSpawnGuard,
+tests/conftest.py:118:def _never_spawn_real_terminals(monkeypatch: pytest.MonkeyPatch) -> None:
+tests/conftest.py:119:    """Stub ``VisualizerLauncher._default_spawn`` for every test.
+tests/conftest.py:125:    patching it (e.g. by streaming a ``sub_agent_spawned`` event or a
+tests/conftest.py:129:    This guard replaces only the innermost ``_default_spawn`` seam, so:
+tests/conftest.py:132:      callable are unaffected (they never reach ``_default_spawn``);
+tests/conftest.py:140:    def _stubbed_spawn(argv: list[str]) -> object:
+tests/conftest.py:144:    _stubbed_spawn.__test_stub__ = True  # type: ignore[attr-defined]
+tests/conftest.py:146:        "src.tui.visualizer_launcher.VisualizerLauncher._default_spawn",
+tests/conftest.py:147:        staticmethod(_stubbed_spawn),
+tests/conftest.py:152:def fake_herdr_guard(tmp_path: Path) -> "FakeHerdrSpawnGuard":
+tests/conftest.py:154:    return FakeHerdrSpawnGuard(root=tmp_path)
+tests/conftest.py:158:def _never_spawn_real_herdr(fake_herdr_guard: FakeHerdrSpawnGuard, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/conftest.py:164:    original_spawn = HerdrCliTransport._spawn
+tests/conftest.py:166:    async def guarded_spawn(
+tests/conftest.py:170:        fake_herdr_guard.require_registered(path=transport._config.binary_path)
+tests/conftest.py:171:        return await original_spawn(transport, command=command)
+tests/conftest.py:173:    monkeypatch.setattr(target=HerdrCliTransport, name="_spawn", value=guarded_spawn)
+tests/conftest.py:178:    tmp_path: Path, fake_herdr_guard: "FakeHerdrSpawnGuard", monkeypatch: pytest.MonkeyPatch
+tests/conftest.py:198:    fake_herdr_guard.register(executable=executable, files=(capture, barrier))
+tests/conftest.py:202:        "HERDR_BIN_PATH": str(executable),
+tests/conftest.py:206:    return FakeHerdrFixture(executable=executable, capture=capture, barrier=barrier, guard=fake_herdr_guard)
+tests/agents/slo_agent/test_session.py:972:        Verifies the full path: pool emits ``sub_agent_spawned`` via relay →
+tests/agents/slo_agent/test_session.py:988:            kind="sub_agent_spawned",
+tests/agents/slo_agent/test_session.py:1004:    def test_attach_pool_merges_spawn_tool_into_extra_tools(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/test_session_history.py:298:    async def test_sub_agent_spawned_event_writes_history(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/test_session_history.py:299:        """A ``sub_agent_spawned`` stream event writes a ``sub_agent_spawned`` history record."""
+tests/agents/slo_agent/test_session_history.py:317:            kind="sub_agent_spawned",
+tests/agents/slo_agent/test_session_history.py:325:        assert persisted.kind == "sub_agent_spawned"
+tests/agents/slo_agent/history/test_token_estimator.py:147:            "sub_agent_spawned",
+tests/agents/slo_agent/orchestrator/test_default_orchestrator_prompt.py:26:    def test_constant_exists_in_spawn_tool_module(self) -> None:
+tests/agents/slo_agent/orchestrator/test_default_orchestrator_prompt.py:86:    def test_sync_phrase_routes_to_spawn_sub_agents(self) -> None:
+tests/agents/slo_agent/orchestrator/test_default_orchestrator_prompt.py:110:    def test_addendum_routes_unqualified_to_spawn(self) -> None:
+tests/agents/slo_agent/orchestrator/test_relaunch.py:149:async def test_spawn_for_adoption_cancellation_while_append_lease_waits_never_spawns_workload(
+tests/agents/slo_agent/orchestrator/test_relaunch.py:226:async def test_cancelled_late_capture_open_closes_endpoint_without_workload_spawn(
+tests/agents/slo_agent/orchestrator/test_relaunch.py:255:async def test_invoke_when_spawn_error_contains_environment_credential_returns_safe_error(
+tests/agents/slo_agent/orchestrator/test_context_dao.py:163:    def test_spawn_context_round_trip(self) -> None:
+tests/agents/slo_agent/test_stream_event_dao.py:86:            kind="sub_agent_spawned",
+tests/agents/slo_agent/test_stream_event_dao.py:93:    def test_sub_agent_spawned_kind_is_valid(self) -> None:
+tests/agents/slo_agent/test_stream_event_dao.py:94:        """``sub_agent_spawned`` is a valid ``StreamEventKind``."""
+tests/agents/slo_agent/test_stream_event_dao.py:96:            kind="sub_agent_spawned",
+tests/agents/slo_agent/test_stream_event_dao.py:101:        assert event.kind == "sub_agent_spawned"
+tests/agents/slo_agent/test_stream_event_dao.py:125:        for kind in ("sub_agent_spawned", "sub_agent_completed", "sub_agent_failed"):
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:74:    launch_spawn: Optional[Callable] = None,
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:81:    ``LaunchWorkflowTool.build`` wrapper (→ ``launch_spawn``), then patches
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:90:      ``spawn=launch_spawn`` and ``history_root=history_root``, so no real
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:102:        launch_spawn (Optional[Callable]): Async callable replacing the real
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:146:            spawn=launch_spawn or spawn,
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:289:def _recording_spawn(*, into: dict, pid: int) -> Callable:
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:304:    async def _spawn(*argv: str, **kwargs: Any) -> _StubProcess:
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:319:    return _spawn
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:383:        launch_spawn=lambda *a, **kw: spawn_calls.append((a, kw)),  # would record any detach
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:437:        launch_spawn=_recording_spawn(into=recorded, pid=4242),  # never creates a process
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:466:        spawn=_recording_spawn(into={}, pid=9999),
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:491:        launch_spawn=lambda *a, **kw: None,
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:523:        launch_spawn=lambda *a, **kw: None,
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:546:async def test_solo_prompt_does_not_spawn_sub_agents(tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_workflow_routing_e2e.py:552:        launch_spawn=lambda *a, **kw: None,
+tests/agents/slo_agent/orchestrator/test_process.py:467:    async def test_run_marks_running_with_spawned_pid(self) -> None:
+tests/agents/slo_agent/orchestrator/test_process.py:545:    async def test_spawn_failure_returns_failed_result(self) -> None:
+tests/agents/slo_agent/orchestrator/test_process.py:561:    """``_write_spawn_context`` persistence behaviour."""
+tests/agents/slo_agent/orchestrator/test_process.py:563:    def test_write_spawn_context_creates_file(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_process.py:577:        process._write_spawn_context()
+tests/agents/slo_agent/orchestrator/test_process.py:588:    def test_write_spawn_context_is_idempotent(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_process.py:600:        process._write_spawn_context()
+tests/agents/slo_agent/orchestrator/test_process.py:606:        process._write_spawn_context()
+tests/agents/slo_agent/orchestrator/test_process.py:611:    def test_write_spawn_context_handles_oserror(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_process.py:627:            process._write_spawn_context()
+tests/agents/slo_agent/orchestrator/test_process.py:714:    async def test_cancel_waits_for_inflight_spawn_before_reaping(self) -> None:
+tests/agents/slo_agent/orchestrator/test_process.py:722:        process._spawn_in_progress = True
+tests/agents/slo_agent/orchestrator/test_process.py:742:            process._spawn_ready.set()
+tests/agents/slo_agent/orchestrator/test_process.py:1018:    async def test_sub_agent_spawn_uses_allowlisted_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/agents/slo_agent/orchestrator/test_pool.py:85:    async def test_batch_above_max_tasks_rejected_without_spawning(self) -> None:
+tests/agents/slo_agent/orchestrator/test_pool.py:102:    async def test_spawned_and_completed_events_emitted_per_task(self) -> None:
+tests/agents/slo_agent/orchestrator/test_pool.py:103:        """``sub_agent_spawned`` and ``sub_agent_completed`` are relayed for each task."""
+tests/agents/slo_agent/orchestrator/test_pool.py:121:        assert "sub_agent_spawned" in kinds
+tests/agents/slo_agent/orchestrator/test_pool.py:591:    async def test_sealed_pool_does_not_spawn_task_waiting_for_capacity(self) -> None:
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:51:    def test_tool_name_is_spawn_sub_agents(self) -> None:
+tests/agents/slo_agent/orchestrator/test_spawn_tool.py:311:    def test_addendum_contains_spawn_sub_agents(self) -> None:
+tests/agents/slo_agent/herdr/test_gate.py:35:            "HERDR_BIN_PATH": str(tmp_path / "absent"),
+tests/agents/slo_agent/orchestrator/test_openrouter_capture_secrecy.py:100:    result = await LaunchWorkflowTool._spawn_and_patch(
+tests/agents/slo_agent/orchestrator/test_openrouter_capture_secrecy.py:182:async def test_child_capture_secret_stays_in_spawn_environment(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:239:        guard._validate_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:241:            kwargs=_script_spawn_kwargs(root=root, inherited=inherited),
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:245:def test_script_rejects_duplicate_registered_inherited_fd_before_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:261:def test_script_rejects_closed_or_unrelated_registered_fd_before_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:283:def test_script_rejects_wrong_pipe_direction_before_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:294:            guard._validate_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:296:                kwargs=_script_spawn_kwargs(root=root, inherited=(read_fd,)),
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:303:def test_script_accepts_exact_registered_pipe_tuple_before_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:313:        guard._validate_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:315:            kwargs=_script_spawn_kwargs(root=root, inherited=(write_fd,)),
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:336:            **_script_spawn_kwargs(root=root, inherited=(expected_write, extra_write)),
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:363:            **_script_spawn_kwargs(root=root, inherited=(read_fd,)),
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:375:def test_child_local_guard_allows_exact_inherited_tuple_and_observes_real_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:388:            **_script_spawn_kwargs(root=root, inherited=(write_fd,)),
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:399:def test_clean_writer_does_not_spawn_reporter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:448:def test_production_capture_opener_uses_exact_isolated_entry_without_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:474:    def refuse_spawn(argv: list[str], **kwargs: object) -> None:
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:505:    monkeypatch.setattr(subprocess, "Popen", refuse_spawn)
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:618:                guard._validate_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:736:def _script_spawn_kwargs(*, root: Path, inherited: tuple[int, ...]) -> dict[str, object]:
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:769:def test_reporter_precondition_rejects_nonexact_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:796:        guard._validate_spawn(args=(), kwargs=call)
+tests/agents/slo_agent/orchestrator/test_capture_contained_lifetime.py:823:    guard._validate_spawn(args=(), kwargs=call)
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:272:    async def test_spawn_uses_start_new_session_true(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:281:    async def test_spawn_argv_matches_handle_identity(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:295:    async def test_spawn_env_is_allowlisted(
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:320:    async def test_handle_written_with_launching_before_spawn(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:342:    async def test_handle_pid_patched_after_spawn(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:427:    async def test_blank_brief_returns_error_no_spawn(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:439:    async def test_cap_reached_returns_refusal_no_spawn(
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:494:    async def test_spawn_oserror_marks_failed_and_returns_error(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_launch_tool.py:660:    async def test_abort_mid_spawn_reaps_fresh_process_group(
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:840:    async def test_resume_reports_spawn_failure_without_state_change(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:867:    async def test_resume_admits_one_spawn_across_distinct_service_instances(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:886:        first_spawn_entered: asyncio.Event = asyncio.Event()
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:887:        release_first_spawn: asyncio.Event = asyncio.Event()
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:897:                first_spawn_entered.set()
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:898:                await release_first_spawn.wait()
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:904:            await first_spawn_entered.wait()
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:906:            release_first_spawn.set()
+tests/agents/slo_agent/orchestrator/test_workflow_command_service.py:916:    async def test_resume_restores_reservation_when_spawn_fails(self, tmp_path: Path) -> None:
+tests/agents/slo_agent/herdr/test_session_visualizer.py:136:                    kind="sub_agent_spawned",
+tests/agents/slo_agent/orchestrator/capture_test_safety.py:513:            if event in {"os.system", "os.posix_spawn", "os.fork", "os.exec", "os.spawn"}:
+tests/agents/slo_agent/orchestrator/capture_test_safety.py:559:        self._validate_spawn(args=args, kwargs=kwargs)
+tests/agents/slo_agent/orchestrator/capture_test_safety.py:571:        self._validate_spawn(args=(args,), kwargs=kwargs)
+tests/agents/slo_agent/orchestrator/capture_test_safety.py:574:    def _validate_spawn(self, *, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+tests/agents/slo_agent/orchestrator/capture_test_safety.py:678:        self._validate_spawn(args=args, kwargs=kwargs)
+tests/agents/slo_agent/orchestrator/capture_test_safety.py:756:            if event in {"os.system", "os.posix_spawn", "os.fork", "os.exec", "os.spawn"}:
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:175:        guard._validate_spawn(
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:245:def test_writer_spawn_failure_closes_pipe_fds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:340:async def test_capture_close_failure_preserves_spawned_pid(
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:376:        await LaunchWorkflowTool._spawn_and_patch(
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:437:        result_json = await LaunchWorkflowTool._spawn_and_patch(
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:731:async def test_launch_reaps_post_acknowledgement_writer_after_spawn_boundary(
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:847:        result = await LaunchWorkflowTool._spawn_and_patch(
+tests/agents/slo_agent/orchestrator/test_capture_writer.py:950:    result = await LaunchWorkflowTool._spawn_and_patch(
+tests/agents/slo_agent/orchestrator/test_detached_fd_capture.py:115:    result = await LaunchWorkflowTool._spawn_and_patch(
+tests/agents/slo_agent/orchestrator/test_bootstrap.py:65:            mock_spawn_tool = MagicMock()
+tests/agents/slo_agent/orchestrator/test_bootstrap.py:66:            MockTool.build.return_value = mock_spawn_tool
+tests/agents/slo_agent/orchestrator/test_bootstrap.py:72:            spawn_tools=[mock_spawn_tool],
+tests/agents/slo_agent/orchestrator/test_bootstrap.py:117:    def test_attach_builds_spawn_tool_from_pool(self) -> None:
+tests/agents/slo_agent/orchestrator/test_bootstrap.py:156:    def test_attach_registers_only_spawn_tool_when_disabled(
+tests/agents/slo_agent/orchestrator/test_bootstrap.py:192:    def test_attach_headless_registers_only_spawn_tool(
+tests/agents/slo_agent/herdr/test_reporter.py:740:async def test_viewer_lock_waiter_superseded_report_never_spawns(
+tests/agents/slo_agent/herdr/test_session_visualizer_lifetime.py:78:                session_id=PARENT, kind="sub_agent_spawned", payload=SessionHistoryEventPayloadDAO()
+tests/agents/slo_agent/herdr/test_transport_read_failures.py:26:    original_spawn = transport._spawn
+tests/agents/slo_agent/herdr/test_transport_read_failures.py:30:        process = await original_spawn(command=command)
+tests/agents/slo_agent/herdr/test_transport_read_failures.py:50:    monkeypatch.setattr(target=transport, name="_spawn", value=spawn)
+tests/agents/slo_agent/herdr/test_session_visualizer_policy.py:126:            session_id=session.session_id, kind="sub_agent_spawned", payload=SessionHistoryEventPayloadDAO()
+tests/agents/slo_agent/herdr/test_session_visualizer_policy.py:135:                    session_id=PARENT, kind="sub_agent_spawned", payload=SessionHistoryEventPayloadDAO()
+tests/agents/slo_agent/herdr/test_test_isolation.py:96:    assert getattr(VisualizerLauncher._default_spawn, "__test_stub__", False)
+tests/agents/slo_agent/herdr/test_test_isolation.py:167:    monkeypatch.setenv("HERDR_BIN_PATH", str(executable))
+tests/agents/slo_agent/herdr/test_test_isolation.py:184:    async def attempted_spawn(event: object) -> None:
+tests/agents/slo_agent/herdr/test_test_isolation.py:187:            await transport._spawn(command=HerdrCliCommandDAO(argv=("pane", "split")))
+tests/agents/slo_agent/herdr/test_test_isolation.py:190:    session.subscribe(handler=attempted_spawn)
+tests/agents/slo_agent/herdr/test_failed_acquisition_ownership.py:35:        patch.object(owner._transport, "_spawn", side_effect=AssertionError("forbidden spawn")) as spawn,
+tests/agents/slo_agent/herdr/test_fake_fixture.py:9:from tests.state_isolation import FakeHerdrSpawnGuard
+tests/agents/slo_agent/herdr/test_fake_fixture.py:20:    assert os.environ["HERDR_BIN_PATH"] == str(executable)
+tests/agents/slo_agent/herdr/test_fake_fixture.py:24:def test_default_capability_denies(tmp_path: Path, fake_herdr_guard: FakeHerdrSpawnGuard) -> None:
+tests/agents/slo_agent/herdr/test_fake_fixture.py:27:        fake_herdr_guard.require_registered(path=tmp_path / "fake")
+tests/agents/slo_agent/herdr/test_spawn_guard.py:42:    guard = state_isolation.FakeHerdrSpawnGuard(root=root)
+tests/agents/slo_agent/herdr/test_spawn_guard.py:81:    guard = state_isolation.FakeHerdrSpawnGuard(root=tmp_path)
+tests/integration/herdr_restore_process_bootstrap.py:15:    from tests.state_isolation import FakeHerdrSpawnGuard
+tests/integration/herdr_restore_process_bootstrap.py:520:    _shim_guard: "FakeHerdrSpawnGuard | None"
+tests/integration/herdr_restore_process_bootstrap.py:535:        from tests.state_isolation import FakeHerdrSpawnGuard
+tests/integration/herdr_restore_process_bootstrap.py:537:        guard = FakeHerdrSpawnGuard(root=self.root)
+tests/integration/herdr_restore_process_bootstrap.py:733:            "os.posix_spawn",
+tests/agents/slo_agent/herdr/test_final_lifetime_closure.py:123:        process, spawn = owner._transport._active, owner._transport._spawn_task
+tests/agents/slo_agent/herdr/test_final_lifetime_closure.py:146:        assert owner._transport._active is process and owner._transport._spawn_task is spawn
+tests/agents/slo_agent/herdr/test_t2_remaining.py:136:async def test_actual_spawn_substitution_refused(
+tests/agents/slo_agent/herdr/test_t2_remaining.py:175:        await owner._transport._spawn(command=HerdrCliCommandDAO(argv=("pane", "split")))
+tests/agents/slo_agent/herdr/test_gate_diagnostics.py:23:    environment = {"HERDR_ENV": "1", "HERDR_PANE_ID": "p", "HERDR_BIN_PATH": str(tmp_path / "absent")}
+tests/agents/slo_agent/herdr/test_gate_diagnostics.py:27:        "binary": ("HERDR_BIN_PATH", "private-relative-sentinel"),
+tests/agents/slo_agent/herdr/test_gate_diagnostics.py:49:    environment = {"HERDR_ENV": "1", "HERDR_PANE_ID": "p", "HERDR_BIN_PATH": str(tmp_path / "absent")}
+tests/agents/slo_agent/herdr/test_gate_diagnostics.py:64:    valid = {"HERDR_ENV": "1", "HERDR_PANE_ID": "p", "HERDR_BIN_PATH": str(tmp_path / "absent")}
+tests/agents/slo_agent/herdr/test_gate_diagnostics.py:83:    valid = {"HERDR_ENV": "1", "HERDR_PANE_ID": "p", "HERDR_BIN_PATH": str(tmp_path / "absent")}
+tests/agents/slo_agent/herdr/test_gate_diagnostics.py:111:    valid = {"HERDR_ENV": "1", "HERDR_PANE_ID": "p", "HERDR_BIN_PATH": str(tmp_path / "absent")}
+tests/cli/test_headless_exclusions.py:17:async def test_relaunch_excludes_herdr_at_spawn(
+tests/cli/test_headless_exclusions.py:27:    excluded = ("HERDR_ENV", "HERDR_PANE_ID", "HERDR_BIN_PATH", "HERDR_SOCKET", "herdrFuture", "HERDR")
+tests/cli/test_headless_exclusions.py:49:async def test_subagent_excludes_herdr_at_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+tests/cli/test_headless_exclusions.py:78:async def test_detached_launch_excludes_herdr_at_spawn(
+tests/cli/test_headless.py:370:def _spawn_result_event(*, content: str) -> AgentStreamEventDAO:
+tests/cli/test_headless.py:421:    async def test_maybe_notify_fleet_sends_note_on_spawned(self, tmp_path) -> None:
+tests/cli/test_headless.py:432:            event=AgentStreamEventDAO(kind="sub_agent_spawned", sub_agent_id="child-1", task_id="t1")
+tests/cli/test_headless.py:462:        await runner._maybe_notify_fleet(event=AgentStreamEventDAO(kind="sub_agent_spawned"))
+tests/cli/test_headless.py:486:    async def test_runner_taps_spawn_result_into_phase_update(self, tmp_path, capsys) -> None:
+tests/cli/test_headless.py:498:            _spawn_result_event(content=spawn_json),
+tests/cli/test_headless.py:527:            _spawn_result_event(content=spawn_json),
+tests/cli/test_headless.py:606:            _spawn_result_event(content="{}"),
+tests/agents/slo_agent/herdr/test_transport_lifetime.py:59:async def test_cancel_during_late_spawn(
+tests/agents/slo_agent/herdr/test_transport_lifetime.py:65:    original = transport._spawn
+tests/agents/slo_agent/herdr/test_transport_lifetime.py:76:    monkeypatch.setattr(target=transport, name="_spawn", value=delayed)
+tests/agents/slo_agent/herdr/test_cli_transport.py:139:async def test_spawn_boundary_refuses_unregistered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/agents/slo_agent/herdr/test_cli_transport.py:154:        await transport._spawn(command=HerdrCliCommandDAO(argv=("pane", "split")))
+tests/agents/slo_agent/herdr/test_cli_transport.py:157:async def test_registered_spawn_is_real_and_environment_is_allowlisted(
+tests/agents/slo_agent/herdr/test_cli_transport.py:188:        "HERDR_BIN_PATH": str(fake_herdr.executable),
+tests/agents/slo_agent/herdr/test_cli_transport.py:191:    process = await transport._spawn(command=HerdrCliCommandDAO(argv=("pane", "split")))
+tests/agents/slo_agent/herdr/test_cli_transport.py:224:    transport._active = await transport._spawn(command=command)
+tests/agents/slo_agent/herdr/test_cli_transport.py:243:    process = await transport._spawn(command=HerdrCliCommandDAO(argv=("pane", "split")))
+tests/agents/slo_agent/herdr/test_cli_transport.py:251:async def test_observe_and_drain_spawn(fake_herdr: FakeHerdrFixture, tmp_path: Path, failure: bool) -> None:
+tests/agents/slo_agent/herdr/test_cli_transport.py:269:    transport._spawn_task = asyncio.create_task(
+tests/agents/slo_agent/herdr/test_cli_transport.py:270:        coro=refused() if failure else transport._spawn(command=command)
+tests/agents/slo_agent/herdr/test_cli_transport.py:293:    transport._spawn_task = asyncio.create_task(coro=transport._spawn(command=command))
+tests/agents/slo_agent/herdr/test_cli_transport.py:297:    assert transport._active is None and transport._spawn_task is None
+tests/agents/slo_agent/herdr/test_cli_transport.py:341:    assert transport._active is None and transport._spawn_task is None
+tests/integration/herdr_unified_141.py:159:            AgentStreamEventDAO(kind="sub_agent_spawned", sub_agent_id="child-141", task_id="task-141"),
+tests/tui/test_herdr_platform_commit.py:29:    guarded_spawn = VisualizerLauncher._default_spawn
+tests/tui/test_herdr_platform_commit.py:30:    assert getattr(guarded_spawn, "__test_stub__", False)
+tests/tui/test_herdr_platform_commit.py:46:        result = guarded_spawn(argv)
+tests/tui/test_herdr_platform_commit.py:52:        patch.object(VisualizerLauncher, "_default_spawn", side_effect=spawn),
+tests/tui/test_herdr_platform_commit.py:89:    guarded_spawn = VisualizerLauncher._default_spawn
+tests/tui/test_herdr_platform_commit.py:90:    assert getattr(guarded_spawn, "__test_stub__", False)
+tests/tui/test_herdr_platform_commit.py:105:        result = guarded_spawn(argv)
+tests/tui/test_herdr_platform_commit.py:132:                patch.object(VisualizerLauncher, "_default_spawn", side_effect=spawn),
+tests/agents/slo_agent/herdr/test_policy_accounting_closure.py:239:    original_spawn = owner._transport._spawn
+tests/agents/slo_agent/herdr/test_policy_accounting_closure.py:241:    async def held_spawn(*, command: HerdrCliCommandDAO) -> asyncio.subprocess.Process:
+tests/agents/slo_agent/herdr/test_policy_accounting_closure.py:243:        process = await original_spawn(command=command)
+tests/agents/slo_agent/herdr/test_policy_accounting_closure.py:248:    monkeypatch.setattr(target=owner._transport, name="_spawn", value=held_spawn)
+tests/agents/slo_agent/herdr/test_policy_accounting_closure.py:286:async def test_definitive_spawn_failure(
+tests/agents/slo_agent/herdr/test_policy_accounting_closure.py:315:    async def refuse_spawn(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+tests/agents/slo_agent/herdr/test_policy_accounting_closure.py:327:    monkeypatch.setattr(target=asyncio, name="create_subprocess_exec", value=refuse_spawn)
+tests/tui/test_herdr_attached.py:39:                event = AgentStreamEventDAO(kind="sub_agent_spawned", sub_agent_id="child", task_id="task")
+tests/integration/test_herdr_lifetime_matrix.py:367:    guarded_spawn = VisualizerLauncher._default_spawn
+tests/integration/test_herdr_lifetime_matrix.py:368:    assert getattr(guarded_spawn, "__test_stub__", False)
+tests/integration/test_herdr_lifetime_matrix.py:380:        result = guarded_spawn(argv)
+tests/integration/test_herdr_lifetime_matrix.py:407:                patch.object(VisualizerLauncher, "_default_spawn", side_effect=spawn),
+tests/integration/test_herdr_lifetime_matrix.py:526:                    VisualizerLauncher, "_default_spawn", wraps=VisualizerLauncher._default_spawn
+tests/agents/slo_agent/compaction/test_compacter.py:161:    def test_cut_retreats_above_spawn_sub_agents_group(self) -> None:
+tests/agents/slo_agent/compaction/test_compacter.py:164:        ``spawn_sub_agents`` is a tool: tool_call(SPAWN) → sub_agent_spawned/
+tests/agents/slo_agent/compaction/test_compacter.py:174:            _make_event(kind="sub_agent_spawned", token_usage=0),  # 3
+tests/agents/slo_agent/compaction/test_compacter.py:175:            _make_event(kind="sub_agent_spawned", token_usage=0),  # 4
+tests/integration/test_herdr_restore_harness_safety.py:126:def test_shim_path_refuses_before_discovery_or_spawn(tmp_path: Path, case: str) -> None:
+tests/integration/test_herdr_restore_harness_safety.py:490:        "spawn": "os.posix_spawn(str(dummy), [str(dummy)], {})",
+tests/integration/test_herdr_restore_harness_safety.py:793:    from tests.state_isolation import FakeHerdrSpawnGuard
+tests/integration/test_herdr_restore_harness_safety.py:826:    guard = FakeHerdrSpawnGuard(root=root)
+tests/integration/test_herdr_restore_harness_safety.py:840:    from tests.state_isolation import FakeHerdrSpawnGuard
+tests/integration/test_herdr_restore_harness_safety.py:848:    guard = FakeHerdrSpawnGuard(root=tmp_path)
+tests/integration/test_herdr_restore_harness_safety.py:904:    from tests.state_isolation import FakeHerdrSpawnGuard
+tests/integration/test_herdr_restore_harness_safety.py:916:                FakeHerdrSpawnGuard(root=tmp_path / "missing")
+tests/integration/test_herdr_restore_harness_safety.py:920:                    FakeHerdrSpawnGuard(root=tmp_path)
+tests/integration/test_herdr_restore_harness_safety.py:922:    guard = FakeHerdrSpawnGuard(root=tmp_path)
+tests/integration/test_herdr_restore_harness_safety.py:1074:    "event", ["os.exec", "os.posix_spawn", "os.fork", "os.forkpty", "os.system", "subprocess.Popen"]
+tests/integration/test_herdr_restore_harness_safety.py:1200:def test_process_launch_refused_before_spawn(tmp_path: Path, case: str) -> None:
+tests/integration/test_herdr_restore_harness_safety.py:1374:def test_supervisor_nonlinux_refuses_before_spawn(tmp_path: Path) -> None:
+tests/integration/test_herdr_restore_harness_safety.py:1386:def test_supervisor_not_isolated_refuses_before_spawn(tmp_path: Path) -> None:
+tests/integration/test_herdr_restore_harness_safety.py:1466:def test_supervisor_spawn_failure_closes_handshake(tmp_path: Path) -> None:
+tests/tui/test_herdr_visualizer.py:35:async def test_async_platform_keeps_root_spawn_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+tests/tui/test_visualizer_launcher.py:204:    def test_disabled_returns_false_without_spawning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/tui/test_visualizer_launcher.py:246:    def test_success_spawns_and_returns_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/tui/test_visualizer_launcher.py:262:    def test_spawn_failure_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/tui/test_visualizer_launcher.py:287:    ``VisualizerLauncher._default_spawn``, which on a developer machine opens
+tests/tui/test_visualizer_launcher.py:293:    def test_default_spawn_is_stubbed_suite_wide(self) -> None:
+tests/tui/test_visualizer_launcher.py:294:        """The autouse fixture replaced ``_default_spawn`` with the test stub."""
+tests/tui/test_visualizer_launcher.py:295:        assert getattr(VisualizerLauncher._default_spawn, "__test_stub__", False) is True
+tests/tui/test_visualizer_launcher.py:297:    def test_unpatched_launch_spawns_no_real_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+tests/tui/test_visualizer_launcher.py:301:        ``sub_agent_spawned`` event or a ``launch_workflow`` tool result:
+tests/tui/test_visualizer_launcher.py:323:    guarded_spawn = VisualizerLauncher._default_spawn
+tests/tui/test_visualizer_launcher.py:324:    assert getattr(guarded_spawn, "__test_stub__", False)
+tests/tui/test_visualizer_launcher.py:338:        patch.object(VisualizerLauncher, "_default_spawn", side_effect=spawn) as submitted,
+tests/tui/test_app.py:3227:    def test_attach_pool_to_session_sets_spawn_tool_on_session(self, tmp_path: Path) -> None:
+tests/tui/test_app.py:3266:    def test_headless_session_does_not_have_spawn_tool(self, tmp_path: Path) -> None:
+tests/tui/test_herdr_activation_faults.py:132:async def test_mounted_definitive_spawn_failure_preserves_prior_binding(
+tests/tui/test_herdr_activation_faults.py:138:    original_spawn = HerdrCliTransport._spawn
+tests/tui/test_herdr_activation_faults.py:153:        return await original_spawn(transport, command=command)
+tests/tui/test_herdr_activation_faults.py:156:    with patch.object(HerdrCliTransport, "_spawn", new=spawn):
+tests/tui/test_subagent_event_routing.py:48:def _spawned(*, task_id: str = "task-A", session_id: str = "s1") -> AgentStreamEventDAO:
+tests/tui/test_subagent_event_routing.py:49:    """Build a ``sub_agent_spawned`` event."""
+tests/tui/test_subagent_event_routing.py:51:        kind="sub_agent_spawned",
+tests/tui/test_subagent_event_routing.py:155:    async def test_spawned_writes_notice_to_main_transcript(self) -> None:
+tests/tui/test_subagent_event_routing.py:156:        """``sub_agent_spawned`` writes ``⊇ task-A: spawned`` to the adapter."""
+tests/tui/test_subagent_event_routing.py:161:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:170:    async def test_spawned_does_not_reach_orchestrator_projector(self) -> None:
+tests/tui/test_subagent_event_routing.py:177:                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:183:    async def test_spawned_makes_fleet_panel_visible(self) -> None:
+tests/tui/test_subagent_event_routing.py:184:        """After ``sub_agent_spawned``, fleet panel is visible."""
+tests/tui/test_subagent_event_routing.py:192:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:198:    async def test_spawned_registers_fleet_row(self) -> None:
+tests/tui/test_subagent_event_routing.py:199:        """After ``sub_agent_spawned``, the fleet panel has a row for the task."""
+tests/tui/test_subagent_event_routing.py:204:            await app._render_event(_spawned(task_id="task-B", session_id="s2"))
+tests/tui/test_subagent_event_routing.py:217:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:232:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:250:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:269:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:294:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:325:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:340:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:356:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:391:            await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:430:    async def test_first_spawn_launches_visualizer_once(self) -> None:
+tests/tui/test_subagent_event_routing.py:440:                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:441:                await app._render_event(_spawned(task_id="task-B", session_id="s2"))
+tests/tui/test_subagent_event_routing.py:461:                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:480:                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:500:                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:520:                await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+tests/tui/test_subagent_event_routing.py:529:                await app._render_event(_spawned(task_id="task-B", session_id="s2"))
+tests/tui/test_subagent_event_routing.py:611:        for kind in ("sub_agent_spawned", "sub_agent_completed", "sub_agent_failed"):
+tests/integration/herdr_transport_observer.py:30:            transport._active is None and transport._spawn_task is None and transport._cleanup_task is None
+tests/tui/test_visualizer_ui_enhancements.py:53:    loader.load_spawn_context = MagicMock(return_value=None)
+tests/integration/herdr_restore_process_entry.py:59:from tests.state_isolation import FakeHerdrSpawnGuard
+tests/integration/herdr_restore_process_entry.py:80:    guard = FakeHerdrSpawnGuard(root=ROOT)
+tests/integration/herdr_restore_process_entry.py:85:    original = HerdrCliTransport._spawn
+tests/integration/herdr_restore_process_entry.py:87:    async def guarded_spawn(
+tests/integration/herdr_restore_process_entry.py:95:        HERDR_ENV="1", HERDR_PANE_ID="offline-pane", HERDR_BIN_PATH=str(executable), SLO_HERDR_DISABLED="0"
+tests/integration/herdr_restore_process_entry.py:98:    with patch.object(HerdrCliTransport, "_spawn", guarded_spawn):
+tests/integration/herdr_restore_process_entry.py:331:        patch.object(VisualizerLauncher, "_default_spawn", forbidden),
+tests/tui/test_headless_workflow_visualizer.py:90:def _spawned_event(*, child_id: str, task_id: str = "task-1") -> SessionHistoryEventDAO:
+tests/tui/test_headless_workflow_visualizer.py:91:    """Build a ``sub_agent_spawned`` event.
+tests/tui/test_headless_workflow_visualizer.py:101:        kind="sub_agent_spawned",
+tests/tui/test_headless_workflow_visualizer.py:243:    def test_discovers_child_from_spawned_event(self) -> None:
+tests/tui/test_headless_workflow_visualizer.py:244:        """A sub_agent_spawned event yields one ChildSessionSummaryDAO."""
+tests/tui/test_headless_workflow_visualizer.py:248:            _spawned_event(child_id=child_id, task_id="t-1"),
+tests/tui/test_headless_workflow_visualizer.py:266:            _spawned_event(child_id=child_id),
+tests/tui/test_headless_workflow_visualizer.py:282:            _spawned_event(child_id=child_id),
+tests/tui/test_headless_workflow_visualizer.py:298:            _spawned_event(child_id=child_id),
+tests/tui/test_headless_workflow_visualizer.py:309:    def test_completed_without_prior_spawned_is_ignored(self) -> None:
+tests/tui/test_headless_workflow_visualizer.py:323:    def test_duplicate_spawned_events_only_yield_one_entry(self) -> None:
+tests/tui/test_headless_workflow_visualizer.py:324:        """Duplicate sub_agent_spawned for the same child id produces one entry."""
+tests/tui/test_headless_workflow_visualizer.py:328:            _spawned_event(child_id=child_id),
+tests/tui/test_headless_workflow_visualizer.py:329:            _spawned_event(child_id=child_id),
+tests/tui/test_headless_workflow_visualizer.py:482:            _event(kind="sub_agent_spawned"),
+tests/tui/test_headless_workflow_visualizer.py:655:            _spawned_event(child_id="child-1"),
+tests/tui/test_headless_workflow_visualizer.py:669:            _spawned_event(child_id=child_id, task_id="t-99"),
+tests/tui/test_headless_workflow_visualizer.py:911:# WorkflowVisualizerLoader — load_spawn_context (sub-spec 54.a.4)
+tests/tui/test_headless_workflow_visualizer.py:963:    """``load_spawn_context`` reads and parses child spawn_context.json."""
+tests/tui/test_headless_workflow_visualizer.py:986:        result = loader.load_spawn_context(
+tests/tui/test_headless_workflow_visualizer.py:999:        result = loader.load_spawn_context(
+tests/tui/test_headless_workflow_visualizer.py:1015:        result = loader.load_spawn_context(
+tests/tui/test_headless_workflow_visualizer.py:1028:    """``_build_child_summary`` populates ``has_spawn_context`` and ``prompt_preview``."""
+tests/tui/test_headless_workflow_visualizer.py:1058:        assert summary.has_spawn_context is True
+tests/tui/test_headless_workflow_visualizer.py:1090:        assert summary.has_spawn_context is True
+tests/tui/test_headless_workflow_visualizer.py:1093:    def test_no_spawn_context_has_empty_preview(self, tmp_path: Path) -> None:
+tests/tui/test_headless_workflow_visualizer.py:1104:        assert summary.has_spawn_context is False
+tests/tui/test_herdr_attached_composed.py:22:async def test_attached_spawn_submits_real_parent_once(
+tests/tui/test_herdr_attached_composed.py:75:                kind="sub_agent_spawned", sub_agent_id="synthetic-child", task_id="task"
+tests/integration/test_herdr_full_flow.py:432:        (HerdrCliTransport, "_spawn"),
+tests/integration/test_herdr_full_flow.py:1014:    monkeypatch.setattr(target=VisualizerLauncher, name="_default_spawn", value=staticmethod(spawn))
+tests/integration/test_herdr_full_flow.py:1049:        assert record["category"] == "platform_spawn_failed"
+tests/integration/test_herdr_full_flow.py:1128:    monkeypatch.setattr(target=VisualizerLauncher, name="_default_spawn", value=staticmethod(spawn))
+tests/integration/test_herdr_full_flow.py:1141:        event = AgentStreamEventDAO(kind="sub_agent_spawned", sub_agent_id="controlled-child", task_id="task")
+tests/integration/test_herdr_full_flow.py:1357:                kind="sub_agent_spawned", sub_agent_id="controlled-child", task_id="task"

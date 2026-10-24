@@ -53,7 +53,7 @@ class TestAnthropicReasoningPayloads:
 
     def test_anthropic_thinking_payload_returns_adaptive_type(self) -> None:
         """Resolved reasoning config produces an adaptive thinking payload."""
-        payload: dict[str, Any] = anthropic_thinking_payload(
+        payload = anthropic_thinking_payload(
             reasoning=_enabled_reasoning(provider_effort="medium"),
         )
 

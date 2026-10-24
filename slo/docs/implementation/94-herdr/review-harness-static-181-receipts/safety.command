@@ -1,0 +1,1 @@
+python -B -m pytest -q tests/integration/test_herdr_restore_harness_safety.py tests/agents/slo_agent/herdr/test_test_isolation.py tests/agents/slo_agent/herdr/test_spawn_guard.py tests/test_slo_home_isolation.py 

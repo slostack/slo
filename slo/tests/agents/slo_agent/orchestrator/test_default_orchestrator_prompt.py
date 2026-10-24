@@ -149,6 +149,7 @@ class TestAttachSubAgentPoolInjectsOrchestratorPrompt:
         spawn_tool = SpawnSubAgentsTool.build(pool=mock_pool)
         session.attach_sub_agent_pool(pool=mock_pool, spawn_tool=spawn_tool)
 
+        assert session._config is not None
         assert session._config.system_prompt == DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT
 
     def test_does_not_overwrite_existing_system_prompt(self) -> None:
@@ -163,6 +164,7 @@ class TestAttachSubAgentPoolInjectsOrchestratorPrompt:
         spawn_tool = SpawnSubAgentsTool.build(pool=mock_pool)
         session.attach_sub_agent_pool(pool=mock_pool, spawn_tool=spawn_tool)
 
+        assert session._config is not None
         assert session._config.system_prompt == "custom body"
 
     def test_addendum_appended_in_both_cases(self) -> None:
@@ -178,6 +180,7 @@ class TestAttachSubAgentPoolInjectsOrchestratorPrompt:
             spawn_tool = SpawnSubAgentsTool.build(pool=mock_pool)
             session.attach_sub_agent_pool(pool=mock_pool, spawn_tool=spawn_tool)
 
+            assert session._config is not None
             assert ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM in (
                 session._config.append_system_prompt or ""
             ), f"Addendum missing for initial_prompt={initial_prompt!r}"

@@ -207,7 +207,7 @@ async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
 
 
 async def test_new_waits_for_old_service_disposal_before_session_assignment(tmp_path: Path) -> None:
-    """Semantic /new cancellation leaves the old session until service cleanup joins."""
+    """Committed /new joins old cleanup before adoption despite caller cancellation."""
     import asyncio
     from tests.tui.workflows.test_visibility_paint_barriers import checkpoint
 
@@ -267,7 +267,9 @@ async def test_new_waits_for_old_service_disposal_before_session_assignment(tmp_
         finally:
             release.set()
             await asyncio.wait_for(asyncio.gather(command, return_exceptions=True), timeout=5)
-        assert app._session is session
+        assert app._session is not session
+        assert len(owners) == 2
+        assert owners[1] == app._session.session_id
 
 
 async def test_new_joins_observation_then_accepted_abort_before_retiring_sink(tmp_path: Path) -> None:
@@ -385,8 +387,12 @@ async def test_new_joins_observation_then_accepted_abort_before_retiring_sink(tm
         await pilot.pause()
         assert isinstance(result[0], asyncio.CancelledError)
         assert order == ["observation-joined", "service-close", "abort-joined"]
-        assert app._session is session
-        assert len(services) == 1
+        assert app._session is not session
+        assert len(services) == 2
+        assert services[0]._closed
+        assert not services[1]._closed
         assert screen not in app.screen_stack
-        assert list(app.query(SubAgentFleetRow)) == []
+        assert all(
+            row.row.key.orchestrator_session_id != session.session_id for row in app.query(SubAgentFleetRow)
+        )
         assert len(world.abort.calls) == 1

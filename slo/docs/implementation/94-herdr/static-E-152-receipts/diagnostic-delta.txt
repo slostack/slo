@@ -1,0 +1,3 @@
+Fresh harness RED versus151: added=0, removed=0
+After versus fresh harness RED: added=0, removed=1
+src/agents/slo_agent/skills/service.py: error: Library stubs not installed for "yaml"  [import-untyped]

@@ -26,11 +26,24 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleStore,
     WorkflowState,
 )
+from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.app import SloTUI
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
+
+
+@pytest.fixture(autouse=True)
+def _enable_fake_visualizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise platform compatibility with suite-wide real spawn blocking intact."""
+    monkeypatch.setenv("SLO_AUTO_VISUALIZE", "1")
+
+
+async def _join_viewers(app: SloTUI) -> None:
+    """Await registered workers while their fake platform boundary is installed."""
+    for task in tuple(app._visualizer_launch_tasks.values()):
+        await asyncio.wait_for(task, timeout=5)
 
 
 def _mock_session(*, history_root: Path) -> MagicMock:
@@ -43,8 +56,13 @@ def _mock_session(*, history_root: Path) -> MagicMock:
         MagicMock: Session mock matching the ``SloAgentSession`` surface.
     """
     session: MagicMock = MagicMock(spec=SloAgentSession)
+    # This receive-path double owns no external reporting resources.
+    session.finish_retired_reporting_cleanup.return_value = HerdrReporterCloseOutcomeDAO(
+        replacement="safe", resources="drained"
+    )
     session.workdir = Path(".").resolve()
     session.session_id = "session-1234"
+    session.workflow_visualizer_destination = "platform"
     session.session_name = None
     session.active_model_name = "claude-sonnet-4-6"
     session.routed_model_name = "claude-sonnet-4-6"
@@ -162,7 +180,9 @@ class TestContextNoteDelivery:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            await app._handle_inbox_message(message=message)
+            async with app._prompt_submission_lock:
+                admitted = await app._handle_inbox_message(message=message)
+            assert admitted is True
 
             assert app._adapter is not None
             assert any(
@@ -192,7 +212,9 @@ class TestContextNoteDelivery:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            await app._handle_inbox_message(message=message)
+            async with app._prompt_submission_lock:
+                admitted = await app._handle_inbox_message(message=message)
+            assert admitted is True
 
             session.record_workflow_update.assert_awaited_once_with(
                 text="phase note",
@@ -223,11 +245,12 @@ class TestVisualizerRetarget:
                 return_value=True,
             ) as mock_launch:
                 await app._render_event(event)
+                await _join_viewers(app)
 
             mock_launch.assert_called_once_with(parent_session_id="orch-1")
             assert app._adapter is not None
             assert any(
-                "Opened workflow visualizer in a new window (session orch-1)." in content
+                "Opened workflow visualizer in a new window." in content
                 for content, _classes in app._adapter.lines
             )
 
@@ -250,6 +273,7 @@ class TestVisualizerRetarget:
                 return_value=True,
             ) as mock_launch:
                 await app._render_event(event)
+                await _join_viewers(app)
 
             mock_launch.assert_not_called()
 
@@ -272,6 +296,7 @@ class TestVisualizerRetarget:
                 return_value=True,
             ) as mock_launch:
                 await app._render_event(event)
+                await _join_viewers(app)
 
             mock_launch.assert_not_called()
 
@@ -290,9 +315,11 @@ class TestVisualizerRetarget:
                 app._maybe_launch_workflow_visualizer(
                     result_text='{"orchestrator_session_id": "orch-1"}',
                 )
+                await _join_viewers(app)
                 app._maybe_launch_workflow_visualizer(
                     result_text='{"orchestrator_session_id": "orch-1"}',
                 )
+                await _join_viewers(app)
 
             mock_launch.assert_called_once_with(parent_session_id="orch-1")
 
@@ -311,10 +338,11 @@ class TestVisualizerRetarget:
                 app._maybe_launch_workflow_visualizer(
                     result_text='{"orchestrator_session_id": "orch-1"}',
                 )
+                await _join_viewers(app)
 
             assert app._adapter is not None
             assert any(
-                content == "⊇ Watch the workflow live: slo visualize --session orch-1 --follow"
+                "slo visualize --session orch-1 --follow" in content
                 for content, _classes in app._adapter.lines
             )
 
@@ -333,9 +361,12 @@ class TestVisualizerRetarget:
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 return_value=True,
             ) as mock_launch:
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_started"),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_started"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             mock_launch.assert_called_once_with(parent_session_id="orch-1")
 
@@ -355,26 +386,35 @@ class TestVisualizerRetarget:
                     "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                     return_value=True,
                 ) as mock_launch,
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()),
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
             ):
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_started"),
-                )
-                await app._handle_inbox_message(
-                    message=_workflow_message(
-                        kind="workflow_completed",
-                        delivery_mode="chat_turn",
-                        message_id="message-2",
-                    ),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_started"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(
+                            kind="workflow_completed",
+                            delivery_mode="chat_turn",
+                            message_id="message-2",
+                        ),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
                 await _write_handle(store=store, workflow_id="wf-2", state="launching")
-                await app._handle_inbox_message(
-                    message=_workflow_message(
-                        kind="workflow_started",
-                        message_id="message-3",
-                        workflow_id="wf-2",
-                    ),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(
+                            kind="workflow_started",
+                            message_id="message-3",
+                            workflow_id="wf-2",
+                        ),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             assert mock_launch.call_count == 2
 
@@ -394,14 +434,17 @@ class TestVisualizerRetarget:
                     "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                     return_value=True,
                 ) as mock_launch,
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()),
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
             ):
-                await app._handle_inbox_message(
-                    message=_workflow_message(
-                        kind="workflow_completed",
-                        delivery_mode="chat_turn",
-                    ),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(
+                            kind="workflow_completed",
+                            delivery_mode="chat_turn",
+                        ),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             mock_launch.assert_not_called()
 
@@ -431,7 +474,10 @@ class TestAppServiceRendererBoundary:
                 ) as advance_spy,
                 patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
             ):
-                await app._handle_inbox_message(message=message)
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(message=message)
+                assert admitted is True
+                await _join_viewers(app)
 
         advance_spy.assert_awaited_once_with(kind="workflow_started", payload=message.payload)
 
@@ -451,9 +497,12 @@ class TestAppServiceRendererBoundary:
                 patch.object(renderer, "apply_effects", wraps=renderer.apply_effects) as apply_spy,
                 patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
             ):
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_started"),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_started"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
         apply_spy.assert_called_once()
         effects = apply_spy.call_args.kwargs["effects"]
@@ -473,15 +522,18 @@ class TestAppServiceRendererBoundary:
             renderer = app._ensure_workflow_renderer()
             with (
                 patch.object(renderer, "apply_effects", wraps=renderer.apply_effects) as apply_spy,
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()),
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
                 patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
             ):
-                await app._handle_inbox_message(
-                    message=_workflow_message(
-                        kind="workflow_completed",
-                        delivery_mode="chat_turn",
-                    ),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(
+                            kind="workflow_completed",
+                            delivery_mode="chat_turn",
+                        ),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
         apply_spy.assert_called_once()
         effects = apply_spy.call_args.kwargs["effects"]
@@ -503,9 +555,12 @@ class TestWorkflowHandleStateAdvance:
         async with app.run_test() as pilot:
             await pilot.pause()
             with patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True):
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_started"),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_started"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
             assert handle is not None
@@ -525,10 +580,13 @@ class TestWorkflowHandleStateAdvance:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()):
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_completed", delivery_mode="chat_turn"),
-                )
+            with patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)):
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_completed", delivery_mode="chat_turn"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
             assert handle is not None
@@ -550,9 +608,12 @@ class TestWorkflowHandleStateAdvance:
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 return_value=True,
             ) as mock_launch:
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_started", workflow_id="wf-missing"),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_started", workflow_id="wf-missing"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             mock_launch.assert_not_called()
             assert app._workflow_app_service is not None
@@ -569,10 +630,13 @@ class TestWorkflowHandleStateAdvance:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()):
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_failed", delivery_mode="chat_turn"),
-                )
+            with patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)):
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_failed", delivery_mode="chat_turn"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
             assert handle is not None
@@ -643,7 +707,10 @@ class TestWorkflowHandleStateAdvance:
                 "src.tui.visualizer_launcher.VisualizerLauncher.launch",
                 return_value=True,
             ) as mock_launch:
-                await app._handle_inbox_message(message=message)
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(message=message)
+                assert admitted is True
+                await _join_viewers(app)
 
             mock_launch.assert_not_called()
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
@@ -697,21 +764,30 @@ class TestAbortSeparationAndExit:
             app._fleet_panel = fleet_panel_spy
             with (
                 patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock()),
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
             ):
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_started"),
-                )
-                await app._handle_inbox_message(
-                    message=_workflow_message(kind="workflow_phase_update", message_id="message-2"),
-                )
-                await app._handle_inbox_message(
-                    message=_workflow_message(
-                        kind="workflow_completed",
-                        delivery_mode="chat_turn",
-                        message_id="message-3",
-                    ),
-                )
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_started"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_phase_update", message_id="message-2"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(
+                            kind="workflow_completed",
+                            delivery_mode="chat_turn",
+                            message_id="message-3",
+                        ),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
 
             fleet_panel_spy.apply_snapshot.assert_not_called()
             fleet_panel_spy.reset.assert_not_called()
@@ -775,6 +851,7 @@ class TestLaunchResultSeedsExitHint:
                 return_value=True,
             ):
                 await app._render_event(event)
+                await _join_viewers(app)
 
             assert app._resume_command_hint() == (
                 "Resume this session: slo --resume session-1234\n"

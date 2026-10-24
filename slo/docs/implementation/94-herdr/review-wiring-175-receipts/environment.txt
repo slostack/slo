@@ -1,0 +1,12 @@
+Initial read-only verification (before tests):
+$ pwd
+/root/Code/slo-94-herdr-integration/slo
+$ pyenv which python
+/root/.pyenv/versions/slo-harness/bin/python
+$ pyenv exec python --version
+Python 3.11.7
+$ make test-env
+fallback
+Combined verification command exited 0. Existing dirty/untracked work was inspected, not reset.
+
+Executions use run.sh's explicit approved interpreter prefix and tracked synthetic fallback only, with PYTHONPATH=$PWD. No environment file sourced; no full environment printed. Outside-tests review probes explicitly load -p tests.conftest to retain root isolation and fake-only/terminal guards.

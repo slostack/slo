@@ -32,7 +32,7 @@ from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
-from src.tui.workflows.dao import WorkflowSessionSnapshotDAO
+from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, WorkflowSessionSnapshotDAO
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
 
 # ---------------------------------------------------------------------------
@@ -752,9 +752,7 @@ class TestHistoryGatedLaunchEffects:
 
         with (
             patch.object(session, "attached_dispatch_snapshot", new=supplier),
-            patch(
-                "src.tui.workflows.renderer.DetachedWorkflowRenderer.handle_launch_result"
-            ) as renderer_launch,
+            patch("src.tui.workflows.renderer.DetachedWorkflowRenderer.apply_effects") as renderer_launch,
         ):
             app: SloTUI = SloTUI(session=session)
             async with app.run_test(size=(120, 40)) as pilot:
@@ -777,11 +775,12 @@ class TestHistoryGatedLaunchEffects:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             assert app._workflow_app_service is not None
-            outcome: str = app._workflow_app_service.advance_from_launch_result(
+            outcome: HandleAdvanceOutcomeDAO = app._workflow_app_service.advance_from_launch_result(
                 result_text='{"workflow_id": "wf-1", "orchestrator_session_id": "orch-1", "state": "running"}'
             )
 
-            assert outcome != "ignored"
+            assert outcome.workflow_id == "wf-1"
+            assert [effect.effect for effect in outcome.effects] == ["launch_visualizer"]
             assert app._live_workflow_labels() == []
             assert app._resume_command_hint() == f"Resume this session: slo --resume {session.session_id}"
 
@@ -792,7 +791,12 @@ class TestHistoryGatedLaunchEffects:
 
 
 class TestVisualizerAutoLaunch:
-    """``_maybe_launch_visualizer`` opens the visualizer once per run."""
+    """``_maybe_launch_visualizer`` schedules the visualizer once per run."""
+
+    @pytest.fixture(autouse=True)
+    def enable_auto_visualize(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Opt these five launch contracts into the production master gate."""
+        monkeypatch.setenv("SLO_AUTO_VISUALIZE", "1")
 
     @pytest.mark.asyncio
     async def test_first_spawn_launches_visualizer_once(self) -> None:
@@ -807,7 +811,9 @@ class TestVisualizerAutoLaunch:
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
                 await app._render_event(_spawned(task_id="task-B", session_id="s2"))
-                await _settle(app=app, pilot=pilot)
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             mock_launch.assert_called_once()
             assert app._visualizer_launched_for_run is True
@@ -825,7 +831,9 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=True),
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await _settle(app=app, pilot=pilot)
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             _, kwargs = mock_launch.call_args
             assert kwargs["parent_session_id"] == session.session_id
@@ -842,7 +850,9 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=True),
             ):
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await _settle(app=app, pilot=pilot)
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             assert app._adapter is not None
             lines = [content for content, _ in app._adapter.lines]
@@ -860,7 +870,9 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=False),
             ):
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await _settle(app=app, pilot=pilot)
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
 
             assert app._adapter is not None
             lines = [content for content, _ in app._adapter.lines]
@@ -878,12 +890,16 @@ class TestVisualizerAutoLaunch:
                 new=MagicMock(return_value=True),
             ) as mock_launch:
                 await app._render_event(_spawned(task_id="task-A", session_id="s1"))
-                await _settle(app=app, pilot=pilot)
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
                 assert app._visualizer_launched_for_run is True
 
                 await app._cleanup_sub_agent_state()
                 assert app._visualizer_launched_for_run is False
 
                 await app._render_event(_spawned(task_id="task-B", session_id="s2"))
-                await _settle(app=app, pilot=pilot)
+                task = app._visualizer_launch_tasks[app._session.session_id]
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done() and not app._visualizer_launch_tasks
                 assert mock_launch.call_count == 2

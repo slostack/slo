@@ -250,7 +250,7 @@ class TestLLMFactoryAnthropicRouting:
             LLMFactory.create(model_name="claude-sonnet-4-6")
 
         mock_builder.assert_called_once()
-        kwargs: dict = mock_builder.call_args.kwargs
+        kwargs = mock_builder.call_args.kwargs
         assert kwargs["model_name"] == "claude-sonnet-4-6"
         assert kwargs["cred"].auth_type is AuthType.OAUTH
 
@@ -337,7 +337,7 @@ class TestLLMFactoryOpenAIRouting:
             )
 
         mock_builder.assert_called_once()
-        kwargs: dict = mock_builder.call_args.kwargs
+        kwargs = mock_builder.call_args.kwargs
         assert kwargs["model_name"] == "gpt-5"
         assert kwargs["cred"].auth_type is AuthType.OAUTH
         assert kwargs["session_id"] == "sess-routed"
@@ -403,6 +403,7 @@ class TestLLMFactoryReasoningRouting:
                 reasoning_level="xhigh",
             )
 
+        assert isinstance(result.llm, ChatOpenAI)
         assert result.llm.reasoning == {"effort": "xhigh", "summary": "auto"}
         assert result.llm.use_responses_api is True
         assert result.llm.output_version == "responses/v1"
@@ -425,6 +426,7 @@ class TestLLMFactoryReasoningRouting:
                 reasoning_level="xhigh",
             )
 
+        assert isinstance(result.llm, ChatAnthropic)
         assert result.llm.thinking == {"type": "adaptive"}
         assert result.llm.model_kwargs.get("output_config") == {"effort": "high"}
         assert result.llm.temperature is None
@@ -454,6 +456,7 @@ class TestLLMFactoryReasoningRouting:
         )
         tool_msg = ToolMessage(content="file.txt", tool_call_id="call_1", name="bash")
 
+        assert isinstance(result.llm, _ThinkingPatchedChatAnthropic)
         payload = result.llm._get_request_payload(
             input_=[HumanMessage(content="go"), ai_msg, tool_msg],
         )
@@ -499,6 +502,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
         ):
             result = LLMFactory.create(model_name="claude-opus-4-8-1m-context")
 
+        assert isinstance(result.llm, ChatAnthropic)
         assert result.llm.model == "claude-opus-4-8"
 
     def test_api_key_lane_haiku_sends_dated_api_model_id(self) -> None:
@@ -509,6 +513,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
         ):
             result = LLMFactory.create(model_name="claude-haiku-4-5")
 
+        assert isinstance(result.llm, ChatAnthropic)
         assert result.llm.model == "claude-haiku-4-5-20251001"
 
     def test_api_key_lane_sonnet_1m_sends_base_api_model_id(self) -> None:
@@ -519,6 +524,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
         ):
             result = LLMFactory.create(model_name="claude-sonnet-4-6-1m-context")
 
+        assert isinstance(result.llm, ChatAnthropic)
         assert result.llm.model == "claude-sonnet-4-6"
 
     def test_api_key_lane_identity_entry_sends_canonical_name(self) -> None:
@@ -529,6 +535,7 @@ class TestLLMFactoryAnthropicApiModelNameResolution:
         ):
             result = LLMFactory.create(model_name="claude-opus-4-8")
 
+        assert isinstance(result.llm, ChatAnthropic)
         assert result.llm.model == "claude-opus-4-8"
 
     def test_oauth_lane_1m_variant_sends_base_api_model_id(self) -> None:

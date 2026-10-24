@@ -626,17 +626,20 @@ class TestSubAgentPoolAbortAndDrain:
         assert result.error == "pool sealed by abort; no new sub-agents will be spawned"
         assert result.failed_task_ids == ["t1"]
 
-    async def test_abort_and_drain_noops_when_already_sealed(self) -> None:
+    async def test_abort_and_drain_noops_when_already_sealed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A second ordered abort does not repeat child cancellation or recording."""
         pool, _ = _make_pool()
         pool._sealed = True
-        pool.cancel_all = AsyncMock()
+        cancel_mock = AsyncMock()
+        monkeypatch.setattr(pool, "cancel_all", cancel_mock)
 
         await pool.abort_and_drain()
 
-        pool.cancel_all.assert_not_called()
+        cancel_mock.assert_not_called()
 
-    async def test_abort_and_drain_concurrent_callers_join_one_shutdown(self) -> None:
+    async def test_abort_and_drain_concurrent_callers_join_one_shutdown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Concurrent abort callers wait for the same ordered pool shutdown."""
         pool, _ = _make_pool()
         started: asyncio.Event = asyncio.Event()
@@ -646,7 +649,8 @@ class TestSubAgentPoolAbortAndDrain:
             started.set()
             await release.wait()
 
-        pool.cancel_all = AsyncMock(side_effect=cancel_all)
+        cancel_mock = AsyncMock(side_effect=cancel_all)
+        monkeypatch.setattr(pool, "cancel_all", cancel_mock)
         first: asyncio.Task[None] = asyncio.create_task(pool.abort_and_drain())
         await started.wait()
         second: asyncio.Task[None] = asyncio.create_task(pool.abort_and_drain())
@@ -655,7 +659,7 @@ class TestSubAgentPoolAbortAndDrain:
         assert second.done() is False
         release.set()
         await asyncio.gather(first, second)
-        pool.cancel_all.assert_awaited_once()
+        cancel_mock.assert_awaited_once()
 
     async def test_sealed_pool_does_not_spawn_task_waiting_for_capacity(self) -> None:
         """A queued task is terminalized without spawning after the pool seals.

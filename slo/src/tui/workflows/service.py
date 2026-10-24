@@ -45,7 +45,6 @@ from src.tui.workflows.dao import (
     ChildAbortTargetDAO,
     DetachedWorkflowUiEffectDAO,
     HandleAdvanceOutcomeDAO,
-    LaunchResultOutcome,
     LiveWorkflowLabelDAO,
     ParsedFleetUpdateDAO,
     ParsedLaunchResultDAO,
@@ -353,13 +352,13 @@ class DetachedWorkflowAppService:
             workflow_id=parsed.workflow_id,
         )
 
-    def advance_from_launch_result(self, *, result_text: str) -> LaunchResultOutcome:
+    def advance_from_launch_result(self, *, result_text: str) -> HandleAdvanceOutcomeDAO:
         """Translate one ``launch_workflow`` tool-result text into UI effects.
 
         WHAT: parses the handle JSON; a valid result seeds the state cache
             (so the exit hint lists the workflow before its ``workflow_started``
-            note is claimed) and returns ``launched`` so the caller executes
-            the visualizer effect. Anything else is a safe no-op.
+            note is claimed) and returns one typed visualizer effect.
+            Anything else is a safe no-op; no durable advance is claimed.
         WHO: the TUI live render path on ``launch_workflow`` tool results.
         WHEN: during the launch turn, when the tool result streams through.
 
@@ -367,17 +366,26 @@ class DetachedWorkflowAppService:
             result_text (str): Raw ``launch_workflow`` tool-result text.
 
         Returns:
-            LaunchResultOutcome: ``launched`` for a valid handle payload,
-                ``ignored`` for malformed, error, or orchestrator-id-less JSON.
+            HandleAdvanceOutcomeDAO: Launch effect for a valid handle payload,
+                empty effects for malformed, error, or orchestrator-id-less JSON.
         """
         parsed: Optional[ParsedLaunchResultDAO] = parse_launch_workflow_result(
             result_text=result_text,
         )
         if parsed is None:
-            return "ignored"
+            return HandleAdvanceOutcomeDAO()
         if parsed.workflow_id:
             self._workflow_states[parsed.workflow_id] = parsed.state
-        return "launched"
+        return HandleAdvanceOutcomeDAO(
+            workflow_id=parsed.workflow_id,
+            effects=[
+                DetachedWorkflowUiEffectDAO(
+                    effect="launch_visualizer",
+                    orchestrator_session_id=parsed.orchestrator_session_id,
+                    state=parsed.state,
+                )
+            ],
+        )
 
     def fleet_update_for(self, *, workflow_id: str) -> Optional[ParsedFleetUpdateDAO]:
         """Return the latest claimed fleet note for a workflow renderer.

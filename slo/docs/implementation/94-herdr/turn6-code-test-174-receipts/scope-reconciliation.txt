@@ -1,0 +1,23 @@
+Turn6 (global 174) input reconciliation against the frozen 171 comprehensive set.
+
+Frozen set: 1064 inputs (docs/implementation/** receipt artifacts and the two
+mutable research indexes excluded, exactly as 168/171 define the scope).
+
+Post-turn enumeration: 1066 inputs = 1064 frozen + 2 new test modules.
+
+Changed frozen inputs (exactly 3, all intended R173 edits):
+  - src/tui/app.py                              R173-1 captured-identity rechecks
+  - src/agents/slo_agent/sessions/service.py    R173-3 in-place public contracts
+  - tests/cli/test_headless.py                  R173-2 three tmp_path: Path fixtures
+
+New inputs (exactly 2, both intended):
+  - tests/tui/test_startup_notice_cutoff.py             R173-1 permanent tests
+  - tests/implementation_checks/test_conventions_audit_paths.py  R173-2 audit regression
+
+Changed excluded receipt artifact (outside manifest scope by design):
+  - docs/implementation/94-herdr/conventions-revision-159-receipts/audit.py
+    R173-2 repository/product path normalization repair. Receipt/probe
+    directories are excluded from the comprehensive set in 168/171.
+
+No other source, test, build, config, guard, or environment input changed.
+No deletions, no renames. dpkg -V coreutils silent/exit0 after every gate.

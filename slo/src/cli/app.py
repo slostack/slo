@@ -7,6 +7,7 @@ from typing import Optional
 
 import typer
 import typer.core
+from typer._click.core import Context as ClickContext
 
 from src.cli.plugin import plugin_app
 from src.cli.schedule.app import schedule_app
@@ -30,18 +31,18 @@ class _SloGroup(typer.core.TyperGroup):
     subcommand straight through to Click's dispatch. Otherwise the
     default behaviour kicks in and the token is parsed as the workdir.
 
-    ``ctx`` is annotated ``typer.Context`` rather than ``click.Context``
+    ``ctx`` is annotated with Typer's vendored base Context, not ``click.Context``
     on purpose. Typer >= 0.20 vendors Click as ``typer._click`` and no
     longer depends on the ``click`` distribution, so ``import click``
     resolves only by accident on machines where a dev-group package
     (``black``) drags it in. A ``pipx install`` gets no ``click`` at all
     and the CLI died on import. ``typer.Context`` is the vendored class
-    Typer actually passes here, and it exists on every supported Typer.
+    Typer passes here. The base type also admits every context accepted by the superclass.
     """
 
     def parse_args(
         self,
-        ctx: typer.Context,
+        ctx: ClickContext,
         args: list[str],
     ) -> list[str]:
         """Disambiguate workdir-vs-subcommand on the first positional.
@@ -96,6 +97,11 @@ def _default(
         "--resume",
         help="Resume a known Slo session reference (session id or unique session name).",
     ),
+    herdr_restore: Optional[str] = typer.Option(
+        None,
+        "--herdr-restore",
+        help="Integration restore reference; requires a literal UUID --resume.",
+    ),
     workspace: Optional[Path] = typer.Option(
         None,
         "--workspace",
@@ -121,15 +127,27 @@ def _default(
         typer.echo(message=resolve_version())
         raise typer.Exit(code=0)
     if ctx.invoked_subcommand is not None:
+        if herdr_restore is not None:
+            raise typer.BadParameter(message="Herdr restore cannot be combined with a subcommand.")
         return
-    tui_kwargs: dict[str, object] = {
-        "workdir": workdir,
-        "workspace_file": workspace,
-        "resume_session_reference": resume,
-    }
+    if herdr_restore is not None:
+        TyperDispatch.tui(
+            workdir=workdir,
+            workspace_file=workspace,
+            resume_session_reference=resume,
+            plugin_paths=plugin,
+            herdr_restore_reference=herdr_restore,
+        )
+        return
     if plugin:
-        tui_kwargs["plugin_paths"] = plugin
-    TyperDispatch.tui(**tui_kwargs)  # type: ignore[arg-type]
+        TyperDispatch.tui(
+            workdir=workdir,
+            workspace_file=workspace,
+            resume_session_reference=resume,
+            plugin_paths=plugin,
+        )
+        return
+    TyperDispatch.tui(workdir=workdir, workspace_file=workspace, resume_session_reference=resume)
 
 
 @app.command(name="run")

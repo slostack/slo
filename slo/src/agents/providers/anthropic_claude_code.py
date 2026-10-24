@@ -170,7 +170,7 @@ class ClaudeCodeChatAnthropic(_ThinkingPatchedChatAnthropic):
         if not isinstance(message, AIMessage) or not message.tool_calls:
             return result
 
-        available_tool_names: list[str] = self._tool_name_candidates()
+        available_tool_names: list[str] = self._tool_name_candidates(tools=kwargs.get("tools"))
         normalized_tool_calls: list[dict[str, Any]] = []
         for tool_call in message.tool_calls:
             normalized_tool_call: dict[str, Any] = dict(tool_call)
@@ -240,19 +240,18 @@ class ClaudeCodeChatAnthropic(_ThinkingPatchedChatAnthropic):
         )
         return canonicalized_tool
 
-    def _tool_name_candidates(self) -> list[str]:
-        """Return the currently bound Slo tool names.
+    def _tool_name_candidates(self, *, tools: object) -> list[str]:
+        """Read original tool names from the current RunnableBinding invocation.
+
+        Args:
+            tools: Request-local schemas forwarded by ChatAnthropic to output formatting.
 
         Returns:
-            list[str]: Tool names available on the model instance.
+            list[str]: Bound names, or no candidates for an unbound invocation.
         """
-        tool_payloads: list[dict[str, Any]] = cast(
-            list[dict[str, Any]],
-            getattr(self, "tools", None) or self.kwargs.get("tools", []) or [],
-        )
-        return [
-            str(tool.get("name")) for tool in tool_payloads if isinstance(tool, dict) and tool.get("name")
-        ]
+        if not isinstance(tools, list):
+            return []
+        return [str(tool["name"]) for tool in tools if isinstance(tool, dict) and tool.get("name")]
 
     def _normalize_inbound_tool_name(
         self,

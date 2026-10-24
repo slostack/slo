@@ -1,0 +1,1 @@
+-m black --check src/tui/app.py src/agents/slo_agent/sessions/service.py tests/tui/test_startup_notice_cutoff.py tests/implementation_checks/test_conventions_audit_paths.py

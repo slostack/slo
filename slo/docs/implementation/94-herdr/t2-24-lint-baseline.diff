@@ -1,0 +1,13 @@
+301a302,313
+> tests/agents/slo_agent/herdr/test_reporter.py:185: error: "HerdrRestoreStoreProtocol" has no attribute "calls"  [attr-defined]
+> tests/agents/slo_agent/herdr/test_reporter.py:216: error: Item "None" of "HerdrReportTicketDAO | None" has no attribute "sequence"  [union-attr]
+> tests/agents/slo_agent/herdr/test_reporter.py:265: error: Argument "capture" to "HerdrSavedRestoreDAO" has incompatible type "HerdrRestoreCaptureDAO | None"; expected "HerdrRestoreCaptureDAO"  [arg-type]
+> tests/agents/slo_agent/herdr/test_reporter.py:279: error: Argument "operation" to "HerdrReportTicketDAO" has incompatible type "str"; expected "Literal['claim', 'lifecycle', 'restore', 'clear', 'set', 'replace_release', 'shutdown_release', 'shutdown_clear', 'activation_release']"  [arg-type]
+> tests/agents/slo_agent/herdr/test_reporter.py:290: error: Item "None" of "HerdrRemoteBindingDAO | None" has no attribute "capture"  [union-attr]
+> tests/agents/slo_agent/herdr/test_reporter.py:291: error: Item "None" of "HerdrRemoteBindingDAO | None" has no attribute "certainty"  [union-attr]
+> tests/agents/slo_agent/herdr/test_reporter.py:292: error: Item "None" of "HerdrRemoteBindingDAO | None" has no attribute "reference"  [union-attr]
+> tests/agents/slo_agent/herdr/test_reporter.py:393: error: Argument "capture" to "HerdrSavedRestoreDAO" has incompatible type "HerdrRestoreCaptureDAO | None"; expected "HerdrRestoreCaptureDAO"  [arg-type]
+> tests/agents/slo_agent/herdr/test_reporter.py:400: error: Argument "operation" to "HerdrReportTicketDAO" has incompatible type "str"; expected "Literal['claim', 'lifecycle', 'restore', 'clear', 'set', 'replace_release', 'shutdown_release', 'shutdown_clear', 'activation_release']"  [arg-type]
+> tests/agents/slo_agent/herdr/test_reporter.py:478: error: Item "None" of "HerdrRemoteBindingDAO | None" has no attribute "certainty"  [union-attr]
+> tests/agents/slo_agent/herdr/test_reporter.py:649: error: Item "None" of "HerdrSavedRestoreDAO | None" has no attribute "capture"  [union-attr]
+> tests/agents/slo_agent/herdr/test_reporter.py:707: error: Item "None" of "HerdrReportTicketDAO | None" has no attribute "sequence"  [union-attr]

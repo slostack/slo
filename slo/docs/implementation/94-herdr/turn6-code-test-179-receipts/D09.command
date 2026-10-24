@@ -1,0 +1,1 @@
+env PYTHONPATH=/root/Code/slo-94-herdr-integration/slo poetry run pytest -m not\ e2e -q tests/agents/slo_agent/herdr tests/tui/test_herdr_visualizer.py tests/tui/test_visualizer_launcher.py tests/tui/workflows tests/tui/test_workflow_receive_path.py tests/integration/test_herdr_full_flow.py 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from textual.content import Content
+
 from textual.app import App, ComposeResult
 from textual.containers import HorizontalScroll
 
@@ -137,6 +139,7 @@ class TestSloDiffViewLifecycle:
             assert view._language == "python"
             row = view._render_code_line(text="return 2", role="added")
             assert str(row.content) == "+ return 2"
+            assert isinstance(row.content, Content)
             assert any(span.start >= 2 and span.end > span.start for span in row.content._spans)
 
     async def test_prepare_when_no_safe_hint_uses_plain_text_fallback(self) -> None:

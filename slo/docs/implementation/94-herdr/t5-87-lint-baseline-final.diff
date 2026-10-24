@@ -1,0 +1,14 @@
+--- /tmp/lintbase87	2026-10-19 02:51:50.447556776 +0700
++++ /tmp/lintfinal87	2026-10-19 02:52:55.846977772 +0700
+@@ -5,11 +5,8 @@
+ src/agents/providers/openai_codex.py: error: Argument "api_key" to "ChatOpenAI" has incompatible type "str"; expected "SecretStr | None"  [arg-type]
+ src/agents/providers/openai_codex.py: error: Unexpected keyword argument "openai_api_base" for "ChatOpenAI"  [call-arg]
+ src/agents/skills/registry.py: error: Argument "kind" to "Skill" has incompatible type "str"; expected "Literal['skill', 'workflow']"  [arg-type]
+-src/agents/skills/registry.py: error: Library stubs not installed for "yaml"  [import-untyped]
+ src/agents/slo_agent/assistant_chunk_normalizer.py: error: Generator has incompatible item type "ToolCall"; expected "dict[str, Any]"  [misc]
+ src/agents/slo_agent/skills/service.py: error: Library stubs not installed for "yaml"  [import-untyped]
+-src/cli/app.py: error: Argument 1 of "parse_args" is incompatible with supertype "typer._click.core.Command"; supertype defines the argument type as "Context"  [override]
+-src/cli/app.py: error: Argument 1 of "parse_args" is incompatible with supertype "typer.core.TyperGroup"; supertype defines the argument type as "Context"  [override]
+ src/tui/transcript_projector.py: error: Argument "tool_name" to "ToolOutputUpdateDAO" has incompatible type "str | None"; expected "str"  [arg-type]
+ tests/agents/model_catalog/test_model_catalog_store.py: error: "object" has no attribute "flock"  [attr-defined]
+ tests/agents/model_catalog/test_openrouter_admission_security.py: error: Argument 1 has incompatible type "object"; expected "def (*object, **object) -> object"  [arg-type]

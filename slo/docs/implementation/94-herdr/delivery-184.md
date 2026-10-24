@@ -1,0 +1,132 @@
+# Feature 94 Herdr — delivery record 184
+
+Accounting: **turn6, global dispatch 184, delivery phase**. User explicitly
+authorized commit/push/GitLab-MR update and CI monitoring. No merge, no force
+push, no push to `main`, no history rewrite, no branch-protection or CI-policy
+change was performed or attempted.
+
+## Verdict: DELIVERED (pushed; MR updated in place; CI terminal and green for the exact pushed SHA)
+
+## Commit / branch
+
+- Branch: `feature-94-herdr-integration` (existing; normal push only).
+- Delivery commit: **`687c1a7b2f25a30c82365ead49d2995b063349b9`**
+  `fix(94): review-driven lifetime cutoffs, audit-sensitivity repair, and turn-6 evidence`
+  — 399 files changed, 11431 insertions, 78 deletions.
+- Delivery-record commit: **`204f7850d0f3f579a05b568a03ce2f221bf4ac10`**
+  `docs(94): delivery record 184` — this file (docs-only, 1 file).
+- Prior published commits on the same branch (pushed by the concurrent
+  workflow before this dispatch): `bc98b76` (DRAFT feature snapshot) and
+  `c2f9e56` (publication-handoff correction).
+- Push output: `c2f9e56..687c1a7 feature-94-herdr-integration -> feature-94-herdr-integration`.
+
+## What the delivery commit contains
+
+- `src/tui/app.py` — R178-1 post-summary scroll cutoff revalidation in
+  `_hydrate_transcript_from_history`; R173-1 guards retained.
+- `tests/tui/test_startup_notice_cutoff.py` — parametrized closing/displaced
+  post-summary scroll rejection + open-path positive control.
+- `tests/implementation_checks/test_conventions_audit_paths.py` — R178-2
+  audit-sensitivity repair (single source-under-test seam, materialized-mutant
+  separation, explicit-rejection oracles).
+- Durable evidence: `turn6-code-test-176/177/179.md` (+receipts),
+  `independent-review-wiring-178/180.md`, `independent-review-harness-static-181.md`,
+  `independent-review-synthesis-182.md`, `completion-183.md` (+ receipt dirs).
+- Secret scan of the staged payload before commit: **0 matches** for token /
+  private-key / bcrypt-hash / bearer patterns.
+
+## Pre-push verification on the exact committed tree (687c1a7)
+
+Environment: `VIRTUAL_ENV=/root/.pyenv/versions/slo-harness`, its `bin` on
+PATH, `PYENV_VERSION=slo-harness`, `PYTHONPATH=$PWD`, tracked fallback exports;
+`make test-env` = `fallback`. No stash; the tree tested was the tree pushed.
+
+| Gate | Result |
+|---|---|
+| `make smoke` | **288 passed**, 2 warnings, exit 0 |
+| `make lint` (mypy, unmodified) | **816 source files clean**, exit 0 |
+| Focused: `test_startup_notice_cutoff.py` + `test_conventions_audit_paths.py` | **22 passed**, exit 0 |
+| `dpkg -V coreutils` after all runs | silent, exit 0 |
+
+Author turn-6 gates (evidence committed with this delivery): full non-e2e
+**8773 passed / 19 deselected**; smoke 288; lint 816 clean; chapter partitions
+**B26 1531 / C31 1538 / D09 1748**.
+
+## Merge request
+
+- URL: **https://gitlab.com/core-27/slo/-/merge_requests/131**
+- State: open **Draft**, source `feature-94-herdr-integration` → target `main`.
+- This dispatch **updated the existing MR in place** (no duplicate MR):
+  description now carries the feature summary, the review-driven static/lifetime
+  fixes, the gate table, the independent-review evidence (core172 READY,
+  wiring180 READY, harness-static181 READY, synthesis-182 READY,
+  completion-183 COMPLETE 100% offline), and the explicit qualifications
+  (live acceptance USER-DEFERRED, compatibility UNVERIFIED, security finding
+  132 separate/open).
+
+## CI for the exact pushed SHA 687c1a7b2f25a30c82365ead49d2995b063349b9
+
+Both pipelines were created by the push and polled to a terminal state
+(created ~19:00 UTC, terminal ~19:23 UTC, 2026-10-20):
+
+| Pipeline | Ref / source | Status | Jobs | URL |
+|---|---|---|---|---|
+| 2967294077 | `feature-94-herdr-integration` (push) | **success** | pytest success (1341.6 s), secret_detection success (54.0 s) | https://gitlab.com/core-27/slo/-/pipelines/2967294077 |
+| 2967294376 | `refs/merge-requests/131/head` (merge_request_event) | **success** | same two jobs | https://gitlab.com/core-27/slo/-/pipelines/2967294376 |
+
+No job failed; no retry was needed; no credential, runner, or provider limit
+was hit. Monitoring method: `glab api projects/core-27%2Fslo/pipelines?sha=687c1a7…`
+and per-pipeline `jobs` polling at ~90–480 s intervals until both pipelines
+reached the terminal `success` state.
+
+## CI for the delivery-record commit 204f7850d0f3f579a05b568a03ce2f221bf4ac10
+
+The docs-only follow-up push triggered a second pair of pipelines, also polled
+to a terminal state (terminal ~19:50 UTC, 2026-10-20):
+
+| Pipeline | Ref / source | Status | Jobs | URL |
+|---|---|---|---|---|
+| 2967389607 | `feature-94-herdr-integration` (push) | **success** | pytest success (1338.2 s), secret_detection success (74.0 s) | https://gitlab.com/core-27/slo/-/pipelines/2967389607 |
+| 2967389997 | `refs/merge-requests/131/head` (merge_request_event) | **success** | same two jobs | https://gitlab.com/core-27/slo/-/pipelines/2967389997 |
+
+Current branch HEAD is `204f785`; both pushed commits have green terminal
+pipelines on both the branch and the MR ref.
+
+## CI for the record-correction commit aa0c9f2ce829333c3413af7a055f7391f35297f9
+
+The second docs-only record correction (`docs(94): delivery record 184 — add
+204f785 pipeline terminal results`) triggered a third pair of pipelines, also
+polled to terminal (terminal ~20:14 UTC, 2026-10-20):
+
+| Pipeline | Ref / source | Status | URL |
+|---|---|---|---|
+| 2967495388 | `feature-94-herdr-integration` (push) | **success** | https://gitlab.com/core-27/slo/-/pipelines/2967495388 |
+| 2967495948 | `refs/merge-requests/131/head` (merge_request_event) | **success** | https://gitlab.com/core-27/slo/-/pipelines/2967495948 |
+
+Current branch HEAD is `aa0c9f2`. All three pushed commits (`687c1a7`,
+`204f785`, `aa0c9f2`) have green terminal pipelines on both the branch ref and
+the MR ref.
+
+## CI for the final record commit 3ad7aacec4458f2efdbc155d8663eadcb9cd70b3
+
+The final docs-only record update triggered one last pair of pipelines, polled
+to terminal (terminal ~20:40 UTC, 2026-10-20):
+
+| Pipeline | Ref / source | Status | Jobs | URL |
+|---|---|---|---|---|
+| 2967625970 | `feature-94-herdr-integration` (push) | **success** | pytest success (1326.6 s), secret_detection success (58.5 s) | https://gitlab.com/core-27/slo/-/pipelines/2967625970 |
+| 2967626451 | `refs/merge-requests/131/head` (merge_request_event) | **success** | same two jobs | https://gitlab.com/core-27/slo/-/pipelines/2967626451 |
+
+Current branch HEAD is `3ad7aac`. All four pushed commits (`687c1a7`,
+`204f785`, `aa0c9f2`, `3ad7aac`) have green terminal pipelines on both the
+branch ref and the MR ref. No further pushes were made after this commit; the
+record you are reading is the final pushed state.
+
+## Blockers
+
+None. DELIVERED stands for the offline delivery scope: branch pushed
+(`687c1a7` + docs-records `204f785`, `aa0c9f2`, `3ad7aac`), MR !131 updated in
+place, and CI green in a terminal state for the exact pushed SHAs. Live Herdr acceptance
+remains USER-DEFERRED; live compatibility UNVERIFIED; security finding 132 is
+separate and open; this MR must not be merged without an explicit operator
+decision (it remains Draft).

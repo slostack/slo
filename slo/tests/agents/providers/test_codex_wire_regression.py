@@ -1,4 +1,4 @@
-"""Exact offline Codex constructor wire and no-retry contract."""
+"""Exact offline Codex constructor wire and SDK retry contract."""
 
 import json
 
@@ -8,10 +8,12 @@ from openai import RateLimitError
 
 from src.agents.providers.openai_codex import build_chatgpt_backed_chat_openai
 from tests.agents.providers.test_openai_codex import _build_jwt, _oauth_cred
+from tests.agents.retry_options import SDKRetryOptions
 
 
-async def test_codex_exact_wire_and_no_retry() -> None:
-    """One rejected Responses request retains identity, body and endpoint semantics."""
+@pytest.mark.parametrize("retry_options", [{}, {"max_retries": 0}])
+async def test_codex_exact_wire_and_configured_retries(retry_options: SDKRetryOptions) -> None:
+    """Rejected Responses requests honor SDK retries and retain wire semantics."""
     token = _build_jwt(claims={"https://api.openai.com/auth": {"chatgpt_account_id": "offline-account"}})
     requests: list[httpx.Request] = []
 
@@ -29,10 +31,11 @@ async def test_codex_exact_wire_and_no_retry() -> None:
             session_id="offline-session",
             streaming=False,
             http_async_client=client,
+            **retry_options,
         )
         with pytest.raises(RateLimitError):
             await chat.ainvoke("hello")
-    assert len(requests) == 1
+    assert len(requests) == retry_options.get("max_retries", 3) + 1
     request = requests[0]
     assert request.method == "POST"
     assert str(request.url) == "https://chatgpt.com/backend-api/codex/responses"

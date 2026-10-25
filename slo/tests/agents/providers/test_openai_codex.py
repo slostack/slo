@@ -31,6 +31,7 @@ from src.agents.providers.openai_codex import (
 )
 from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
+from tests.agents.retry_options import SDKRetryOptions
 
 
 def _build_jwt(*, claims: dict[str, Any]) -> str:
@@ -205,7 +206,8 @@ class TestBuildChatgptBackedChatOpenAI:
             "x-client-request-id": "sess-9",
         }
 
-    def test_enables_responses_api_and_disables_store(self) -> None:
+    @pytest.mark.parametrize("retry_options", [{}, {"max_retries": 0}, {"max_retries": 5}])
+    def test_enables_responses_api_and_disables_store(self, retry_options: SDKRetryOptions) -> None:
         """``use_responses_api=True``, ``store=False``, reasoning include set."""
         cred: CredentialDAO = _oauth_cred(
             access_token=_build_jwt(
@@ -219,13 +221,15 @@ class TestBuildChatgptBackedChatOpenAI:
             model_name="gpt-5",
             cred=cred,
             session_id="s",
+            **retry_options,
         )
 
         assert chat.use_responses_api is True
         assert chat.output_version == "responses/v1"
         assert chat.store is False
         assert chat.include == ["reasoning.encrypted_content"]
-        assert chat.max_retries == 0
+        assert chat.max_retries == retry_options.get("max_retries", 3)
+        assert chat.root_async_client.max_retries == retry_options.get("max_retries", 3)
 
     def test_threads_prompt_cache_key_through_extra_body(self) -> None:
         """``extra_body["prompt_cache_key"]`` is the session id."""

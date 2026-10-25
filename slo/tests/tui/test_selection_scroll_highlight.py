@@ -148,6 +148,7 @@ class TestPilotVisibleSelection:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["answer", "thinking", "user"])
     @pytest.mark.parametrize("theme_name", ["slo-default", "slo-dark"])
+    @pytest.mark.usefixtures("theme_colors")
     async def test_selection_paint_and_scroll_remain_native_for_every_visible_body_and_theme(
         self, kind: str, theme_name: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:

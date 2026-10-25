@@ -2397,13 +2397,19 @@ Two special requirements are enforced automatically by the builder:
   as a default header on every request.
 
 `LLMFactory._build_kimi_for_coding_chat_openai` builds a `ChatOpenAI` with
-`base_url="https://api.kimi.com/coding/v1"`, `max_retries=0` (the pool and
-the retry layers own fallback, so errors must surface immediately), and
+`base_url="https://api.kimi.com/coding/v1"`, `max_retries=3` by default, and
 `supports_explicit_caching=False` (KFC has no prompt caching). Supported
 model names come from the canonical model catalog
 (`src/agents/model_catalog/seed.py`); older `moonshot-*` aliases still resolve
 but are not advertised as preferred names. The credential env var is
 `SLO_KIMI_FOR_CODING_API_KEY`.
+
+ChatGPT/Codex OAuth, OpenRouter and Kimi clients all honor the factory's
+`max_retries` setting, including an explicit zero to disable SDK retries.
+The default permits four total SDK request attempts before Slo handles an
+escaped error. SDK retries also apply to eligible rate-limit and server-error
+responses, delaying their visibility to Slo; they do not resume a stream that
+has already started.
 
 #### K3 reasoning levels
 
@@ -2844,6 +2850,11 @@ visible transcript is now a tree of `AssistantStreamBlock` /
 `ToolExecutionBlock` / `Static` widgets.
 
 ### 8.3 The Conftest Auto-Fixture
+
+Tests asserting exact theme colors opt into the `theme_colors` fixture before
+constructing the app. It temporarily removes inherited `NO_COLOR`, which Textual
+otherwise honors by rendering colors as grayscale. Other tests and the application
+continue to respect the caller's terminal preference.
 
 `tests/tui/conftest.py` is the most important fixture in the repo. It's
 an autouse fixture scoped to `tests/tui/` that patches

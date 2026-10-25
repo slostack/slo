@@ -138,6 +138,7 @@ def build_chatgpt_backed_chat_openai(
     reasoning: Optional[ResolvedReasoningConfigDAO] = None,
     model_kwargs: Optional[dict[str, Any]] = None,
     streaming: bool = True,
+    max_retries: int = 3,
     http_async_client: Optional[Any] = None,
 ) -> ChatOpenAI:
     """Build a ``ChatOpenAI`` that targets ``chatgpt.com/backend-api/codex/responses``.
@@ -166,6 +167,7 @@ def build_chatgpt_backed_chat_openai(
             forbidden (that policy lives in the factory).
         streaming (bool): Streaming flag. Defaults to ``True`` so the
             ReAct loop sees deltas as they arrive.
+        max_retries (int): SDK retries after the initial request. Defaults to 3.
         http_async_client (Optional[Any]): Optional pre-built
             ``httpx.AsyncClient``. Wired through to the underlying
             ``openai-python`` client so tests can inject a
@@ -196,11 +198,7 @@ def build_chatgpt_backed_chat_openai(
         temperature=temperature,
         model_kwargs=dict(model_kwargs or {}),
         streaming=streaming,
-        # ``ChatOpenAI`` would otherwise transparently retry 429s a few
-        # times before surfacing them. For the ChatGPT lane we want
-        # quota errors to reach the TUI immediately so the user sees a
-        # plan-limit message instead of a stuck spinner.
-        max_retries=0,
+        max_retries=max_retries,
         extra_body={"prompt_cache_key": session_id},
         http_async_client=http_async_client,
     )

@@ -378,7 +378,7 @@ async def test_prepared_mixed_pool_tool_fallback(
                     headers={"retry-after-ms": "1"},
                     json={"error": {"message": "rate limit", "type": "rate_limit"}},
                 )
-                for _ in range(4 if route == "gpt-6-luna" and not oauth else 1)
+                for _ in range(4)
             ]
 
         def respond(request: httpx.Request) -> httpx.Response:
@@ -428,7 +428,7 @@ async def test_prepared_mixed_pool_tool_fallback(
             ):
                 events = [event async for event in session.invoke(text="run echo-89")]
             echo.assert_called_once()
-    assert order == [first] * (4 if first == "gpt-6-luna" and not oauth else 1) + [other, other]
+    assert order == [first] * 4 + [other, other]
     assert session.active_model_name == first
     assert session.usage_snapshot().active_model_name == other
     successful = [response for response in delivered if response.status_code == 200]

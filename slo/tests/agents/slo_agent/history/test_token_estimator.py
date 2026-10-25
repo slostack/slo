@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+from typing import Optional
+from uuid import UUID, uuid4, uuid5
+
+from langchain_core.messages import BaseMessage
 
 import pytest
 
@@ -11,6 +15,8 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventPayloadDAO,
 )
 from src.agents.slo_agent.compaction.token_estimator import TokenEstimator
+from src.agents.slo_agent.history.projector import SessionHistoryProjector
+from src.agents.slo_agent.messaging.dao import MessageApplicationMetadataDAO, MessagePrincipalDAO
 
 
 def _event(*, kind: str, **payload_kwargs) -> SessionHistoryEventDAO:
@@ -160,6 +166,54 @@ class TestEstimateAssistantDelta:
         delta = "partial text chunk"
         event = _event(kind="assistant_delta", delta=delta)
         assert TokenEstimator.estimate(event=event) == math.ceil(len(delta) / 4)
+
+
+class TestEstimateMessageApplication:
+    """Canonical messaging estimates follow the actual shared context formatter."""
+
+    @pytest.mark.parametrize(argnames="sender_kind", argvalues=["human", "agent", "workflow", "scheduler"])
+    @pytest.mark.parametrize(argnames="kind", argvalues=["agent_input", "context_note", "transcript_note"])
+    def test_canonical_application_counts_projected_context(self, sender_kind: str, kind: str) -> None:
+        """Count provenance quotation overhead, but no transcript-only content."""
+        session_id: str = str(uuid4())
+        message_id: str = str(uuid4())
+        metadata: MessageApplicationMetadataDAO = MessageApplicationMetadataDAO.model_validate(
+            {
+                "message_id": message_id,
+                "kind": kind,
+                "sender": MessagePrincipalDAO.model_validate(
+                    {"principal_id": "original-author", "kind": sender_kind}
+                ),
+                "sequence": 1,
+                "run_id": str(uuid4()),
+                "execution_generation": str(uuid4()),
+            }
+        )
+        event: SessionHistoryEventDAO = SessionHistoryEventDAO(
+            event_id=str(uuid5(namespace=UUID(session_id), name="message:" + message_id)),
+            session_id=session_id,
+            kind="workflow_update",
+            turn_id=metadata.run_id,
+            payload=SessionHistoryEventPayloadDAO(
+                content="Exact accepted text.", metadata={"messaging_v1": metadata.model_dump(mode="json")}
+            ),
+        )
+        projected: Optional[BaseMessage] = SessionHistoryProjector.project_message_application(event=event)
+        expected: int = math.ceil(len(projected.text()) / 4) if projected is not None else 0
+        assert TokenEstimator.estimate(event=event) == expected
+        if kind == "transcript_note":
+            assert expected == 0
+        elif sender_kind != "human":
+            assert expected > math.ceil(len(event.payload.content or "") / 4)
+
+    def test_legacy_workflow_update_keeps_existing_zero_estimate(self) -> None:
+        """The narrow accounting repair does not change legacy event policy."""
+        event: SessionHistoryEventDAO = SessionHistoryEventDAO(
+            session_id="legacy",
+            kind="workflow_update",
+            payload=SessionHistoryEventPayloadDAO(content="Legacy workflow notice"),
+        )
+        assert TokenEstimator.estimate(event=event) == 0
 
 
 class TestEstimateCompactionSummary:

@@ -20,6 +20,8 @@ from src.agents.slo_agent.history.dao import (
     HISTORY_OBSERVATION_MAX_BYTES,
     HISTORY_OBSERVATION_MAX_EVENTS,
     HistoryObservationWindowDAO,
+    MessageHistoryEvidenceDAO,
+    MessageCompactionSelectionDAO,
     SessionHistoryEventDAO,
     SessionHistoryMetadataDAO,
 )
@@ -105,6 +107,18 @@ class SessionHistoryStoreProtocol(Protocol):
             SessionHistoryEventDAO: The event with assigned ``sequence``
                 and computed ``token_usage``.
         """
+        ...
+
+    async def append_message_application_once(
+        self, *, event: SessionHistoryEventDAO
+    ) -> SessionHistoryEventDAO:
+        """Persist the exact application once or fail closed on conflicting raw evidence."""
+        ...
+
+    async def application_evidence(
+        self, *, session_id: str, after_sequence: int = 0, limit: int = 256
+    ) -> MessageHistoryEvidenceDAO:
+        """Read raw validated active events before replay healing, at most 256 per page."""
         ...
 
     async def load_events(
@@ -203,6 +217,12 @@ class SessionHistoryStoreProtocol(Protocol):
         """
         ...
 
+    async def select_message_compaction(
+        self, *, session_id: str, events: list[SessionHistoryEventDAO], result: CompactionResult
+    ) -> MessageCompactionSelectionDAO:
+        """Validate the raw source snapshot and return exact removed identities."""
+        ...
+
     async def compact_to_boundary(
         self,
         *,
@@ -210,6 +230,7 @@ class SessionHistoryStoreProtocol(Protocol):
         events: list[SessionHistoryEventDAO],
         result: CompactionResult,
         turn_id: str,
+        messaging_compaction_id: Optional[str] = None,
     ) -> SessionHistoryEventDAO:
         """Atomically activate a retained tail plus one compaction summary.
 

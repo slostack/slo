@@ -11,6 +11,8 @@ Keep the schema additive: every persisted line carries
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -131,6 +133,45 @@ class SessionHistoryEventDAO(BaseModel):
     iteration: int = 0
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     payload: SessionHistoryEventPayloadDAO = Field(default_factory=SessionHistoryEventPayloadDAO)
+
+    def application_sha256(self) -> str:
+        """Hash supplied application fields, excluding only assigned sequence/token usage.
+
+        Journal, raw-history verification and replay conflict detection share this
+        normalization. No tree metadata, timestamps or provenance are discarded.
+
+        Returns:
+            str: SHA256 of canonical UTF-8 JSON.
+        """
+        data: object = json.loads(
+            self.model_dump_json(exclude={"sequence": True, "payload": {"token_usage"}})
+        )
+        encoded: str = json.dumps(
+            obj=data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
+        return hashlib.sha256(string=encoded.encode(encoding="utf-8")).hexdigest()
+
+
+class MessageCompactionSelectionDAO(BaseModel):
+    """Exact removed application membership bound to the summary source snapshot."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    snapshot_sha256: str = Field(description="Canonical source event-list SHA256, including sequence.")
+    message_ids: tuple[str, ...] = Field(description="Removed messaging identities in event order.")
+    observation_ids: tuple[str, ...] = Field(description="Removed internal observation identities.")
+
+
+class MessageHistoryEvidenceDAO(BaseModel):
+    """One bounded page of validated raw active history, before replay healing."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    events: tuple[SessionHistoryEventDAO, ...] = Field(
+        description="Validated raw active events in sequence order, before replay healing."
+    )
+    next_sequence: Optional[int] = Field(
+        default=None,
+        description="Exclusive sequence cursor for the next bounded page; None means no remaining events.",
+    )
 
 
 class SessionHistoryMetadataDAO(BaseModel):

@@ -33,10 +33,12 @@ import tempfile
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, TYPE_CHECKING
+from typing import Any, Callable, Coroutine, Literal, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from langchain_core.messages import BaseMessage
@@ -65,7 +67,30 @@ from src.agents.providers.credit_exhaustion_policy import (
 )
 from src.agents.providers.model_pool import RouteSwitchRecordDAO
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.messaging.dao import (
+    BoundaryDAO,
+    CompactionLedgerDAO,
+    BoundaryDeliveryDAO,
+    MessageApplicationMetadataDAO,
+    MessageDeliveryDAO,
+    MessageAddressDAO,
+    MessageAdmissionError,
+    MessageErrorDAO,
+    MessageIdentityDAO,
+    MessagePrincipalDAO,
+    MessageReceiptDAO,
+    MessageStoreError,
+    MessageSubmissionDAO,
+    MessagingLimitsDAO,
+    _require_uuid,
+)
+from src.agents.slo_agent.messaging.ownership import SessionExecutionOwnership
+from src.agents.slo_agent.messaging.delivery import MessageRunState
+from src.agents.slo_agent.messaging.queue import BoundaryClaimsDAO, SessionMessageQueue
+from src.agents.slo_agent.messaging.store import MessageStore
 from src.agents.slo_agent.history.dao import (
+    MessageHistoryEvidenceDAO,
+    MessageCompactionSelectionDAO,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
     SessionHistoryMetadataDAO,
@@ -78,7 +103,7 @@ from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProto
 from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
 from src.agents.slo_agent.compaction.compaction_checker import CompactionChecker
-from src.agents.slo_agent.compaction.compacter import Compacter
+from src.agents.slo_agent.compaction.compacter import Compacter, CompactionResult
 from src.agents.slo_agent.compaction.context_window import (
     ContextWindowSnapshotDAO,
     ContextWindowSnapshotService,
@@ -107,6 +132,7 @@ from src.agents.slo_agent.events.runtime import (
 from src.agents.slo_agent.runtime import SloRuntimeContext
 from src.agents.slo_agent.sessions.dao import (
     AgentEventSubscriber,
+    MessagingAgentFactory,
     ManualCompactionResultDAO,
     PreflightBypassNoticeDAO,
     PreflightDecisionDAO,
@@ -479,6 +505,21 @@ class PromptAttemptResultDAO(BaseModel):
     )
 
 
+@dataclass
+class _InvocationObserver:
+    """One publisher's bounded, nonblocking observation of its assigned logical run."""
+
+    message_id: str
+    principal: MessagePrincipalDAO
+    events: deque[AgentStreamEventDAO] = field(default_factory=deque)
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
+    run_id: Optional[str] = None
+    terminal: Optional[AgentStreamEventDAO] = None
+    error: Optional[Exception] = None
+    buffered_bytes: int = 0
+    detached: bool = False
+
+
 class SloAgentSession:
     """One ``SloAgent`` per process, one in-flight prompt at a time."""
 
@@ -496,10 +537,18 @@ class SloAgentSession:
         plugin_loader_kwargs: Optional[dict[str, Path]] = None,
         catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = None,
         pending_preparation: bool = False,
+        messaging_executor_factory: Optional[Callable[[], ThreadPoolExecutor]] = None,
+        messaging_agent_factory: Optional[MessagingAgentFactory] = None,
     ) -> None:
         """Compose a session around a config (lazy) or a pre-built agent.
 
         Args:
+            messaging_agent_factory: Optional trusted construction seam for a real
+                agent bound to this session's source with an injected external model.
+                This bounded composition enables delivery without legacy caller cutover.
+            messaging_executor_factory: Optional single-worker construction seam for
+                real messaging persistence. The store owns and joins the worker;
+                omitted uses its existing production worker, never an inline executor.
             pending_preparation (bool): Defer capabilities and expose unknown usage
                 until the mounted TUI completes catalog preparation.
             catalog_snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied
@@ -544,7 +593,8 @@ class SloAgentSession:
         self._admitted_openrouter_credential: Optional[CredentialDAO] = None
         self._agent_openrouter_fingerprint: Optional[str] = None
         self._agent: Optional[SloAgent] = agent
-        self._agent_is_injected: bool = agent is not None
+        self._agent_is_injected: bool = agent is not None or messaging_agent_factory is not None
+        self._messaging_agent_factory: Optional[MessagingAgentFactory] = messaging_agent_factory
         self._agent_catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = catalog_snapshot
         configured_plugin_paths: list[Path] = list(config.plugin_paths) if config is not None else []
         self._plugin_paths: list[Path] = list(plugin_paths or configured_plugin_paths)
@@ -555,6 +605,37 @@ class SloAgentSession:
         self._subscribers: list[AgentEventSubscriber] = []
         self._is_running: bool = False
         self._lock: asyncio.Lock = asyncio.Lock()
+        # Activation is explicit; unstarted callers retain the legacy execution path.
+        self._messaging_limits: MessagingLimitsDAO = (
+            config.messaging_limits if config is not None else MessagingLimitsDAO()
+        )
+        self._messaging_executor_factory: Optional[Callable[[], ThreadPoolExecutor]] = (
+            messaging_executor_factory
+        )
+        self._messaging_lifecycle_lock: asyncio.Lock = asyncio.Lock()
+        self._messaging_start_task: Optional[asyncio.Task[None]] = None
+        self._messaging_close_task: Optional[asyncio.Task[None]] = None
+        self._messaging_closing: bool = False
+        self._messaging_accepting: bool = False
+        self._messaging_storage_failed: bool = False
+        self._messaging_target: Optional[MessageAddressDAO] = None
+        self._messaging_owner_principal: Optional[MessagePrincipalDAO] = None
+        self._messaging_ownership: Optional[SessionExecutionOwnership] = None
+        self._message_store: Optional[MessageStore] = None
+        self._message_queue: Optional[SessionMessageQueue] = None
+        self._messaging_calls: set[asyncio.Task[MessageReceiptDAO | MessageErrorDAO]] = set()
+        self._history_barrier: asyncio.Lock = asyncio.Lock()
+        self._message_run: Optional[MessageRunState] = None
+        self._messaging_scheduler: Optional[asyncio.Task[None]] = None
+        self._messaging_note_task: Optional[asyncio.Task[None]] = None
+        self._messaging_paused: bool = False
+        self._messaging_resumed: asyncio.Event = asyncio.Event()
+        self._messaging_resumed.set()
+        self._messaging_failure: Optional[Exception] = None
+        self._invocation_observers: dict[str, _InvocationObserver] = {}
+        self._message_run_terminal: Optional[AgentStreamEventDAO] = None
+        self._messaging_initial_history: list[BaseMessage] = []
+        self._messaging_has_accepted_input: bool = False
         # Default policy: persistent history is on by default for the
         # production lazy-config path; tests that inject a pre-built
         # agent (config=None) get history disabled by default so the
@@ -612,6 +693,774 @@ class SloAgentSession:
         self._workflow_message_ids_seen: Optional[set[str]] = None
         self.runtime_context: "SloRuntimeContext" = self._build_runtime_context()
         log_info(msg=f"SloAgentSession built session_id={session_id[:8]} workdir={self._workdir}")
+
+    @property
+    def messaging_limits(self) -> MessagingLimitsDAO:
+        """Return immutable construction-time bounds without starting messaging."""
+        return self._messaging_limits
+
+    @property
+    def messaging_target(self) -> MessageAddressDAO:
+        """Return the ready incarnation for trusted composition, never allocate it on read.
+
+        Raises:
+            MessageAdmissionError: Messaging is offline or completing.
+        """
+        self._require_messaging_ready()
+        assert self._messaging_target is not None
+        return self._messaging_target
+
+    @property
+    def messaging_owner_principal(self) -> MessagePrincipalDAO:
+        """Borrow the startup-registered embedded human; reading never grants authority.
+
+        Raises:
+            MessageAdmissionError: Messaging is offline or completing.
+        """
+        self._require_messaging_ready()
+        assert self._messaging_owner_principal is not None
+        return self._messaging_owner_principal
+
+    def _require_messaging_ready(self) -> None:
+        """Apply the session lifecycle cutoff before exposing a ready binding."""
+        if self._messaging_closing:
+            raise MessageAdmissionError(error=MessageErrorDAO(code="completing"))
+        if self._messaging_storage_failed:
+            raise MessageStoreError()
+        if not self._messaging_accepting:
+            raise MessageAdmissionError(error=MessageErrorDAO(code="offline"))
+
+    async def start_messaging(self) -> None:
+        """Join explicit startup after sealed recipient-local recovery, without provider execution.
+
+        Startup owns the execution lease and SQLite worker. Missing or contradictory
+        application evidence remains sealed rather than guessing recovery success.
+
+        Raises:
+            MessageAdmissionError: Closed instance, incompatible injected agent,
+                or existing evidence requires the later delivery checkpoint.
+            MessageStoreError: Safe startup/storage failure.
+            SessionAlreadyOwnedError: Another owner holds the session.
+        """
+        async with self._messaging_lifecycle_lock:
+            if self._messaging_closing:
+                raise MessageAdmissionError(error=MessageErrorDAO(code="completing"))
+            if self._messaging_start_task is None:
+                self._messaging_start_task = asyncio.create_task(coro=self._start_messaging_owned())
+            task: asyncio.Task[None] = self._messaging_start_task
+        await self._join_messaging_lifecycle(task=task)
+
+    async def _start_messaging_owned(self) -> None:
+        """Serialize activation with legacy execution, then publish only complete admission resources."""
+        async with self._lock:
+            try:
+                if self._agent is not None:
+                    raise MessageAdmissionError(error=MessageErrorDAO(code="unsupported"))
+                target: MessageAddressDAO = MessageAddressDAO(
+                    kind="agent_session", session_id=self._session_id, generation=str(uuid4())
+                )
+                root: Optional[Path] = self.history_root if self._enable_history else None
+                if self._enable_history and root is None:
+                    raise MessageStoreError()
+                self._messaging_ownership = await SessionExecutionOwnership.acquire(
+                    root=root, session_id=self._session_id
+                )
+                self._message_store = await MessageStore.open(
+                    path=root / self._session_id / "messaging.v1.sqlite3" if root is not None else None,
+                    limits=self._messaging_limits,
+                    target=target,
+                    executor_factory=self._messaging_executor_factory,
+                )
+                async with self._history_barrier:
+                    await self._reconcile_message_applications(store=self._message_store)
+                self._messaging_target = target
+                self._messaging_owner_principal = MessagePrincipalDAO(
+                    principal_id=f"human:{os.geteuid()}:{uuid4()}", kind="human"
+                )
+                self._message_queue = SessionMessageQueue(
+                    store=self._message_store,
+                    target=target,
+                    authorize=self._authorize_message,
+                    authorize_read=self._authorize_message_reader,
+                )
+                if self._messaging_closing:
+                    return
+                await self._message_queue.set_lifecycle(accepting=True)
+                self._messaging_accepting = not self._messaging_closing
+                if self._messaging_accepting:
+                    self._messaging_scheduler = asyncio.create_task(coro=self._run_message_scheduler())
+                    self._messaging_note_task = asyncio.create_task(coro=self._run_idle_message_notes())
+            except BaseException:
+                await self._release_messaging_resources()
+                raise
+
+    async def _run_message_scheduler(self) -> None:
+        """Own queue execution, preserving hard pauses and stopping on uncertain delivery.
+
+        Explicit startup creates this sole consumer; close joins it before storage
+        and ownership release. Compatibility callers are publishers, not executors.
+        """
+        queue: Optional[SessionMessageQueue] = self._message_queue
+        if queue is None:
+            raise MessageStoreError()
+        try:
+            while not self._messaging_closing:
+                await self._messaging_resumed.wait()
+                if self._messaging_closing:
+                    return
+                await queue.wait_for_work()
+                if self._messaging_closing:
+                    return
+                if self._messaging_paused:
+                    self._messaging_resumed.clear()
+                    continue
+                async with self._session_run_scope():
+                    if self._messaging_closing or self._messaging_paused:
+                        continue
+                    if not await queue.has_pending_input():
+                        continue
+                    self._message_run = MessageRunState(run_id=str(uuid4()))
+                    self._message_run_terminal = None
+                    try:
+                        async for _event in self._invoke_submission(text=""):
+                            pass
+                        self._settle_invocation_observers(run_id=self._message_run.run_id)
+                    except Exception as error:
+                        self._settle_invocation_observers(run_id=self._message_run.run_id, error=error)
+                        raise
+                    finally:
+                        if self._message_run.pause_requested:
+                            self._messaging_paused = True
+                            self._messaging_resumed.clear()
+                            self._fail_unassigned_observers(code="recovery_required")
+                        self._message_run = None
+        except Exception as error:
+            self._messaging_failure = error
+            self._fail_unassigned_observers(code="recovery_required")
+            log_warning(msg=f"messaging_scheduler_paused: {type(error).__name__}")
+            self._messaging_paused = True
+            self._messaging_storage_failed = True
+            self._messaging_accepting = False
+            self._messaging_resumed.clear()
+            await queue.seal()
+            await queue.retain_pending()
+
+    async def _run_idle_message_notes(self) -> None:
+        """Apply one idle note per pass, yielding priority to executable input.
+
+        Execution ownership precedes history and queue locks. Projection verifies
+        context-note identity without creating an agent or invoking a provider.
+        """
+        queue: Optional[SessionMessageQueue] = self._message_queue
+        if queue is None:
+            raise MessageStoreError()
+        try:
+            while not self._messaging_closing:
+                await self._messaging_resumed.wait()
+                if self._messaging_closing:
+                    return
+                await queue.wait_for_notes()
+                if self._messaging_closing:
+                    return
+                if self._messaging_paused:
+                    self._messaging_resumed.clear()
+                    continue
+                async with self._lock:
+                    if self._messaging_closing or self._messaging_paused:
+                        continue
+                    if await queue.has_pending_input():
+                        continue
+                    async with self._history_barrier:
+                        await self._ensure_history_session()
+                        boundary: BoundaryDAO = BoundaryDAO(run_id=str(uuid4()), boundary_index=0)
+                        claimed: Optional[MessageDeliveryDAO] = await queue.take_idle_note(boundary=boundary)
+                        prepared: Optional[MessageDeliveryDAO] = await self._prepare_message_application(
+                            delivery=claimed
+                        )
+                        if prepared is not None:
+                            if prepared.event is None or self._message_store is None:
+                                raise MessageStoreError()
+                            SessionHistoryProjector.project_message_application(event=prepared.event)
+                            await self._message_store.mark_applied(
+                                message_id=prepared.envelope.submission.message_id
+                            )
+                await asyncio.sleep(delay=0)
+        except Exception as error:
+            self._messaging_failure = error
+            self._fail_unassigned_observers(code="recovery_required")
+            self._messaging_paused = True
+            self._messaging_storage_failed = True
+            self._messaging_accepting = False
+            self._messaging_resumed.clear()
+            await queue.seal()
+            await queue.retain_pending()
+
+    async def take_one(self, *, boundary: BoundaryDAO) -> BoundaryDeliveryDAO:
+        """Freeze one prepared boundary under execution → history → queue ordering.
+
+        Args:
+            boundary: Exact current logical run and index, never an attempt ID.
+
+        Returns:
+            BoundaryDeliveryDAO: Cached result, including empty selections.
+
+        Raises:
+            MessageStoreError: Invalid cursor or uncertain claim/history; delivery seals.
+        """
+        run: Optional[MessageRunState] = self._message_run
+        queue: Optional[SessionMessageQueue] = self._message_queue
+        if run is None or queue is None or not self._is_running:
+            raise MessageStoreError()
+        if boundary != BoundaryDAO(run_id=run.run_id, boundary_index=run.boundary_index):
+            raise MessageStoreError()
+        if run.delivery is not None:
+            return run.delivery
+        try:
+            async with self._history_barrier:
+                claims: BoundaryClaimsDAO = await queue.select_boundary(boundary=boundary)
+                note: Optional[MessageDeliveryDAO] = await self._prepare_message_application(
+                    delivery=claims.note
+                )
+                instruction: Optional[MessageDeliveryDAO] = await self._prepare_message_application(
+                    delivery=claims.instruction
+                )
+                run.delivery = BoundaryDeliveryDAO(
+                    boundary=boundary,
+                    urgent_high_water=claims.urgent_high_water,
+                    note=note,
+                    instruction=instruction,
+                )
+                if instruction is not None:
+                    observer: Optional[_InvocationObserver] = self._invocation_observers.get(
+                        instruction.envelope.submission.message_id
+                    )
+                    if observer is not None:
+                        observer.run_id = run.run_id
+                        observer.changed.set()
+                return run.delivery
+        except BaseException:
+            self._messaging_paused = True
+            self._messaging_storage_failed = True
+            await queue.seal()
+            raise
+
+    async def _prepare_message_application(
+        self, *, delivery: Optional[MessageDeliveryDAO]
+    ) -> Optional[MessageDeliveryDAO]:
+        """Journal exact claim before append-once and history evidence commit, outside queue mutex."""
+        if delivery is None:
+            return None
+        store: Optional[MessageStore] = self._message_store
+        if store is None:
+            raise MessageStoreError()
+        metadata: MessageApplicationMetadataDAO = MessageApplicationMetadataDAO(
+            message_id=delivery.envelope.submission.message_id,
+            kind=delivery.envelope.submission.kind,
+            sender=delivery.envelope.sender,
+            sequence=delivery.envelope.sequence,
+            run_id=delivery.boundary.run_id,
+            execution_generation=self.messaging_target.generation,
+        )
+        event: SessionHistoryEventDAO = SessionHistoryEventDAO(
+            event_id=delivery.history_event_id,
+            session_id=self._session_id,
+            kind="workflow_update",
+            turn_id=delivery.boundary.run_id,
+            recorded_at=delivery.envelope.admitted_at,
+            payload=SessionHistoryEventPayloadDAO(
+                content=delivery.envelope.submission.text,
+                metadata={"messaging_v1": metadata.model_dump(mode="json")},
+            ),
+        )
+        await store.prepare_application(delivery=delivery, event=event)
+        if self._enable_history:
+            if self._history_store is None:
+                raise MessageStoreError()
+            event = await self._history_store.append_message_application_once(event=event)
+        await store.mark_history_committed(message_id=metadata.message_id)
+        return delivery.model_copy(update={"event": event})
+
+    async def commit_applied(self, *, delivery: MessageDeliveryDAO) -> None:
+        """Verify cached claim and actual agent insertion identity before acknowledging SQLite.
+
+        Args:
+            delivery: Exact prepared slot returned to the sole agent borrower.
+
+        Raises:
+            MessageStoreError: Insertion/evidence/commit is uncertain; no provider may follow.
+        """
+        run: Optional[MessageRunState] = self._message_run
+        store: Optional[MessageStore] = self._message_store
+        queue: Optional[SessionMessageQueue] = self._message_queue
+        try:
+            if run is None or run.delivery is None or store is None:
+                raise MessageStoreError()
+            if delivery not in (run.delivery.note, run.delivery.instruction):
+                raise MessageStoreError()
+            message_id: str = delivery.envelope.submission.message_id
+            if message_id not in run.applied_message_ids:
+                raise MessageStoreError()
+            await store.mark_applied(message_id=message_id)
+        except BaseException:
+            self._messaging_paused = True
+            self._messaging_storage_failed = True
+            if queue is not None:
+                await queue.seal()
+            raise
+
+    def urgent_high_water(self) -> int:
+        """Read owner-loop urgency from the queue without claiming input."""
+        return self._message_queue.urgent_high_water() if self._message_queue is not None else 0
+
+    def yield_is_requested(self, *, after_sequence: int) -> bool:
+        """Expose urgency ordering, not A.2 interruption."""
+        return self.urgent_high_water() > after_sequence
+
+    async def wait_for_yield(self, *, after_sequence: int) -> None:
+        """Borrow the queue's cancellation-safe newer-urgency waiter."""
+        if self._message_queue is None:
+            raise MessageStoreError()
+        await self._message_queue.wait_for_yield(after_sequence=after_sequence)
+
+    async def has_pending_input(self) -> bool:
+        """Recheck executable work without claiming and without notes waking reasoning."""
+        if self._message_queue is None:
+            raise MessageStoreError()
+        return await self._message_queue.has_pending_input()
+
+    async def _reconcile_message_applications(self, *, store: MessageStore) -> None:
+        """Repair recipient journals under ownership/history barrier without running a provider.
+
+        Applied identities require raw proof; an applying journal is appended once,
+        projected successfully and only then acknowledged. Accepted input is retained.
+        """
+        await self._reconcile_message_compactions(store=store)
+        # Validate all raw pages before any SQLite state transition or replay healing.
+        await self._find_message_evidence(event_id=None)
+        await store.reset_unprepared_claims()
+        after_sequence: int = 0
+        while True:
+            identities: tuple[MessageIdentityDAO, ...] = await store.read_identities(
+                after_sequence=after_sequence
+            )
+            if not identities:
+                break
+            for identity in identities:
+                await self._reconcile_message_identity(store=store, identity=identity)
+            after_sequence = identities[-1].receipt.sequence
+            await asyncio.sleep(delay=0)
+        messages: list[BaseMessage] = await self._load_message_history()
+        await self._require_recovery_projection_membership(store=store, messages=messages)
+        # The complete reconstruction succeeded before any new applied receipt.
+        after_sequence = 0
+        while True:
+            identities = await store.read_identities(after_sequence=after_sequence)
+            if not identities:
+                return
+            for identity in identities:
+                if identity.receipt.state == "applying":
+                    await store.mark_applied(message_id=identity.receipt.message_id)
+            after_sequence = identities[-1].receipt.sequence
+            await asyncio.sleep(delay=0)
+
+    async def _require_recovery_projection_membership(
+        self, *, store: MessageStore, messages: list[BaseMessage]
+    ) -> None:
+        """Require replay inclusion or committed coverage before readiness or an attempt.
+
+        The history barrier keeps this reconstruction stable through acknowledgement.
+        Individual event validity cannot prove inclusion after the projector's summary
+        selection. Transcript-only notes require raw proof but intentionally no context.
+
+        Args:
+            store: The session-owned SQLite journal already reconciled against raw history.
+            messages: The actual aggregate reconstruction that this boundary will consume.
+
+        Raises:
+            MessageStoreError: Replay omits an applying or applied context identity without coverage.
+        """
+        projected_event_ids: set[str] = {message.id for message in messages if message.id is not None}
+        after_sequence: int = 0
+        while True:
+            identities: tuple[MessageIdentityDAO, ...] = await store.read_identities(
+                after_sequence=after_sequence
+            )
+            if not identities:
+                return
+            for identity in identities:
+                if identity.receipt.state not in ("applying", "applied"):
+                    continue
+                if await self._message_is_covered(store=store, message_id=identity.receipt.message_id):
+                    continue
+                event: SessionHistoryEventDAO = await store.load_application_event(
+                    message_id=identity.receipt.message_id
+                )
+                if (
+                    SessionHistoryProjector.project_message_application(event=event) is not None
+                    and event.event_id not in projected_event_ids
+                ):
+                    raise MessageStoreError()
+            after_sequence = identities[-1].receipt.sequence
+            await asyncio.sleep(delay=0)
+
+    async def _message_is_covered(self, *, store: MessageStore, message_id: str) -> bool:
+        """Require exact committed membership; preparation and sequence maxima are not proof."""
+        after_id: Optional[str] = None
+        while True:
+            ledgers: tuple[CompactionLedgerDAO, ...] = await store.read_compactions(after_id=after_id)
+            if not ledgers:
+                return False
+            if any(ledger.state == "committed" and message_id in ledger.message_ids for ledger in ledgers):
+                return True
+            after_id = ledgers[-1].compaction_id
+            await asyncio.sleep(delay=0)
+
+    async def _reconcile_message_compactions(self, *, store: MessageStore) -> None:
+        """Resolve prepared activation from the active UUID or exact surviving originals."""
+        after_id: Optional[str] = None
+        prepared_count: int = 0
+        while True:
+            ledgers: tuple[CompactionLedgerDAO, ...] = await store.read_compactions(after_id=after_id)
+            if not ledgers:
+                return
+            for ledger in ledgers:
+                if ledger.state != "prepared":
+                    continue
+                prepared_count += 1
+                if prepared_count > 1 or ledger.observation_ids:
+                    raise MessageStoreError()
+                summary: Optional[SessionHistoryEventDAO] = await self._find_compaction_summary(
+                    compaction_id=ledger.compaction_id
+                )
+                if summary is None:
+                    await self._require_original_compaction_members(store=store, ledger=ledger)
+                await store.finish_compaction(
+                    compaction_id=ledger.compaction_id,
+                    summary_event_id=summary.event_id if summary is not None else None,
+                )
+            after_id = ledgers[-1].compaction_id
+            await asyncio.sleep(delay=0)
+
+    async def _find_compaction_summary(self, *, compaction_id: str) -> Optional[SessionHistoryEventDAO]:
+        """Require one active summary UUID, rejecting duplicate or wrong-kind authority."""
+        if self._history_store is None:
+            raise MessageStoreError()
+        after_sequence: int = 0
+        found: Optional[SessionHistoryEventDAO] = None
+        while True:
+            page: MessageHistoryEvidenceDAO = await self._history_store.application_evidence(
+                session_id=self._session_id, after_sequence=after_sequence
+            )
+            for event in page.events:
+                if event.payload.metadata.get("messaging_compaction_id") != compaction_id:
+                    continue
+                if found is not None or event.kind != "compaction_summary":
+                    raise MessageStoreError()
+                found = event
+            if page.next_sequence is None:
+                return found
+            after_sequence = page.next_sequence
+            await asyncio.sleep(delay=0)
+
+    async def _require_original_compaction_members(
+        self, *, store: MessageStore, ledger: CompactionLedgerDAO
+    ) -> None:
+        """Rollback requires every member's exact active proof, not archive presence."""
+        for message_id in ledger.message_ids:
+            after_sequence: int = 0
+            found: bool = False
+            while not found:
+                identities: tuple[MessageIdentityDAO, ...] = await store.read_identities(
+                    after_sequence=after_sequence
+                )
+                if not identities:
+                    raise MessageStoreError()
+                for identity in identities:
+                    if identity.receipt.message_id != message_id:
+                        continue
+                    active: Optional[SessionHistoryEventDAO] = await self._find_message_evidence(
+                        event_id=identity.history_event_id
+                    )
+                    if active is None or active.application_sha256() != identity.event_sha256:
+                        raise MessageStoreError()
+                    found = True
+                after_sequence = identities[-1].receipt.sequence
+                await asyncio.sleep(delay=0)
+
+    async def _find_message_evidence(self, *, event_id: Optional[str]) -> Optional[SessionHistoryEventDAO]:
+        """Scan bounded raw pages, never using projector healing as durability proof."""
+        if not self._enable_history:
+            return None
+        if self._history_store is None:
+            raise MessageStoreError()
+        after_sequence: int = 0
+        found: Optional[SessionHistoryEventDAO] = None
+        while True:
+            page: MessageHistoryEvidenceDAO = await self._history_store.application_evidence(
+                session_id=self._session_id, after_sequence=after_sequence
+            )
+            for event in page.events:
+                if "messaging_v1" in event.payload.metadata:
+                    SessionHistoryProjector.project_message_application(event=event)
+                if event.event_id == event_id:
+                    if found is not None:
+                        raise MessageStoreError()
+                    found = event
+            if page.next_sequence is None:
+                return found
+            after_sequence = page.next_sequence
+            await asyncio.sleep(delay=0)
+
+    async def _reconcile_message_identity(self, *, store: MessageStore, identity: MessageIdentityDAO) -> None:
+        """Require canonical journal/raw agreement before projection or terminal acknowledgement."""
+        if identity.receipt.state in ("accepted", "cancelled"):
+            return
+        message_id: str = identity.receipt.message_id
+        if identity.history_event_id is None or identity.event_sha256 is None:
+            raise MessageStoreError()
+        active: Optional[SessionHistoryEventDAO] = (
+            await self._find_message_evidence(event_id=identity.history_event_id)
+            if self._enable_history
+            else await store.load_application_event(message_id=message_id)
+        )
+        if active is not None and active.application_sha256() != identity.event_sha256:
+            raise MessageStoreError()
+        if identity.receipt.state == "applied":
+            if active is None:
+                if not await self._message_is_covered(store=store, message_id=message_id):
+                    raise MessageStoreError()
+                return
+            SessionHistoryProjector.project_message_application(event=active)
+            return
+        journal: SessionHistoryEventDAO = await store.load_application_event(message_id=message_id)
+        if (
+            journal.event_id != identity.history_event_id
+            or journal.application_sha256() != identity.event_sha256
+        ):
+            raise MessageStoreError()
+        if self._history_store is None or not self._enable_history:
+            raise MessageStoreError()
+        persisted: SessionHistoryEventDAO = await self._history_store.append_message_application_once(
+            event=journal
+        )
+        await store.mark_history_committed(message_id=message_id)
+        SessionHistoryProjector.project_message_application(event=persisted)
+
+    def _authorize_message_reader(self, principal: MessagePrincipalDAO) -> None:
+        """Check full startup registration and lifecycle synchronously inside the queue mutex."""
+        self._require_messaging_ready()
+        if principal != self._messaging_owner_principal:
+            raise MessageAdmissionError(error=MessageErrorDAO(code="unauthorized"))
+
+    def _authorize_message(self, submission: MessageSubmissionDAO, principal: MessagePrincipalDAO) -> None:
+        """Enforce the bound route and admission-only capability inside the commit mutex."""
+        self._require_message_route(target=submission.target)
+        self._authorize_message_reader(principal=principal)
+        supported_kinds: tuple[str, ...] = ("agent_input", "context_note", "transcript_note")
+        if submission.kind not in supported_kinds or submission.payload.type != "text":
+            raise MessageAdmissionError(error=MessageErrorDAO(code="unsupported"))
+
+    def _require_message_route(self, *, target: MessageAddressDAO) -> None:
+        """Distinguish another destination from an obsolete incarnation before storage access."""
+        self._require_messaging_ready()
+        assert self._messaging_target is not None
+        if (target.kind, target.session_id, target.channel_id) != (
+            self._messaging_target.kind,
+            self._messaging_target.session_id,
+            self._messaging_target.channel_id,
+        ):
+            raise MessageAdmissionError(error=MessageErrorDAO(code="invalid_message"))
+        if target.generation != self._messaging_target.generation:
+            raise MessageAdmissionError(error=MessageErrorDAO(code="stale_generation"))
+
+    def track_messaging_call(
+        self, *, operation: Coroutine[None, None, MessageReceiptDAO | MessageErrorDAO]
+    ) -> asyncio.Task[MessageReceiptDAO | MessageErrorDAO]:
+        """Own one client operation synchronously before either owner awaits it.
+
+        Args:
+            operation: One admission or receipt call, never an automatic retry.
+
+        Returns:
+            Shared task retained by session and client until settlement.
+        """
+        task: asyncio.Task[MessageReceiptDAO | MessageErrorDAO] = asyncio.create_task(coro=operation)
+        self._messaging_calls.add(task)
+        task.add_done_callback(self._messaging_call_settled)
+        return task
+
+    def _messaging_call_settled(self, task: asyncio.Task[MessageReceiptDAO | MessageErrorDAO]) -> None:
+        """Consume abandoned errors and remove only settled registrations on the owner loop."""
+        if not task.cancelled():
+            error: Optional[BaseException] = task.exception()
+            if error is None:
+                outcome: MessageReceiptDAO | MessageErrorDAO = task.result()
+                observer: Optional[_InvocationObserver] = (
+                    self._invocation_observers.get(outcome.message_id)
+                    if outcome.message_id is not None
+                    else None
+                )
+                if observer is not None:
+                    if isinstance(outcome, MessageErrorDAO):
+                        observer.error = MessageAdmissionError(error=outcome)
+                    observer.changed.set()
+        self._messaging_calls.discard(task)
+
+    async def admit_message(
+        self, *, submission: MessageSubmissionDAO, principal: MessagePrincipalDAO
+    ) -> MessageReceiptDAO | MessageErrorDAO:
+        """Authorize and commit through the queue; return fixed errors, not provider execution.
+
+        Args:
+            submission: Immutable caller intent and stable retry identity.
+            principal: Bound principal rechecked inside queue admission serialization.
+
+        Returns:
+            Committed admission receipt or a safe refusal with the original ID.
+        """
+        try:
+            self._require_messaging_ready()
+            assert self._message_queue is not None
+            receipt: MessageReceiptDAO = await self._message_queue.admit(
+                submission=submission, principal=principal
+            )
+            self._messaging_has_accepted_input = True
+            if submission.kind == "agent_input" and not receipt.retained_for_recovery:
+                self._messaging_paused = False
+                self._messaging_resumed.set()
+            return receipt
+        except MessageAdmissionError as error:
+            return MessageErrorDAO(code=error.error.code, message_id=submission.message_id)
+        except Exception:
+            self._messaging_storage_failed = True
+            self._messaging_accepting = False
+            return MessageErrorDAO(code="storage_unavailable", message_id=submission.message_id)
+
+    async def get_message_receipt(
+        self, *, message_id: str, target: MessageAddressDAO, principal: MessagePrincipalDAO
+    ) -> MessageReceiptDAO | MessageErrorDAO:
+        """Authorize the route and current registration before inspecting receipt existence.
+
+        Args:
+            message_id: Original stable identity.
+            target: Client's exact bound incarnation.
+            principal: Startup-registered identity, never inferred from the ID.
+
+        Returns:
+            Authorized receipt, real not_found, or a fixed safe error.
+        """
+        try:
+            _require_uuid(value=message_id, field="message_id")
+        except (TypeError, ValueError):
+            return MessageErrorDAO(code="invalid_message")
+        try:
+            self._require_message_route(target=target)
+            assert self._message_queue is not None
+            receipt: Optional[MessageReceiptDAO] = await self._message_queue.get_receipt(
+                message_id=message_id, principal=principal
+            )
+            return (
+                receipt if receipt is not None else MessageErrorDAO(code="not_found", message_id=message_id)
+            )
+        except MessageAdmissionError as error:
+            return MessageErrorDAO(code=error.error.code, message_id=message_id)
+        except Exception:
+            self._messaging_storage_failed = True
+            self._messaging_accepting = False
+            return MessageErrorDAO(code="storage_unavailable", message_id=message_id)
+
+    async def close_messaging(self) -> None:
+        """Seal and join calls, retain accepted input, close storage, release the lease last.
+
+        Close is idempotent and cannot restart this instance. Cancellation of a
+        waiter propagates only after the shared shutdown operation settles.
+
+        Raises:
+            MessageStoreError: Retention or cleanup could not be confirmed.
+        """
+        async with self._messaging_lifecycle_lock:
+            self._messaging_closing = True
+            self._messaging_resumed.set()
+            if self._messaging_close_task is None:
+                self._messaging_close_task = asyncio.create_task(coro=self._close_messaging_owned())
+            task: asyncio.Task[None] = self._messaging_close_task
+        await self._join_messaging_lifecycle(task=task)
+
+    @staticmethod
+    async def _join_messaging_lifecycle(*, task: asyncio.Task[None]) -> None:
+        """Join an owned lifecycle operation despite repeated cancellation of its waiter."""
+        cancelled: bool = False
+        while not task.done():
+            try:
+                await asyncio.shield(arg=task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()  # Retrieve a concurrent failure without replacing caller cancellation.
+            raise asyncio.CancelledError() from None
+        task.result()
+
+    async def _close_messaging_owned(self) -> None:
+        """Settle startup and all shared calls before retaining input and releasing resources."""
+        if self._messaging_start_task is not None:
+            try:
+                await asyncio.shield(arg=self._messaging_start_task)
+            except Exception:
+                pass  # Startup already unwound; close still owns call/resource cleanup.
+        try:
+            if self._message_queue is not None:
+                await self._message_queue.seal()
+            self._fail_unassigned_observers(code="completing")
+            calls: tuple[asyncio.Task[MessageReceiptDAO | MessageErrorDAO], ...] = tuple(
+                self._messaging_calls
+            )
+            for call in calls:
+                try:
+                    await asyncio.shield(arg=call)
+                except Exception:
+                    self._messaging_storage_failed = True
+            consumer_failure: bool = False
+            if self._messaging_scheduler is not None:
+                if self._agent is not None:
+                    self._agent.abort()
+                try:
+                    await self._messaging_scheduler
+                except Exception:
+                    consumer_failure = True
+            if self._messaging_note_task is not None:
+                try:
+                    await self._messaging_note_task
+                except Exception:
+                    consumer_failure = True
+            if consumer_failure:
+                raise MessageStoreError() from None
+            async with self._lock:
+                async with self._history_barrier:
+                    if (
+                        self._message_store is not None
+                        and self._messaging_accepting
+                        and self._enable_history
+                        and not self._messaging_storage_failed
+                    ):
+                        await self._reconcile_message_applications(store=self._message_store)
+                    if self._message_queue is not None:
+                        await self._message_queue.retain_pending()
+                        await self._message_queue.set_lifecycle(accepting=False)
+        finally:
+            self._messaging_accepting = False
+            await self._release_messaging_resources()
+
+    async def _release_messaging_resources(self) -> None:
+        """Join existing worker close before releasing execution ownership, including failed startup."""
+        try:
+            if self._message_store is not None:
+                await self._message_store.close()
+        finally:
+            if self._messaging_ownership is not None:
+                await self._messaging_ownership.release()
 
     @classmethod
     def build(
@@ -816,6 +1665,8 @@ class SloAgentSession:
         standard extended bundle so orchestrator sessions carry the
         ``spawn_sub_agents`` tool alongside the default 9-tool set.
         """
+        if self._messaging_agent_factory is not None:
+            return self._messaging_agent_factory(message_source=self)
         if self._config is None:
             raise RuntimeError("SloAgentSession has no config to build a SloAgent from.")
         resolved_workspace_file: Optional[Path] = self._resolve_workspace_file_for_agent()
@@ -838,6 +1689,7 @@ class SloAgentSession:
             append_system_prompt=self._config.append_system_prompt,
             plugin_dispatcher=self._plugin_dispatcher,
             snapshot=self.catalog_snapshot,
+            message_source=self if self._message_run is not None else None,
         )
 
     def _load_plugins(self) -> None:
@@ -2008,6 +2860,15 @@ class SloAgentSession:
         """
         if not self._enable_history or self._history_store is None:
             return False
+        async with self._history_barrier:
+            return await self._record_workflow_update_locked(
+                text=text, message_id=message_id, workflow_id=workflow_id
+            )
+
+    async def _record_workflow_update_locked(self, *, text: str, message_id: str, workflow_id: str) -> bool:
+        """Deduplicate and append one legacy note under the common history barrier."""
+        if self._history_store is None:
+            return False
         await self._ensure_history_session()
         seen_message_ids: set[str] = await self._seen_workflow_message_ids()
         if message_id in seen_message_ids:
@@ -2251,6 +3112,11 @@ class SloAgentSession:
         Aborts the active ``SloAgent`` turn and schedules the pool's ordered
         seal-and-drain shutdown when an orchestrator pool is active.
         """
+        if self._messaging_start_task is not None:
+            self._messaging_paused = True
+            self._messaging_resumed.clear()
+            if self._message_run is not None:
+                self._message_run.pause_requested = True
         if self._agent is not None:
             self._agent.abort()
         if self._sub_agent_pool is not None:
@@ -2524,60 +3390,184 @@ class SloAgentSession:
             BaseException: The terminal provider or runtime failure when the
                 attempt failed and no retry plan is available.
         """
+        if self._messaging_start_task is not None or self._messaging_closing:
+            if history is not None:
+                self._seed_messaging_history(history=history)
+            async for event in self._invoke_message_observer(text=text):
+                yield event
+            return
         if self._preparation_status != "ready":
             raise ModelPreparationRequiredError("Model preparation required; use /auth or /model refresh.")
         self._assert_no_prompt_in_flight()
         async with self._session_run_scope():
-            plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
-                text=text,
-            )
-            pending_session_events: list[AgentStreamEventDAO] = []
+            async for event in self._invoke_submission(text=text, history=history):
+                yield event
+
+    def _seed_messaging_history(self, *, history: list[dict]) -> None:
+        """Convert legacy history once before the first idle ephemeral publication.
+
+        The owner-loop check and assignment contain no await, so another publisher
+        cannot replace a seed once an observer or an admission has started.
+
+        Raises:
+            MessageAdmissionError: History would overwrite accepted/live context.
+        """
+        self._require_messaging_ready()
+        if (
+            self._enable_history
+            or self._is_running
+            or self._messaging_has_accepted_input
+            or self._messaging_calls
+            or self._invocation_observers
+        ):
+            raise MessageAdmissionError(error=MessageErrorDAO(code="invalid_message"))
+        try:
+            self._messaging_initial_history = SloAgent._history_to_messages(history=history)
+        except (TypeError, ValueError, KeyError, AttributeError):
+            raise MessageAdmissionError(error=MessageErrorDAO(code="invalid_message")) from None
+
+    async def _invoke_message_observer(self, *, text: str) -> AsyncGenerator[AgentStreamEventDAO, None]:
+        """Publish once through the real local client; detachment never cancels shared work."""
+        from src.agents.slo_agent.messaging.client import LocalSessionMessagingClient
+
+        self._require_messaging_ready()
+        if self._messaging_scheduler is None:
+            raise MessageAdmissionError(error=MessageErrorDAO(code="unsupported"))
+        if len(self._invocation_observers) >= 256:
+            raise MessageAdmissionError(error=MessageErrorDAO(code="queue_full"))
+        message_id: str = str(uuid4())
+        observer: _InvocationObserver = _InvocationObserver(
+            message_id=message_id, principal=self.messaging_owner_principal
+        )
+        self._invocation_observers[message_id] = observer
+        client: LocalSessionMessagingClient = LocalSessionMessagingClient(
+            session=self, target=self.messaging_target, principal=observer.principal
+        )
+        try:
+            try:
+                submission: MessageSubmissionDAO = MessageSubmissionDAO(
+                    message_id=message_id, target=self.messaging_target, kind="agent_input", text=text
+                )
+            except ValueError:
+                raise MessageAdmissionError(
+                    error=MessageErrorDAO(code="invalid_message", message_id=message_id)
+                ) from None
+            outcome: MessageReceiptDAO | MessageErrorDAO = await client.submit(submission=submission)
+            if isinstance(outcome, MessageErrorDAO) and outcome.code != "unknown_outcome":
+                raise MessageAdmissionError(error=outcome)
             while True:
-                prepared: PreparedPromptAttemptDAO = await self._prepare_attempt_context(
-                    plan=plan,
-                )
-                for event in pending_session_events:
+                observer.changed.clear()
+                while observer.events:
+                    event: AgentStreamEventDAO = observer.events.popleft()
+                    observer.buffered_bytes -= len(event.model_dump_json().encode(encoding="utf-8"))
                     yield event
-                pending_session_events = []
-                tracker: PromptAttemptTrackerDAO = self._build_attempt_tracker(
-                    turn_id=prepared.turn_id,
-                )
-                try:
-                    async for event in self._run_attempt_lifecycle(
-                        prepared=prepared,
-                        tracker=tracker,
-                        history=history,
-                    ):
-                        yield event
-                except Exception as exc:
-                    if self._should_reraise_attempt_exception(
-                        tracker=tracker,
-                    ):
-                        raise
-                    self._record_unhandled_attempt_exception(
-                        tracker=tracker,
-                        error=exc,
-                    )
-                result: PromptAttemptResultDAO = self._build_attempt_result(
+                if observer.terminal is not None:
+                    yield observer.terminal
+                if observer.error is not None:
+                    raise observer.error
+                if observer.terminal is not None:
+                    return
+                await observer.changed.wait()
+        finally:
+            observer.detached = True
+            self._invocation_observers.pop(message_id, None)
+            await client.close()
+
+    def _publish_invocation_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Fan out before external callbacks; terminal outcome stays outside bounded buffers."""
+        run: Optional[MessageRunState] = self._message_run
+        if run is None:
+            return
+        if event.kind in ("run_completed", "run_failed", "run_aborted"):
+            self._message_run_terminal = event
+            return
+        size: int = len(event.model_dump_json().encode(encoding="utf-8"))
+        for observer in tuple(self._invocation_observers.values()):
+            if observer.detached or observer.run_id != run.run_id:
+                continue
+            if len(observer.events) >= 256 or observer.buffered_bytes + size > 1024 * 1024:
+                observer.error = MessageAdmissionError(error=MessageErrorDAO(code="replay_gap"))
+                observer.events.clear()
+                observer.buffered_bytes = 0
+                observer.detached = True
+            else:
+                observer.events.append(event)
+                observer.buffered_bytes += size
+            observer.changed.set()
+
+    def _settle_invocation_observers(self, *, run_id: str, error: Optional[Exception] = None) -> None:
+        """Keep each final logical outcome alive until that publisher detaches."""
+        terminal: AgentStreamEventDAO = self._message_run_terminal or AgentStreamEventDAO(
+            kind="run_failed" if error is not None else "run_completed"
+        )
+        for observer in tuple(self._invocation_observers.values()):
+            if observer.detached or observer.run_id != run_id:
+                continue
+            observer.terminal = terminal
+            observer.error = error
+            observer.changed.set()
+
+    def _fail_unassigned_observers(self, *, code: Literal["completing", "recovery_required"]) -> None:
+        """Wake publishers whose accepted work cannot reach an assignment in this lifetime."""
+        for observer in tuple(self._invocation_observers.values()):
+            if observer.run_id is None and not observer.detached:
+                observer.error = MessageAdmissionError(error=MessageErrorDAO(code=code))
+                observer.changed.set()
+
+    async def _invoke_submission(
+        self, *, text: str, history: Optional[list[dict]] = None
+    ) -> AsyncGenerator[AgentStreamEventDAO, None]:
+        """Execute existing attempt workflow inside the caller-owned execution scope."""
+        plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
+            text=text,
+        )
+        pending_session_events: list[AgentStreamEventDAO] = []
+        while True:
+            prepared: PreparedPromptAttemptDAO = await self._prepare_attempt_context(
+                plan=plan,
+            )
+            for event in pending_session_events:
+                yield event
+            pending_session_events = []
+            tracker: PromptAttemptTrackerDAO = self._build_attempt_tracker(
+                turn_id=prepared.turn_id,
+            )
+            try:
+                async for event in self._run_attempt_lifecycle(
+                    prepared=prepared,
                     tracker=tracker,
+                    history=history,
+                ):
+                    yield event
+            except Exception as exc:
+                if self._should_reraise_attempt_exception(
+                    tracker=tracker,
+                ):
+                    raise
+                self._record_unhandled_attempt_exception(
+                    tracker=tracker,
+                    error=exc,
                 )
-                next_plan: PromptAttemptPlanDAO | None = await self._derive_next_attempt_plan(
-                    plan=plan,
-                    result=result,
-                )
-                if next_plan is not None:
-                    if next_plan.attempt_kind == "stream_reconnect":
-                        pending_session_events.append(self._build_stream_reconnecting_event(result=result))
-                    if next_plan.attempt_kind == "stream_continuation":
-                        pending_session_events.append(
-                            self._build_stream_continuation_retrying_event(plan=next_plan)
-                        )
-                    plan = next_plan
-                    continue
-                self._raise_if_attempt_failed(
-                    result=result,
-                )
-                return
+            result: PromptAttemptResultDAO = self._build_attempt_result(
+                tracker=tracker,
+            )
+            next_plan: PromptAttemptPlanDAO | None = await self._derive_next_attempt_plan(
+                plan=plan,
+                result=result,
+            )
+            if next_plan is not None:
+                if next_plan.attempt_kind == "stream_reconnect":
+                    pending_session_events.append(self._build_stream_reconnecting_event(result=result))
+                if next_plan.attempt_kind == "stream_continuation":
+                    pending_session_events.append(
+                        self._build_stream_continuation_retrying_event(plan=next_plan)
+                    )
+                plan = next_plan
+                continue
+            self._raise_if_attempt_failed(
+                result=result,
+            )
+            return
 
     def _assert_no_prompt_in_flight(self) -> None:
         """Raise if another prompt is already running on this session.
@@ -2648,7 +3638,7 @@ class SloAgentSession:
         return PromptAttemptPlanDAO(
             attempt_kind="initial",
             text=text,
-            persist_user_message=True,
+            persist_user_message=self._message_run is None,
             excluded_turn_ids=frozenset(),
             preflight_compaction_mode="respect_dirty_flag",
             source_failed_turn_id=None,
@@ -2688,14 +3678,17 @@ class SloAgentSession:
         turn_id: str = self._allocate_turn_id()
         await self._ensure_history_session()
         self._admit_run_snapshot()
+        await self._verify_borrowed_message_run(excluded_turn_ids=set(plan.excluded_turn_ids))
         await self._ensure_agent_ready()
         await self._run_plan_preflight_compaction(
             plan=plan,
             turn_id=turn_id,
         )
-        message_history: list[BaseMessage] = await self._load_message_history(
-            excluded_turn_ids=set(plan.excluded_turn_ids),
-        )
+        async with self._history_barrier:
+            message_history: list[BaseMessage] = await self._load_message_history(
+                excluded_turn_ids=set(plan.excluded_turn_ids),
+            )
+            await self._verify_message_attempt_projection(messages=message_history)
         runtime_handler: Optional[AgentRuntimeHandler] = self._build_runtime_handler_for_attempt(
             turn_id=turn_id,
         )
@@ -2707,6 +3700,83 @@ class SloAgentSession:
             runtime_handler=runtime_handler,
             policy=policy,
         )
+
+    async def _verify_message_attempt_projection(self, *, messages: list[BaseMessage]) -> None:
+        """Seal before provider execution if the exact attempt reconstruction lost applied context.
+
+        Called under the history barrier after preflight compaction and final replay selection.
+        Startup's raw checks and the borrowed cursor checks do not replace this aggregate proof.
+
+        Args:
+            messages: Final persistent or ephemeral context passed to the attempt.
+
+        Raises:
+            MessageStoreError: Context membership or its committed coverage cannot be proven.
+        """
+        store: Optional[MessageStore] = self._message_store
+        if store is None:
+            return
+        try:
+            await self._require_recovery_projection_membership(store=store, messages=messages)
+        except BaseException:
+            self._messaging_paused = True
+            self._messaging_storage_failed = True
+            if self._message_queue is not None:
+                await self._message_queue.seal()
+            raise
+
+    async def _verify_borrowed_message_run(self, *, excluded_turn_ids: Optional[set[str]] = None) -> None:
+        """Require raw and aggregate insertion proof before rebuilding, never re-pop live work.
+
+        Args:
+            excluded_turn_ids: Attempt-specific completed turns omitted from replay; defaults to None.
+
+        Raises:
+            MessageStoreError: Retained insertion is absent from this replay and committed coverage.
+        """
+        run: Optional[MessageRunState] = self._message_run
+        if run is None or not run.applied_message_ids:
+            return
+        store: Optional[MessageStore] = self._message_store
+        try:
+            if store is None or self._messaging_storage_failed:
+                raise MessageStoreError()
+            async with self._history_barrier:
+                await self._reconcile_message_compactions(store=store)
+                remaining: set[str] = set(run.applied_message_ids)
+                after_sequence: int = 0
+                while remaining:
+                    identities: tuple[MessageIdentityDAO, ...] = await store.read_identities(
+                        after_sequence=after_sequence
+                    )
+                    if not identities:
+                        raise MessageStoreError()
+                    for identity in identities:
+                        if identity.receipt.message_id not in remaining:
+                            continue
+                        if identity.receipt.state != "applied":
+                            raise MessageStoreError()
+                        journal: SessionHistoryEventDAO = await store.load_application_event(
+                            message_id=identity.receipt.message_id
+                        )
+                        if (
+                            journal.event_id != identity.history_event_id
+                            or journal.application_sha256() != identity.event_sha256
+                        ):
+                            raise MessageStoreError()
+                        await self._reconcile_message_identity(store=store, identity=identity)
+                        remaining.remove(identity.receipt.message_id)
+                    after_sequence = identities[-1].receipt.sequence
+                messages: list[BaseMessage] = await self._load_message_history(
+                    excluded_turn_ids=excluded_turn_ids
+                )
+                await self._require_recovery_projection_membership(store=store, messages=messages)
+        except BaseException:
+            self._messaging_paused = True
+            self._messaging_storage_failed = True
+            if self._message_queue is not None:
+                await self._message_queue.seal()
+            raise
 
     def _allocate_turn_id(self) -> str:
         """Return a new UUID4 turn identifier for one attempt.
@@ -3442,6 +4512,8 @@ class SloAgentSession:
             plan=plan,
             failed_turn_id=result.turn_id,
         )
+        if self._message_run is not None:
+            continuation_plan = continuation_plan.model_copy(update={"persist_user_message": False})
         await self._persist_stream_continuation_retrying_event(
             failed_turn_id=result.turn_id,
             plan=continuation_plan,
@@ -3826,6 +4898,7 @@ class SloAgentSession:
             runtime_handler=runtime_handler,
             iteration_retry_policy=iteration_retry_policy,
             iteration_recovery_policy=iteration_recovery_policy,
+            message_run=self._message_run,
         )
         try:
             while True:
@@ -4273,8 +5346,9 @@ class SloAgentSession:
         """
         if self._agent is not None:
             return
-        self._validate_configured_backend_eligibility()
-        await self._refresh_oauth_credential_if_needed()
+        if not self._agent_is_injected:
+            self._validate_configured_backend_eligibility()
+            await self._refresh_oauth_credential_if_needed()
         with CredentialResolver.bind_build_credential(credential=self._admitted_openrouter_credential):
             self._agent = self._build_agent()
         self._agent_catalog_snapshot = self.catalog_snapshot
@@ -4667,7 +5741,30 @@ class SloAgentSession:
             list[BaseMessage]: Empty when history is disabled or the
                 session has no completed turns yet.
         """
-        if not self._enable_history or self._history_store is None:
+        if not self._enable_history:
+            if self._message_store is None:
+                return []
+            journal_events: list[SessionHistoryEventDAO] = []
+            after_sequence: int = 0
+            while True:
+                identities: tuple[MessageIdentityDAO, ...] = await self._message_store.read_identities(
+                    after_sequence=after_sequence
+                )
+                if not identities:
+                    break
+                for identity in identities:
+                    if identity.receipt.state == "applied":
+                        journal_events.append(
+                            await self._message_store.load_application_event(
+                                message_id=identity.receipt.message_id
+                            )
+                        )
+                after_sequence = identities[-1].receipt.sequence
+            projected: list[BaseMessage] = await self._history_projector.build_message_history(
+                events=journal_events, excluded_turn_ids=excluded_turn_ids or set()
+            )
+            return [*self._messaging_initial_history, *projected]
+        if self._history_store is None:
             return []
         events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
             session_id=self._session_id,
@@ -4704,6 +5801,8 @@ class SloAgentSession:
         try:
             await self._run_compaction_if_needed(turn_id=turn_id)
         except Exception as exc:  # noqa: BLE001
+            if self._messaging_storage_failed:
+                raise MessageStoreError() from exc
             log_error(
                 msg="preflight_compaction_failed",
                 session_id=self._session_id[:8],
@@ -4775,18 +5874,14 @@ class SloAgentSession:
             force=force,
         )
 
-        result = await Compacter.compact(
+        result: CompactionResult = await Compacter.compact(
             events=compaction_events,
             model_name=model_name,
             llm=self._agent.llm,
             snapshot=self.catalog_snapshot,
         )
-        await self._history_store.compact_to_boundary(
-            session_id=self._session_id,
-            events=compaction_events,
-            result=result,
-            turn_id=turn_id,
-        )
+        async with self._history_barrier:
+            await self._activate_message_compaction(events=compaction_events, result=result, turn_id=turn_id)
 
         log_info(
             msg="compaction_completed",
@@ -4795,6 +5890,68 @@ class SloAgentSession:
             tokens_after=result.tokens_after,
         )
         return True
+
+    async def _require_settled_message_applications(self, *, store: MessageStore) -> None:
+        """Reject a rewrite during an unacknowledged live application; never reconcile RAM away."""
+        after_sequence: int = 0
+        while True:
+            identities: tuple[MessageIdentityDAO, ...] = await store.read_identities(
+                after_sequence=after_sequence
+            )
+            if not identities:
+                return
+            if any(identity.receipt.state == "applying" for identity in identities):
+                raise MessageStoreError()
+            for identity in identities:
+                await self._reconcile_message_identity(store=store, identity=identity)
+            after_sequence = identities[-1].receipt.sequence
+            await asyncio.sleep(delay=0)
+
+    async def _activate_message_compaction(
+        self, *, events: list[SessionHistoryEventDAO], result: CompactionResult, turn_id: str
+    ) -> None:
+        """Prepare exact coverage then activate through the existing history transaction.
+
+        Summary generation is outside this barrier. Any changed source is refused.
+        An exception is not rollback proof: resolve the prepared UUID before writes.
+        """
+        if self._history_store is None:
+            raise MessageStoreError()
+        store: Optional[MessageStore] = self._message_store
+        if store is None:
+            await self._history_store.compact_to_boundary(
+                session_id=self._session_id, events=events, result=result, turn_id=turn_id
+            )
+            return
+        await self._reconcile_message_compactions(store=store)
+        await self._require_settled_message_applications(store=store)
+        selection: MessageCompactionSelectionDAO = await self._history_store.select_message_compaction(
+            session_id=self._session_id, events=events, result=result
+        )
+        compaction_id: str = str(uuid4())
+        await store.prepare_compaction(
+            compaction_id=compaction_id,
+            message_ids=selection.message_ids,
+            observation_ids=selection.observation_ids,
+        )
+        try:
+            summary: SessionHistoryEventDAO = await self._history_store.compact_to_boundary(
+                session_id=self._session_id,
+                events=events,
+                result=result,
+                turn_id=turn_id,
+                messaging_compaction_id=compaction_id,
+            )
+            await store.finish_compaction(compaction_id=compaction_id, summary_event_id=summary.event_id)
+        except BaseException:
+            try:
+                await self._reconcile_message_compactions(store=store)
+            except BaseException:
+                self._messaging_storage_failed = True
+                self._messaging_paused = True
+                if self._message_queue is not None:
+                    await self._message_queue.seal()
+            raise
 
     def _inspect_provider_error(self, *, error: BaseException) -> ProviderErrorSignalDAO | None:
         """Inspect an escaped provider error once when its provider is known.
@@ -4864,7 +6021,8 @@ class SloAgentSession:
         """
         if not self._enable_history or self._history_store is None:
             return
-        await self._history_store.append_event(event=event)
+        async with self._history_barrier:
+            await self._history_store.append_event(event=event)
 
     def _runtime_handler_for_turn(self, *, turn_id: str) -> AgentRuntimeHandler:
         """Build the trace handler that maps runtime events → persisted events.
@@ -5028,6 +6186,7 @@ class SloAgentSession:
 
     async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
         """Forward ``event`` to every registered subscriber (failure-isolated)."""
+        self._publish_invocation_event(event=event)
         if self._plugin_dispatcher is not None:
             await self._plugin_dispatcher.emit(event)
         for subscriber in list(self._subscribers):

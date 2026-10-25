@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import json
 import math
 import os
@@ -24,7 +25,7 @@ from collections import deque
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterator, Optional
+from typing import BinaryIO, Iterator, Optional, TypeVar
 
 from pydantic import ValidationError
 
@@ -37,6 +38,8 @@ from src.agents.slo_agent.history.dao import (
     HISTORY_OBSERVATION_MAX_BYTES,
     HISTORY_OBSERVATION_MAX_EVENTS,
     HistoryObservationWindowDAO,
+    MessageHistoryEvidenceDAO,
+    MessageCompactionSelectionDAO,
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
     SessionHistoryMetadataDAO,
@@ -54,6 +57,8 @@ __all__ = [
     "normalize_session_name_key",
 ]
 
+
+_HistoryResultT = TypeVar("_HistoryResultT")
 
 _DIR_MODE: int = 0o700
 _FILE_MODE: int = 0o600
@@ -404,10 +409,197 @@ class FilesystemSessionHistoryStore:
             FileNotFoundError: When the session was never ensured.
         """
         async with self._lock:
-            return await asyncio.to_thread(
-                self._append_event_sync,
-                event=event,
+            task: asyncio.Task[SessionHistoryEventDAO] = asyncio.create_task(
+                coro=asyncio.to_thread(self._append_event_sync, event=event)
             )
+            return await self._join_application_worker(task=task)
+
+    async def append_message_application_once(
+        self, *, event: SessionHistoryEventDAO
+    ) -> SessionHistoryEventDAO:
+        """Append the exact journal event once while retaining ownership through cancellation.
+
+        Args:
+            event: Canonical event prepared by the session under its history barrier.
+
+        Returns:
+            SessionHistoryEventDAO: Matching persisted event with assigned history fields.
+
+        Raises:
+            MessageStoreError: Raw history, identity, redaction or persistence is uncertain.
+        """
+        from src.agents.slo_agent.history.projector import SessionHistoryProjector
+
+        SessionHistoryProjector.project_message_application(event=event)
+        async with self._lock:
+            task: asyncio.Task[SessionHistoryEventDAO] = asyncio.create_task(
+                coro=asyncio.to_thread(self._append_message_application_once_sync, event=event)
+            )
+            return await self._join_application_worker(task=task)
+
+    @staticmethod
+    async def _join_application_worker(*, task: asyncio.Task[_HistoryResultT]) -> _HistoryResultT:
+        """Join a submitted writer before releasing serialization, even after repeated cancellation."""
+        cancelled: bool = False
+        while not task.done():
+            try:
+                await asyncio.shield(arg=task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError()
+        return task.result()
+
+    async def application_evidence(
+        self, *, session_id: str, after_sequence: int = 0, limit: int = 256
+    ) -> MessageHistoryEvidenceDAO:
+        """Read a bounded raw event page; repair only an unterminated final fragment.
+
+        Args:
+            session_id: Session owned by the caller.
+            after_sequence: Exclusive history cursor.
+            limit: Page size from one through 256.
+
+        Returns:
+            MessageHistoryEvidenceDAO: Raw validated records, never replay-healed events.
+
+        Raises:
+            MessageStoreError: Invalid page or uncertain raw history.
+        """
+        from src.agents.slo_agent.messaging.dao import MessageStoreError
+
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 256
+            or type(after_sequence) is not int
+            or after_sequence < 0
+        ):
+            raise MessageStoreError()
+        async with self._lock:
+            task: asyncio.Task[MessageHistoryEvidenceDAO] = asyncio.create_task(
+                coro=asyncio.to_thread(
+                    self._application_evidence_sync,
+                    session_id=session_id,
+                    after_sequence=after_sequence,
+                    limit=limit,
+                )
+            )
+            cancelled: bool = False
+            while not task.done():
+                try:
+                    await asyncio.shield(arg=task)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break
+            if cancelled:
+                if not task.cancelled():
+                    task.exception()
+                raise asyncio.CancelledError()
+            return task.result()
+
+    def _application_evidence_sync(
+        self, *, session_id: str, after_sequence: int, limit: int
+    ) -> MessageHistoryEvidenceDAO:
+        """Page the validated raw scan on the history worker."""
+        selected: list[SessionHistoryEventDAO] = []
+        more: bool = False
+        for event in self._iter_application_events_sync(session_id=session_id):
+            if event.sequence <= after_sequence:
+                continue
+            if len(selected) < limit:
+                selected.append(event)
+            else:
+                more = True
+        # Detect duplicate identities for this bounded page even outside its sequence
+        # window. Startup visits every page; no lifetime payload or ID set is retained.
+        counts: dict[str, int] = {event.event_id: 0 for event in selected}
+        for event in self._iter_application_events_sync(session_id=session_id):
+            if event.event_id in counts:
+                counts[event.event_id] += 1
+        if any(count != 1 for count in counts.values()):
+            from src.agents.slo_agent.messaging.dao import MessageStoreError
+
+            raise MessageStoreError()
+        page: tuple[SessionHistoryEventDAO, ...] = tuple(selected)
+        return MessageHistoryEvidenceDAO(events=page, next_sequence=page[-1].sequence if more else None)
+
+    def _iter_application_events_sync(self, *, session_id: str) -> Iterator[SessionHistoryEventDAO]:
+        """Stream raw records, restoring archives and repairing only the final fragment."""
+        from src.agents.slo_agent.messaging.dao import MessageStoreError
+
+        try:
+            path: Path = self._events_path(session_id=session_id)
+            self._recover_compaction_archive_if_needed(active_path=path)
+            if not path.exists():
+                return
+            previous: int = 0
+            stream: BinaryIO
+            with path.open(mode="r+b") as stream:
+                while True:
+                    offset: int = stream.tell()
+                    record: bytes = stream.readline()
+                    if not record:
+                        return
+                    event: SessionHistoryEventDAO
+                    try:
+                        event = SessionHistoryEventDAO.model_validate_json(json_data=record)
+                    except ValidationError:
+                        if record.endswith(b"\n"):
+                            raise
+                        stream.truncate(offset)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                        return
+                    if event.session_id != session_id or event.sequence <= previous:
+                        raise MessageStoreError()
+                    if not record.endswith(b"\n"):
+                        stream.write(b"\n")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    previous = event.sequence
+                    yield event
+        except Exception as error:
+            raise MessageStoreError() from error
+
+    def _read_application_events_sync(self, *, session_id: str) -> list[SessionHistoryEventDAO]:
+        """Collect a rewrite snapshot only for callers that require the complete history."""
+        return list(self._iter_application_events_sync(session_id=session_id))
+
+    def _append_message_application_once_sync(
+        self, *, event: SessionHistoryEventDAO
+    ) -> SessionHistoryEventDAO:
+        """Verify raw identity and high-water before assigning sequence and committing metadata."""
+        from src.agents.slo_agent.messaging.dao import MessageStoreError
+
+        try:
+            metadata: SessionHistoryMetadataDAO = self._read_metadata_sync(session_id=event.session_id)
+            high_water: int = metadata.latest_sequence
+            existing: Optional[SessionHistoryEventDAO] = None
+            for item in self._iter_application_events_sync(session_id=event.session_id):
+                high_water = max(high_water, item.sequence)
+                if item.event_id == event.event_id:
+                    if existing is not None:
+                        raise MessageStoreError()
+                    existing = item
+            if existing is not None and existing.application_sha256() != event.application_sha256():
+                raise MessageStoreError()
+            metadata.latest_sequence = high_water
+            self._write_metadata_sync(metadata=metadata)
+            if existing is not None:
+                return existing
+            redacted: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate_json(
+                json_data=CredentialResolver.redact_openrouter_text(text=event.model_dump_json())
+            )
+            if redacted.application_sha256() != event.application_sha256():
+                raise MessageStoreError()
+            return self._append_event_sync(event=event)
+        except Exception as error:
+            raise MessageStoreError() from error
 
     async def load_events(
         self,
@@ -556,6 +748,71 @@ class FilesystemSessionHistoryStore:
                 session_name=session_name,
             )
 
+    async def select_message_compaction(
+        self, *, session_id: str, events: list[SessionHistoryEventDAO], result: CompactionResult
+    ) -> MessageCompactionSelectionDAO:
+        """Validate the raw source snapshot and identify exact removed applications.
+
+        Raises:
+            MessageStoreError: Stale snapshot, invalid metadata or missing cut.
+        """
+        async with self._lock:
+            task: asyncio.Task[MessageCompactionSelectionDAO] = asyncio.create_task(
+                coro=asyncio.to_thread(
+                    self._select_message_compaction_sync, session_id=session_id, events=events, result=result
+                )
+            )
+            return await self._join_application_worker(task=task)
+
+    @staticmethod
+    def _snapshot_sha256(*, events: list[SessionHistoryEventDAO]) -> str:
+        """Hash the complete ordered snapshot, including assigned history fields."""
+        encoded: str = json.dumps(
+            obj=[event.model_dump(mode="json") for event in events],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        return hashlib.sha256(string=encoded.encode(encoding="utf-8")).hexdigest()
+
+    def _select_message_compaction_sync(
+        self, *, session_id: str, events: list[SessionHistoryEventDAO], result: CompactionResult
+    ) -> MessageCompactionSelectionDAO:
+        """Use the activation owner's retain boundary, never queue high-water."""
+        from src.agents.slo_agent.messaging.dao import MessageApplicationMetadataDAO, MessageStoreError
+        from src.agents.slo_agent.history.projector import SessionHistoryProjector
+
+        try:
+            active: list[SessionHistoryEventDAO] = self._read_application_events_sync(session_id=session_id)
+            digest: str = self._snapshot_sha256(events=events)
+            if digest != self._snapshot_sha256(events=active):
+                raise MessageStoreError()
+            boundary: int = self._resolve_retain_boundary_sequence(
+                events=active, first_kept_entry_id=result.first_kept_entry_id
+            )
+            removed: list[str] = []
+            seen: set[str] = set()
+            for event in active:
+                if "dispatch_completion_v1" in event.payload.metadata:
+                    raise MessageStoreError()
+                if "messaging_v1" not in event.payload.metadata:
+                    continue
+                SessionHistoryProjector.project_message_application(event=event)
+                metadata: MessageApplicationMetadataDAO = MessageApplicationMetadataDAO.model_validate(
+                    event.payload.metadata["messaging_v1"]
+                )
+                if metadata.message_id in seen:
+                    raise MessageStoreError()
+                seen.add(metadata.message_id)
+                if event.sequence < boundary:
+                    removed.append(metadata.message_id)
+            return MessageCompactionSelectionDAO(
+                snapshot_sha256=digest, message_ids=tuple(removed), observation_ids=()
+            )
+        except Exception as error:
+            raise MessageStoreError() from error
+
     async def compact_to_boundary(
         self,
         *,
@@ -563,6 +820,7 @@ class FilesystemSessionHistoryStore:
         events: list[SessionHistoryEventDAO],
         result: CompactionResult,
         turn_id: str,
+        messaging_compaction_id: Optional[str] = None,
     ) -> SessionHistoryEventDAO:
         """Atomically replace active history with a retained tail and summary.
 
@@ -580,13 +838,17 @@ class FilesystemSessionHistoryStore:
             SessionHistoryEventDAO: The activated summary with its assigned sequence.
         """
         async with self._lock:
-            return await asyncio.to_thread(
-                self._compact_to_boundary_sync,
-                session_id=session_id,
-                events=events,
-                result=result,
-                turn_id=turn_id,
+            task: asyncio.Task[SessionHistoryEventDAO] = asyncio.create_task(
+                coro=asyncio.to_thread(
+                    self._compact_to_boundary_sync,
+                    session_id=session_id,
+                    events=events,
+                    result=result,
+                    turn_id=turn_id,
+                    messaging_compaction_id=messaging_compaction_id,
+                )
             )
+            return await self._join_application_worker(task=task)
 
     async def append_compaction_summary(
         self,
@@ -1247,6 +1509,7 @@ class FilesystemSessionHistoryStore:
         events: list[SessionHistoryEventDAO],
         result: CompactionResult,
         turn_id: str,
+        messaging_compaction_id: Optional[str] = None,
     ) -> SessionHistoryEventDAO:
         """Synchronously commit one all-or-nothing compaction candidate.
 
@@ -1259,6 +1522,11 @@ class FilesystemSessionHistoryStore:
         Returns:
             SessionHistoryEventDAO: Summary assigned the transaction sequence.
         """
+        if messaging_compaction_id is not None:
+            from src.agents.slo_agent.messaging.dao import _require_uuid
+
+            _require_uuid(value=messaging_compaction_id, field="messaging_compaction_id")
+            self._select_message_compaction_sync(session_id=session_id, events=events, result=result)
         metadata: SessionHistoryMetadataDAO = self._read_metadata_sync(session_id=session_id)
         sequence: int = metadata.latest_sequence + 1
         summary_event: SessionHistoryEventDAO = SessionHistoryEventDAO(
@@ -1277,6 +1545,8 @@ class FilesystemSessionHistoryStore:
                 },
             ),
         )
+        if messaging_compaction_id is not None:
+            summary_event.payload.metadata["messaging_compaction_id"] = messaging_compaction_id
         retain_from_sequence: int = self._resolve_retain_boundary_sequence(
             events=events,
             first_kept_entry_id=result.first_kept_entry_id,

@@ -8,7 +8,7 @@ Canonical location for ``SessionConfigDAO`` and the
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional, Protocol, TYPE_CHECKING
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -19,6 +19,20 @@ from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.compaction.context_window import ContextWindowSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.reasoning_capabilities import ReasoningLevel
+from src.agents.slo_agent.messaging.dao import MessagingLimitsDAO
+
+if TYPE_CHECKING:
+    from src.agents.slo_agent.agent import SloAgent
+    from src.agents.slo_agent.messaging.delivery import AgentMessageSource
+
+
+class MessagingAgentFactory(Protocol):
+    """Construct a real agent with the owning session's delivery source."""
+
+    def __call__(self, *, message_source: AgentMessageSource) -> SloAgent:
+        """Bind the source during construction; the session retains execution ownership."""
+        ...
+
 
 __all__ = [
     "AgentEventSubscriber",
@@ -90,6 +104,10 @@ class SessionConfigDAO(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     workdir: Path
+    messaging_limits: MessagingLimitsDAO = Field(
+        default_factory=MessagingLimitsDAO,
+        description="Construction-time admission deadline and capacity limits for explicit local messaging.",
+    )
     model_name: Optional[str] = None
     model_pool_dao: Optional["ModelPoolDAO"] = None
     """Optional priority-ordered model pool. When set, the session builds a

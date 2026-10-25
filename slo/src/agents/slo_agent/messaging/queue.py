@@ -49,8 +49,9 @@ from src.agents.slo_agent.messaging.dao import (
 )
 from src.agents.slo_agent.messaging.store import MessageStore
 
-__all__ = ["SessionMessageQueue", "BoundaryClaimsDAO"]
+__all__: list[str] = ["SessionMessageQueue", "BoundaryClaimsDAO"]
 
+# Mypy's TypeVar special form requires a positional name literal.
 _T = TypeVar("_T")
 
 
@@ -181,11 +182,11 @@ class SessionMessageQueue:
         complete queue-owned operation, not just its store worker, so a failed
         read still latches failure and wakes siblings before cancellation wins.
         """
-        task: asyncio.Task[_T] = asyncio.create_task(self._observe_storage_locked(operation=operation))
-        cancelled = False
+        task: asyncio.Task[_T] = asyncio.create_task(coro=self._observe_storage_locked(operation=operation))
+        cancelled: bool = False
         while not task.done():
             try:
-                await asyncio.shield(task)
+                await asyncio.shield(arg=task)
             except asyncio.CancelledError:
                 cancelled = True
             except Exception:
@@ -324,6 +325,52 @@ class SessionMessageQueue:
             boundary=boundary, urgent_high_water=urgent_high_water, note=note, instruction=instruction
         )
 
+    async def take_idle_note(self, *, boundary: BoundaryDAO) -> Optional[MessageDeliveryDAO]:
+        """Claim an idle note only if no executable input wins the same mutex.
+
+        Args:
+            boundary: Maintenance-only identity, never a model-work authorization.
+
+        Returns:
+            Optional note claim; pending input always takes priority.
+        """
+        async with self._mutex:
+            self._require_storage_healthy()
+            return await self._settle_mutation_locked(
+                operation=self._take_idle_note_locked(boundary=boundary)
+            )
+
+    async def _take_idle_note_locked(self, *, boundary: BoundaryDAO) -> Optional[MessageDeliveryDAO]:
+        """Keep eligibility check and note claim in one serialized ownership interval."""
+        await self._refresh_signals_locked()
+        if self._work.is_set():
+            return None
+        return await self._store.claim_note(boundary=boundary)
+
+    async def get_receipt(
+        self, *, message_id: str, principal: MessagePrincipalDAO
+    ) -> Optional[MessageReceiptDAO]:
+        """Recheck registered read authority before existence under admission serialization.
+
+        Args:
+            message_id: Original submission identity.
+            principal: Bound identity, never authority merely by construction.
+
+        Returns:
+            Authorized stored receipt, or None only after an actual lookup.
+
+        Raises:
+            MessageAdmissionError: Current registration is absent or invalidated.
+            MessageStoreError: Storage is unavailable; the queue latches failure.
+        """
+        async with self._mutex:
+            # Callable promises positional types/arity, not parameter names.
+            self._authorize_read(principal)
+            self._require_storage_healthy()
+            return await self._settle_operation_locked(
+                operation=self._store.get_receipt(message_id=message_id, principal=principal)
+            )
+
     async def retain_pending(self) -> None:
         """Retain accepted work and publish ineligibility before session shutdown.
 
@@ -401,7 +448,7 @@ class SessionMessageQueue:
             if self._sealed:
                 return
             await self._settle_operation_locked(operation=self._refresh_signals_locked())
-            await self._changed.wait_for(lambda: self._sealed or self._storage_failed or self._notes.is_set())
+            await self._changed.wait_for(predicate=lambda: self._sealed or self._storage_failed or self._notes.is_set())
             if self._storage_failed:
                 raise MessageStoreError()
 
@@ -415,6 +462,24 @@ class SessionMessageQueue:
             self._sealed = True
             self._changed.notify_all()
 
+    def urgent_high_water(self) -> int:
+        """Read the owner-loop urgency snapshot without claiming a record."""
+        self._require_storage_healthy()
+        return self._urgent_high_water
+
+    def yield_is_requested(self, *, after_sequence: int) -> bool:
+        """Report newer eligible urgency without implementing cooperative interruption."""
+        return self.urgent_high_water() > after_sequence
+
+    async def has_pending_input(self) -> bool:
+        """Refresh eligibility under the queue mutex without claiming input."""
+        async with self._mutex:
+            self._require_storage_healthy()
+            if self._sealed:
+                return False
+            await self._settle_operation_locked(operation=self._refresh_signals_locked())
+            return self._work.is_set()
+
     async def wait_for_work(self) -> None:
         """Wait until executable input exists or admission seals.
 
@@ -427,7 +492,7 @@ class SessionMessageQueue:
             if self._sealed:
                 return
             await self._settle_operation_locked(operation=self._refresh_signals_locked())
-            await self._changed.wait_for(lambda: self._sealed or self._storage_failed or self._work.is_set())
+            await self._changed.wait_for(predicate=lambda: self._sealed or self._storage_failed or self._work.is_set())
             if self._storage_failed:
                 raise MessageStoreError()
 
@@ -451,7 +516,7 @@ class SessionMessageQueue:
                 return
             await self._settle_operation_locked(operation=self._refresh_signals_locked())
             await self._changed.wait_for(
-                lambda: self._sealed or self._storage_failed or self._urgent_high_water > after_sequence
+                predicate=lambda: self._sealed or self._storage_failed or self._urgent_high_water > after_sequence
             )
             if self._storage_failed:
                 raise MessageStoreError()

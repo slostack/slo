@@ -28,7 +28,7 @@ from src.agents.slo_agent.messaging.dao import (
     MessageDeliveryDAO,
 )
 
-__all__ = ["MessageRunState", "AgentMessageSource"]
+__all__: list[str] = ["MessageRunState", "AgentMessageSource"]
 
 
 @dataclass
@@ -43,6 +43,7 @@ class MessageRunState:
     boundary_index: int = 0
     delivery: Optional[BoundaryDeliveryDAO] = None
     applied_message_ids: frozenset[str] = field(default_factory=frozenset)
+    pause_requested: bool = False
 
 
 class AgentMessageSource(Protocol):

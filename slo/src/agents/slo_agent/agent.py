@@ -100,6 +100,16 @@ _TOOL_OUTPUT_PREVIEW_CHARS: int = 240
 """Legacy tool-output preview cap retained for backward-compatible tests."""
 
 
+from src.agents.slo_agent.messaging.delivery import AgentMessageSource, MessageRunState
+from src.agents.slo_agent.messaging.dao import (
+    BoundaryDAO,
+    BoundaryDeliveryDAO,
+    MessageDeliveryDAO,
+    MessageStoreError,
+)
+from src.agents.slo_agent.history.projector import SessionHistoryProjector
+
+
 class SloAgent:
     """Wrapper around a compiled Slo LangGraph + the multi-turn loop.
 
@@ -127,10 +137,13 @@ class SloAgent:
         session_id: Optional[str] = None,
         plugin_dispatcher: Optional["PluginDispatcher"] = None,
         snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+        message_source: Optional[AgentMessageSource] = None,
     ) -> None:
         """Build the agent.
 
         Args:
+            message_source: Optional session-owned delivery port; invoke must borrow
+                its matching logical run. The agent alone mutates live context.
             model_name (Optional[str]): Identifier passed to
                 ``LLMFactory.create``. Ignored when ``model_pool_dao`` or
                 ``llm`` is supplied.
@@ -177,6 +190,7 @@ class SloAgent:
                 construction view; None keeps global reads. Admission and capture
                 remain the session caller's responsibility.
         """
+        self._message_source: Optional[AgentMessageSource] = message_source
         self._llm: Optional[LLM] = llm
         self._plugin_dispatcher: Optional["PluginDispatcher"] = plugin_dispatcher
         _build_result: SloAgentBuildResult = build_slo_agent(
@@ -479,7 +493,7 @@ class SloAgent:
     def _build_initial_run_context(
         self,
         *,
-        query: str,
+        query: Optional[str],
         history: Optional[list[dict]],
         message_history: Optional[list[BaseMessage]],
     ) -> list[BaseMessage]:
@@ -828,6 +842,7 @@ class SloAgent:
         self,
         *,
         accumulated_messages: list[BaseMessage],
+        message_run: Optional[MessageRunState] = None,
     ) -> bool:
         """Determine whether the outer ReAct loop should execute another iteration.
 
@@ -835,21 +850,33 @@ class SloAgent:
         that would revive a run that would otherwise stop. The actual drain is
         performed by the subsequent ``_apply_steering`` call in ``_react_loop``.
 
-        A pending steer overrides a would-stop verdict because steering's contract
-        is: any steer queued before the loop evaluates its stop condition is
-        honored by reviving the run for at least one more turn.
+        Legacy pending steering can revive a stopped turn. A messaging source
+        instead supplies pending executable input only after hard abort/stop policy;
+        notes cannot authorize another provider step. A hard stop records a pause
+        on the borrowed run for the owning scheduler.
 
         Args:
             accumulated_messages (list[BaseMessage]): Full accumulated message list.
+            message_run: Optional borrowed cursor receiving a hard-stop pause.
 
         Returns:
             bool: ``True`` to execute another iteration; ``False`` to break the loop.
         """
         has_pending_steering: bool = not self._steering_queue.empty()
         hook_turn: TurnAccumulatorDAO = self._turn_to_hook_accumulator(turn=self._active_turn)
-        would_stop: bool = await self._evaluate_stop_hook(
-            turn=hook_turn, messages=accumulated_messages
-        ) or not self._last_turn_has_tool_calls(messages=accumulated_messages)
+        hook_stopped: bool = await self._evaluate_stop_hook(turn=hook_turn, messages=accumulated_messages)
+        if self._message_source is not None:
+            if self._abort_event.is_set():
+                return False
+            if hook_stopped:
+                if message_run is not None:
+                    message_run.pause_requested = True
+                return False
+            return (
+                self._last_turn_has_tool_calls(messages=accumulated_messages)
+                or await self._message_source.has_pending_input()
+            )
+        would_stop: bool = hook_stopped or not self._last_turn_has_tool_calls(messages=accumulated_messages)
         return not would_stop or has_pending_steering
 
     async def _execute_iteration_with_retry(
@@ -950,6 +977,7 @@ class SloAgent:
         runtime_handler: Optional[AgentRuntimeHandler],
         iteration_retry_policy: Optional[IterationRetryPolicy],
         iteration_recovery_policy: Optional[IterationRecoveryPolicy] = None,
+        message_run: Optional[MessageRunState] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Drive the outer ReAct iteration loop, recovering from recoverable failures.
 
@@ -973,6 +1001,8 @@ class SloAgent:
         pending_recovery: bool = False
         while True:
             self._current_iteration = iteration
+            if message_run is not None:
+                await self._apply_message_boundary(accumulated_messages=accumulated_messages, run=message_run)
             await self._inject_before_agent_turn_messages(
                 accumulated_messages=accumulated_messages,
                 iteration=iteration,
@@ -1004,6 +1034,9 @@ class SloAgent:
                     recoveries_used += 1
                     iteration += 1
                     pending_recovery = True
+                    if message_run is not None:
+                        message_run.boundary_index += 1
+                        message_run.delivery = None
                     continue
                 async for event in self._emit_terminal_failure(
                     exc=exc,
@@ -1023,16 +1056,55 @@ class SloAgent:
             if self._abort_event.is_set():
                 return  # run_aborted already yielded; skip stop evaluation and next iteration
 
-            if not await self._should_loop_continue(accumulated_messages=accumulated_messages):
+            if not await self._should_loop_continue(
+                accumulated_messages=accumulated_messages, message_run=message_run
+            ):
                 break
 
             iteration += 1
-            async for event in self._apply_steering(
-                accumulated_messages=accumulated_messages,
-                iteration=iteration,
-                runtime_handler=runtime_handler,
-            ):
-                yield event
+            if message_run is not None:
+                message_run.boundary_index += 1
+                message_run.delivery = None
+            else:
+                async for event in self._apply_steering(
+                    accumulated_messages=accumulated_messages,
+                    iteration=iteration,
+                    runtime_handler=runtime_handler,
+                ):
+                    yield event
+
+    async def _apply_message_boundary(
+        self, *, accumulated_messages: list[BaseMessage], run: MessageRunState
+    ) -> None:
+        """Insert prepared note then instruction once; record identity before awaiting acknowledgement.
+
+        Args:
+            accumulated_messages: Live context owned only by this agent.
+            run: Borrowed session cursor, unchanged by provider retries.
+
+        Raises:
+            MessageStoreError: Preparation or acknowledgement is uncertain; no provider follows.
+        """
+        source: Optional[AgentMessageSource] = self._message_source
+        if source is None:
+            raise MessageStoreError()
+        boundary: BoundaryDAO = BoundaryDAO(run_id=run.run_id, boundary_index=run.boundary_index)
+        delivery: BoundaryDeliveryDAO = await source.take_one(boundary=boundary)
+        selected: Optional[MessageDeliveryDAO]
+        for selected in (delivery.note, delivery.instruction):
+            if selected is None:
+                continue
+            message_id: str = selected.envelope.submission.message_id
+            if selected.event is None:
+                raise MessageStoreError()
+            if message_id not in run.applied_message_ids:
+                projected: Optional[BaseMessage] = SessionHistoryProjector.project_message_application(
+                    event=selected.event
+                )
+                if projected is not None:
+                    accumulated_messages.append(projected)
+                run.applied_message_ids = run.applied_message_ids | {message_id}
+            await source.commit_applied(delivery=selected)
 
     async def _inject_before_agent_turn_messages(
         self,
@@ -1195,6 +1267,7 @@ class SloAgent:
         runtime_handler: Optional[AgentRuntimeHandler],
         iteration_retry_policy: Optional[IterationRetryPolicy],
         iteration_recovery_policy: Optional[IterationRecoveryPolicy] = None,
+        message_run: Optional[MessageRunState] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Coordinate the full run lifecycle: abort check → preamble → loop → completion.
 
@@ -1222,22 +1295,24 @@ class SloAgent:
         await self._emit_run_started_trace(query=query, runtime_handler=runtime_handler)
 
         accumulated_messages: list[BaseMessage] = self._build_initial_run_context(
-            query=query,
+            query=None if message_run is not None else query,
             history=history,
             message_history=message_history,
         )
-        async for event in self._apply_steering(
-            accumulated_messages=accumulated_messages,
-            iteration=0,
-            runtime_handler=runtime_handler,
-        ):
-            yield event
+        if message_run is None:
+            async for event in self._apply_steering(
+                accumulated_messages=accumulated_messages,
+                iteration=0,
+                runtime_handler=runtime_handler,
+            ):
+                yield event
 
         async for event in self._react_loop(
             accumulated_messages=accumulated_messages,
             runtime_handler=runtime_handler,
             iteration_retry_policy=iteration_retry_policy,
             iteration_recovery_policy=iteration_recovery_policy,
+            message_run=message_run,
         ):
             yield event
 
@@ -1267,6 +1342,7 @@ class SloAgent:
         runtime_handler: Optional[AgentRuntimeHandler] = None,
         iteration_retry_policy: Optional[IterationRetryPolicy] = None,
         iteration_recovery_policy: Optional[IterationRecoveryPolicy] = None,
+        message_run: Optional[MessageRunState] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Run the multi-turn loop and yield normalized stream events.
 
@@ -1304,6 +1380,8 @@ class SloAgent:
             ValueError: If both ``history`` and ``message_history`` are supplied.
         """
         self._validate_invoke_inputs(history=history, message_history=message_history)
+        if (self._message_source is None) != (message_run is None):
+            raise ValueError("message_source and message_run must be supplied together")
         self._initialize_run_state()
         try:
             async for event in self._execute_run(
@@ -1313,6 +1391,7 @@ class SloAgent:
                 runtime_handler=runtime_handler,
                 iteration_retry_policy=iteration_retry_policy,
                 iteration_recovery_policy=iteration_recovery_policy,
+                message_run=message_run,
             ):
                 yield event
         finally:
@@ -1422,7 +1501,7 @@ class SloAgent:
 
     def _build_initial_messages(
         self,
-        query: str,
+        query: Optional[str],
         history: Optional[list[dict]] = None,
         message_history: Optional[list[BaseMessage]] = None,
     ) -> list[BaseMessage]:
@@ -1459,7 +1538,8 @@ class SloAgent:
             messages.extend(message_history)
         elif history:
             messages.extend(self._history_to_messages(history=history))
-        messages.append(HumanMessage(content=query))
+        if query is not None:
+            messages.append(HumanMessage(content=query))
         return messages
 
     def _drain(self, queue: asyncio.Queue[BaseMessage]) -> list[BaseMessage]:

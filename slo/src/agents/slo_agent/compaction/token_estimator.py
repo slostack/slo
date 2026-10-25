@@ -32,6 +32,9 @@ from __future__ import annotations
 
 import json
 import math
+from typing import Optional
+
+from langchain_core.messages import BaseMessage
 
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 
@@ -85,6 +88,12 @@ class TokenEstimator:
             return len(event.payload.delta or "")
         if kind == "compaction_summary":
             return len(event.payload.content or "")
+        if kind == "workflow_update" and "messaging_v1" in event.payload.metadata:
+            # Import lazily: history persistence itself uses this estimator.
+            from src.agents.slo_agent.history.projector import SessionHistoryProjector
+
+            message: Optional[BaseMessage] = SessionHistoryProjector.project_message_application(event=event)
+            return len(message.text()) if message is not None else 0
         return 0
 
     @classmethod

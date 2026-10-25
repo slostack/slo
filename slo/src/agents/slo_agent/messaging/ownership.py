@@ -13,12 +13,28 @@ import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Optional, TypeVar
+from typing import Callable, Optional, Protocol, TypeVar
 
+
+class _FileLockModule(Protocol):
+    """Describe only the optional POSIX module's locking contract."""
+
+    LOCK_EX: int
+    LOCK_NB: int
+    LOCK_UN: int
+
+    def flock(self, fd: int, operation: int, /) -> None:
+        """Apply the requested lock operation to an open descriptor."""
+        ...
+
+
+fcntl: Optional[_FileLockModule]
 try:
-    import fcntl
+    import fcntl as _fcntl
 except ImportError:  # Non-POSIX hosts still support explicit ephemeral ownership.
-    fcntl = None  # type: ignore[assignment]
+    fcntl = None
+else:
+    fcntl = _fcntl
 
 from src.agents.slo_agent.messaging.dao import (
     MessageAdmissionError,
@@ -28,11 +44,12 @@ from src.agents.slo_agent.messaging.dao import (
     _require_uuid,
 )
 
-__all__ = ["SessionExecutionOwnership"]
+__all__: list[str] = ["SessionExecutionOwnership"]
 
-_LOCK_FILE_NAME = "execution-owner.v1.lock"
+_LOCK_FILE_NAME: str = "execution-owner.v1.lock"
 _EPHEMERAL_OWNERS: set[str] = set()
-_EPHEMERAL_MUTEX = Lock()
+_EPHEMERAL_MUTEX: Lock = Lock()
+# Mypy's TypeVar special form requires a positional name literal.
 _T = TypeVar("_T")
 
 
@@ -41,9 +58,9 @@ class SessionExecutionOwnership:
 
     def __init__(self, *, descriptor: Optional[int], session_id: str, executor: ThreadPoolExecutor) -> None:
         """Bind acquired resources; callers construct leases through acquire only."""
-        self._descriptor = descriptor
-        self._session_id = session_id
-        self._executor = executor
+        self._descriptor: Optional[int] = descriptor
+        self._session_id: str = session_id
+        self._executor: ThreadPoolExecutor = executor
         self._release_task: Optional[asyncio.Task[None]] = None
 
     @classmethod
@@ -75,9 +92,11 @@ class SessionExecutionOwnership:
             _require_uuid(value=session_id, field="session_id")
         except (ValueError, TypeError):
             raise MessageStoreError() from None
-        operation = asyncio.create_task(
-            cls._acquire_owned(root=root, session_id=session_id, executor_factory=executor_factory)
+        operation: asyncio.Task[SessionExecutionOwnership] = asyncio.create_task(
+            coro=cls._acquire_owned(root=root, session_id=session_id, executor_factory=executor_factory)
         )
+        lease: SessionExecutionOwnership
+        cancelled: bool
         lease, cancelled = await cls._settle(future=operation)
         if cancelled:
             await lease.release()
@@ -93,14 +112,14 @@ class SessionExecutionOwnership:
         executor_factory: Optional[Callable[[], ThreadPoolExecutor]],
     ) -> "SessionExecutionOwnership":
         """Own startup resources in a task never cancelled by an acquire waiter."""
-        executor = (
+        executor: ThreadPoolExecutor = (
             executor_factory()
             if executor_factory is not None
             else ThreadPoolExecutor(max_workers=1, thread_name_prefix="slo-msg-owner")
         )
         try:
-            descriptor = await asyncio.get_running_loop().run_in_executor(
-                executor, lambda: cls._acquire_sync(root=root, session_id=session_id)
+            descriptor: Optional[int] = await asyncio.get_running_loop().run_in_executor(
+                executor=executor, func=lambda: cls._acquire_sync(root=root, session_id=session_id)
             )
             return cls(descriptor=descriptor, session_id=session_id, executor=executor)
         except BaseException:
@@ -121,10 +140,10 @@ class SessionExecutionOwnership:
     @staticmethod
     async def _settle(future: asyncio.Future[_T]) -> tuple[_T, bool]:
         """Join a protected operation; remember cancellation without abandoning it."""
-        cancelled = False
+        cancelled: bool = False
         while not future.done():
             try:
-                await asyncio.shield(future)
+                await asyncio.shield(arg=future)
             except asyncio.CancelledError:
                 cancelled = True
         return future.result(), cancelled
@@ -136,26 +155,26 @@ class SessionExecutionOwnership:
         Missing directories are created privately; existing ancestors are never
         chmodded. The final session directory must belong to the current user.
         """
-        descriptors = [os.open("/", os.O_RDONLY | os.O_DIRECTORY)]
+        descriptors: list[int] = [os.open(path="/", flags=os.O_RDONLY | os.O_DIRECTORY)]
         try:
             for component in directory.absolute().parts[1:]:
                 if component in (".", ".."):
                     raise MessageStoreError()
-                parent = descriptors[-1]
+                parent: int = descriptors[-1]
                 try:
-                    os.mkdir(component, mode=0o700, dir_fd=parent)
+                    os.mkdir(path=component, mode=0o700, dir_fd=parent)
                 except FileExistsError:
                     pass
-                descriptor = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                descriptor: int = os.open(path=component, flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
                 descriptors.append(descriptor)
-            final = descriptors[-1]
-            if os.fstat(final).st_uid != os.geteuid():
+            final: int = descriptors[-1]
+            if os.fstat(fd=final).st_uid != os.geteuid():
                 raise MessageStoreError()
-            os.fchmod(final, 0o700)
+            os.fchmod(fd=final, mode=0o700)
             return os.dup(final)
         finally:
             for descriptor in reversed(descriptors):
-                os.close(descriptor)
+                os.close(fd=descriptor)
 
     @classmethod
     def _open_and_lock(cls, *, root: Path, session_id: str) -> int:
@@ -167,12 +186,12 @@ class SessionExecutionOwnership:
         try:
             directory_fd = cls._open_directory(directory=root / session_id)
             descriptor = os.open(
-                _LOCK_FILE_NAME,
-                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-                0o600,
+                path=_LOCK_FILE_NAME,
+                flags=os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                mode=0o600,
                 dir_fd=directory_fd,
             )
-            metadata = os.fstat(descriptor)
+            metadata: os.stat_result = os.fstat(fd=descriptor)
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_uid != os.geteuid()
@@ -180,9 +199,9 @@ class SessionExecutionOwnership:
             ):
                 raise MessageStoreError()
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.fchmod(descriptor, 0o600)
-            os.fsync(descriptor)
-            held = descriptor
+            os.fchmod(fd=descriptor, mode=0o600)
+            os.fsync(fd=descriptor)
+            held: int = descriptor
             descriptor = None
             return held
         except BlockingIOError:
@@ -191,9 +210,9 @@ class SessionExecutionOwnership:
             raise MessageStoreError() from None
         finally:
             if descriptor is not None:
-                os.close(descriptor)
+                os.close(fd=descriptor)
             if directory_fd is not None:
-                os.close(directory_fd)
+                os.close(fd=directory_fd)
 
     def _release_sync(self) -> None:
         """Drop the worker-owned descriptor or ephemeral entry exactly once."""
@@ -201,21 +220,21 @@ class SessionExecutionOwnership:
             with _EPHEMERAL_MUTEX:
                 _EPHEMERAL_OWNERS.discard(self._session_id)
             return
-        descriptor = self._descriptor
+        descriptor: int = self._descriptor
         self._descriptor = None
         try:
             assert fcntl is not None
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
-                os.close(descriptor)
+                os.close(fd=descriptor)
         except OSError:
             raise MessageStoreError() from None
 
     async def _release_owned(self) -> None:
         """Keep cleanup alive until the worker settles, then shut down its executor."""
         try:
-            await asyncio.get_running_loop().run_in_executor(self._executor, self._release_sync)
+            await asyncio.get_running_loop().run_in_executor(executor=self._executor, func=self._release_sync)
         finally:
             self._executor.shutdown(wait=True)
 
@@ -230,7 +249,9 @@ class SessionExecutionOwnership:
             asyncio.CancelledError: Cancellation is propagated only after cleanup settles.
         """
         if self._release_task is None:
-            self._release_task = asyncio.create_task(self._release_owned())
+            self._release_task = asyncio.create_task(coro=self._release_owned())
+        _: None
+        cancelled: bool
         _, cancelled = await self._settle(future=self._release_task)
         if cancelled:
             raise asyncio.CancelledError()

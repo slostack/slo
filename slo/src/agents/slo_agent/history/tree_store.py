@@ -19,6 +19,8 @@ from src.agents.slo_agent.history.dao import (
     HISTORY_OBSERVATION_MAX_BYTES,
     HISTORY_OBSERVATION_MAX_EVENTS,
     HistoryObservationWindowDAO,
+    MessageHistoryEvidenceDAO,
+    MessageCompactionSelectionDAO,
     SessionHistoryEventDAO,
     SessionHistoryMetadataDAO,
 )
@@ -53,6 +55,7 @@ class TreeBasedFilesystemSessionHistoryStore:
         """
         self._flat: FilesystemSessionHistoryStore = FilesystemSessionHistoryStore(root=root)
         self._last_entry_id: Optional[str] = None
+        self._last_entry_sequence: int = 0
         self._pending_tool_calls: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -280,7 +283,39 @@ class TreeBasedFilesystemSessionHistoryStore:
                 self._pending_tool_calls[tool_call_id] = event.event_id
 
         self._last_entry_id = event.event_id
+        self._last_entry_sequence = persisted.sequence
         return persisted
+
+    async def append_message_application_once(
+        self, *, event: SessionHistoryEventDAO
+    ) -> SessionHistoryEventDAO:
+        """Preserve journal bytes and advance the tree cursor only for newer persisted events.
+
+        Args:
+            event: Exact application from the session journal.
+
+        Returns:
+            SessionHistoryEventDAO: Flat-store proof without tree enrichment.
+        """
+        persisted: SessionHistoryEventDAO = await self._flat.append_message_application_once(event=event)
+        if persisted.sequence > self._last_entry_sequence:
+            self._last_entry_id = persisted.event_id
+            self._last_entry_sequence = persisted.sequence
+        return persisted
+
+    async def application_evidence(
+        self, *, session_id: str, after_sequence: int = 0, limit: int = 256
+    ) -> MessageHistoryEvidenceDAO:
+        """Read raw proof through the sole flat-history owner without tree enrichment."""
+        return await self._flat.application_evidence(
+            session_id=session_id, after_sequence=after_sequence, limit=limit
+        )
+
+    async def select_message_compaction(
+        self, *, session_id: str, events: list[SessionHistoryEventDAO], result: CompactionResult
+    ) -> MessageCompactionSelectionDAO:
+        """Use the flat owner's exact raw-source selection without tree enrichment."""
+        return await self._flat.select_message_compaction(session_id=session_id, events=events, result=result)
 
     async def compact_to_boundary(
         self,
@@ -289,6 +324,7 @@ class TreeBasedFilesystemSessionHistoryStore:
         events: list[SessionHistoryEventDAO],
         result: CompactionResult,
         turn_id: str,
+        messaging_compaction_id: Optional[str] = None,
     ) -> SessionHistoryEventDAO:
         """Delegate transactional compaction to the flat durable store.
 
@@ -306,6 +342,7 @@ class TreeBasedFilesystemSessionHistoryStore:
             events=events,
             result=result,
             turn_id=turn_id,
+            messaging_compaction_id=messaging_compaction_id,
         )
 
     async def append_compaction_summary(

@@ -25,14 +25,14 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Optional
+from typing import Annotated, ClassVar, Literal, Optional, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, OrchestratorResultDAO
 
-__all__ = [
+__all__: list[str] = [
     "Priority",
     "MessageKind",
     "ReceiptState",
@@ -67,10 +67,10 @@ __all__ = [
     "SessionAlreadyOwnedError",
 ]
 
-Priority = Literal["normal", "urgent"]
-MessageKind = Literal["agent_input", "context_note", "ui_notice", "transcript_note"]
-ReceiptState = Literal["accepted", "applying", "applied", "cancelled"]
-ErrorCode = Literal[
+Priority: TypeAlias = Literal["normal", "urgent"]
+MessageKind: TypeAlias = Literal["agent_input", "context_note", "ui_notice", "transcript_note"]
+ReceiptState: TypeAlias = Literal["accepted", "applying", "applied", "cancelled"]
+ErrorCode: TypeAlias = Literal[
     "invalid_message",
     "conflict",
     "queue_full",
@@ -87,9 +87,9 @@ ErrorCode = Literal[
     "replay_gap",
 ]
 
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SOURCE_ID_RE = re.compile(r"^[\x20-\x7e]{1,128}$")
+_UUID_RE: re.Pattern[str] = re.compile(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_SHA256_RE: re.Pattern[str] = re.compile(pattern=r"^[0-9a-f]{64}$")
+_SOURCE_ID_RE: re.Pattern[str] = re.compile(pattern=r"^[\x20-\x7e]{1,128}$")
 
 
 def _require_uuid(*, value: str, field: str) -> str:
@@ -105,14 +105,14 @@ def _require_uuid(*, value: str, field: str) -> str:
     Raises:
         ValueError: The value is not a canonical UUID string.
     """
-    if not _UUID_RE.fullmatch(value):
+    if not _UUID_RE.fullmatch(string=value):
         raise ValueError(f"{field} must be a canonical lowercase hyphenated UUID")
     return value
 
 
 def _require_sha256(*, value: str, field: str) -> str:
     """Validate one 64-character lowercase hexadecimal SHA-256 digest."""
-    if not _SHA256_RE.fullmatch(value):
+    if not _SHA256_RE.fullmatch(string=value):
         raise ValueError(f"{field} must be a 64-character lowercase hex SHA-256")
     return value
 
@@ -121,12 +121,12 @@ def _require_aware(*, value: datetime, field: str) -> datetime:
     """Reject naive datetimes; all timestamps are canonical UTC ISO8601."""
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field} must be timezone-aware (UTC)")
-    return value.astimezone(timezone.utc)
+    return value.astimezone(tz=timezone.utc)
 
 
 def _require_source_id(*, value: str, field: str) -> str:
     """Validate a bounded printable non-control source identifier."""
-    if not _SOURCE_ID_RE.fullmatch(value):
+    if not _SOURCE_ID_RE.fullmatch(string=value):
         raise ValueError(f"{field} must be 1-128 printable non-control characters")
     return value
 
@@ -134,7 +134,7 @@ def _require_source_id(*, value: str, field: str) -> str:
 class MessageDAO(BaseModel):
     """Immutable validated messaging boundary data; never execution authority."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
 class MessageAddressDAO(MessageDAO):
@@ -244,7 +244,7 @@ class WorkflowMessagePayloadDAO(MessageDAO):
     workflow: WorkflowPayloadDAO
 
 
-MessagePayload = Annotated[TextPayloadDAO | WorkflowMessagePayloadDAO, Field(discriminator="type")]
+MessagePayload: TypeAlias = Annotated[TextPayloadDAO | WorkflowMessagePayloadDAO, Field(discriminator="type")]
 
 
 class MessageSubmissionDAO(MessageDAO):
@@ -278,7 +278,7 @@ class MessageSubmissionDAO(MessageDAO):
         if not value.strip():
             raise ValueError("text must not be whitespace-only")
         try:
-            value.encode("utf-8")
+            value.encode(encoding="utf-8")
         except UnicodeEncodeError:
             raise ValueError("text must be valid UTF-8") from None
         return value
@@ -300,14 +300,14 @@ class MessageSubmissionDAO(MessageDAO):
         if self.kind == "ui_notice" and self.target.kind != "ui_channel":
             raise ValueError("notices require channel targets")
         if isinstance(self.payload, WorkflowMessagePayloadDAO):
-            workflow = self.payload.workflow
+            workflow: WorkflowPayloadDAO = self.payload.workflow
             if self.kind != "agent_input" and workflow.event in ("completed", "failed"):
                 raise ValueError("terminal workflow events require agent_input")
             if self.kind != "context_note" and workflow.event in ("started", "phase", "fleet"):
                 raise ValueError("start/phase/fleet workflow events require context_note")
             if self.workflow_id is None or self.workflow_id != workflow.workflow_id:
                 raise ValueError("outer workflow_id must equal payload workflow_id")
-            expected_source = (
+            expected_source: str = (
                 f"workflow:{workflow.workflow_id}:" f"{workflow.orchestrator_generation}:{workflow.revision}"
             )
             if self.source_event_id != expected_source:
@@ -694,7 +694,7 @@ class MessageAdmissionError(Exception):
 
     def __init__(self, *, error: MessageErrorDAO) -> None:
         super().__init__(error.code)
-        self.error = error
+        self.error: MessageErrorDAO = error
 
 
 class MessageStoreError(Exception):
@@ -702,7 +702,7 @@ class MessageStoreError(Exception):
 
     def __init__(self) -> None:
         super().__init__("storage_unavailable")
-        self.error = MessageErrorDAO(code="storage_unavailable")
+        self.error: MessageErrorDAO = MessageErrorDAO(code="storage_unavailable")
 
 
 class SessionAlreadyOwnedError(Exception):
@@ -710,7 +710,7 @@ class SessionAlreadyOwnedError(Exception):
 
     def __init__(self) -> None:
         super().__init__("session_already_owned")
-        self.error = MessageErrorDAO(code="unauthorized")
+        self.error: MessageErrorDAO = MessageErrorDAO(code="unauthorized")
 
 
 def canonical_submission_bytes(*, submission: MessageSubmissionDAO) -> bytes:
@@ -726,14 +726,14 @@ def canonical_submission_bytes(*, submission: MessageSubmissionDAO) -> bytes:
         bytes: Canonical UTF-8 JSON encoding of the submission.
     """
     return json.dumps(
-        submission.model_dump(mode="json"),
+        obj=submission.model_dump(mode="json"),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
         allow_nan=False,
-    ).encode("utf-8")
+    ).encode(encoding="utf-8")
 
 
 def utcnow() -> datetime:
     """Return the current canonical UTC timestamp for messaging records."""
-    return datetime.now(timezone.utc)
+    return datetime.now(tz=timezone.utc)

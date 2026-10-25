@@ -38,12 +38,15 @@ class TruncationResult:
         truncated: True iff truncation actually happened.
         original_lines: Total line count of the input before truncation.
         original_bytes: Byte count of the UTF-8-encoded input.
+        kept_lines: Number of complete input lines retained, excluding the footer.
+            Defaults to zero for compatibility with existing construction.
     """
 
     text: str
     truncated: bool
     original_lines: int
     original_bytes: int
+    kept_lines: int = 0
 
 
 class Truncator:
@@ -104,6 +107,7 @@ class Truncator:
                 truncated=False,
                 original_lines=total_lines,
                 original_bytes=total_bytes,
+                kept_lines=total_lines,
             )
 
         kept: list[str] = []
@@ -125,6 +129,7 @@ class Truncator:
             truncated=True,
             original_lines=total_lines,
             original_bytes=total_bytes,
+            kept_lines=len(kept),
         )
 
     @classmethod
@@ -160,6 +165,7 @@ class Truncator:
                 truncated=False,
                 original_lines=total_lines,
                 original_bytes=total_bytes,
+                kept_lines=total_lines,
             )
 
         kept_rev: list[str] = []
@@ -181,6 +187,7 @@ class Truncator:
             truncated=True,
             original_lines=total_lines,
             original_bytes=total_bytes,
+            kept_lines=len(kept_rev),
         )
 
     @classmethod

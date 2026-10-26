@@ -20,6 +20,8 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
+from src.agents.providers.openai_responses_sequencing import SequencedChatOpenAI
+
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPool, ModelPoolDAO
 
@@ -705,10 +707,10 @@ class LLMFactory:
             reasoning: Effective configuration copied for the client lifetime.
 
         Returns:
-            Stock legacy model or configured protected Platform adapter.
+            Sequenced legacy model or configured protected Platform adapter.
         """
         if not entry.requires_responses_api:
-            return ChatOpenAI(**kwargs)
+            return SequencedChatOpenAI(**kwargs)
         return cls._build_protected_openai_model(
             kwargs=kwargs, entry=entry, api_model_name=api_model_name, reasoning=reasoning
         )

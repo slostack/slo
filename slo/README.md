@@ -853,6 +853,23 @@ Some module paths cited in the sections below predate the package split
 `rate_limit/`). The maintained tree is in
 [Maintainer Reference → Repository layout](#repository-layout).
 
+### OpenAI streamed tool-call sequencing
+
+`src/agents/providers/openai_responses_sequencing.py` contains the removable
+`SequencedChatOpenAI(ChatOpenAI)` workaround for LangChain OpenAI 0.3.35.
+It overrides `_astream` and introduces `_astream_responses_sequenced` to keep
+interleaved function arguments on the original call's merge index. Both executable
+calls and replay content are corrected. Completed arguments supply only missing
+suffixes; conflicting or unfinished calls fail instead of reaching tool execution.
+Codex, protected Platform, and legacy OpenAI factory paths use this subclass.
+Other providers, synchronous calls, nonstreaming calls and Chat Completions keep
+their existing behavior. No dependency upgrade or global patch is required.
+
+To remove the workaround, restore the stock `ChatOpenAI` construction/base class
+in `openai_codex.py`, `openai_platform.py` and the OpenAI factory in `base.py`,
+then delete the workaround module. Rerun the sequencing HTTP replay tests when
+upgrading LangChain; its private streaming interfaces are not a stable API.
+
 ### 4.1 The Cast of Characters
 
 The participants, roughly in order of appearance:

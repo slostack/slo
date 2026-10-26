@@ -99,7 +99,7 @@ def test_create_llm_openai_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLO_OPENAI_API_KEY", "sk-test")
     _reload_cfg()
     result = LLMFactory.create(model_name="gpt-4.1")
-    assert result.llm.__class__.__name__ == "ChatOpenAI"
+    assert result.llm.__class__.__name__ == "SequencedChatOpenAI"
     assert result.supports_explicit_caching is False
 
 
@@ -108,7 +108,7 @@ def test_create_llm_openai_o3_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLO_OPENAI_API_KEY", "sk-test")
     _reload_cfg()
     result = LLMFactory.create(model_name="o3")
-    assert result.llm.__class__.__name__ == "ChatOpenAI"
+    assert result.llm.__class__.__name__ == "SequencedChatOpenAI"
     assert result.supports_explicit_caching is False
 
 
@@ -117,7 +117,7 @@ def test_create_llm_openai_o1_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLO_OPENAI_API_KEY", "sk-test")
     _reload_cfg()
     result = LLMFactory.create(model_name="o1")
-    assert result.llm.__class__.__name__ == "ChatOpenAI"
+    assert result.llm.__class__.__name__ == "SequencedChatOpenAI"
     assert result.supports_explicit_caching is False
 
 
@@ -126,7 +126,7 @@ def test_create_llm_openai_gpt5_dispatch(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("SLO_OPENAI_API_KEY", "sk-test")
     _reload_cfg()
     result = LLMFactory.create(model_name="gpt-5")
-    assert result.llm.__class__.__name__ == "ChatOpenAI"
+    assert result.llm.__class__.__name__ == "SequencedChatOpenAI"
     assert result.supports_explicit_caching is False
 
 
@@ -147,7 +147,7 @@ def test_create_llm_openai_codex_dispatch(
     monkeypatch.setenv("SLO_OPENAI_API_KEY", "sk-test")
     _reload_cfg()
     result = LLMFactory.create(model_name=model_name)
-    assert result.llm.__class__.__name__ == "ChatOpenAI"
+    assert result.llm.__class__.__name__ == "SequencedChatOpenAI"
     assert result.supports_explicit_caching is False
 
 

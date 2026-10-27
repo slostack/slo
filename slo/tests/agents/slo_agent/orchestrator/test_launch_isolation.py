@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import shutil
+import sys
+import venv
+from collections.abc import Iterator
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -32,14 +37,70 @@ def _launch_argv(*, launch: str) -> list[str]:
     return WorkflowRelauncher._build_argv(handle=_build_handle())
 
 
+@pytest.fixture(scope="module")
+def installed_python(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """Install this checkout's wheel offline into a disposable interpreter.
+
+    The default launch contract requires installation; the pytest interpreter
+    may intentionally be source-only. Never modify that interpreter or pipx.
+    System site packages supply existing dependencies, not the Slo source.
+    """
+    root: Path = Path(__file__).resolve().parents[4]
+    with TemporaryDirectory(prefix="installed-launch-", dir=tmp_path_factory.getbasetemp()) as directory:
+        yield _install_checkout(root=root, temporary=Path(directory))
+
+
+def _install_checkout(*, root: Path, temporary: Path) -> Path:
+    """Build and install only the local wheel; never fetch dependencies or alter the parent."""
+    source: Path = temporary / "source"
+    source.mkdir()
+    for name in ("src", "config"):
+        shutil.copytree(src=root / name, dst=source / name, ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("pyproject.toml", "README.md", "install.sh"):
+        shutil.copyfile(src=root / name, dst=source / name)
+    subprocess.run(
+        args=[sys.executable, "-c", "from poetry.core.masonry.api import build_wheel; build_wheel('dist')"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    environment: Path = temporary / "venv"
+    venv.EnvBuilder(system_site_packages=True, with_pip=False).create(env_dir=environment)
+    interpreter: Path = environment / "bin" / "python"
+    subprocess.run(
+        args=[
+            sys.executable,
+            "-m",
+            "pip",
+            "--python",
+            str(interpreter),
+            "install",
+            "--no-index",
+            "--no-deps",
+            "--no-compile",
+            str(next((source / "dist").glob("*.whl"))),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return interpreter
+
+
 @pytest.mark.parametrize("launch", ["sub-agent", "workflow", "resume"])
-def test_agent_isolation_does_not_isolate_project_commands(tmp_path: Path, launch: str) -> None:
+def test_agent_isolation_does_not_isolate_project_commands(
+    tmp_path: Path, launch: str, installed_python: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Real Python ignores hostile agent imports but project commands can set PYTHONPATH.
 
     Exercise the production interpreter prefix with a finite probe instead of
     starting an LLM session. Retain hostile environment values deliberately to
     prove isolation independently of the environment allowlist.
     """
+    monkeypatch.delenv(name="SLO_DEV_MODE", raising=False)
     hostile: Path = tmp_path / "hostile"
     hostile.mkdir()
     for directory in (tmp_path, hostile):
@@ -49,6 +110,10 @@ def test_agent_isolation_does_not_isolate_project_commands(tmp_path: Path, launc
     (hostile / "project_probe.py").write_text("VALUE = 'project-import-ok'\n")
     argv: list[str] = _launch_argv(launch=launch)
     prefix: list[str] = argv[: argv.index("-m")]
+    assert prefix == [sys.executable, "-I"]
+    # Run the unchanged production flags in the explicitly installed fixture.
+    # The source-only parent interpreter contract is checked above, not patched.
+    prefix = [str(installed_python), *prefix[1:]]
     script: str = """
 import importlib.util, json, os, subprocess, sys
 spec = importlib.util.find_spec('src')
@@ -86,6 +151,11 @@ print(json.dumps({
     assert "" not in observed["path"]
     assert str(tmp_path) not in observed["path"]
     assert str(hostile) not in observed["path"]
+    assert observed["src_origin"] is not None, (
+        "Managed children require Slo installed in the parent interpreter; "
+        "cwd/PYTHONPATH cannot supply src under -I"
+    )
+    assert Path(observed["src_origin"]).is_relative_to(installed_python.parent.parent)
     assert observed["src_origin"] not in (
         str(tmp_path / "src" / "__init__.py"),
         str(hostile / "src" / "__init__.py"),

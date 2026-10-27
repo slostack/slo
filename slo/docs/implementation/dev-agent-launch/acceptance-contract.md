@@ -1,0 +1,66 @@
+> Current handoff: [implementation-evidence.md](implementation-evidence.md). Dispatch 3 completes bounded wiring; mandatory pytest and mypy gates remain BLOCKED. Earlier milestone/pending statements below are historical.
+
+# Development agent launches — prerequisite acceptance contract
+
+Status: **detached runnable slice implemented; early review pending; NOT Step1 acceptance-ready**. Current requirement/evidence map and commands: [slice-evidence.md](slice-evidence.md). D-02 is the orchestrator’s interpretation of the original explicit opt-in, not additional user approval: explicit process-env opt-in only; development-parent resume inherits mode, later non-opted-in parent remains installed, no durable mode/root schema expansion. Historical prerequisite analysis below is retained; the current slice receipt supersedes its pending/clarify statements. Source: the user's current explicit `SLO_DEV_MODE=1` request. This document is the requested pre-implementation contract, not feature approval or a waiver.
+
+## Scope and supplied cause
+
+The supplied root cause is accepted: `/root/.pyenv/versions/slo-harness/bin/python -I -m src.cli` cannot import `src` in the source-only development environment. Do not repeat the original paid workflow failures or review transcripts. Keep normal installed launches isolated; support a deliberate development exception without installing into or changing pipx.
+
+Application: `/root/Code/tui-refactor/slo`; Git root: `/root/Code/tui-refactor`; verified branch: `feature-96_chat_transcript`; initial HEAD: `dd2da5bf9feb23618d76562ccf264cbfc315873b`. All relative paths below are application-relative. The user explicitly chose this existing branch rather than a fresh feature branch.
+
+## Stable acceptance and requirement/risk evidence map
+
+Every requirement below comes from the current user request. Proposed hardening against cwd shadowing follows the existing import-isolation contract and KB, not an unrelated security expansion. Evidence is pending unless explicitly identified as baseline or preservation evidence.
+
+| ID | Required observable outcome | Risk / required evidence |
+|---|---|---|
+| DEV-01 | With opt-in absent or not exactly `1`, all managed agent launches retain `sys.executable -I -m src.cli` and the existing sanitized environment. | Installed compatibility and import injection. Cover sub-agent, detached, and both relaunch execution paths; retain hostile cwd/PYTHONPATH/PYTHONHOME checks, timeout/identity/credential filtering. Existing baseline: default argv/env tests pass; three installed-import assertions fail (B-01). |
+| DEV-02 | Only exact `SLO_DEV_MODE=1` enables development mode. `DEV=1`, unset, empty, `0`, `true`, `yes`, and whitespace-padded `1` do not. | Accidental opt-in. Parameterized policy decisions plus caller-wiring checks. No inference from interpreter name, cwd, presence of a checkout, or ambient PYTHONPATH. |
+| DEV-03 | Development agent argv omits `-I`; child PYTHONPATH is exactly the resolved import root of the **running Slo code**, not task cwd, Git root, or arbitrary ambient entries. | Wrong checkout or hostile code import. Assert `src`, `config`, and `src.cli` origins from a foreign temporary cwd containing a hostile `src`; discard hostile ambient PYTHONPATH/PYTHONHOME. This checkout's import root is `/root/Code/tui-refactor/slo`, not its parent Git root. |
+| DEV-04 | A development child can launch a development descendant and workflow resume retains development import availability. | Partial propagation and mode/argv mismatch. Local child→grandchild import-only proof; resumed command retains original session/brief/owner/cwd and uses the same policy. See D-02 for cross-mode restart interpretation. |
+| DEV-05 | One cohesive shared launch policy owns opt-in, interpreter prefix, and controlled import environment for managed `spawn_sub_agents`, detached launch, and relaunch. | Duplicated decisions and drift. Trace `SubAgentProcess.run`, `LaunchWorkflowTool.build(...).ainvoke`, `WorkflowRelauncher.invoke`, and `spawn_for_adoption`; caller tests must exercise actual spawn boundaries, not just a standalone helper. |
+| DEV-06 | Auxiliary capture writer and capture failure reporter isolation, environment, descriptors, redaction, adoption and cleanup remain unchanged. | Credential disclosure, descriptor/lifetime regression. Retain `-I -B` and dedicated writer/reporter env; rerun capture tests and inspect no auxiliary adoption of development policy. |
+| DEV-07 | Real, bounded local subprocess proof from outside checkout imports the intended development CLI without provider calls or a running agent workflow. | An argv-only test can pass while imports fail. Use production launch prefix/env and finite `-c` import probe with origin JSON; optionally CLI `--help` only after confirming no side effects. Use existing pytest tmp roots and subprocess cleanup, no new harness. |
+| DEV-08 | Test-first focused pytest for each increment; affected tests at milestones; full default non-E2E pytest after final implementation before acceptance; applicable static checks and independent review/completion evidence. | Unnoticed regressions. Save commands, environment, logs and exits. No skips, deleted assertions, baseline exemptions or inherited historical waivers to manufacture green. Full gate has not run in this prerequisite phase. |
+| DEV-09 | All preexisting modifications/untracked work survive; no unrelated refactor, new harness, installed-pipx modification, reset, stash, or worktree switch. | Data loss and scope contamination. Compare external initial content hashes/status/index. Preserve the four preexisting lines in `test_launch_isolation.py:89–92`. Only requested documentation is written in this phase. |
+| DEV-10 | A later **feature-only**, staged and secret-scanned local commit occurs only after gates are accepted. No push/merge. | Committing unrelated ChatTranscript/user work or credentials. User authorization for that later commit is recorded, but this prerequisite assignment forbids committing. Stage feature hunks only; inspect staged patch and index separately from preexisting work. |
+
+## Current ownership and proposed smallest policy
+
+Current chain:
+
+```text
+managed task / detached tool / workflow resume
+  → caller-specific run flags + shared build_headless_child_env
+  → asyncio subprocess creation → CLI import → headless runtime
+```
+
+`process.py:318` builds sub-agent argv; `:476` builds its env; `:542` creates the process with task cwd. `launch_tool.py:76` builds detached argv; `_spawn_and_patch` builds env before capture setup and invokes injected `spawn`. `relaunch.py` has **two** spawn paths (`spawn_for_adoption`, `invoke`) and one `_build_argv`. Both use shared env. Detached/resume currently pass `--cwd` to the CLI but do not pass subprocess `cwd`; do not silently change this behavior.
+
+`spawn_env.py::build_headless_child_env` owns the existing allowlist (PATH/HOME/LANG/TERM/PYENV_ROOT/PYENV_VERSION, non-secret SLO settings, explicit OpenRouter credential exception), workflow ID and nonempty extras. `SLO_DEV_MODE` already passes the SLO prefix filter; PYTHONPATH does not. The helper also shares a file with capture mechanics, so do not route writers through the new agent policy accidentally.
+
+**Proposed, not implemented:** colocate a cohesive `AgentLaunchPolicy` in `spawn_env.py`. Capture the exact opt-in once per launch into that policy; derive the code root from that module's resolved `__file__` (`parents[4]` in the present layout). Offer paired behavior such as `build_argv(arguments: list[str]) -> list[str]` and `build_environment(workflow_id: Optional[str], extra: Optional[dict[str, str]]) -> dict[str, str]`; callers retain CLI flag assembly and process/resource ownership. The same policy instance must produce both argv and env, including across awaited capture setup. No caller repeats flag parsing or root arithmetic. Keep existing helper behavior for default/auxiliary consumers; choose exact signatures during the first test-first slice without adding a second owner.
+
+Default prefix remains byte-for-byte `[sys.executable, '-I', '-m', 'src.cli']`. Proposed development prefix is `[sys.executable, '-P', '-s', '-m', 'src.cli']`: Python 3.11 `-P` prevents cwd insertion while permitting controlled PYTHONPATH; `-s` retains user-site exclusion. Merely dropping `-I` lets task cwd precede PYTHONPATH and reintroduces the known shadowing defect. Development env uses the existing sanitized base plus exactly one code-derived PYTHONPATH and `SLO_DEV_MODE=1`; it never appends ambient entries. Do not add a user-configurable source-root override, Git probing, packaging dependencies, or fallback interpreter.
+
+This policy owns only transient launch preparation: no file writes, subprocesses, durable mode field, scheduler behavior, or new resource lifecycle. Existing callers retain spawn failures, capture cleanup, terminal results, cancellation and PID ownership. Reject any design that silently falls back to task cwd when source derivation fails. Development mode is a trusted-code opt-in, not a process sandbox.
+
+“If this module disappeared, would complexity disappear too, or would its work have to be repeated across callers?” The opt-in/prefix/root/environment coupling would be repeated across three owners (four execution paths); shared ownership therefore removes real duplication. Alternatives rejected: three inline branches, forwarding arbitrary PYTHONPATH, removing isolation globally, or changing the installed environment. Comparison is author analysis, not independent review.
+
+## Bounded delivery order
+
+1. **Smallest runnable slice (DEV-01/02/03/05/07):** failing development test through detached tool's existing injected `spawn=` seam, real temporary handle/capture persistence and a finite import-only subprocess adapter. Add the shared policy and wire this path. Assert observed CLI/code origin and stored identity, plus default unchanged behavior. Pure decision tests cover exact flag values cheaply. Run focused pytest immediately. Request bounded independent early feedback through the parent workflow; this prerequisite agent may not spawn reviewers.
+2. **Complete propagation (DEV-04/05):** wire managed process and both relaunch paths with the same resolved policy. Add only narrow injected process-creation seams where needed to avoid new internal monkeypatch tests; preserve existing signatures/defaults where compatible. Cover descendant import and resume identity through real temp stores. No live agent task is necessary.
+3. **Hardening and acceptance (DEV-01/06/08/09/10):** run affected orchestration/capture regressions; final bounded multi-process/import proof if not already the slice's evidence; full default gate once implementation is complete, static checks, preservation audit, independent final review and completion check. Update only relevant launch-policy documentation/KB facts once implemented, respecting preexisting AGENTS/RESEARCH changes. Only then may the authorized later local commit be prepared.
+
+## Baseline, decisions and limitations (no waivers)
+
+- **B-01, acceptance blocker:** existing focused baseline is **3 failed, 184 passed, 2 warnings; exit 1**, 8.80 s. Failures are the three variants of `test_agent_isolation_does_not_isolate_project_commands` at line 89: isolated `find_spec('src')` returns None in `slo-harness`. This is the preexisting +4-line assertion, not a new red test or permission to weaken it. The feature's default behavior intentionally remains isolated, so development support alone will not make those default installed-availability cases green in this source-only interpreter. Owner/operator must decide a compliant installed-boundary proof strategy or explicitly disposition the blocked gate. Do not install/modify pipx, skip the tests, or claim a waiver. Safe disposable installation evidence would need separate scope approval if it requires new setup; no new harness is authorized.
+- **D-01, proposal for first slice:** retain cwd/user-site protections with `-P -s` in development mode. This satisfies omit-`-I` and controlled-import requirements; verify hostile-cwd behavior. If the implementer proposes bare `python -m`, resolve the shadowing risk before coding.
+- **D-02, historical prerequisite question (now interpreted as current-parent policy):** proposal is process-environment opt-in: descendants inherit `1`, and resume performed by a development-mode parent uses its running checkout. A later installed parent without opt-in remains installed mode; no persistent mode/root fields exist in `WorkflowHandleDAO`. If “resume preserve mode” must survive changing the launching parent to non-development mode, that needs an explicit decision and a durable compatibility design, not silent schema expansion.
+- Full default/static/capture-suite gates are pending, not passing; no baseline exemptions approved. Historical waivers for other features do not apply.
+- Current scope is prerequisite discovery only. READY for handoff means these artifacts and relevant baseline evidence exist; it does not authorize this agent to implement or establish feature acceptance.
+
+See [routing-handoff.md](routing-handoff.md) for exact source routing, commands, receipt inventory and preservation evidence.

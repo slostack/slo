@@ -16,7 +16,6 @@ import contextlib
 import json
 import os
 import signal
-import sys
 from pathlib import Path
 from typing import IO, Awaitable, Callable, Optional, Protocol
 from uuid import uuid4
@@ -30,7 +29,7 @@ import config.cfg as cfg_module
 from config.logger import log_info
 from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.orchestrator.capture_writer import WorkflowCaptureCompletionContext
-from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env, open_capture_file_append
+from src.agents.slo_agent.orchestrator.spawn_env import AgentLaunchPolicy, open_capture_file_append
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -81,12 +80,12 @@ def _build_argv(
     model: Optional[str],
     cwd: str,
     reasoning_level: Optional[ReasoningLevel] = None,
+    launch_policy: Optional[AgentLaunchPolicy] = None,
 ) -> list[str]:
     """Build the detached headless orchestrator command line.
 
-    Mirrors ``SubAgentProcess._build_argv``: ``sys.executable -I -m src.cli``
-    keeps the child on the same interpreter and virtualenv as the parent in
-    installed and editable-install layouts, isolated from project import paths.
+    The shared launch policy owns interpreter isolation and explicit development
+    imports; this boundary owns only the detached workflow's CLI arguments.
 
     Args:
         brief (str): Workflow brief passed as the headless ``-p`` prompt.
@@ -96,15 +95,13 @@ def _build_argv(
         cwd (str): Working directory the workflow operates in.
         reasoning_level (Optional[ReasoningLevel]): Canonical request passed unchanged;
             None omits the flag, preserving child preference/seed resolution.
+        launch_policy (Optional[AgentLaunchPolicy]): Per-launch environment snapshot;
+            omitted for standalone command construction.
 
     Returns:
         list[str]: Argv for ``create_subprocess_exec``.
     """
     argv: list[str] = [
-        sys.executable,
-        "-I",
-        "-m",
-        "src.cli",
         "run",
         "--orchestrator",
         "--json",
@@ -122,7 +119,7 @@ def _build_argv(
         argv += ["--model", model]
     if reasoning_level is not None:
         argv += ["--reasoning", reasoning_level]
-    return argv
+    return (launch_policy or AgentLaunchPolicy()).build_argv(arguments=argv)
 
 
 class LaunchWorkflowTool:
@@ -392,7 +389,8 @@ class LaunchWorkflowTool:
             str: Patched handle JSON, or an error JSON string on any failure —
                 this method never raises into the agent graph.
         """
-        child_env: dict[str, str] = build_headless_child_env(workflow_id=handle.workflow_id)
+        launch_policy = AgentLaunchPolicy()
+        child_env: dict[str, str] = launch_policy.build_environment(workflow_id=handle.workflow_id)
         proc: Optional[_ProcessLike] = None
         capture_warning: Optional[str] = None
         capture_files = contextlib.ExitStack()
@@ -435,6 +433,7 @@ class LaunchWorkflowTool:
                     model=model,
                     cwd=handle.cwd,
                     reasoning_level=reasoning_level,
+                    launch_policy=launch_policy,
                 ),
                 start_new_session=True,
                 stdout=stdout_file,

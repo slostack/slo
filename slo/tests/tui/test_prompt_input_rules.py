@@ -189,6 +189,7 @@ class TestPromptInputRulesPaint:
     """The prompt editor paints exactly two horizontal rules in every state."""
 
     @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.usefixtures("theme_colors")
     async def test_rules_when_focused_and_unfocused(self, tmp_path: Path, theme: Theme) -> None:
         """Focused and unfocused editors both paint accent-coloured top/bottom rules only."""
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))

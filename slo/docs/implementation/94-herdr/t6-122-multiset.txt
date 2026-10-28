@@ -1,0 +1,19 @@
+t6-121-lint.log -> final: removed=14 added=0
+REMOVED 6 x tests/cli/test_headless.py: error: Cannot assign to a method  [method-assign]
+REMOVED 1 x tests/cli/test_headless.py: error: Incompatible types in assignment (expression has type "Mapping[str, Any] | Any", variable has type "dict[Any, Any]")  [assignment]
+REMOVED 1 x tests/cli/test_headless.py: error: Set comprehension has incompatible type Set[str | None]; expected Set[str]  [misc]
+REMOVED 1 x tests/cli/test_headless.py: error: Type cannot be declared in assignment to non-self attribute  [misc]
+REMOVED 1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "int"  [arg-type]
+REMOVED 1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "list[dict[str, object]]"  [arg-type]
+REMOVED 1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "str"  [arg-type]
+REMOVED 2 x tests/tui/workflows/test_workflow_app_service.py: error: Cannot assign to a method  [method-assign]
+t6-122-red1.log -> final: removed=14 added=0
+REMOVED 6 x tests/cli/test_headless.py: error: Cannot assign to a method  [method-assign]
+REMOVED 1 x tests/cli/test_headless.py: error: Incompatible types in assignment (expression has type "Mapping[str, Any] | Any", variable has type "dict[Any, Any]")  [assignment]
+REMOVED 1 x tests/cli/test_headless.py: error: Set comprehension has incompatible type Set[str | None]; expected Set[str]  [misc]
+REMOVED 1 x tests/cli/test_headless.py: error: Type cannot be declared in assignment to non-self attribute  [misc]
+REMOVED 1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "int"  [arg-type]
+REMOVED 1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "list[dict[str, object]]"  [arg-type]
+REMOVED 1 x tests/tui/workflows/test_workflow_app_service.py: error: Argument 1 to "ParsedFleetUpdateDAO" has incompatible type "**dict[str, object]"; expected "str"  [arg-type]
+REMOVED 2 x tests/tui/workflows/test_workflow_app_service.py: error: Cannot assign to a method  [method-assign]
+PASS: exact 14 target diagnostics removed; 0 added; remaining 281 unwaived.

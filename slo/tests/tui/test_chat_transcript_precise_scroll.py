@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from textual.widgets import Static
+from textual.events import Key
 
 from src.tui.components.chat_transcript.component import TranscriptScroll
 from tests.tui.test_chat_transcript import TranscriptTestApp
@@ -18,6 +19,12 @@ class PaintObservedApp(TranscriptTestApp):
         super().__init__(transcript=transcript)
         self.observe = False
         self.frames: list[list[str]] = []
+        self.interrupt_frame: list[str] | None = None
+
+    def on_key(self, event: Key) -> None:
+        """Capture the painted reading row at actual input dispatch, not before queueing."""
+        if self.observe and event.key == "right":
+            self.interrupt_frame = painted_rows(app=self)
 
     def post_display_hook(self) -> None:
         """Capture each displayed compositor state without yielding or scheduling work."""
@@ -115,12 +122,12 @@ async def test_every_compositor_frame_excludes_interrupted_public_y_endpoint() -
         async with asyncio.timeout(3):
             while scroll.scroll_y < 35 or len({tuple(frame) for frame in app.frames}) < 2:
                 await asyncio.sleep(0.001)
-        before = painted_rows(app=app)
-        before_literal = next(line.split()[0] for line in before if "PRECISE-" in line)
-        before_row = named_row(app=app, literal=before_literal)
         assert 30 < scroll.scroll_y < 80
         assert transcript._native_navigation is None
         await pilot.press("right")
+        assert app.interrupt_frame is not None
+        before_literal = next(line.split()[0] for line in app.interrupt_frame if "PRECISE-" in line)
+        before_row = next(index for index, line in enumerate(app.interrupt_frame) if before_literal in line)
         await pilot.wait_for_scheduled_animations()
         await pilot.pause()
         settled = painted_rows(app=app)

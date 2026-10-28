@@ -891,7 +891,7 @@ class ChatTranscript(Vertical):
         self._queue_follow_pin()
         self._enforce_window_soon()
 
-    async def hydrate(self) -> None:
+    async def hydrate(self, *, is_current: Optional[Callable[[], bool]] = None) -> None:
         """Read the newest history once before subscription, without durable writes.
 
         Read errors leave boot usable. Projection errors propagate to the caller;
@@ -907,7 +907,9 @@ class ChatTranscript(Vertical):
             async with self._mutation_lock:
                 if generation != self._generation or self._presentation_closed or not self.is_attached:
                     return
-                await self._present_history_tail(entries=entries)
+                if is_current is not None and not is_current():
+                    return
+                await self._present_history_tail(entries=entries, is_current=is_current)
 
     async def _invoke_history_reader(self) -> list[TranscriptEntryDAO]:
         """Adapt the borrowed Awaitable contract to a tracked coroutine task."""
@@ -929,7 +931,9 @@ class ChatTranscript(Vertical):
             if self._read_task is task:
                 self._read_task = None
 
-    async def _present_history_tail(self, *, entries: list[TranscriptEntryDAO]) -> None:
+    async def _present_history_tail(
+        self, *, entries: list[TranscriptEntryDAO], is_current: Optional[Callable[[], bool]] = None
+    ) -> None:
         """Publish the bounded canonical tail; cursor counts entries, never widgets."""
         snapshot = self._capture_follow_snapshot()
         # A partial publication is retained. Only clear/bind may admit replay again;
@@ -938,10 +942,13 @@ class ChatTranscript(Vertical):
         tail = entries[-TRANSCRIPT_HYDRATION_ENTRY_LIMIT:]
         for entry in tail:
             await self._projector.project_replay_entry(entry=entry)
+            if is_current is not None and not is_current():
+                return
         self._load_older_cursor = len(entries) - len(tail)
         self._hydrated = True
         await self._update_earlier_summary()
-        self._finish_viewport_mutation(snapshot=snapshot)
+        if is_current is None or is_current():
+            self._finish_viewport_mutation(snapshot=snapshot)
 
     async def load_older(self) -> None:
         """Join one older read/publication; failures preserve the current mounted prefix.

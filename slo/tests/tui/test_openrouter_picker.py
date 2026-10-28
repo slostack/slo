@@ -227,6 +227,7 @@ async def test_mounted_picker_paints_reasoning_disable_evidence(
             assert app._input is not None
             app._input.load_text("/model openrouter")
             await pilot.pause()
+            assert app._suggestion_menu is not None
             widget = app._suggestion_menu.query_one(".slash-suggestion-lines")
             assert_widget_painted(app=app, widget=widget, text=expected)
             try:

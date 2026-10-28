@@ -20,6 +20,7 @@ from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
 )
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.stream_recovery.dao import (
     ProviderStreamFailure,
@@ -271,6 +272,10 @@ class TestReplayThinkingParity:
             SloTUI: App under test.
         """
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        # This replay-only double owns no external resources.
+        session.finish_retired_reporting_cleanup.return_value = HerdrReporterCloseOutcomeDAO(
+            replacement="safe", resources="drained"
+        )
         session.workdir = Path(".").resolve()
         session.session_id = "session-history-1234"
         session.session_name = None

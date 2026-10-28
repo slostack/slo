@@ -283,22 +283,25 @@ class TestBuildSessionConfigPreferences:
 
         assert config.reasoning_level is None
 
+    @pytest.mark.parametrize("fallback_model", ["gpt-5.4", "gpt-6.1-sol"])
     def test_invalid_saved_model_preference_falls_back_with_notice(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallback_model: str
     ) -> None:
         """A saved preference pointing at an unknown model is safely replaced."""
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "prefs.json"))
-        monkeypatch.setenv("SLO_DEFAULT_MODEL_NAME", "gpt-5.4")
+        # cfg resolves this short key dynamically; SLO_DEFAULT_MODEL_NAME is
+        # captured when config.cfg is imported, before this test's patches.
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", fallback_model)
         from src.agents.slo_agent.preferences.service import UserPreferencesStore
 
         UserPreferencesStore.upsert(model_name="mistral-large")
 
         config = TyperDispatch._build_session_config(workdir=tmp_path)
 
-        assert config.model_name == "gpt-5.4"
+        assert config.model_name == fallback_model
         assert config.fallback_notice is not None
         assert "mistral-large" in config.fallback_notice
-        assert "falling back" in config.fallback_notice
+        assert f"falling back to {fallback_model}" in config.fallback_notice
 
     def test_compatibility_prefix_preference_keeps_model_with_notice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

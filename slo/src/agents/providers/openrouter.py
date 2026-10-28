@@ -428,7 +428,7 @@ class OpenRouterChatOpenAI(ChatOpenAI):
     )
 
     def __init__(self, *, slo_model_name: str, **kwargs: Any) -> None:
-        """Create a no-retry, Chat-Completions-only gateway adapter.
+        """Create a Chat-Completions-only gateway adapter with configured SDK retries.
 
         Args:
             slo_model_name (str): Canonical Slo route retained outside provider wire payloads.

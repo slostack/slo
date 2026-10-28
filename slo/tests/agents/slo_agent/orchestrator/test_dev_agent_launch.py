@@ -164,7 +164,9 @@ async def test_managed_development_launch_imports_and_persists_capture(
     monkeypatch.setenv(name="SLO_DEV_MODE", value="1")
     history = tmp_path / "history"
     assert history.resolve().is_relative_to(tmp_path.resolve())
-    task = SubAgentTaskDAO(task_id="probe", prompt="import only", cwd=str(tmp_path))
+    task = SubAgentTaskDAO(
+        task_id="probe", task_summary="Verify checkout imports", prompt="import only", cwd=str(tmp_path)
+    )
     registry = ProcessRegistry()
     dispatch_id = "44444444-4444-4444-8444-444444444444"
     registry.begin_dispatch(dispatch_id=dispatch_id)

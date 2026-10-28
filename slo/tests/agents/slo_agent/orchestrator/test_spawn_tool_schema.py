@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pydantic import BaseModel
 from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.tools import BaseTool
@@ -28,20 +29,26 @@ class TestSpawnSubAgentsSchemaShape:
 
     def test_tasks_is_a_native_array_of_objects(self) -> None:
         """``tasks`` renders as an array whose items are objects."""
-        schema: dict[str, Any] = _tool().args_schema.model_json_schema()
+        args_schema = _tool().args_schema
+        assert isinstance(args_schema, type) and issubclass(args_schema, BaseModel)
+        schema = args_schema.model_json_schema()
         tasks_field: dict[str, Any] = schema["properties"]["tasks"]
 
         assert _array_of_objects(field=tasks_field)
 
     def test_tasks_json_is_a_string(self) -> None:
         """``tasks_json`` renders as a string type."""
-        schema: dict[str, Any] = _tool().args_schema.model_json_schema()
+        args_schema = _tool().args_schema
+        assert isinstance(args_schema, type) and issubclass(args_schema, BaseModel)
+        schema = args_schema.model_json_schema()
 
         assert _permits_string(field=schema["properties"]["tasks_json"])
 
     def test_neither_task_input_is_required(self) -> None:
         """Only ``mode`` is required; both task inputs are optional."""
-        schema: dict[str, Any] = _tool().args_schema.model_json_schema()
+        args_schema = _tool().args_schema
+        assert isinstance(args_schema, type) and issubclass(args_schema, BaseModel)
+        schema = args_schema.model_json_schema()
 
         assert "tasks" not in schema.get("required", [])
         assert "tasks_json" not in schema.get("required", [])

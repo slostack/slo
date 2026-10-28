@@ -53,8 +53,8 @@ class WorkflowProgressSource(Protocol):
 class WorkflowProgressSink(Protocol):
     """Presentation boundary for the list and the selected progress view.
 
-    Implementations never raise from these callbacks and never reach into the
-    coordinator's state; the app routes lifecycle intents back to it.
+    apply_sessions may raise presentation errors; the coordinator/app owns fixed
+    feedback and retry. The app routes lifecycle intents back to the coordinator.
     """
 
     def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
@@ -117,6 +117,10 @@ class WorkflowProgressCoordinator:
         self._selected: Optional[WorkflowSessionKeyDAO] = None
         # Bumped on every select/minimize/close; a read applies only if unchanged.
         self._generation: int = 0
+        self._presentation_revision: int = 0
+        self._presentation_lock: asyncio.Lock = asyncio.Lock()
+        self._paint_task: Optional[asyncio.Task[None]] = None
+        self._close_task: Optional[asyncio.Task[None]] = None
         # True while a refresh was requested but not yet started by the drain.
         self._pending: bool = False
         self._closed: bool = False
@@ -160,6 +164,8 @@ class WorkflowProgressCoordinator:
             coordinator itself when the selected member is removed.
         WHEN: Before the sink dismisses the view, so no late result can paint it.
         """
+        if self._closed:
+            return
         self._generation += 1
         self._selected = None
         self._sink.minimize_progress()
@@ -186,17 +192,25 @@ class WorkflowProgressCoordinator:
         WHO: SloTUI teardown, before ``service.close`` and ``sink.dispose``.
         WHEN: On ``/new`` adoption and on unmount; idempotent.
         """
-        self._closed = True
-        self._generation += 1
-        self._selected = None
-        self._pending = False
+        if self._close_task is None:
+            self._closed = True
+            self._generation += 1
+            self._presentation_revision += 1
+            self._selected = None
+            self._pending = False
+            self._close_task = asyncio.create_task(self._close_observation())
+        await self._join_paint(task=self._close_task)
+
+    async def _close_observation(self) -> None:
+        """Stop the timer, join the drain, then cross the final paint barrier."""
         self._stop_timer()
         task: Optional[asyncio.Task[None]] = self._task
         self._task = None
-        if task is None:
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        async with self._presentation_lock:
+            pass
 
     def _stop_timer(self) -> None:
         """Stop and forget the interval timer, if one was registered."""
@@ -228,15 +242,64 @@ class WorkflowProgressCoordinator:
             log_error(msg="workflow_observation_refresh_failed")
             self._sink.observation_failed()
 
+    async def apply_local_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> bool:
+        """Paint committed local visibility without waiting for observation reads.
+
+        Args:
+            snapshot: Current service projection.
+        Returns:
+            bool: Whether this presentation revision painted successfully.
+        """
+        if self._closed:
+            return False
+        self._generation += 1
+        self._presentation_revision += 1
+        return await self._paint_sessions(snapshot=snapshot, generation=self._presentation_revision)
+
+    async def _paint_sessions(self, *, snapshot: WorkflowSessionSnapshotDAO, generation: int) -> bool:
+        """Serialize list paint and join shielded panel work before releasing ownership."""
+        async with self._presentation_lock:
+            if self._closed or generation != self._presentation_revision:
+                return False
+            self._paint_task = asyncio.create_task(self._sink.apply_sessions(snapshot=snapshot))
+            try:
+                await self._join_paint(task=self._paint_task)
+            finally:
+                self._paint_task = None
+            if self._closed or generation != self._presentation_revision:
+                return False
+            key = self._selected
+            if key is not None and not any(row.key == key for row in snapshot.rows):
+                self._close_removed(key=key)
+            return True
+
+    @staticmethod
+    async def _join_paint(*, task: asyncio.Task[None]) -> None:
+        """Join a started sink operation even across repeated caller cancellation."""
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError()
+        task.result()
+
     async def _refresh_current_view(self) -> None:
         """Read the list, paint it, then refresh the selection captured before the read."""
         generation: int = self._generation
+        presentation_revision: int = self._presentation_revision
         key: Optional[WorkflowSessionKeyDAO] = self._selected
         sessions: WorkflowSessionSnapshotDAO = await self._service.load_session_snapshot()
-        if self._closed:
+        if self._closed or presentation_revision != self._presentation_revision:
             return
-        await self._sink.apply_sessions(snapshot=sessions)
-        if self._closed or key is None or generation != self._generation:
+        painted = await self._paint_sessions(snapshot=sessions, generation=presentation_revision)
+        if not painted or key is None or generation != self._generation:
             return
         await self._refresh_member(key=key, generation=generation, sessions=sessions)
 

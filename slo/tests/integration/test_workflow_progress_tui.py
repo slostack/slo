@@ -874,8 +874,11 @@ class TestOwnedWorkflowListToProgress:
             agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="ok")])),
             workdir=tmp_path,
             session_id=str(uuid4()),
+            history_store=FilesystemSessionHistoryStore(root=world.root),
+            enable_history=True,
         )
         replacement.attached_dispatch_snapshot = AttachedDispatchSnapshotDAO.empty  # type: ignore[method-assign]
+        assert replacement.history_root == world.session.history_root
         app: SloTUI = SloTUI(session=world.session)
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -896,15 +899,20 @@ class TestOwnedWorkflowListToProgress:
             world.append(start=3, lines=1)
             world.supplier.publish(status="running")
             _coordinator(app=app).request_refresh()
-            await entered.wait()
-            with patch("src.tui.app.SloAgentSession.build", return_value=replacement):
-                replacing: asyncio.Task[None] = asyncio.create_task(
-                    app._start_new_session(requested_name=None)
-                )
-                await asyncio.sleep(0)
-                assert not replacing.done()
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+                with patch("src.tui.app.SloAgentSession.build", return_value=replacement):
+                    replacing: asyncio.Task[None] = asyncio.create_task(
+                        app._start_new_session(requested_name=None)
+                    )
+                    try:
+                        await asyncio.sleep(0)
+                        assert not replacing.done()
+                    finally:
+                        gate.set()
+                        await replacing
+            finally:
                 gate.set()
-                await replacing
             await _settle(app=app, pilot=pilot)
 
             assert list(panel.query(SubAgentFleetRow)) == []
@@ -1084,12 +1092,9 @@ class TestClearFinishedGroupsInRealApp:
             await _tick(app=app, pilot=pilot)
 
             visible = [item.row.key for item in app._fleet_panel.query(SubAgentFleetRow)]
-            assert [(key.orchestrator_session_id, key.session_id) for key in visible] == [
-                ("orch-live", "orch-live"),
-                ("orch-live", "child-wf-live"),
-            ]
+            assert visible == []
             assert (
-                "cleared 2 finished workflow group(s) from the list; 1 still running",
+                "Hidden 3 workflow group(s). Execution continues. Use /workflows tui show to restore.",
                 "tool-result",
             ) in app.query_one(ChatTranscript)._adapter.lines
             assert _tree_state(root=world.root) == before
@@ -1119,7 +1124,7 @@ def _publish_fleet(*, world: _World, target_status: str) -> None:
             task_id=f"task-{index:02d}",
             session_id=f"sibling-{index:02d}",
             status="running",
-            prompt_preview=f"{index:02d} {_LONG_TASK}",
+            prompt_preview=f"Task summary v1: Verify workflow list sibling {index:02d}",
         )
         for index in range(_SIBLINGS)
     )
@@ -1249,7 +1254,7 @@ class TestTwentyChildFleetJourney:
             sibling: SubAgentFleetRow = next(
                 item for item in panel.query(SubAgentFleetRow) if item.row.key.session_id == "sibling-00"
             )
-            capped: str = f"00 {_LONG_TASK}"[: TASK_PREVIEW_MAX_CODE_POINTS - 1] + "…"
+            capped: str = "Verify workflow list sibling 00"
             assert str(sibling.query_one(Static).render()) == f"[running] sibling-00: {capped}"
             assert sibling.region.height <= 1
             _capture(app=app, views=views, name=f"{stem}-1-list-multiline")

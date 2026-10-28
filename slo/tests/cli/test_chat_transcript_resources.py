@@ -1,6 +1,8 @@
 """Build real archives in disposable source and import the extracted CSS resource."""
 
 import os
+from src.tui.components.chat_transcript.component import ChatTranscript
+
 from pathlib import Path
 import shutil
 import subprocess

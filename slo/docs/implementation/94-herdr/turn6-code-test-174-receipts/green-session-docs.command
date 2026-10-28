@@ -1,0 +1,1 @@
+python -m pytest -q tests/agents/slo_agent/herdr/test_session_lifetime.py tests/agents/slo_agent/herdr/test_session_attention.py tests/agents/slo_agent/herdr/test_attention_boundary_closure.py tests/agents/slo_agent/herdr/test_session_mutation.py tests/agents/slo_agent/herdr/test_session_capture.py tests/cli/test_headless.py 

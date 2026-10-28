@@ -607,7 +607,7 @@ async def test_factory_stream_parses_complete_tool_response(
             assert request.headers["openai-beta"] == "responses=experimental"
             assert request.headers["session-id"] == request.headers["x-client-request-id"] == model_name
             assert isinstance(result.llm, ChatOpenAI)
-            assert result.llm.max_retries == 0
+            assert result.llm.max_retries == 3
         assert not {
             "max_tokens",
             "max_completion_tokens",

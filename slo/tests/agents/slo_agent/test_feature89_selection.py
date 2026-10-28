@@ -460,8 +460,12 @@ async def test_oauth_selection_and_near_expiry_refresh_build(
     def respond(request: httpx.Request) -> httpx.Response:
         """Capture the post-refresh SDK bearer without making any network request."""
         requests.append(request)
-        if synchronous == "secondary" and len(requests) == 1:
-            return httpx.Response(status_code=429, json={"error": {"message": "synthetic rate limit"}})
+        if synchronous == "secondary" and len(requests) <= 4:
+            return httpx.Response(
+                status_code=429,
+                headers={"retry-after-ms": "1"},
+                json={"error": {"message": "synthetic rate limit"}},
+            )
         return httpx.Response(
             status_code=200,
             headers={"content-type": "text/event-stream"},
@@ -504,7 +508,7 @@ async def test_oauth_selection_and_near_expiry_refresh_build(
     else:
         assert store.path.read_bytes() == before
     assert any(event.kind == "run_completed" for event in events)
-    assert len(requests) == (2 if synchronous == "secondary" else 1) and token != fresh_token
+    assert len(requests) == (5 if synchronous == "secondary" else 1) and token != fresh_token
     assert all(
         request.headers["authorization"] == requests[0].headers["authorization"] for request in requests
     )

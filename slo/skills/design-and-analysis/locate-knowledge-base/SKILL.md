@@ -23,7 +23,7 @@ source_prompt: locate-knowledge-base.md
 
 ## Examples
 
-- A spec pre-hook says "read the KB" and `SLO_KB_DIR` is unset.
+- A specification skill says "read the KB" and `SLO_KB_DIR` is unset.
 - The user asks: "Where is my knowledge base?" or "Set up a knowledge base for Slo."
 - A debugging skill says "grep the KB first" on a machine that has never had one.
 

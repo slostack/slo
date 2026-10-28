@@ -110,6 +110,7 @@ class SelectionObserver:
         """Correlate natural Rendered propagation using numeric identity and follow intent."""
         message = frame.f_locals.get("message", frame.f_locals.get("event"))
         if type(message).__qualname__ == "AssistantStreamBlock.Rendered":
+            assert message is not None
             return {"message_id": id(message), "was_following": message.was_following}
         callback = frame.f_locals.get("callback")
         name = getattr(callback, "__name__", "")

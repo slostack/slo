@@ -130,7 +130,7 @@ async def test_injected_factory_new_session_persists_only_to_replacement(tmp_pat
         await pilot.pause()
         assert len(factory.calls) == 2
         replacement = factory.sessions[1]
-        assert factory.trace == ["unsubscribe", "build", "startup", "subscribe"]
+        assert factory.trace == ["build", "unsubscribe", "subscribe", "startup"]
         config, pending = factory.calls[1]
         assert pending is True
         assert (config.workdir, config.history_root, config.model_name) == (
@@ -213,9 +213,12 @@ async def test_replay_is_mounted_before_startup_and_live_subscription(tmp_path: 
 
 
 @pytest.mark.parametrize("launched", [False, True])
-async def test_both_visualizer_routes_use_injected_launcher(tmp_path: Path, launched: bool) -> None:
+async def test_both_visualizer_routes_use_injected_launcher(
+    tmp_path: Path, launched: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Route attached child and detached tool events through the mounted app once."""
     session = ObservedSession(config=session_config(tmp_path=tmp_path), trace=[])
+    monkeypatch.setenv("SLO_AUTO_VISUALIZE", "1")
     launcher = RecordingLauncher(launched=launched)
     app = SloTUI(session=session, visualizer_launcher=launcher)
     handle = WorkflowHandleDAO(
@@ -237,23 +240,19 @@ async def test_both_visualizer_routes_use_injected_launcher(tmp_path: Path, laun
         for event in (attached, attached, detached, detached):
             await session.event_relay(event)
         await pilot.pause()
-        assert launcher.calls == [session.session_id, "detached-session"]
+        await asyncio.gather(*tuple(app._visualizer_launch_tasks.values()))
+        # Main now retries failed viewers; successful requests stay deduplicated.
+        assert set(launcher.calls) == {session.session_id, "detached-session"}
+        if launched:
+            assert launcher.calls == [session.session_id, "detached-session"]
         notices = [
             str(widget.content) for widget in app.query(Static) if widget.has_class("sub-agent-notice")
         ]
-        expected = (
-            [
-                f"⊇ Opened workflow visualizer in a new window (session {session.session_id}).",
-                "⊇ Opened workflow visualizer in a new window (session detached-session).",
-            ]
-            if launched
-            else [
-                f"⊇ Watch sub-agents live: slo visualize --session {session.session_id} --follow",
-                "⊇ Watch the workflow live: slo visualize --session detached-session --follow",
-            ]
-        )
-        for notice in expected:
-            assert notices.count(notice) == 1
+        if launched:
+            assert notices.count("⊇ Opened workflow visualizer in a new window.") == 2
+        else:
+            for identity in (session.session_id, "detached-session"):
+                assert any(f"slo visualize --session {identity} --follow" in notice for notice in notices)
         assert not list(app.query(AssistantStreamBlock))
 
 

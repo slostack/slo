@@ -117,7 +117,7 @@ Roughly: **`RESEARCH.md` = "what is permanently true and why"; `MEMORY.md` =
 "what is true right now."** Skills that draft specs — notably
 [`feature-specifications`](../../design-and-analysis/feature-specifications/SKILL.md)
 in its
-[Gather context stage](../../design-and-analysis/feature-specifications/SKILL.md#gather-context) —
+[read-before-writing step](../../design-and-analysis/feature-specifications/SKILL.md#read-before-writing) —
 read **both**: the stable design context and the live state, before a spec is
 drafted.
 
@@ -252,13 +252,11 @@ drops the review and completion-check steps.
 
 | Skill | What it covers |
 |---|---|
-| [`feature-specifications`](../../design-and-analysis/feature-specifications/SKILL.md) | Style guide for writing technical feature specifications |
-| [`feature-specifications-pre-hook`](../../design-and-analysis/feature-specifications-pre-hook/SKILL.md) | Compatibility redirect to feature-specifications / Gather context |
-| [`feature-specifications-post-hook`](../../design-and-analysis/feature-specifications-post-hook/SKILL.md) | Compatibility redirect to feature-specifications / Self-check and Revise |
+| [`feature-specifications`](../../design-and-analysis/feature-specifications/SKILL.md) | Writes a feature's `overview.md`: domains, journeys, interfaces, open decisions |
 | [`feature-specification-verification`](../../design-and-analysis/feature-specification-verification/SKILL.md) | Reviewing a draft spec for gaps, ambiguities, and redundant functionality |
 | [`gather-feature-context`](../../design-and-analysis/gather-feature-context/SKILL.md) | Pulls domain, business, current-state, and implementation context into a sign-off briefing |
-| [`breakdown-feature-spec-to-tasks`](../../design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md) | Decomposing an approved spec into dependency-ordered sub-tasks |
-| [`specification-development`](../../design-and-analysis/specification-development/SKILL.md) | Pipeline: brief → context → draft → verification → task breakdown |
+| [`breakdown-feature-spec-to-tasks`](../../design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md) | Expands `overview.md` into standalone engineering sub-specs and a dependency-ordered task list |
+| [`specification-development`](../../design-and-analysis/specification-development/SKILL.md) | Pipeline: overview → sub-specs → family verification |
 | [`implement-feature-request`](../../design-and-analysis/implement-feature-request/SKILL.md) | End-to-end: feature request → specs → code → tests → review → docs |
 
 ### Understanding and debugging

@@ -751,6 +751,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             dispatch_id=child.dispatch_id,
             status=child.status,
             task_text=child.task_text,
+            task_summary=child.task_summary,
             task_text_complete=child.task_text_complete,
         )
 

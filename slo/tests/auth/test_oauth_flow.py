@@ -345,6 +345,7 @@ class TestOAuthFlowManualResponse:
 
         assert events == ["present", "open"]
         assert presentation is not None
+        assert exchange.await_args is not None
         assert presentation.redirect_uri == exchange.await_args.kwargs["redirect_uri"]
         assert exchange.await_args.kwargs["code"] == "manual-code"
         assert credential.auth_type is AuthType.OAUTH
@@ -742,6 +743,7 @@ class TestOAuthFlowReadsProviderBind:
         import urllib.parse as up
 
         query: dict[str, str] = dict(up.parse_qsl(up.urlsplit(recorded_urls[0]).query))
+        assert mock_exchange.await_args is not None
         assert query["state"] == mock_exchange.await_args.kwargs["verifier"]
 
     @pytest.mark.asyncio
@@ -798,3 +800,61 @@ class TestOAuthFlowReadsProviderBind:
             "code_challenge_method",
             "code",
         }
+
+
+async def test_fractional_deadline_cancellation_joins_receiver_and_closes_listener() -> None:
+    """Cancelling a fractional-deadline attempt drains its receiver and callback socket."""
+    entered = asyncio.Event()
+    drained = asyncio.Event()
+    presentations: list[AuthorizationPresentationDAO] = []
+
+    async def receive() -> str:
+        """Hold the response until cancellation, recording final cleanup."""
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            drained.set()
+        raise AssertionError("unreachable")
+
+    flow = OAuthFlow(
+        provider=FauxOAuthProvider(),
+        present_authorization=presentations.append,
+        authorization_response_receiver=receive,
+        timeout_seconds=30.5,
+        manual_timeout_seconds=60.5,
+        browser_host=_HEADLESS_HOST,
+    )
+    task = asyncio.create_task(flow.invoke())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert drained.is_set()
+    from urllib.parse import urlsplit
+
+    address = urlsplit(presentations[0].redirect_uri)
+    assert address.hostname is not None and address.port is not None
+    with socket.socket() as listener:
+        listener.bind((address.hostname, address.port))
+
+
+@pytest.mark.parametrize("timeout", [None, 0.0, 0.125])
+def test_timeout_annotations_preserve_resolution(
+    monkeypatch: pytest.MonkeyPatch, timeout: Optional[float]
+) -> None:
+    """Fractional seconds survive; zero and omission retain environment defaults."""
+    monkeypatch.setattr("src.auth.oauth_flow.cfg", lambda *, key: "23")
+    flow = OAuthFlow(
+        provider=FauxOAuthProvider(),
+        present_authorization=lambda presentation: None,
+        timeout_seconds=timeout,
+        manual_timeout_seconds=timeout,
+        browser_host=_HEADLESS_HOST,
+    )
+    expected = timeout or 23
+    assert flow._timeout == expected
+    assert flow._manual_timeout == expected
+    assert _CallbackServer(timeout=expected)._timeout == expected

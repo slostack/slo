@@ -4,7 +4,14 @@ import importlib
 import shutil
 from pathlib import Path
 
-from tests.state_isolation import INHERITED_STATE_OVERRIDES, SLO_HOME_BINDINGS, isolate_suite_slo_home
+from tests.state_isolation import (
+    INHERITED_STATE_OVERRIDES,
+    FakeHerdrFixture,
+    FakeHerdrSpawnGuard,
+    SLO_HOME_BINDINGS,
+    inherited_herdr_names,
+    isolate_suite_slo_home,
+)
 
 # Collection imports application state, so fixtures alone are too late.
 _SUITE_SLO_HOME: Path = isolate_suite_slo_home()
@@ -36,6 +43,9 @@ def isolated_slo_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pyt
     Returns:
         Path: The resolved, initially empty per-test SLO_HOME.
     """
+    for name in inherited_herdr_names():
+        monkeypatch.delenv(name=name, raising=False)
+    monkeypatch.setenv(name="SLO_HERDR_DISABLED", value="1")
     root: Path = tmp_path_factory.mktemp("slo-home").resolve()
     monkeypatch.setenv(name="SLO_HOME", value=str(root))
     monkeypatch.setenv(name="SLO_AUTH_FILE", value=str(root / "global" / "authentication.json"))
@@ -136,3 +146,61 @@ def _never_spawn_real_terminals(monkeypatch: pytest.MonkeyPatch) -> None:
         "src.tui.visualizer_launcher.VisualizerLauncher._default_spawn",
         staticmethod(_stubbed_spawn),
     )
+
+
+@pytest.fixture
+def fake_herdr_guard(tmp_path: Path) -> "FakeHerdrSpawnGuard":
+    """Allocate an ungranted per-test capability for T2's independent spawn guard."""
+    return FakeHerdrSpawnGuard(root=tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _never_spawn_real_herdr(fake_herdr_guard: FakeHerdrSpawnGuard, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse all transport spawn without this test's registered file capability."""
+    import asyncio
+    from src.agents.slo_agent.herdr.dao import HerdrCliCommandDAO
+    from src.agents.slo_agent.herdr.service import HerdrCliTransport
+
+    original_spawn = HerdrCliTransport._spawn
+
+    async def guarded_spawn(
+        transport: HerdrCliTransport, *, command: HerdrCliCommandDAO
+    ) -> asyncio.subprocess.Process:
+        """Revalidate every fixture identity immediately before delegation."""
+        fake_herdr_guard.require_registered(path=transport._config.binary_path)
+        return await original_spawn(transport, command=command)
+
+    monkeypatch.setattr(target=HerdrCliTransport, name="_spawn", value=guarded_spawn)
+
+
+@pytest.fixture
+def fake_herdr(
+    tmp_path: Path, fake_herdr_guard: "FakeHerdrSpawnGuard", monkeypatch: pytest.MonkeyPatch
+) -> "FakeHerdrFixture":
+    """Create and register only new contained files before synthetic activation."""
+    import sys
+
+    executable, capture, barrier = (tmp_path / name for name in ("fake-herdr", "capture.jsonl", "barrier"))
+    script = (
+        f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
+        f"root = Path({str(tmp_path)!r})\n"
+        f"capture = Path({str(capture)!r})\n"
+        "assert not capture.is_symlink() and capture.resolve().parent == root.resolve()\n"
+        "with capture.open('a') as stream: stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    for path, text in ((executable, script), (capture, ""), (barrier, "")):
+        assert path.is_absolute() and ".." not in path.parts
+        assert not any(p.is_symlink() for p in (path, *path.parents))
+        assert path.parent.resolve(strict=True) == tmp_path.resolve(strict=True)
+        with path.open(mode="x", encoding="utf-8") as stream:
+            stream.write(text)
+        path.chmod(0o700 if path == executable else 0o600)
+    fake_herdr_guard.register(executable=executable, files=(capture, barrier))
+    for name, value in {
+        "HERDR_ENV": "1",
+        "HERDR_PANE_ID": "synthetic-pane",
+        "HERDR_BIN_PATH": str(executable),
+        "SLO_HERDR_DISABLED": "0",
+    }.items():
+        monkeypatch.setenv(name=name, value=value)
+    return FakeHerdrFixture(executable=executable, capture=capture, barrier=barrier, guard=fake_herdr_guard)

@@ -337,7 +337,8 @@ class TranscriptProjectionAdapter:
         block.update_partial(
             snapshot=ToolOutputUpdateDAO(
                 tool_call_id=tool_call_id,
-                tool_name=event.tool_name or block.tool_name,
+                # Empty names preserve the widget's existing unknown-name state.
+                tool_name=event.tool_name or block.tool_name or "",
                 content_snapshot=event.content or "",
                 truncated=bool(metadata.get("truncated", False)),
                 full_output_path=metadata.get("full_output_path"),

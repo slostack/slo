@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.workflows.dao import (
     ChildAbortTargetDAO,
+    WorkflowListGroupDAO,
+    WorkflowListGroupKeyDAO,
     DetachedWorkflowUiEffectDAO,
     ParsedFleetUpdateDAO,
     ParsedLaunchResultDAO,
@@ -15,14 +17,79 @@ from src.tui.workflows.dao import (
     SessionProgressSnapshotDAO,
     WorkflowSessionKeyDAO,
     WorkflowSessionRowDAO,
-    WorkflowListDismissOutcomeDAO,
-    WorkflowListDismissRequestDAO,
+    WorkflowListVisibilityOutcomeDAO,
+    WorkflowListVisibilityRequestDAO,
     WorkflowSessionSnapshotDAO,
     parse_fleet_update_message,
     parse_launch_workflow_result,
     parse_workflow_lifecycle_message,
     workflow_lifecycle_target_for_kind,
 )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "attached-no-parent",
+        "unsafe-parent",
+        "pending-with-time",
+        "child-first",
+        "wrong-parent",
+        "wrong-source",
+        "attached-with-workflow",
+    ],
+)
+def test_visibility_group_rejects_inconsistent_structure(case: str) -> None:
+    """Group records cannot mix parent, source or pending identity contracts."""
+    from datetime import datetime, timezone
+
+    dispatch = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
+    key = WorkflowListGroupKeyDAO(kind="detached", group_id="wf-a")
+    parent = WorkflowSessionRowDAO(
+        key=WorkflowSessionKeyDAO(orchestrator_session_id="orch-a", session_id="orch-a"),
+        role="orchestrator",
+        workflow_id="wf-a",
+        status="running",
+        task_text="parent",
+        task_text_complete=True,
+    )
+    child = WorkflowSessionRowDAO(
+        key=WorkflowSessionKeyDAO(orchestrator_session_id="orch-a", session_id="child-a"),
+        role="child",
+        workflow_id="wf-a",
+        status="running",
+        task_text="child",
+        task_text_complete=True,
+    )
+    values: dict[str, object] = dict(
+        key=key, first_seen=0, orchestrator_session_id="orch-a", rows=(parent, child)
+    )
+    if case == "attached-no-parent":
+        values.update(
+            key=WorkflowListGroupKeyDAO(kind="attached", group_id=dispatch),
+            orchestrator_session_id=None,
+            rows=(),
+        )
+    elif case == "unsafe-parent":
+        values.update(orchestrator_session_id="../escape", rows=())
+    elif case == "pending-with-time":
+        values.update(orchestrator_session_id=None, rows=(), started_at=datetime.now(tz=timezone.utc))
+    elif case == "child-first":
+        values.update(rows=(child, parent))
+    elif case == "wrong-parent":
+        values.update(orchestrator_session_id="orch-other")
+    elif case == "attached-with-workflow":
+        values.update(
+            key=WorkflowListGroupKeyDAO(kind="attached", group_id=dispatch),
+            rows=tuple(
+                row.model_copy(update={"key": row.key.model_copy(update={"attached_dispatch_id": dispatch})})
+                for row in (parent, child)
+            ),
+        )
+    else:
+        values.update(key=WorkflowListGroupKeyDAO(kind="detached", group_id="wf-other"))
+    with pytest.raises(ValidationError):
+        WorkflowListGroupDAO.model_validate(values)
 
 
 class TestWorkflowLifecycleTargetForKind:
@@ -567,87 +634,103 @@ class TestSessionProgressSnapshotDAO:
         assert snapshot.membership_removed is True
 
 
-class TestWorkflowListDismissRequestDAO:
-    """``/workflows tui dismiss [<id>]`` request carried from the router to the app (94.a.5)."""
+class TestWorkflowListVisibilityRequestDAO:
+    """Visibility requests carry a safe dismiss alias; show always restores all."""
 
     @pytest.mark.parametrize("target_id", [None, "wf-3f2a", "orch-a.1_B"])
     def test_accepts_absent_or_safe_target(self, target_id: str | None) -> None:
-        """No target (clear all finished) and safe ids are accepted unchanged."""
-        assert WorkflowListDismissRequestDAO(target_id=target_id).target_id == target_id
+        """Safe exact aliases remain unchanged."""
+        assert WorkflowListVisibilityRequestDAO(action="dismiss", target_id=target_id).target_id == target_id
 
     @pytest.mark.parametrize("target_id", ["", "../wf", "wf/a", "wf a", ".", "[bold]x"])
     def test_rejects_unsafe_target(self, target_id: str) -> None:
-        """Empty, traversal, separator, space and markup ids are refused."""
+        """Reject unsafe aliases before they can reach feedback."""
         with pytest.raises(ValidationError):
-            WorkflowListDismissRequestDAO(target_id=target_id)
+            WorkflowListVisibilityRequestDAO(action="dismiss", target_id=target_id)
+
+    def test_show_has_no_target(self) -> None:
+        """Show has no targeted variant."""
+        assert WorkflowListVisibilityRequestDAO(action="show").target_id is None
+        with pytest.raises(ValidationError):
+            WorkflowListVisibilityRequestDAO(action="show", target_id="wf-a")
 
     def test_is_frozen_and_forbids_extra_fields(self) -> None:
-        """The request is immutable and carries nothing beyond its target."""
-        request = WorkflowListDismissRequestDAO()
+        """Requests are closed immutable records."""
+        request = WorkflowListVisibilityRequestDAO(action="dismiss")
         with pytest.raises(ValidationError):
-            request.target_id = "wf-a"  # type: ignore[misc]
+            request.target_id = "wf-a"
         with pytest.raises(ValidationError):
-            WorkflowListDismissRequestDAO(extra="x")  # type: ignore[call-arg]
+            WorkflowListVisibilityRequestDAO(action="dismiss", extra="x")
 
 
-class TestWorkflowListDismissOutcomeDAO:
-    """The outcome owns its transcript text for every 94.a.5 branch."""
+class TestWorkflowListVisibilityOutcomeDAO:
+    """Exact a.1 feedback and count/target invariants, not obsolete status refusals."""
 
     @pytest.mark.parametrize(
-        ("fields", "rendered"),
+        ("action", "outcome", "count", "target", "rendered"),
         [
             (
-                {"cleared": ("wf-a", "owner-1"), "still_running": 1},
-                "cleared 2 finished workflow group(s) from the list; 1 still running",
+                "dismiss",
+                "changed",
+                3,
+                None,
+                "Hidden 3 workflow group(s). Execution continues. Use /workflows tui show to restore.",
             ),
-            ({"cleared": ("wf-a",)}, "cleared 1 finished workflow group(s) from the list"),
-            ({}, "no finished workflow groups to clear"),
-            ({"still_running": 2}, "no finished workflow groups to clear"),
-            ({"target_id": "wf-a", "cleared": ("wf-a",)}, "cleared workflow wf-a from the list"),
             (
-                {"target_id": "wf-a", "refused_running": "wf-a"},
-                "workflow wf-a is still running — wait for it or use /workflows abort wf-a",
+                "dismiss",
+                "changed",
+                2,
+                "owner-1",
+                "Hidden 2 workflow group(s). Execution continues. Use /workflows tui show to restore.",
             ),
-            ({"target_id": "wf-z", "unknown": "wf-z"}, "no workflow wf-z in the list"),
-        ],
-        ids=[
-            "cleared-some-running",
-            "cleared-none-running",
-            "nothing",
-            "nothing-running",
-            "target",
-            "refused",
-            "unknown",
+            (
+                "show",
+                "changed",
+                2,
+                None,
+                "Shown 2 previously hidden workflow group(s). Retained rows may be stale.",
+            ),
+            ("dismiss", "unchanged", 0, None, "No visible workflow groups to hide."),
+            ("dismiss", "unchanged", 0, "wf-a", "Workflow wf-a is already hidden."),
+            ("show", "unchanged", 0, None, "No hidden workflow groups to show."),
+            ("dismiss", "unknown", 0, "wf-z", "No workflow wf-z in this session list."),
+            ("dismiss", "ambiguous", 0, "orch-a", "Workflow orch-a is ambiguous; use its workflow ID."),
+            ("show", "unavailable", 0, None, "Workflow list unavailable in this session."),
         ],
     )
-    def test_rendered_line(self, fields: dict[str, object], rendered: str) -> None:
-        """Each outcome renders exactly the line the chapter's behaviour table names."""
-        assert WorkflowListDismissOutcomeDAO(**fields).rendered == rendered  # type: ignore[arg-type]
+    def test_rendered_line(
+        self, action: str, outcome: str, count: int, target: str | None, rendered: str
+    ) -> None:
+        """Each accepted shape emits the exact fixed contract line."""
+        value = WorkflowListVisibilityOutcomeDAO(
+            action=action,
+            outcome=outcome,
+            changed_groups=count,
+            target_id=target,
+            snapshot=WorkflowSessionSnapshotDAO(),
+        )
+        assert value.rendered == rendered
+        with pytest.raises(ValidationError):
+            value.changed_groups = 9
 
     @pytest.mark.parametrize(
         "fields",
         [
-            {"refused_running": "wf-a"},
-            {"unknown": "wf-a"},
-            {"target_id": "wf-a", "refused_running": "wf-a", "unknown": "wf-a"},
-            {"target_id": "wf-a", "cleared": ("wf-a",), "unknown": "wf-a"},
-            {"target_id": "wf-a", "cleared": ("wf-a", "wf-b")},
-            {"target_id": "wf-a", "refused_running": "wf-b"},
-            {"still_running": -1},
-            {"private": "x"},
-        ],
-        ids=[
-            "refusal-without-target",
-            "unknown-without-target",
-            "refused-and-unknown",
-            "cleared-and-unknown",
-            "target-clears-two",
-            "refusal-other-id",
-            "negative-running",
-            "extra-field",
+            {"outcome": "changed"},
+            {"outcome": "unchanged", "changed_groups": 1},
+            {"outcome": "unknown"},
+            {"outcome": "ambiguous"},
+            {"outcome": "unknown", "target_id": "wf-a", "changed_groups": 1},
+            {"outcome": "unavailable", "changed_groups": 1},
+            {"outcome": "ambiguous", "target_id": "orch-a", "changed_groups": 1},
+            {"outcome": "unchanged", "changed_groups": -1},
+            {"outcome": "unknown", "target_id": "../secret"},
+            {"outcome": "unchanged", "private": "x"},
         ],
     )
     def test_rejects_inconsistent_outcome(self, fields: dict[str, object]) -> None:
-        """An outcome cannot claim contradictory or off-target results."""
+        """Changed means positive; every other outcome changes zero; refusals name safe targets."""
         with pytest.raises(ValidationError):
-            WorkflowListDismissOutcomeDAO(**fields)  # type: ignore[arg-type]
+            WorkflowListVisibilityOutcomeDAO(
+                action="dismiss", snapshot=WorkflowSessionSnapshotDAO(), **fields
+            )

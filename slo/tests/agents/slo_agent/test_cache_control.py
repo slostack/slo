@@ -80,7 +80,7 @@ class TestPromptCachingFlag:
 
         messages = agent._build_initial_messages(query="hello")
 
-        system_msg: SystemMessage = messages[0]
+        system_msg = messages[0]
         assert isinstance(system_msg, SystemMessage)
         assert "cache_control" not in (system_msg.additional_kwargs or {})
 
@@ -100,7 +100,7 @@ class TestPromptCachingFlag:
 
         messages = agent._build_initial_messages(query="hello")
 
-        system_msg: SystemMessage = messages[0]
+        system_msg = messages[0]
         assert isinstance(system_msg, SystemMessage)
         assert system_msg.additional_kwargs.get("cache_control") == {"type": "ephemeral"}
 

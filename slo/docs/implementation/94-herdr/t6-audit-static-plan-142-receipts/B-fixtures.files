@@ -1,0 +1,5 @@
+tests/agents/slo_agent/compaction/test_compacted_session_updater.py
+tests/auth/providers/test_openai_codex_device_authorization.py
+tests/auth/test_oauth_flow.py
+tests/tui/authentication/test_auth_screen.py
+tests/tui/authentication/test_authentication_headless_e2e.py

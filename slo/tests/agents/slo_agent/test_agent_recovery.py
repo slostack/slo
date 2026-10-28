@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import AsyncIterator, Optional
 
 import pytest
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
 
 from src.agents.providers import FauxChatModel
@@ -96,6 +96,10 @@ def _make_fail_once_faux(
     base = FauxChatModel(responses=responses)
 
     class _FailOnceFaux(FauxChatModel):
+        def __init__(self, *, responses: list[AIMessage]) -> None:
+            """Initialize the scripted queue used by the recovery fixture."""
+            super().__init__(responses=responses)
+
         async def _astream(
             self,
             messages,
@@ -122,6 +126,10 @@ def _make_always_fail_faux() -> FauxChatModel:
     """
 
     class _AlwaysFailFaux(FauxChatModel):
+        def __init__(self, *, responses: list[AIMessage]) -> None:
+            """Initialize the scripted queue used by the recovery fixture."""
+            super().__init__(responses=responses)
+
         async def _astream(
             self,
             messages,
@@ -152,6 +160,10 @@ def _make_fail_n_times_faux(*, fail_count: int, responses: list) -> FauxChatMode
     base = FauxChatModel(responses=responses)
 
     class _FailNFaux(FauxChatModel):
+        def __init__(self, *, responses: list[AIMessage]) -> None:
+            """Initialize the scripted queue used by the recovery fixture."""
+            super().__init__(responses=responses)
+
         async def _astream(
             self,
             messages,

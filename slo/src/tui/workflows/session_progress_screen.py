@@ -63,7 +63,9 @@ class ProgressLog(RichLog):
 
     def __init__(self) -> None:
         """Build the screen's non-wrapping, manually followed log."""
-        super().__init__(wrap=False, markup=False, auto_scroll=False, id="session-log")
+        # Markdown must fit narrow modals rather than RichLog's default 78-cell floor.
+        # Plain tool output remains unwrapped and horizontally scrollable.
+        super().__init__(min_width=1, wrap=False, markup=False, auto_scroll=False, id="session-log")
 
     def on_resize(self, event: events.Resize) -> None:
         """Render deferred lines natively, then report the new layout to the screen.
@@ -260,6 +262,8 @@ class SessionProgressScreen(ModalScreen[None]):
         self._log.focus()
         self.watch(self._log, "navigation_revision", self._hide_reset_notice, init=False)
         self.watch(self._log, "virtual_size", self._retry_pending_restore, init=False)
+        self.watch(self._log, "show_horizontal_scrollbar", self._retry_pending_restore, init=False)
+        self.watch(self._log, "show_vertical_scrollbar", self._retry_pending_restore, init=False)
 
     def on_progress_log_layout_changed(self, _message: ProgressLog.LayoutChanged) -> None:
         """Retry a clamped restore once the log has been laid out again.

@@ -34,41 +34,21 @@ PROGRESS_REFRESH_FAILED_NOTICE: str = "Progress refresh unavailable; retrying on
 
 
 class WorkflowProgressUpdatesAdapter:
-    """Keep the workflow session list and the selected agent's progress dialog up to date.
+    """App adapter implementing ``WorkflowProgressSink`` for one owning session (feature 94 a.3).
 
-    The app creates this adapter with ``register(tui=self)`` when it starts
-    watching the current session's workflows. ``WorkflowProgressCoordinator``
-    calls it after reading fresh data, normally every five seconds and when
-    a refresh is requested. ``apply_sessions()`` updates the session list;
-    ``apply_progress()`` updates the open progress dialog.
-
-    When the user selects an agent, ``open_progress()`` opens its dialog.
-    Minimizing saves the reading position so reopening can restore it. The
-    adapter keeps track of its own dialogs and refuses to replace unrelated
-    dialogs. It also prevents delayed updates from changing a closed view or
-    silently switching the reader to a different execution.
-
-    When the user chooses Abort child, it opens a confirmation dialog and
-    passes an explicitly confirmed request back to the app. It does not
-    cancel agents itself. If a refresh fails, it keeps the last displayed
-    data and shows: "Progress refresh unavailable; retrying on the next tick."
-
-    Unlike ``WorkflowNoticeAdapter``, this adapter manages the progress UI;
-    it does not write notices into the main chat. It does not read progress
-    files, schedule refreshes, or run agents. Those jobs belong to the
-    workflow service and coordinator.
+    Owns only presentation state: the single progress screen reference, the
+    selected row identity captured at open, the latest list identities and the
+    bounded LRU of saved viewports. It never builds services, never touches the
+    coordinator's state and never cancels execution; lifecycle intents go back
+    through the app (``_on_progress_incarnation_changed``). Unrelated modals are
+    never dismissed: only a screen this sink pushed is ever closed.
     """
 
-    @classmethod
-    def register(cls, *, tui: SloTUI) -> Self:
-        """Create this presentation adapter bound to one app instance."""
-        return cls(tui=tui)
-
     def __init__(self, *, tui: SloTUI) -> None:
-        """Bind the adapter to the owning app with empty presentation state.
+        """Bind the sink to the owning app with empty presentation state.
 
         Args:
-            tui (SloTUI): App whose screens, panel and prompt the adapter drives.
+            tui (SloTUI): App whose screens, panel and prompt the sink drives.
         """
         self._tui: SloTUI = tui
         self._screen: Optional[SessionProgressScreen] = None
@@ -79,8 +59,13 @@ class WorkflowProgressUpdatesAdapter:
         # Identity of the open view's row when it was opened; None when unknown.
         self._selected_identity: Optional[tuple[str, str]] = None
         self._failure_notified: bool = False
-        # The confirmation this adapter opened above its progress view, if any.
+        # The one confirmation this sink pushed above its progress view, if open.
         self._confirmation: Optional[AbortConfirmationScreen] = None
+
+    @classmethod
+    def register(cls, *, tui: SloTUI) -> Self:
+        """Create one app-owned presentation adapter for this observation lifetime."""
+        return cls(tui=tui)
 
     def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
         """Open one owned view, refusing to stack behind unrelated modals.
@@ -111,7 +96,7 @@ class WorkflowProgressUpdatesAdapter:
         return True
 
     def minimize_progress(self) -> None:
-        """Save the current viewport and give up this adapter's progress screen.
+        """Save the current viewport and give up this sink's progress screen.
 
         WHAT: Withdraws an owned confirmation first (answering False, so no
             abort is submitted), then retires the view: it closes at once when it
@@ -247,7 +232,7 @@ class WorkflowProgressUpdatesAdapter:
         self._tui._focus_after_progress()
 
     def _remember_viewport(self, *, screen: SessionProgressScreen) -> None:
-        """Bound saved positions whenever the adapter minimizes or replaces a view.
+        """Bound saved positions whenever the sink minimizes or replaces a view.
 
         Args:
             screen (SessionProgressScreen): Owned screen being dismissed.

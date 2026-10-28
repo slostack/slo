@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -25,8 +26,9 @@ async def _start_server(handler: Any) -> tuple[str, web.AppRunner]:
     await runner.setup()
     site: web.TCPSite = web.TCPSite(runner=runner, host="127.0.0.1", port=0)
     await site.start()
-    server = site._server  # type: ignore[attr-defined]
-    assert server is not None and server.sockets
+    server = site._server
+    assert isinstance(server, asyncio.Server)
+    assert server.sockets
     port: int = server.sockets[0].getsockname()[1]
     return f"http://127.0.0.1:{port}/device", runner
 

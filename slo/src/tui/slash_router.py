@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Optional, Protocol
 from unittest.mock import Mock
 
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPreferencesStoreCorruptError
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
@@ -39,6 +39,7 @@ from src.agents.slo_agent.history.tree_builder import SessionTreeBuilder
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowCommandResultDAO,
     WorkflowCommandService,
+    WorkflowResumeLauncher,
     WorkflowHandleStore,
 )
 from src.tui.tree_export_format import TreeExportFormat
@@ -48,7 +49,7 @@ from src.tui.slash_command_registry import (
     SlashCommandSpecDAO,
     build_default_registry,
 )
-from src.tui.workflows.dao import WorkflowListDismissRequestDAO
+from src.tui.workflows.dao import WorkflowListVisibilityRequestDAO
 
 __all__ = ["SlashCommandResultDAO", "SlashRouter"]
 
@@ -95,9 +96,9 @@ class SlashCommandResultDAO(BaseModel):
             succeeded; the TUI suppresses its observation group in memory.
         resumed_workflow_id (Optional[str]): Workflow whose relaunch was
             confirmed; the TUI clears any observation suppression for it.
-        tui_dismiss (Optional[WorkflowListDismissRequestDAO]): ``/workflows tui
-            dismiss [<id>]`` request; the TUI hides finished groups from its
-            session list in memory and renders the service's outcome line.
+        tui_visibility (Optional[WorkflowListVisibilityRequestDAO]): ``/workflows tui
+            dismiss [<id>]`` or ``show`` request; the TUI changes list visibility
+            in memory and renders the service's typed outcome line.
     """
 
     rendered: Optional[str] = None
@@ -118,7 +119,9 @@ class SlashCommandResultDAO(BaseModel):
     git_diff_path: Optional[str] = None
     dismissed_workflow_id: Optional[str] = None
     resumed_workflow_id: Optional[str] = None
-    tui_dismiss: Optional[WorkflowListDismissRequestDAO] = None
+    tui_visibility: Optional[WorkflowListVisibilityRequestDAO] = Field(
+        default=None, description="Local workflow display intent."
+    )
 
     @model_validator(mode="after")
     def _reject_duplicate_context_refresh(self) -> "SlashCommandResultDAO":
@@ -146,10 +149,12 @@ class SlashRouter:
         *,
         line: str,
         session: SloAgentSession,
+        workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
     ) -> SlashCommandResultDAO:
         """Route ``line`` (known to start with ``/``) to a handler.
 
         Args:
+            workflow_resume_launcher: Optional process/capture boundary for workflow resume.
             line (str): The full input line including the leading slash.
             session (SloAgentSession): The session to apply commands to.
 
@@ -171,6 +176,10 @@ class SlashRouter:
                 handler=plugin_handler,
                 rest=rest,
                 session=session,
+            )
+        if command.name == "workflows" and workflow_resume_launcher is not None:
+            return await cls._handle_workflows(
+                rest=rest, session=session, resume_launcher=workflow_resume_launcher
             )
         handler: SlashHandler = cls._handler_for(command_name=command.name)
         return await handler(rest=rest, session=session)
@@ -268,7 +277,9 @@ class SlashRouter:
         """
         token: str
         rest: str
-        token, _, rest = line[1:].strip().partition(" ")
+        parts = line[1:].strip().split(maxsplit=1)
+        token = parts[0] if parts else ""
+        rest = parts[1] if len(parts) > 1 else ""
         return token, rest
 
     @classmethod
@@ -1241,6 +1252,7 @@ class SlashRouter:
         *,
         rest: str,
         session: SloAgentSession,
+        resume_launcher: Optional[WorkflowResumeLauncher] = None,
     ) -> SlashCommandResultDAO:
         """List, abort, dismiss, or resume detached workflows, or clear the TUI list.
 
@@ -1251,6 +1263,7 @@ class SlashRouter:
         before the history guard because attached groups exist without history.
 
         Args:
+            resume_launcher: Optional process/capture boundary; production launch is the default.
             rest (str): Trailing argument text — empty for list, or
                 ``abort <workflow-id>``, ``dismiss <workflow-id>``,
                 ``resume <workflow-id>`` or ``tui dismiss [<workflow-id>]``.
@@ -1260,10 +1273,13 @@ class SlashRouter:
             SlashCommandResultDAO: Result with the listing, a confirmation, a
                 typed list-clearing request, or an error/usage line.
         """
+        visibility_parts = rest.split(maxsplit=1)
+        if visibility_parts and visibility_parts[0] == "tui":
+            return cls._workflow_list_visibility_result(
+                argument=visibility_parts[1] if len(visibility_parts) > 1 else ""
+            )
         subcommand, _, workflow_id = rest.strip().partition(" ")
         workflow_id = workflow_id.strip()
-        if subcommand == "tui":
-            return cls._workflow_list_dismiss_result(argument=workflow_id)
         if session.history_root is None:
             return SlashCommandResultDAO(
                 rendered="workflows unavailable — history is disabled for this session",
@@ -1271,6 +1287,7 @@ class SlashRouter:
         service: WorkflowCommandService = WorkflowCommandService(
             store=WorkflowHandleStore(history_root=session.history_root),
             owner_session_id=session.session_id,
+            resume_launcher=resume_launcher,
         )
         if not subcommand:
             return SlashCommandResultDAO(rendered=await service.list_text())
@@ -1283,7 +1300,7 @@ class SlashRouter:
         return SlashCommandResultDAO(rendered=f"usage: {WORKFLOWS_USAGE}")
 
     @classmethod
-    def _workflow_list_dismiss_result(cls, *, argument: str) -> SlashCommandResultDAO:
+    def _workflow_list_visibility_result(cls, *, argument: str) -> SlashCommandResultDAO:
         """Translate ``/workflows tui <argument>`` into a typed request or the usage line.
 
         WHAT: Carries only the request; the app applies it to its observation
@@ -1295,31 +1312,35 @@ class SlashRouter:
             argument (str): Text after ``tui``.
 
         Returns:
-            SlashCommandResultDAO: ``tui_dismiss`` request, or the usage line for
+            SlashCommandResultDAO: ``tui_visibility`` request, or the usage line for
                 any other form or an unsafe id.
         """
-        request: Optional[WorkflowListDismissRequestDAO] = cls._list_dismiss_request(
+        request: Optional[WorkflowListVisibilityRequestDAO] = cls._list_visibility_request(
             words=tuple(argument.split())
         )
         if request is None:
             return SlashCommandResultDAO(rendered=f"usage: {WORKFLOWS_USAGE}")
-        return SlashCommandResultDAO(rendered="", tui_dismiss=request)
+        return SlashCommandResultDAO(rendered="", tui_visibility=request)
 
     @staticmethod
-    def _list_dismiss_request(*, words: tuple[str, ...]) -> Optional[WorkflowListDismissRequestDAO]:
+    def _list_visibility_request(*, words: tuple[str, ...]) -> Optional[WorkflowListVisibilityRequestDAO]:
         """Parse ``dismiss [<id>]`` into a validated request.
 
         Args:
             words (tuple[str, ...]): Whitespace-separated words after ``tui``.
 
         Returns:
-            Optional[WorkflowListDismissRequestDAO]: The request, or None for any
+            Optional[WorkflowListVisibilityRequestDAO]: The request, or None for any
                 other shape or an id that is not a safe identifier.
         """
+        if words == ("show",):
+            return WorkflowListVisibilityRequestDAO(action="show")
         if words[:1] != ("dismiss",) or len(words) > 2:
             return None
         try:
-            return WorkflowListDismissRequestDAO(target_id=words[1] if len(words) == 2 else None)
+            return WorkflowListVisibilityRequestDAO(
+                action="dismiss", target_id=words[1] if len(words) == 2 else None
+            )
         except ValidationError:
             return None
 

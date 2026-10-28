@@ -108,7 +108,7 @@ class TestClaudeCodePayloadShaping:
 
     def test_canonicalizes_shared_tool_names_on_outbound_payload(self) -> None:
         """Shared Slo tool names are title-cased to Claude Code's naming."""
-        bound: RunnableBinding = build_claude_code_backed_chat_anthropic(
+        bound = build_claude_code_backed_chat_anthropic(
             model_name="claude-sonnet-4-6",
             cred=_oauth_cred(),
         ).bind_tools(
@@ -125,7 +125,9 @@ class TestClaudeCodePayloadShaping:
                 },
             ]
         )
-        chat: ClaudeCodeChatAnthropic = bound.bound
+        assert isinstance(bound, RunnableBinding)
+        chat = bound.bound
+        assert isinstance(chat, ClaudeCodeChatAnthropic)
 
         payload: dict[str, Any] = chat._get_request_payload(
             input_=[HumanMessage(content="use tools")],
@@ -235,6 +237,10 @@ class TestClaudeCodeOutputNormalization:
         ):
             result = chat._format_output(response)
 
-        message: AIMessage = result.generations[0].message
+        message = result.generations[0].message
+        assert isinstance(message, AIMessage)
         assert message.tool_calls[0]["name"] == "read"
-        assert message.content[0]["name"] == "read"
+        assert isinstance(message.content, list)
+        block = message.content[0]
+        assert isinstance(block, dict)
+        assert block["name"] == "read"

@@ -1,24 +1,17 @@
-"""Renderer for detached-workflow UI effects (spec 57.a.5).
+"""Present typed workflow effects without parsing raw results or launching windows.
 
-Consumes the typed effects emitted by ``DetachedWorkflowAppService`` and
-executes them: owns the one-window-per-orchestrator-session launch guard,
-calls ``VisualizerLauncher``, and writes the success / manual-command
-transcript notices. This is the only layer of the receive path allowed to
-touch the visualizer launcher and the transcript notice surface.
+The app owns scheduling, captured session lifetime and async execution. This
+renderer owns per-parent deduplication and shared attached/detached notices.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Protocol
+from typing import List, Protocol
 
-from src.tui.visualizer_launcher import VisualizerLauncher
-from src.tui.workflows.dao import (
-    DetachedWorkflowUiEffectDAO,
-    ParsedLaunchResultDAO,
-    parse_launch_workflow_result,
-)
+from src.agents.slo_agent.herdr.dao import VisualizerLaunchOutcomeDAO
+from src.tui.workflows.dao import DetachedWorkflowUiEffectDAO
 
-__all__ = ["DetachedWorkflowRenderer", "DetachedWorkflowNoticeSink", "DetachedVisualizerLaunch"]
+__all__ = ["DetachedWorkflowRenderer", "DetachedWorkflowNoticeSink", "DetachedVisualizerSchedule"]
 
 
 class DetachedWorkflowNoticeSink(Protocol):
@@ -34,68 +27,32 @@ class DetachedWorkflowNoticeSink(Protocol):
         ...
 
 
-class DetachedVisualizerLaunch(Protocol):
-    """Narrow launcher seam — satisfied by ``VisualizerLauncher.launch``."""
+class DetachedVisualizerSchedule(Protocol):
+    """Register work with the app-owned registry without executing a launch."""
 
-    def __call__(self, *, parent_session_id: str) -> bool:
-        """Open the visualizer window for one orchestrator session.
-
-        Args:
-            parent_session_id (str): Detached orchestrator session id.
-
-        Returns:
-            bool: ``True`` when a terminal window was spawned.
-        """
+    def __call__(self, *, parent_session_id: str) -> None:
+        """Schedule the captured workflow parent; return no launch result."""
         ...
 
 
 class DetachedWorkflowRenderer:
-    """Execute detached-workflow UI effects with launch de-duplication.
-
-    The launch guard is keyed by ``orchestrator_session_id`` — not per run —
-    so one detached workflow opens at most one visualizer window while it is
-    live. The ``reset_launch_guard`` effect (emitted only by terminal
-    lifecycle advances) frees the guard so a re-run of the same workflow
-    gets a fresh window. Launch is best-effort: a skipped or failed spawn
-    writes the manual ``slo visualize`` command to the transcript instead of
-    the success line.
-    """
+    """Deduplicate typed launch effects and present completed launch outcomes."""
 
     def __init__(
         self,
         *,
         notice_sink: DetachedWorkflowNoticeSink,
-        launcher: Optional[DetachedVisualizerLaunch] = None,
+        schedule: DetachedVisualizerSchedule,
     ) -> None:
-        """Bind the renderer to its notice sink and launcher.
+        """Bind transcript presentation and the app-owned scheduling callback.
 
         Args:
-            notice_sink (DetachedWorkflowNoticeSink): Transcript notice surface.
-            launcher (Optional[DetachedVisualizerLaunch]): Visualizer launch
-                callable for tests. ``None`` resolves to
-                ``VisualizerLauncher.launch`` at call time so the class-level
-                patch seam used across the suite keeps working.
+            notice_sink: Transcript notice surface.
+            schedule: Synchronous registration only, never a window launcher.
         """
-        self._notice_sink: DetachedWorkflowNoticeSink = notice_sink
-        self._launcher: Optional[DetachedVisualizerLaunch] = launcher
+        self._notice_sink = notice_sink
+        self._schedule = schedule
         self._launched_for: set[str] = set()
-
-    def handle_launch_result(self, *, result_text: str) -> None:
-        """Execute the launch-result path for one ``launch_workflow`` tool result.
-
-        WHAT: re-validates the tool-result text (malformed/error JSON is a
-            safe no-op) and asks the visualizer to open for a valid handle.
-        WHO: the TUI live render path on ``launch_workflow`` tool results.
-        WHEN: during the launch turn, after the app service has seeded the
-            live-state cache.
-
-        Args:
-            result_text (str): Raw ``launch_workflow`` tool-result text.
-        """
-        orchestrator_session_id: str = self._orchestrator_session_id_from_result(
-            result_text=result_text,
-        )
-        self._launch_once(orchestrator_session_id=orchestrator_session_id)
 
     def apply_effects(self, *, effects: List[DetachedWorkflowUiEffectDAO]) -> None:
         """Execute every typed UI effect in one lifecycle outcome.
@@ -143,47 +100,45 @@ class DetachedWorkflowRenderer:
         if orchestrator_session_id in self._launched_for:
             return
         self._launched_for.add(orchestrator_session_id)
-        launch: DetachedVisualizerLaunch = self._launcher or VisualizerLauncher.launch
-        launched: bool = launch(parent_session_id=orchestrator_session_id)
-        self._write_launch_notice(
-            launched=launched,
-            orchestrator_session_id=orchestrator_session_id,
-        )
+        self._schedule(parent_session_id=orchestrator_session_id)
 
-    def _write_launch_notice(self, *, launched: bool, orchestrator_session_id: str) -> None:
-        """Write the success or manual-command transcript notice.
-
-        Args:
-            launched (bool): Whether the window spawn succeeded.
-            orchestrator_session_id (str): Detached orchestrator session id.
-        """
-        if launched:
-            self._notice_sink.write(
-                content=(
-                    "⊇ Opened workflow visualizer in a new window " f"(session {orchestrator_session_id})."
-                ),
-                classes="sub-agent-notice",
-            )
-            return
-        self._notice_sink.write(
-            content=(
-                "⊇ Watch the workflow live: " f"slo visualize --session {orchestrator_session_id} --follow"
-            ),
-            classes="sub-agent-notice",
-        )
-
-    @staticmethod
-    def _orchestrator_session_id_from_result(*, result_text: str) -> str:
-        """Re-extract the orchestrator session id from a tool-result text.
+    def write_launch_outcome(
+        self,
+        *,
+        parent_session_id: str,
+        outcome: VisualizerLaunchOutcomeDAO,
+    ) -> None:
+        """Present a completed request without claiming viewer process liveness.
 
         Args:
-            result_text (str): Raw ``launch_workflow`` tool-result text.
-
-        Returns:
-            str: The orchestrator session id, or ``""`` for malformed/error
-                JSON — the launch guard treats ``""`` as a no-op.
+            parent_session_id: Captured request identity.
+            outcome: Safe typed execution result, never raw CLI output.
         """
-        parsed: ParsedLaunchResultDAO | None = parse_launch_workflow_result(result_text=result_text)
-        if parsed is None:
-            return ""
-        return parsed.orchestrator_session_id
+        try:
+            self._write_launch_notice(parent_session_id=parent_session_id, outcome=outcome)
+        finally:
+            if outcome.status == "failed":
+                self._launched_for.discard(parent_session_id)
+
+    def _write_launch_notice(
+        self,
+        *,
+        parent_session_id: str,
+        outcome: VisualizerLaunchOutcomeDAO,
+    ) -> None:
+        """Format the shared attached/detached typed completion notice."""
+        notices = {
+            "opened": "Opened workflow visualizer in a new window.",
+            "submitted": "Submitted workflow viewer command to Herdr pane",
+            "reused": "Previously attempted viewer; Select the retained Herdr pane if still present",
+            "failed": "Workflow viewer launch failed; recover manually",
+            "skipped": "Workflow viewer launch skipped; open manually",
+        }
+        content = notices[outcome.status]
+        if outcome.pane_id is not None:
+            content += f" ({outcome.pane_id})."
+        if outcome.status == "reused":
+            content += " Otherwise run in a pane you choose:"
+        if outcome.status in ("failed", "skipped", "reused"):
+            content += f" slo visualize --session {parent_session_id} --follow"
+        self._notice_sink.write(content=f"⊇ {content}", classes="sub-agent-notice")

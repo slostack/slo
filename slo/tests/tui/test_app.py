@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.tools import tool
 
 from config.logger import interactive_logging, log_info
+from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.compaction.compacter import Compacter
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
@@ -43,6 +44,7 @@ from src.tui.components.chat_transcript.component import (
 from src.tui.authentication import AuthenticationScreen
 from src.tui.git_diff_content_service import GitDiffContentDAO, GitDiffContentError
 from src.tui.git_diff_screen import GitDiffScreen
+from src.tui.slash_router import SlashCommandResultDAO
 from src.tui.slodiff.model import FileStateKind
 from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 from src.tui.thinking_spinner import _BRAILLE_FRAMES, ThinkingSpinner
@@ -71,6 +73,19 @@ def _build_session(*, responses: list[AIMessage]) -> SloAgentSession:
         workdir=Path(".").resolve(),
         session_id=str(uuid4()),
     )
+
+
+def _build_resource_free_session_mock() -> MagicMock:
+    """Build a presentation-only session double with truthful final drain evidence.
+
+    These fixtures own no reporter, child or lease. Lifecycle retention tests use
+    real sessions instead; an unconfigured AsyncMock is not drained evidence.
+    """
+    session = MagicMock(spec=SloAgentSession)
+    outcome = HerdrReporterCloseOutcomeDAO(replacement="safe", resources="drained")
+    session.close_external_reporting.return_value = outcome
+    session.finish_retired_reporting_cleanup.return_value = outcome
+    return session
 
 
 def _empty_usage_snapshot() -> SessionUsageSnapshotDAO:
@@ -335,7 +350,7 @@ class TestSloTUIActiveModelState:
     @pytest.mark.asyncio
     async def test_title_uses_session_active_model_and_reasoning_state(self) -> None:
         """Mount-time title reflects the session active model and reasoning level."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -359,7 +374,7 @@ class TestSloTUIActiveModelState:
     @pytest.mark.asyncio
     async def test_auth_dismissed_switches_to_provider_default_model(self) -> None:
         """Anthropic auth success switches away from an OpenAI active model."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -401,7 +416,7 @@ class TestSloTUIActiveModelState:
     @pytest.mark.asyncio
     async def test_dispatch_slash_command_refreshes_title_when_requested(self) -> None:
         """Slash-command results with ``refresh_title=True`` update the top bar immediately."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -420,7 +435,7 @@ class TestSloTUIActiveModelState:
             await pilot.pause()
             with patch(
                 "src.tui.app.SlashRouter.dispatch",
-                return_value=MagicMock(
+                return_value=SlashCommandResultDAO(
                     rendered="reasoning changed high -> off",
                     should_clear=False,
                     open_auth_modal=False,
@@ -521,7 +536,7 @@ class TestSloTUI:
     @pytest.mark.asyncio
     async def test_subtitle_uses_session_name_when_present(self) -> None:
         """The subtitle shows the session name and full (untruncated) id."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -544,7 +559,7 @@ class TestSloTUI:
     async def test_subtitle_shows_full_session_id_without_truncation(self) -> None:
         """A full UUID session id is shown verbatim — never sliced to a prefix."""
         full_id: str = "a166b82b-617e-45c6-9ada-a36f1c589fb6"
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = full_id
@@ -566,7 +581,7 @@ class TestSloTUI:
     @pytest.mark.asyncio
     async def test_rename_session_updates_subtitle_immediately(self) -> None:
         """Renaming the active session refreshes the subtitle right away."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -603,7 +618,7 @@ class TestSloTUISessionInbox:
         """History-backed TUI sessions hold an active lease only while mounted."""
         history_root: Path = tmp_path / "history"
         lease_store: SessionOwnershipLeaseStore = SessionOwnershipLeaseStore(history_root=history_root)
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -632,7 +647,7 @@ class TestSloTUISessionInbox:
         """`ui_notice` inbox items render a low-noise notice and are acked."""
         history_root: Path = tmp_path / "history"
         inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -683,7 +698,7 @@ class TestSloTUISessionInbox:
         """
         history_root: Path = tmp_path / "history"
         inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -735,7 +750,7 @@ class TestSloTUISessionInbox:
         """
         history_root: Path = tmp_path / "history"
         inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -791,7 +806,7 @@ class TestSloTUISessionInbox:
         history_root: Path = (tmp_path / "history").resolve()
         assert history_root.is_relative_to(tmp_path.resolve())
         inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = tmp_path
         session.session_id = "session-openrouter-target"
@@ -835,7 +850,7 @@ class TestSloTUISessionInbox:
     @pytest.mark.asyncio
     async def test_new_session_replaces_active_session_and_clears_transcript(self) -> None:
         """`/new` swaps in a fresh session and clears the visible transcript."""
-        old_session: MagicMock = MagicMock(spec=SloAgentSession)
+        old_session: MagicMock = _build_resource_free_session_mock()
         old_session.preparation_status = "ready"
         old_session.workdir = Path(".").resolve()
         old_session.session_id = "old-session-1234"
@@ -853,7 +868,7 @@ class TestSloTUISessionInbox:
         old_session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
         old_session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
 
-        new_session: MagicMock = MagicMock(spec=SloAgentSession)
+        new_session: MagicMock = _build_resource_free_session_mock()
         new_session.preparation_status = "ready"
         new_session.workdir = Path(".").resolve()
         new_session.session_id = "new-session-5678"
@@ -897,7 +912,7 @@ class TestSloTUISessionInbox:
     @pytest.mark.asyncio
     async def test_new_session_rejection_while_run_active_preserves_existing_behavior(self) -> None:
         """`/new` stays rejected during an active run; no second session is built."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -939,7 +954,7 @@ class TestSloTUISessionInbox:
         WHEN: A completed prompt remains tracked until its queue handoff
             finishes, so `/new` must not slip through the session guard alone.
         """
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -983,7 +998,7 @@ class TestSloTUISessionInbox:
     @pytest.mark.asyncio
     async def test_dispatch_slash_command_handles_new_and_rename_intents(self) -> None:
         """Slash dispatch routes naming lifecycle intents through app-owned helpers."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -1194,7 +1209,7 @@ class TestSloTUISessionInbox:
     async def test_exit_prints_resume_command_for_active_session(self) -> None:
         """Quitting prints a ``slo --resume <id>`` line so the session can be reopened."""
         full_id: str = "a166b82b-617e-45c6-9ada-a36f1c589fb6"
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = full_id
@@ -1324,7 +1339,7 @@ class TestSloTUISessionInbox:
     @pytest.mark.asyncio
     async def test_slash_abort_escalates_to_hard_cancel(self) -> None:
         """``/abort`` arms the hard-cancel escalation, not just the cooperative flag."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -1351,7 +1366,7 @@ class TestSloTUISessionInbox:
 
     def _steering_session_stub(self) -> MagicMock:
         """Build a session stub with the steering-facing runtime surface."""
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -1648,7 +1663,7 @@ class TestQueuedPromptGating:
         Returns:
             MagicMock: ``SloAgentSession``-specced stub for queue/abort tests.
         """
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-1234"
@@ -2616,8 +2631,11 @@ class TestSloTUICopy:
     """Clipboard-oriented TUI behavior."""
 
     @pytest.mark.asyncio
-    async def test_copy_binding_copies_visible_transcript_when_prompt_has_no_selection(self) -> None:
+    async def test_copy_binding_copies_visible_transcript_when_prompt_has_no_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """``Cmd+C`` / ``Ctrl+Shift+C`` copies the transcript as plain text."""
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
         session: SloAgentSession = _build_session(
             responses=[AIMessage(content="hi")],
         )
@@ -4339,7 +4357,7 @@ class TestLoadOlderEntries:
         Returns:
             SloTUI: App under test.
         """
-        session: MagicMock = MagicMock(spec=SloAgentSession)
+        session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
         session.session_id = "session-history-1234"

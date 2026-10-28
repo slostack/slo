@@ -86,6 +86,20 @@ class TestWriteEntry:
         assert _plain(writes=thinking.writes)[1] == "t" * 2000
         assert _plain(writes=tool.writes)[1] == "o" * 800
 
+    @pytest.mark.parametrize("kind", ["thinking", "assistant"])
+    def test_reasoning_uses_markdown_without_rewriting_source(self, kind: str) -> None:
+        """Both capture thinking and replay reasoning preserve Markdown and literal spaces."""
+        source = "**Review** the source.\n\nNext line.  \nHard break.\n\n```text\n    x  =  1\n```"
+        entry = (
+            TranscriptEntryDAO(kind="thinking", content=source)
+            if kind == "thinking"
+            else TranscriptEntryDAO(kind="assistant", reasoning=source, answer="Unchanged answer.")
+        )
+        log = _write(entry=entry)
+        body = log.writes[1 if kind == "thinking" else 2][0]
+        assert isinstance(body, Markdown)
+        assert body.markup == source
+
     def test_markup_in_content_is_literal(self) -> None:
         """Untrusted tool output with Rich markup is written as literal text."""
         log = _write(entry=TranscriptEntryDAO(kind="tool", tool_name="[b]x[/b]", output="[red]boom[/red]"))

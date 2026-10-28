@@ -1,0 +1,26 @@
+# Manifest reconciliation — turn6-code-test-176
+# Base (pre-feature) d0e3a75 vs HEAD c2f9e56 vs worktree for the 4 intended files
+
+src/tui/app.py
+  base(d0e3a75)=2fab5eee8da12ecf30b3bd03a3b6822e205a51f2
+  HEAD(c2f9e56)=f1148d97daba0fd4016eb0edc60874e703ab1c25
+  worktree     =f1148d97daba0fd4016eb0edc60874e703ab1c25  [WORKTREE==HEAD]
+src/agents/slo_agent/sessions/service.py
+  base(d0e3a75)=224c3da7f5a48fa6f8f6bba0090da47eece39be4
+  HEAD(c2f9e56)=c5fffbf4d2997e4598b04f8d6ca15a851e3a01e1
+  worktree     =c5fffbf4d2997e4598b04f8d6ca15a851e3a01e1  [WORKTREE==HEAD]
+tests/tui/test_startup_notice_cutoff.py
+  base(d0e3a75)=ABSENT
+  HEAD(c2f9e56)=c7f240ae3ec9459eb6f59840411f79f7f6563dd4
+  worktree     =c7f240ae3ec9459eb6f59840411f79f7f6563dd4  [WORKTREE==HEAD]
+tests/implementation_checks/test_conventions_audit_paths.py
+  base(d0e3a75)=ABSENT
+  HEAD(c2f9e56)=ecd2f4b3bb1eb8483744917e19a52c4579e82c11
+  worktree     =ecd2f4b3bb1eb8483744917e19a52c4579e82c11  [WORKTREE==HEAD]
+
+# Other tracked files changed vs HEAD:
+  (none)
+
+# audit.py (must be unchanged from pre-my-work bc98b76):
+  bc98b76=589e42366630bdd6b8cdb647a5caa9fef1ee196d
+  worktree=589e42366630bdd6b8cdb647a5caa9fef1ee196d  UNCHANGED

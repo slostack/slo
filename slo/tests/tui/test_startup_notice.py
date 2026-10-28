@@ -91,6 +91,7 @@ class TestStartupNotice:
                 "/help" in content for content, _classes in app.query_one(ChatTranscript)._adapter.lines
             )
 
+        assert session.history_store is not None
         metadata = await session.history_store.read_metadata(session_id=session_id)
         assert metadata.startup_notice_shown_at is not None
 

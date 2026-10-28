@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -131,7 +132,7 @@ class TestModelCatalogStoreRefreshLease:
         cache_path = tmp_path / "catalog.json"
         assert cache_path.resolve().is_relative_to(tmp_path.resolve())
         assert store_module._fcntl is not None
-        original_flock = store_module._fcntl.flock
+        original_flock = fcntl.flock
         calls = 0
 
         def failing_once_flock(descriptor: int, operation: int) -> None:

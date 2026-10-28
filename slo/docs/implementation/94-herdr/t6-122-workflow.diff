@@ -1,0 +1,57 @@
+--- docs/implementation/94-herdr/t6-122-workflow-before.txt	2026-10-19 10:53:53.323627130 +0700
++++ tests/tui/workflows/test_workflow_app_service.py	2026-10-19 10:55:34.587955262 +0700
+@@ -4,7 +4,7 @@
+ 
+ from pathlib import Path
+ from typing import List
+-from unittest.mock import AsyncMock
++from unittest.mock import AsyncMock, patch
+ 
+ from src.agents.slo_agent.orchestrator.workflow_registry import (
+     WorkflowHandleDAO,
+@@ -115,9 +115,9 @@
+         store: WorkflowHandleStore = _build_store(history_root=tmp_path)
+         service: DetachedWorkflowAppService = _build_service(store=store)
+         service._workflow_states = {"wf-seeded": "running"}
+-        store.reconcile = AsyncMock(side_effect=OSError("disk gone"))
+-
+-        snapshot: dict[str, WorkflowState] = await service.reconcile_snapshot()
++        reconcile: AsyncMock = AsyncMock(spec=store.reconcile, side_effect=OSError("disk gone"))
++        with patch.object(target=store, attribute="reconcile", new=reconcile):
++            snapshot: dict[str, WorkflowState] = await service.reconcile_snapshot()
+ 
+         assert snapshot == {"wf-seeded": "running"}
+ 
+@@ -142,7 +142,11 @@
+         )
+ 
+         assert outcome == HandleAdvanceOutcomeDAO(workflow_id="wf-1")
+-        assert service.fleet_update_for(workflow_id="wf-1") == ParsedFleetUpdateDAO(**payload)
++        assert service.fleet_update_for(workflow_id="wf-1") == ParsedFleetUpdateDAO(
++            workflow_id="wf-1",
++            entries=[{"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}],
++            live_count=1,
++        )
+         handle = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-1")
+         assert handle is not None
+         assert handle.state == "launching"
+@@ -270,12 +274,14 @@
+         """Unknown workflows and illegal transitions never fail delivery."""
+         store: WorkflowHandleStore = _build_store(history_root=tmp_path)
+         service: DetachedWorkflowAppService = _build_service(store=store)
+-        store.update_state = AsyncMock(side_effect=FileNotFoundError("wf-missing"))
+-
+-        outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
+-            kind="workflow_started",
+-            payload=_lifecycle_payload(),
++        update_state: AsyncMock = AsyncMock(
++            spec=store.update_state, side_effect=FileNotFoundError("wf-missing")
+         )
++        with patch.object(target=store, attribute="update_state", new=update_state):
++            outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
++                kind="workflow_started",
++                payload=_lifecycle_payload(),
++            )
+ 
+         assert outcome.advanced_handle is False
+         assert outcome.effects == []

@@ -14,14 +14,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 CURRENT_AI_FOOTER = "Co-Authored-By: Claude <noreply@anthropic.com>"
 POLICY_FILES = (
-    "AGENTS.md",
+    "README.md",
     "SLO.md",
-    "CLAUDE.md",
     "skills/git-ops/branching-and-commit-conventions/SKILL.md",
     "skills/git-ops/ship-feature/SKILL.md",
     "skills/orchestration/workflows/gitlab-code-test-review.md",
 )
-COMMIT_EXAMPLE_FILES = POLICY_FILES[3:]
+COMMIT_EXAMPLE_FILES = (
+    "skills/git-ops/branching-and-commit-conventions/SKILL.md",
+    "skills/git-ops/ship-feature/SKILL.md",
+    "skills/orchestration/workflows/gitlab-code-test-review.md",
+)
 
 
 @pytest.mark.parametrize("relative", POLICY_FILES)

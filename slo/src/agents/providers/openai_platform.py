@@ -4,10 +4,10 @@ from collections.abc import Mapping
 from typing import ClassVar, Optional
 
 from langchain_core.language_models import LanguageModelInput
-from langchain_openai import ChatOpenAI
 from pydantic import PrivateAttr
 
 from src.agents.providers.openai_codex import openai_reasoning_payload
+from src.agents.providers.openai_responses_sequencing import SequencedChatOpenAI
 from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
 
 
@@ -170,7 +170,7 @@ class OpenAIRequestPolicy:
         return [item for item in value if not forbid_sampling or item != cls._LOGPROBS_INCLUDE]
 
 
-class OpenAIPlatformChatOpenAI(ChatOpenAI):
+class OpenAIPlatformChatOpenAI(SequencedChatOpenAI):
     """Apply lifetime-pinned catalog policy at the existing SDK payload boundary."""
 
     _policy_model_name: Optional[str] = PrivateAttr(default=None)

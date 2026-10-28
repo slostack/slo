@@ -18,6 +18,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.timer import Timer
 from textual.widget import Widget
+from textual.worker import Worker, WorkerCancelled, WorkerFailed
 from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
@@ -40,6 +41,8 @@ from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.authentication import AuthenticationScreen
+from src.tui.path_suggestion_engine import PathSuggestionReader
+from src.tui.path_suggestion_controller import PathPromptSnapshotDAO, PathSuggestionController
 from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
 from src.tui.model_catalog import ModelSuggestionProjection
@@ -51,6 +54,7 @@ from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.thinking_spinner import ThinkingSpinner
 from src.tui.transcript_projector import TranscriptProjector
 from src.tui.tree_export_format import TreeExportFormat
+from src.tui.editor_launcher import EditorLauncher
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
@@ -331,6 +335,9 @@ class PromptInput(TextArea):
     class SuggestionAccepted(Message):
         """Posted when the prompt accepts the highlighted suggestion."""
 
+    class PathSuggestionsRequested(Message):
+        """Posted when Tab requests filesystem discovery without a visible menu."""
+
     class SuggestionMoved(Message):
         """Posted when the prompt moves the highlighted suggestion row."""
 
@@ -378,6 +385,11 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             self.post_message(self.SuggestionAccepted())
+            return
+        if event.key == "tab":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PathSuggestionsRequested())
             return
         if self._should_move_suggestion(event=event):
             event.prevent_default()
@@ -472,7 +484,8 @@ class PromptInput(TextArea):
         Returns:
             bool: True when the suggestion menu should close.
         """
-        return self._suggestion_navigation_enabled and event.key == "escape"
+        # Escape also revokes an in-progress, not-yet-visible filesystem read.
+        return event.key == "escape"
 
     @staticmethod
     def _suggestion_delta(*, event: events.Key) -> int:
@@ -551,6 +564,8 @@ class SloTUI(App):
         workflow_service_factory: Optional[WorkflowAppServiceFactory] = None,
         workflow_coordinator_factory: Optional[WorkflowCoordinatorFactory] = None,
         workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
+        path_reader: Optional[PathSuggestionReader] = None,
+        editor_launcher: Optional[EditorLauncher] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -572,6 +587,8 @@ class SloTUI(App):
             browser_host (Optional[BrowserHost]): Optional injected host that
                 decides whether link clicks may open a browser. ``None`` uses
                 ``BrowserHost.current()``.
+            path_reader: Optional off-thread path reader; defaults to real immediate enumeration.
+            editor_launcher: Optional local editor validation/submission boundary.
             workflow_resume_launcher: Optional workflow process/capture launch boundary.
             workflow_service_factory: Optional real-service composition boundary.
             workflow_coordinator_factory: Optional coordinator composition boundary;
@@ -579,6 +596,8 @@ class SloTUI(App):
         """
         super().__init__()
         self._workflow_resume_launcher = workflow_resume_launcher
+        self._editor_launcher = editor_launcher or EditorLauncher()
+        self._editor_launch_tasks: dict[Worker[None], asyncio.Task[None]] = {}
         self._workflow_service_factory: WorkflowAppServiceFactory = (
             workflow_service_factory or DetachedWorkflowAppService
         )
@@ -640,6 +659,9 @@ class SloTUI(App):
         # ``steering_applied`` event drains one (FIFO), matching the agent's
         # drain order.
         self._pending_steer_blocks: list[SteeringPendingBlock] = []
+        self._path_suggestions = PathSuggestionController(
+            view=self, reader=path_reader, run_worker=self.run_worker
+        )
         self._slash_suggestion_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
         self._picker_catalog_revision: tuple[int, int] = ModelSuggestionProjection.current_revision()
         self._suggestion_engine: SlashSuggestionEngine = SlashSuggestionEngine(
@@ -1138,6 +1160,7 @@ class SloTUI(App):
     async def on_unmount(self) -> None:
         """Seal admission before awaiting the single retained shutdown task."""
         self._app_closing = True
+        self._path_suggestions.close()
         self._delivery_quiescing = True
         self._session.begin_external_reporting_close()
         if self._app_shutdown_task is None:
@@ -1154,6 +1177,7 @@ class SloTUI(App):
         replacement = self._session_replacement_task
         if replacement is not None:
             await HerdrTaskJoin.wait(task=replacement)
+        await self._shutdown_step(cleanup=self._drain_editor_launches)
         await self._shutdown_step(cleanup=self._cancel_visualizer_launches)
         async with self._prompt_submission_lock:
             session = self._session
@@ -1163,6 +1187,7 @@ class SloTUI(App):
             await self._shutdown_step(cleanup=session.close_external_reporting)
             await self._shutdown_step(cleanup=self._close_selected_delivery)
         await self._drain_shutdown_owners(session=session)
+        await self._shutdown_step(cleanup=self._path_suggestions.join)
         # A failed viewer helper is not evidence that its retained workers ended.
         for task in tuple(self._visualizer_launch_tasks.values()):
             await HerdrTaskJoin.wait(task=task)
@@ -1902,6 +1927,11 @@ class SloTUI(App):
                 self._input.set_prompt_history_navigation_enabled(enabled=False)
         self._refresh_slash_suggestions()
 
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        """Invalidate cursor-local completions when the prompt insertion point moves."""
+        if event.text_area is self._input:
+            self._refresh_slash_suggestions()
+
     def on_assistant_stream_block_rendered(self, event: AssistantStreamBlock.Rendered) -> None:
         """Re-check scroll-follow after an answer or thinking flush renders a block.
 
@@ -2014,6 +2044,9 @@ class SloTUI(App):
         del event
         row = self._slash_suggestion_state.highlighted_row
         if row is None or self._input is None:
+            return
+        if self._slash_suggestion_state.kind == "path":
+            self._path_suggestions.accept(insert_text=row.insert_text)
             return
         updated_text: str = self._replace_prompt_text(
             insert_text=row.insert_text,
@@ -2569,6 +2602,10 @@ class SloTUI(App):
         """Recompute slash suggestions from the current prompt buffer."""
         if self._input is None:
             return
+        if self._suggestion_engine.owns_arguments(buffer_text=self._input.text):
+            self._path_suggestions.invalidate()
+        elif self._path_suggestions.request():
+            return
         self._picker_catalog_revision = ModelSuggestionProjection.current_revision()
         state: SlashSuggestionStateDAO = self._suggestion_engine.evaluate(
             buffer_text=self._input.text,
@@ -2583,6 +2620,62 @@ class SloTUI(App):
         self._slash_suggestion_state = state
         self._render_slash_suggestion_state(state=state)
 
+    def on_prompt_input_path_suggestions_requested(self, event: PromptInput.PathSuggestionsRequested) -> None:
+        """Forward Tab discovery unless enumerated slash arguments own input.
+
+        Args:
+            event: Prompt-local path discovery intent.
+        """
+        del event
+        if self._input is not None and not self._suggestion_engine.owns_arguments(
+            buffer_text=self._input.text
+        ):
+            self._path_suggestions.request(explicit=True)
+
+    def capture_path_prompt(self) -> Optional[PathPromptSnapshotDAO]:
+        """Adapt mounted TextArea state and selected cwd to immutable completion input.
+
+        Returns:
+            Current prompt authority, or None after closing/before composition.
+        """
+        if self._input is None or self._app_closing:
+            return None
+        return PathPromptSnapshotDAO(
+            text=self._input.text,
+            cursor=self._input.cursor_location,
+            workdir=self._session.workdir,
+            selection_empty=self._input.selection.is_empty,
+        )
+
+    def publish_path_suggestions(self, *, state: SlashSuggestionStateDAO) -> None:
+        """Adapt controller output to the existing shared menu/navigation state.
+
+        Args:
+            state: Completion presentation, containing no file contents.
+        """
+        self._slash_suggestion_state = state
+        self._render_slash_suggestion_state(state=state)
+
+    def replace_path_span(
+        self, *, insert_text: str, start: tuple[int, int], end: tuple[int, int], cursor_inside_quote: bool
+    ) -> None:
+        """Apply the controller's range edit as one undoable TextArea transaction.
+
+        Args:
+            insert_text: Encoded literal replacement including any closing quote.
+            start: Inclusive range location.
+            end: Exclusive range location.
+            cursor_inside_quote: Keep navigation before a retained closing quote.
+        """
+        if self._input is None:
+            return
+        self._input.history.checkpoint()
+        self._input.replace(insert=insert_text, start=start, end=end, maintain_selection_offset=False)
+        if cursor_inside_quote:
+            row, column = self._input.cursor_location
+            self._input.move_cursor(location=(row, column - 1))
+        self._input.history.checkpoint()
+
     def _refresh_visible_slash_suggestions_when_catalog_changed(self) -> None:
         """Refresh an open picker after a public catalog-status publication.
 
@@ -2591,7 +2684,7 @@ class SloTUI(App):
         WHO: The mounted app calls this from Textual's idle loop.
         WHEN: Only while a visible ``/model`` suggestion menu is on screen.
         """
-        if not self._slash_suggestion_state.visible:
+        if not self._slash_suggestion_state.visible or self._slash_suggestion_state.kind != "slash":
             return
         revision = ModelSuggestionProjection.current_revision()
         if revision == self._picker_catalog_revision:
@@ -2614,10 +2707,8 @@ class SloTUI(App):
             self._input.set_suggestion_navigation_enabled(enabled=state.visible)
 
     def _hide_slash_suggestions(self) -> None:
-        """Hide the slash suggestion menu and disable suggestion navigation."""
-        hidden_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
-        self._slash_suggestion_state = hidden_state
-        self._render_slash_suggestion_state(state=hidden_state)
+        """Dismiss current completion work as well as its visible menu."""
+        self._path_suggestions.dismiss()
 
     def _replace_prompt_text(
         self,
@@ -2679,7 +2770,7 @@ class SloTUI(App):
             if line.strip() == "/model refresh":
                 self._start_session_preparation()
                 return
-            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model"}:
+            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model", "/code"}:
                 self._write_adapter_line(content="Model preparation required.", classes="tool-result")
                 return
         mounted_activity: bool = await self._mount_slash_activity(line=line)
@@ -2695,6 +2786,9 @@ class SloTUI(App):
         finally:
             if mounted_activity:
                 await self._unmount_spinner()
+        if isinstance(result.code_path, str):
+            self._schedule_editor_launch(argument=result.code_path)
+            return
         if result.should_clear:
             await self.action_clear()
         if result.replace_session:
@@ -2742,6 +2836,64 @@ class SloTUI(App):
             self._push_auth_modal()
         if result.should_exit:
             self.exit()
+
+    def _schedule_editor_launch(self, *, argument: str) -> None:
+        """Capture the session before background validation without blocking prompt input.
+
+        Args:
+            argument: Raw single-path slash intent.
+        """
+        if self._app_closing or self._session_transitioning:
+            return
+        worker: Worker[None] = self.run_worker(
+            work=partial(self._run_editor_launch, argument=argument, session=self._session),
+            group="editor-launch",
+            exit_on_error=False,
+        )
+        self._editor_launch_tasks[worker] = asyncio.create_task(
+            coro=self._wait_for_editor_worker(worker=worker)
+        )
+
+    async def _run_editor_launch(self, *, argument: str, session: SloAgentSession) -> None:
+        """Render submission evidence only while its captured owner remains selected.
+
+        Args:
+            argument: Raw operator token for off-thread validation.
+            session: Selected session captured synchronously at registration.
+        """
+        notice = await self._editor_launcher.invoke(argument=argument, session=session)
+        if not self._app_closing and not self._session_transitioning and session is self._session:
+            self._write_adapter_line(content=notice, classes="tool-result")
+
+    async def _drain_editor_launches(self) -> None:
+        """Cancel/join request mechanics, never close user-owned editor panes."""
+        tasks = tuple(self._editor_launch_tasks.items())
+        for worker, _wait in tasks:
+            worker.cancel()
+        for _worker, wait in tasks:
+            await HerdrTaskJoin.wait(task=wait)
+            wait.result()
+
+    async def _wait_for_editor_worker(self, *, worker: Worker[None]) -> None:
+        """Retire a launch only after actual completion, including pre-entry cancellation.
+
+        Started and retained at admission, this wait does not depend on Textual's
+        state messages. In-flight cancellation keeps the handle until validation
+        and terminal request cleanup have joined their work. Unexpected failures
+        are accounted with a fixed diagnostic, never exception details or a late
+        transcript notice, before the retained wait releases ownership.
+
+        Args:
+            worker: App-owned editor worker whose request mechanics must finish.
+        """
+        try:
+            await worker.wait()
+        except WorkerCancelled:
+            pass
+        except WorkerFailed:
+            log_error(msg="editor_launch_worker_failed", stack_trace=False)
+        finally:
+            self._editor_launch_tasks.pop(worker, None)
 
     async def _open_git_diff(self, *, path: str) -> None:
         """Load Git diff content and push its focused screen when it is safe.
@@ -2847,6 +2999,7 @@ class SloTUI(App):
             candidate: Fully prepared inactive successor.
         """
         try:
+            await self._drain_editor_launches()
             await self._cancel_visualizer_launches()
         except Exception:
             self._replacement_delivery_safe = False
@@ -2989,6 +3142,7 @@ class SloTUI(App):
             self._write_lifecycle_notice(
                 content="Previous subscription cleanup incomplete.", classes="tool-result"
             )
+        self._path_suggestions.dismiss()
         self._session = candidate
         candidate.subscribe(handler=self._render_event)
 

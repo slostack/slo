@@ -29,24 +29,26 @@ def test_active_specification_guidance_has_no_expansion_mandates(relative: str) 
         assert obsolete not in text, (relative, obsolete)
 
 
-def test_author_defines_complete_contracts_without_duplicate_narrative() -> None:
-    """Keep semantic completeness, explicit ownership, and proposed/source separation."""
-    text = (SKILLS / AUTHOR).read_text(encoding="utf-8")
+def test_overview_keeps_interfaces_and_sub_specs_keep_complete_contracts() -> None:
+    """The overview agrees interfaces; sub-specs carry complete contracts and core logic."""
+    overview = (SKILLS / AUTHOR).read_text(encoding="utf-8")
     for requirement in (
-        "### Engineering sub-spec structure",
-        "### File-by-file implementation contracts",
-        "### Existing behavior versus proposed contracts",
-        "### Single-source contracts",
-        "### Revision and evidence hygiene",
-        "### Presentation rules",
-        "requiredness, nullability, defaults",
-        "Do not replace fields, parameters, enum members, or defaults with ellipses",
-        "Method bodies may be omitted",
-        "no arbitrary word limit",
-        "independent verification",
+        "**Interfaces, not implementations.**",
+        "keyword arguments, type hints, no bodies",
+        "**Unknowns are information.**",
+        "Write clearly and present well",
     ):
-        assert requirement in text
-
+        assert requirement in overview
+    breakdown = (SKILLS / BREAKDOWN).read_text(encoding="utf-8")
+    for requirement in (
+        "#### Required sub-spec structure",
+        "Fully specify types, requiredness, defaults, errors and guards",
+        "Core logic must be specified",
+        "Never present a proposed API as verified existing code",
+        "`<NN>.a.n-<slice>.md`",
+        "Limited-context test",
+    ):
+        assert requirement in breakdown
 
 def test_review_checks_semantic_preservation_not_fixed_heading_count() -> None:
     """Shortening must preserve failure, compatibility, and acceptance contracts."""
@@ -64,15 +66,14 @@ def test_review_checks_semantic_preservation_not_fixed_heading_count() -> None:
 
 
 def test_breakdown_and_workflow_preserve_ownership_and_review_gates() -> None:
-    """Task generation must not re-expand contracts or bypass review after edits."""
+    """Sub-spec changes return to review; editorial shortening keeps every contract."""
     breakdown = (SKILLS / BREAKDOWN).read_text(encoding="utf-8")
     workflow = (SKILLS / WORKFLOW).read_text(encoding="utf-8")
-    assert "Preserve semantic coverage" in breakdown
     assert "Material contract changes require renewed verification" in breakdown
-    assert "final editorial pass" in workflow
-    assert "workflow records outside the specification body" in workflow
+    assert "Editorial simplification retained all guards" in breakdown
+    assert "consolidation the overview committed to" in workflow
+    assert "retest and re-review" in workflow
     assert "independent, adversarial review" in workflow
-
 
 def test_sample_demonstrates_overview_contract_and_verifiable_python() -> None:
     """The shipped example must demonstrate—not just describe—the new format."""

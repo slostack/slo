@@ -2363,7 +2363,7 @@
     ],
     "description": "Self-review pass that runs after a feature specification is drafted with feature-specifications. Always runs a DRY consolidation pass over the entities and data structures the spec introduces, and catches gaps, convention drift, redundant functionality that already exists in the code, oversized scope, weak examples, structure mismatches between the overview and its technical sub-specs, and missing test coverage before the spec is handed to a developer or published.",
     "destination": "skills/design-and-analysis/feature-specifications-post-hook/SKILL.md",
-    "status": "retained"
+    "status": "removed"
   },
   {
     "tier": "bundled",
@@ -2399,7 +2399,7 @@
     ],
     "description": "Context-gathering pass that runs before drafting or revising a feature specification with feature-specifications. Loads KB, MEMORY.md, repo guardrails (CLAUDE.md / AGENTS.md / docs/RESEARCH.md), code conventions, and the current state of the affected surface so the resulting spec respects existing patterns, and identifies the existing owners the spec must consolidate with instead of duplicating.",
     "destination": "skills/design-and-analysis/feature-specifications-pre-hook/SKILL.md",
-    "status": "retained"
+    "status": "removed"
   },
   {
     "tier": "bundled",

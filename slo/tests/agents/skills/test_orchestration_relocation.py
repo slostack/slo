@@ -18,11 +18,11 @@ def test_frozen_moves_normalize_to_base_bytes() -> None:
     """Freeze preserved owners; convergence policy revisions have semantic gates."""
     # Code-test-review, its GitLab companion and workflow orchestration now intentionally
     # evolve under test_workflow_convergence.py and the progression/turn-rule suites.
-    # Retain the specification workflow pin accepted in readable-contract commit 51bc104
-    # and the original orchestrator pin; do not derive new pins from this merge.
+    # The specification workflow now evolves under the semantic gates in
+    # test_specification_authoring.py. The orchestrator pin was re-taken when its
+    # specification routing moved to overview → sub-specs → family review.
     pins = {
-        "skills/orchestration/workflows/specification-development.md": "678dbead2f3cc07da9e6529fe4d8e3f89a2bdc4b907806fb52fddee9348de2e9",
-        "skills/orchestration/orchestrator/SKILL.md": "d8b280b7016ec038685edfed443eaa81b1d988d714893db034ea1ba3d9809cc2",
+        "skills/orchestration/orchestrator/SKILL.md": "79537a28e721f11c7773fd381b599fdba39c1611ac7b04fc0d97bbd598737606",
     }
     for relative, expected in pins.items():
         text = (ROOT / relative).read_text()

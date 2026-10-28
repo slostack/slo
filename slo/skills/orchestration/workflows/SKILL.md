@@ -46,7 +46,7 @@ roster is here:
 
 | Workflow file | Type | Sub-skills it sequences |
 |---|---|---|
-| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications-pre-hook`, `feature-specifications`, `feature-specifications-post-hook`, `feature-specification-verification`, `breakdown-feature-spec-to-tasks` |
+| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications` (overview), `breakdown-feature-spec-to-tasks` (sub-specs), `feature-specification-verification` (family review); optional `gather-feature-context` |
 | [code-test-review.md](code-test-review.md) | Pipeline | `code-test-loop`, `review-feature-code`, `is-the-feature-completed` (+ engineering-routing, shared testing, scoped language conventions) |
 | [gitlab-code-test-review.md](gitlab-code-test-review.md) | Pipeline | Code-Test-Review sub-skills + `git-ops/gitlab-issues`, `git-ops/ship-feature` |
 
@@ -151,7 +151,7 @@ span multiple workflow turns.
 | Workflow | Stages belonging to one workflow turn |
 |---|---|
 | Code + Test + Review | Code and test → review; include the completion check when required |
-| Specification Development | Context and specification with PRE/POST hooks → independent verification → task breakdown |
+| Specification Development | Overview → standalone engineering sub-specs → family verification (REVISE loops back to the owning step) |
 | Parallel workflow | All required branches → synthesis and any required review |
 
 The actual workflow file defines the stages. Do not omit a completion check just

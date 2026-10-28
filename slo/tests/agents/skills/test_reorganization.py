@@ -20,6 +20,9 @@ def test_source_inventory_has_live_destinations() -> None:
     for item in inventory:
         if item["tier"] == "project-reference":
             continue
+        if item["status"] == "removed":
+            assert not (ROOT / item["destination"]).exists(), item["source"]
+            continue
         assert item["status"] != "pending", item["source"]
         assert item["destination"], item["source"]
         assert (ROOT / item["destination"]).is_file(), item["source"]

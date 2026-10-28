@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Optional
+
+from textual.widget import Widget
 
 from textual.app import ComposeResult
 from textual.content import Content, Span
@@ -23,6 +27,15 @@ __all__ = ["AssistantStreamBlock"]
 
 _STREAM_FLUSH_INTERVAL_SECONDS: float = 1.0 / 30.0
 """Coalescing cadence for streamed answer renders (~30 fps)."""
+
+
+@dataclass(frozen=True)
+class FollowSnapshotDAO:
+    """Immutable pre-mutation viewport intent, invalid without an attached owner."""
+
+    was_following: bool = False
+    presentation_generation: int = -1
+    viewport_revision: int = -1
 
 
 class AssistantAnswerBody(Static):
@@ -108,7 +121,7 @@ class AssistantStreamBlock(Vertical):
     the optional title prefix. Copy behaviour lives entirely on the shared
     TUI clipboard paths (focus-chord and mouse selection); no card-local copy
     control exists after ``72.a.3``.
-    WHO: ``TranscriptProjector`` updates it for ``text_*`` and terminal events.
+    WHO: ``TranscriptProjectionAdapter`` updates it for ``text_*`` and terminal events.
     WHEN: One block is mounted per outer-loop answer iteration. Thinking renders
     in a separate ``AssistantStreamThinkingBlock`` segment.
     """
@@ -130,16 +143,16 @@ class AssistantStreamBlock(Vertical):
         ``Static.update`` expanded ``max_scroll_y``.
         """
 
-        def __init__(self, *, was_following: bool) -> None:
-            """Initialise the rendered notification.
-
-            Args:
-                was_following (bool): True when the viewport was at the bottom
-                    immediately before the flush, so the app knows to restore
-                    scroll-end.
-            """
+        def __init__(self, *, snapshot: FollowSnapshotDAO, source: Widget) -> None:
+            """Transport the exact captured intent and emitting widget without recapture."""
             super().__init__()
-            self.was_following: bool = was_following
+            self.snapshot = snapshot
+            self.source = source
+
+        @property
+        def was_following(self) -> bool:
+            """Expose captured following intent for observation only."""
+            return self.snapshot.was_following
 
     can_focus: bool = True
 
@@ -175,6 +188,7 @@ class AssistantStreamBlock(Vertical):
         self,
         *,
         title_prefix: Optional[str] = None,
+        follow_snapshot: Optional[Callable[[], FollowSnapshotDAO]] = None,
     ) -> None:
         """Seed an empty assistant answer block.
 
@@ -185,6 +199,7 @@ class AssistantStreamBlock(Vertical):
                 renders identically to the pre-feature behaviour.
         """
         super().__init__()
+        self._follow_snapshot = follow_snapshot
         self._title_prefix: Optional[str] = title_prefix
         self._label: Optional[LiteralTextStatic] = (
             LiteralTextStatic(title_prefix, classes="sub-agent-label") if title_prefix else None
@@ -255,29 +270,16 @@ class AssistantStreamBlock(Vertical):
         """
         if not self._answer_dirty:
             return
-        was_following: bool = self._check_app_at_bottom()
+        snapshot = self._capture_follow_snapshot()
         self._flush_answer()
         if self.is_mounted:
-            self.post_message(AssistantStreamBlock.Rendered(was_following=was_following))
+            self.post_message(self.Rendered(snapshot=snapshot, source=self))
 
-    def _check_app_at_bottom(self) -> bool:
-        """Return True when the transcript viewport is effectively at the bottom.
-
-        Reads the scroll state from the app via duck-typing without importing
-        ``SloTUI`` (which would create a circular dependency). When unmounted
-        or when the app does not expose ``_transcript_is_at_bottom``, returns
-        ``False`` (safe default — no spurious scroll-end).
-
-        Returns:
-            bool: True when the transcript viewport is within one line of the
-                scroll bottom.
-        """
-        if not self.is_mounted:
-            return False
-        check = getattr(self.app, "_transcript_is_at_bottom", None)
-        if check is None:
-            return False
-        return bool(check())
+    def _capture_follow_snapshot(self) -> FollowSnapshotDAO:
+        """Call the borrowed owner once, only while mounted and attached."""
+        if self._follow_snapshot is None or not self.is_mounted or not self.is_attached:
+            return FollowSnapshotDAO()
+        return self._follow_snapshot()
 
     def _flush_answer(self) -> None:
         """Render the accumulated answer, skipping work when text is unchanged.
@@ -374,7 +376,7 @@ class AssistantStreamBlock(Vertical):
             return
         self._answer_text = content
         self._answer_dirty = True
-        self._flush_answer()
+        self._flush_dirty_regions()
 
     def finalize(self, *, final_text: str) -> None:
         """Finalize the block using completed assistant text.
@@ -398,11 +400,7 @@ class AssistantStreamBlock(Vertical):
         """Mark the block as aborted while preserving partial content."""
         if self._finalized:
             return
-        self._terminal_note_text = "(aborted)"
-        self._terminal_note.display = True
-        self._terminal_note.update(self._terminal_note_text)
-        self._finalized = True
-        self._stop_flush_timer()
+        self._finish_with_warning(text="(aborted)")
 
     def mark_failed(self, *, error_message: str) -> None:
         """Mark the block as failed while preserving partial content.
@@ -412,16 +410,29 @@ class AssistantStreamBlock(Vertical):
         """
         if self._finalized:
             return
-        self._terminal_note_text = f"(error: {error_message})"
+        self._finish_with_warning(text=f"(error: {error_message})")
+
+    def _finish_with_warning(self, *, text: str) -> None:
+        """Capture once before terminal layout changes, including a pending answer.
+
+        Abort and failure use one render transaction even without a dirty answer.
+        Flushing the answer directly prevents the timer cleanup from recapturing
+        after the warning has already changed the viewport.
+        """
+        snapshot = self._capture_follow_snapshot()
+        self._terminal_note_text = text
         self._terminal_note.display = True
-        self._terminal_note.update(self._terminal_note_text)
+        self._terminal_note.update(text)
+        self._flush_answer()
         self._finalized = True
         self._stop_flush_timer()
+        if self.is_mounted:
+            self.post_message(self.Rendered(snapshot=snapshot, source=self))
 
     def seal(self) -> None:
         """Mark the block finalized without overwriting any streamed content.
 
-        Called by ``TranscriptProjector._finalize_completed_run`` when
+        Called by ``TranscriptProjectionAdapter._finalize_completed_run`` when
         ``run_completed`` fires with no confirmed final text. Stops the block
         from accepting further ``append_text`` deltas while preserving
         whatever was already streamed into the answer region. Flushes pending

@@ -164,7 +164,9 @@ slo/
 │   ├── tui/
 │   │   ├── app.py                     # SloTUI (Textual App) + PromptInput + /new,/rename + prompt-history recall
 │   │   ├── prompt_history.py          # PromptHistoryNavigator — in-process Up/Down prompt recall
-│   │   ├── transcript_projector.py    # TranscriptProjector — events → widgets
+│   │   ├── components/chat_transcript/ # ChatTranscript + packaged css.tcss + local adapters
+│   │   │   └── adapters/workflow_progress.py # app-owned WorkflowProgressUpdatesAdapter
+│   │   ├── transcript_projector.py    # TranscriptProjectionAdapter — events → widgets
 │   │   ├── event_renderer.py          # tool-call line formatting helpers
 │   │   ├── slash_router.py            # SlashRouter — dispatches /commands
 │   │   ├── slash_command_registry.py  # SlashCommandRegistry + SlashCommandSpecDAO
@@ -489,6 +491,30 @@ slow test suites".
 
 **`SloTUI`** (`src/tui/app.py`) is the Textual `App` for the interactive path.
 
+**Feature 96 cutover (verification in progress):** `SloTUI` now composes one
+`ChatTranscript` from `src/tui/components/chat_transcript/component.py`. The
+component owns replay, older reads, windowing, logical lines, streaming follow,
+native navigation and visibility geometry. The app retains subscription, session
+replacement, queue, focus, clipboard and workflow decisions. `SessionFactory`
+and the visualizer launcher are injectable app construction seams. The canonical
+projector is now `TranscriptProjectionAdapter`; no legacy class alias remains.
+Transcript/notice adapters moved under `components/chat_transcript/adapters/`;
+`workflow_progress.py` remains app-owned. The old `src/tui/adapters/` modules
+are deleted. Component CSS loads from its packaged `css.tcss` via DEFAULT_CSS.
+Acceptance evidence and unresolved proof conflicts are recorded in
+`docs/implementation/96-chat-transcript/dispatch12.md`; cutover is code-complete,
+not independently accepted.
+
+**Adapters:** `TranscriptNoticeDisplayAdapter` and `WorkflowNoticeAdapter` live
+under `src/tui/components/chat_transcript/adapters/` and register against the
+component (`register(tui=owner)` creates a fresh instance). They own logical
+notice recording/display and workflow-notice forwarding, respectively.
+`WorkflowProgressUpdatesAdapter` lives beside them in `workflow_progress.py` but
+registers against **SloTUI**, not ChatTranscript: session lists, progress dialogs,
+saved reading positions and child-abort confirmation remain app-owned. Its
+`WorkflowProgressSink` protocol is unchanged. TYPE_CHECKING imports avoid runtime
+cycles. No old `src/tui/adapters/` compatibility modules remain.
+
 **Per-component transcript model:** every conversational entry is a dedicated Textual widget:
 - `UserMessageBlock` — one user turn, rendered with `Rich.Markdown`.
 - `AssistantStreamThinkingBlock` — one normalized parent thinking segment, keyed by the
@@ -511,13 +537,13 @@ use warm `md-heading`); a `ToolExecutionBlock` paints pending/success/error fill
 gains the CSS-state hooks `-done` (added by `update_result()`) and `-error` (added by
 `mark_incomplete()`) purely as styling seams — `_result_output`/`is_incomplete` remain the
 lifecycle truth used by `_is_block_live`. The turn separator is a muted `─` rule
-(`_TranscriptAdapter.TURN_SEPARATOR`, `border-muted`). `UsageStatusBar` renders Pi-style
+(`TranscriptNoticeDisplayAdapter.TURN_SEPARATOR`, `border-muted`). `UsageStatusBar` renders Pi-style
 compact token quantities (`6.0k`, `12k`, `1.0M`) for token values only — rpm, cooldown
 seconds, and context percent keep their raw units. `SloTUI._refresh_title_bar()` collapses
 the session workdir to `~`/`~/...` via `_collapse_home_in_path` (`Path.relative_to`
 ancestry, so home-prefix lookalikes stay absolute); the usage bar owns no cwd display.
 
-`TranscriptProjector` owns parent `block_id` routing and mounts replay reasoning as a
+`TranscriptProjectionAdapter` owns parent `block_id` routing and mounts replay reasoning as a
 sealed thinking block immediately before its answer block (replay adjacency). `SloTUI`
 owns child/sub-agent events: they never mount a foreground transcript block; child
 lifecycle events only request one coalesced session-list refresh (feature 94).
@@ -569,8 +595,8 @@ native `screen-selection-background` / `screen-selection-foreground` ownership. 
 paint, scrolling, and replay.
 
 **Session replay:** `ReplayEntryProjector.build_entries()` reads the on-disk JSONL and
-emits `TranscriptEntryDAO` objects. `TranscriptProjector.project_replay_entry()` mounts the
-same widget types. `TranscriptProjector` (`src/tui/transcript_projector.py`) owns the live
+emits `TranscriptEntryDAO` objects. `TranscriptProjectionAdapter.project_replay_entry()` mounts the
+same widget types. `TranscriptProjectionAdapter` (`src/tui/transcript_projector.py`) owns the live
 streaming path too.
 
 **Slash commands** are dispatched by `SlashRouter` (`src/tui/slash_router.py`).
@@ -669,7 +695,7 @@ session controls — owner map".
 ```
 SloTUI ── one WorkflowProgressCoordinator (5.0 s, single flight) ──> DetachedWorkflowAppService
    ▲                                                                  │ load_session_snapshot (owner-scoped,
-   │ _WorkflowProgressSink (apply_sessions / apply_progress)          │  attached batch first, then detached)
+   │ WorkflowProgressUpdatesAdapter (apply_sessions / apply_progress)          │  attached batch first, then detached)
    │                                                                  │ load_session_progress (bounded loader)
    ├── SubAgentFleetPanel ("Ongoing workflow tasks", below PromptInput, above UsageStatusBar)
    ├── SessionProgressScreen (ProgressLog, Minimize, Abort child…)

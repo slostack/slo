@@ -9,6 +9,7 @@ authentication capture helpers.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,8 +206,8 @@ class TestPromptInputRulesPaint:
             focused.assert_horizontal_rules(width=prompt_input.region.width)
             focused.assert_rules_coloured(accent_hex=accent_hex)
 
-            assert app._transcript_scroll is not None
-            app._transcript_scroll.focus()
+            assert app.query_one(ChatTranscript)._transcript_scroll is not None
+            app.query_one(ChatTranscript)._transcript_scroll.focus()
             await pilot.pause()
             assert not prompt_input.has_focus
             unfocused: PaintedPromptFrame = PaintedPromptFrame.capture(app=app)

@@ -98,6 +98,7 @@ build-backend = "poetry.core.masonry.api"
   # ``--finalize-environment`` step. The installer is the only wrapper and
   # managed-shell-environment writer.
   include = [
+      { path = "src/tui/components/chat_transcript/css.tcss", format = ["sdist", "wheel"] },
       { path = "skills/**/*", format = ["sdist", "wheel"] },
       { path = "plugins/**/*", format = ["sdist", "wheel"] },
       { path = "install.sh", format = ["sdist", "wheel"] },

@@ -8,6 +8,7 @@ The existing JUnit report carries the trace on success as well as failure.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import json
 import platform
 from time import monotonic_ns
@@ -137,9 +138,9 @@ class SelectionObserver:
         """Read numeric viewport/latch/body state only; do not render or refresh."""
         if self.app is None:
             return {}
-        scroll = self.app._transcript_scroll
+        scroll = self.app.query_one(ChatTranscript)._transcript_scroll
         fields: dict[str, object] = {
-            "latch": self.app._force_following_until_layout,
+            "latch": self.app.query_one(ChatTranscript)._force_following_until_layout,
             "size": list(self.app.size),
         }
         if scroll is not None:

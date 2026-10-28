@@ -1,0 +1,20 @@
+cd /root/Code/tui-refactor/slo
+export VIRTUAL_ENV=/root/.pyenv/versions/slo-harness
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+export SLO_ENV=test SLO_ROOT_DIR="$PWD" SLO_APP_DIR="$PWD" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40
+unset SLO_OPENAI_API_KEY SLO_KIMI_FOR_CODING_API_KEY SLO_OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY
+PYTHONPATH="$PWD" poetry run pytest -m 'not e2e' \
+  tests/tui/test_transcript_adapter.py tests/tui/test_app.py \
+  tests/tui/test_transcript_projector.py tests/tui/test_replay_resume.py \
+  tests/tui/test_assistant_stream_block.py tests/tui/test_assistant_stream_thinking_block.py \
+  tests/tui/test_scroll_follow.py tests/tui/test_selection_copy.py \
+  tests/tui/test_selection_scroll_highlight.py tests/tui/test_selection_copy_e2e.py \
+  tests/tui/test_subagent_event_routing.py tests/tui/test_workflow_receive_path.py \
+  tests/tui/test_workflow_session_list.py tests/tui/workflows \
+  tests/tui/test_agent_pane_manager.py tests/tui/test_tree_viewer.py \
+  tests/tui/test_slash_router_tree.py tests/tui/test_visualizer_launcher.py \
+  tests/tui/test_tool_block_partial.py tests/tui/test_tool_execution_block.py \
+  tests/tui/test_user_message_block.py tests/tui/test_queued_prompt_block.py \
+  tests/tui/test_steering_pending_block.py \
+  tests/integration/test_workflow_progress_tui.py \
+  tests/integration/test_workflow_child_abort_tui.py

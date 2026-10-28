@@ -1,0 +1,11 @@
+ChatTranscript { height: 1fr; }
+ChatTranscript #transcript-scroll { height: 1fr; border: none; background: $surface; }
+ChatTranscript #transcript-content { width: 100%; height: auto; padding: 1 1 0 1; }
+ChatTranscript .turn-separator { color: $border-muted; text-style: dim; }
+ChatTranscript .user-line { color: $accent; text-style: bold; }
+ChatTranscript .tool-line { color: $success; text-style: bold; }
+ChatTranscript .tool-result { color: $text-muted; }
+ChatTranscript .assistant-aborted { color: $warning; text-style: italic; }
+ChatTranscript .steer-pending { color: $warning; text-style: italic; }
+ChatTranscript .tool-call-incomplete { color: $warning; text-style: italic; }
+ChatTranscript .transcript-prepend-boundary { height: 0; padding: 0; margin: 0; border: none; }

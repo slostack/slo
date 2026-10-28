@@ -1,6 +1,6 @@
 """Tests for TUI recovery UX (Feature 50, sub-spec 50.a.4).
 
-Covers ``TranscriptProjector.project`` recovery notice branches and
+Covers ``TranscriptProjectionAdapter.project`` recovery notice branches and
 the ``saw_failed_event`` suppression on the ``recovery_exhausted`` path.
 """
 
@@ -11,7 +11,7 @@ from typing import Optional
 import pytest
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-from src.tui.transcript_projector import TranscriptProjector
+from src.tui.transcript_projector import TranscriptProjectionAdapter
 
 # ── minimal fake host ─────────────────────────────────────────────────────────
 
@@ -69,12 +69,12 @@ class _FakeHost:
 
 
 class TestRecoveryNoticeLines:
-    """``TranscriptProjector.project`` writes the correct notice line for each recovery kind."""
+    """``TranscriptProjectionAdapter.project`` writes the correct notice line for each recovery kind."""
 
     async def test_recovery_started_writes_notice_line(self) -> None:
         """``recovery_started`` writes the recovering notice and returns early."""
         host = _FakeHost()
-        projector = TranscriptProjector(host=host)
+        projector = TranscriptProjectionAdapter(host=host)
 
         await projector.project(
             event=AgentStreamEventDAO(kind="recovery_started", iteration=0),
@@ -88,7 +88,7 @@ class TestRecoveryNoticeLines:
     async def test_recovery_succeeded_writes_notice_line(self) -> None:
         """``recovery_succeeded`` writes the recovered notice and returns early."""
         host = _FakeHost()
-        projector = TranscriptProjector(host=host)
+        projector = TranscriptProjectionAdapter(host=host)
 
         await projector.project(
             event=AgentStreamEventDAO(kind="recovery_succeeded", iteration=1),
@@ -102,7 +102,7 @@ class TestRecoveryNoticeLines:
     async def test_recovery_exhausted_writes_notice_line(self) -> None:
         """``recovery_exhausted`` writes the could-not-recover notice and returns early."""
         host = _FakeHost()
-        projector = TranscriptProjector(host=host)
+        projector = TranscriptProjectionAdapter(host=host)
 
         await projector.project(
             event=AgentStreamEventDAO(kind="recovery_exhausted", iteration=1),
@@ -116,7 +116,7 @@ class TestRecoveryNoticeLines:
     async def test_recovery_started_does_not_mount_assistant_block(self) -> None:
         """``recovery_started`` writes only a transcript line — no assistant block is mounted."""
         host = _FakeHost()
-        projector = TranscriptProjector(host=host)
+        projector = TranscriptProjectionAdapter(host=host)
 
         await projector.project(
             event=AgentStreamEventDAO(kind="recovery_started", iteration=0),
@@ -127,7 +127,7 @@ class TestRecoveryNoticeLines:
     async def test_recovery_three_events_write_three_notice_lines(self) -> None:
         """Three recovery events produce exactly three distinct notice lines in order."""
         host = _FakeHost()
-        projector = TranscriptProjector(host=host)
+        projector = TranscriptProjectionAdapter(host=host)
 
         await projector.project(
             event=AgentStreamEventDAO(kind="recovery_started", iteration=0),

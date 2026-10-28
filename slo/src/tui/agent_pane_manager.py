@@ -12,7 +12,7 @@ from typing import Optional
 
 from textual.containers import Vertical, VerticalScroll
 
-from src.tui.transcript_projector import TranscriptProjector
+from src.tui.transcript_projector import TranscriptProjectionAdapter
 
 __all__ = ["AgentPaneDAO", "AgentPaneManager"]
 
@@ -25,14 +25,14 @@ class AgentPaneDAO:
         scroll (VerticalScroll): Scroll container shown/hidden as the pane
             is activated or deactivated.
         content (Vertical): Widget mountpoint the pane's projector targets.
-        projector (TranscriptProjector): Per-pane event projector.
+        projector (TranscriptProjectionAdapter): Per-pane event projector.
         tab_label (str): Short label shown on the tab strip.
         task_id (Optional[str]): Sub-task id; ``None`` for the orchestrator pane.
     """
 
     scroll: VerticalScroll
     content: Vertical
-    projector: TranscriptProjector
+    projector: TranscriptProjectionAdapter
     tab_label: str
     task_id: Optional[str] = None
 
@@ -106,7 +106,7 @@ class AgentPaneManager:
             pane.scroll.display = position == index
         return True
 
-    def projector_for_task(self, *, task_id: str) -> Optional[TranscriptProjector]:
+    def projector_for_task(self, *, task_id: str) -> Optional[TranscriptProjectionAdapter]:
         """Resolve a sub-agent ``task_id`` to its pane projector.
 
         Called by ``SloTUI._route_sub_agent_event`` to deliver a tagged child
@@ -116,7 +116,7 @@ class AgentPaneManager:
             task_id (str): Sub-task identifier carried on the event.
 
         Returns:
-            Optional[TranscriptProjector]: The matching projector, or ``None``.
+            Optional[TranscriptProjectionAdapter]: The matching projector, or ``None``.
         """
         for pane in self._panes:
             if pane.task_id == task_id:

@@ -28,18 +28,6 @@ Footer {
     height: 1fr;
 }
 
-#transcript-scroll {
-    height: 1fr;
-    border: none;
-    background: $surface;
-}
-
-#transcript-content {
-    width: 100%;
-    height: auto;
-    padding: 1 1 0 1;
-}
-
 #status-region {
     height: auto;
     min-height: 1;
@@ -56,40 +44,6 @@ PromptInput, PromptInput:focus {
     max-height: 17;
     padding: 0 1;
     margin: 1 0 0 0;
-}
-
-.turn-separator {
-    color: $border-muted;
-    text-style: dim;
-}
-
-.user-line {
-    color: $accent;
-    text-style: bold;
-}
-
-.tool-line {
-    color: $success;
-    text-style: bold;
-}
-
-.tool-result {
-    color: $text-muted;
-}
-
-.assistant-aborted {
-    color: $warning;
-    text-style: italic;
-}
-
-.steer-pending {
-    color: $warning;
-    text-style: italic;
-}
-
-.tool-call-incomplete {
-    color: $warning;
-    text-style: italic;
 }
 
 /* Spinner glyph/text styling lives in ThinkingSpinner.DEFAULT_CSS (72.a.5). */

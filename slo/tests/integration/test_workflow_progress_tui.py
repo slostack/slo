@@ -12,6 +12,7 @@ terminal or user history is touched; visualizer launch stays disabled.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import asyncio
 from datetime import datetime, timezone
 import hashlib
@@ -414,8 +415,8 @@ class TestOwnedWorkflowListToProgress:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            assert app._adapter is not None
-            foreground: list[tuple[str, str]] = list(app._adapter.lines)
+            assert app.query_one(ChatTranscript)._adapter is not None
+            foreground: list[tuple[str, str]] = list(app.query_one(ChatTranscript)._adapter.lines)
             with patch.object(world.session, "abort") as abort:
                 screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
                 log: ProgressLog = screen.query_one(ProgressLog)
@@ -460,7 +461,7 @@ class TestOwnedWorkflowListToProgress:
                 reads.assert_not_called()
 
             abort.assert_not_called()
-            assert list(app._adapter.lines) == foreground
+            assert list(app.query_one(ChatTranscript)._adapter.lines) == foreground
             painted: str = _painted_log_text(screen=reopened)
             assert _PRIVATE_PROMPT not in painted
 
@@ -473,7 +474,7 @@ class TestOwnedWorkflowListToProgress:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             assert sink is not None
             key: WorkflowSessionKeyDAO = screen.key
             screen.query_one(ProgressLog).scroll_to(x=0, y=5, animate=False, immediate=True)
@@ -526,7 +527,7 @@ class TestOwnedWorkflowListToProgress:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             assert sink is not None
             key: WorkflowSessionKeyDAO = screen.key
             confirmation: AbortConfirmationScreen = await _open_confirmation(app=app, pilot=pilot)
@@ -587,7 +588,7 @@ class TestOwnedWorkflowListToProgress:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             assert sink is not None
             key: WorkflowSessionKeyDAO = screen.key
             confirmation: AbortConfirmationScreen = await _open_confirmation(app=app, pilot=pilot)
@@ -649,7 +650,7 @@ class TestOwnedWorkflowListToProgress:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             assert sink is not None
             service = app._workflow_app_service
             assert service is not None
@@ -756,7 +757,7 @@ class TestOwnedWorkflowListToProgress:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             service = app._workflow_app_service
             assert sink is not None and service is not None
             confirmation: AbortConfirmationScreen = await _open_confirmation(app=app, pilot=pilot)
@@ -785,8 +786,8 @@ class TestOwnedWorkflowListToProgress:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            assert app._adapter is not None
-            foreground: list[tuple[str, str]] = list(app._adapter.lines)
+            assert app.query_one(ChatTranscript)._adapter is not None
+            foreground: list[tuple[str, str]] = list(app.query_one(ChatTranscript)._adapter.lines)
             screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
             await _open_confirmation(app=app, pilot=pilot)
             with patch.object(world.session, "abort") as whole_abort:
@@ -814,7 +815,7 @@ class TestOwnedWorkflowListToProgress:
             assert "aborted" in reopened_state
             assert len(seam.calls) == 1
             whole_abort.assert_not_called()
-            assert list(app._adapter.lines) == foreground
+            assert list(app.query_one(ChatTranscript)._adapter.lines) == foreground
 
     async def test_matching_incarnation_invokes_no_handler(self, tmp_path: Path) -> None:
         """A tick with the same execution leaves the view open and calls no handler."""
@@ -838,7 +839,7 @@ class TestOwnedWorkflowListToProgress:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             assert sink is not None
             owner: str = world.session.session_id
             keys: list[WorkflowSessionKeyDAO] = [
@@ -1060,7 +1061,11 @@ class TestClearFinishedGroupsInRealApp:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            assert app._fleet_panel is not None and app._input is not None and app._adapter is not None
+            assert (
+                app._fleet_panel is not None
+                and app._input is not None
+                and app.query_one(ChatTranscript)._adapter is not None
+            )
             assert [
                 item.row.key.orchestrator_session_id for item in app._fleet_panel.query(SubAgentFleetRow)
             ] == [
@@ -1086,7 +1091,7 @@ class TestClearFinishedGroupsInRealApp:
             assert (
                 "cleared 2 finished workflow group(s) from the list; 1 still running",
                 "tool-result",
-            ) in app._adapter.lines
+            ) in app.query_one(ChatTranscript)._adapter.lines
             assert _tree_state(root=world.root) == before
             assert seam.calls == []
             assert {handle.state for handle in await handles.list_observation(owner_session_id=owner)} == {
@@ -1225,8 +1230,12 @@ class TestTwentyChildFleetJourney:
         async with app.run_test(size=(width, height)) as pilot:
             app.theme = theme
             await _settle(app=app, pilot=pilot)
-            assert app._input is not None and app._fleet_panel is not None and app._adapter is not None
-            foreground: list[tuple[str, str]] = list(app._adapter.lines)
+            assert (
+                app._input is not None
+                and app._fleet_panel is not None
+                and app.query_one(ChatTranscript)._adapter is not None
+            )
+            foreground: list[tuple[str, str]] = list(app.query_one(ChatTranscript)._adapter.lines)
             app._input.load_text(_MULTILINE_DRAFT)
             await _settle(app=app, pilot=pilot)
 
@@ -1325,7 +1334,7 @@ class TestTwentyChildFleetJourney:
             assert statuses.pop(_CHILD) == "aborted"
             assert set(statuses.values()) == {"running"} and len(statuses) == 1 + _SIBLINGS
             assert app._input.text == _MULTILINE_DRAFT
-            assert list(app._adapter.lines) == foreground
+            assert list(app.query_one(ChatTranscript)._adapter.lines) == foreground
             assert sorted(path.name for path in views.iterdir()) == [
                 f"{stem}-1-list-multiline.svg",
                 f"{stem}-2-progress-reading-history.svg",

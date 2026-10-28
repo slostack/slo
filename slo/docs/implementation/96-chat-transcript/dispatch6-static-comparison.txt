@@ -1,0 +1,5 @@
+HEAD baseline errors: 292
+Current errors: 292
+Added normalized diagnostics: 0
+Removed normalized diagnostics: 0
+Normalization: ignore line numbers; canonical projector rename only.

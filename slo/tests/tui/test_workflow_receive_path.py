@@ -9,6 +9,7 @@ delivery modes keep their existing rendering behaviour.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -164,10 +165,10 @@ class TestContextNoteDelivery:
             await pilot.pause()
             await app._handle_inbox_message(message=message)
 
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscript)._adapter is not None
             assert any(
                 content == "⊛ wf-1 update: [workflow wf-1] lifecycle note" and classes == "sub-agent-notice"
-                for content, classes in app._adapter.lines
+                for content, classes in app.query_one(ChatTranscript)._adapter.lines
             )
             session.record_workflow_update.assert_awaited_once_with(
                 text="[workflow wf-1] lifecycle note",
@@ -225,10 +226,10 @@ class TestVisualizerRetarget:
                 await app._render_event(event)
 
             mock_launch.assert_called_once_with(parent_session_id="orch-1")
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscript)._adapter is not None
             assert any(
                 "Opened workflow visualizer in a new window (session orch-1)." in content
-                for content, _classes in app._adapter.lines
+                for content, _classes in app.query_one(ChatTranscript)._adapter.lines
             )
 
     @pytest.mark.asyncio
@@ -312,10 +313,10 @@ class TestVisualizerRetarget:
                     result_text='{"orchestrator_session_id": "orch-1"}',
                 )
 
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscript)._adapter is not None
             assert any(
                 content == "⊇ Watch the workflow live: slo visualize --session orch-1 --follow"
-                for content, _classes in app._adapter.lines
+                for content, _classes in app.query_one(ChatTranscript)._adapter.lines
             )
 
     @pytest.mark.asyncio
@@ -649,10 +650,10 @@ class TestWorkflowHandleStateAdvance:
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
             assert handle is not None
             assert handle.state == "launching"
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscript)._adapter is not None
             assert any(
                 content == "[scheduled notice] monitor: monitor tick"
-                for content, _classes in app._adapter.lines
+                for content, _classes in app.query_one(ChatTranscript)._adapter.lines
             )
 
 

@@ -1,5 +1,6 @@
 """Offline Feature89 acceptance through the mounted app, real SDK, tools and history."""
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import asyncio
 import json
 from collections.abc import AsyncIterator
@@ -821,12 +822,15 @@ async def test_mounted_prepared_jev_tool_cycle_and_resume(
             async with app.run_test(size=(120, 40)) as pilot:
                 await app._dispatch_slash_command(line=f"/model {ROUTE}")
                 await app._dispatch_slash_command(line="/reasoning")
-                assert "provider default; controls unavailable" in app._copyable_transcript_text()
+                assert (
+                    "provider default; controls unavailable"
+                    in app.query_one(ChatTranscript).logical_copy_text()
+                )
                 await app._submit_or_queue_prompt(text="run echo-89")
                 assert app._in_flight_task is not None
                 await app._in_flight_task
                 await pilot.pause()
-                assert "complete-89" in app._copyable_transcript_text()
+                assert "complete-89" in app.query_one(ChatTranscript).logical_copy_text()
             from src.agents.model_catalog.service import ModelCatalogService
 
             from datetime import datetime, timedelta
@@ -864,7 +868,7 @@ async def test_mounted_prepared_jev_tool_cycle_and_resume(
                 assert resumed_app._in_flight_task is not None
                 await resumed_app._in_flight_task
                 await pilot.pause()
-                transcript = resumed_app._copyable_transcript_text()
+                transcript = resumed_app.query_one(ChatTranscript).logical_copy_text()
                 assert "complete-89" in transcript and "resume-89" in transcript
             echo.assert_called_once()
     captured = capsys.readouterr()
@@ -1009,7 +1013,7 @@ async def test_mounted_gpt6_tool_cycle_and_resume(
                     assert app._in_flight_task is not None
                     await app._in_flight_task
                     await pilot.pause()
-                    assert "complete-89" in app._copyable_transcript_text()
+                    assert "complete-89" in app.query_one(ChatTranscript).logical_copy_text()
                 with patch(
                     "src.cli.typer_dispatch.FilesystemSessionHistoryStore",
                     return_value=FilesystemSessionHistoryStore(root=root / "history"),
@@ -1028,7 +1032,7 @@ async def test_mounted_gpt6_tool_cycle_and_resume(
                     assert resumed_app._in_flight_task is not None
                     await resumed_app._in_flight_task
                     await pilot.pause()
-                    transcript = resumed_app._copyable_transcript_text()
+                    transcript = resumed_app.query_one(ChatTranscript).logical_copy_text()
                     assert "complete-89" in transcript and "resume-89" in transcript
                 echo.assert_called_once()
     assert len(requests) == 3

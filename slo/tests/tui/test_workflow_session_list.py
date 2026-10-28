@@ -13,6 +13,7 @@ No test touches files outside ``tmp_path``, providers, processes or terminals.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import asyncio
 from pathlib import Path
 from typing import Any, Optional
@@ -535,7 +536,7 @@ class TestObservationLifecycle:
             await _settle(app=app, pilot=pilot)
             coordinator: WorkflowProgressCoordinator = _coordinator(app=app)
             service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             panel: Optional[SubAgentFleetPanel] = app._fleet_panel
             assert service is not None and sink is not None and panel is not None
             real_close, real_service_close = coordinator.close, service.close
@@ -831,7 +832,7 @@ class TestProgressLifecycleEdges:
             app.post_message(SubAgentFleetPanel.SessionSelected(key=key))
             await _settle(app=app, pilot=pilot)
             [new_screen] = _progress_screens(app=app)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             assert sink is not None and new_screen is not old_screen
             service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
             assert service is not None
@@ -975,7 +976,7 @@ class TestProgressLifecycleEdges:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            sink = app._workflow_progress_sink
+            sink = app._workflow_progress_updates_adapter
             assert sink is not None
             await _coordinator(app=app).close()
             key: WorkflowSessionKeyDAO = WorkflowSessionKeyDAO(
@@ -1049,8 +1050,8 @@ def _transcript(*, app: SloTUI) -> list[str]:
     Returns:
         list[str]: Line contents in order.
     """
-    assert app._adapter is not None
-    return [content for content, _classes in app._adapter.lines]
+    assert app.query_one(ChatTranscript)._adapter is not None
+    return [content for content, _classes in app.query_one(ChatTranscript)._adapter.lines]
 
 
 class TestClearFinishedGroups:

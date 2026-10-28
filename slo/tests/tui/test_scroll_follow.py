@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 from pathlib import Path
 from uuid import uuid4
 
@@ -40,7 +41,7 @@ async def _fill_transcript(*, app: SloTUI, pilot, line_count: int = 40) -> None:
         line_count (int, optional): Number of lines to append. Defaults to 40.
     """
     for index in range(line_count):
-        app._write_adapter_line(content=f"line {index}", classes="tool-result")
+        app.query_one(ChatTranscript).write_transcript_line(content=f"line {index}", classes="tool-result")
     await pilot.pause()
 
 
@@ -56,14 +57,17 @@ class TestTranscriptFollowMode:
             await pilot.pause()
             await _fill_transcript(app=app, pilot=pilot)
 
-            assert app._transcript_scroll is not None
-            app._transcript_scroll.scroll_end(animate=False)
+            assert app.query_one(ChatTranscript)._transcript_scroll is not None
+            app.query_one(ChatTranscript)._transcript_scroll.scroll_end(animate=False)
             await pilot.pause()
 
-            app._write_adapter_line(content="tail", classes="tool-result")
+            app.query_one(ChatTranscript).write_transcript_line(content="tail", classes="tool-result")
             await pilot.pause()
 
-            assert (app._transcript_scroll.max_scroll_y - app._transcript_scroll.scroll_y) <= 1.0
+            assert (
+                app.query_one(ChatTranscript)._transcript_scroll.max_scroll_y
+                - app.query_one(ChatTranscript)._transcript_scroll.scroll_y
+            ) <= 1.0
 
     @pytest.mark.asyncio
     async def test_flat_transcript_write_does_not_jump_when_user_scrolled_up(self) -> None:
@@ -74,16 +78,19 @@ class TestTranscriptFollowMode:
             await pilot.pause()
             await _fill_transcript(app=app, pilot=pilot)
 
-            assert app._transcript_scroll is not None
-            app._transcript_scroll.scroll_to(y=0, animate=False)
+            assert app.query_one(ChatTranscript)._transcript_scroll is not None
+            app.query_one(ChatTranscript)._transcript_scroll.scroll_to(y=0, animate=False)
             await pilot.pause()
-            previous_scroll_y: float = app._transcript_scroll.scroll_y
+            previous_scroll_y: float = app.query_one(ChatTranscript)._transcript_scroll.scroll_y
 
-            app._write_adapter_line(content="tail", classes="tool-result")
+            app.query_one(ChatTranscript).write_transcript_line(content="tail", classes="tool-result")
             await pilot.pause()
 
-            assert app._transcript_scroll.scroll_y == previous_scroll_y
-            assert app._transcript_scroll.scroll_y < app._transcript_scroll.max_scroll_y
+            assert app.query_one(ChatTranscript)._transcript_scroll.scroll_y == previous_scroll_y
+            assert (
+                app.query_one(ChatTranscript)._transcript_scroll.scroll_y
+                < app.query_one(ChatTranscript)._transcript_scroll.max_scroll_y
+            )
 
     @pytest.mark.asyncio
     async def test_stream_event_does_not_jump_when_user_scrolled_up(self) -> None:
@@ -94,18 +101,21 @@ class TestTranscriptFollowMode:
             await pilot.pause()
             await _fill_transcript(app=app, pilot=pilot)
 
-            assert app._transcript_scroll is not None
-            app._transcript_scroll.scroll_to(y=0, animate=False)
+            assert app.query_one(ChatTranscript)._transcript_scroll is not None
+            app.query_one(ChatTranscript)._transcript_scroll.scroll_to(y=0, animate=False)
             await pilot.pause()
-            previous_scroll_y: float = app._transcript_scroll.scroll_y
+            previous_scroll_y: float = app.query_one(ChatTranscript)._transcript_scroll.scroll_y
 
             await app._render_event(
                 AgentStreamEventDAO(kind="text_delta", delta="hello", iteration=0),
             )
             await pilot.pause()
 
-            assert app._transcript_scroll.scroll_y == previous_scroll_y
-            assert app._transcript_scroll.scroll_y < app._transcript_scroll.max_scroll_y
+            assert app.query_one(ChatTranscript)._transcript_scroll.scroll_y == previous_scroll_y
+            assert (
+                app.query_one(ChatTranscript)._transcript_scroll.scroll_y
+                < app.query_one(ChatTranscript)._transcript_scroll.max_scroll_y
+            )
 
     @pytest.mark.asyncio
     async def test_stream_event_keeps_follow_mode_when_viewport_was_at_bottom(self) -> None:
@@ -116,19 +126,22 @@ class TestTranscriptFollowMode:
             await pilot.pause()
             await _fill_transcript(app=app, pilot=pilot)
 
-            assert app._transcript_scroll is not None
-            app._transcript_scroll.scroll_end(animate=False)
+            assert app.query_one(ChatTranscript)._transcript_scroll is not None
+            app.query_one(ChatTranscript)._transcript_scroll.scroll_end(animate=False)
             # Wait for the scroll to actually land before dispatching. _render_event
             # snapshots _transcript_is_at_bottom() at dispatch time; if scroll_end has
             # not settled, the app correctly preserves position and no later pumping
             # can undo that decision. A bare pause() was the flake.
-            await pump_until(pilot=pilot, predicate=app._transcript_is_at_bottom)
-            assert app._transcript_is_at_bottom()
+            await pump_until(
+                pilot=pilot,
+                predicate=lambda: app.query_one(ChatTranscript)._capture_follow_snapshot().was_following,
+            )
+            assert app.query_one(ChatTranscript)._capture_follow_snapshot().was_following
 
             await app._render_event(
                 AgentStreamEventDAO(kind="text_delta", delta="hello", iteration=0),
             )
-            scroll = app._transcript_scroll
+            scroll = app.query_one(ChatTranscript)._transcript_scroll
             await pump_until(
                 pilot=pilot,
                 predicate=lambda: (scroll.max_scroll_y - scroll.scroll_y) <= 1.0,

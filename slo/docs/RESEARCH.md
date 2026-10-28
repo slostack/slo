@@ -1,5 +1,22 @@
 # Slo Codebase Index
 
+## ChatTranscript ownership (Feature 96)
+
+`SloTUI` owns session subscription/replacement, queue, focus and clipboard;
+`components/chat_transcript/component.py::ChatTranscript` owns mounted replay,
+older reads, windowing, logical text, navigation and visibility. Its local
+`TranscriptNoticeDisplayAdapter` and `WorkflowNoticeAdapter` register against the
+component. `adapters/workflow_progress.py::WorkflowProgressUpdatesAdapter` remains
+app-owned despite living in that package. `TranscriptProjectionAdapter` is the
+canonical projector with no legacy alias. CSS is an adjacent packaged resource.
+
+Textual 8.2.8 rounds animated scroll targets: a PageUp accepted mid-animation
+can request a fractional coordinate. Normalize animated targets before storing
+completion expectations or pending axes can remain forever after reaching the
+rounded native target. The actual Pilot supersession regression is in
+`test_chat_transcript_closure.py`. Full default evidence and remaining exact proof
+conflicts: `implementation/96-chat-transcript/dispatch12.md`; not independent approval.
+
 ## Feature 89 runtime owners and offline acceptance
 
 `src/agents/providers/openai_platform.py` owns strict nonmutating caller-option
@@ -288,7 +305,7 @@ Herdr is excluded. Each decision has one owner:
 | Progress loading and the shared formatter | `WorkflowVisualizerLoader` + `workflows/transcript_renderer.py` (used by `slo visualize` and the modal) |
 | Owner-scoped list and progress gateway | `DetachedWorkflowAppService` (`load_session_snapshot`, `load_session_progress`, `begin_child_abort`) |
 | Observation timer | `WorkflowProgressCoordinator` (one 5.0 s timer per owning session) |
-| Panel/modal presentation | `SubAgentFleetPanel`/`FleetSessionList`/`SubAgentFleetRow`, `SessionProgressScreen`, `AbortConfirmationScreen`, via the app's `_WorkflowProgressSink` |
+| Panel/modal presentation | `SubAgentFleetPanel`/`FleetSessionList`/`SubAgentFleetRow`, `SessionProgressScreen`, `AbortConfirmationScreen`, via the app-owned `WorkflowProgressUpdatesAdapter` |
 | Stopping one child | `SubAgentPool.abort_child`; detached requests through `ChildAbortStore` → `ChildAbortController` |
 
 ### Rules that are easy to break
@@ -355,7 +372,7 @@ Composed proof: `tests/integration/test_workflow_progress_tui.py` (including the
 ```text
 src/cli/app.py → src/cli/typer_dispatch.py → SloAgentSession
   → SloAgent → graph/service.py tool node → ToolExecutor → agent tools
-  → AgentStreamEventDAO subscribers → TranscriptProjector → Textual widgets
+  → AgentStreamEventDAO subscribers → SloTUI → ChatTranscript → TranscriptProjectionAdapter → widgets
 ```
 
 - `src/cli/app.py` is the Typer parse surface. `src/cli/typer_dispatch.py` owns runtime assembly. `src/cli/plugin.py` provides the managed-plugin lifecycle sub-app.

@@ -12,7 +12,7 @@ import pytest
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.tools.tool_output import ToolOutputUpdateDAO
-from src.tui.transcript_projector import TranscriptProjector
+from src.tui.transcript_projector import TranscriptProjectionAdapter
 from tests.tui.test_transcript_projector import FakeHost, FakeToolBlock
 
 
@@ -69,7 +69,7 @@ class _PartialHost(FakeHost):
 async def test_partial_update_patches_mounted_block_in_place() -> None:
     """A known block receives ``update_partial`` and stays mounted."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
+    projector = TranscriptProjectionAdapter(host=host)
     await projector.project(
         event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-1", tool_name="bash")
     )
@@ -96,7 +96,7 @@ async def test_partial_update_patches_mounted_block_in_place() -> None:
 async def test_early_partial_update_mounts_block_first() -> None:
     """An update arriving before normal mounting ensures the block exists."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
+    projector = TranscriptProjectionAdapter(host=host)
 
     await projector.project(
         event=AgentStreamEventDAO(
@@ -115,7 +115,7 @@ async def test_early_partial_update_mounts_block_first() -> None:
 async def test_terminal_tool_result_supersedes_partial_and_pops_block() -> None:
     """Only the terminal branch pops; partial content never becomes the result."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
+    projector = TranscriptProjectionAdapter(host=host)
     await projector.project(
         event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-1", tool_name="bash")
     )
@@ -146,7 +146,7 @@ async def test_terminal_tool_result_supersedes_partial_and_pops_block() -> None:
 async def test_partial_update_never_pops_block() -> None:
     """A stream of partials keeps the same single block mounted throughout."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
+    projector = TranscriptProjectionAdapter(host=host)
 
     for index in range(3):
         await projector.project(

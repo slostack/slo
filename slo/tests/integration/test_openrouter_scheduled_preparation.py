@@ -6,6 +6,7 @@ HTTP-400 bodies test adapter normalization, not arbitrary old-key text sanitatio
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import json
 import os
 import sys
@@ -298,7 +299,7 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
                     assert await inbox.list_pending(session_id="scheduled-target") == []
                     done = await inbox.list_done(session_id="scheduled-target")
                     assert len(done) == 1 and done[0].message_id == pending[0].message_id
-                    transcript = app._copyable_transcript_text()
+                    transcript = app.query_one(ChatTranscript).logical_copy_text()
                     if gateway_failure:
                         assert "scheduled mounted answer" not in transcript
                     else:

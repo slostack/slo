@@ -6,11 +6,12 @@ progress. It owns one five-second timer, at most one in-flight read task, the
 observation generation and the selected key. It never owns, cancels or signals
 agent execution; closing it stops observation only.
 
-Presentation is behind the consumer-owned ``WorkflowProgressSink`` protocol (the
-app adapter in ``src/tui/app.py`` and a recording fake in tests), and reads go
-through ``WorkflowProgressSource`` (``DetachedWorkflowAppService`` in production).
-The sink owns screen references and saved viewports; this coordinator owns
-scheduling and selected identity only.
+Presentation is behind the consumer-owned ``WorkflowProgressSink`` protocol,
+implemented by ``WorkflowProgressUpdatesAdapter`` in
+``src/tui/components/chat_transcript/adapters/workflow_progress.py`` and a recording fake in tests.
+Reads go through ``WorkflowProgressSource`` (``DetachedWorkflowAppService`` in
+production). The adapter owns screen references and saved viewports; this
+coordinator owns scheduling and selected identity only.
 """
 
 from __future__ import annotations

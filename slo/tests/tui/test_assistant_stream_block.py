@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -93,8 +94,8 @@ class TestAssistantStreamBlockStreaming:
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
             block = AssistantStreamBlock()
-            assert app._transcript_content is not None
-            await app._transcript_content.mount(block)
+            assert app.query_one(ChatTranscript)._transcript_content is not None
+            await app.query_one(ChatTranscript)._transcript_content.mount(block)
             block._answer_text = "# tail"
             block._answer_dirty = True
             block.seal()

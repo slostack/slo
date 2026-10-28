@@ -6,6 +6,7 @@ Covers ``SloTUI.on_text_selected`` (sub-spec 68.b.3) and
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -111,15 +112,15 @@ class TestRawMarkdownCopy:
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
             if kind == "answer":
-                block = await app.mount_assistant_block()
+                block = await app.query_one(ChatTranscript).mount_assistant_block()
                 block.finalize(final_text="# answer")
                 body = block._answer_body
             elif kind == "thinking":
-                block = await app.mount_thinking_block()
+                block = await app.query_one(ChatTranscript).mount_thinking_block()
                 block.set_thinking(content="# thinking")
                 body = block._body
             else:
-                block = await app.mount_user_message_block(text="# user")
+                block = await app.query_one(ChatTranscript).mount_user_message_block(text="# user")
                 body = block._body
             app.screen.focused = body  # type: ignore[attr-defined]
             await app.action_copy_raw_markdown()
@@ -134,7 +135,9 @@ class TestRawMarkdownCopy:
             if kind == "prompt":
                 target = app._input
             elif kind == "tool":
-                target = await app.mount_tool_execution_block(tool_call_id="call", tool_name="read")
+                target = await app.query_one(ChatTranscript).mount_tool_execution_block(
+                    tool_call_id="call", tool_name="read"
+                )
             elif kind == "notice":
                 target = Static("notice")
                 await app.mount(target)
@@ -206,7 +209,7 @@ class TestRawMarkdownCopy:
         """A provider success invokes only the established clipboard writer exactly once."""
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
-            block = await app.mount_user_message_block(text="# raw")
+            block = await app.query_one(ChatTranscript).mount_user_message_block(text="# raw")
             app.screen.focused = block  # type: ignore[attr-defined]
             app.copy_to_clipboard = MagicMock()  # type: ignore[method-assign]
 

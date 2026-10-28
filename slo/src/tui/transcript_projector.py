@@ -15,7 +15,7 @@ from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThink
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
 
-__all__ = ["TranscriptMountHost", "TranscriptProjector"]
+__all__ = ["TranscriptMountHost", "TranscriptProjectionAdapter"]
 
 
 _ABORTED_TERMINAL_NOTE: str = "aborted"
@@ -89,7 +89,7 @@ class TranscriptMountHost(Protocol):
         ...
 
 
-class TranscriptProjector:
+class TranscriptProjectionAdapter:
     """Project normalized stream events into transcript widget updates.
 
     Assistant reasoning / answer content must stay in chronological transcript
@@ -154,7 +154,7 @@ class TranscriptProjector:
                 return  # no content — do not mount an empty block
             if not event.block_id:
                 log_warning(
-                    "TranscriptProjector: ignoring thinking_delta with no block_id",
+                    "TranscriptProjectionAdapter: ignoring thinking_delta with no block_id",
                     iteration=event.iteration,
                 )
                 return
@@ -168,7 +168,7 @@ class TranscriptProjector:
         if event.kind == "thinking_end":
             if not event.block_id:
                 log_warning(
-                    "TranscriptProjector: ignoring thinking_end with no block_id",
+                    "TranscriptProjectionAdapter: ignoring thinking_end with no block_id",
                     iteration=event.iteration,
                 )
                 return
@@ -358,7 +358,9 @@ class TranscriptProjector:
             before (Optional[int]): Child index to insert before. ``None``
                 appends at the end.
         """
-        self._host.mount_turn_separator_if_needed(before=before)
+        separated = self._host.mount_turn_separator_if_needed(before=before)
+        if separated and before is not None:
+            before += 1
         await self._host.mount_user_message_block(text=text, before=before)
         self._host.record_transcript_line(content=f"> {text}", classes="user-line")
 

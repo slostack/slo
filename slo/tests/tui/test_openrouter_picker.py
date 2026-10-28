@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscript
 from unittest.mock import patch
 
 import pytest
@@ -202,7 +203,9 @@ async def test_tui_when_auth_has_no_landing_model_primes_cached_model_search() -
     ],
 )
 async def test_mounted_picker_paints_reasoning_disable_evidence(
-    size: tuple[int, int], reasoning: dict[str, object], expected: str,
+    size: tuple[int, int],
+    reasoning: dict[str, object],
+    expected: str,
 ) -> None:
     """Require real normal-path paint, then prove hidden render text cannot satisfy it."""
     from src.agents.model_catalog.seed import SeedModelCatalog
@@ -242,14 +245,17 @@ async def test_mounted_picker_paints_reasoning_disable_evidence(
 @pytest.mark.parametrize(
     "reasoning,expected",
     [
-        ({"supported_efforts": ["none"], "mandatory": False},
-         "supported: off (reasoning disable supported)"),
-        ({"supported_efforts": ["low", "high"]},
-         "supported: low, high (provider default; disable unavailable)"),
+        ({"supported_efforts": ["none"], "mandatory": False}, "supported: off (reasoning disable supported)"),
+        (
+            {"supported_efforts": ["low", "high"]},
+            "supported: low, high (provider default; disable unavailable)",
+        ),
     ],
 )
 async def test_mounted_reasoning_router_paints_converted_controls(
-    size: tuple[int, int], reasoning: dict[str, object], expected: str,
+    size: tuple[int, int],
+    reasoning: dict[str, object],
+    expected: str,
 ) -> None:
     """Paint the real bare-command result using the normal transcript adapter."""
     from src.agents.model_catalog.seed import SeedModelCatalog
@@ -274,7 +280,7 @@ async def test_mounted_reasoning_router_paints_converted_controls(
             await app.screen.action_cancel()
             await pilot.pause()
         assert result.rendered is not None
-        app._write_adapter_line(content=result.rendered, classes="tool-result")
+        app.query_one(ChatTranscript).write_transcript_line(content=result.rendered, classes="tool-result")
         await pilot.pause()
         app.query_one("#transcript-scroll").scroll_end(animate=False)
         await pilot.pause()

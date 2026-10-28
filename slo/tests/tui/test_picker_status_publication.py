@@ -65,6 +65,17 @@ async def test_verified_dismissal_paints_status_before_long_label(size: tuple[in
                 assert "context " in (app._slash_suggestion_state.rows[0].detail or "")
                 assert "synthetic-picker-key" not in painted
                 assert session.active_model_name != route
+                # EARLY-01: type through the slash in a provider model identity.
+                app._input.load_text("/model openrouter:vendor")
+                app._input.move_cursor(location=(0, len(app._input.text)))
+                await pilot.press("/")
+                await pilot.pause()
+                assert app._slash_suggestion_state.kind == "slash"
+                assert [row.insert_text for row in app._slash_suggestion_state.rows] == [route]
+                await pilot.press("tab")
+                await pilot.pause()
+                assert app._input.text == f"/model {route}"
+                assert app._path_suggestions._query is None
                 app._input.load_text("/model ")
                 await pilot.pause()
                 await pilot.press("down", "down")

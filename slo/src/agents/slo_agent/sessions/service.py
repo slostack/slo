@@ -66,6 +66,7 @@ from src.agents.providers.credit_exhaustion_policy import (
 from src.agents.providers.model_pool import ModelPoolDAO, ModelPoolEntryDAO, RouteSwitchRecordDAO
 from src.agents.slo_agent.herdr.sequence_store import HerdrFileLease
 from src.agents.slo_agent.herdr.visualizer import HerdrVisualizerLauncher
+from src.agents.slo_agent.herdr.editor import HerdrEditorLauncher
 from src.agents.slo_agent.herdr.dao import HerdrVisualizerRequestDAO, VisualizerLaunchOutcomeDAO
 from src.agents.slo_agent.orchestrator.context_reader import OrchestratorContextReader
 import shutil
@@ -641,6 +642,7 @@ class SloAgentSession:
         self._suspended_reporting_operation: Optional[int] = None
         self._herdr_destination: HerdrDestination = "platform"
         self._herdr_visualizer: Optional[HerdrVisualizerLauncher] = None
+        self._herdr_editor: Optional[HerdrEditorLauncher] = None
         self._herdr_viewer_drain_failed = False
         self._herdr_interactive: bool = False
         self._herdr_default_history: bool = False
@@ -2312,6 +2314,20 @@ class SloAgentSession:
             return "unavailable"
         return self._herdr_destination
 
+    async def open_editor(self, *, argv: tuple[str, ...]) -> VisualizerLaunchOutcomeDAO:
+        """Submit an editor only through this session's retained reporter authority.
+
+        Args:
+            argv: Validated editor executable, option terminator and absolute file.
+
+        Returns:
+            Safe submission evidence, never a fallback or process-readiness claim.
+        """
+        editor = self._herdr_editor
+        if self._herdr_closing or self.workflow_visualizer_destination != "herdr" or editor is None:
+            return VisualizerLaunchOutcomeDAO(status="failed")
+        return await editor.invoke(argv=argv)
+
     async def open_workflow_visualizer(self, *, parent_session_id: str) -> VisualizerLaunchOutcomeDAO:
         """Submit a saved workflow parent to this session's existing pane owner.
 
@@ -2461,6 +2477,8 @@ class SloAgentSession:
                 self._herdr_destination = self._herdr_reporter.destination
                 if self._herdr_destination == "herdr":
                     self._herdr_visualizer = self._herdr_reporter.build_visualizer()
+                    if isinstance(self._herdr_reporter, HerdrReporter):
+                        self._herdr_editor = self._herdr_reporter.build_editor()
                     self._herdr_reporting_started = True
                     self._publish_herdr_snapshot()
         except (Exception, asyncio.CancelledError):
@@ -2657,6 +2675,12 @@ class SloAgentSession:
                 self._herdr_start_task.result()
             except (Exception, asyncio.CancelledError):
                 # Inner task cancellation is defective activation, not caller cancellation.
+                self._herdr_close_uncertain = True
+        if self._herdr_editor is not None:
+            try:
+                await self._herdr_editor.close()
+            except (Exception, asyncio.CancelledError):
+                self._herdr_viewer_drain_failed = True
                 self._herdr_close_uncertain = True
         if self._herdr_visualizer is not None:
             try:

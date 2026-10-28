@@ -2007,7 +2007,7 @@ run until the user explicitly stops them.
 
 Skills are vendored convention prompts that the agent reads on demand.
 
-- **Location:** `skills/<group>/<slug>/SKILL.md` — 188 skills across 14 groups:
+- **Location:** `skills/<group>/<slug>/SKILL.md` — 186 skills across 14 groups:
   `orientation/`, `design-and-analysis/`, `coding/`, `git-ops/`, `cli/`,
   `tui/`, `integration-tests/`, `frontend-vue/`, `presentation/`,
   `user-content/`, `engineering/`, `languages/`, `samples/`, and

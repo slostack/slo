@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Specification skills split into overview, sub-specs and family review.**
+  `feature-specifications` now writes only `overview.md` (domains, journeys,
+  interfaces, duplicate-code table, open decisions, delivery order).
+  `breakdown-feature-spec-to-tasks` expands it into standalone engineering
+  sub-specs (`<NN>.a.n-<slice>.md`) and `task-list.md` instead of publishing
+  JIRA sub-tasks. `feature-specification-verification` reviews the whole family
+  once and routes REVISE findings to the skill that owns the failing document.
+  All three require a blocking duplicate-code check, keep cohesive steps (a
+  write and its flush) in one method, list convention skills per language, and
+  put end-to-end behaviour tests first, with unit tests only for complex
+  computation. The `specification-development` workflow, orchestrator routing,
+  `gather-feature-context`, `feature-specification-with-html` and the
+  orientation guides follow the new order.
+
+### Removed
+
+- **`feature-specifications-pre-hook` and `feature-specifications-post-hook`.**
+  The overview author's own checklist and the family review replace them.
+
 ## [0.22.0] — 2026-10-18
 
 **Orchestrated workflows gain reasoning-level control and honest budget

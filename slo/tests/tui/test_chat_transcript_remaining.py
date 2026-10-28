@@ -75,8 +75,18 @@ async def test_hidden_real_prepend_and_upper_growth(
             event=AgentStreamEventDAO(kind="text_delta", content="answer", iteration=1)
         )
         await transcript.echo_user(text="\n\n".join(f"READ-LATER-{i:02}" for i in range(60)))
-        await pilot.pause()
         scroll = transcript.query_one(TranscriptScroll)
+        # Reading starts only after the real append/layout pin has settled.
+        # A single pause can leave PageUp targeting the pre-append viewport.
+        async with asyncio.timeout(5):
+            while True:
+                await pilot.pause()
+                if (
+                    transcript._active_pin is None
+                    and scroll.scroll_y == scroll.max_scroll_y
+                    and any("READ-LATER" in line for line in painted_rows(app=app))
+                ):
+                    break
         scroll.focus()
         await pilot.press("pageup")
         await pilot.wait_for_scheduled_animations()

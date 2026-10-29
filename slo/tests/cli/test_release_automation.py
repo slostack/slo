@@ -121,8 +121,26 @@ class TestReleaseAutomation:
             {"job": "release-pipx-recovery"},
             {"job": "release-docker-installer-matrix"},
             {"job": "hosted-installer-smoke"},
-            {"job": "macos-installer-smoke"},
+            {"job": "macos-installer-smoke", "optional": True},
         ]
+
+    def test_only_macos_is_excluded_and_linux_release_gates_remain_required(self) -> None:
+        """The operator-waived macOS job is absent without weakening any Linux gate."""
+        pipeline: dict[str, object] = yaml.safe_load(GITLAB_CI.read_text())
+        macos_job: dict[str, object] = pipeline["macos-installer-smoke"]  # type: ignore[assignment]
+        assert macos_job["rules"] == [{"when": "never"}]
+        for job_name in (".release-e2e", ".hosted-installer-smoke", "create-gitlab-release"):
+            job: dict[str, object] = pipeline[job_name]  # type: ignore[assignment]
+            assert job["rules"] == [{"if": "$CI_COMMIT_TAG"}]
+            assert not job.get("allow_failure", False)
+        for job_name in (
+            "release-pipx-recovery",
+            "release-docker-installer-matrix",
+            "hosted-installer-smoke",
+        ):
+            job = pipeline[job_name]  # type: ignore[assignment]
+            assert "rules" not in job
+            assert not job.get("allow_failure", False)
 
     def test_gitlab_macos_job_selects_python_311_before_poetry_install(self) -> None:
         """The macOS release runner verifies the project-supported interpreter before Poetry runs."""
@@ -140,6 +158,18 @@ class TestReleaseAutomation:
         assert before_script.index("poetry env use python3.11") < before_script.index(
             "poetry install --no-interaction"
         )
+
+    def test_linux_release_setup_uses_the_image_python_without_activating_a_disabled_venv(self) -> None:
+        """Cold-cache release jobs must install directly in the verified Python 3.11 image."""
+        pipeline: dict[str, object] = yaml.safe_load(GITLAB_CI.read_text())
+        for job_name in (".release-e2e", "release-docker-installer-matrix", ".hosted-installer-smoke"):
+            job: dict[str, object] = pipeline[job_name]  # type: ignore[assignment]
+            before_script: list[str] = job["before_script"]  # type: ignore[assignment]
+            interpreter_check: str = "python3.11 -c 'import sys; assert sys.version_info[:2] == (3, 11)'"
+            assert before_script.index(interpreter_check) < before_script.index(
+                "poetry install --no-interaction"
+            )
+            assert "poetry env use python3.11" not in before_script, job_name
 
     def test_gitlab_tag_publication_fetches_the_same_tagged_public_installer_source(self) -> None:
         """The real GitLab tag job forbids local installer bytes and pins all release source inputs."""
@@ -228,11 +258,11 @@ class TestReleaseAutomation:
         assert docker_job["image"] == "python:3.11"
         docker_before_script: list[str] = docker_job["before_script"]  # type: ignore[assignment]
         assert (
-            "apt-get update && apt-get install -y --no-install-recommends docker.io" in docker_before_script
+            "apt-get update && apt-get install -y --no-install-recommends docker-cli" in docker_before_script
         )
         assert all("apk" not in command for command in docker_before_script)
         assert "python3.11 -c 'import sys; assert sys.version_info[:2] == (3, 11)'" in docker_before_script
-        assert "poetry env use python3.11" in docker_before_script
+        assert "poetry env use python3.11" not in docker_before_script
         template: dict[str, object] = pipeline[".release-e2e"]  # type: ignore[assignment]
         effective_image: str = str(docker_job.get("image", template["image"]))
         assert effective_image == "python:3.11"
@@ -279,7 +309,7 @@ class TestReleaseAutomation:
         assert "SLO_INSTALL_E2E=1 requires a usable docker executable on PATH" in smoke_test
         assert 'os.environ.get("SLO_INSTALL_E2E") != "1"' in smoke_test
 
-    def test_gitlab_tag_pipeline_makes_hosted_and_macos_release_evidence_fatal(self) -> None:
+    def test_gitlab_hosted_smoke_commands_are_preserved_including_excluded_macos(self) -> None:
         """The actual GitLab provider publishes, then waits for its release verification jobs."""
         content: str = GITLAB_CI.read_text()
         publish_start: int = content.index("publish-installer:")
@@ -319,7 +349,7 @@ class TestReleaseAutomation:
         assert "python3 -m site --user-base" not in macos_job
 
     def test_gitlab_tag_pipeline_creates_the_release_only_after_all_required_evidence(self) -> None:
-        """GitLab alone creates a release after hosted Linux and macOS evidence passes."""
+        """GitLab alone creates a release after mandatory Linux evidence passes."""
         content: str = GITLAB_CI.read_text()
 
         assert "create-gitlab-release:" in content

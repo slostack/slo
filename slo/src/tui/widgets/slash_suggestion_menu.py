@@ -75,13 +75,7 @@ class SlashSuggestionMenu(Vertical):
 
     def _paint_window(self) -> None:
         """Paint only height-bounded candidates, keeping the selected identity visible."""
-        row_height = max(
-            (
-                1 + max(1, len(self._detail_for_terminal(row_detail=row.detail or "").splitlines()))
-                for row in self._state.rows
-            ),
-            default=2,
-        )
+        row_height = self._row_height()
         capacity = max(1, min(25, (self.app.size.height - 8) // row_height))
         highlight = self._state.highlighted_index
         self.window_start = max(0, min(self.window_start, max(0, len(self._state.rows) - capacity)))
@@ -96,9 +90,12 @@ class SlashSuggestionMenu(Vertical):
         for index in range(self.window_start, window_end):
             row = self._state.rows[index]
             prefix = "›" if index == highlight else " "
-            lines.extend(
-                [f"{prefix} {row.label}", f"  {self._detail_for_terminal(row_detail=row.detail or '')}"]
-            )
+            label = row.label
+            if self._state.kind == "path":
+                label = self._single_line_path_label(label=label)
+            lines.append(f"{prefix} {label}")
+            if self._state.kind != "path":
+                lines.append(f"  {self._detail_for_terminal(row_detail=row.detail or '')}")
         if not lines:
             lines.append("No models match — change search or /model refresh")
         else:
@@ -111,6 +108,46 @@ class SlashSuggestionMenu(Vertical):
             for line in entry.splitlines()
         )
         self.query_one(".slash-suggestion-lines", Static).update(content)
+
+    @staticmethod
+    def _single_line_path_label(*, label: str) -> str:
+        """Escape every splitlines separator when painting paths, never insertion tokens.
+
+        Args:
+            label (str): Literal filesystem candidate label.
+
+        Returns:
+            str: Display-only label that occupies one logical menu row.
+        """
+        escapes: dict[str, str | int | None] = {
+            "\n": r"\n",
+            "\r": r"\r",
+            "\v": r"\v",
+            "\f": r"\f",
+            "\x1c": r"\x1c",
+            "\x1d": r"\x1d",
+            "\x1e": r"\x1e",
+            "\x85": r"\x85",
+            "\u2028": r"\u2028",
+            "\u2029": r"\u2029",
+        }
+        return label.translate(str.maketrans(escapes))
+
+    def _row_height(self) -> int:
+        """Size path windows as single-line rows; retain command/model detail capacity.
+
+        Returns:
+            int: Maximum painted line count per candidate in the current menu.
+        """
+        if self._state.kind == "path":
+            return 1
+        return max(
+            (
+                1 + max(1, len(self._detail_for_terminal(row_detail=row.detail or "").splitlines()))
+                for row in self._state.rows
+            ),
+            default=2,
+        )
 
     @staticmethod
     def _detail_for_terminal(*, row_detail: str) -> str:

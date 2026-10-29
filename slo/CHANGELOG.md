@@ -35,6 +35,44 @@
 - **`feature-specifications-pre-hook` and `feature-specifications-post-hook`.**
   The overview author's own checklist and the family review replace them.
 
+## [0.3.0] — 2026-10-29
+
+### Fixed
+
+- **Finder path suggestions use compact, directories-first rows.** Directory
+  labels end in `/`; file labels do not. Each path occupies one display line
+  without a redundant file/directory description. Display escaping covers unusual
+  line separators without changing the literal path inserted into the prompt.
+  Quoted directory navigation, cursor placement, surrounding text and undo/redo
+  preserve exact filename characters through the local prompt document adapter.
+  Non-path slash-command descriptions remain available.
+- **`/code` accepts existing directories as well as files.** Paths resolve against
+  the selected session's working directory and retain that session's terminal
+  authority. The launcher submits `nvim -- <absolute-target>` as literal arguments,
+  never shell-evaluated text. Missing paths, malformed input, NULs, broken links
+  and unsupported filesystem objects are refused before terminal submission;
+  cancellation and session replacement retain their existing cleanup behavior.
+- **Two consecutive prompt-focused Escapes abort the active run.** A second
+  Escape within 0.5 seconds uses the actual `/abort` flow and persisted cancellation
+  lifecycle. The first Escape still dismisses suggestions. Intervening keys,
+  edits, cursor/selection changes, focus/modal changes, commands and session/run
+  transitions reset the sequence so stale input cannot trigger an abort.
+
+### Verification and limitations
+
+- Accepted feature snapshot: full default non-E2E suite **11,178 passed**, with
+  **19 unchanged policy deselections**; independent affected review **168 passed**
+  and completion checks **81 passed**. Scoped Black and mypy checks passed for
+  all 11 changed/new Python files. Release metadata guards are checked separately
+  after the version change; exact-head CI must pass before merge.
+- The prompt document adapter is verified with Textual 8.2.8; dependency upgrades
+  must retain literal-path editing and history regressions. Recording terminal
+  tests prove safe argv/session authority, not a real nvim launch or readiness.
+- The pending header change is **not included** in this release.
+- Version **0.3.0 is intentional**, despite the existing higher numeric v0.22.0
+  tag. Plain `slo update` continues to select the highest numeric release,
+  v0.22.0; publishing the installer pinned to v0.3.0 does not change that policy.
+
 ## [0.22.0] — 2026-10-18
 
 **Orchestrated workflows gain reasoning-level control and honest budget

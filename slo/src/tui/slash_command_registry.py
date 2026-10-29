@@ -182,10 +182,10 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
     ),
     SlashCommandSpecDAO(
         name="code",
-        description="open an existing file in a separate editor pane",
+        description="open an existing file or directory in a separate editor pane",
         argument_mode="free_text",
-        usage="/code <file_path>",
-        argument_hint="file_path",
+        usage="/code <path>",
+        argument_hint="path",
         display_order=39,
     ),
     SlashCommandSpecDAO(

@@ -42,7 +42,9 @@ class PathSuggestionEngine:
 
     # Incomplete quotes are intentional while typing. This is tokenization only:
     # no interpolation, globbing, shell execution or file-content access.
-    _TOKENS = re.compile(r"""(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*(?:"|$)|'[^']*(?:'|$))+""")
+    _TOKENS = re.compile(
+        pattern=r"""(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*(?:"|$)|'[^']*(?:'|$))+""", flags=re.DOTALL
+    )
 
     @classmethod
     def query(

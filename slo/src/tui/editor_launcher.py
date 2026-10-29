@@ -1,4 +1,4 @@
-"""Literal file validation and local editor submission, never content attachment."""
+"""Literal path validation and local editor submission, never content attachment."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ class EditorRequestError(Exception):
 
 
 class EditorLauncher:
-    """Validate one literal file off-loop and submit it without owning the editor."""
+    """Validate one literal file or directory off-loop and submit it without owning the editor."""
 
     def __init__(
         self,
@@ -113,13 +113,13 @@ class EditorLauncher:
             workdir: Session cwd, independent of process cwd.
 
         Returns:
-            Absolute editor executable, option terminator and absolute file path.
+            Absolute editor executable, option terminator and absolute target path.
 
         Raises:
-            EditorRequestError: Invalid token, missing/non-file path or missing nvim.
+            EditorRequestError: Invalid token, missing/unsupported path or missing nvim.
         """
         token = self._validate_token(argument=argument)
-        path = self._resolve_file(token=token, workdir=workdir)
+        path = self._resolve_path(token=token, workdir=workdir)
         return (self._discover_executable(), "--", str(path))
 
     def _discover_executable(self) -> str:
@@ -153,30 +153,30 @@ class EditorLauncher:
         try:
             tokens = shlex.split(s=argument)
         except ValueError:
-            raise EditorRequestError("Usage: /code <file_path> (quote paths containing spaces).") from None
+            raise EditorRequestError("Usage: /code <path> (quote paths containing spaces).") from None
         if len(tokens) != 1 or not tokens[0] or "\x00" in tokens[0]:
-            raise EditorRequestError("Usage: /code <file_path> (quote paths containing spaces).")
+            raise EditorRequestError("Usage: /code <path> (quote paths containing spaces).")
         return tokens[0]
 
     @staticmethod
-    def _resolve_file(*, token: str, workdir: Path) -> Path:
-        """Resolve a validated token against session cwd and require a regular file.
+    def _resolve_path(*, token: str, workdir: Path) -> Path:
+        """Resolve a validated token against session cwd and require an existing file or directory.
 
         Args:
             token: Literal validated path with optional home prefix.
             workdir: Captured session cwd, not executable discovery cwd.
 
         Returns:
-            Absolute existing file path, following file symlinks.
+            Absolute existing target path, following symlinks.
 
         Raises:
-            EditorRequestError: Fixed diagnostic for inaccessible/non-file targets.
+            EditorRequestError: Fixed diagnostic for inaccessible or unsupported targets.
         """
         try:
             path = Path(token).expanduser()
             path = (path if path.is_absolute() else workdir / path).resolve(strict=True)
-            if path.is_file():
+            if path.is_file() or path.is_dir():
                 return path
         except (OSError, RuntimeError, ValueError):
             pass
-        raise EditorRequestError("/code requires an accessible existing file, not a directory.")
+        raise EditorRequestError("/code requires an accessible existing file or directory.")

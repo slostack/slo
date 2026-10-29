@@ -103,6 +103,31 @@ async def test_code_tab_discovers_argument_then_accepts_and_submits_file(tmp_pat
     assert app._path_suggestions._task is None
 
 
+@pytest.mark.parametrize(argnames="name", argvalues=[".", "space ü", "-c;$(touch sentinel)`x`'\""])
+async def test_code_keyboard_submits_literal_existing_directory(tmp_path: Path, name: str) -> None:
+    """Directories, including session cwd, cross the same literal editor boundary."""
+    from src.tui.editor_launcher import EditorLauncher
+
+    target = tmp_path / name
+    assert target.resolve().is_relative_to(tmp_path.resolve())
+    target.mkdir(exist_ok=True)
+    terminal = RecordingEditorTerminal()
+    app = SloTUI(
+        session=build_path_session(workdir=tmp_path),
+        editor_launcher=EditorLauncher(terminal=terminal, executable_lookup=EditorLookup()),
+    )
+    async with app.run_test() as pilot:
+        app.query_one(PromptInput).load_text("/code " + shlex.quote(name))
+        await pilot.press("enter")
+        await pump_until(
+            pilot=pilot,
+            predicate=lambda: bool(transcript_lines(app=app)),
+        )
+        await pump_until(pilot=pilot, predicate=lambda: not app._editor_launch_tasks)
+        assert terminal.calls == [("/test-only/nvim", "--", str(target.resolve()))]
+        assert not app._session.is_running
+
+
 class EditorLookup:
     """Return a fixed executable identity rather than invoking host tools."""
 
@@ -147,7 +172,6 @@ async def test_code_keyboard_resolves_literal_file_without_model(tmp_path: Path,
     argvalues=[
         ("", True, "Usage: /code"),
         ("missing.py", True, "existing file"),
-        (".", True, "existing file"),
         ("'unterminated", True, "Usage: /code"),
         ("one.py two.py", True, "Usage: /code"),
         ("one.py", False, "nvim is unavailable"),

@@ -12,7 +12,7 @@ from typing import Optional
 
 from textual.containers import Vertical, VerticalScroll
 
-from src.tui.transcript_projector import TranscriptProjectionAdapter
+from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
 
 __all__ = ["AgentPaneDAO", "AgentPaneManager"]
 

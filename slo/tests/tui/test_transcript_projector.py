@@ -2,15 +2,61 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-from src.tui.transcript_projector import TranscriptProjectionAdapter
+from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
+
+
+@pytest.mark.parametrize(
+    argnames="first_module",
+    argvalues=[
+        "src.tui.components.chat_transcript.adapters.transcript_projector",
+        "src.tui.components.chat_transcript.component",
+        "src.tui.agent_pane_manager",
+        "src.tui.app",
+    ],
+)
+def test_relocated_projector_imports_without_component_backedge(first_module: str) -> None:
+    """Load each entry first in a fresh interpreter, retaining adapter independence.
+
+    Args:
+        first_module: Module to import before the other relocation consumers.
+    """
+    script: str = """
+import importlib
+import sys
+
+adapter_name = "src.tui.components.chat_transcript.adapters.transcript_projector"
+component_name = "src.tui.components.chat_transcript.component"
+importlib.import_module(sys.argv[1])
+if sys.argv[1] == adapter_name:
+    assert component_name not in sys.modules
+adapter = importlib.import_module(adapter_name)
+component = importlib.import_module(component_name)
+manager = importlib.import_module("src.tui.agent_pane_manager")
+importlib.import_module("src.tui.app")
+assert component.TranscriptProjectionAdapter is adapter.TranscriptProjectionAdapter
+assert manager.TranscriptProjectionAdapter is adapter.TranscriptProjectionAdapter
+"""
+    completed: subprocess.CompletedProcess[str] = subprocess.run(
+        args=[sys.executable, "-B", "-c", script, first_module],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _user_entry(*, content: str) -> TranscriptEntryDAO:

@@ -13,7 +13,7 @@ from textual.content import Content
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.tools.tool_output import ToolOutputUpdateDAO
-from src.tui.transcript_projector import TranscriptProjectionAdapter
+from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
 from tests.tui.test_transcript_projector import FakeHost, FakeToolBlock
 
 

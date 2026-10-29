@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-from src.tui.transcript_projector import TranscriptProjectionAdapter
+from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
 
 from tests.tui.test_transcript_projector import FakeHost
 

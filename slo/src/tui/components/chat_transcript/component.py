@@ -34,7 +34,7 @@ from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.components.chat_transcript.adapters.transcript import TranscriptNoticeDisplayAdapter
 from src.tui.components.chat_transcript.adapters.workflow_notice import WorkflowNoticeAdapter
-from src.tui.transcript_projector import TranscriptProjectionAdapter
+from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock, FollowSnapshotDAO
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic

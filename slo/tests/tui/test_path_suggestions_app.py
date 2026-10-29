@@ -68,7 +68,13 @@ class TestPathSuggestionJourney:
                 "abc.py",
                 "readme.md",
             ]
-            assert "alpha/" in str(menu.query_one(Static).content)
+            assert str(menu.query_one(Static).content).splitlines() == [
+                "› alpha/",
+                "  zeta/",
+                "  abc.py",
+                "  readme.md",
+                "Showing 4 of 4 — type to narrow",
+            ]
             assert "not-immediate" not in str(menu.query_one(Static).content)
 
             await pilot.press("a")
@@ -87,6 +93,148 @@ class TestPathSuggestionJourney:
             await pilot.pause()
             assert prompt.text == "Review\nuse src/a later"
             assert not app._session.is_running
+
+    async def test_single_line_path_window_scrolls_and_preserves_command_details(
+        self, tmp_path: Path
+    ) -> None:
+        """Path capacity uses one line per row; slash commands retain their descriptions."""
+        for index in range(30):
+            target = tmp_path / f"file-{index:02}.py"
+            assert target.resolve().is_relative_to(tmp_path.resolve())
+            target.touch()
+        app = SloTUI(session=build_path_session(workdir=tmp_path))
+        async with app.run_test(size=(120, 40)) as pilot:
+            prompt = app.query_one(PromptInput)
+            menu = app.query_one(SlashSuggestionMenu)
+            await pilot.press(".", "/")
+            await pump_until(pilot=pilot, predicate=lambda: app._slash_suggestion_state.visible)
+            lines = str(menu.query_one(Static).content).splitlines()
+            assert lines[0] == "› file-00.py"
+            assert lines[-2:] == ["  file-24.py", "Showing 25 of 30 — type to narrow"]
+            assert len(lines) == 26
+            await pilot.press("up")
+            await pilot.pause()
+            lines = str(menu.query_one(Static).content).splitlines()
+            assert lines[-2] == "› file-29.py"
+            await pilot.press("tab")
+            await pilot.pause()
+            assert prompt.text == "./file-29.py"
+            assert not app._slash_suggestion_state.visible
+
+            prompt.load_text("/he")
+            prompt.move_cursor(location=(0, 3))
+            await pump_until(pilot=pilot, predicate=lambda: app._slash_suggestion_state.visible)
+            row = app._slash_suggestion_state.rows[0]
+            assert row.label == "/help" and row.detail
+            assert str(menu.query_one(Static).content).splitlines()[:2] == [
+                "› /help",
+                f"  {row.detail}",
+            ]
+            assert not app._session.is_running
+
+    @pytest.mark.parametrize(
+        argnames=("separator", "display_separator"),
+        argvalues=[
+            ("\n", r"\n"),
+            ("\r", r"\r"),
+            ("\r\n", r"\r\n"),
+            ("\v", r"\v"),
+            ("\f", r"\f"),
+            ("\x1c", r"\x1c"),
+            ("\x1d", r"\x1d"),
+            ("\x1e", r"\x1e"),
+            ("\x85", r"\x85"),
+            ("\u2028", r"\u2028"),
+            ("\u2029", r"\u2029"),
+        ],
+    )
+    async def test_newline_label_is_one_row_in_short_layout_and_inserts_literal_path(
+        self, tmp_path: Path, separator: str, display_separator: str
+    ) -> None:
+        """Display escaped line breaks without changing the accepted filesystem token."""
+        import shlex
+
+        filename = f"line{separator}break.py"
+        target = tmp_path / filename
+        assert target.resolve().is_relative_to(tmp_path.resolve())
+        target.touch()
+        app = SloTUI(session=build_path_session(workdir=tmp_path))
+        async with app.run_test(size=(60, 16)) as pilot:
+            prompt = app.query_one(PromptInput)
+            await pilot.press(".", "/")
+            await pump_until(pilot=pilot, predicate=lambda: app._slash_suggestion_state.visible)
+            menu = app.query_one(SlashSuggestionMenu)
+            assert str(menu.query_one(Static).content).splitlines() == [
+                f"› line{display_separator}break.py",
+                "Showing 1 of 1 — type to narrow",
+            ]
+            assert menu.region.bottom <= prompt.region.y
+            insert_text = app._slash_suggestion_state.rows[0].insert_text
+            await pilot.press("tab")
+            await pilot.pause()
+            assert shlex.split(prompt.text) == [f"./{filename}"]
+            assert prompt.text == insert_text
+            assert prompt.cursor_location == prompt.document.end
+            prompt.action_undo()
+            await pilot.pause()
+            assert prompt.text == "./"
+            assert prompt.cursor_location == (0, 2)
+            prompt.action_redo()
+            await pilot.pause()
+            assert prompt.text == insert_text
+            assert prompt.cursor_location == prompt.document.end
+
+    @pytest.mark.parametrize("separator", ["\r", "\r\n", "\n", "\u2028"])
+    @pytest.mark.parametrize("quote", ["", "'", '"'])
+    async def test_separator_directory_navigation_preserves_quotes_cursor_and_undo(
+        self, tmp_path: Path, separator: str, quote: str
+    ) -> None:
+        """Complete a literal directory then its child without losing suffix or undo history."""
+        import shlex
+
+        directory = tmp_path / f"line{separator}quote'and\"dir"
+        assert directory.resolve().is_relative_to(tmp_path.resolve())
+        directory.mkdir()
+        target = directory / "child.py"
+        assert target.resolve().is_relative_to(tmp_path.resolve())
+        target.touch()
+        app = SloTUI(session=build_path_session(workdir=tmp_path))
+        async with app.run_test() as pilot:
+            prompt = app.query_one(PromptInput)
+            original = f"before\nuse {quote}./li{quote} later"
+            prompt.load_text(original)
+            prompt.move_cursor(location=(1, len(f"use {quote}./li")))
+            await pump_until(pilot=pilot, predicate=lambda: app._slash_suggestion_state.visible)
+            await pilot.press("tab")
+            await pump_until(
+                pilot=pilot,
+                predicate=lambda: [row.label for row in app._slash_suggestion_state.rows] == ["child.py"],
+            )
+            directory_text = prompt.text
+            directory_cursor = prompt.cursor_location
+            assert shlex.split(directory_text) == ["before", "use", f"./{directory.name}/", "later"]
+            assert (
+                prompt.document.get_text_range(prompt.cursor_location, prompt.document.end)
+                == quote + " later"
+            )
+            await pilot.press("tab")
+            await pilot.pause()
+            accepted = prompt.text
+            assert shlex.split(accepted) == ["before", "use", f"./{directory.name}/child.py", "later"]
+            assert prompt.document.get_text_range(prompt.cursor_location, prompt.document.end) == " later"
+            await pilot.press("left", "right")
+            assert prompt.document.get_text_range(prompt.cursor_location, prompt.document.end) == " later"
+            prompt.action_undo()
+            await pilot.pause()
+            assert prompt.text == directory_text
+            assert prompt.cursor_location == directory_cursor
+            prompt.action_undo()
+            await pilot.pause()
+            assert prompt.text == original
+            prompt.action_redo()
+            prompt.action_redo()
+            await pilot.pause()
+            assert prompt.text == accepted
 
     async def test_directory_acceptance_lists_contents_and_escape_keeps_text(self, tmp_path: Path) -> None:
         """Tab navigates directories; Escape dismisses without modifying the prompt.

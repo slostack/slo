@@ -1,6 +1,7 @@
 """Dense metadata validation decisions not duplicated across mounted journeys."""
 
 import asyncio
+import os
 import threading
 import shutil
 from pathlib import Path
@@ -53,6 +54,19 @@ async def test_code_path_resolution_errors_remain_safe(tmp_path: Path, argument:
     )
     assert terminal.calls == []
     assert "Traceback" not in notice
+
+
+async def test_code_unsupported_fifo_is_refused_without_opening_or_submission(tmp_path: Path) -> None:
+    """Metadata validation refuses non-file/non-directory nodes without blocking on reads."""
+    target = tmp_path / "unsupported"
+    assert target.resolve().is_relative_to(tmp_path.resolve())
+    os.mkfifo(target)
+    terminal = RecordingEditorTerminal()
+    notice = await EditorLauncher(terminal=terminal, executable_lookup=EditorLookup()).invoke(
+        argument=target.name, session=build_path_session(workdir=tmp_path)
+    )
+    assert notice == "/code requires an accessible existing file or directory."
+    assert terminal.calls == []
 
 
 @pytest.mark.parametrize(argnames="path_entry", argvalues=["bin", ":"])

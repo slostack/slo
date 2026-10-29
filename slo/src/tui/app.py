@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from time import monotonic
 from typing import Optional, Protocol, cast
 
 from rich.markdown import Markdown
@@ -15,6 +16,8 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.document._wrapped_document import WrappedDocument
+from textual.document._document_navigator import DocumentNavigator
 from textual.message import Message
 from textual.timer import Timer
 from textual.widget import Widget
@@ -59,6 +62,7 @@ from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
+from src.tui.widgets.prompt_document import PromptDocument
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
@@ -319,6 +323,27 @@ class PromptInput(TextArea):
         super().__init__(soft_wrap=True)
         self._suggestion_navigation_enabled: bool = False
         self._prompt_history_navigation_enabled: bool = False
+
+    def _set_document(self, text: str, language: Optional[str]) -> None:
+        """Build the plain prompt document without normalizing literal path characters.
+
+        TextArea calls this on initialization and load_text; retain its normal
+        wrapping/navigation setup and edit history machinery.
+
+        Args:
+            text: Literal prompt buffer.
+            language: Optional syntax language; non-prompt syntax uses TextArea's setup.
+        """
+        if language:
+            super()._set_document(text=text, language=language)
+            return
+        self._highlight_query = None
+        self.document = PromptDocument(text=text)
+        self.wrapped_document = WrappedDocument(self.document, tab_width=self.indent_width)
+        self.navigator = DocumentNavigator(self.wrapped_document)
+        self._build_highlight_map()
+        self.move_cursor(location=(0, 0))
+        self._rewrap_and_refresh_virtual_size()
 
     class Submitted(Message):
         """Posted when the user presses Enter to submit the buffer."""
@@ -596,6 +621,7 @@ class SloTUI(App):
         """
         super().__init__()
         self._workflow_resume_launcher = workflow_resume_launcher
+        self._escape_deadline: float = 0.0
         self._editor_launcher = editor_launcher or EditorLauncher()
         self._editor_launch_tasks: dict[Worker[None], asyncio.Task[None]] = {}
         self._workflow_service_factory: WorkflowAppServiceFactory = (
@@ -1919,6 +1945,7 @@ class SloTUI(App):
         """
         if event.text_area is not self._input:
             return
+        self._reset_escape_sequence()
         if self._setting_prompt_from_history:
             self._setting_prompt_from_history = False
         elif self._prompt_history.is_navigating:
@@ -1930,6 +1957,7 @@ class SloTUI(App):
     def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         """Invalidate cursor-local completions when the prompt insertion point moves."""
         if event.text_area is self._input:
+            self._reset_escape_sequence()
             self._refresh_slash_suggestions()
 
     def on_assistant_stream_block_rendered(self, event: AssistantStreamBlock.Rendered) -> None:
@@ -1950,6 +1978,48 @@ class SloTUI(App):
         """
         if event.was_following:
             self._scroll_transcript_to_end()
+
+    async def on_event(self, event: events.Event) -> None:
+        """Observe original input before Textual forwards it to consuming widgets.
+
+        Escape remains widget-owned dismissal on the first press. Only a second
+        prompt-focused Escape within 0.5 seconds dispatches the real /abort path.
+        Forwarded/bubbled keys must not be counted twice.
+        """
+        if isinstance(event, (events.DescendantFocus, events.DescendantBlur, events.AppBlur, events.Paste)):
+            self._reset_escape_sequence()
+        if isinstance(event, events.Key) and not event.is_forwarded:
+            if await self._consume_double_escape(event=event):
+                return
+        await super().on_event(event)
+
+    def _reset_escape_sequence(self) -> None:
+        """Revoke the armed key when input, focus, session or run context changes."""
+        self._escape_deadline = 0.0
+
+    async def _consume_double_escape(self, *, event: events.Key) -> bool:
+        """Translate only consecutive main-prompt Escapes into existing abort dispatch.
+
+        Args:
+            event: Original, not-yet-forwarded terminal key.
+
+        Returns:
+            True when the second Escape was consumed by /abort.
+        """
+        if event.key != "escape" or self._input is None or self.focused is not self._input:
+            self._reset_escape_sequence()
+            return False
+        if self._input.screen is not self.screen:
+            self._reset_escape_sequence()
+            return False
+        now = monotonic()
+        if now > self._escape_deadline:
+            self._escape_deadline = now + 0.5
+            return False
+        self._reset_escape_sequence()
+        self._hide_slash_suggestions()
+        await self._dispatch_slash_command(line="/abort")
+        return True
 
     async def on_key(self, event: events.Key) -> None:
         """Redirect a printable keystroke back to the prompt input.
@@ -2764,6 +2834,7 @@ class SloTUI(App):
         Args:
             line (str): The full input line including the leading slash.
         """
+        self._reset_escape_sequence()
         self._hide_slash_suggestions()
         if self._session.preparation_status != "ready":
             command = line.strip().split(maxsplit=1)[0]
@@ -3142,6 +3213,7 @@ class SloTUI(App):
             self._write_lifecycle_notice(
                 content="Previous subscription cleanup incomplete.", classes="tool-result"
             )
+        self._reset_escape_sequence()
         self._path_suggestions.dismiss()
         self._session = candidate
         candidate.subscribe(handler=self._render_event)
@@ -4094,6 +4166,7 @@ class SloTUI(App):
         Args:
             text (str): The user prompt.
         """
+        self._reset_escape_sequence()
         self._projector.reset_for_new_run()
         await self._mount_spinner()
         saw_failed_event: bool = False
@@ -4114,6 +4187,7 @@ class SloTUI(App):
             if not saw_failed_event:
                 self._render_run_error(exc=exc)
         finally:
+            self._reset_escape_sequence()
             await self._refresh_context_window_after_prompt()
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()

@@ -34,18 +34,6 @@ Footer {
     margin: 1 0 0 0;
 }
 
-PromptInput, PromptInput:focus {
-    border: none;
-    border-top: solid $accent;
-    border-bottom: solid $accent;
-    background: $surface;
-    height: auto;
-    min-height: 3;
-    max-height: 17;
-    padding: 0 1;
-    margin: 1 0 0 0;
-}
-
 /* Spinner glyph/text styling lives in ThinkingSpinner.DEFAULT_CSS (72.a.5). */
 
 /* Workflow session list (feature 94 a.2): one heading plus at most five

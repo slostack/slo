@@ -154,6 +154,7 @@ async def test_inbox_delivery_disposition(tmp_path: Path, case: str) -> None:
             return await original_ack(session_id=session_id, message_id=message_id)
 
         app._app_closing = case == "closed_entry"
+        assert app._input is not None
         with (
             patch.object(store, "claim_next", side_effect=claim),
             patch.object(store, "ack", side_effect=ack) as ack_spy,
@@ -161,7 +162,9 @@ async def test_inbox_delivery_disposition(tmp_path: Path, case: str) -> None:
             patch.object(session, "invoke", wraps=session.invoke) as invoke,
             patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
             patch.object(app, "_queue_prompt", wraps=app._queue_prompt) as queue,
-            patch.object(app._prompt_history, "record", wraps=app._prompt_history.record) as history,
+            patch.object(
+                app._input._prompt_history, "record", wraps=app._input._prompt_history.record
+            ) as history,
         ):
             if case in {"claim_error", "advance_error", "ack_error"}:
                 with pytest.raises(OSError, match="sentinel"):
@@ -398,9 +401,12 @@ async def test_durable_advance_then_shutdown(tmp_path: Path, throwing_notice: bo
                 app._app_closing = True
                 entered.set()
 
+        assert app._input is not None
         with (
             patch.object(store, "claim_next", side_effect=claim),
-            patch.object(app._prompt_history, "record", wraps=app._prompt_history.record) as history,
+            patch.object(
+                app._input._prompt_history, "record", wraps=app._input._prompt_history.record
+            ) as history,
             patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
             patch.object(app, "_queue_prompt", wraps=app._queue_prompt) as queue,
             patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
@@ -462,11 +468,12 @@ async def assert_restart_retains_claim(
     before_events = await history.load_events(session_id=message.session_id)
     assert not any(event.kind in {"user_message", "tool_call"} for event in before_events)
     async with mounted_inbox(root=root, session_id=message.session_id) as restarted:
+        assert restarted._input is not None
         with patch.object(restarted._session, "invoke", wraps=restarted._session.invoke) as invoke:
             await restarted._poll_session_inbox()
             invoke.assert_not_called()
             assert restarted._in_flight_task is None
-            assert restarted._prompt_history.older(current_buffer="") is None
+            assert restarted._input._prompt_history.older(current_buffer="") is None
             assert await history.load_events(session_id=message.session_id) == before_events
             path = inbox_file(root=root, message=message)
             assert path.parent.name == "claimed" and path.read_bytes() == original_bytes

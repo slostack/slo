@@ -55,25 +55,25 @@ async def test_verified_dismissal_paints_status_before_long_label(size: tuple[in
             app._input.load_text("/model openrouter:")
             await pilot.pause()
             with patch.object(CredentialResolver, "resolve", side_effect=AssertionError("typing I/O")):
-                app._refresh_slash_suggestions()
+                app._input.update_model_context(active_model_name=app._session.active_model_name)
                 rows = model_suggestion_entries(active_model_name=session.active_model_name)
                 assert next(row for row in rows if row.model_name == route).status_summary.startswith(
                     "key verified"
                 )
                 painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
                 assert "key verified" in painted
-                assert "context " in (app._slash_suggestion_state.rows[0].detail or "")
+                assert "context " in (app._input._slash_suggestion_state.rows[0].detail or "")
                 assert "synthetic-picker-key" not in painted
                 assert session.active_model_name != route
                 app._input.load_text("/model ")
                 await pilot.pause()
                 await pilot.press("down", "down")
-                selected = app._slash_suggestion_state.highlighted_row
+                selected = app._input._slash_suggestion_state.highlighted_row
                 assert selected is not None
                 published = snapshot.model_copy(update={"generation": 981})
                 with patch.object(ModelCatalogService, "load", return_value=published):
                     await pilot.pause()
-                    highlighted = app._slash_suggestion_state.highlighted_row
+                    highlighted = app._input._slash_suggestion_state.highlighted_row
                     assert highlighted is not None
                     assert highlighted.insert_text == selected.insert_text
                     assert all(
@@ -87,7 +87,7 @@ async def test_verified_dismissal_paints_status_before_long_label(size: tuple[in
                 ):
                     ModelSuggestionProjection.refresh_authentication(verified_credential=credential)
                     await pilot.pause()
-                    assert app._slash_suggestion_state.highlighted_row is None
+                    assert app._input._slash_suggestion_state.highlighted_row is None
                     painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
                     assert "No models match" in painted
     ModelSuggestionProjection.reset()

@@ -241,7 +241,7 @@ async def observe_restore(app: SloTUI) -> None:
         public_admission = "not_attempted"
         painted_error = ""
         if capability == "model_changed":
-            from src.tui.app import PromptInput
+            from src.tui.components.prompt_input.component import PromptInput
 
             app.query_one(PromptInput).text = "explicit capability refusal probe"
             await pilot.press("enter")

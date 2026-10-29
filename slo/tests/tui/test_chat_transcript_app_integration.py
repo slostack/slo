@@ -18,7 +18,8 @@ from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDAO
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.components.chat_transcript.component import ChatTranscript
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.user_message_block import UserMessageBlock

@@ -32,22 +32,29 @@ def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Pat
         capture_output=True,
         text=True,
     )
-    resource = "src/tui/components/chat_transcript/css.tcss"
-    expected = (root / resource).read_bytes()
+    resources = {
+        "src/tui/components/chat_transcript/css.tcss": "ChatTranscript .transcript-prepend-boundary",
+        "src/tui/components/prompt_input/css.tcss": "PromptInput:focus",
+    }
     extraction = tmp_path / "wheel"
     with zipfile.ZipFile(next((source / "dist").glob("*.whl"))) as wheel:
-        assert wheel.read(resource) == expected
+        for resource in resources:
+            assert wheel.read(resource) == (root / resource).read_bytes()
         wheel.extractall(extraction)
     with tarfile.open(next((source / "dist").glob("*.tar.gz"))) as archive:
-        member = next(item for item in archive.getmembers() if item.name.endswith("/" + resource))
-        stream = archive.extractfile(member)
-        assert stream is not None and stream.read() == expected
+        for resource in resources:
+            member = next(item for item in archive.getmembers() if item.name.endswith("/" + resource))
+            stream = archive.extractfile(member)
+            assert stream is not None and stream.read() == (root / resource).read_bytes()
     program = (
         "import sys; from pathlib import Path; "
         f"root=Path({str(extraction)!r}); sys.path.insert(0,str(root)); "
         "import src.tui.components.chat_transcript.component as c; "
         "assert Path(c.__file__).is_relative_to(root); "
-        "assert 'ChatTranscript .transcript-prepend-boundary' in c.ChatTranscript.DEFAULT_CSS"
+        "assert 'ChatTranscript .transcript-prepend-boundary' in c.ChatTranscript.DEFAULT_CSS; "
+        "import src.tui.components.prompt_input.component as p; "
+        "assert Path(p.__file__).is_relative_to(root); "
+        "assert 'PromptInput:focus' in p.PromptInput.DEFAULT_CSS"
     )
     subprocess.run(
         [sys.executable, "-I", "-c", program],
@@ -67,6 +74,7 @@ def test_adapter_import_orders_are_acyclic(tmp_path: Path) -> None:
         "src.tui.components.chat_transcript.adapters.workflow_notice",
         "src.tui.components.chat_transcript.adapters.workflow_progress",
         "src.tui.components.chat_transcript.component",
+        "src.tui.components.prompt_input.component",
         "src.tui.app",
     ]
     for order in (modules, list(reversed(modules))):

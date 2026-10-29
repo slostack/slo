@@ -136,7 +136,7 @@ async def test_public_unmount_refuses_late_auth(tmp_path: Path, success: bool) -
             )
             with (
                 patch("src.tui.app.ModelSuggestionProjection.refresh_authentication") as projection,
-                patch.object(app, "_refresh_slash_suggestions") as suggestions,
+                patch.object(app._input, "update_model_context") as suggestions,
                 patch.object(app, "_refresh_title_bar") as title,
                 patch.object(session, "refresh_usage_snapshot") as usage,
                 patch.object(app, "push_screen") as screen,

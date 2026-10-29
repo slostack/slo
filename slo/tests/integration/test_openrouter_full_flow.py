@@ -9,6 +9,7 @@ separate contracts, not claims made by this test.
 from __future__ import annotations
 
 from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.prompt_input.component import PromptInput
 from pathlib import Path
 from collections.abc import Iterator
 from unittest.mock import patch
@@ -586,8 +587,8 @@ async def test_mounted_openrouter_auth_picker_router_session_and_resume_flow(
                 assert first_app._input is not None
                 first_app._input.load_text("/model mounted unseeded")
                 await pilot.pause()
-                assert first_app._slash_suggestion_state.rows[0].insert_text == route
-                first_app.on_prompt_input_suggestion_accepted(type("Accepted", (), {})())
+                assert first_app._input._slash_suggestion_state.rows[0].insert_text == route
+                first_app._input.on_prompt_input_suggestion_accepted(PromptInput.SuggestionAccepted())
                 await pilot.pause()
                 assert first_app._input.text == f"/model {route}"
                 await first_app._dispatch_slash_command(line=f"/model {route}")

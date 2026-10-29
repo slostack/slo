@@ -308,4 +308,4 @@ async def test_tui_when_display_search_matches_inserts_exact_canonical_argument(
             await pilot.pause()
 
             assert app._input.text == "/model openrouter:vendor/opaque-id"
-            assert app._slash_suggestion_state.rows[0].label == "openrouter:vendor/opaque-id"
+            assert app._input._slash_suggestion_state.rows[0].label == "openrouter:vendor/opaque-id"

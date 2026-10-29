@@ -24,7 +24,8 @@ from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import SloTUI, PromptInput
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.session_progress_screen import SessionProgressScreen

@@ -248,9 +248,12 @@ async def test_all_owner_claim_pending(
 
         async def observe() -> None:
             """Assert refused delivery independently of retained process finalization."""
+            assert app._input is not None
             with (
                 patch.object(session, "invoke", wraps=session.invoke) as invoke,
-                patch.object(app._prompt_history, "record", wraps=app._prompt_history.record) as history,
+                patch.object(
+                    app._input._prompt_history, "record", wraps=app._input._prompt_history.record
+                ) as history,
                 patch.object(store, "claim_next", side_effect=claim),
                 patch.object(store, "ack", side_effect=ack) as ack_spy,
                 patch.object(app, "_run_prompt", side_effect=run),

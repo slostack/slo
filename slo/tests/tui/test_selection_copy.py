@@ -21,7 +21,7 @@ from textual.app import App
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from src.tui.app import PromptInput
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 
 from src.agents.providers.faux import FauxChatModel

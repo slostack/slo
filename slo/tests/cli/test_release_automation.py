@@ -241,7 +241,9 @@ class TestReleaseAutomation:
 
         assert collection.returncode == 0, collection.stderr
         assert "test_hosted_installer_installs_and_runs_the_tagged_product" in collection.stdout
-        assert "2/6 tests collected (4 deselected)" in collection.stdout
+        assert "test_direct_pipx_regeneration_recovers_through_packaged_finalizer[pip]" in collection.stdout
+        assert "test_direct_pipx_regeneration_recovers_through_packaged_finalizer[uv]" in collection.stdout
+        assert "3/7 tests collected (4 deselected)" in collection.stdout
 
     def test_gitlab_tag_pipeline_requires_local_wheel_recovery_and_docker_matrix_proofs(self) -> None:
         """Tag pipelines override default deselection for each required locally-built E2E proof."""

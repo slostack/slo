@@ -355,3 +355,176 @@ class TestIsolatedLauncherWriter:
         assert result.returncode == 0, result.stderr
         assert not any(call.startswith("pipx install") for call in fake_bin.calls)
         assert all(not path.exists() for path in fake_bin.profile_paths.values())
+
+
+@pytest.mark.parametrize(
+    "response, succeeds",
+    [
+        ("venvs are in {root}/venvs\napps are exposed on your $PATH at /unused\n", True),
+        ("venvs are in {root}/venvs\nvenvs are in {root}/venvs\n", False),
+        ("venvs are in relative/venvs\n", False),
+        ("venvs are in {root}/not-venvs\n", False),
+        ("PIPX_HOME={root}\n", False),
+        ("venvs are in \n{root}/venvs\n", False),
+        ("warning\nvenvs are in {root}/venvs\n", False),
+        ("venvs are in {root}/venvs\r\n", False),
+        ("venvs are in $(touch {root}/owned)/venvs\n", False),
+        ("", False),
+    ],
+)
+def test_old_pipx_list_root_is_authoritative_or_refused(
+    tmp_path: Path, response: str, succeeds: bool
+) -> None:
+    """Finalize only from the observed old-tool root record, never shell evaluation.
+
+    Args:
+        tmp_path: Sole writable fixture root.
+        response: Captured list-shaped output or hostile near-miss.
+        succeeds: Whether the output authorizes the existing validated installation.
+    """
+    fake_bin = FakeBin(root=tmp_path)
+    pipx_home: Path = tmp_path / "custom root"
+    venv, python, user, entry = fake_bin.make_launcher_layout(pipx_home=pipx_home)
+    location: Path = venv / "site-packages"
+    location.mkdir()
+    output: Path = tmp_path / "list-output"
+    output.write_text(response.format(root=pipx_home))
+    fake_bin.write_regular_executable(
+        path=tmp_path / "bin" / "pipx",
+        content=(
+            '#!/bin/sh\ncase "$*" in\n'
+            '"environment --value PIPX_HOME") exit 2 ;;\n'
+            f'list) cat "{output}" ;;\n'
+            f'"runpip slo show slo") printf "%s\\n" "Location: {location}" ;;\n'
+            "*) exit 1 ;;\nesac\n"
+        ),
+    )
+    before: bytes = user.read_bytes()
+    entry_before: bytes = entry.read_bytes()
+
+    result = fake_bin.run(snippet="slo_finalize_isolated_launcher")
+
+    assert (result.returncode == 0) is succeeds, result.stderr
+    assert entry.read_bytes() == entry_before
+    assert not (pipx_home / "owned").exists()
+    if succeeds:
+        assert f"exec '{python}' -I '{entry}'" in user.read_text()
+    else:
+        assert user.read_bytes() == before
+
+
+MODERN_PIP_BODY: str = """import sys
+from src.cli import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())
+"""
+MODERN_UV_BODY: str = """# -*- coding: utf-8 -*-
+import sys
+from src.cli import main
+if __name__ == "__main__":
+    if sys.argv[0].endswith("-script.pyw"):
+        sys.argv[0] = sys.argv[0][:-11]
+    elif sys.argv[0].endswith(".exe"):
+        sys.argv[0] = sys.argv[0][:-4]
+    sys.exit(main())
+"""
+
+
+@pytest.mark.parametrize("body", [MODERN_PIP_BODY, MODERN_UV_BODY])
+@pytest.mark.parametrize("artifact", ["user", "entry"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "no-option",
+        "extra-statement",
+        "wrong-import",
+        "wrong-call",
+        "extra-flag",
+        "wrong-python",
+        "uv-truncated",
+    ],
+)
+def test_modern_generated_launchers_are_exact_or_preserved(
+    tmp_path: Path, body: str, artifact: str, mutation: str
+) -> None:
+    """Accept observed pip/uv scripts while preserving both artifacts on near-misses.
+
+    Args:
+        tmp_path: Sole writable fixture root.
+        body: Complete observed modern generator body.
+        artifact: Packaging-owned or user-facing script to exercise.
+        mutation: Exact accepted form or untrusted alteration.
+    """
+    fake_bin = FakeBin(root=tmp_path)
+    venv, python, user, entry = fake_bin.make_launcher_layout()
+    location: Path = venv / "site-packages"
+    location.mkdir()
+    fake_bin.write_fake_pipx(location=location, pipx_home=venv.parents[1])
+    shebang: str = f"#!{python} -E"
+    if mutation == "no-option":
+        shebang = f"#!{python}"
+    elif mutation == "extra-statement":
+        body += "print('untrusted')\n"
+    elif mutation == "wrong-import":
+        body = body.replace("from src.cli import main", "from foreign import main")
+    elif mutation == "wrong-call":
+        body = body.replace("sys.exit(main())", "sys.exit(main(1))")
+    elif mutation == "extra-flag":
+        shebang += " -s"
+    elif mutation == "wrong-python":
+        shebang = "#!/foreign/python -E"
+    elif mutation == "uv-truncated":
+        body = body.replace("    sys.exit(main())\n", "")
+    selected: Path = user if artifact == "user" else entry
+    selected.write_text(f"{shebang}\n{body}")
+    user_before: bytes = user.read_bytes()
+    entry_before: bytes = entry.read_bytes()
+
+    result = fake_bin.run(snippet="slo_finalize_isolated_launcher")
+
+    assert entry.read_bytes() == entry_before
+    if mutation in {"none", "no-option"}:
+        assert result.returncode == 0, result.stderr
+        assert f"exec '{python}' -I '{entry}'" in user.read_text()
+        assert fake_bin.run(snippet="slo_finalize_isolated_launcher").returncode == 0
+    else:
+        assert result.returncode != 0
+        assert user.read_bytes() == user_before
+
+
+@pytest.mark.parametrize(
+    "value, list_status",
+    [("relative", 0), ("/first\n/second", 0), ("", 0), (None, 1)],
+)
+def test_failed_or_invalid_root_query_never_uses_exported_root(
+    tmp_path: Path, value: str | None, list_status: int
+) -> None:
+    """Refuse invalid successful value queries and failed fallback commands.
+
+    Args:
+        tmp_path: Sole writable fixture root.
+        value: Invalid modern value, or None for an unsupported modern query.
+        list_status: Legacy list exit code even when it prints a plausible header.
+    """
+    fake_bin = FakeBin(root=tmp_path)
+    venv, _, user, _ = fake_bin.make_launcher_layout()
+    pipx_home: Path = venv.parents[1]
+    output: Path = tmp_path / "value"
+    output.write_text(value or "")
+    fake_bin.write_regular_executable(
+        path=tmp_path / "bin" / "pipx",
+        content=(
+            '#!/bin/sh\ncase "$*" in\n'
+            f'"environment --value PIPX_HOME") cat "{output}"; exit {2 if value is None else 0} ;;\n'
+            f'list) printf "%s\\n" "venvs are in {pipx_home}/venvs"; exit {list_status} ;;\n'
+            "*) exit 1 ;;\nesac\n"
+        ),
+    )
+    before: bytes = user.read_bytes()
+
+    result = fake_bin.run(snippet="slo_finalize_isolated_launcher", env={"PIPX_HOME": str(pipx_home)})
+
+    assert result.returncode != 0
+    assert user.read_bytes() == before

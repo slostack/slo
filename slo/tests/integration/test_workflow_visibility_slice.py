@@ -12,6 +12,7 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+from tests.tui.authentication._painted_output import wait_for_condition, wait_until_painted
 from tests.tui.workflows.test_session_snapshot import _Files, _entry, _handle
 from tests.tui.workflows.test_visibility_loader_slice import file_state, tree_state
 from src.agents.slo_agent.orchestrator.dao import (
@@ -138,15 +139,19 @@ async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
     app = SloTUI(session=session, workflow_service_factory=factory)
     async with app.run_test(size=size) as pilot:
         app.theme = theme
-        await pilot.pause()
         panel = app.query_one(SubAgentFleetPanel)
         editor = app.query_one(PromptInput)
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: len(panel.query(SubAgentFleetRow)) == 6,
+            description="six running fleet rows are mounted",
+        )
         assert app.focused is editor
         original = tuple(row.row for row in panel.query(SubAgentFleetRow))
         assert len(original) == 6
-        from tests.tui.authentication._painted_output import assert_widget_painted
-
-        assert_widget_painted(app=app, widget=panel, text="Ongoing workflow tasks")
+        # Painting trails mounting by a frame under parallel worker load; poll
+        # the compositor instead of asserting a single immediate render.
+        await wait_until_painted(pilot=pilot, widget=panel, text="Ongoing workflow tasks")
         assert panel.size.height > 0
         transcript_height = app.query_one("#transcript-scroll").size.height
         import sys
@@ -192,7 +197,11 @@ async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
             offline_files = tree_state(root)
             editor.text = "/workflows tui show"
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_for_condition(
+                pilot=pilot,
+                predicate=lambda: len(panel.query(SubAgentFleetRow)) == 6,
+                description="re-shown fleet rows are restored",
+            )
             restored = tuple(row.row for row in panel.query(SubAgentFleetRow))
             assert [row.key for row in restored] == [row.key for row in original]
             assert [row.task_text for row in restored] == [row.task_text for row in original]

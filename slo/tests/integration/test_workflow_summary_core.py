@@ -34,6 +34,7 @@ from tests.tui.authentication._painted_output import (
     painted_text,
     painted_widget_strips,
     wait_for_condition,
+    wait_until_painted,
 )
 
 SUMMARY_PAIRS = [
@@ -303,9 +304,10 @@ async def test_task_summary_survives_registration_to_detail(
             assert child.row.task_summary == label
             panel.focus_sessions()
             await pilot.press("down")
-            await pilot.pause()
-            painted = painted_text(strips=painted_widget_strips(app=app, widget=child))
+            # The focused row's content paint trails mounting under parallel worker
+            # load; poll the compositor until the label's literal cells appear.
             expected = f"[pending] {child_id}: {label}"
+            painted = await wait_until_painted(pilot=pilot, widget=child, text=expected)
             # Rows intentionally clip horizontally; compare actual visible literal cells.
             assert painted and "".join(expected.split()).startswith(painted.removesuffix("…"))
             assert "[pending]summary-child" in painted

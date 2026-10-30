@@ -35,6 +35,27 @@
 - **`feature-specifications-pre-hook` and `feature-specifications-post-hook`.**
   The overview author's own checklist and the family review replace them.
 
+## [0.3.1] — 2026-10-30
+
+### Fixed
+
+- Keep the main TUI header to `slo · <working directory> · session <session_id>`
+  and the existing status indicator. Use the selected session's working directory
+  and full ID, retain home-directory abbreviation, and omit model, reasoning,
+  authentication and session-name metadata from the header only.
+- Include the Linux release CI repairs merged after v0.3.0: install dependencies
+  directly in the verified Python 3.11 image without activating a disabled Poetry
+  virtualenv, and explicitly install Debian's `docker-cli` for the dind matrix.
+  Only the operator-waived macOS gate is excluded; Linux pipx recovery, all four
+  Docker installer images and hosted installer verification remain release-fatal.
+
+### Preserved
+
+- Keep the packaging-owned `slo-entry` trampoline, isolated `slo` wrapper,
+  installer validation and recovery contracts unchanged.
+- Retain the v0.3.0 dirs-first Finder with literal separators, safe `/code`
+  file/directory arguments and session authority, and double-Escape abort/reset.
+
 ## [0.3.0] — 2026-10-29
 
 ### Fixed

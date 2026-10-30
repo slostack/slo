@@ -347,8 +347,8 @@ class TestSloTUIActiveModelState:
     """Title rendering, slash-triggered refresh, and auth-success provider switching."""
 
     @pytest.mark.asyncio
-    async def test_title_uses_session_active_model_and_reasoning_state(self) -> None:
-        """Mount-time title reflects the session active model and reasoning level."""
+    async def test_title_uses_only_session_workdir_and_identity(self) -> None:
+        """Mount-time header excludes model and reasoning metadata."""
         session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
@@ -367,8 +367,9 @@ class TestSloTUIActiveModelState:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert "claude-sonnet-4-6" in app.title
-            assert "reasoning high" in app.title
+            assert app.title.endswith(" · session session-1234")
+            assert "claude-sonnet-4-6" not in app.title
+            assert "reasoning" not in app.title
 
     @pytest.mark.asyncio
     async def test_auth_dismissed_switches_to_provider_default_model(self) -> None:
@@ -405,8 +406,9 @@ class TestSloTUIActiveModelState:
             app._on_auth_dismissed(value)
             await pilot.pause()
             session.switch_model.assert_called_once_with(model_name="claude-opus-4-8-1m-context")
-            assert "claude-opus-4-8-1m-context" in app.title
-            assert "reasoning high" in app.title
+            assert app.title.endswith(" · session session-1234")
+            assert "claude-opus-4-8-1m-context" not in app.title
+            assert app.sub_title == ""
             assert (
                 "active model switched to claude-opus-4-8-1m-context",
                 "tool-result",
@@ -533,8 +535,8 @@ class TestSloTUI:
     """Pilot-driven tests for the ``slo`` Textual app."""
 
     @pytest.mark.asyncio
-    async def test_subtitle_uses_session_name_when_present(self) -> None:
-        """The subtitle shows the session name and full (untruncated) id."""
+    async def test_header_excludes_session_name_when_present(self) -> None:
+        """A session name never adds another header item."""
         session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
@@ -552,10 +554,12 @@ class TestSloTUI:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.sub_title == "session customer import regression · session-1234"
+            assert app.sub_title == ""
+            assert app.title.endswith(" · session session-1234")
+            assert "customer import regression" not in app.title
 
     @pytest.mark.asyncio
-    async def test_subtitle_shows_full_session_id_without_truncation(self) -> None:
+    async def test_header_shows_full_session_id_without_truncation(self) -> None:
         """A full UUID session id is shown verbatim — never sliced to a prefix."""
         full_id: str = "a166b82b-617e-45c6-9ada-a36f1c589fb6"
         session: MagicMock = _build_resource_free_session_mock()
@@ -575,11 +579,12 @@ class TestSloTUI:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.sub_title == f"session {full_id}"
+            assert app.title.endswith(f" · session {full_id}")
+            assert app.sub_title == ""
 
     @pytest.mark.asyncio
-    async def test_rename_session_updates_subtitle_immediately(self) -> None:
-        """Renaming the active session refreshes the subtitle right away."""
+    async def test_rename_session_keeps_header_identity_unchanged(self) -> None:
+        """Renaming is confirmed separately without adding header metadata."""
         session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
@@ -605,7 +610,9 @@ class TestSloTUI:
             await app._rename_current_session(session_name="release prep")
             await pilot.pause()
 
-            assert app.sub_title.startswith("session release prep · session-")
+            assert app.title.endswith(" · session session-1234")
+            assert app.sub_title == ""
+            assert "release prep" not in app.title
             assert ("session renamed to release prep", "tool-result") in _require_adapter_lines(app=app)
 
 
@@ -904,7 +911,8 @@ class TestSloTUISessionInbox:
             old_session.unsubscribe.assert_called_once_with(handler=app._render_event)
             new_session.subscribe.assert_called_once_with(handler=app._render_event)
             assert ("existing line", "tool-result") not in _require_adapter_lines(app=app)
-            assert app.sub_title.startswith("session fresh thread · new-sess")
+            assert app.title.endswith(" · session new-session-5678")
+            assert app.sub_title == ""
 
     @pytest.mark.asyncio
     async def test_new_session_rejection_while_run_active_preserves_existing_behavior(self) -> None:

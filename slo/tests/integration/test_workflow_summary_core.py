@@ -30,7 +30,12 @@ from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.session_progress_screen import SessionProgressScreen
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from tests.tui.workflows.test_session_snapshot import _handle
-from tests.tui.authentication._painted_output import painted_text, painted_widget_strips
+from tests.tui.authentication._painted_output import (
+    painted_text,
+    painted_widget_strips,
+    wait_for_condition,
+    wait_until_painted,
+)
 
 SUMMARY_PAIRS = [
     (
@@ -288,17 +293,21 @@ async def test_task_summary_survives_registration_to_detail(
             editor = app.query_one(PromptInput)
             editor.text = "/workflows tui show"
             await pilot.press("enter")
-            for _ in range(5):
-                await pilot.pause()
             panel = app.query_one(SubAgentFleetPanel)
+            await wait_for_condition(
+                pilot=pilot,
+                predicate=lambda: any(row.row.role == "child" for row in panel.query(SubAgentFleetRow)),
+                description="pending child fleet row is mounted",
+            )
             child = next(row for row in panel.query(SubAgentFleetRow) if row.row.role == "child")
             assert str(child.query_one(Static).render()) == f"[pending] {child_id}: {label}"
             assert child.row.task_summary == label
             panel.focus_sessions()
             await pilot.press("down")
-            await pilot.pause()
-            painted = painted_text(strips=painted_widget_strips(app=app, widget=child))
+            # The focused row's content paint trails mounting under parallel worker
+            # load; poll the compositor until the label's literal cells appear.
             expected = f"[pending] {child_id}: {label}"
+            painted = await wait_until_painted(pilot=pilot, widget=child, text=expected)
             # Rows intentionally clip horizontally; compare actual visible literal cells.
             assert painted and "".join(expected.split()).startswith(painted.removesuffix("…"))
             assert "[pending]summary-child" in painted
@@ -334,8 +343,11 @@ async def test_task_summary_survives_registration_to_detail(
             assert_released_files(root=root, prompt=prompt, child_id=child_id, readers=released_readers)
             editor.text = "/workflows tui show"
             await pilot.press("enter")
-            for _ in range(5):
-                await pilot.pause()
+            await wait_for_condition(
+                pilot=pilot,
+                predicate=lambda: any(row.row.role == "child" for row in panel.query(SubAgentFleetRow)),
+                description="completed child fleet row is mounted",
+            )
             child = next(row for row in panel.query(SubAgentFleetRow) if row.row.role == "child")
             original_key = child.row.key
             assert child.row.task_summary == label
@@ -345,8 +357,11 @@ async def test_task_summary_survives_registration_to_detail(
             assert list(panel.query(SubAgentFleetRow)) == []
             editor.text = "/workflows tui show"
             await pilot.press("enter")
-            for _ in range(5):
-                await pilot.pause()
+            await wait_for_condition(
+                pilot=pilot,
+                predicate=lambda: any(row.row.role == "child" for row in panel.query(SubAgentFleetRow)),
+                description="re-shown child fleet row is mounted",
+            )
             child = next(row for row in panel.query(SubAgentFleetRow) if row.row.role == "child")
             assert child.row.task_summary == label
             assert child.row.task_text == prompt
@@ -355,8 +370,11 @@ async def test_task_summary_survives_registration_to_detail(
             assert str(child.query_one(Static).render()) == f"[completed] {child_id}: {label}"
             panel.focus_sessions()
             await pilot.press("down", "enter")
-            for _ in range(5):
-                await pilot.pause()
+            await wait_for_condition(
+                pilot=pilot,
+                predicate=lambda: isinstance(app.screen, SessionProgressScreen),
+                description="session progress screen is mounted",
+            )
             assert isinstance(app.screen, SessionProgressScreen)
             assert str(app.screen.query_one("#task-description", Static).render()) == prompt
             assert [event.content for event in events if event.kind == "sub_agent_spawned"] == [

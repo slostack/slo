@@ -20,6 +20,7 @@ idempotency with a working ``slo --help``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,27 @@ def _selected_images() -> list[str]:
     return [assigned_image]
 
 
+def _installer_environment_args() -> list[str]:
+    """Pin nested release installs without changing ordinary local defaults.
+
+    The matrix image assignment identifies release mode even if its tag is
+    missing. Docker does not inherit parent variables; pass captured values as
+    argv data and clear the installer's higher-precedence SLO_VERSION override.
+
+    Returns:
+        list[str]: Explicit Docker environment arguments, or none locally.
+
+    Raises:
+        ValueError: If release mode has no valid immutable version tag.
+    """
+    tag: str = os.environ.get("CI_COMMIT_TAG", "")
+    if not tag and not os.environ.get("SLO_INSTALL_SMOKE_IMAGE", ""):
+        return []
+    if re.fullmatch(pattern=r"v[0-9]+\.[0-9]+\.[0-9]+", string=tag) is None:
+        raise ValueError("CI_COMMIT_TAG must be an immutable vMAJOR.MINOR.PATCH tag")
+    return ["--env", f"CI_COMMIT_TAG={tag}", "--env", f"SLO_REF={tag}", "--env", "SLO_VERSION="]
+
+
 def _require_docker_for_requested_e2e() -> str:
     """Return Docker's executable path or fail an explicitly requested E2E run.
 
@@ -92,6 +114,7 @@ def test_installer_bootstraps_and_finalises_shell_environment(image: str) -> Non
         image (str): Docker base image to smoke-test.
     """
     assert CONTAINER_SCRIPT.is_file(), f"missing container script: {CONTAINER_SCRIPT}"
+    installer_environment: list[str] = _installer_environment_args()
     docker: str = _require_docker_for_requested_e2e()
     bootstrap: str = (
         "set -e; "
@@ -104,6 +127,7 @@ def test_installer_bootstraps_and_finalises_shell_environment(image: str) -> Non
             docker,
             "run",
             "--rm",
+            *installer_environment,
             "-v",
             f"{REPOSITORY_ROOT.parent}:/src:ro",
             image,

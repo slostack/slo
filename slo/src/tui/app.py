@@ -1157,22 +1157,17 @@ class SloTUI(App):
         return f"~/{relative_path}"
 
     def _refresh_title_bar(self, *, subject: Optional[str] = None) -> None:
-        """Render title and subtitle from the session's active runtime state.
+        """Refresh the main header from the selected session after lifecycle changes.
+
+        Model, authentication and usage details remain on their separate surfaces.
 
         Args:
-            subject (Optional[str]): Optional authenticated subject to
-                append to the subtitle.
+            subject (Optional[str]): Accepted for auth-callback compatibility;
+                authenticated identity is not displayed in the header.
         """
         workdir_text: str = self._collapse_home_in_path(path=self._session.workdir)
-        self.title = (
-            f"slo · {workdir_text} · {self._session.routed_model_name} · "
-            f"reasoning {self._session.active_reasoning_level}"
-        )
-        if self._session.session_name is not None:
-            session_identity: str = f"session {self._session.session_name} · {self._session.session_id}"
-        else:
-            session_identity = f"session {self._session.session_id}"
-        self.sub_title = f"{session_identity} · {subject}" if subject else session_identity
+        self.title = f"slo · {workdir_text} · session {self._session.session_id}"
+        self.sub_title = ""
 
     def _refresh_usage_status_bar(self) -> None:
         """Refresh the persistent usage-and-limits widget."""

@@ -566,6 +566,43 @@ slo_read_safe_launcher() {
     cat "$path"
 }
 
+slo_query_pipx_home() {
+    # Prefer the value API. pipx 1.0.0 has no environment command; its captured
+    # list header reports the resolved VenvContainer, not a guessed HOME layout.
+    # Parse data only, never source/eval it. All containment checks follow below.
+    local output="" line="" root="" count=0
+    if output="$(pipx environment --value PIPX_HOME 2>/dev/null)"; then
+        printf '%s\n' "$output"
+        return 0
+    fi
+    if ! output="$(pipx list 2>/dev/null)"; then
+        echo "error: 'pipx environment --value PIPX_HOME' failed and pipx list failed; refusing to guess the pipx layout." >&2
+        return 1
+    fi
+    case "$output" in
+        "venvs are in /"*) ;;
+        *) return 1 ;;
+    esac
+    while IFS= read -r line; do
+        case "$line" in
+            "venvs are in "*)
+                count=$((count + 1))
+                root="${line#venvs are in }"
+                ;;
+        esac
+    done <<< "$output"
+    [ "$count" = 1 ] || return 1
+    case "$root" in
+        /*/venvs) root="${root%/venvs}" ;;
+        *) return 1 ;;
+    esac
+    if printf '%s' "$root" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+        return 1
+    fi
+    [ -n "$root" ] || return 1
+    printf '%s\n' "$root"
+}
+
 slo_resolve_isolated_launcher_layout() {
     # Resolve and validate the pipx venv that owns the two generated scripts.
     # Stdout contract: exactly four key=value records; diagnostics use stderr.
@@ -573,7 +610,7 @@ slo_resolve_isolated_launcher_layout() {
     local python_bin="" user_launcher="" entry_launcher="" show_output=""
     local location="" line="" location_parent="" prefix=""
     local python_prefix=""
-    if ! pipx_home_raw="$(pipx environment --value PIPX_HOME 2>/dev/null)"; then
+    if ! pipx_home_raw="$(slo_query_pipx_home)"; then
         echo "error: 'pipx environment --value PIPX_HOME' failed; refusing to guess the pipx layout." >&2
         return 1
     fi
@@ -660,7 +697,7 @@ slo_render_isolated_launcher() {
 }
 
 slo_is_recognized_generated_launcher() {
-    # Recognize only pip's src.cli:main console script. A pip/pipx-generated
+    # Recognize only the observed pip/uv src.cli:main console scripts. A pip/pipx-generated
     # shebang may retain venv/bin/python even when that validated path resolves
     # through contained links to the canonical executable used by the wrapper.
     # Those two paths, and no arbitrary same-venv pathname, are accepted.
@@ -673,7 +710,7 @@ slo_is_recognized_generated_launcher() {
     venv_root="$(dirname "$(dirname "$python_bin")")"
     original_python="$venv_root/bin/python"
     case "$shebang" in
-        "#!$python_bin" | "#!$original_python") ;;
+        "#!$python_bin" | "#!$original_python" | "#!$python_bin -E" | "#!$original_python -E") ;;
         *) return 1 ;;
     esac
     expected_body="# -*- coding: utf-8 -*-
@@ -694,6 +731,20 @@ from src.cli import main
 if __name__ == '__main__':
     sys.argv[0] = sys.argv[0].removesuffix('.exe')
     sys.exit(main())"
+    if [ "${content#*$'\n'}" = "$expected_body" ]; then
+        return 0
+    fi
+    # uv's complete generated body. Do not normalize tokens or permit arbitrary
+    # flags/statements: both packaging artifacts pass this same finite allowlist.
+    expected_body='# -*- coding: utf-8 -*-
+import sys
+from src.cli import main
+if __name__ == "__main__":
+    if sys.argv[0].endswith("-script.pyw"):
+        sys.argv[0] = sys.argv[0][:-11]
+    elif sys.argv[0].endswith(".exe"):
+        sys.argv[0] = sys.argv[0][:-4]
+    sys.exit(main())'
     [ "${content#*$'\n'}" = "$expected_body" ]
 }
 

@@ -246,7 +246,10 @@ class SubAgentFleetPanel(Vertical):
         try:
             await self._list.clear()
             self._rows = [SubAgentFleetRow(row=row) for row in rows]
-            await self._list.extend(self._rows)
+            # An empty extend still calls Textual's mount, which refuses once
+            # the app is exiting (``is_attached`` is False); zero rows need no mount.
+            if self._rows:
+                await self._list.extend(self._rows)
         finally:
             self._adopt_mounted_rows()
         self._list.index = self._restored_index(revision=revision, key=old_key, index=old_index)

@@ -37,7 +37,7 @@ from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.components.chat_transcript.component import ChatTranscript
-from src.tui.components.chat_transcript.adapters.workflow_progress import WorkflowProgressUpdatesAdapter
+from src.tui.components.workflow_progress.component import WorkflowProgress
 from src.tui.authentication import AuthenticationScreen
 from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
@@ -82,6 +82,7 @@ from src.tui.workflows.renderer import DetachedWorkflowRenderer
 from src.tui.workflows.service import AttachedChildAbort, DetachedWorkflowAppService
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
 from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, ChildControlCapabilityDAO
+from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.session_progress_screen import SessionProgressScreen
 
 
@@ -493,6 +494,7 @@ class SloTUI(App):
         self._mount_runtime_task: Optional[asyncio.Task[None]] = None
         self._app_closing: bool = False
         self._app_shutdown_task: Optional[asyncio.Task[None]] = None
+        self._shutdown_started: bool = False
         self._session_replacement_task: Optional[asyncio.Task[None]] = None
         self._session_transitioning: bool = False
         self._retired_herdr_session: Optional[SloAgentSession] = None
@@ -525,8 +527,9 @@ class SloTUI(App):
         )
         self._prompt_history: PromptHistoryNavigator = PromptHistoryNavigator()
         self._setting_prompt_from_history: bool = False
-        # Fleet panel reference for sub-agent status display.
-        self._fleet_panel: Optional[SubAgentFleetPanel] = None
+        # Workflow progress component (feature 96.f.1): owns the fleet panel and
+        # one observation-lifetime adapter per bound session.
+        self._workflow_progress: Optional[WorkflowProgress] = None
         # Guards one-per-run auto-launch of the workflow visualizer window.
         self._visualizer_launched_for_run: bool = False
         self._visualizer_launch_tasks: dict[str, asyncio.Task[None]] = {}
@@ -540,7 +543,7 @@ class SloTUI(App):
         # Feature 94 a.3: the sole observation refresh owner and its presentation
         # adapter, rebuilt together with the service for every owning session.
         self._workflow_progress_coordinator: Optional[WorkflowProgressCoordinator] = None
-        self._workflow_progress_updates_adapter: Optional[WorkflowProgressUpdatesAdapter] = None
+        self._workflow_progress_updates_adapter: Optional[WorkflowProgressSink] = None
         # Session the observation trio is bound to; None while unbound. Recorded
         # only after the coordinator's no-await start completes, and cleared first
         # on close, so a matching session ID alone never proves a healthy binding:
@@ -571,10 +574,10 @@ class SloTUI(App):
                 yield self._suggestion_menu
             self._input = PromptInput()
             yield self._input
-            # Workflow session list: below PromptInput, hidden while it has no
-            # rows. The orchestrator transcript always stays in the foreground.
-            self._fleet_panel = SubAgentFleetPanel()
-            yield self._fleet_panel
+            # Workflow progress: below PromptInput, hidden while it has no rows.
+            # The orchestrator transcript always stays in the foreground.
+            self._workflow_progress = WorkflowProgress(host=self)
+            yield self._workflow_progress
             self._usage_status_bar = UsageStatusBar()
             yield self._usage_status_bar
         yield Footer()
@@ -962,6 +965,52 @@ class SloTUI(App):
             plugin_statuses=self._session.plugin_status_map(),
         )
 
+    async def _shutdown(self) -> None:
+        """Join the observation barrier before Textual prunes the presentation tree.
+
+        WHAT: Seals application admission, joins in-flight mount/replacement
+            runtime work outside the prompt-submission lock, then joins the one
+            retained observation close task (coordinator → service → component
+            retirement) before delegating to the superclass's actual shutdown
+            batch (screen pruning, message close, driver close). Reentrant calls
+            (``run_test`` exit and ``run_async`` finally can both dispatch this)
+            return at once: the first call owns the full sequence.
+        WHO: Installed Textual dispatches this on the SloTUI subclass from both
+            ``run_async`` (shielded, normal exit/error/cancellation) and
+            ``run_test`` context exit; it is application lifecycle integration,
+            not framework modification. The private seam keeps the installed
+            no-argument async signature and delegates exactly once.
+        WHEN: Before any superclass pruning: ``App._shutdown`` closes screens
+            and unmounts widgets *before* dispatching app Unmount, so the
+            observation join must already have happened here. The superclass
+            call lives in ``finally`` so a pre-close failure or cancellation
+            can never skip real framework cleanup.
+        """
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+        try:
+            await self._join_observation_before_superclass_pruning()
+        finally:
+            await super()._shutdown()
+
+    async def _join_observation_before_superclass_pruning(self) -> None:
+        """Seal admission, join runtime work, then join the observation close.
+
+        The cutoff mirrors ``on_unmount`` so no prompt, delivery or external
+        report is admitted after shutdown begins; the joins reuse the retained
+        mount/replacement tasks outside ``_prompt_submission_lock`` and the one
+        shielded observation close task — no second shutdown owner is created.
+        """
+        self._app_closing = True
+        self._delivery_quiescing = True
+        self._session.begin_external_reporting_close()
+        if self._mount_runtime_task is not None:
+            await HerdrTaskJoin.wait(task=self._mount_runtime_task)
+        if self._session_replacement_task is not None:
+            await HerdrTaskJoin.wait(task=self._session_replacement_task)
+        await self._close_workflow_observation()
+
     async def on_unmount(self) -> None:
         """Seal admission before awaiting the single retained shutdown task."""
         self._app_closing = True
@@ -1170,7 +1219,7 @@ class SloTUI(App):
         """
         coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
         service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
-        sink: Optional[WorkflowProgressUpdatesAdapter] = self._workflow_progress_updates_adapter
+        sink: Optional[WorkflowProgressSink] = self._workflow_progress_updates_adapter
         if not (
             self._workflow_observation_session_id == binding.session_id
             and self._session is binding.session
@@ -1179,14 +1228,7 @@ class SloTUI(App):
             and sink is not None
         ):
             return
-        self._workflow_observation_session_id = None
-        self._workflow_progress_coordinator = None
-        self._workflow_app_service = None
-        self._workflow_progress_updates_adapter = None
-        await coordinator.close()
-        await service.close()
-        sink.dispose()
-        await self._reset_session_list()
+        await self._close_workflow_observation()
 
     def _build_session_delivery(self, *, session: SloAgentSession) -> None:
         """Build inert delivery collaborators before initialization captures ownership.
@@ -1298,13 +1340,32 @@ class SloTUI(App):
         await self._close_workflow_observation()
         self._workflow_observation_close_task = None
         self._workflow_app_service = self._build_workflow_service()
-        self._workflow_progress_updates_adapter = WorkflowProgressUpdatesAdapter.register(tui=self)
-        self._workflow_progress_coordinator = self._workflow_coordinator_factory(
-            service=self._workflow_app_service,
-            sink=self._workflow_progress_updates_adapter,
-            schedule=self._schedule_workflow_refresh,
-        )
-        self._workflow_progress_coordinator.start()
+        if self._workflow_progress is None:
+            # Unmounted (pre-mount) callers build the service but cannot bind the
+            # component; leave the sink unbound so a later mounted bind succeeds.
+            return
+        try:
+            self._workflow_progress_updates_adapter = self._workflow_progress.bind_observation()
+            self._workflow_progress_coordinator = self._workflow_coordinator_factory(
+                service=self._workflow_app_service,
+                sink=self._workflow_progress_updates_adapter,
+                schedule=self._schedule_workflow_refresh,
+            )
+            self._workflow_progress_coordinator.start()
+        except BaseException as startup_error:
+            # The initiating startup error is the one the caller must see. Join the
+            # shared close barrier so the partially acquired owner (service, sink
+            # and any started coordinator) is retired. A cleanup failure is
+            # reported through the fixed lifecycle diagnostic and chained as the
+            # startup error's context; it never replaces the original exception,
+            # and the failed close task stays published, permanently blocking
+            # reuse because a completed failed task is never retried.
+            try:
+                await self._close_workflow_observation()
+            except BaseException as cleanup_error:
+                self._write_lifecycle_notice(content="Session cleanup incomplete.", classes="tool-result")
+                raise startup_error from cleanup_error
+            raise
         self._workflow_observation_session_id = self._session.session_id
 
     async def _ensure_workflow_observation_bound(self) -> None:
@@ -1364,7 +1425,7 @@ class SloTUI(App):
         self._workflow_observation_session_id = None
         coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
         service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
-        sink: Optional[WorkflowProgressUpdatesAdapter] = self._workflow_progress_updates_adapter
+        sink: Optional[WorkflowProgressSink] = self._workflow_progress_updates_adapter
         self._workflow_progress_coordinator = None
         self._workflow_app_service = None
         self._workflow_progress_updates_adapter = None
@@ -1378,9 +1439,8 @@ class SloTUI(App):
                 if service is not None:
                     await service.close()
             finally:
-                if sink is not None:
-                    sink.dispose()
-                await self._reset_session_list()
+                if sink is not None and self._workflow_progress is not None:
+                    await self._workflow_progress.retire_observation(sink=sink)
 
     def _build_workflow_service(self) -> DetachedWorkflowAppService:
         """Build the owner-scoped workflow service for the current session.
@@ -2963,41 +3023,9 @@ class SloTUI(App):
         Args:
             message (SessionProgressScreen.AbortRequested): Captured confirmation target.
         """
-        if self._workflow_progress_updates_adapter is None:
+        if self._workflow_progress is None:
             return
-        self._workflow_progress_updates_adapter.confirm_abort(target=message.target)
-
-    def _on_child_abort_confirmed(self, *, target: ChildAbortTargetDAO) -> None:
-        """Hand an explicitly confirmed target to the service and refresh at once.
-
-        WHAT: The service owns the submission (minimizing never withdraws it);
-            the immediate refresh paints the pending notice and disabled Abort.
-        WHO: ``WorkflowProgressUpdatesAdapter`` from its confirmation callback, only on True.
-        WHEN: Once per explicit Abort child choice.
-
-        Args:
-            target (ChildAbortTargetDAO): Identity captured when confirmation opened.
-        """
-        if self._workflow_app_service is None:
-            return
-        self._workflow_app_service.begin_child_abort(target=target)
-        self._request_workflow_refresh()
-
-    def _on_progress_incarnation_changed(self, *, key: WorkflowSessionKeyDAO) -> None:
-        """Close the old execution view when the sink observes same-key reuse.
-
-        WHAT: The coordinator invalidates its generation first, then asks the sink
-            to dismiss the view; the reader must select the session again.
-        WHO: ``WorkflowProgressUpdatesAdapter.apply_sessions`` only, while reconciling the
-            selected identity against fresh rows.
-        WHEN: When the open view's key now names a different execution or dispatch.
-
-        Args:
-            key (WorkflowSessionKeyDAO): Selected key whose incarnation changed.
-        """
-        if self._workflow_progress_coordinator is not None:
-            self._workflow_progress_coordinator.minimize()
-        self.notify(message=f"Session execution changed; select {key.session_id} again.", markup=False)
+        self._workflow_progress.confirm_abort(target=message.target)
 
     def _apply_workflow_command_result(self, *, result: SlashCommandResultDAO) -> None:
         """Route typed ``/workflows dismiss|resume`` outcomes to observation.
@@ -3052,72 +3080,109 @@ class SloTUI(App):
             self._chat_transcript.write_transcript_line(content=content, classes="tool-result")
             coordinator.request_refresh()
 
-    async def _apply_session_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
-        """Apply a snapshot to the panel and return focus if its list vanished.
-
-        WHAT: The panel never focuses anything itself. When an empty snapshot hides
-            a list that held focus, focus returns to the prompt editor, but only on
-            the base screen (never behind a modal).
-        WHO: ``WorkflowProgressUpdatesAdapter.apply_sessions`` for every coordinator refresh.
-        WHEN: Whenever a fresh session snapshot is available.
+    def may_open_progress(self, *, current: Optional[SessionProgressScreen]) -> bool:
+        """Allow a progress view to open unless an unrelated modal is active.
 
         Args:
-            snapshot (WorkflowSessionSnapshotDAO): Ordered rows to display.
-        """
-        if self._fleet_panel is None:
-            return
-        list_focused: bool = self._session_list_holds_focus()
-        await self._fleet_panel.apply_snapshot(snapshot=snapshot)
-        if snapshot.rows:
-            return
-        self._return_focus_from_hidden_list(list_focused=list_focused)
-
-    async def _reset_session_list(self) -> None:
-        """Empty and hide the session list, returning focus if the list held it.
-
-        WHAT: The single app-owned reset path, so every emptying of the panel
-            carries the same base-screen focus-return rule as an empty snapshot.
-        WHO: ``_close_workflow_observation`` on owner replacement and unmount.
-        WHEN: After the coordinator, service and sink of the old owner are closed.
-        """
-        if self._fleet_panel is None:
-            return
-        list_focused: bool = self._session_list_holds_focus()
-        await self._fleet_panel.reset()
-        self._return_focus_from_hidden_list(list_focused=list_focused)
-
-    def _session_list_holds_focus(self) -> bool:
-        """Return whether the session list (or one of its rows) holds focus.
+            current (Optional[SessionProgressScreen]): The adapter's already open
+                view; it never blocks its own replacement.
 
         Returns:
-            bool: True when the mounted panel or a descendant is focused.
+            bool: False while another modal covers the base screen.
         """
-        if self._fleet_panel is None:
-            return False
-        return self._fleet_panel.has_focus or self._fleet_panel.has_focus_within
+        return not (len(self.screen_stack) > 1 and self.screen is not current)
 
-    def _focus_after_progress(self) -> None:
-        """Return focus to the list, or to the prompt when the list is empty, on the base screen.
-
-        WHO: ``WorkflowProgressUpdatesAdapter`` once its progress view has left the stack.
-        WHEN: Only when no other modal remains above the base screen.
-        """
-        if len(self.screen_stack) > 1 or self._fleet_panel is None or self._input is None:
-            return
-        if self._fleet_panel.display:
-            self._fleet_panel.focus_sessions()
-            return
-        self._input.focus()
-
-    def _return_focus_from_hidden_list(self, *, list_focused: bool) -> None:
-        """Focus the prompt editor after a focused list was hidden on the base screen.
+    def is_active_progress(self, *, screen: SessionProgressScreen) -> bool:
+        """Return whether the owned progress view is the active screen.
 
         Args:
-            list_focused (bool): Whether the list held focus before it was emptied.
+            screen (SessionProgressScreen): View to compare with the stack top.
         """
-        if not list_focused or len(self.screen_stack) > 1 or self._input is None:
+        return self.screen is screen
+
+    def present_progress(self, *, screen: SessionProgressScreen, on_closed: Callable[[None], None]) -> None:
+        """Push one owned progress view with its dismissal callback.
+
+        Args:
+            screen (SessionProgressScreen): Fresh view to present.
+            on_closed (Callable[[None], None]): Callback after the view leaves the stack.
+        """
+        self.push_screen(screen=screen, callback=on_closed)
+
+    def present_confirmation(
+        self, *, screen: AbortConfirmationScreen, on_closed: Callable[[Optional[bool]], None]
+    ) -> None:
+        """Push one owned abort confirmation with its result callback.
+
+        Args:
+            screen (AbortConfirmationScreen): Confirmation to present.
+            on_closed (Callable[[Optional[bool]], None]): Result callback.
+        """
+        self.push_screen(screen=screen, callback=on_closed)
+
+    def notify_progress(self, *, message: str, warning: bool = False) -> None:
+        """Show one fixed workflow-progress notice.
+
+        Args:
+            message (str): Literal notice text.
+            warning (bool, optional): Whether to use warning severity. Defaults to False.
+        """
+        if warning:
+            self.notify(message=message, markup=False, severity="warning")
+            return
+        self.notify(message=message, markup=False)
+
+    def return_prompt_focus(self) -> None:
+        """Focus the prompt editor on the base screen only, never behind a modal."""
+        if len(self.screen_stack) > 1 or self._input is None:
             return
         self._input.focus()
+
+    def progress_closed(self) -> None:
+        """Return focus to the visible session list, or to the prompt when empty.
+
+        WHO: The bound adapter once its progress view has left the stack.
+        WHEN: Only when no other modal remains above the base screen.
+        """
+        if len(self.screen_stack) > 1 or self._workflow_progress is None or self._input is None:
+            return
+        if self._workflow_progress.has_visible_sessions():
+            self._workflow_progress.focus_sessions()
+            return
+        self._input.focus()
+
+    def progress_incarnation_changed(self, *, key: WorkflowSessionKeyDAO) -> None:
+        """Close the old execution view when the sink observes same-key reuse.
+
+        WHAT: The coordinator invalidates its generation first, then asks the sink
+            to dismiss the view; the reader must select the session again. Runs
+            synchronously so invalidation precedes any further paint.
+        WHO: The bound adapter's ``apply_sessions`` only, while reconciling the
+            selected identity against fresh rows.
+        WHEN: When the open view's key now names a different execution or dispatch.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Selected key whose incarnation changed.
+        """
+        if self._workflow_progress_coordinator is not None:
+            self._workflow_progress_coordinator.minimize()
+        self.notify(message=f"Session execution changed; select {key.session_id} again.", markup=False)
+
+    def child_abort_confirmed(self, *, target: ChildAbortTargetDAO) -> None:
+        """Hand an explicitly confirmed target to the service and refresh at once.
+
+        WHAT: The service owns the submission (minimizing never withdraws it);
+            the immediate refresh paints the pending notice and disabled Abort.
+        WHO: The bound adapter from its confirmation callback, only on True.
+        WHEN: Once per explicit Abort child choice.
+
+        Args:
+            target (ChildAbortTargetDAO): Identity captured when confirmation opened.
+        """
+        if self._workflow_app_service is None:
+            return
+        self._workflow_app_service.begin_child_abort(target=target)
+        self._request_workflow_refresh()
 
     def _schedule_visualizer_launch(self, *, parent_session_id: str) -> None:
         """Capture the selected owner and register one pending request per parent.

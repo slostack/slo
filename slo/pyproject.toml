@@ -99,6 +99,7 @@ build-backend = "poetry.core.masonry.api"
   # managed-shell-environment writer.
   include = [
       { path = "src/tui/components/chat_transcript/css.tcss", format = ["sdist", "wheel"] },
+      { path = "src/tui/components/workflow_progress/css.tcss", format = ["sdist", "wheel"] },
       { path = "skills/**/*", format = ["sdist", "wheel"] },
       { path = "plugins/**/*", format = ["sdist", "wheel"] },
       { path = "install.sh", format = ["sdist", "wheel"] },

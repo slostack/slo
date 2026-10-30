@@ -31,7 +31,7 @@ from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
-from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList
+from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList, SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, WorkflowSessionSnapshotDAO
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
@@ -260,8 +260,10 @@ def _painted_rows(*, app: SloTUI) -> dict[str, str]:
     Returns:
         dict[str, str]: Session id to displayed status.
     """
-    assert app._fleet_panel is not None
-    return {item.row.key.session_id: item.row.status for item in app._fleet_panel.query(SubAgentFleetRow)}
+    return {
+        item.row.key.session_id: item.row.status
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -311,13 +313,12 @@ class TestSubAgentEventRouting:
             await _settle(app=app, pilot=pilot)
             supplier: _AttachedSupplier = await _install_service(app=app)
             supplier.publish()
-            assert app._fleet_panel is not None
-            assert app._fleet_panel.display is False
+            assert app.query_one(SubAgentFleetPanel).display is False
 
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
             await _settle(app=app, pilot=pilot)
 
-            assert app._fleet_panel.display is True
+            assert app.query_one(SubAgentFleetPanel).display is True
             assert _painted_rows(app=app) == {app._session.session_id: "running", "s1": "running"}
 
     @pytest.mark.asyncio
@@ -334,8 +335,7 @@ class TestSubAgentEventRouting:
                 await app._render_event(_spawned(task_id="task-A", session_id="child-1"))
                 await _settle(app=app, pilot=pilot)
 
-                assert app._fleet_panel is not None
-                assert app._fleet_panel.display is True
+                assert app.query_one(SubAgentFleetPanel).display is True
                 assert _painted_rows(app=app) == {session.session_id: "running", "child-1": "running"}
 
     @pytest.mark.asyncio
@@ -424,9 +424,10 @@ class TestSubAgentEventRouting:
             await _settle(app=app, pilot=pilot)
 
             assert supplier.calls == reads_after_spawn
-            assert app._fleet_panel is not None
             [child] = [
-                item for item in app._fleet_panel.query(SubAgentFleetRow) if item.row.key.session_id == "s1"
+                item
+                for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+                if item.row.key.session_id == "s1"
             ]
             assert (child.row.status, child.row.task_text) == ("running", "Audit the parser")
             assert list(app.query(selector=AssistantStreamThinkingBlock)) == []
@@ -552,14 +553,12 @@ class TestFleetPanelCleanup:
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
             await _settle(app=app, pilot=pilot)
 
-            assert app._fleet_panel is not None
-            assert app._fleet_panel.display is True
+            assert app.query_one(SubAgentFleetPanel).display is True
 
             await app._cleanup_sub_agent_state()
             await pilot.pause()
 
-            assert app._fleet_panel is not None
-            assert app._fleet_panel.display is True
+            assert app.query_one(SubAgentFleetPanel).display is True
             assert _painted_rows(app=app) == {app._session.session_id: "running", "s1": "running"}
 
     @pytest.mark.asyncio
@@ -572,8 +571,7 @@ class TestFleetPanelCleanup:
             supplier: _AttachedSupplier = await _install_service(app=app)
             await _settle(app=app, pilot=pilot)
             supplier.publish()
-            assert app._fleet_panel is not None
-            session_list: FleetSessionList = app._fleet_panel.query_one(FleetSessionList)
+            session_list: FleetSessionList = app.query_one(SubAgentFleetPanel).query_one(FleetSessionList)
             failing_extend: AsyncMock = AsyncMock(side_effect=RuntimeError("mount failed once"))
             with (
                 patch.object(session_list, "extend", new=failing_extend),
@@ -619,11 +617,10 @@ class TestSessionListFocusReturn:
             supplier: _AttachedSupplier = await _install_service(app=app)
             supplier.publish()
             await _refresh(app=app, pilot=pilot)
-            assert app._fleet_panel is not None
-            app._fleet_panel.focus_sessions()
+            app.query_one(SubAgentFleetPanel).focus_sessions()
             await _settle(app=app, pilot=pilot)
 
-            await app._apply_session_snapshot(snapshot=WorkflowSessionSnapshotDAO())
+            await app._workflow_progress_updates_adapter.apply_sessions(snapshot=WorkflowSessionSnapshotDAO())
             await _settle(app=app, pilot=pilot)
 
             assert app.focused is app._input
@@ -640,7 +637,7 @@ class TestSessionListFocusReturn:
             app.set_focus(None)
             await _settle(app=app, pilot=pilot)
 
-            await app._apply_session_snapshot(snapshot=WorkflowSessionSnapshotDAO())
+            await app._workflow_progress_updates_adapter.apply_sessions(snapshot=WorkflowSessionSnapshotDAO())
             await _settle(app=app, pilot=pilot)
 
             assert app.focused is None
@@ -654,14 +651,13 @@ class TestSessionListFocusReturn:
             await _settle(app=app, pilot=pilot)
             (await _install_service(app=app)).publish()
             await _refresh(app=app, pilot=pilot)
-            assert app._fleet_panel is not None
-            app._fleet_panel.focus_sessions()
+            app.query_one(SubAgentFleetPanel).focus_sessions()
             await _settle(app=app, pilot=pilot)
             modal: _BlockingModal = _BlockingModal()
             await app.push_screen(modal)
             await _settle(app=app, pilot=pilot)
 
-            await app._apply_session_snapshot(snapshot=WorkflowSessionSnapshotDAO())
+            await app._workflow_progress_updates_adapter.apply_sessions(snapshot=WorkflowSessionSnapshotDAO())
             await _settle(app=app, pilot=pilot)
 
             assert app.screen is modal
@@ -677,15 +673,17 @@ class TestSessionListFocusReturn:
             await _settle(app=app, pilot=pilot)
             (await _install_service(app=app)).publish()
             await _refresh(app=app, pilot=pilot)
-            assert app._fleet_panel is not None
-            app._fleet_panel.focus_sessions()
+            app.query_one(SubAgentFleetPanel).focus_sessions()
             await _settle(app=app, pilot=pilot)
 
             await app._cleanup_sub_agent_state()
             await _settle(app=app, pilot=pilot)
 
-            assert app._fleet_panel.display is True
-            assert app.focused is not None and app._fleet_panel in app.focused.ancestors_with_self
+            assert app.query_one(SubAgentFleetPanel).display is True
+            assert (
+                app.focused is not None
+                and app.query_one(SubAgentFleetPanel) in app.focused.ancestors_with_self
+            )
 
     @pytest.mark.asyncio
     async def test_prompt_end_cleanup_of_unfocused_list_leaves_focus_alone(self) -> None:
@@ -713,8 +711,7 @@ class TestSessionListFocusReturn:
             await _settle(app=app, pilot=pilot)
             (await _install_service(app=app)).publish()
             await _refresh(app=app, pilot=pilot)
-            assert app._fleet_panel is not None
-            app._fleet_panel.focus_sessions()
+            app.query_one(SubAgentFleetPanel).focus_sessions()
             await _settle(app=app, pilot=pilot)
             modal: _BlockingModal = _BlockingModal()
             await app.push_screen(modal)
@@ -741,15 +738,14 @@ class TestSessionListFocusReturn:
                 await _settle(app=app, pilot=pilot)
                 await app._render_event(_spawned(task_id="task-A", session_id="old-child"))
                 await _settle(app=app, pilot=pilot)
-                assert app._fleet_panel is not None
-                app._fleet_panel.focus_sessions()
+                app.query_one(SubAgentFleetPanel).focus_sessions()
                 await _settle(app=app, pilot=pilot)
 
                 with patch("src.tui.app.SloAgentSession.build", return_value=new_session):
                     await app._start_new_session(requested_name=None)
                 await _settle(app=app, pilot=pilot)
 
-                assert (app._fleet_panel.display, app.focused) == (False, app._input)
+                assert (app.query_one(SubAgentFleetPanel).display, app.focused) == (False, app._input)
 
 
 class TestHistoryGatedLaunchEffects:

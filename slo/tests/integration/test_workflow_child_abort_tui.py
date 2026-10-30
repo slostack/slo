@@ -44,6 +44,7 @@ from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDA
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import SloTUI
+from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
@@ -322,8 +323,10 @@ def _rows(*, app: SloTUI) -> dict[str, str]:
     Returns:
         dict[str, str]: Row statuses.
     """
-    assert app._fleet_panel is not None
-    return {item.row.key.session_id: item.row.status for item in app._fleet_panel.query(SubAgentFleetRow)}
+    return {
+        item.row.key.session_id: item.row.status
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+    }
 
 
 async def _open(*, app: SloTUI, pilot: Pilot[None], session_id: str) -> SessionProgressScreen:
@@ -337,9 +340,10 @@ async def _open(*, app: SloTUI, pilot: Pilot[None], session_id: str) -> SessionP
     Returns:
         SessionProgressScreen: Opened screen.
     """
-    assert app._fleet_panel is not None
     row = next(
-        item for item in app._fleet_panel.query(SubAgentFleetRow) if item.row.key.session_id == session_id
+        item
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+        if item.row.key.session_id == session_id
     )
     await pilot.click(row)
     await _tick(app=app, pilot=pilot)

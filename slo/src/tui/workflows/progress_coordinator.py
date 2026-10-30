@@ -8,7 +8,7 @@ agent execution; closing it stops observation only.
 
 Presentation is behind the consumer-owned ``WorkflowProgressSink`` protocol,
 implemented by ``WorkflowProgressUpdatesAdapter`` in
-``src/tui/components/chat_transcript/adapters/workflow_progress.py`` and a recording fake in tests.
+``src/tui/components/workflow_progress/adapters/workflow_progress.py`` and a recording fake in tests.
 Reads go through ``WorkflowProgressSource`` (``DetachedWorkflowAppService`` in
 production). The adapter owns screen references and saved viewports; this
 coordinator owns scheduling and selected identity only.

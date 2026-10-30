@@ -17,7 +17,7 @@ from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.chat_transcript.adapters.workflow_progress import WorkflowProgressUpdatesAdapter
+from src.tui.components.workflow_progress.adapters.workflow_progress import WorkflowProgressUpdatesAdapter
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
 from src.tui.workflows.service import DetachedWorkflowAppService
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
@@ -371,7 +371,7 @@ async def test_rollback_closes_captured_observation_owner(tmp_path: Path) -> Non
             assert app._workflow_progress_updates_adapter is None
             assert app._workflow_observation_session_id is None
             assert app._delivery_quiescing and not app._replacement_delivery_safe
-            panel: Optional[SubAgentFleetPanel] = app._fleet_panel
+            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
             assert panel is not None
             with patch.object(panel, "reset") as reset:
                 await app._close_workflow_observation()

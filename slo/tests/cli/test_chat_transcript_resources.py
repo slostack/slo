@@ -32,22 +32,30 @@ def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Pat
         capture_output=True,
         text=True,
     )
-    resource = "src/tui/components/chat_transcript/css.tcss"
-    expected = (root / resource).read_bytes()
+    resources = (
+        "src/tui/components/chat_transcript/css.tcss",
+        "src/tui/components/workflow_progress/css.tcss",
+    )
     extraction = tmp_path / "wheel"
     with zipfile.ZipFile(next((source / "dist").glob("*.whl"))) as wheel:
-        assert wheel.read(resource) == expected
+        for resource in resources:
+            assert wheel.read(resource) == (root / resource).read_bytes()
         wheel.extractall(extraction)
     with tarfile.open(next((source / "dist").glob("*.tar.gz"))) as archive:
-        member = next(item for item in archive.getmembers() if item.name.endswith("/" + resource))
-        stream = archive.extractfile(member)
-        assert stream is not None and stream.read() == expected
+        members = {item.name: item for item in archive.getmembers()}
+        for resource in resources:
+            member = next(item for name, item in members.items() if name.endswith("/" + resource))
+            stream = archive.extractfile(member)
+            assert stream is not None and stream.read() == (root / resource).read_bytes()
     program = (
         "import sys; from pathlib import Path; "
         f"root=Path({str(extraction)!r}); sys.path.insert(0,str(root)); "
         "import src.tui.components.chat_transcript.component as c; "
+        "import src.tui.components.workflow_progress.component as w; "
         "assert Path(c.__file__).is_relative_to(root); "
-        "assert 'ChatTranscript .transcript-prepend-boundary' in c.ChatTranscript.DEFAULT_CSS"
+        "assert Path(w.__file__).is_relative_to(root); "
+        "assert 'ChatTranscript .transcript-prepend-boundary' in c.ChatTranscript.DEFAULT_CSS; "
+        "assert 'WorkflowProgress SubAgentFleetPanel' in w.WorkflowProgress.DEFAULT_CSS"
     )
     subprocess.run(
         [sys.executable, "-I", "-c", program],
@@ -65,7 +73,8 @@ def test_adapter_import_orders_are_acyclic(tmp_path: Path) -> None:
     modules = [
         "src.tui.components.chat_transcript.adapters.transcript",
         "src.tui.components.chat_transcript.adapters.workflow_notice",
-        "src.tui.components.chat_transcript.adapters.workflow_progress",
+        "src.tui.components.workflow_progress.adapters.workflow_progress",
+        "src.tui.components.workflow_progress.component",
         "src.tui.components.chat_transcript.component",
         "src.tui.app",
     ]

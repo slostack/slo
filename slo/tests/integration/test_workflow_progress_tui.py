@@ -378,9 +378,10 @@ async def _open_child(*, app: SloTUI, pilot: Pilot[None]) -> SessionProgressScre
     Returns:
         SessionProgressScreen: Opened screen.
     """
-    assert app._fleet_panel is not None
     row: SubAgentFleetRow = next(
-        item for item in app._fleet_panel.query(SubAgentFleetRow) if item.row.key.session_id == _CHILD
+        item
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+        if item.row.key.session_id == _CHILD
     )
     await pilot.click(row)
     await _settle(app=app, pilot=pilot)
@@ -498,7 +499,7 @@ class TestOwnedWorkflowListToProgress:
             world.start_child(lines=3, execution_id=_EXECUTION_B)
             with (
                 patch.object(
-                    app, "_on_progress_incarnation_changed", wraps=app._on_progress_incarnation_changed
+                    app, "progress_incarnation_changed", wraps=app.progress_incarnation_changed
                 ) as handler,
                 patch.object(world.session, "abort") as abort,
                 patch.object(screen, "apply_snapshot") as late_paint,
@@ -556,7 +557,7 @@ class TestOwnedWorkflowListToProgress:
             world.start_child(lines=3, execution_id=_EXECUTION_B)
             with (
                 patch.object(
-                    app, "_on_progress_incarnation_changed", wraps=app._on_progress_incarnation_changed
+                    app, "progress_incarnation_changed", wraps=app.progress_incarnation_changed
                 ) as handler,
                 patch.object(world.session, "abort") as abort,
                 patch.object(screen, "apply_snapshot") as late_paint,
@@ -690,7 +691,9 @@ class TestOwnedWorkflowListToProgress:
                 for _ in range(3):
                     await pilot.pause()
 
-            assert order == ["minimize", "withdraw", "retire"]
+            # The real app close entry retires the owned confirmation (withdraw)
+            # and the owned view (retire) through the component's retirement.
+            assert order == ["withdraw", "retire"]
             assert results == [False]
             assert [
                 s for s in app.screen_stack if isinstance(s, (SessionProgressScreen, AbortConfirmationScreen))
@@ -826,7 +829,7 @@ class TestOwnedWorkflowListToProgress:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             screen: SessionProgressScreen = await _open_child(app=app, pilot=pilot)
-            with patch.object(app, "_on_progress_incarnation_changed") as handler:
+            with patch.object(app, "progress_incarnation_changed") as handler:
                 await _tick(app=app, pilot=pilot)
 
             handler.assert_not_called()
@@ -883,7 +886,7 @@ class TestOwnedWorkflowListToProgress:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            panel: Optional[SubAgentFleetPanel] = app._fleet_panel
+            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
             assert panel is not None
             gate: asyncio.Event = asyncio.Event()
             entered: asyncio.Event = asyncio.Event()
@@ -967,9 +970,8 @@ class TestAttachedAndDetachedListInRealApp:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
 
-            assert app._fleet_panel is not None
             rows: list[WorkflowSessionRowDAO] = [
-                item.row for item in app._fleet_panel.query(SubAgentFleetRow)
+                item.row for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
             ]
             assert [(row.key.orchestrator_session_id, row.key.session_id) for row in rows] == [
                 (world.session.session_id, world.session.session_id),
@@ -1070,12 +1072,13 @@ class TestClearFinishedGroupsInRealApp:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             assert (
-                app._fleet_panel is not None
+                app.query_one(SubAgentFleetPanel) is not None
                 and app._input is not None
                 and app.query_one(ChatTranscript)._adapter is not None
             )
             assert [
-                item.row.key.orchestrator_session_id for item in app._fleet_panel.query(SubAgentFleetRow)
+                item.row.key.orchestrator_session_id
+                for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
             ] == [
                 owner,
                 owner,
@@ -1091,7 +1094,7 @@ class TestClearFinishedGroupsInRealApp:
             await _settle(app=app, pilot=pilot)
             await _tick(app=app, pilot=pilot)
 
-            visible = [item.row.key for item in app._fleet_panel.query(SubAgentFleetRow)]
+            visible = [item.row.key for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)]
             assert visible == []
             assert (
                 "Hidden 3 workflow group(s). Execution continues. Use /workflows tui show to restore.",
@@ -1183,8 +1186,10 @@ def _row_statuses(*, app: SloTUI) -> dict[str, str]:
     Returns:
         dict[str, str]: Session id to status.
     """
-    assert app._fleet_panel is not None
-    return {item.row.key.session_id: item.row.status for item in app._fleet_panel.query(SubAgentFleetRow)}
+    return {
+        item.row.key.session_id: item.row.status
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+    }
 
 
 def _session_state(*, screen: SessionProgressScreen) -> list[str]:
@@ -1237,14 +1242,14 @@ class TestTwentyChildFleetJourney:
             await _settle(app=app, pilot=pilot)
             assert (
                 app._input is not None
-                and app._fleet_panel is not None
+                and app.query_one(SubAgentFleetPanel) is not None
                 and app.query_one(ChatTranscript)._adapter is not None
             )
             foreground: list[tuple[str, str]] = list(app.query_one(ChatTranscript)._adapter.lines)
             app._input.load_text(_MULTILINE_DRAFT)
             await _settle(app=app, pilot=pilot)
 
-            panel: SubAgentFleetPanel = app._fleet_panel
+            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
             usage: UsageStatusBar = app.query_one(UsageStatusBar)
             assert len(app.query(SubAgentFleetPanel)) == 1
             assert len(list(panel.query(SubAgentFleetRow))) == 1 + 1 + _SIBLINGS

@@ -39,6 +39,7 @@ from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList, SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.widgets.usage_status_bar import UsageStatusBar
+from src.tui.components.workflow_progress.component import WorkflowProgress
 from src.tui.workflows.dao import (
     WorkflowSessionKeyDAO,
     WorkflowSessionRowDAO,
@@ -227,8 +228,7 @@ async def _populated_app(*, app: SloTUI, pilot: Pilot[None], children: int) -> S
     await _settle(app=app, pilot=pilot)
     _supplier(app=app).publish(children=children)
     await _refresh(app=app, pilot=pilot)
-    assert app._fleet_panel is not None
-    return app._fleet_panel
+    return app.query_one(SubAgentFleetPanel)
 
 
 class TestSessionListLayout:
@@ -285,16 +285,18 @@ class TestSessionListLayout:
             assert _painted_text(app=app, widget=child) == "[aborted] child-00: [b]task[/b] number 0"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
     @pytest.mark.parametrize(
         ("width", "height"), [(59, 20), (60, 19), (40, 12)], ids=["narrow", "short", "tiny"]
     )
     async def test_below_minimum_size_shows_resize_notice(
-        self, tmp_path: Path, width: int, height: int
+        self, tmp_path: Path, theme: Theme, width: int, height: int
     ) -> None:
         """Below 60x20 the rows give way to a compact notice; Escape is harmless and idle Ctrl+C still quits."""
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(width, height)) as pilot:
+            app.theme = theme.name
             await pilot.pause()
             panel: SubAgentFleetPanel = await _populated_app(app=app, pilot=pilot, children=5)
             await pilot.pause()
@@ -320,6 +322,7 @@ class TestSessionListLayout:
             await pilot.resize_terminal(width=120, height=40)
             await pilot.pause()
 
+            assert app.query_one(WorkflowProgress).display is True
             assert panel.query_one(FleetSessionList).region.height == 5
             assert panel.query_one(".workflow-sessions-resize-notice", Static).display is False
 
@@ -381,8 +384,10 @@ def _rows(*, app: SloTUI) -> dict[str, str]:
     Returns:
         dict[str, str]: Session id to displayed status.
     """
-    assert app._fleet_panel is not None
-    return {item.row.key.session_id: item.row.status for item in app._fleet_panel.query(SubAgentFleetRow)}
+    return {
+        item.row.key.session_id: item.row.status
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+    }
 
 
 def _row_widget(*, app: SloTUI, session_id: str) -> SubAgentFleetRow:
@@ -395,9 +400,10 @@ def _row_widget(*, app: SloTUI, session_id: str) -> SubAgentFleetRow:
     Returns:
         SubAgentFleetRow: Row widget.
     """
-    assert app._fleet_panel is not None
     return next(
-        item for item in app._fleet_panel.query(SubAgentFleetRow) if item.row.key.session_id == session_id
+        item
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+        if item.row.key.session_id == session_id
     )
 
 
@@ -575,7 +581,7 @@ class TestObservationLifecycle:
             coordinator: WorkflowProgressCoordinator = _coordinator(app=app)
             service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
             sink = app._workflow_progress_updates_adapter
-            panel: Optional[SubAgentFleetPanel] = app._fleet_panel
+            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
             assert service is not None and sink is not None and panel is not None
             real_close, real_service_close = coordinator.close, service.close
             real_dispose, real_reset = sink.dispose, panel.reset
@@ -600,6 +606,12 @@ class TestObservationLifecycle:
             service.close = service_close  # type: ignore[method-assign]
             sink.dispose = dispose  # type: ignore[method-assign]
             panel.reset = reset  # type: ignore[method-assign]
+            # The application ``_shutdown`` override joins the observation
+            # barrier before Textual prunes the presentation tree, so the
+            # component's widget unmount joins an already-terminal retirement
+            # instead of retiring presentation first. The canonical order
+            # therefore holds on both the ``/new`` replacement and the normal
+            # unmount paths (spec 96.f.1 §5.4.2 step 5).
             if trigger == "new_session":
                 with patch(
                     "src.tui.app.SloAgentSession.build", return_value=_build_session(workdir=tmp_path)
@@ -609,7 +621,11 @@ class TestObservationLifecycle:
                 assert coordinator._closed is True and coordinator._task is None
 
         if trigger == "unmount":
+            # Normal unmount: observation (coordinator, service, sink) is joined
+            # before the panel is reset; presentation retires last.
             assert order == ["coordinator", "service", "sink", "panel"]
+            assert coordinator._closed is True and coordinator._task is None
+            assert app._workflow_progress_updates_adapter is None
 
     @pytest.mark.asyncio
     async def test_unbound_close_is_inert_and_replacement_stays_bound(self, tmp_path: Path) -> None:
@@ -618,7 +634,7 @@ class TestObservationLifecycle:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            panel: Optional[SubAgentFleetPanel] = app._fleet_panel
+            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
             assert panel is not None
             with patch.object(panel, "reset") as reset:
                 await app._close_workflow_observation()
@@ -669,8 +685,7 @@ class TestProgressSelection:
             if activation == "click":
                 await pilot.click(_row_widget(app=app, session_id="child-01"))
             else:
-                assert app._fleet_panel is not None
-                app._fleet_panel.focus_sessions()
+                app.query_one(SubAgentFleetPanel).focus_sessions()
                 await pilot.press("down", "down", "enter")
             await _settle(app=app, pilot=pilot)
 
@@ -717,8 +732,10 @@ class TestProgressSelection:
             escalate.assert_not_called()
             assert _progress_screens(app=app) == []
             assert _coordinator(app=app)._selected is None
-            assert app._fleet_panel is not None
-            assert app.focused is not None and app._fleet_panel in app.focused.ancestors_with_self
+            assert (
+                app.focused is not None
+                and app.query_one(SubAgentFleetPanel) in app.focused.ancestors_with_self
+            )
 
     @pytest.mark.asyncio
     async def test_unrelated_modal_refuses_selection_and_stays_open(self, tmp_path: Path) -> None:
@@ -894,8 +911,10 @@ class TestProgressLifecycleEdges:
                 notify.call_args.kwargs["message"]
                 == "This session is no longer in the current workflow list."
             )
-            assert app._fleet_panel is not None
-            assert app.focused is not None and app._fleet_panel in app.focused.ancestors_with_self
+            assert (
+                app.focused is not None
+                and app.query_one(SubAgentFleetPanel) in app.focused.ancestors_with_self
+            )
 
     @pytest.mark.asyncio
     async def test_deferred_paint_for_a_replaced_screen_with_the_same_key_is_rejected(
@@ -983,8 +1002,10 @@ class TestProgressLifecycleEdges:
 
             assert _progress_screens(app=app) == []
             assert app.screen_stack == [app.screen_stack[0]]
-            assert app._fleet_panel is not None
-            assert app.focused is not None and app._fleet_panel in app.focused.ancestors_with_self
+            assert (
+                app.focused is not None
+                and app.query_one(SubAgentFleetPanel) in app.focused.ancestors_with_self
+            )
             select.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1052,8 +1073,10 @@ class TestProgressLifecycleEdges:
                 await _settle(app=app, pilot=pilot)
 
             assert _progress_screens(app=app) == []
-            assert app._fleet_panel is not None
-            assert app.focused is not None and app._fleet_panel in app.focused.ancestors_with_self
+            assert (
+                app.focused is not None
+                and app.query_one(SubAgentFleetPanel) in app.focused.ancestors_with_self
+            )
             select.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1081,7 +1104,7 @@ class TestProgressLifecycleEdges:
                 task_text="t",
                 task_text_complete=False,
             )
-            with patch.object(app, "_on_progress_incarnation_changed") as handler:
+            with patch.object(app, "progress_incarnation_changed") as handler:
                 await sink.apply_sessions(snapshot=WorkflowSessionSnapshotDAO(rows=(row,)))
 
             handler.assert_called_once_with(key=key)
@@ -1125,9 +1148,8 @@ async def _finished_app(*, app: SloTUI, pilot: Pilot[None]) -> SubAgentFleetPane
     await _settle(app=app, pilot=pilot)
     _publish_finished(supplier=_supplier(app=app))
     await _refresh(app=app, pilot=pilot)
-    assert app._fleet_panel is not None
     assert set(_rows(app=app)) == {app._session.session_id, "child-completed", "child-failed"}
-    return app._fleet_panel
+    return app.query_one(SubAgentFleetPanel)
 
 
 def _transcript(*, app: SloTUI) -> list[str]:
@@ -1160,6 +1182,7 @@ class TestClearFinishedGroups:
 
             assert _rows(app=app) == {}
             assert panel.display is False
+            assert app.query_one(WorkflowProgress).display is False
             assert panel.region.height == 0
             assert app.focused is app._input
             new_lines: list[str] = _transcript(app=app)[lines_before:]
@@ -1175,7 +1198,7 @@ class TestClearFinishedGroups:
             panel: SubAgentFleetPanel = await _finished_app(app=app, pilot=pilot)
             panel.query_one(FleetSessionList).focus()
             await pilot.pause()
-            assert app._session_list_holds_focus()
+            assert app.query_one(WorkflowProgress).sessions_hold_focus()
 
             await app._dispatch_slash_command(line="/workflows tui dismiss")
             await _settle(app=app, pilot=pilot)
@@ -1249,8 +1272,8 @@ class TestClearFinishedGroups:
             await _submit_prompt(app=app, pilot=pilot, text="/workflows tui show")
             await _settle(app=app, pilot=pilot)
             assert set(_rows(app=app)) == {app._session.session_id, "step-1", "step-2"}
-            assert app._fleet_panel is not None and app._fleet_panel.display is True
-            assert app._fleet_panel.region.height > 0
+            assert app.query_one(SubAgentFleetPanel).display is True
+            assert app.query_one(SubAgentFleetPanel).region.height > 0
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

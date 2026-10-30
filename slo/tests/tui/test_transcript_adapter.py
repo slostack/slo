@@ -12,14 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from src.tui.app import SloTUI
 from src.tui.components.chat_transcript.adapters.transcript import TranscriptNoticeDisplayAdapter
 from src.tui.components.chat_transcript.adapters.workflow_notice import WorkflowNoticeAdapter
-from src.tui.components.chat_transcript.adapters.workflow_progress import WorkflowProgressUpdatesAdapter
 from src.tui.components.chat_transcript.component import ChatTranscript
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from tests.tui.test_app import _build_session
-from langchain_core.messages import AIMessage
 
 
 async def empty_history() -> list[TranscriptEntryDAO]:
@@ -28,18 +24,14 @@ async def empty_history() -> list[TranscriptEntryDAO]:
 
 
 def test_register_returns_fresh_instances_with_correct_owners() -> None:
-    """Transcript adapters borrow the component; progress still borrows the application."""
+    """Transcript adapters borrow the component; each registration returns a fresh owner."""
     transcript = ChatTranscript(history_reader=empty_history)
-    app = SloTUI(session=_build_session(responses=[AIMessage(content="unused")]))
     first = TranscriptNoticeDisplayAdapter.register(tui=transcript)
     second = TranscriptNoticeDisplayAdapter.register(tui=transcript)
     first.record(content="one", classes="tool-result")
     assert second.lines == []
     assert first is not second
     assert WorkflowNoticeAdapter.register(tui=transcript)._tui is transcript
-    progress = WorkflowProgressUpdatesAdapter.register(tui=app)
-    assert progress._tui is app
-    assert WorkflowProgressUpdatesAdapter.register(tui=app) is not progress
 
 
 @pytest.mark.parametrize("adapter_first", [True, False])
@@ -48,7 +40,6 @@ def test_register_returns_fresh_instances_with_correct_owners() -> None:
     [
         ("transcript", "TranscriptNoticeDisplayAdapter"),
         ("workflow_notice", "WorkflowNoticeAdapter"),
-        ("workflow_progress", "WorkflowProgressUpdatesAdapter"),
     ],
 )
 def test_imports_are_acyclic_in_a_fresh_interpreter(
@@ -58,7 +49,7 @@ def test_imports_are_acyclic_in_a_fresh_interpreter(
 ) -> None:
     """Both import orders work without eager owner imports or old forwarding modules."""
     adapter_import = f"from src.tui.components.chat_transcript.adapters.{module} import {class_name}\n"
-    owner_import = "from src.tui.app import SloTUI\nfrom src.tui.components.chat_transcript.component import ChatTranscript\n"
+    owner_import = "from src.tui.components.chat_transcript.component import ChatTranscript\n"
     script = (
         adapter_import + "assert 'src.tui.app' not in sys.modules\n" + owner_import
         if adapter_first

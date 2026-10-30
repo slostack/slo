@@ -159,7 +159,7 @@ async def test_app_paints_real_projection_inserts_and_handles_empty_search() -> 
                 await pilot.press("down", "down")
                 await pilot.resize_terminal(width=60, height=15)
                 await pilot.pause()
-                assert app._slash_suggestion_state.highlighted_index == 2
+                assert app._input._slash_suggestion_state.highlighted_index == 2
                 await pilot.press("tab")
                 assert app._input.text == "  /model model-0002"
                 app._input.load_text("/model missing")

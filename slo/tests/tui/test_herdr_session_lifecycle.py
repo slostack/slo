@@ -67,7 +67,8 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
             assert app._chat_transcript._transcript_content is not None
             children = tuple(app._chat_transcript._transcript_content.children)
             queue = app._queued_prompt_block
-            history = app._prompt_history
+            assert app._input is not None
+            history = app._input._prompt_history
             pool = old.sub_agent_pool
             assert pool is not None
             subscribers = tuple(old._subscribers)
@@ -111,7 +112,7 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
             assert not preparation.done()
             assert app._queued_prompt_block is queue
             assert app._queued_prompt_text == "held prompt"
-            assert app._prompt_history is history
+            assert app._input._prompt_history is history
             assert tuple(app._chat_transcript._transcript_content.children)[: len(children)] == children
             assert await app._lease_store.read(session_id=old.session_id) == lease
             assert old.sub_agent_pool is pool and not pool._sealed

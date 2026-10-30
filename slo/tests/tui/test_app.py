@@ -32,7 +32,8 @@ from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.components.chat_transcript.component import (
     LOAD_OLDER_BATCH_SIZE,
     TRANSCRIPT_HYDRATION_ENTRY_LIMIT,
@@ -1157,13 +1158,13 @@ class TestSloTUISessionInbox:
 
             app._input.load_text("/")
             await pilot.pause()
-            starting_index: int = app._slash_suggestion_state.highlighted_index
+            starting_index: int = app._input._slash_suggestion_state.highlighted_index
 
             await pilot.press("down")
             await pilot.pause()
 
-            assert app._slash_suggestion_state.visible is True
-            assert app._slash_suggestion_state.highlighted_index != starting_index
+            assert app._input._slash_suggestion_state.visible is True
+            assert app._input._slash_suggestion_state.highlighted_index != starting_index
             assert app._input.text == "/"
 
     @pytest.mark.asyncio
@@ -3415,8 +3416,9 @@ class TestSloTUITypingRedirect:
             await pilot.press("slash")  # Textual key name for "/"
             await pilot.pause()
 
-            assert _require_prompt_input(app=app).text == "/"
-            assert app._slash_suggestion_state.visible is True
+            prompt_input = _require_prompt_input(app=app)
+            assert prompt_input.text == "/"
+            assert prompt_input._slash_suggestion_state.visible is True
 
 
 class TestSloTUIGlobalExpandToggle:

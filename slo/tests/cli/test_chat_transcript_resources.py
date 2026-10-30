@@ -35,6 +35,7 @@ def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Pat
     resources = (
         "src/tui/components/chat_transcript/css.tcss",
         "src/tui/components/workflow_progress/css.tcss",
+        "src/tui/components/prompt_input/css.tcss",
     )
     extraction = tmp_path / "wheel"
     with zipfile.ZipFile(next((source / "dist").glob("*.whl"))) as wheel:
@@ -42,9 +43,8 @@ def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Pat
             assert wheel.read(resource) == (root / resource).read_bytes()
         wheel.extractall(extraction)
     with tarfile.open(next((source / "dist").glob("*.tar.gz"))) as archive:
-        members = {item.name: item for item in archive.getmembers()}
         for resource in resources:
-            member = next(item for name, item in members.items() if name.endswith("/" + resource))
+            member = next(item for item in archive.getmembers() if item.name.endswith("/" + resource))
             stream = archive.extractfile(member)
             assert stream is not None and stream.read() == (root / resource).read_bytes()
     program = (
@@ -55,7 +55,10 @@ def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Pat
         "assert Path(c.__file__).is_relative_to(root); "
         "assert Path(w.__file__).is_relative_to(root); "
         "assert 'ChatTranscript .transcript-prepend-boundary' in c.ChatTranscript.DEFAULT_CSS; "
-        "assert 'WorkflowProgress SubAgentFleetPanel' in w.WorkflowProgress.DEFAULT_CSS"
+        "assert 'WorkflowProgress SubAgentFleetPanel' in w.WorkflowProgress.DEFAULT_CSS; "
+        "import src.tui.components.prompt_input.component as p; "
+        "assert Path(p.__file__).is_relative_to(root); "
+        "assert 'PromptInput:focus' in p.PromptInput.DEFAULT_CSS"
     )
     subprocess.run(
         [sys.executable, "-I", "-c", program],
@@ -76,6 +79,7 @@ def test_adapter_import_orders_are_acyclic(tmp_path: Path) -> None:
         "src.tui.components.workflow_progress.adapters.workflow_progress",
         "src.tui.components.workflow_progress.component",
         "src.tui.components.chat_transcript.component",
+        "src.tui.components.prompt_input.component",
         "src.tui.app",
     ]
     for order in (modules, list(reversed(modules))):

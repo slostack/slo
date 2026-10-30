@@ -10,7 +10,8 @@ import pytest
 
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 
 
 def test_delivery_construction_is_inert_and_reuses_stores(tmp_path: Path) -> None:

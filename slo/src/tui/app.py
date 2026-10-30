@@ -13,10 +13,9 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.message import Message
 from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import Footer, Header, Static, TextArea
+from textual.widgets import Footer, Header, Static
 
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
@@ -38,14 +37,11 @@ from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.components.chat_transcript.component import ChatTranscript
 from src.tui.components.workflow_progress.component import WorkflowProgress
+from src.tui.components.prompt_input.component import PromptInput as _PromptInput
 from src.tui.authentication import AuthenticationScreen
-from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
 from src.tui.model_catalog import ModelSuggestionProjection
-from src.tui.slash_suggestion_engine import (
-    SlashSuggestionEngine,
-    SlashSuggestionStateDAO,
-)
+from src.tui.slash_suggestion_engine import SlashSuggestionEngine
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.thinking_spinner import ThinkingSpinner
 from src.tui.tree_export_format import TreeExportFormat
@@ -138,7 +134,7 @@ class WorkflowAppServiceFactory(Protocol):
         ...
 
 
-__all__ = ["SloTUI", "PromptInput"]
+__all__ = ["SloTUI"]
 
 
 @dataclass(frozen=True)
@@ -182,196 +178,6 @@ Content events never touch the list: a row's task label stays stable while
 its child streams. The stream-only ``sub_agent_dispatch_started`` event (no
 ``sub_agent_id``) also requests a refresh; see ``_render_event``.
 """
-
-
-class PromptInput(TextArea):
-    """``TextArea`` that posts prompt-specific intent messages.
-
-    ``TextArea`` has no ``Submitted`` message of its own (that belongs to
-    ``Input``), so we synthesise one. Bare Enter submits; modified Enter
-    chords such as Shift+Enter, Cmd+Enter, and Ctrl+Enter insert a literal
-    newline instead. When slash suggestions are visible, ``Tab`` / ``Up`` /
-    ``Down`` / ``Esc`` are translated into suggestion intent messages so the
-    app can keep command composition keyboard-first.
-    """
-
-    def __init__(self) -> None:
-        """Construct the prompt input with explicit soft wrapping enabled."""
-        super().__init__(soft_wrap=True)
-        self._suggestion_navigation_enabled: bool = False
-        self._prompt_history_navigation_enabled: bool = False
-
-    class Submitted(Message):
-        """Posted when the user presses Enter to submit the buffer."""
-
-        def __init__(self, *, text: str) -> None:
-            """Carry the submitted text.
-
-            Args:
-                text (str): The full multi-line buffer at submit time.
-            """
-            self.text: str = text
-            super().__init__()
-
-    class SuggestionAccepted(Message):
-        """Posted when the prompt accepts the highlighted suggestion."""
-
-    class SuggestionMoved(Message):
-        """Posted when the prompt moves the highlighted suggestion row."""
-
-        def __init__(self, *, delta: int) -> None:
-            """Carry the row movement request.
-
-            Args:
-                delta (int): Positive or negative row movement.
-            """
-            self.delta: int = delta
-            super().__init__()
-
-    class SuggestionDismissed(Message):
-        """Posted when the prompt dismisses slash suggestions."""
-
-    class PromptHistoryOlderRequested(Message):
-        """Posted when the prompt requests the next older prompt."""
-
-    class PromptHistoryNewerRequested(Message):
-        """Posted when the prompt requests the next newer prompt."""
-
-    def set_suggestion_navigation_enabled(self, *, enabled: bool) -> None:
-        """Enable or disable suggestion-specific key interception.
-
-        Args:
-            enabled (bool): True when slash suggestions are visible.
-        """
-        self._suggestion_navigation_enabled = enabled
-
-    def set_prompt_history_navigation_enabled(self, *, enabled: bool) -> None:
-        """Enable or disable prompt-history navigation mode.
-
-        Args:
-            enabled (bool): True when the prompt is browsing recalled history.
-        """
-        self._prompt_history_navigation_enabled = enabled
-
-    async def _on_key(self, event: events.Key) -> None:
-        """Intercept Enter chords for submit/newline semantics.
-
-        Args:
-            event (events.Key): The key event from Textual.
-        """
-        if self._should_accept_suggestion(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.SuggestionAccepted())
-            return
-        if self._should_move_suggestion(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.SuggestionMoved(delta=self._suggestion_delta(event=event)))
-            return
-        if self._should_request_older_prompt(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.PromptHistoryOlderRequested())
-            return
-        if self._should_request_newer_prompt(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.PromptHistoryNewerRequested())
-            return
-        if self._should_dismiss_suggestions(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.SuggestionDismissed())
-            return
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.Submitted(text=self.text))
-            return
-        if event.key in {"shift+enter", "ctrl+enter", "meta+enter"}:
-            event.prevent_default()
-            event.stop()
-            self.insert("\n")
-            return
-        await super()._on_key(event)
-
-    def _should_accept_suggestion(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should accept a suggestion.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when the suggestion menu should accept the current row.
-        """
-        return self._suggestion_navigation_enabled and event.key == "tab"
-
-    def _should_move_suggestion(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should move the highlight.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when the highlighted suggestion should move.
-        """
-        return self._suggestion_navigation_enabled and event.key in {"up", "down"}
-
-    def _should_request_older_prompt(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should request older prompt recall.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when history recall should move older.
-        """
-        return (
-            not self._suggestion_navigation_enabled
-            and event.key == "up"
-            and (not self.text or self._prompt_history_navigation_enabled)
-        )
-
-    def _should_request_newer_prompt(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should request newer prompt recall.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when history recall should move newer.
-        """
-        return (
-            not self._suggestion_navigation_enabled
-            and event.key == "down"
-            and self._prompt_history_navigation_enabled
-        )
-
-    def _should_dismiss_suggestions(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should dismiss suggestions.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when the suggestion menu should close.
-        """
-        return self._suggestion_navigation_enabled and event.key == "escape"
-
-    @staticmethod
-    def _suggestion_delta(*, event: events.Key) -> int:
-        """Return the row movement implied by ``event``.
-
-        Args:
-            event (events.Key): Up/down key event.
-
-        Returns:
-            int: ``1`` for down and ``-1`` for up.
-        """
-        if event.key == "down":
-            return 1
-        return -1
 
 
 class SessionFactory(Protocol):
@@ -509,8 +315,10 @@ class SloTUI(App):
         )
         self._chat_shell: Optional[Vertical] = None
         self._status_region: Optional[Vertical] = None
-        self._input: Optional[PromptInput] = None
+        self._input: Optional[_PromptInput] = None
         self._suggestion_menu: Optional[SlashSuggestionMenu] = None
+        self._suggestions_bound: bool = False
+        """True once the mounted editor has adopted its suggestion collaborators."""
         self._usage_status_bar: Optional[UsageStatusBar] = None
         self._in_flight_task: Optional[asyncio.Task[None]] = None
         self._prompt_submission_lock: asyncio.Lock = asyncio.Lock()
@@ -520,15 +328,7 @@ class SloTUI(App):
         self._queued_prompt_block: Optional[QueuedPromptBlock] = None
         """Mounted visual counterpart of ``_queued_prompt_text``, when mounted."""
         self._spinner: Optional[ThinkingSpinner] = None
-        self._slash_suggestion_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
-        self._picker_catalog_revision: tuple[int, int] = ModelSuggestionProjection.current_revision()
-        self._suggestion_engine: SlashSuggestionEngine = SlashSuggestionEngine(
-            registry=SlashRouter.registry(),
-        )
-        self._prompt_history: PromptHistoryNavigator = PromptHistoryNavigator()
-        self._setting_prompt_from_history: bool = False
-        # Workflow progress component (feature 96.f.1): owns the fleet panel and
-        # one observation-lifetime adapter per bound session.
+        # Workflow progress owns the fleet panel and its observation-lifetime adapter.
         self._workflow_progress: Optional[WorkflowProgress] = None
         # Guards one-per-run auto-launch of the workflow visualizer window.
         self._visualizer_launched_for_run: bool = False
@@ -572,7 +372,7 @@ class SloTUI(App):
             self._suggestion_menu = SlashSuggestionMenu()
             with self._status_region:
                 yield self._suggestion_menu
-            self._input = PromptInput()
+            self._input = _PromptInput()
             yield self._input
             # Workflow progress: below PromptInput, hidden while it has no rows.
             # The orchestrator transcript always stays in the foreground.
@@ -645,6 +445,13 @@ class SloTUI(App):
         if not self._runtime_may_start(session=session):
             return
         ModelSuggestionProjection.refresh_authentication()
+        if self._input is not None and self._suggestion_menu is not None and not self._suggestions_bound:
+            self._input.bind_suggestions(
+                menu=self._suggestion_menu,
+                engine=SlashSuggestionEngine(registry=SlashRouter.registry()),
+                active_model_name=session.active_model_name,
+            )
+            self._suggestions_bound = True
         await self._chat_transcript.hydrate(is_current=lambda: self._runtime_may_start(session=session))
         if not self._runtime_may_start(session=session):
             return
@@ -724,6 +531,8 @@ class SloTUI(App):
         else:
             if self._runtime_may_start(session=session):
                 self._write_lifecycle_notice(content="Model catalog ready.", classes="tool-result")
+                if self._input is not None:
+                    self._input.update_model_context(active_model_name=session.active_model_name)
         if self._runtime_may_start(session=session):
             self._refresh_title_bar()
             self._refresh_usage_status_bar()
@@ -867,7 +676,8 @@ class SloTUI(App):
         if getattr(self, "_app_closing", False):
             return
         ModelSuggestionProjection.refresh_authentication(verified_credential=value)
-        self._refresh_slash_suggestions()
+        if self._input is not None:
+            self._input.update_model_context(active_model_name=self._session.active_model_name)
         if value is None:
             return
         if self._session.preparation_status != "ready":
@@ -890,6 +700,8 @@ class SloTUI(App):
             except RuntimeError:
                 pass
             else:
+                if self._input is not None:
+                    self._input.update_model_context(active_model_name=new_model_name)
                 if self._chat_transcript is not None:
                     self._chat_transcript.write_transcript_line(
                         content=f"active model switched to {new_model_name}",
@@ -911,8 +723,7 @@ class SloTUI(App):
         if self._input is None:
             return
         self._input.load_text("/model ")
-        self._move_prompt_cursor_to_end()
-        self._refresh_slash_suggestions()
+        self._input.move_cursor(self._input.document.end)
         self._input.focus()
 
     @staticmethod
@@ -1698,7 +1509,7 @@ class SloTUI(App):
         ``_claim_and_handle_idle_inbox_message``), so the machine turn's task
         creation is atomic with local prompt acceptance. A machine turn never
         enters the user queue: it must not call ``_queue_prompt``,
-        ``_prompt_history.record``, or ``_echo_user_line``.
+        the component's accepted-prompt recall, or ``_echo_user_line``.
 
         Args:
             message (SessionInboxMessageDAO): Claimed inbox item.
@@ -1774,22 +1585,6 @@ class SloTUI(App):
 
     # ---- Input handling ---------------------------------------------------
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """Refresh slash suggestions when the prompt buffer changes.
-
-        Args:
-            event (TextArea.Changed): Prompt buffer change event.
-        """
-        if event.text_area is not self._input:
-            return
-        if self._setting_prompt_from_history:
-            self._setting_prompt_from_history = False
-        elif self._prompt_history.is_navigating:
-            self._prompt_history.clear_navigation()
-            if self._input is not None:
-                self._input.set_prompt_history_navigation_enabled(enabled=False)
-        self._refresh_slash_suggestions()
-
     async def on_key(self, event: events.Key) -> None:
         """Redirect a printable keystroke back to the prompt input.
 
@@ -1842,7 +1637,7 @@ class SloTUI(App):
         string. Focus moves first so the editor renders its cursor; then the
         character is inserted at the cursor so the first keystroke is never
         dropped. The resulting ``TextArea.Changed`` event drives the normal
-        slash-suggestion refresh via ``on_text_area_changed``.
+        slash-suggestion refresh via ``PromptInput.on_text_area_changed``.
 
         Args:
             event (events.Key): The printable key event to replay.
@@ -1852,81 +1647,7 @@ class SloTUI(App):
         self._input.focus()
         self._input.insert(text=event.character or "")
 
-    def on_prompt_input_suggestion_moved(self, event: PromptInput.SuggestionMoved) -> None:
-        """Move the highlighted slash suggestion row.
-
-        Args:
-            event (PromptInput.SuggestionMoved): Requested row movement.
-        """
-        if not self._slash_suggestion_state.visible:
-            return
-        self._slash_suggestion_state = self._slash_suggestion_state.with_highlight_delta(
-            delta=event.delta,
-        )
-        self._render_slash_suggestion_state(state=self._slash_suggestion_state)
-
-    def on_prompt_input_suggestion_dismissed(self, event: PromptInput.SuggestionDismissed) -> None:
-        """Dismiss visible slash suggestions.
-
-        Args:
-            event (PromptInput.SuggestionDismissed): Dismissal request.
-        """
-        del event
-        self._hide_slash_suggestions()
-
-    def on_prompt_input_suggestion_accepted(self, event: PromptInput.SuggestionAccepted) -> None:
-        """Accept the highlighted slash suggestion when visible.
-
-        Args:
-            event (PromptInput.SuggestionAccepted): Acceptance request.
-        """
-        del event
-        row = self._slash_suggestion_state.highlighted_row
-        if row is None or self._input is None:
-            return
-        updated_text: str = self._replace_prompt_text(
-            insert_text=row.insert_text,
-            state=self._slash_suggestion_state,
-        )
-        self._input.load_text(updated_text)
-        self._move_prompt_cursor_to_end()
-        self._refresh_slash_suggestions()
-
-    def on_prompt_input_prompt_history_older_requested(
-        self,
-        event: PromptInput.PromptHistoryOlderRequested,
-    ) -> None:
-        """Load the next older prompt into the editor when available.
-
-        Args:
-            event (PromptInput.PromptHistoryOlderRequested): History request.
-        """
-        del event
-        if self._input is None:
-            return
-        recalled_text: Optional[str] = self._prompt_history.older(current_buffer=self._input.text)
-        if recalled_text is None:
-            return
-        self._load_prompt_history_text(text=recalled_text)
-
-    def on_prompt_input_prompt_history_newer_requested(
-        self,
-        event: PromptInput.PromptHistoryNewerRequested,
-    ) -> None:
-        """Load the next newer prompt into the editor when available.
-
-        Args:
-            event (PromptInput.PromptHistoryNewerRequested): History request.
-        """
-        del event
-        if self._input is None:
-            return
-        recalled_text: Optional[str] = self._prompt_history.newer()
-        if recalled_text is None:
-            return
-        self._load_prompt_history_text(text=recalled_text)
-
-    async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+    async def on_prompt_input_submitted(self, event: _PromptInput.Submitted) -> None:
         """Route a submitted input line as a slash command, new turn, or held prompt.
 
         WHAT: Preserves immediate slash dispatch, then serializes normal-prompt
@@ -1935,12 +1656,11 @@ class SloTUI(App):
         WHEN: Runs once per Enter submission while the TUI is mounted.
 
         Args:
-            event (PromptInput.Submitted): Custom input submission message.
+            event (_PromptInput.Submitted): Custom input submission message.
         """
         text: str = (event.text or "").strip()
-        self._hide_slash_suggestions()
         if self._input is not None:
-            self._input.load_text("")
+            self._input.clear_submission()
         if not text:
             return
         if text.startswith("/"):
@@ -1992,7 +1712,8 @@ class SloTUI(App):
         """
         if self._app_closing or self._session_transitioning:
             return
-        self._prompt_history.record(text=text)
+        if self._input is not None:
+            self._input.record_accepted_prompt(text=text)
         await self._chat_transcript.echo_user(text=text)
         self._register_prompt_task(text=text)
 
@@ -2365,103 +2086,10 @@ class SloTUI(App):
 
     # ---- Private helpers --------------------------------------------------
 
-    def _refresh_slash_suggestions(self) -> None:
-        """Recompute slash suggestions from the current prompt buffer."""
-        if self._input is None:
-            return
-        self._picker_catalog_revision = ModelSuggestionProjection.current_revision()
-        state: SlashSuggestionStateDAO = self._suggestion_engine.evaluate(
-            buffer_text=self._input.text,
-            active_model_name=self._session.active_model_name,
-        )
-        previous = self._slash_suggestion_state.highlighted_row
-        if previous is not None:
-            index = next(
-                (index for index, row in enumerate(state.rows) if row.insert_text == previous.insert_text), 0
-            )
-            state = state.model_copy(update={"highlighted_index": index})
-        self._slash_suggestion_state = state
-        self._render_slash_suggestion_state(state=state)
-
-    def _refresh_visible_slash_suggestions_when_catalog_changed(self) -> None:
-        """Refresh an open picker after a public catalog-status publication.
-
-        WHAT: Observes the presentation revision and reuses the normal engine
-            evaluation path without invoking credential, client, or catalog I/O.
-        WHO: The mounted app calls this from Textual's idle loop.
-        WHEN: Only while a visible ``/model`` suggestion menu is on screen.
-        """
-        if not self._slash_suggestion_state.visible:
-            return
-        revision = ModelSuggestionProjection.current_revision()
-        if revision == self._picker_catalog_revision:
-            return
-        self._refresh_slash_suggestions()
-
     def on_idle(self) -> None:
         """Adopt a published picker status revision without waiting for a keystroke."""
-        self._refresh_visible_slash_suggestions_when_catalog_changed()
-
-    def _render_slash_suggestion_state(self, *, state: SlashSuggestionStateDAO) -> None:
-        """Render one suggestion state into the prompt-adjacent menu.
-
-        Args:
-            state (SlashSuggestionStateDAO): Suggestion state to render.
-        """
-        if self._suggestion_menu is not None:
-            self._suggestion_menu.update_state(state=state)
         if self._input is not None:
-            self._input.set_suggestion_navigation_enabled(enabled=state.visible)
-
-    def _hide_slash_suggestions(self) -> None:
-        """Hide the slash suggestion menu and disable suggestion navigation."""
-        hidden_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
-        self._slash_suggestion_state = hidden_state
-        self._render_slash_suggestion_state(state=hidden_state)
-
-    def _replace_prompt_text(
-        self,
-        *,
-        insert_text: str,
-        state: SlashSuggestionStateDAO,
-    ) -> str:
-        """Return the prompt text after accepting one suggestion.
-
-        Args:
-            insert_text (str): Accepted suggestion text.
-            state (SlashSuggestionStateDAO): Suggestion state describing the replacement span.
-
-        Returns:
-            str: Updated prompt text.
-        """
-        if self._input is None:
-            return insert_text
-        before: str = self._input.text[: state.replacement_start]
-        after: str = self._input.text[state.replacement_end :]
-        return f"{before}{insert_text}{after}"
-
-    def _move_prompt_cursor_to_end(self) -> None:
-        """Move the prompt cursor to the end of the current buffer."""
-        if self._input is None:
-            return
-        line_count: int = self._input.text.count("\n")
-        final_line: str = self._input.text.split("\n")[-1]
-        self._input.move_cursor(location=(line_count, len(final_line)))
-
-    def _load_prompt_history_text(self, *, text: str) -> None:
-        """Load recalled prompt-history text into the editor.
-
-        Args:
-            text (str): Prompt text recalled from navigator history.
-        """
-        if self._input is None:
-            return
-        self._setting_prompt_from_history = True
-        self._input.set_prompt_history_navigation_enabled(
-            enabled=self._prompt_history.is_navigating,
-        )
-        self._input.load_text(text)
-        self._move_prompt_cursor_to_end()
+            self._input.refresh_published_suggestions()
 
     async def _dispatch_slash_command(self, *, line: str) -> None:
         """Hand a slash command to ``SlashRouter`` and render the result.
@@ -2473,7 +2101,8 @@ class SloTUI(App):
         Args:
             line (str): The full input line including the leading slash.
         """
-        self._hide_slash_suggestions()
+        if self._input is not None:
+            self._input.hide_suggestions()
         if self._session.preparation_status != "ready":
             command = line.strip().split(maxsplit=1)[0]
             if line.strip() == "/model refresh":
@@ -2486,15 +2115,20 @@ class SloTUI(App):
                     )
                 return
         mounted_activity: bool = await self._mount_slash_activity(line=line)
-        previous_model = self._session.active_model_name
+        session = self._session
+        previous_model = session.active_model_name
         try:
             result = await SlashRouter.dispatch(
-                line=line, session=self._session, workflow_resume_launcher=self._workflow_resume_launcher
+                line=line, session=session, workflow_resume_launcher=self._workflow_resume_launcher
             )
-            if self._session.active_model_name != previous_model:
-                self._suggestion_engine.record_selection(model_name=self._session.active_model_name)
             if line.strip() == "/model refresh":
                 ModelSuggestionProjection.refresh_authentication()
+            if self._runtime_may_start(session=session) and self._input is not None:
+                if session.active_model_name != previous_model:
+                    self._input.record_model_selection(model_name=session.active_model_name)
+                    self._input.update_model_context(active_model_name=session.active_model_name)
+                elif line.strip() == "/model refresh":
+                    self._input.update_model_context(active_model_name=session.active_model_name)
         finally:
             if mounted_activity:
                 await self._unmount_spinner()
@@ -2850,13 +2484,14 @@ class SloTUI(App):
 
     async def _refresh_replacement_ui(self) -> None:
         """Clear the adopted transcript and input independently of runtime refresh."""
+        session = self._session
         await self._clear_transcript_and_prompt_queue()
-        await self._chat_transcript.bind_history(history_reader=self._session.hydrate_transcript_entries)
-        self._prompt_history.clear_navigation()
-        self._prompt_history = PromptHistoryNavigator()
+        await self._chat_transcript.bind_history(history_reader=session.hydrate_transcript_entries)
+        if not self._runtime_may_start(session=session):
+            return
         if self._input is not None:
-            self._input.load_text("")
-            self._input.set_prompt_history_navigation_enabled(enabled=False)
+            self._input.reset_session()
+            self._input.update_model_context(active_model_name=session.active_model_name)
         await self._maybe_render_startup_notice()
 
     async def _prepare_replacement_session(

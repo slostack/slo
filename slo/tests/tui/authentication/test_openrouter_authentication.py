@@ -219,6 +219,7 @@ def test_auth_dismissal_without_landing_model_preserves_active_route() -> None:
     from src.tui.app import SloTUI
 
     app = Mock(spec=SloTUI)
+    app._input = None
     app._session = Mock(active_model_name="gpt-6-astra")
     with patch("src.tui.app.default_model_for_provider", return_value=None):
         SloTUI._on_auth_dismissed(

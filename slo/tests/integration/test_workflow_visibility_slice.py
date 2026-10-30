@@ -24,7 +24,8 @@ from src.agents.slo_agent.orchestrator.dao import (
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.service import AttachedChildAbort, DetachedWorkflowAppService

@@ -13,7 +13,8 @@ from src.agents.base import LLMBuildResult
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 
 
 @pytest.mark.parametrize("phase", ["delivery", "activation", "context"])

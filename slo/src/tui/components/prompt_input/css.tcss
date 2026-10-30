@@ -1,0 +1,18 @@
+/* src/tui/components/prompt_input/css.tcss
+ *
+ * The prompt editor is framed only by two horizontal accent rules (top and
+ * bottom); no side edges or corners, in focused and unfocused states.
+ * Colours resolve through the active Textual theme via $surface / $accent.
+ */
+
+PromptInput, PromptInput:focus {
+    border: none;
+    border-top: solid $accent;
+    border-bottom: solid $accent;
+    background: $surface;
+    height: auto;
+    min-height: 3;
+    max-height: 17;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}

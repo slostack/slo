@@ -15,7 +15,8 @@ from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHisto
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore, WorkflowHandleDAO
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.widgets.user_message_block import UserMessageBlock
 from tests.tui.workflows.test_session_snapshot import _Files, _entry, _handle

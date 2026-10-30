@@ -32,7 +32,8 @@ from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, SubAgentStatusDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.slash_router import SlashCommandResultDAO
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock

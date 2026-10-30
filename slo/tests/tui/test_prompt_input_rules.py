@@ -29,7 +29,8 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInput
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from tests.tui._scroll_settle import pump_until
@@ -310,7 +311,7 @@ class TestPromptInputRulesNeighbours:
                 assert app._in_flight_task is not None
                 assert invoke_log == ["first"]
                 assert len(queued_blocks) == 1
-                assert app._slash_suggestion_state.visible is True
+                assert prompt_input._slash_suggestion_state.visible is True
                 assert app._suggestion_menu is not None and app._usage_status_bar is not None
                 queue_region = queued_blocks[0].region
                 menu_region = app._suggestion_menu.region

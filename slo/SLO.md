@@ -1,8 +1,10 @@
 # Slo Repo Conventions
 
-- Read `AGENTS.md` first for any code, architecture, workflow, or testing task in
+- Read `README.md` first for any code, architecture, workflow, or testing task in
   this repository. It is the authoritative reference for module layout, the
-  runtime chain, the tool bundle, and the style rules.
+  runtime chain, the tool bundle, and the style rules. KB `slo/operational-reference.md`
+  holds the exact operational specifics (timeouts, limits, commands, how-tos);
+  the root `RESEARCH.md`, when present, is a gitignored local project-memory file.
 
 ## Skills maintenance
 
@@ -23,7 +25,7 @@ Both commands recursively scan `skills/**/SKILL.md` and rebuild only
 assets, including non-code families such as PDF/presentation. Refresh delegates
 to the index builder; it no longer imports upstream prompts or uses
 `SLO_CODE_PROMPTS_DIR`. Runtime discovery and user override behavior are unchanged.
-See `AGENTS.md` for the layered skill structure.
+See `README.md` for the layered skill structure.
 
 ## Workflow-turn counting
 
@@ -67,9 +69,10 @@ gates; process completion alone does not establish workflow acceptance.
   `TimeoutError: main agent stream produced no events ...; treated as hung`.
   Keep parent > child, export both before starting the orchestrator, and prefer
   splitting phases so no single blocking call exceeds the parent guard. See
-  `AGENTS.md` and KB `slo/headless-workflow-orchestration.md`.
+  KB `slo/operational-reference.md` and KB `slo/headless-workflow-orchestration.md`.
 
-- **Verify before you claim.** Every code change needs a passing test covering
-  each decision point it touches, and the full non-e2e suite must be green
-  before the work is called done. Report failures with their output rather than
-  summarising them away.
+- **Verify before you claim.** Follow `skills/engineering/engineering-testing/SKILL.md`
+  and `skills/coding/test-verification-policy/SKILL.md` for meaningful behavior,
+  boundary and critical failure-path evidence. Run the full non-e2e suite before
+  acceptance; baseline exemptions need explicit approval. Report failures and
+  blocked checks honestly, never as passing.

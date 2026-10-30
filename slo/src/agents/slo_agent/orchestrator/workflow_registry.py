@@ -5,16 +5,29 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import inspect
+import itertools
 import json
 import os
 import signal
-from contextlib import contextmanager
+import stat
+from contextlib import AbstractAsyncContextManager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterator, List, Literal, Optional, Protocol, TextIO, TypeAlias
+from typing import (
+    TYPE_CHECKING,
+    Awaitable,
+    Callable,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    TextIO,
+    TypeAlias,
+)
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from config.logger import log_info
 from config.timeout_resolver import positive_float_env
@@ -24,6 +37,7 @@ from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorStatusDAO,
     SubAgentStatusDAO,
     build_cleanup_summary,
+    safe_identifier,
 )
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
@@ -39,6 +53,7 @@ if TYPE_CHECKING:
     from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO
 
 __all__ = [
+    "WorkflowCommandResultDAO",
     "WorkflowCommandService",
     "WorkflowHandleDAO",
     "WorkflowHandleStore",
@@ -123,6 +138,18 @@ Workflow ids reach the store from inbox payloads and user-typed
 ``/workflows abort <id>`` arguments; they are used as file names and must
 never be able to escape the per-session ``workflows/`` directory."""
 
+OBSERVATION_MAX_HANDLES: int = 256
+"""Largest owned workflow group set one observation admits (feature 94 a.2)."""
+
+OBSERVATION_MAX_HANDLE_BYTES: int = 65_536
+"""Per-handle byte budget enforced before decode during observation."""
+
+OBSERVATION_MAX_DIRECTORY_ENTRIES: int = 4 * (OBSERVATION_MAX_HANDLES + 1)
+"""Directory-entry scan budget: each handle may sit beside its lock and transient temp file."""
+
+OBSERVATION_UNAVAILABLE_MESSAGE: str = "workflow observation unavailable"
+"""Fixed error for every refused observation; never partial membership or raw adapter text."""
+
 _CAPTURE_WRITER_FAILURE_CODE: Literal["capture_writer_failed"] = "capture_writer_failed"
 _CAPTURE_WRITER_FAILURE_MESSAGE: str = "Capture writer failed; workflow output may be incomplete."
 
@@ -170,6 +197,41 @@ class WorkflowStatusSchemaDAO(BaseModel):
         default=None,
         description="Workflow id to inspect. Omit to list all session workflows.",
     )
+
+
+class WorkflowCommandResultDAO(BaseModel):
+    """Typed outcome of one ``/workflows dismiss`` or ``resume`` command (feature 94 a.2).
+
+    The transcript text stays the operator contract; the optional ids are the
+    only signal observers use, so no caller parses success text.
+
+    Attributes:
+        rendered (str): One-line transcript confirmation or refusal.
+        dismissed_workflow_id (Optional[str]): Set only after a durable
+            ``stalled → failed`` dismissal succeeded.
+        resumed_workflow_id (Optional[str]): Set only after a relaunch was
+            durably adopted and confirmed.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rendered: str
+    dismissed_workflow_id: Optional[str] = None
+    resumed_workflow_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _reject_conflicting_signals(self) -> "WorkflowCommandResultDAO":
+        """Refuse a result that claims both dismissal and resume.
+
+        Returns:
+            WorkflowCommandResultDAO: Self after validation.
+
+        Raises:
+            ValueError: When both workflow ids are set.
+        """
+        if self.dismissed_workflow_id is not None and self.resumed_workflow_id is not None:
+            raise ValueError("a command result signals dismissal or resume, not both")
+        return self
 
 
 class WorkflowHandleStore:
@@ -238,6 +300,50 @@ class WorkflowHandleStore:
         """
         async with self._lock:
             return await asyncio.to_thread(self._list_sync, owner_session_id=owner_session_id)
+
+    async def list_observation(self, *, owner_session_id: str) -> tuple[WorkflowHandleDAO, ...]:
+        """Return every owned handle for one bounded, read-only observation poll.
+
+        WHAT: Scans the owner's workflows directory within fixed budgets (at most
+            256 handle names, 64 KiB per handle before decode, symlinks refused)
+            and returns the complete owned set. Unlike ``list`` it never skips an
+            entry: any malformed, oversized, misnamed, foreign or excess handle
+            refuses the whole observation, so callers never mistake an unreadable
+            file for a removed workflow. It never reconciles, locks files or writes.
+        WHO: Called by DetachedWorkflowAppService session snapshot assembly.
+        WHEN: On every workflow observation refresh of the owning TUI session.
+
+        Args:
+            owner_session_id (str): Owning TUI session id.
+
+        Returns:
+            tuple[WorkflowHandleDAO, ...]: Owned handles sorted by ``started_at``
+                then ``workflow_id``; empty when the directory does not exist.
+
+        Raises:
+            ValueError: ``OBSERVATION_UNAVAILABLE_MESSAGE`` for an unsafe owner,
+                escaped directory, exceeded budget or untrusted handle.
+            OSError: When the directory or a handle cannot be read.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(self._list_observation_sync, owner_session_id=owner_session_id)
+
+    def is_live(self, *, handle: WorkflowHandleDAO) -> bool:
+        """Return whether a handle names a running orchestrator with live process evidence.
+
+        WHAT: Requires the ``running`` state and a positive pid the store's
+            liveness probe reports alive; it reads and writes nothing.
+        WHO: The TUI workflow service before offering or submitting a detached
+            child abort (feature 94 a.4).
+        WHEN: At abort-eligibility and confirmation time.
+
+        Args:
+            handle (WorkflowHandleDAO): Owned handle from a bounded observation listing.
+
+        Returns:
+            bool: True only for a running handle whose process is still live.
+        """
+        return handle.state == "running" and handle.pid > 0 and self._pid_alive(handle.pid)
 
     async def update_state(
         self,
@@ -513,6 +619,122 @@ class WorkflowHandleStore:
                 handles.append(handle)
         handles.sort(key=lambda item: item.started_at)
         return handles
+
+    def _list_observation_sync(self, *, owner_session_id: str) -> tuple[WorkflowHandleDAO, ...]:
+        """Synchronously read the complete bounded owned handle set.
+
+        Args:
+            owner_session_id (str): Owning TUI session id.
+
+        Returns:
+            tuple[WorkflowHandleDAO, ...]: Sorted owned handles.
+        """
+        directory: Path = self._observation_dir(owner_session_id=owner_session_id)
+        handles: tuple[WorkflowHandleDAO, ...] = tuple(
+            self._read_observation_handle(entry=entry, owner_session_id=owner_session_id)
+            for entry in self._observation_handle_entries(directory=directory)
+        )
+        return tuple(sorted(handles, key=lambda handle: (handle.started_at, handle.workflow_id)))
+
+    def _observation_dir(self, *, owner_session_id: str) -> Path:
+        """Return the owner's workflows directory after identity and containment checks.
+
+        Args:
+            owner_session_id (str): Candidate owner id from the TUI session.
+
+        Returns:
+            Path: Contained workflows directory, which may not exist.
+
+        Raises:
+            ValueError: When the owner is unsafe or a path component is a symlink.
+        """
+        try:
+            safe_identifier(value=owner_session_id)
+        except ValueError:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE) from None
+        directory: Path = self._workflows_dir(owner_session_id=owner_session_id)
+        if Path(os.path.realpath(directory)) != directory:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+        return directory
+
+    @staticmethod
+    def _observation_handle_entries(*, directory: Path) -> tuple[os.DirEntry[str], ...]:
+        """Scan bounded directory entries and keep the handle-named ones.
+
+        Args:
+            directory (Path): Contained owner workflows directory.
+
+        Returns:
+            tuple[os.DirEntry[str], ...]: At most 256 ``wf-*.json`` entries; empty
+                when the directory is absent.
+
+        Raises:
+            ValueError: When the entry or handle budget is exceeded.
+        """
+        try:
+            scanner = os.scandir(directory)
+        except FileNotFoundError:
+            return ()
+        with scanner:
+            entries: list[os.DirEntry[str]] = list(
+                itertools.islice(scanner, OBSERVATION_MAX_DIRECTORY_ENTRIES + 1)
+            )
+        handle_entries: tuple[os.DirEntry[str], ...] = tuple(
+            entry for entry in entries if entry.name.startswith("wf-") and entry.name.endswith(".json")
+        )
+        if len(entries) > OBSERVATION_MAX_DIRECTORY_ENTRIES or len(handle_entries) > OBSERVATION_MAX_HANDLES:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+        return handle_entries
+
+    @classmethod
+    def _read_observation_handle(cls, *, entry: os.DirEntry[str], owner_session_id: str) -> WorkflowHandleDAO:
+        """Decode one regular handle file within its byte budget and verify ownership.
+
+        Args:
+            entry (os.DirEntry[str]): Scanned handle entry.
+            owner_session_id (str): Owner the handle must name.
+
+        Returns:
+            WorkflowHandleDAO: Trusted owned handle.
+
+        Raises:
+            ValueError: Symlinked, non-regular, oversized, malformed, foreign or
+                misnamed handle.
+        """
+        if not entry.is_file(follow_symlinks=False):
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+        try:
+            handle: WorkflowHandleDAO = WorkflowHandleDAO.model_validate_json(
+                cls._read_bounded(path=entry.path)
+            )
+        except ValueError:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE) from None
+        if handle.owner_session_id != owner_session_id or entry.name != f"{handle.workflow_id}.json":
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+        return handle
+
+    @staticmethod
+    def _read_bounded(*, path: str) -> bytes:
+        """Read one regular file without following links, stopping past the budget.
+
+        Args:
+            path (str): Handle path from the bounded scan.
+
+        Returns:
+            bytes: At most 64 KiB of handle bytes.
+
+        Raises:
+            ValueError: When the file is not regular or exceeds the budget.
+            OSError: When the file cannot be opened or read.
+        """
+        descriptor: int = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle_file:
+            if not stat.S_ISREG(os.fstat(handle_file.fileno()).st_mode):
+                raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+            data: bytes = handle_file.read(OBSERVATION_MAX_HANDLE_BYTES + 1)
+        if len(data) > OBSERVATION_MAX_HANDLE_BYTES:
+            raise ValueError(OBSERVATION_UNAVAILABLE_MESSAGE)
+        return data
 
     def _update_state_sync(
         self,
@@ -1162,6 +1384,61 @@ class WorkflowStatusTool:
         return workflow_status
 
 
+class RelaunchProcess(Protocol):
+    """Process identity consumed during durable adoption."""
+
+    @property
+    def pid(self) -> int:
+        """Return the newly launched workload PID.
+
+        Returns:
+            int: Positive workload identity.
+        """
+        ...
+
+
+class RelaunchOwnership(Protocol):
+    """Launch lifetime retained until durable adoption completes."""
+
+    @property
+    def process(self) -> RelaunchProcess:
+        """Return the owned workload.
+
+        Returns:
+            RelaunchProcess: Newly launched process identity.
+        """
+        ...
+
+    def activate(self, *, expected_pid: int) -> Awaitable[None] | None:
+        """Activate capture only after durable adoption.
+
+        Args:
+            expected_pid: PID committed to the workflow handle.
+
+        Returns:
+            Awaitable[None] | None: Optional activation completion.
+        """
+        ...
+
+
+class WorkflowResumeLauncher(Protocol):
+    """Constructor-injected process/capture boundary; command retains adoption policy."""
+
+    def __call__(
+        self, *, handle: WorkflowHandleDAO, history_root: Path
+    ) -> AbstractAsyncContextManager[RelaunchOwnership]:
+        """Open a launch lifetime for a reserved handle.
+
+        Args:
+            handle: Durably reserved launching handle.
+            history_root: Root for the existing history and capture files.
+
+        Returns:
+            AbstractAsyncContextManager[RelaunchOwnership]: Owned process and capture lifetime.
+        """
+        ...
+
+
 class WorkflowCommandService:
     """Slash-command façade for detached workflow supervision (spec 57.a.6).
 
@@ -1186,10 +1463,12 @@ class WorkflowCommandService:
         kill: Optional[ProcessGroupKiller] = None,
         pid_alive: Optional[PidAliveProbe] = None,
         schedule: Optional[EscalationScheduler] = None,
+        resume_launcher: Optional[WorkflowResumeLauncher] = None,
     ) -> None:
         """Bind the service to a session's handles.
 
         Args:
+            resume_launcher: Optional launch lifetime factory; defaults to WorkflowRelauncher.
             store (WorkflowHandleStore): Handle store for the owning session.
             owner_session_id (str): The TUI session whose workflows are managed.
             kill (Optional[KillCallable]): Injectable signal sender for tests.
@@ -1200,6 +1479,7 @@ class WorkflowCommandService:
                 scheduler for tests. ``None`` uses the running event loop's
                 ``call_later``.
         """
+        self._resume_launcher = resume_launcher
         self._store: WorkflowHandleStore = store
         self._history_root: Path = store._history_root
         self._owner_session_id: str = owner_session_id
@@ -1255,10 +1535,9 @@ class WorkflowCommandService:
         return await self._abort_terminal_fleet_children(handle=handle)
 
     async def dismiss(self, *, workflow_id: str) -> str:
-        """Acknowledge a stalled workflow (``stalled → failed``).
+        """Acknowledge a stalled workflow and return only its transcript text.
 
-        Invoked by ``/workflows dismiss <id>`` so a crashed orchestrator's row
-        stops appearing as actionable.
+        Compatibility delegate for string callers of ``dismiss_result``.
 
         Args:
             workflow_id (str): Workflow to dismiss.
@@ -1266,14 +1545,33 @@ class WorkflowCommandService:
         Returns:
             str: One-line confirmation or error text for the transcript.
         """
+        return (await self.dismiss_result(workflow_id=workflow_id)).rendered
+
+    async def dismiss_result(self, *, workflow_id: str) -> WorkflowCommandResultDAO:
+        """Acknowledge a stalled workflow (``stalled → failed``) with a typed outcome.
+
+        WHAT: Applies the durable dismissal transition; the handle file is kept.
+        WHO: Invoked by ``/workflows dismiss <id>`` so a crashed orchestrator's
+            row stops appearing as actionable.
+        WHEN: Once per operator dismiss command.
+
+        Args:
+            workflow_id (str): Workflow to dismiss.
+
+        Returns:
+            WorkflowCommandResultDAO: Transcript text, plus the dismissed id only
+                after the durable transition succeeded.
+        """
         handle: Optional[WorkflowHandleDAO] = await self._store.read(
             owner_session_id=self._owner_session_id,
             workflow_id=workflow_id,
         )
         if handle is None:
-            return f"no workflow {workflow_id}"
+            return WorkflowCommandResultDAO(rendered=f"no workflow {workflow_id}")
         if handle.state != "stalled":
-            return f"workflow {workflow_id} is {handle.state} — only stalled workflows can be dismissed"
+            return WorkflowCommandResultDAO(
+                rendered=f"workflow {workflow_id} is {handle.state} — only stalled workflows can be dismissed"
+            )
         try:
             await self._store.update_state(
                 owner_session_id=self._owner_session_id,
@@ -1281,10 +1579,26 @@ class WorkflowCommandService:
                 state="failed",
             )
         except (FileNotFoundError, WorkflowStateTransitionError) as exc:
-            return f"could not dismiss workflow {workflow_id}: {exc}"
-        return f"workflow {workflow_id} dismissed (stalled → failed)"
+            return WorkflowCommandResultDAO(rendered=f"could not dismiss workflow {workflow_id}: {exc}")
+        return WorkflowCommandResultDAO(
+            rendered=f"workflow {workflow_id} dismissed (stalled → failed)",
+            dismissed_workflow_id=workflow_id,
+        )
 
     async def resume(self, *, workflow_id: str) -> str:
+        """Relaunch a dead workflow orchestrator and return only its transcript text.
+
+        Compatibility delegate for string callers of ``resume_result``.
+
+        Args:
+            workflow_id (str): Identifier of the workflow to resume.
+
+        Returns:
+            str: One-line transcript confirmation or safe refusal text.
+        """
+        return (await self.resume_result(workflow_id=workflow_id)).rendered
+
+    async def resume_result(self, *, workflow_id: str) -> WorkflowCommandResultDAO:
         """Relaunch a dead workflow orchestrator with its persisted history.
 
         WHAT: Spawns a fresh orchestrator for a stalled or failed handle, then
@@ -1296,12 +1610,13 @@ class WorkflowCommandService:
             workflow_id (str): Identifier of the workflow to resume.
 
         Returns:
-            str: One-line transcript confirmation or safe refusal text.
+            WorkflowCommandResultDAO: Transcript text, plus the resumed id only
+                for a confirmed relaunch.
         """
         async with self._resume_lock:
             return await self._resume_locked(workflow_id=workflow_id)
 
-    async def _resume_locked(self, *, workflow_id: str) -> str:
+    async def _resume_locked(self, *, workflow_id: str) -> WorkflowCommandResultDAO:
         """Spawn and atomically admit one relaunch while this service owns resume admission.
 
         WHAT: Serializes resume requests so an old capture drain completes before
@@ -1313,7 +1628,8 @@ class WorkflowCommandService:
             workflow_id (str): Identifier of the terminal workflow to relaunch.
 
         Returns:
-            str: Safe confirmation, warning, or refusal for the slash transcript.
+            WorkflowCommandResultDAO: Safe confirmation, warning, or refusal; only a
+                confirmed relaunch names the resumed workflow.
         """
         from src.agents.slo_agent.orchestrator.relaunch import RelaunchOutcomeDAO, WorkflowRelauncher
 
@@ -1325,21 +1641,23 @@ class WorkflowCommandService:
             None,
         )
         if handle is None:
-            return f"no workflow {workflow_id}"
+            return WorkflowCommandResultDAO(rendered=f"no workflow {workflow_id}")
         if handle.state not in ("stalled", "failed"):
-            return self._resume_state_refusal(workflow_id=workflow_id, state=handle.state)
+            return WorkflowCommandResultDAO(
+                rendered=self._resume_state_refusal(workflow_id=workflow_id, state=handle.state)
+            )
         try:
             reserved_handle: WorkflowHandleDAO = await self._store.reserve_relaunch(
                 owner_session_id=self._owner_session_id,
                 workflow_id=workflow_id,
             )
         except (FileNotFoundError, WorkflowStateTransitionError) as exc:
-            return f"could not relaunch workflow {workflow_id}: {exc}"
+            return WorkflowCommandResultDAO(rendered=f"could not relaunch workflow {workflow_id}: {exc}")
         ownership: object | None = None
         adopted_pid: int | None = None
         adoption_committed: bool = False
         try:
-            async with WorkflowRelauncher.spawn_for_adoption(
+            async with (self._resume_launcher or WorkflowRelauncher.spawn_for_adoption)(
                 handle=reserved_handle,
                 history_root=self._history_root,
             ) as ownership:
@@ -1364,17 +1682,20 @@ class WorkflowCommandService:
         except OSError:
             if adoption_committed and adopted_pid is not None:
                 await self._record_adopted_capture_failure(workflow_id=workflow_id, expected_pid=adopted_pid)
-                return f"workflow {workflow_id} resume failed"
+                return WorkflowCommandResultDAO(rendered=f"workflow {workflow_id} resume failed")
             if ownership is not None:
                 self._shutdown_rejected_relaunch(ownership=ownership)
-                return f"workflow {workflow_id} resume failed"
+                return WorkflowCommandResultDAO(rendered=f"workflow {workflow_id} resume failed")
             await self._rollback_failed_relaunch(workflow_id=workflow_id, state=handle.state)
-            return f"workflow {workflow_id} resume failed"
+            return WorkflowCommandResultDAO(rendered=f"workflow {workflow_id} resume failed")
         except (FileNotFoundError, WorkflowStateTransitionError) as exc:
             if ownership is not None:
                 self._shutdown_rejected_relaunch(ownership=ownership)
-            return f"could not relaunch workflow {workflow_id}: {exc}"
-        return self._resume_confirmation(workflow_id=workflow_id, outcome=outcome)
+            return WorkflowCommandResultDAO(rendered=f"could not relaunch workflow {workflow_id}: {exc}")
+        return WorkflowCommandResultDAO(
+            rendered=self._resume_confirmation(workflow_id=workflow_id, outcome=outcome),
+            resumed_workflow_id=workflow_id,
+        )
 
     async def _record_adopted_capture_failure(self, *, workflow_id: str, expected_pid: int) -> None:
         """Persist fixed-safe capture degradation without changing an adopted workload.

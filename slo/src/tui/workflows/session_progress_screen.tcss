@@ -1,0 +1,96 @@
+/* Session progress modal (feature 94 a.3); rules follow the approved demo. */
+
+SessionProgressScreen {
+    align: center middle;
+    background: $background 65%;
+}
+
+#progress-box {
+    width: 92%;
+    height: 88%;
+    border: round $border-muted;
+    background: $surface;
+    padding: 1 2;
+}
+
+#progress-heading {
+    height: 1;
+    width: 1fr;
+    color: $accent;
+    text-style: bold;
+}
+
+#task-scroll {
+    height: 3;
+    background: $surface;
+}
+
+#task-description {
+    height: auto;
+    color: $text-muted;
+}
+
+#session-state {
+    height: auto;
+    color: $text-muted;
+}
+
+#session-log {
+    height: 1fr;
+    min-height: 3;
+    background: $surface;
+    border: none;
+}
+
+/* One terminal cell is the minimum usable thickness on either axis.
+   Keep the thumb quiet at rest, with a modest hover/drag affordance. */
+SessionProgressScreen #session-log,
+SessionProgressScreen #task-scroll {
+    scrollbar-size: 1 1;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-color: $text 18%;
+    scrollbar-color-hover: $text 30%;
+    scrollbar-color-active: $text 40%;
+    scrollbar-corner-color: $surface;
+}
+
+SessionProgressScreen .hint {
+    height: 1;
+    color: $text-muted;
+}
+
+SessionProgressScreen .actions {
+    height: auto;
+    align-horizontal: right;
+}
+
+SessionProgressScreen .actions Button {
+    min-width: 12;
+    width: auto;
+    margin-left: 1;
+}
+
+/* Below 80 columns: stacked single-row buttons and no hint keep controls reachable at 60x20. */
+
+SessionProgressScreen.-progress-narrow #progress-box {
+    padding: 0 1;
+}
+
+SessionProgressScreen.-progress-narrow .hint {
+    display: none;
+}
+
+SessionProgressScreen.-progress-narrow .actions {
+    layout: vertical;
+    align-horizontal: left;
+}
+
+SessionProgressScreen.-progress-narrow .actions Button {
+    width: 1fr;
+    height: 1;
+    min-width: 0;
+    margin-left: 0;
+    border: none;
+}

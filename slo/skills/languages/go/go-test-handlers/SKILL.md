@@ -43,6 +43,12 @@ kind: skill
 
 **Test category:** database-backed integration. Keep real domain collaborators here; use go-test-orchestration recording fakes for isolated order/cutoff behavior. A skip because Docker is unavailable is unverified integration evidence, not a passing gate.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers Go mechanics only.
+
+- This recipe is level 1 (journey: HTTP → handler → application service → domain service → database) in the policy's test levels.
+- Doubles: real database or store; mocks (testify/mock or `httptest`) only for third-party API clients; hand-written stubs for internal collaborators, passed in through constructors or struct fields.
+- Coverage: follow the policy's "What Must Be Tested". Do not restate it here.
+
 **Scope and authority:** Go; read `skills/languages/go/go-conventions/SKILL.md` first. This recipe is a reconciled snapshot of installed guidance, not permission to adopt a dependency. Framework-specific examples apply only to a project already using that stack. Select the test category with `skills/engineering/engineering-testing/SKILL.md`.
 
 This is the Go equivalent of the Python `test-controllers` prompt (FastAPI router

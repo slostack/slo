@@ -29,6 +29,30 @@ Select a small sufficient set of shared, language, component, framework and proj
 5. Identify test category before choosing a test recipe: isolated unit, orchestration unit, adapter/database integration, or end-to-end. Return a compact routing record: task, languages, stack, project contracts, selected absolute skill paths/source tiers, exclusions, commands and unresolved decisions.
 6. For a named workflow load its exact file in `skills/orchestration/workflows/`; never substitute the cadence skill. Preserve in-session vs explicitly detached routing. Each phase receives this routing record, acceptance criteria and artifact paths, not merely the prior agent's verdict.
 
+## Continuation and routing validity
+
+Initial discovery establishes one compact current routing record. Continuation
+agents validate and reuse it rather than repeating the entire selection procedure.
+Record task/acceptance IDs, relevant source revision or content identity, selected
+absolute skill paths/source tiers, project contracts, exclusions, commands/environment,
+artifact references and unresolved decisions. Preserve detailed history separately.
+
+Refresh affected portions when scope introduces a language/framework/component,
+relevant instructions or selected skills change, verification commands/environment
+change, or the record is incomplete/conflicting. Such changes invalidate the affected
+assumptions and evidence, not automatically every unrelated prerequisite. Verify
+sources still exist and resolve overrides against the current manifest when needed.
+
+The routing summary selects guidance; it does not replace authoritative guidance.
+Each fresh agent reads the actual rules needed for its assignment. "Another agent
+read this" is not evidence that the current agent understands its obligations.
+
+For each unresolved decision record affected scope, blocking status and the specific
+decision needed. Continue independent work where safe and authorized; never silently
+waive a mandatory rule. Keep a single current handoff rather than appending all prior
+reports as mandatory reading. Stable evidence may be referenced, changed evidence
+must be revalidated.
+
 ## Authority
 
 Shared policy owns obligations; language conventions own their idiomatic expression; component/framework recipes own scoped implementation mechanisms. Approved project contracts specialize them. An exception must name the rule, rationale, owner and acceptance evidence. A local file, newer example or installed override is not by itself permission to silently waive a baseline obligation. Report incompatible instructions and ask for a decision when user intent is not established. Examples must comply with their authority; do not teach superseded code as a second option.

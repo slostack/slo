@@ -6,7 +6,7 @@ sub-agent labels, and the markdown-aware rich transcript writer.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +20,8 @@ from src.tui.headless_workflow_visualizer import (
     _DIAG_HEIGHT_MAX,
     _DIAG_HEIGHT_MIN,
 )
+from src.tui.workflows.dao import SessionProgressSnapshotDAO, WorkflowSessionRowDAO
+from src.tui.workflows.transcript_renderer import WorkflowTranscriptRenderer
 from src.tui.workflow_visualizer_loader import (
     ChildSessionSummaryDAO,
     HeadlessWorkflowVisualizerConfigDAO,
@@ -36,6 +38,21 @@ def _config() -> HeadlessWorkflowVisualizerConfigDAO:
     return HeadlessWorkflowVisualizerConfigDAO(session_reference="x", follow=False)
 
 
+async def _empty_progress(*, row: WorkflowSessionRowDAO) -> SessionProgressSnapshotDAO:
+    """Return an empty progress snapshot for any requested row."""
+    return SessionProgressSnapshotDAO(
+        key=row.key,
+        execution_id=row.execution_id,
+        revision="",
+        source_generation="",
+        availability="empty",
+        observed_at="2026-10-18T00:00:00+00:00",
+        task_text=row.task_text,
+        task_text_complete=row.task_text_complete,
+        status=row.status,
+    )
+
+
 def _loader_for(*, data: WorkflowDataDAO) -> MagicMock:
     """Build a mock loader returning ``data`` from ``load()``.
 
@@ -48,7 +65,7 @@ def _loader_for(*, data: WorkflowDataDAO) -> MagicMock:
     loader = MagicMock()
     loader.load = AsyncMock(return_value=data)
     loader.load_orchestrator_context = MagicMock(return_value=None)
-    loader.load_child_transcript_entries = AsyncMock(return_value=[])
+    loader.load_session_progress = AsyncMock(side_effect=_empty_progress)
     loader.load_child_stderr_lines = MagicMock(return_value=[])
     loader.load_spawn_context = MagicMock(return_value=None)
     return loader
@@ -61,11 +78,12 @@ class _FakeLog:
         """Initialise the capture buffer."""
         self.writes: list[Any] = []
 
-    def write(self, renderable: Any) -> None:  # noqa: ANN401 — records any renderable.
+    def write(self, renderable: Any, *, scroll_end: Optional[bool] = None) -> None:  # noqa: ANN401
         """Record a written renderable.
 
         Args:
             renderable (Any): The value written.
+            scroll_end (Optional[bool], optional): RichLog scroll flag. Defaults to None.
         """
         self.writes.append(renderable)
 
@@ -139,7 +157,7 @@ class TestChildLabelColour:
 
 
 # ---------------------------------------------------------------------------
-# _write_entry_rich
+# WorkflowTranscriptRenderer.write_entry (shared since 94.a.3)
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +169,7 @@ class TestWriteEntryRich:
         log = _FakeLog()
         entry = TranscriptEntryDAO(kind="assistant", answer="# Heading\n\nbody")
 
-        HeadlessWorkflowVisualizer._write_entry_rich(detail_log=log, entry=entry)  # type: ignore[arg-type]
+        WorkflowTranscriptRenderer.write_entry(log=log, entry=entry)  # type: ignore[arg-type]
 
         assert any(isinstance(w, Markdown) for w in log.writes)
 
@@ -160,19 +178,20 @@ class TestWriteEntryRich:
         log = _FakeLog()
         entry = TranscriptEntryDAO(kind="user", content="do **this**")
 
-        HeadlessWorkflowVisualizer._write_entry_rich(detail_log=log, entry=entry)  # type: ignore[arg-type]
+        WorkflowTranscriptRenderer.write_entry(log=log, entry=entry)  # type: ignore[arg-type]
 
         assert any(isinstance(w, Markdown) for w in log.writes)
 
-    def test_thinking_entry_not_markdown(self) -> None:
-        """Thinking text stays plain (no markdown renderable)."""
+    def test_thinking_entry_uses_shared_markdown(self) -> None:
+        """Thinking uses the same source-preserving Markdown renderer as the modal."""
         log = _FakeLog()
         entry = TranscriptEntryDAO(kind="thinking", content="pondering")
 
-        HeadlessWorkflowVisualizer._write_entry_rich(detail_log=log, entry=entry)  # type: ignore[arg-type]
+        WorkflowTranscriptRenderer.write_entry(log=log, entry=entry)  # type: ignore[arg-type]
 
-        assert not any(isinstance(w, Markdown) for w in log.writes)
-        assert log.writes  # something was written
+        bodies = [w for w in log.writes if isinstance(w, Markdown)]
+        assert len(bodies) == 1
+        assert bodies[0].markup == "pondering"
 
 
 # ---------------------------------------------------------------------------

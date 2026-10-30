@@ -93,3 +93,61 @@ PromptInput, PromptInput:focus {
 }
 
 /* Spinner glyph/text styling lives in ThinkingSpinner.DEFAULT_CSS (72.a.5). */
+
+/* Workflow session list (feature 94 a.2): one heading plus at most five
+ * one-line rows, never more than a quarter of the screen. Short screens keep
+ * one row so the editor and usage bar stay reachable; below the minimum
+ * interactive size (60x20) a compact notice replaces the rows. The size
+ * classes come from SloTUI's breakpoints. */
+SubAgentFleetPanel {
+    height: auto;
+    max-height: 25vh;
+}
+
+SubAgentFleetPanel > .workflow-sessions-heading {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+SubAgentFleetPanel > .workflow-sessions-resize-notice {
+    display: none;
+    height: 1;
+    padding: 0 1;
+    color: $warning;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+SubAgentFleetPanel > FleetSessionList {
+    height: auto;
+    min-height: 1;
+    max-height: 5;
+    background: $surface;
+}
+
+SubAgentFleetRow {
+    height: 1;
+}
+
+SubAgentFleetRow > Static {
+    width: 1fr;
+    height: 1;
+    padding: 0 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+Screen.-workflow-short-height SubAgentFleetPanel > FleetSessionList {
+    max-height: 1;
+}
+
+Screen.-workflow-below-minimum-width SubAgentFleetPanel > FleetSessionList,
+Screen.-workflow-below-minimum-height SubAgentFleetPanel > FleetSessionList {
+    display: none;
+}
+
+Screen.-workflow-below-minimum-width SubAgentFleetPanel > .workflow-sessions-resize-notice,
+Screen.-workflow-below-minimum-height SubAgentFleetPanel > .workflow-sessions-resize-notice {
+    display: block;
+}

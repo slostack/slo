@@ -40,7 +40,7 @@ Each method should make only **one type of decision**. When a method needs to ma
 **Why?**
 - Each method has a clear, single responsibility
 - The call stack naturally documents the decision tree
-- Testing becomes straightforward - one test per decision point
+- Each decision point is testable through observable outcomes — see `skills/coding/test-verification-policy/SKILL.md`
 - Code reads like a table of contents
 
 ### 2. Tell, Don't Ask
@@ -598,45 +598,91 @@ Their language-specific hard rules still govern; this guidance grants no exempti
 
 Declarative code is dramatically easier to test:
 
+- Each decision has a distinct, observable outcome, so a test drives the public entry point and asserts that outcome.
+- Follow `skills/coding/test-verification-policy/SKILL.md`: real database (`async_db_session`, `clickhouse_client`), stubs only for third-party clients, passed in through constructor keyword parameters.
+- Never `patch.object` a private method such as `_execute_query_execution`. That proves wiring to a mock, not behavior.
+
 ```python
-# Testing nested conditionals requires complex setup
-async def test_execute_workflow_query_clickhouse(self):
-    # Must set up: workflow type, query existence, query engine
-    workflow = Mock(workflow_type=WorkflowType.QUERY_EXECUTION)
-    query = Mock(query_engine=QueryEngine.CLICKHOUSE)
-    service = WorkflowService(workflow=workflow, query=query)
-    await service._execute_workflow()
-    # Assert...
+class RecordingS3Client:
+    """Third-party stub: records uploads instead of calling S3."""
+
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, str]] = []
+
+    async def upload_file(self, *, bucket: str, key: str, body: bytes) -> None:
+        """Record the bucket and key of each upload."""
+        self.uploads.append((bucket, key))
 
 
-# Testing single-decision methods is straightforward
-async def test_execute_workflow_dispatches_to_query_execution(self):
-    # Only need to set up: workflow type
-    workflow = Mock(workflow_type=WorkflowType.QUERY_EXECUTION)
-    service = WorkflowService(workflow=workflow)
+class TestWorkflowServiceInvoke:
+    async def test_invoke_stores_query_result_to_s3_when_engine_is_clickhouse(
+        self, async_db_session: AsyncSession, clickhouse_client: ClickHouseClient
+    ) -> None:
+        """ClickHouse query workflow uploads its result and marks the run completed."""
+        workflow_run: WorkflowRun = await build_workflow_run(
+            db_session=async_db_session,
+            workflow_type=WorkflowType.QUERY_EXECUTION,
+            query_engine=QueryEngine.CLICKHOUSE,
+            sql="SELECT 1",
+        )
+        s3_client: RecordingS3Client = RecordingS3Client()
 
-    with patch.object(service, '_execute_query_execution') as mock:
-        await service._execute_workflow()
-        mock.assert_called_once()
+        await WorkflowService(
+            workflow_run_id=workflow_run.id,
+            db_session=async_db_session,
+            clickhouse_client=clickhouse_client,
+            s3_client=s3_client,
+        ).invoke()
 
+        stored: WorkflowRun = await WorkflowRunService.get(id=workflow_run.id, db_session=async_db_session)
+        assert stored.status == WorkflowRunStatus.COMPLETED
+        assert [key for _bucket, key in s3_client.uploads] == [stored.result_s3_key]
 
-async def test_execute_query_execution_validates_query_exists(self):
-    # Only need to set up: missing query
-    service = WorkflowService(query=None)
+    async def test_invoke_raises_and_uploads_nothing_when_query_is_missing(
+        self, async_db_session: AsyncSession, clickhouse_client: ClickHouseClient
+    ) -> None:
+        """Guard clause: a query workflow without a query fails before any upload."""
+        workflow_run: WorkflowRun = await build_workflow_run(
+            db_session=async_db_session,
+            workflow_type=WorkflowType.QUERY_EXECUTION,
+            query_engine=None,
+            sql=None,
+        )
+        s3_client: RecordingS3Client = RecordingS3Client()
+        service: WorkflowService = WorkflowService(
+            workflow_run_id=workflow_run.id,
+            db_session=async_db_session,
+            clickhouse_client=clickhouse_client,
+            s3_client=s3_client,
+        )
 
-    with pytest.raises(ValueError, match="Query not found"):
-        await service._execute_query_execution()
+        with pytest.raises(ValueError, match="Query not found"):
+            await service.invoke()
 
+        assert s3_client.uploads == []
 
-async def test_execute_query_execution_dispatches_clickhouse(self):
-    # Only need to set up: query engine
-    query = Mock(query_engine=QueryEngine.CLICKHOUSE)
-    service = WorkflowService(query=query)
+    async def test_invoke_raises_when_query_engine_is_not_supported(
+        self, async_db_session: AsyncSession, clickhouse_client: ClickHouseClient
+    ) -> None:
+        """Dispatch default: an unsupported engine fails with an explicit error."""
+        workflow_run: WorkflowRun = await build_workflow_run(
+            db_session=async_db_session,
+            workflow_type=WorkflowType.QUERY_EXECUTION,
+            query_engine=QueryEngine.POSTGRES,
+            sql="SELECT 1",
+        )
+        service: WorkflowService = WorkflowService(
+            workflow_run_id=workflow_run.id,
+            db_session=async_db_session,
+            clickhouse_client=clickhouse_client,
+            s3_client=RecordingS3Client(),
+        )
 
-    with patch.object(service, '_execute_query_and_store_to_s3_clickhouse') as mock:
-        await service._execute_query_execution()
-        mock.assert_called_once()
+        with pytest.raises(ValueError, match="not supported"):
+            await service.invoke()
 ```
+
+- `build_workflow_run` seeds rows through the real domain services; it is a test factory, not a mock.
 
 ## Review checklist
 
@@ -647,7 +693,7 @@ When writing or reviewing code, ask:
 - [ ] Are there more than 2 levels of nesting? (Refactor if yes)
 - [ ] Am I asking about state and then deciding? (Push decision down if yes)
 - [ ] Do method names clearly describe what they do?
-- [ ] Can each method be tested independently?
+- [ ] Is each decision reachable and assertable through an observable outcome (returned result, persisted row, recorded call on an injected stub)?
 - [ ] Would a new developer understand the flow by reading method names?
 - [ ] Are conditional branches based on type? (Consider polymorphism)
 - [ ] Could a lookup table replace if-elif chains?

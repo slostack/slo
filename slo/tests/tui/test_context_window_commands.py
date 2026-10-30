@@ -38,12 +38,19 @@ def _usage_snapshot(*, snapshot: ContextWindowSnapshotDAO) -> SessionUsageSnapsh
     )
 
 
-def _session() -> SloAgentSession:
+def _session(monkeypatch: pytest.MonkeyPatch) -> SloAgentSession:
     """Build a prebuilt-agent session for the /context-window advisory boundary.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Environment mutator; pins the global
+            default model so the advisory's model identity is deterministic.
 
     Returns:
         SloAgentSession: Session wrapping a faux model.
     """
+    # cfg resolves the short key dynamically; the ambient SLO_DEFAULT_MODEL_NAME
+    # is captured at config.cfg import, before this helper's patch.
+    monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
     return SloAgentSession(
         agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
         workdir=Path(".").resolve(),
@@ -91,9 +98,11 @@ async def test_context_window_renders_snapshot_and_requests_measurement() -> Non
 
 
 @pytest.mark.asyncio
-async def test_context_window_at_threshold_emits_one_advisory_without_compacting() -> None:
+async def test_context_window_at_threshold_emits_one_advisory_without_compacting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """/context-window enters the snapshot-refresh advisory boundary."""
-    session: SloAgentSession = _session()
+    session: SloAgentSession = _session(monkeypatch=monkeypatch)
     advised: list[AgentStreamEventDAO] = []
 
     async def _capture(event: AgentStreamEventDAO) -> None:

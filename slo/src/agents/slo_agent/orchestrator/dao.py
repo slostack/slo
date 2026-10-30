@@ -8,11 +8,14 @@ Sub-spec 01-sub-agents 01.b.
 
 from __future__ import annotations
 
+import re
 from typing import Literal, Optional
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.agents.reasoning_capabilities import ReasoningLevel
+from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
 
 __all__ = [
     "ReasoningLevel",
@@ -29,6 +32,20 @@ __all__ = [
     "OrchestratorRunState",
     "OrchestratorStatusDAO",
     "OrchestratorResultDAO",
+    "ExecutionPhase",
+    "StdoutCaptureIdentityDAO",
+    "ChildExecutionEvidenceDAO",
+    "ExecutionIndexDAO",
+    "ChildAbortOutcome",
+    "ChildAbortRequestDAO",
+    "ChildAbortOutcomeDAO",
+    "ChildControlCapabilityDAO",
+    "DispatchIdentityDAO",
+    "ResolvedDispatchTaskDAO",
+    "AttachedDispatchSnapshotDAO",
+    "TERMINAL_STATUSES",
+    "canonical_uuid",
+    "safe_identifier",
     "exit_code_for_terminal_kind",
     "lifecycle_kind_for_status",
     "run_state_for_terminal_kind",
@@ -76,6 +93,84 @@ SUB_AGENT_STATUS_TO_TERMINAL_REASON: dict[str, str] = {
     "failed": "failed",
 }
 """Child terminal status to its default terminal reason."""
+
+TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "aborted"})
+"""Child statuses that end an execution incarnation and can never regress."""
+
+_SAFE_IDENTIFIER_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9._-]+$")
+"""Safe session-id slug rule shared with ``src.cli.headless_request``.
+
+Duplicated as a pattern (not imported) because importing ``src.cli`` from this
+foundational DAO module would load the CLI application and create an import cycle.
+"""
+
+_SHA256_HEX_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]{64}$")
+"""Lower-case hexadecimal SHA-256 digest of exact persisted bytes."""
+
+
+def canonical_uuid(*, value: str) -> str:
+    """Return a strictly parsed canonical UUID string.
+
+    WHAT: Accepts only the lower-case hyphenated form that ``str(UUID)`` emits,
+        so one identity never has two spellings on disk or in memory.
+    WHO: Called by DAO validators for execution, run and request identities.
+    WHEN: Whenever a runtime or durable identity is constructed or decoded.
+
+    Args:
+        value (str): Candidate UUID text.
+
+    Returns:
+        str: The unchanged canonical UUID text.
+
+    Raises:
+        ValueError: If the value is not a canonical UUID string.
+    """
+    try:
+        parsed: UUID = UUID(value)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("identity must be a canonical UUID") from exc
+    if str(parsed) != value:
+        raise ValueError("identity must be a canonical UUID")
+    return value
+
+
+def safe_identifier(*, value: str) -> str:
+    """Return a session-style identifier that is safe as one path component.
+
+    WHAT: Applies the existing headless session-id rule (``[A-Za-z0-9._-]``
+        slug, which also covers canonical UUIDs) and rejects traversal components.
+    WHO: Called by DAO validators for session, owner and dispatch identities.
+    WHEN: Before an identity can address any durable child-control or evidence file.
+
+    Args:
+        value (str): Candidate identifier.
+
+    Returns:
+        str: The unchanged identifier.
+
+    Raises:
+        ValueError: If the value is empty or unsafe as one path component.
+    """
+    if ".." in value or value == "." or not _SAFE_IDENTIFIER_RE.fullmatch(value):
+        raise ValueError("identifier must be a safe path component")
+    return value
+
+
+def _optional_runtime_uuid(*, value: str) -> str:
+    """Accept an empty legacy runtime identity or a canonical UUID.
+
+    Args:
+        value (str): Runtime execution identity; empty for legacy rows.
+
+    Returns:
+        str: The unchanged value.
+
+    Raises:
+        ValueError: If a non-empty value is not a canonical UUID.
+    """
+    if value == "":
+        return value
+    return canonical_uuid(value=value)
 
 
 def exit_code_for_terminal_kind(*, kind: str) -> int:
@@ -268,6 +363,28 @@ class SubAgentTaskDAO(BaseModel):
 
     task_id: str
     prompt: str
+    task_summary: str = Field(
+        min_length=1,
+        max_length=512,
+        description="Required concise description of the assigned operation and concrete subject; not role, instructions or status.",
+    )
+
+    @field_validator("task_summary", mode="before")
+    @classmethod
+    def _validate_task_summary(cls, value: object) -> str:
+        """Validate an authored description before any dispatch publication.
+
+        Args:
+            value: Untrusted authored summary.
+        Returns:
+            str: Complete normalized description.
+        Raises:
+            ValueError: Invalid type or mechanical summary policy.
+        """
+        if not isinstance(value, str):
+            raise ValueError("task_summary must be a string describing the assigned work")
+        return TaskPreview.validate_summary(task_summary=value)
+
     cwd: Optional[str] = None
     model: Optional[str] = None
     reasoning_level: Optional[ReasoningLevel] = None
@@ -341,8 +458,9 @@ class SubAgentStatusDAO(BaseModel):
         status (SubAgentStatus): Current lifecycle state.
         last_text (Optional[str]): Latest visible answer text from the child.
             Updated on each ``text_delta`` event relayed from the child.
-        prompt_preview (str): First 120 characters of the task prompt.
-            Used as a human-readable label in the TUI fleet status.
+        prompt_preview (str): ``TaskPreview`` label of the task prompt (controls
+            stripped, whitespace collapsed, at most 150 code points including an
+            ellipsis). Used as a human-readable label in the TUI fleet status.
         last_heartbeat_at (Optional[float]): Monotonic timestamp of the most
             recent recognized child heartbeat.
         last_stdout_at (Optional[float]): Monotonic timestamp of the most
@@ -353,6 +471,9 @@ class SubAgentStatusDAO(BaseModel):
         exit_code (Optional[int]): Child exit code at terminal time.
         terminal_reason (Optional[TerminalReason]): How the child ended.
         terminated_by (Optional[TerminatedBy]): Which reaper ended the child.
+        execution_id (str): Runtime incarnation identity allocated at registration.
+            Excluded from serialization so released closed readers keep decoding
+            fleet.json; ``execution.v1.json`` is the persisted identity owner.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -370,6 +491,17 @@ class SubAgentStatusDAO(BaseModel):
     exit_code: Optional[int] = None
     terminal_reason: Optional[TerminalReason] = None
     terminated_by: Optional[TerminatedBy] = None
+    execution_id: str = Field(
+        default="",
+        exclude=True,
+        description="Runtime incarnation identity; never serialized into released fleet files.",
+    )
+
+    @field_validator("execution_id")
+    @classmethod
+    def _validate_execution_id(cls, value: str) -> str:
+        """Reject a non-empty runtime identity that is not a canonical UUID."""
+        return _optional_runtime_uuid(value=value)
 
     def liveness(
         self,
@@ -497,6 +629,8 @@ class SubAgentResultDAO(BaseModel):
             running (interim value; never returned to callers).
         usage (dict[str, int]): Token-usage totals when available. Reserved
             for per-child billing attribution; empty dict in v1.
+        execution_id (str): Runtime incarnation that produced this result; excluded
+            from serialization so released readers keep decoding status.json.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -523,6 +657,17 @@ class SubAgentResultDAO(BaseModel):
         default=None,
         description="Redacted operator-facing failure summary.",
     )
+    execution_id: str = Field(
+        default="",
+        exclude=True,
+        description="Runtime incarnation identity; never serialized into released status files.",
+    )
+
+    @field_validator("execution_id")
+    @classmethod
+    def _validate_execution_id(cls, value: str) -> str:
+        """Reject a non-empty runtime identity that is not a canonical UUID."""
+        return _optional_runtime_uuid(value=value)
 
 
 class OrchestratorResultDAO(BaseModel):
@@ -547,3 +692,533 @@ class OrchestratorResultDAO(BaseModel):
     all_completed: bool = True
     failed_task_ids: list[str] = Field(default_factory=list)
     error: Optional[str] = None
+
+
+ExecutionPhase = Literal["pending", "running", "terminal"]
+"""Persisted phase of one execution incarnation in ``execution.v1.json``.
+
+``pending``  — registered; no trusted capture, context or status evidence.
+``running``  — fresh spawn context and stdout capture belong to this incarnation.
+``terminal`` — old-shaped status.json holds this incarnation's registry winner.
+"""
+
+_PHASE_STATUSES: dict[str, frozenset[str]] = {
+    "pending": frozenset({"pending"}),
+    "running": frozenset({"running"}),
+    "terminal": TERMINAL_STATUSES,
+}
+"""Public statuses each persisted phase may carry; the registry winner supplies them."""
+
+
+class StdoutCaptureIdentityDAO(BaseModel):
+    """Exact filesystem identity of one freshly opened stdout capture.
+
+    Attributes:
+        device (int): ``st_dev`` of the opened capture file.
+        inode (int): ``st_ino`` of the opened capture file.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    device: int = Field(ge=0)
+    inode: int = Field(ge=0)
+
+
+class ChildExecutionEvidenceDAO(BaseModel):
+    """Versioned sibling that binds old-shaped child files to one incarnation.
+
+    Written to ``children/<session_id>/execution.v1.json`` beside the released
+    spawn_context.json/status.json files, which keep their closed schemas. New
+    readers trust capture, context or status bytes only when this sibling, the
+    run's execution index and the file identities/digests all agree. Old readers
+    ignore it. It is a regenerated projection of the registry winner, never a
+    second execution authority and never backfilled into older records.
+
+    Attributes:
+        schema_version (Literal[1]): Closed sibling schema version.
+        session_id (str): Safe child session identifier.
+        execution_id (str): Canonical UUID of this incarnation.
+        dispatch_id (Optional[str]): Canonical UUID of the dispatch that admitted this
+            incarnation; ProcessRegistry.register always supplies it. None only when
+            a reader parses a sibling written before dispatch metadata existed.
+        phase (ExecutionPhase): Pending, running or terminal publication phase.
+        status (SubAgentStatus): Registry status published with the phase.
+        stdout_identity (Optional[StdoutCaptureIdentityDAO]): Fresh capture identity;
+            None before spawn, for a pending abort, or when capture could not open.
+        spawn_context_sha256 (Optional[str]): Digest of this incarnation's exact
+            spawn_context.json bytes; None when the context was not written.
+        status_sha256 (Optional[str]): Digest of the exact status.json bytes; set
+            only in the terminal phase.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1] = 1
+    session_id: str
+    execution_id: str
+    dispatch_id: Optional[str] = None
+    phase: ExecutionPhase
+    status: SubAgentStatus
+    stdout_identity: Optional[StdoutCaptureIdentityDAO] = None
+    spawn_context_sha256: Optional[str] = None
+    status_sha256: Optional[str] = None
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, value: str) -> str:
+        """Require a safe child session path component."""
+        return safe_identifier(value=value)
+
+    @field_validator("execution_id")
+    @classmethod
+    def _validate_execution_id(cls, value: str) -> str:
+        """Require a canonical incarnation UUID."""
+        return canonical_uuid(value=value)
+
+    @field_validator("dispatch_id")
+    @classmethod
+    def _validate_dispatch_id(cls, value: Optional[str]) -> Optional[str]:
+        """Require a canonical dispatch UUID when one is present."""
+        return value if value is None else canonical_uuid(value=value)
+
+    @field_validator("spawn_context_sha256", "status_sha256")
+    @classmethod
+    def _validate_digest(cls, value: Optional[str]) -> Optional[str]:
+        """Require lower-case SHA-256 hex digests when present."""
+        if value is not None and not _SHA256_HEX_RE.fullmatch(value):
+            raise ValueError("digest must be lower-case SHA-256 hex")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_phase_evidence(self) -> "ChildExecutionEvidenceDAO":
+        """Reject evidence whose phase, status and digests disagree.
+
+        Returns:
+            ChildExecutionEvidenceDAO: Self after validation.
+
+        Raises:
+            ValueError: If the status does not belong to the phase, a pending phase
+                carries capture/context evidence, or the status digest is present
+                exactly when the phase is not terminal.
+        """
+        if self.status not in _PHASE_STATUSES[self.phase]:
+            raise ValueError("status does not belong to the execution phase")
+        if (self.phase == "terminal") != (self.status_sha256 is not None):
+            raise ValueError("status digest is required exactly in the terminal phase")
+        if self.phase == "pending" and (self.stdout_identity or self.spawn_context_sha256):
+            raise ValueError("pending evidence carries no capture or context identity")
+        return self
+
+    @classmethod
+    def pending(
+        cls,
+        *,
+        session_id: str,
+        execution_id: str,
+        dispatch_id: str,
+    ) -> "ChildExecutionEvidenceDAO":
+        """Build the initial evidence published at registration.
+
+        WHAT: Declares a new incarnation with no trusted capture, context or status.
+        WHO: Called by ProcessRegistry.register.
+        WHEN: Before the pending fleet projection is persisted.
+
+        Args:
+            session_id (str): Safe child session identifier.
+            execution_id (str): Freshly allocated incarnation UUID.
+            dispatch_id (str): Dispatch captured at admission; running and terminal
+                evidence copy it unchanged.
+
+        Returns:
+            ChildExecutionEvidenceDAO: Pending-phase evidence.
+        """
+        return cls(
+            session_id=session_id,
+            execution_id=execution_id,
+            dispatch_id=dispatch_id,
+            phase="pending",
+            status="pending",
+        )
+
+    def running(
+        self,
+        *,
+        stdout_identity: Optional[StdoutCaptureIdentityDAO],
+        spawn_context_sha256: Optional[str],
+    ) -> "ChildExecutionEvidenceDAO":
+        """Return running evidence for this incarnation's fresh capture and context.
+
+        Args:
+            stdout_identity (Optional[StdoutCaptureIdentityDAO]): Identity of the
+                freshly opened stdout capture, or None when capture is unavailable.
+            spawn_context_sha256 (Optional[str]): Digest of the fresh context bytes.
+
+        Returns:
+            ChildExecutionEvidenceDAO: Running-phase evidence.
+        """
+        return self.model_validate(
+            {
+                **self.model_dump(),
+                "phase": "running",
+                "status": "running",
+                "stdout_identity": stdout_identity,
+                "spawn_context_sha256": spawn_context_sha256,
+            }
+        )
+
+    def terminal(self, *, status: SubAgentStatus, status_sha256: str) -> "ChildExecutionEvidenceDAO":
+        """Return terminal evidence bound to the exact status.json bytes.
+
+        Args:
+            status (SubAgentStatus): Terminal status of the registry winner.
+            status_sha256 (str): Digest of the exact status.json bytes just written.
+
+        Returns:
+            ChildExecutionEvidenceDAO: Terminal-phase evidence retaining capture identity.
+        """
+        return self.model_validate(
+            {**self.model_dump(), "phase": "terminal", "status": status, "status_sha256": status_sha256}
+        )
+
+
+class ExecutionIndexDAO(BaseModel):
+    """Run-scoped projection of current fleet sessions to incarnations.
+
+    Written as ``execution-index.v1.json`` beside fleet.json. A new reader accepts
+    a child's sibling only when this index maps the session to the same
+    execution_id, so a previous incarnation's sibling cannot authorize a newly
+    pending fleet row. It is a regenerated projection, not an authority.
+
+    Attributes:
+        schema_version (Literal[1]): Closed index schema version.
+        orchestrator_session_id (str): Parent session owning the fleet.
+        run_id (str): Canonical UUID of the pool composition that wrote the index.
+        executions (dict[str, str]): Child session id to current execution UUID.
+        updated_at (str): UTC ISO-8601 write time.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1] = 1
+    orchestrator_session_id: str
+    run_id: str
+    executions: dict[str, str] = Field(default_factory=dict)
+    updated_at: str
+
+    @field_validator("orchestrator_session_id")
+    @classmethod
+    def _validate_orchestrator_session_id(cls, value: str) -> str:
+        """Require a safe parent session path component."""
+        return safe_identifier(value=value)
+
+    @field_validator("run_id")
+    @classmethod
+    def _validate_run_id(cls, value: str) -> str:
+        """Require a canonical run UUID."""
+        return canonical_uuid(value=value)
+
+    @field_validator("executions")
+    @classmethod
+    def _validate_executions(cls, value: dict[str, str]) -> dict[str, str]:
+        """Require safe session keys and canonical execution UUID values."""
+        for session_id, execution_id in value.items():
+            safe_identifier(value=session_id)
+            canonical_uuid(value=execution_id)
+        return value
+
+
+ChildAbortOutcome = Literal[
+    "requested", "aborted", "already_terminal", "not_owned", "unavailable", "unresolved"
+]
+"""Closed child-abort outcomes; ``requested`` is admission only, all others settle."""
+
+
+class _ChildControlIdentity(BaseModel):
+    """Shared validators for child-control DAOs (structure only in T02)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @field_validator("owner_session_id", "orchestrator_session_id", "session_id", check_fields=False)
+    @classmethod
+    def _validate_safe_identity(cls, value: str) -> str:
+        """Require safe session path components."""
+        return safe_identifier(value=value)
+
+    @field_validator("request_id", "run_id", "execution_id", check_fields=False)
+    @classmethod
+    def _validate_uuid_identity(cls, value: str) -> str:
+        """Require canonical UUID identities."""
+        return canonical_uuid(value=value)
+
+
+class ChildAbortRequestDAO(_ChildControlIdentity):
+    """Typed request to abort one exact child incarnation.
+
+    No PID, prompt or path is accepted. Admission, storage and execution belong
+    to later tickets; this ticket defines the closed structure only.
+
+    Attributes:
+        schema_version (Literal[1]): Closed request schema version.
+        request_id (str): Immutable request UUID.
+        owner_session_id (str): TUI owner session that submits the request.
+        orchestrator_session_id (str): Parent orchestrator owning the child.
+        session_id (str): Target child session.
+        run_id (str): Runner invocation that must still own the child.
+        execution_id (str): Exact target incarnation.
+    """
+
+    schema_version: Literal[1] = 1
+    request_id: str
+    owner_session_id: str
+    orchestrator_session_id: str
+    session_id: str
+    run_id: str
+    execution_id: str
+
+
+class ChildAbortOutcomeDAO(_ChildControlIdentity):
+    """Fixed-message outcome (receipt) for one child-abort request.
+
+    Attributes:
+        request_id (str): Request this outcome settles or admits.
+        session_id (str): Target child session.
+        execution_id (str): Target incarnation.
+        outcome (ChildAbortOutcome): Closed outcome literal.
+        terminal_status (Optional[SubAgentStatus]): Canonical terminal status when known.
+        safe_message (str): Fixed operator-facing message; never exception text.
+    """
+
+    request_id: str
+    session_id: str
+    execution_id: str
+    outcome: ChildAbortOutcome
+    terminal_status: Optional[SubAgentStatus] = None
+    safe_message: str
+
+    @classmethod
+    def for_request(
+        cls,
+        *,
+        request: ChildAbortRequestDAO,
+        outcome: ChildAbortOutcome,
+        terminal_status: Optional[SubAgentStatus] = None,
+    ) -> "ChildAbortOutcomeDAO":
+        """Build the outcome for one request with its fixed operator message.
+
+        WHAT: Copies the request's exact request/session/execution identity and
+            selects the fixed message for ``outcome``; no caller supplies text, so
+            exception detail can never reach a receipt or the operator.
+        WHO: SubAgentPool child cancellation, the session facade and later
+            control adapters.
+        WHEN: Whenever a child-abort request is refused, admitted or settled.
+
+        Args:
+            request (ChildAbortRequestDAO): Request the outcome answers.
+            outcome (ChildAbortOutcome): Closed outcome literal.
+            terminal_status (Optional[SubAgentStatus], optional): Canonical terminal
+                status when observed. Defaults to None.
+
+        Returns:
+            ChildAbortOutcomeDAO: Outcome bound to the request identity.
+        """
+        return cls(
+            request_id=request.request_id,
+            session_id=request.session_id,
+            execution_id=request.execution_id,
+            outcome=outcome,
+            terminal_status=terminal_status,
+            safe_message=_CHILD_ABORT_MESSAGES[outcome],
+        )
+
+    @classmethod
+    def admitted(cls, *, request: ChildAbortRequestDAO, durability_warning: bool) -> "ChildAbortOutcomeDAO":
+        """Build the ``requested`` acknowledgement for a durably committed request.
+
+        WHAT: A commit whose directory fsync could not be confirmed is still
+            admitted; only the fixed notice changes, so callers never resubmit.
+        WHO: ChildAbortStore.submit after its atomic request commit.
+        WHEN: Once per committed (or idempotently repeated) request.
+
+        Args:
+            request (ChildAbortRequestDAO): Committed request.
+            durability_warning (bool): True when the commit's durability is unconfirmed.
+
+        Returns:
+            ChildAbortOutcomeDAO: Admission outcome bound to the request identity.
+        """
+        message_key: str = "requested_durability_unconfirmed" if durability_warning else "requested"
+        return cls.for_request(request=request, outcome="requested").model_copy(
+            update={"safe_message": _CHILD_ABORT_MESSAGES[message_key]}
+        )
+
+
+_CHILD_ABORT_MESSAGES: dict[str, str] = {
+    "requested": "Abort requested; waiting for the orchestrator to confirm.",
+    "requested_durability_unconfirmed": "Abort requested; durability not confirmed. Do not resubmit.",
+    "aborted": "Child aborted.",
+    "already_terminal": "Child already finished; nothing was aborted.",
+    "not_owned": "Child is not owned by this run; nothing was aborted.",
+    "unavailable": "Child abort unavailable for this run.",
+    "unresolved": "Abort could not be confirmed; the child may still be running.",
+}
+"""Fixed operator message per child-abort outcome; never exception text."""
+
+
+class ChildControlCapabilityDAO(_ChildControlIdentity):
+    """Runner-published evidence that one run accepts child-control requests.
+
+    Attributes:
+        schema_version (Literal[1]): Closed capability schema version.
+        run_id (str): Runner invocation UUID; regenerated on every invocation.
+        owner_session_id (str): Launch owner bound from workflow context.
+        orchestrator_session_id (str): Parent orchestrator session.
+        accepting (bool): True only while the runner's controller admits requests.
+    """
+
+    schema_version: Literal[1] = 1
+    run_id: str
+    owner_session_id: str
+    orchestrator_session_id: str
+    accepting: bool
+
+
+class DispatchIdentityDAO(BaseModel):
+    """Identity of one admitted ``SubAgentPool.dispatch`` batch.
+
+    Captured once at admission and passed explicitly through the chain, run,
+    register and lifecycle calls, so asynchronous work never reads a mutable
+    "current dispatch" field. Feature 94 a.2.
+
+    Attributes:
+        dispatch_id (str): Pool-generated canonical UUID of the batch.
+        dispatch_sequence (int): Monotonic admitted-start sequence within one
+            pool, starting at 1; observers use it to ignore older event delivery.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dispatch_id: str
+    dispatch_sequence: int = Field(ge=1)
+
+    @field_validator("dispatch_id")
+    @classmethod
+    def _validate_dispatch_id(cls, value: str) -> str:
+        """Require the canonical UUID spelling the pool allocates."""
+        return canonical_uuid(value=value)
+
+    def started_metadata(self, *, orchestrator_session_id: str) -> dict[str, object]:
+        """Return the exact metadata of the stream-only ``sub_agent_dispatch_started`` event.
+
+        WHAT: Builds the three-key payload; nothing else may be added.
+        WHO: Called by SubAgentPool right after admission.
+        WHEN: Once per admitted dispatch, before any child lifecycle event.
+
+        Args:
+            orchestrator_session_id (str): Parent session owning the pool.
+
+        Returns:
+            dict[str, object]: ``orchestrator_session_id``, ``dispatch_id`` and
+                ``dispatch_sequence``.
+        """
+        return {
+            "orchestrator_session_id": orchestrator_session_id,
+            "dispatch_id": self.dispatch_id,
+            "dispatch_sequence": self.dispatch_sequence,
+        }
+
+    def lifecycle_metadata(self, *, execution_id: str) -> dict[str, object]:
+        """Return the dispatch metadata every pool lifecycle event carries.
+
+        WHAT: Adds the child's incarnation to this batch identity.
+        WHO: Called by SubAgentPool for spawned, terminal and reaped events.
+        WHEN: Each time the pool emits a child lifecycle event.
+
+        Args:
+            execution_id (str): Child incarnation the event concerns.
+
+        Returns:
+            dict[str, object]: ``dispatch_id``, ``dispatch_sequence`` and ``execution_id``.
+        """
+        return {
+            "dispatch_id": self.dispatch_id,
+            "dispatch_sequence": self.dispatch_sequence,
+            "execution_id": execution_id,
+        }
+
+
+class ResolvedDispatchTaskDAO(BaseModel):
+    """One dispatch task paired with the session it was resolved to exactly once.
+
+    Built during dispatch preparation, before admission; ``_run_one`` never
+    resolves session references again. Feature 94 a.2.
+
+    Attributes:
+        task (SubAgentTaskDAO): The task as requested (chain steps substitute
+            ``{previous}`` into a copy later).
+        session_id (str): Resolved child session; a safe path component.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    task: SubAgentTaskDAO
+    session_id: str
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, value: str) -> str:
+        """Require a session id that is safe as one evidence path component."""
+        return safe_identifier(value=value)
+
+
+class AttachedDispatchSnapshotDAO(BaseModel):
+    """Transient projection of the latest admitted dispatch's registry entries.
+
+    Observation only, not a second execution registry. An empty identity with
+    sequence zero denotes that no dispatch was admitted yet. Feature 94 a.2.
+
+    Attributes:
+        dispatch_id (str): Latest admitted dispatch UUID, or empty for none.
+        dispatch_sequence (int): Its admitted-start sequence, or 0 for none.
+        entries (tuple[SubAgentStatusDAO, ...]): Deep copies of that batch's
+            current-incarnation entries in registration order.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dispatch_id: str = ""
+    dispatch_sequence: int = Field(default=0, ge=0)
+    entries: tuple[SubAgentStatusDAO, ...] = ()
+
+    @field_validator("dispatch_id")
+    @classmethod
+    def _validate_dispatch_id(cls, value: str) -> str:
+        """Accept the empty no-dispatch value or a canonical UUID."""
+        return _optional_runtime_uuid(value=value)
+
+    @model_validator(mode="after")
+    def _validate_identity_pairing(self) -> "AttachedDispatchSnapshotDAO":
+        """Pair the empty identity with sequence zero and nothing else.
+
+        Returns:
+            AttachedDispatchSnapshotDAO: Self after validation.
+
+        Raises:
+            ValueError: If exactly one of identity and sequence denotes "no dispatch".
+        """
+        if (self.dispatch_id == "") != (self.dispatch_sequence == 0):
+            raise ValueError("empty dispatch identity requires sequence zero")
+        return self
+
+    @classmethod
+    def empty(cls) -> "AttachedDispatchSnapshotDAO":
+        """Return the explicit no-dispatch value.
+
+        WHAT: The value observers receive when no pool or no dispatch exists.
+        WHO: Called by ProcessRegistry before any dispatch and by
+            SloAgentSession.attached_dispatch_snapshot without a pool.
+        WHEN: On every observation that has no admitted batch.
+
+        Returns:
+            AttachedDispatchSnapshotDAO: Empty identity, sequence 0, no entries.
+        """
+        return cls()

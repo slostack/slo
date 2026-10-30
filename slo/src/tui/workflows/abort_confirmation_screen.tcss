@@ -1,0 +1,57 @@
+/* Child-abort confirmation (feature 94 a.4); rules follow the approved demo confirm-box. */
+
+AbortConfirmationScreen {
+    align: center middle;
+    background: $background 65%;
+}
+
+#confirm-box {
+    width: 62;
+    max-width: 95%;
+    height: auto;
+    max-height: 100%;
+    background: $surface;
+    border: round $warning;
+    padding: 1 2;
+}
+
+#confirm-box Static {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#confirm-box .heading {
+    color: $accent;
+    text-style: bold;
+}
+
+AbortConfirmationScreen .actions {
+    height: auto;
+    align-horizontal: right;
+}
+
+AbortConfirmationScreen .actions Button {
+    min-width: 12;
+    width: auto;
+    margin-left: 1;
+}
+
+/* Below 80 columns: compact box with stacked single-row buttons that fit 60x20. */
+
+AbortConfirmationScreen.-confirm-narrow #confirm-box {
+    padding: 0 1;
+}
+
+AbortConfirmationScreen.-confirm-narrow .actions {
+    layout: vertical;
+    align-horizontal: left;
+}
+
+AbortConfirmationScreen.-confirm-narrow .actions Button {
+    width: 1fr;
+    height: 1;
+    min-width: 0;
+    margin-left: 0;
+    margin-bottom: 1;
+    border: none;
+}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,6 +32,9 @@ class SlashSuggestionStateDAO(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["slash", "path"] = Field(
+        default="slash", description="Completion source and acceptance policy."
+    )
     visible: bool = False
     replacement_start: int = 0
     replacement_end: int = 0
@@ -78,6 +81,19 @@ class SlashSuggestionEngine:
         self._registry: SlashCommandRegistry = registry
         self._recent_models: list[str] = []
 
+    def owns_arguments(self, *, buffer_text: str) -> bool:
+        """Reserve enumerated command arguments before filesystem detection.
+
+        Args:
+            buffer_text: Full prompt, including any leading whitespace.
+
+        Returns:
+            Whether a registered command owns argument completion, even with no matches.
+        """
+        token, separator, _ = buffer_text.lstrip().partition(" ")
+        command = self._registry.resolve(token=token.removeprefix("/"))
+        return bool(token.startswith("/") and separator and command and command.argument_mode == "enumerated")
+
     def record_selection(self, *, model_name: str) -> None:
         """Remember at most five successful session-local selections without persistence."""
         self._recent_models = [model_name] + [name for name in self._recent_models if name != model_name][:4]
@@ -88,7 +104,10 @@ class SlashSuggestionEngine:
         buffer_text: str,
         active_model_name: str,
     ) -> SlashSuggestionStateDAO:
-        """Return the suggestion state for the current buffer.
+        """Return command-token or model-argument suggestions for the current buffer.
+
+        Once arguments begin, command rows must not intercept Tab: arguments
+        without enumerated rows leave discovery to the path-completion owner.
 
         Args:
             buffer_text (str): Current prompt buffer.
@@ -118,6 +137,8 @@ class SlashSuggestionEngine:
                     "replacement_end": state.replacement_end + offset,
                 }
             )
+        if has_space:
+            return SlashSuggestionStateDAO(visible=False)
         return self._command_state(command_query=command_query)
 
     @staticmethod

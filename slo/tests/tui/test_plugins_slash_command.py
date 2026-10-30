@@ -77,6 +77,7 @@ async def test_plugins_lists_health_lines(tmp_path: Path) -> None:
     )
 
     result = await SlashRouter.dispatch(line="/plugins", session=session)
+    assert result.rendered is not None
 
     assert "alpha" in result.rendered
     assert "loaded" in result.rendered
@@ -92,6 +93,7 @@ async def test_plugins_reports_empty_when_none_loaded(tmp_path: Path) -> None:
     )
 
     result = await SlashRouter.dispatch(line="/plugins", session=session)
+    assert result.rendered is not None
 
     assert "no plugins" in result.rendered.lower()
 
@@ -109,6 +111,7 @@ async def test_plugins_reload_drops_registrations_of_removed_plugin(tmp_path: Pa
 
     plugin_path.unlink()
     result = await SlashRouter.dispatch(line="/plugins reload", session=session)
+    assert result.rendered is not None
 
     reports = session.plugin_health_reports()
     assert [report.status.value for report in reports] == ["load_failed"]
@@ -130,6 +133,7 @@ async def test_plugins_trust_records_project_and_reloads(tmp_path: Path) -> None
     assert session.plugin_health_reports() == []
 
     result = await SlashRouter.dispatch(line="/plugins trust", session=session)
+    assert result.rendered is not None
 
     assert "trust" in result.rendered.lower()
     assert "proj" in result.rendered

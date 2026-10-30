@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
+from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -74,6 +76,7 @@ def _build_service(*, store: WorkflowHandleStore) -> DetachedWorkflowAppService:
     return DetachedWorkflowAppService(
         workflow_handle_store=store,
         owner_session_id=_OWNER_SESSION_ID,
+        attached_snapshot=AttachedDispatchSnapshotDAO.empty,
     )
 
 
@@ -115,9 +118,9 @@ class TestReconcileSnapshot:
         store: WorkflowHandleStore = _build_store(history_root=tmp_path)
         service: DetachedWorkflowAppService = _build_service(store=store)
         service._workflow_states = {"wf-seeded": "running"}
-        store.reconcile = AsyncMock(side_effect=OSError("disk gone"))
-
-        snapshot: dict[str, WorkflowState] = await service.reconcile_snapshot()
+        reconcile: AsyncMock = AsyncMock(spec=store.reconcile, side_effect=OSError("disk gone"))
+        with patch.object(target=store, attribute="reconcile", new=reconcile):
+            snapshot: dict[str, WorkflowState] = await service.reconcile_snapshot()
 
         assert snapshot == {"wf-seeded": "running"}
 
@@ -142,7 +145,11 @@ class TestAdvanceFromInboxMessage:
         )
 
         assert outcome == HandleAdvanceOutcomeDAO(workflow_id="wf-1")
-        assert service.fleet_update_for(workflow_id="wf-1") == ParsedFleetUpdateDAO(**payload)
+        assert service.fleet_update_for(workflow_id="wf-1") == ParsedFleetUpdateDAO(
+            workflow_id="wf-1",
+            entries=[{"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}],
+            live_count=1,
+        )
         handle = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-1")
         assert handle is not None
         assert handle.state == "launching"
@@ -270,12 +277,14 @@ class TestAdvanceFromInboxMessage:
         """Unknown workflows and illegal transitions never fail delivery."""
         store: WorkflowHandleStore = _build_store(history_root=tmp_path)
         service: DetachedWorkflowAppService = _build_service(store=store)
-        store.update_state = AsyncMock(side_effect=FileNotFoundError("wf-missing"))
-
-        outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
-            kind="workflow_started",
-            payload=_lifecycle_payload(),
+        update_state: AsyncMock = AsyncMock(
+            spec=store.update_state, side_effect=FileNotFoundError("wf-missing")
         )
+        with patch.object(target=store, attribute="update_state", new=update_state):
+            outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
+                kind="workflow_started",
+                payload=_lifecycle_payload(),
+            )
 
         assert outcome.advanced_handle is False
         assert outcome.effects == []
@@ -311,7 +320,10 @@ class TestAdvanceFromLaunchResult:
             ),
         )
 
-        assert outcome == "launched"
+        assert len(outcome.effects) == 1
+        assert outcome.effects[0].effect == "launch_visualizer"
+        assert outcome.effects[0].orchestrator_session_id == "orch-1"
+        assert outcome.advanced_handle is False
         labels: List[LiveWorkflowLabelDAO] = service.live_workflow_labels()
         assert [(label.workflow_id, label.state) for label in labels] == [("wf-9a1b", "launching")]
 
@@ -324,7 +336,10 @@ class TestAdvanceFromLaunchResult:
             result_text='{"orchestrator_session_id": "orch-1"}',
         )
 
-        assert outcome == "launched"
+        assert len(outcome.effects) == 1
+        assert outcome.effects[0].effect == "launch_visualizer"
+        assert outcome.effects[0].orchestrator_session_id == "orch-1"
+        assert outcome.advanced_handle is False
         assert service.live_workflow_labels() == []
 
     def test_malformed_json_is_ignored(self, tmp_path: Path) -> None:
@@ -332,7 +347,7 @@ class TestAdvanceFromLaunchResult:
         store: WorkflowHandleStore = _build_store(history_root=tmp_path)
         service: DetachedWorkflowAppService = _build_service(store=store)
 
-        assert service.advance_from_launch_result(result_text="not json {") == "ignored"
+        assert service.advance_from_launch_result(result_text="not json {").effects == []
 
     def test_error_json_is_ignored(self, tmp_path: Path) -> None:
         """Error JSON never seeds the cache and never launches."""
@@ -343,7 +358,7 @@ class TestAdvanceFromLaunchResult:
             result_text='{"error": "workflow cap reached"}',
         )
 
-        assert outcome == "ignored"
+        assert outcome.effects == []
         assert service.live_workflow_labels() == []
 
 
@@ -373,4 +388,47 @@ class TestLiveWorkflowLabels:
         store: WorkflowHandleStore = _build_store(history_root=tmp_path)
         service: DetachedWorkflowAppService = _build_service(store=store)
 
+        assert service.live_workflow_labels() == []
+
+
+class TestObservationConstruction:
+    """The extended constructor binds collaborators without starting I/O (feature 94 a.2)."""
+
+    def test_constructor_performs_no_io(self) -> None:
+        """Construction never reads the supplier, the handle store or the history store."""
+        supplier: MagicMock = MagicMock(return_value=AttachedDispatchSnapshotDAO.empty())
+        store: MagicMock = MagicMock(spec=WorkflowHandleStore)
+        history_store: MagicMock = MagicMock(spec=SessionHistoryStoreProtocol)
+        capability: MagicMock = MagicMock(return_value=None)
+
+        DetachedWorkflowAppService(
+            workflow_handle_store=store,
+            owner_session_id=_OWNER_SESSION_ID,
+            attached_snapshot=supplier,
+            history_store=history_store,
+            attached_abort=AsyncMock(),
+            attached_capability=capability,
+        )
+
+        assert supplier.call_count == 0
+        assert store.method_calls == []
+        assert history_store.method_calls == []
+        assert capability.call_count == 0
+
+    async def test_lifecycle_without_handle_store_is_safe_noop(self) -> None:
+        """A no-history service keeps every lifecycle method a safe no-effect outcome."""
+        service: DetachedWorkflowAppService = DetachedWorkflowAppService(
+            workflow_handle_store=None,
+            owner_session_id=_OWNER_SESSION_ID,
+            attached_snapshot=AttachedDispatchSnapshotDAO.empty,
+        )
+
+        reconciled: dict[str, WorkflowState] = await service.reconcile_snapshot()
+        outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
+            kind="workflow_started",
+            payload=_lifecycle_payload(),
+        )
+
+        assert reconciled == {}
+        assert outcome == HandleAdvanceOutcomeDAO(workflow_id="wf-1")
         assert service.live_workflow_labels() == []

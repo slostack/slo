@@ -121,7 +121,16 @@ def test_child_contract_explains_payload_and_inheritance_boundaries() -> None:
 @pytest.mark.parametrize("native", [None, []])
 def test_empty_native_uses_legacy_shared_validation(native: list[dict[str, object]] | None) -> None:
     """Both absent native shapes recover legacy objects and validate the same DAO."""
-    legacy = json.dumps([{"task_id": "legacy", "prompt": "text", "reasoning_level": "high"}])
+    legacy = json.dumps(
+        [
+            {
+                "task_id": "legacy",
+                "task_summary": "Check child reasoning compatibility",
+                "prompt": "text",
+                "reasoning_level": "high",
+            }
+        ]
+    )
     resolved = resolve_sub_agent_tasks(tasks=native, tasks_json=legacy)
     assert resolved.error is None
     assert resolved.tasks[0].reasoning_level == "high"
@@ -131,8 +140,16 @@ def test_empty_native_uses_legacy_shared_validation(native: list[dict[str, objec
 @pytest.mark.parametrize("invalid", [{"reasoning": "high"}, {"reasoning_level": "HIGH"}])
 def test_invalid_native_never_rescues_with_legacy(invalid: dict[str, str]) -> None:
     """Unknown keys and noncanonical literals fail on both input paths."""
-    task = {"task_id": "native", "prompt": "text", **invalid}
-    native = resolve_sub_agent_tasks(tasks=[task], tasks_json='[{"task_id":"valid","prompt":"x"}]')
+    task = {
+        "task_id": "native",
+        "task_summary": "Check child reasoning compatibility",
+        "prompt": "text",
+        **invalid,
+    }
+    native = resolve_sub_agent_tasks(
+        tasks=[task],
+        tasks_json='[{"task_id":"valid","task_summary":"Check child reasoning compatibility","prompt":"x"}]',
+    )
     legacy = resolve_sub_agent_tasks(tasks=None, tasks_json=json.dumps([task]))
     assert native.error is not None
     assert native.error.startswith("Invalid task definition:")
@@ -157,18 +174,30 @@ def test_missing_payload_returns_exact_error(
 @pytest.mark.parametrize("level", ["omitted", None, *CANONICAL_REASONING_LEVEL_ORDER])
 def test_resolved_task_reasoning_reaches_child_argv(level: str | None) -> None:
     """Exercise resolver, DAO and real argv builder without spawning a process."""
-    raw: dict[str, object] = {"task_id": "child", "prompt": "text", "model": "gpt-6-astra"}
+    raw: dict[str, object] = {
+        "task_id": "child",
+        "task_summary": "Check child reasoning compatibility",
+        "prompt": "text",
+        "model": "gpt-6-astra",
+    }
     if level != "omitted":
         raw["reasoning_level"] = level
     resolved = resolve_sub_agent_tasks(tasks=[raw], tasks_json=None)
     assert resolved.error is None
     task = resolved.tasks[0]
+    registry = ProcessRegistry()
+    dispatch_id = "44444444-4444-4444-8444-444444444444"
+    registry.begin_dispatch(dispatch_id=dispatch_id)
+    execution_id = registry.register(
+        dispatch_id=dispatch_id, task_id=task.task_id, session_id="child-test", task=task
+    )
     argv = SubAgentProcess(
         task=task,
         session_id="child-test",
         model=task.model,
         relay=AsyncMock(),
-        registry=ProcessRegistry(),
+        registry=registry,
+        execution_id=execution_id,
     )._build_argv()
     assert argv[argv.index("--model") + 1] == "gpt-6-astra"
     if level in {"omitted", None}:
@@ -180,9 +209,10 @@ def test_resolved_task_reasoning_reaches_child_argv(level: str | None) -> None:
 
 
 def test_native_document_examples_pass_real_resolver() -> None:
-    """Parsed documentary objects must satisfy production task validation."""
+    """Historic reasoning examples require explicit summary adaptation for the new schema."""
     for raw in _example_tasks():
-        resolved = resolve_sub_agent_tasks(tasks=[raw], tasks_json="not JSON")
+        adapted = {**raw, "task_summary": "Check documented child reasoning compatibility"}
+        resolved = resolve_sub_agent_tasks(tasks=[adapted], tasks_json="not JSON")
         assert resolved.error is None
         assert resolved.recovery_notes == []
         assert resolved.tasks[0].model == raw["model"]

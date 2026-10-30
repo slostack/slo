@@ -101,7 +101,7 @@ routing hints below.
    - `integration-tests` for cross-service scenarios and flaky-test debugging.
    - `frontend-vue` for Vue conventions and tutorials.
 4. **Load companion skills only when the main skill calls for them.**
-   - Example: `feature-specifications` owns context gathering and self-check; independent verification is separate.
+   - Example: `feature-specifications` writes the overview, `breakdown-feature-spec-to-tasks` the sub-specs; independent verification of the family is separate.
    - Example: integration-test authoring starts with `10-cardinal-rules-and-anti-patterns` before scenario-specific prompts.
 5. **Return only the next best skills.**
    Prefer a short ordered list over a long exhaustive catalog.
@@ -111,8 +111,8 @@ routing hints below.
 ### Feature work
 
 - Implementation request for a feature or story → `implement-feature-request`
-- Need to draft a spec only → `feature-specifications` (Gather context → Draft → Self-check → Revise)
-- Need to break an approved spec into tasks → `breakdown-feature-spec-to-tasks`
+- Need to draft a spec overview only → `feature-specifications` (writes `overview.md`)
+- Need to expand an overview into standalone engineering sub-specs → `breakdown-feature-spec-to-tasks`
 - Need to review shipped code against a spec → `review-feature-code`
 
 ### Backend / coding conventions

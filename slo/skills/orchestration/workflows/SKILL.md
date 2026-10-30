@@ -46,7 +46,7 @@ roster is here:
 
 | Workflow file | Type | Sub-skills it sequences |
 |---|---|---|
-| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications-pre-hook`, `feature-specifications`, `feature-specifications-post-hook`, `feature-specification-verification`, `breakdown-feature-spec-to-tasks` |
+| [specification-development.md](specification-development.md) | Pipeline | `feature-specifications` (overview), `breakdown-feature-spec-to-tasks` (sub-specs), `feature-specification-verification` (family review); optional `gather-feature-context` |
 | [code-test-review.md](code-test-review.md) | Pipeline | `code-test-loop`, `review-feature-code`, `is-the-feature-completed` (+ engineering-routing, shared testing, scoped language conventions) |
 | [gitlab-code-test-review.md](gitlab-code-test-review.md) | Pipeline | Code-Test-Review sub-skills + `git-ops/gitlab-issues`, `git-ops/ship-feature` |
 
@@ -131,7 +131,7 @@ Regardless of workflow type, these rules are non-negotiable:
 
 3. **Each step must complete before the next begins (Pipeline).** Completing a step means: the step's prompt has been executed fully, its outputs exist in the conversation, and its READY artifacts have been verified.
 
-4. **Context accumulates across steps.** The agent carries forward everything produced by prior steps — context bundles, PRE-hook outputs, verification reports, task lists. Later steps should explicitly reference earlier outputs rather than re-deriving them from scratch.
+4. **Maintain a current handoff across steps.** Preserve detailed artifacts, but pass a compact current-state record with authoritative references, acceptance IDs, decisions, blockers and evidence validity. Reuse unchanged prerequisites rather than re-deriving or rereading all historical reports. Each agent still reads authoritative guidance relevant to its assignment.
 
 5. **No step may be skipped.** A step that produces no useful output for a particular feature is still executed — it simply returns a minimal output (e.g. "Granularity: OK — no split needed"). The workflow steps are always executed; the outputs vary by feature.
 
@@ -151,7 +151,7 @@ span multiple workflow turns.
 | Workflow | Stages belonging to one workflow turn |
 |---|---|
 | Code + Test + Review | Code and test → review; include the completion check when required |
-| Specification Development | Context and specification with PRE/POST hooks → independent verification → task breakdown |
+| Specification Development | Overview → standalone engineering sub-specs → family verification (REVISE loops back to the owning step) |
 | Parallel workflow | All required branches → synthesis and any required review |
 
 The actual workflow file defines the stages. Do not omit a completion check just
@@ -248,6 +248,42 @@ Totals: 2 turns started, 1 complete, 1 partial. Final verdict: COMPLETE.
 Dispatch calls per turn and failed-task retries: reported separately.
 ```
 
+
+---
+
+### Convergence checkpoint
+
+Maintain a progress ledger separate from execution counters: original acceptance
+IDs closed/remaining, runnable journeys, open blockers and their age (dispatches
+since discovery), latest verification evidence, and turn/dispatch/retry counts.
+Do not inflate progress by splitting a requirement into cosmetic sub-items.
+
+After three continuations without closing an acceptance item, diagnose progress
+before another implementation dispatch. This is not an execution cap and applies
+even with unlimited budgets. Identify oversized scope, missing prerequisites,
+repeated context discovery, test-harness expansion or an ineffective repair strategy.
+Record the cause and a changed plan with an explicit closure target. Continue when
+there is a justified, authorized next action; ask only for a blocking decision or
+report a genuine blocker. Do not stop solely because the checkpoint fired.
+
+Each dispatch names the acceptance ID, current evidence, missing behavior, owned
+boundaries, test commands and closure target. Keep implementation and its tests
+together; avoid vague "continue until done" handoffs. For INCOMPLETE distinguish:
+useful progress with a precise remainder; missing dependency/decision; execution
+failure; or no substantive progress. Address the cause rather than automatically
+repeating the same prompt. Execution retries and aborts retain their existing rules.
+
+Keep a record of prior checkpoints to expose repeated ineffective replanning;
+do not reset turn, dispatch or retry counters, waive scope, bypass independent review,
+or manufacture READY. Progress metrics are evidence of closed acceptance work,
+not agents completed, test counts or report volume. These are prompt-level guidance,
+not runtime-enforced counters or a promise of fewer dispatches.
+
+A named workflow may define bounded advisory feedback within implementation.
+That checkpoint is not the formal review phase or permission to advance an unmet
+gate; final independent review and required completion checks remain mandatory.
+It does not grant permission to spawn agents. Report unavailable independent review
+and obtain the needed authorization/reviewer instead of claiming solo independence.
 
 ---
 

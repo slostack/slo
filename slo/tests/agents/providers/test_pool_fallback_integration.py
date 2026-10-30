@@ -94,7 +94,7 @@ def _pool(
     )
 
 
-_MESSAGES: list[HumanMessage] = [HumanMessage(content="hello")]
+_MESSAGES: list[BaseMessage] = [HumanMessage(content="hello")]
 
 
 def _classify_side_effect(*, error: Exception, provider: ProviderName) -> ProviderErrorKind:
@@ -142,14 +142,15 @@ class TestPoolPrimarySucceeds:
         )
         result = pool._generate(messages=_MESSAGES)
         assert result.generations[0].message.content == "I am the primary"
-        assert pool._models["gpt-secondary"]._call_count == 0
+        secondary = pool._models["gpt-secondary"]
+        assert isinstance(secondary, FauxChatModel)
+        assert secondary._call_count == 0
 
 
 class TestPoolFallback:
     def test_secondary_used_when_primary_exhausted(self) -> None:
         """Credit exhaustion on primary routes the call to secondary."""
         primary: FauxChatModel = FauxChatModel(responses=[])
-        primary._generate = lambda *a, **kw: (_ for _ in ()).throw(_CreditError())
 
         secondary: FauxChatModel = _faux(responses=["from secondary"])
         dao: ModelPoolDAO = ModelPoolDAO(
@@ -173,14 +174,14 @@ class TestPoolFallback:
             models={"claude-primary": primary, "gpt-secondary": secondary},
         )
 
-        result = pool._generate(messages=_MESSAGES)
+        with patch.object(primary, "_generate", side_effect=_CreditError()):
+            result = pool._generate(messages=_MESSAGES)
         assert result.generations[0].message.content == "from secondary"
         assert "claude-primary" in pool._cooldowns
 
     def test_primary_is_cooled_after_exhaustion(self) -> None:
         """Primary cooldown timestamp is in the future after credit exhaustion."""
         primary: FauxChatModel = FauxChatModel(responses=[])
-        primary._generate = lambda *a, **kw: (_ for _ in ()).throw(_CreditError())
         secondary: FauxChatModel = _faux(responses=["ok"])
 
         dao: ModelPoolDAO = ModelPoolDAO(
@@ -203,7 +204,8 @@ class TestPoolFallback:
             pool_dao=dao,
             models={"claude-primary": primary, "gpt-secondary": secondary},
         )
-        pool._generate(messages=_MESSAGES)
+        with patch.object(primary, "_generate", side_effect=_CreditError()):
+            pool._generate(messages=_MESSAGES)
         assert pool._cooldowns.get("claude-primary", 0) > time.monotonic()
 
 
@@ -221,7 +223,6 @@ class TestPoolTransientProviderFailure:
     def test_switches_to_fallback_when_primary_returns_http_503(self) -> None:
         """A switchable transient 503 cools the primary model and uses the fallback."""
         primary: FauxChatModel = FauxChatModel(responses=[])
-        primary._generate = lambda *a, **kw: (_ for _ in ()).throw(_NetworkError())
         secondary: FauxChatModel = _faux(responses=["never"])
 
         dao: ModelPoolDAO = ModelPoolDAO(
@@ -242,7 +243,8 @@ class TestPoolTransientProviderFailure:
             pool_dao=dao,
             models={"claude-primary": primary, "gpt-secondary": secondary},
         )
-        result = pool._generate(messages=_MESSAGES)
+        with patch.object(primary, "_generate", side_effect=_NetworkError()):
+            result = pool._generate(messages=_MESSAGES)
 
         assert result.generations[0].message.content == "never"
         assert pool._cooldowns.get("claude-primary", 0) > time.monotonic()

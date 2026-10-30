@@ -187,27 +187,29 @@ schema = LocalSearchSchemaDAO(query="test")
 
 The same conventions apply in test code. Tests should be as readable as production code.
 
+- What to test and which doubles to use is owned by `skills/coding/test-verification-policy/SKILL.md`: real `async_db_session`, real services, no `MagicMock` / `AsyncMock` for internal code.
+
 ```python
 # --- Good: named arguments and type hints in tests ---
 
 class TestLocalSearchToolSearch:
     @pytest.mark.asyncio
-    async def test_returns_mapped_daos(self):
-        mock_session: MagicMock = MagicMock()
-        doc: MagicMock = _build_document(title="AI in Radiology", summary="Deep learning")
+    async def test_search_returns_matching_document_when_it_is_stored(self, async_db_session: AsyncSession) -> None:
+        """A stored document is found by query and mapped to a LocalSearchResultDAO."""
+        await DocumentService.build_and_create(
+            db_session=async_db_session,
+            title="AI in Radiology",
+            summary="Deep learning",
+        )
 
-        with patch("src.agents.tools.local_search.DocumentService") as MockService:
-            MockService.search_by_query = AsyncMock(return_value=[doc])
+        results: List[LocalSearchResultDAO] = await LocalSearchTool._search(
+            query="AI in Radiology",
+            limit=10,
+            max_distance=None,
+            db_session=async_db_session,
+        )
 
-            results: List[LocalSearchResultDAO] = await LocalSearchTool._search(
-                query="medical imaging AI",
-                limit=10,
-                max_distance=None,
-                db_session=mock_session,
-            )
-
-        assert isinstance(results, list)
-        assert results[0].title == "AI in Radiology"
+        assert [result.title for result in results] == ["AI in Radiology"]
 ```
 
 ---

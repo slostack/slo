@@ -75,6 +75,8 @@ async def test_large_image_executor_trace_persists_reference_not_base64(tmp_path
 
     _, message = await executor._invoke_one(envelope=envelope)
     reference: str = message.additional_kwargs["image_reference"]
+    assert isinstance(message.content, list)
+    assert isinstance(message.content[0], dict)
     data: str = message.content[0]["source"]["data"]
     decoded: bytes = base64.b64decode(data)
 

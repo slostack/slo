@@ -231,6 +231,7 @@ class SloAgent:
         self._last_assistant_text: str = ""
         self._last_usage_totals: TokenUsageTotalsDAO = TokenUsageTotalsDAO()
         self._usage_capture_version: int = 0
+        self._pending_usage_totals: TokenUsageTotalsDAO = TokenUsageTotalsDAO()
         self._current_iteration: int = 0
         self._recovery_budget: int = 2
         """Maximum LLM-driven recoveries per submitted prompt. Default 2."""
@@ -374,25 +375,46 @@ class SloAgent:
         """
         return self._usage_capture_version
 
-    def _capture_usage_from_completed_turn(self, *, turn: TurnStreamAccumulator) -> None:
-        """Capture usage metadata from the turn's completed assistant message.
+    def consume_completed_usage(self) -> TokenUsageTotalsDAO:
+        """Transfer unconsumed completed usage to the session's sole totals owner.
 
-        Args:
-            turn (TurnStreamAccumulator): Completed turn accumulator.
+        The session drains this fixed-size aggregate synchronously at refresh and
+        finalization boundaries. It survives run resets and interruptions until
+        consumed; latest-update display and capture version remain unchanged.
+        This is a single-consumer handoff, not a cumulative agent counter.
+
+        Returns:
+            TokenUsageTotalsDAO: Known fields since the previous drain, or unknowns.
         """
-        completed_assistant_message: Optional[AIMessage] = turn.completed_assistant_message
-        if completed_assistant_message is None:
-            return
-        self._capture_completed_usage(message=completed_assistant_message)
+        pending = self._pending_usage_totals
+        self._pending_usage_totals = TokenUsageTotalsDAO()
+        return pending
 
     def _capture_completed_usage(self, *, message: AIMessage) -> None:
-        """Extract usage metadata from one completed assistant message.
+        """Capture a single completed response through the node-delta boundary."""
+        self._capture_completed_update_usage(messages=[message])
 
-        Args:
-            message (AIMessage): Completed assistant message.
+    def _capture_completed_update_usage(self, *, messages: list[BaseMessage]) -> None:
+        """Capture one completed node delta before its public event boundary.
+
+        Updates contain new completed messages, not cumulative stream chunks.
+        Retain their sum until the session drains it, even when several updates
+        arrive without public events. Latest-update display remains independent.
         """
+        completed = [message for message in messages if isinstance(message, AIMessage)]
+        if not completed:
+            return
+        totals = TokenUsageTotalsDAO()
+        for message in completed:
+            totals = totals.add(other=self._usage_from_completed_message(message=message))
+        self._last_usage_totals = totals
+        self._pending_usage_totals = self._pending_usage_totals.add(other=totals)
+        self._usage_capture_version += 1
+
+    def _usage_from_completed_message(self, *, message: AIMessage) -> TokenUsageTotalsDAO:
+        """Extract provider-supplied totals without estimating missing fields."""
         usage_metadata: dict[str, object] = dict(message.usage_metadata or {})
-        next_totals: TokenUsageTotalsDAO = TokenUsageTotalsDAO(
+        return TokenUsageTotalsDAO(
             input_tokens=int_or_none(value=usage_metadata.get("input_tokens")),
             output_tokens=int_or_none(value=usage_metadata.get("output_tokens")),
             total_tokens=int_or_none(value=usage_metadata.get("total_tokens")),
@@ -403,10 +425,6 @@ class SloAgent:
                 value=usage_metadata.get("cache_read_input_tokens"),
             ),
         )
-        if next_totals == self._last_usage_totals:
-            return
-        self._last_usage_totals = next_totals
-        self._usage_capture_version += 1
 
     # ---- Run-lifecycle helpers (extracted from invoke) -------------------------
 
@@ -562,7 +580,7 @@ class SloAgent:
     ) -> list[AgentStreamEventDAO]:
         """Process one ``messages``-mode chunk from the LangGraph stream.
 
-        Captures token usage from the chunk, feeds it to the normalizer to produce
+        Feeds the chunk to the normalizer to produce
         normalized stream events, emits stream-level trace events for each, and
         returns the full list so the caller can yield and inspect visibility.
 
@@ -574,7 +592,7 @@ class SloAgent:
         Returns:
             list[AgentStreamEventDAO]: Normalized stream events produced by this chunk.
         """
-        self._capture_completed_usage(message=chunk)
+        # Chunk usage can be incremental; only the completed update owns a capture.
         stream_events: list[AgentStreamEventDAO] = normalizer.absorb_chunk(chunk=chunk)
         for event in stream_events:
             await self._emit_stream_trace_event(
@@ -621,6 +639,8 @@ class SloAgent:
 
         accumulated_messages.extend(delta_messages)
         turn.absorb_messages(messages=delta_messages)
+        # Provider completion is already observed; trace/history awaits may cancel.
+        self._capture_completed_update_usage(messages=delta_messages)
 
         for trace_event in self._trace_events_from_messages(messages=delta_messages):
             await self._emit_trace_event(runtime_handler=runtime_handler, event=trace_event)
@@ -628,7 +648,6 @@ class SloAgent:
         events: list[AgentStreamEventDAO] = []
         for message in delta_messages:
             if isinstance(message, AIMessage):
-                self._capture_completed_usage(message=message)
                 for closing_event in normalizer.finalize_open_blocks(
                     completed_assistant_message=message,
                 ):
@@ -797,7 +816,7 @@ class SloAgent:
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Perform post-iteration housekeeping and yield any remaining closing events.
 
-        Captures token usage from the completed turn, finalizes any still-open
+        Usage is already captured at the update boundary. Finalizes any still-open
         normalizer blocks (yielding their closing stream events and emitting
         stream-level trace events), and updates ``self._last_assistant_text``.
 
@@ -813,7 +832,6 @@ class SloAgent:
             AgentStreamEventDAO: Closing stream events for any still-open blocks.
                 Yields nothing when all blocks were cleanly closed during streaming.
         """
-        self._capture_usage_from_completed_turn(turn=turn)
         for closing_event in normalizer.finalize_open_blocks(
             completed_assistant_message=turn.completed_assistant_message,
         ):

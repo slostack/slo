@@ -1,0 +1,7 @@
+tests/agents/providers/test_anthropic_claude_code.py
+tests/agents/providers/test_anthropic_reasoning.py
+tests/agents/providers/test_credit_exhaustion_policy.py
+tests/agents/providers/test_faux.py
+tests/agents/providers/test_openrouter_nonstream_boundary.py
+tests/agents/providers/test_pool_fallback_integration.py
+tests/agents/test_base.py

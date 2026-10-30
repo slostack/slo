@@ -28,6 +28,12 @@ source_prompt: test-controllers.md
 
 **Applicability:** Python only; framework-specific sections apply only when that stack is in the project. Load `skills/languages/python/python-conventions/SKILL.md` and `skills/engineering/engineering-testing/SKILL.md` for shared obligations and test-category selection.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test. This recipe covers Python fixtures and syntax only.
+
+- This recipe is level 1 (journey: HTTP → router → application service → domain service → database) in the policy's test levels.
+- Doubles: real database; mocks only for third-party API clients; stubs for internal collaborators, passed in through constructors.
+- Coverage: follow the policy's "What Must Be Tested". Do not restate it here.
+
 How to write transactional, end-to-end controller (FastAPI router) tests in
 the standard service layer style. These tests boot the real FastAPI app, swap in the
 test `AsyncSession`, hit the route over HTTP via `httpx.AsyncClient`, and
@@ -369,7 +375,7 @@ await async_db_session.flush()
 
 ## 10. What every controller test must cover
 
-For each route, write at least the following tests. One test per branch.
+Coverage follows the policy's "What Must Be Tested". For each route, FastAPI-specific cases are:
 
 | Branch | Test |
 |---|---|
@@ -416,9 +422,9 @@ PR — see `skills/coding/test-verification-policy/SKILL.md`.
   Assert the specific fields that prove behavior.
 - **Using `requests` or `httpx.Client` (sync)** — the app is async; use
   `httpx.AsyncClient` with `app=...` for in-process ASGI.
-- **Mocking domain services in a controller test** — controller tests are
-  end-to-end against a real DB. If you find yourself patching the service
-  layer, write an application service test instead.
+- **Mocking services or the database in a controller test** — forbidden by
+  the policy's "Test doubles". Controller tests are journey tests against a
+  real database.
 - **Skipping the `errors.code` assertion on failure paths** — `errors.code`
   is the API contract; the human-readable `msg` is not.
 
@@ -444,5 +450,5 @@ Before marking a controller test complete:
       specific `data` fields (on success)
 - [ ] For mutating routes, post-call DB state is asserted via
       `async_db_session.refresh(...)` then field-level checks
-- [ ] One test per decision point in the controller and per documented
-      error code
+- [ ] Each documented error code is triggered once, and coverage and doubles
+      pass the checklist in `skills/coding/test-verification-policy/SKILL.md`

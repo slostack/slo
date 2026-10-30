@@ -1,0 +1,1 @@
+python -m pytest -q tests/agents/slo_agent/herdr tests/agents/providers/test_faux.py tests/tui/test_herdr_init_ownership.py tests/tui/test_herdr_init_rollback.py tests/tui/test_herdr_initialization.py 

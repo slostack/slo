@@ -1,13 +1,17 @@
 """Unit tests for CompactedSessionUpdater.
 
-All tests use a lightweight in-memory mock store. No filesystem I/O, no LLM
-calls. CompactionResult is constructed inline; the test does not import from
-compacter.py to avoid a dependency on the LLM layer.
+Tests use the real CompactionResult and a complete temp-rooted store with an
+in-memory append recorder. No LLM is constructed or called.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+
+from src.agents.slo_agent.compaction.compacter import CompactionResult
+from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 
 from src.agents.slo_agent.compaction.compacted_session_updater import (
     CompactedSessionUpdater,
@@ -17,43 +21,13 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventPayloadDAO,
 )
 
-# ---------------------------------------------------------------------------
-# Minimal CompactionResult stand-in (avoids importing the LLM-dependent compacter)
-# ---------------------------------------------------------------------------
 
+class _InMemoryStore(FilesystemSessionHistoryStore):
+    """Complete temp-rooted store with an in-memory append recorder."""
 
-class _CompactionResult:
-    """Minimal stand-in for CompactionResult used in tests."""
-
-    def __init__(
-        self,
-        *,
-        summary_text: str,
-        first_kept_entry_id: str,
-        cut_point_entry_id: str,
-        tokens_before: int,
-        tokens_after: int,
-    ) -> None:
-        self.summary_text = summary_text
-        self.first_kept_entry_id = first_kept_entry_id
-        self.cut_point_entry_id = cut_point_entry_id
-        self.tokens_before = tokens_before
-        self.tokens_after = tokens_after
-
-
-# ---------------------------------------------------------------------------
-# Minimal async mock store
-# ---------------------------------------------------------------------------
-
-
-class _InMemoryStore:
-    """Minimal async mock store accumulating events in a list.
-
-    Structurally satisfies SessionHistoryStoreProtocol for the subset of
-    methods used by CompactedSessionUpdater (only append_event).
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, *, root: Path) -> None:
+        """Initialize the real store contract without activating filesystem writes."""
+        super().__init__(root=root)
         self.appended: list[SessionHistoryEventDAO] = []
         self._seq: int = 0
 
@@ -83,9 +57,9 @@ def _make_result(
     cut_point_entry_id: str = "evt-cut-point",
     tokens_before: int = 8000,
     tokens_after: int = 300,
-) -> _CompactionResult:
-    """Return a ``_CompactionResult`` with sensible defaults."""
-    return _CompactionResult(
+) -> CompactionResult:
+    """Return a ``CompactionResult`` with sensible defaults."""
+    return CompactionResult(
         summary_text=summary_text,
         first_kept_entry_id=first_kept_entry_id,
         cut_point_entry_id=cut_point_entry_id,
@@ -100,9 +74,9 @@ def _make_result(
 
 
 @pytest.mark.asyncio
-async def test_update_appends_exactly_one_event() -> None:
+async def test_update_appends_exactly_one_event(tmp_path: Path) -> None:
     """update() calls store.append_event exactly once."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     await CompactedSessionUpdater.update(
@@ -115,9 +89,9 @@ async def test_update_appends_exactly_one_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_event_has_compaction_summary_kind() -> None:
+async def test_update_event_has_compaction_summary_kind(tmp_path: Path) -> None:
     """The appended event has kind='compaction_summary'."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     await CompactedSessionUpdater.update(
@@ -130,9 +104,9 @@ async def test_update_event_has_compaction_summary_kind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_event_carries_session_id() -> None:
+async def test_update_event_carries_session_id(tmp_path: Path) -> None:
     """The appended event carries the caller-provided session_id."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     await CompactedSessionUpdater.update(
@@ -145,9 +119,9 @@ async def test_update_event_carries_session_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_payload_content_is_summary_text() -> None:
+async def test_update_payload_content_is_summary_text(tmp_path: Path) -> None:
     """payload.content is set to result.summary_text."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     summary = "Detailed conversation summary spanning multiple topics."
     result = _make_result(summary_text=summary)
 
@@ -161,9 +135,9 @@ async def test_update_payload_content_is_summary_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_payload_metadata_contains_all_four_keys() -> None:
+async def test_update_payload_metadata_contains_all_four_keys(tmp_path: Path) -> None:
     """payload.metadata has first_kept_entry_id, cut_point_entry_id, tokens_before, tokens_after."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result(
         first_kept_entry_id="evt-kept-001",
         cut_point_entry_id="evt-cut-099",
@@ -185,9 +159,9 @@ async def test_update_payload_metadata_contains_all_four_keys() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_propagates_turn_id_when_provided() -> None:
+async def test_update_propagates_turn_id_when_provided(tmp_path: Path) -> None:
     """turn_id is set on the event when the caller provides it."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     await CompactedSessionUpdater.update(
@@ -201,9 +175,9 @@ async def test_update_propagates_turn_id_when_provided() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_turn_id_none_when_omitted() -> None:
+async def test_update_turn_id_none_when_omitted(tmp_path: Path) -> None:
     """turn_id is None when not provided by the caller."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     await CompactedSessionUpdater.update(
@@ -216,9 +190,9 @@ async def test_update_turn_id_none_when_omitted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_iteration_is_zero() -> None:
+async def test_update_iteration_is_zero(tmp_path: Path) -> None:
     """Compaction events carry iteration=0 (not part of a ReAct iteration)."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     await CompactedSessionUpdater.update(
@@ -231,9 +205,9 @@ async def test_update_iteration_is_zero() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_returns_stamped_event_with_store_assigned_sequence() -> None:
+async def test_update_returns_stamped_event_with_store_assigned_sequence(tmp_path: Path) -> None:
     """update() returns the stamped event with the sequence assigned by the store."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     stamped: SessionHistoryEventDAO = await CompactedSessionUpdater.update(
@@ -247,9 +221,9 @@ async def test_update_returns_stamped_event_with_store_assigned_sequence() -> No
 
 
 @pytest.mark.asyncio
-async def test_update_sequence_increments_across_multiple_calls() -> None:
+async def test_update_sequence_increments_across_multiple_calls(tmp_path: Path) -> None:
     """Each update() call increments the sequence monotonically."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     first = await CompactedSessionUpdater.update(
@@ -268,9 +242,9 @@ async def test_update_sequence_increments_across_multiple_calls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_does_not_mutate_existing_store_events() -> None:
+async def test_update_does_not_mutate_existing_store_events(tmp_path: Path) -> None:
     """update() does not delete or modify any events already in the store."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
 
     # Seed the store with a pre-existing event via direct append
     seed_event = SessionHistoryEventDAO(
@@ -295,9 +269,9 @@ async def test_update_does_not_mutate_existing_store_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_event_has_nonempty_event_id() -> None:
+async def test_update_event_has_nonempty_event_id(tmp_path: Path) -> None:
     """The returned event has a non-empty event_id (UUID4 assigned by DAO default)."""
-    store = _InMemoryStore()
+    store = _InMemoryStore(root=tmp_path)
     result = _make_result()
 
     stamped = await CompactedSessionUpdater.update(

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import yaml
 
+from scripts.build_skill_index import _INDEX_HEADER
+from src.agents.skills.registry import SkillRegistry
 from src.agents.slo_agent.skills.service import SkillsLoader
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -13,6 +16,7 @@ SKILLS_DIR = ROOT / "skills"
 CODE_DESIGN_PATH = SKILLS_DIR / "coding/code-design-principles/SKILL.md"
 SOLUTION_DESIGN_PATH = SKILLS_DIR / "coding/solution-design/SKILL.md"
 FEATURE_SPECIFICATION_PATH = SKILLS_DIR / "design-and-analysis/feature-specifications/SKILL.md"
+EXPLAIN_WITH_HTML_PATH = SKILLS_DIR / "design-and-analysis/explain-with-html/SKILL.md"
 REQUIRED_SKILL_SECTIONS = ("## Skill summary", "## Examples", "## Guidance")
 REQUIRED_FRONTMATTER_FIELDS = {"name", "description", "when_to_use", "group", "kind"}
 
@@ -101,15 +105,13 @@ def test_merged_runtime_discovery_exposes_both_design_skills(tmp_path: Path) -> 
 
 
 def test_feature_specification_references_canonical_design_prerequisites() -> None:
-    """Feature specifications name the shared rules and the optional design companion explicitly."""
+    """The overview author links the shared design rules it specializes."""
     text = FEATURE_SPECIFICATION_PATH.read_text(encoding="utf-8")
 
-    assert "[coding rules](../../coding/coding-rules/SKILL.md)" in text
-    assert "[code design principles](../../coding/code-design-principles/SKILL.md)" in text
-    assert "[solution design](../../coding/solution-design/SKILL.md)" in text
-    assert "optional companion" in text
-    assert "not mandatory for every feature specification" in text
-
+    assert "(../../coding/coding-rules/SKILL.md)" in text
+    assert "(../../coding/code-design-principles/SKILL.md)" in text
+    assert "(../../coding/solution-design/SKILL.md)" in text
+    assert "is the rule source this skill specializes" in text
 
 def test_solution_design_requires_consent_and_forbids_implicit_implementation() -> None:
     """Solution design remains a design-only skill unless the user separately authorizes implementation."""
@@ -125,3 +127,68 @@ def test_solution_design_requires_consent_and_forbids_implicit_implementation() 
     normalized_text = " ".join(text.split())
     assert "do not implement code, write tests, edit wiring, or alter related documents" in normalized_text
     assert "unless the user separately asks for that work" in normalized_text
+
+
+def test_explain_with_html_is_discoverable_in_both_catalogs(tmp_path: Path) -> None:
+    """The authored skill is an invocable design skill in index and runtime discovery."""
+    metadata, body = _skill_parts(path=EXPLAIN_WITH_HTML_PATH)
+    assert REQUIRED_FRONTMATTER_FIELDS <= set(metadata)
+    assert metadata["name"] == "explain-with-html"
+    assert metadata["group"] == "design-and-analysis"
+    assert metadata["kind"] == "skill"
+    for section in REQUIRED_SKILL_SECTIONS:
+        assert section in body
+
+    catalog = SkillRegistry.load(skills_dir=SKILLS_DIR)
+    matches = [entry for entry in catalog if entry.name == "explain-with-html"]
+    assert len(matches) == 1
+    assert matches[0].location == "skills/design-and-analysis/explain-with-html/SKILL.md"
+    runtime = SkillsLoader.load_merged(
+        vendored_skills_dir=str(SKILLS_DIR),
+        user_skills_dir=str(tmp_path / "user_skills"),
+        user_workflows_dir=str(tmp_path / "user_workflows"),
+    )
+    runtime_matches = [entry for entry in runtime if entry.name == "explain-with-html"]
+    assert len(runtime_matches) == 1
+    assert runtime_matches[0].file_path == str(EXPLAIN_WITH_HTML_PATH)
+    assert runtime_matches[0].disable_model_invocation is False
+    expected_index = _INDEX_HEADER + SkillRegistry.format_for_prompt(skills=catalog)
+    assert (SKILLS_DIR / "INDEX.md").read_text(encoding="utf-8") == expected_index
+
+
+def test_explain_with_html_requires_design_guidance_before_layout() -> None:
+    """All three requested prerequisites are mandatory and their local links resolve."""
+    _, body = _skill_parts(path=EXPLAIN_WITH_HTML_PATH)
+    prerequisite_section = body.split("### 1.", 1)[1].split("### 2.", 1)[0]
+    assert "Read all three prerequisites in full" in prerequisite_section
+    assert "before choosing the document structure" in prerequisite_section
+    for skill in ("solution-design", "coding-rules", "code-design-principles"):
+        link = f"[{skill}](../../coding/{skill}/SKILL.md)"
+        assert link in prerequisite_section
+    for destination in re.findall(r"\]\(([^)]+)\)", body):
+        assert (EXPLAIN_WITH_HTML_PATH.parent / destination).is_file(), destination
+
+
+def test_explain_with_html_bridges_focused_concepts_to_code_journeys() -> None:
+    """The authored contract requires focused sections and connected, honest code examples."""
+    _, body = _skill_parts(path=EXPLAIN_WITH_HTML_PATH)
+    normalized = " ".join(body.split())
+    assert "one concept or one reader question" in normalized
+    assert "The final three code sections are mandatory" in normalized
+    assert body.index("**Domains as code:**") < body.index("**Interfaces as code:**")
+    assert body.index("**Interfaces as code:**") < body.index("**The journey through code:**")
+    for required in (
+        "Complete implementation is not needed",
+        "actual interface signatures",
+        "Existing source",
+        "Proposed interface",
+        "Illustrative flow",
+        "same symbols, types, example IDs, and numbered steps",
+        "result/event returns to the caller",
+        "cancellation follows its cleanup",
+        "statically baked syntax highlighting",
+        "JavaScript disabled",
+        "Do not implement application code",
+        "spawn sub-agents without separate authorization",
+    ):
+        assert required in normalized, required

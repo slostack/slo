@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Tuple, Literal
+from unittest.mock import patch
+import pytest
+from src.agents.slo_agent.herdr.dao import VisualizerLaunchOutcomeDAO
 
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowState
 from src.tui.workflows.dao import DetachedWorkflowUiEffectDAO
@@ -26,29 +29,14 @@ class _FakeNoticeSink:
         self.lines.append((content, classes))
 
 
-class _FakeLauncher:
-    """Scriptable launcher recording calls and returning a fixed outcome."""
+class _FakeScheduler:
+    """Record scheduling without executing or reporting a launch."""
 
-    def __init__(self, *, launched: bool) -> None:
-        """Fix the launch outcome.
-
-        Args:
-            launched (bool): Value every launch call returns.
-        """
-        self._launched: bool = launched
+    def __init__(self) -> None:
         self.calls: List[str] = []
 
-    def __call__(self, *, parent_session_id: str) -> bool:
-        """Record one launch call and return the scripted outcome.
-
-        Args:
-            parent_session_id (str): Detached orchestrator session id.
-
-        Returns:
-            bool: The scripted launch outcome.
-        """
+    def __call__(self, *, parent_session_id: str) -> None:
         self.calls.append(parent_session_id)
-        return self._launched
 
 
 def _launch_effect(*, orchestrator_session_id: str = "orch-1") -> DetachedWorkflowUiEffectDAO:
@@ -91,7 +79,7 @@ def _reset_effect(
 def _build_renderer(
     *,
     launched: bool = True,
-) -> tuple[DetachedWorkflowRenderer, _FakeNoticeSink, _FakeLauncher]:
+) -> tuple[DetachedWorkflowRenderer, _FakeNoticeSink, _FakeScheduler]:
     """Build a renderer wired to fresh fakes.
 
     Args:
@@ -101,10 +89,10 @@ def _build_renderer(
         tuple: ``(renderer, notice_sink, launcher)``.
     """
     sink: _FakeNoticeSink = _FakeNoticeSink()
-    launcher: _FakeLauncher = _FakeLauncher(launched=launched)
+    launcher: _FakeScheduler = _FakeScheduler()
     renderer: DetachedWorkflowRenderer = DetachedWorkflowRenderer(
         notice_sink=sink,
-        launcher=launcher,
+        schedule=launcher,
     )
     return renderer, sink, launcher
 
@@ -119,12 +107,7 @@ class TestLaunchDeDuplication:
         renderer.apply_effects(effects=[_launch_effect()])
 
         assert launcher.calls == ["orch-1"]
-        assert sink.lines == [
-            (
-                "⊇ Opened workflow visualizer in a new window (session orch-1).",
-                "sub-agent-notice",
-            )
-        ]
+        assert sink.lines == []
 
     def test_duplicate_effect_launches_only_once(self) -> None:
         """A second effect for the same session id is guarded out."""
@@ -134,7 +117,7 @@ class TestLaunchDeDuplication:
         renderer.apply_effects(effects=[_launch_effect()])
 
         assert launcher.calls == ["orch-1"]
-        assert len(sink.lines) == 1
+        assert sink.lines == []
 
     def test_distinct_session_ids_each_launch(self) -> None:
         """The guard is per orchestrator session id, not global."""
@@ -147,63 +130,48 @@ class TestLaunchDeDuplication:
         assert launcher.calls == ["orch-1", "orch-2"]
 
 
-class TestFallbackNotice:
-    """A skipped/failed spawn writes the manual visualize command."""
+class TestLaunchOutcomes:
+    """Only completed typed results produce notices."""
 
-    def test_failed_launch_writes_manual_command_hint(self) -> None:
-        """A ``False`` launch writes the ``slo visualize`` fallback line."""
-        renderer, sink, launcher = _build_renderer(launched=False)
-
+    @pytest.mark.parametrize("status", ["opened", "submitted", "reused", "failed", "skipped"])
+    def test_typed_outcomes(
+        self, status: Literal["opened", "submitted", "reused", "skipped", "failed"]
+    ) -> None:
+        renderer, sink, scheduler = _build_renderer()
         renderer.apply_effects(effects=[_launch_effect()])
-
-        assert launcher.calls == ["orch-1"]
-        assert sink.lines == [
-            (
-                "⊇ Watch the workflow live: slo visualize --session orch-1 --follow",
-                "sub-agent-notice",
-            )
-        ]
-
-
-class TestHandleLaunchResult:
-    """The launch-result path re-validates before launching."""
-
-    def test_valid_result_launches(self) -> None:
-        """A valid handle JSON opens the visualizer."""
-        renderer, _sink, launcher = _build_renderer(launched=True)
-
-        renderer.handle_launch_result(
-            result_text='{"workflow_id": "wf-1", "orchestrator_session_id": "orch-1"}',
+        renderer.write_launch_outcome(
+            parent_session_id="orch-1",
+            outcome=VisualizerLaunchOutcomeDAO(status=status, pane_id="pane-1"),
         )
-
-        assert launcher.calls == ["orch-1"]
-
-    def test_malformed_json_never_launches(self) -> None:
-        """Malformed tool-result text is a safe no-op."""
-        renderer, sink, launcher = _build_renderer(launched=True)
-
-        renderer.handle_launch_result(result_text="not json {")
-
-        assert launcher.calls == []
-        assert sink.lines == []
-
-    def test_error_json_never_launches(self) -> None:
-        """Error JSON carries no orchestrator id and never launches."""
-        renderer, sink, launcher = _build_renderer(launched=True)
-
-        renderer.handle_launch_result(result_text='{"error": "workflow cap reached"}')
-
-        assert launcher.calls == []
-        assert sink.lines == []
-
-    def test_result_shares_guard_with_lifecycle_effects(self) -> None:
-        """A launch result and a later started note launch only once."""
-        renderer, _sink, launcher = _build_renderer(launched=True)
-
-        renderer.handle_launch_result(result_text='{"orchestrator_session_id": "orch-1"}')
+        assert len(sink.lines) == 1
+        text = sink.lines[0][0]
+        assert {
+            "opened": "Opened",
+            "submitted": "Submitted",
+            "reused": "retained",
+            "failed": "failed",
+            "skipped": "skipped",
+        }[status] in text
+        if status in ("failed", "skipped", "reused"):
+            assert "slo visualize --session orch-1 --follow" in text
+        if status == "reused":
+            assert "if still present" in text
+            assert "Previously attempted" in text
+            assert "pane-1" in text
         renderer.apply_effects(effects=[_launch_effect()])
+        assert len(scheduler.calls) == (2 if status == "failed" else 1)
 
-        assert launcher.calls == ["orch-1"]
+    def test_failed_notice_still_releases_guard(self) -> None:
+        renderer, sink, scheduler = _build_renderer()
+        renderer.apply_effects(effects=[_launch_effect()])
+        with patch.object(sink, "write", side_effect=RuntimeError("notice")):
+            with pytest.raises(RuntimeError):
+                renderer.write_launch_outcome(
+                    parent_session_id="orch-1",
+                    outcome=VisualizerLaunchOutcomeDAO(status="failed"),
+                )
+        renderer.apply_effects(effects=[_launch_effect()])
+        assert scheduler.calls == ["orch-1", "orch-1"]
 
 
 class TestTerminalReset:

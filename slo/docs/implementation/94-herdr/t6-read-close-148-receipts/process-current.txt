@@ -1,0 +1,4 @@
+tests/integration/herdr_restore_process_bootstrap.py: OK
+tests/integration/herdr_restore_process_entry.py: OK
+tests/integration/test_herdr_two_process_restore.py: OK
+tests/integration/test_herdr_restore_harness_safety.py: OK

@@ -5,6 +5,9 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import httpx
+import pytest
+
+from tests.agents.retry_options import SDKRetryOptions
 
 from src.agents.base import LLMFactory
 from src.agents.model_catalog.seed import SeedModelCatalog
@@ -44,7 +47,10 @@ def _prepared_snapshot():
     return seed.model_copy(update={"entries": {**seed.entries, entry.model_name: entry}})
 
 
-def test_factory_builds_chat_completions_for_exact_openrouter_api_model_name() -> None:
+@pytest.mark.parametrize("retry_options", [{}, {"max_retries": 0}, {"max_retries": 5}])
+def test_factory_builds_chat_completions_for_exact_openrouter_api_model_name(
+    retry_options: SDKRetryOptions,
+) -> None:
     """Build the fixed gateway adapter without inheriting direct-provider defaults."""
     credential: CredentialDAO = CredentialDAO(
         provider=ProviderName.OPENROUTER,
@@ -60,12 +66,14 @@ def test_factory_builds_chat_completions_for_exact_openrouter_api_model_name() -
             model_name=_OPENROUTER_MODEL_NAME,
             http_async_client=async_client,
             snapshot=_prepared_snapshot(),
+            **retry_options,
         )
 
     assert isinstance(result.llm, OpenRouterChatOpenAI)
     assert result.llm.model_name == "vendor/exact-model"
     assert result.llm.openai_api_base == "https://openrouter.ai/api/v1"
-    assert result.llm.max_retries == 0
+    assert result.llm.max_retries == retry_options.get("max_retries", 3)
+    assert result.llm.root_async_client.max_retries == retry_options.get("max_retries", 3)
     assert result.llm.use_responses_api is False
     assert result.llm.default_headers == {
         "X-OpenRouter-Title": "Slo",

@@ -1,7 +1,6 @@
 ---
 name: code-test-loop
-description: 'Operating rhythm for coding sessions: never write a large block of code
-  without testing the last small block first. Code → test → green → next chunk.'
+description: 'Verify small observable behaviors incrementally, reuse valid evidence, and complete runnable slices before expanding scope.'
 when_to_use: Use as the default cadence whenever writing or modifying code; complements
   test-verification-policy (which dictates what must be tested) by specifying when
   those tests run.
@@ -15,7 +14,7 @@ source_prompt: code-test-loop.md
 ## Skill summary
 
 - **Name:** `code-test-loop`
-- **Description:** Operating rhythm for coding sessions: never write a large block of code without testing the last small block first. Code → test → green → next chunk.
+- **Description:** Verify small observable behaviors incrementally and complete runnable slices before expanding scope.
 - **When to use:** Use as the default cadence whenever writing or modifying code; complements test-verification-policy (which dictates what must be tested) by specifying when those tests run.
 - **Group:** `coding`
 - **Kind:** `workflow`
@@ -83,76 +82,49 @@ Only continue reading this file if:
 
 ---
 
-**The cadence:** never write a large block of code without testing the
-last small block first. Code → test → green → next chunk. Repeat.
-
-This is the operating rhythm for every coding session — solo, agentic, or
-mixed. It complements [skills/coding/test-verification-policy/SKILL.md](../test-verification-policy/SKILL.md)
-(which says *every decision point must be tested*) by specifying *when*
-those tests run during development.
-
----
+**The cadence:** select one small observable behavior → implement and test it in
+language-approved order → verify → extend. Preserve user-requested test-first.
+This skill owns cadence; [test verification](../test-verification-policy/SKILL.md)
+owns evidence adequacy. Neither replaces final review or completion.
 
 ## The rule
 
-For every coding task that produces more than ~50 lines of new code:
+1. Name the behavior, acceptance item, affected boundaries and test command before editing.
+2. Implement one bounded behavioral increment, following the selected language cadence.
+   A cohesive change may cross a few files or layers; line count is not its boundary.
+3. Reuse existing evidence where applicable, add missing assertions and run focused tests.
+4. Run affected surrounding suites at coherent checkpoints, earlier for cross-cutting changes.
+5. Extend only after the increment is verified. Run full agreed gates before final acceptance.
 
-1. **Select a small unit and its decision-path tests.** Bounded scope, single purpose.
-2. **Follow the language ordering.** Go writes the failing test first; the retained Python/TypeScript examples implement and test the same small unit.
-3. **Run the test.** Make it pass.
-4. **Run the surrounding suite** (the file's whole test module, or the
-   module's containing folder). Confirm no regressions.
-5. **Only now** start the next unit.
-
-Do NOT:
-
-- Write 500 lines of code, then write tests at the end.
-- Write tests but defer running them ("I'll run them at the end").
-- Skip "small" units — even a 20-line helper gets a test before its
-  caller is written.
-- Disable a failing test to keep moving. If it's failing, the unit
-  isn't done; fix the code or rewrite the test.
-
----
+Never bulk-write the feature and defer testing. If failures are hard to localize,
+shrink the increment. Do not disable assertions or rewrite expectations merely to
+obtain green. Classify failure as an implementation defect, incorrect test oracle,
+environment problem or reproduced baseline failure. Change an oracle only with
+contract evidence. A baseline exception requires explicit approval; unavailable
+verification is blocked, not passing.
 
 ## Why this matters
 
-- **A failing test caught early is a 2-line fix; a failing test
-  surfaced at the end of a 500-line dump is a 4-hour archaeology
-  session** trying to recall which line broke which invariant.
-- **The next chunk of code is often shaped by what the previous test
-  surfaced.** Writing tests at the end loses that feedback loop —
-  you've already committed to a shape that may not survive
-  verification.
-- **Parallel agents need test-green hand-off points.** When agent A
-  finishes a unit and agent B builds on it, agent B has to be able to
-  trust that agent A's unit works. The only credible evidence is "this
-  test passed in agent A's last run."
-- **Acceptance criteria become a worklist, not a sign-off ritual.** A
-  spec with 10 acceptance criteria gets implemented as 10 test-driven
-  passes through code-write/test-write/run. The acceptance check at
-  the end is a final tally, not the first time the work is exercised.
-
----
+Small feedback cycles localize defects while complete behaviors expose wiring
+problems. Progress means acceptance evidence, not private methods or tests counted.
 
 ## What "small unit" means in practice
 
-| Layer | One unit |
+| Change | Behavioral increment and evidence |
 |---|---|
-| Domain model + DAO | One file pair, then `pytest tests/domains/<x>/test_<x>_dao.py` |
-| Domain service method | One method, then the 3-5 tests covering its decisions |
-| Application service | One private method (e.g. `_load_and_validate`), then its tests; only then `_compose_payload`; etc. |
-| FastAPI router | One route, then its 200/404/422 tests |
-| Pinia store action | One action, then its mocked-API test |
-| Vue component | One SFC, then its render + emit tests |
-| Pydantic DAO change | The change + the (de)serialisation tests |
-| Alembic migration | The migration + an applied/rolled-back smoke check |
+| API | One request reaches the real handler/service and returns its specified result |
+| Lifecycle | One operation completes or cancels with its owned resources accounted for |
+| UI | One user action produces its observable state through the real application boundary |
+| Migration | One schema change applies and rolls back under the project contract |
+| Skills/documentation | One policy change is discoverable, internally consistent and reference-valid |
 
-If a unit can't be tested in isolation, that's a design smell — it's
-probably too tangled with its dependencies. Refactor toward smaller
-units before continuing.
+Use the lowest-cost faithful test boundary. Integration testing is valid; inability
+to isolate a private helper is not by itself a reason to refactor. Refactor when
+coupling causes a concrete correctness, maintainability or verification problem.
+Preserve architecture, naming, typing, documentation and resource-ownership conventions.
 
 ---
+
 
 ## When the loop applies extra-strict
 
@@ -187,56 +159,31 @@ historically caused half-day diagnoses in this codebase:
 
 ## The cadence applied to a 500-line task
 
-Bad pattern (a half-day to debug):
-
-```
-1. Write all 500 lines of app service + router + DAOs + tests
-2. Run pytest. 17 failures.
-3. Half a day disentangling which 50 lines broke which test.
-4. Find one wrong dataclass field; the rest were cascading from that.
-```
-
-Good pattern (a 90-minute green stack):
-
-```
-1. Write DAOs (60 LOC). Write DAO tests (20 LOC). Run. GREEN.
-2. Write domain service method 1 (40 LOC). Write 3 tests (50 LOC). Run. GREEN.
-3. Write domain service method 2 (30 LOC). Write 2 tests (30 LOC). Run. GREEN.
-4. Write app service _load_and_validate (25 LOC). Write 2 tests (40 LOC). Run. GREEN.
-5. ... continue for each named method ...
-9. Write router (30 LOC). Write 3 tests (50 LOC). Run. GREEN.
-10. Run the full suite. GREEN.
-```
-
-Same total LOC. Different debug burden by an order of magnitude.
-
----
+Bad: write all layers, then discover at the end that the entry point never calls them.
+Good: wire one representative journey, verify its observable result, then extend
+one behavior at a time with required failure-path tests. Size is a warning signal,
+not a fixed line-count gate.
 
 ## When a sub-agent is doing the work
 
-If you delegate to a sub-agent (`Agent` tool), state the cadence
-explicitly in the prompt:
+Delegate only when authorized by the orchestration policy. Give the agent a closure
+target: acceptance ID, missing behavior, owned files/boundaries, verification command
+and completion condition. Keep implementation and its tests together.
 
-> "Work in the code+test loop: implement one private method, write its
-> tests, run them, confirm green, then move to the next method. Do NOT
-> write all methods first and then test at the end."
+A handoff reports behavior completed, exact tests/results, remaining acceptance
+items or blocker, and the next action with its expected closure. Test counts and
+"INCOMPLETE" alone do not explain progress. Apply the convergence checkpoint in
+`skills/orchestration/workflows/SKILL.md` when repeated continuations do not close work.
 
-If the agent reports back having written 300 lines without intermediate
-test runs, that's a deviation worth flagging — the work may pass the
-final suite but the *process* is fragile and reproducible bugs will
-surface in PR review.
-
----
 
 ## See also
 
 - [skills/coding/test-verification-policy/SKILL.md](../test-verification-policy/SKILL.md) — what
-  decision points must be tested.
+  evidence establishes adequate coverage.
 - [skills/coding/declarative-method-structure/SKILL.md](../declarative-method-structure/SKILL.md) —
-  why methods should be coherently decomposed and testable in isolation; read the language specialization for syntax-specific rules.
+  cohesive decomposition; read the language specialization for syntax-specific rules.
 - [skills/languages/python/build-application-services/SKILL.md](../../languages/python/build-application-services/SKILL.md) — the
-  `invoke()` + named private methods pattern that maps 1-to-1 with
-  loop iterations.
+  Python application-service conventions; methods need not map 1-to-1 to loop iterations.
 
 ---
 

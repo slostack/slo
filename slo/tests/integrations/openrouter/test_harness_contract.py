@@ -128,20 +128,24 @@ async def test_paid_fixture_enforces_two_requests_tool_continuation_and_no_retry
             content=f"data: {json.dumps(frame)}\n\ndata: [DONE]\n\n",
         )
 
-    arguments = dict(
-        environment={"SLO_OPENROUTER_LIVE_HARNESS": "fixture-paid-smoke"},
-        credential_resolver=credential,
-        handler=handler,
-        model_name=ROUTE,
-    )
     if outcome == "answer":
-        result = await OpenRouterLiveHarness.invoke_fixture(**arguments)
+        result = await OpenRouterLiveHarness.invoke_fixture(
+            environment={"SLO_OPENROUTER_LIVE_HARNESS": "fixture-paid-smoke"},
+            credential_resolver=credential,
+            handler=handler,
+            model_name=ROUTE,
+        )
         assert result.inference_requests == 2 and result.tool_round_trips == 1
         assert "fixture-private-anchor" not in repr(result)
     else:
         expected = OpenRouterAPIError if outcome == "rate_limit" else ValueError
         with pytest.raises(expected):
-            await OpenRouterLiveHarness.invoke_fixture(**arguments)
+            await OpenRouterLiveHarness.invoke_fixture(
+                environment={"SLO_OPENROUTER_LIVE_HARNESS": "fixture-paid-smoke"},
+                credential_resolver=credential,
+                handler=handler,
+                model_name=ROUTE,
+            )
     assert len(posts) == (2 if outcome in {"answer", "extra_tool"} else 1)
 
 

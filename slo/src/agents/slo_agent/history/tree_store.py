@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Optional
 
 from src.agents.slo_agent.history.dao import (
+    HISTORY_OBSERVATION_MAX_BYTES,
+    HISTORY_OBSERVATION_MAX_EVENTS,
+    HistoryObservationWindowDAO,
     SessionHistoryEventDAO,
     SessionHistoryMetadataDAO,
 )
@@ -141,6 +144,38 @@ class TreeBasedFilesystemSessionHistoryStore:
             list[SessionHistoryEventDAO]: All events in sequence order.
         """
         return await self._flat.load_events(session_id=session_id)
+
+    async def load_observation_window(
+        self,
+        *,
+        session_id: str,
+        max_bytes: int = HISTORY_OBSERVATION_MAX_BYTES,
+        max_events: int = HISTORY_OBSERVATION_MAX_EVENTS,
+    ) -> HistoryObservationWindowDAO:
+        """Read a bounded observation window through the flat store with the same limits.
+
+        WHAT: Delegates unchanged; tree metadata lives inside event payloads, so the
+            flat bounded reader observes the identical events.jsonl file.
+        WHO: Called by WorkflowVisualizerLoader for progress, never by inference replay.
+        WHEN: On each progress poll.
+
+        Args:
+            session_id (str): Validated session under this store's configured root.
+            max_bytes (int): Positive byte budget, at most 2,097,152.
+            max_events (int): Positive event budget, at most 2,000.
+
+        Returns:
+            HistoryObservationWindowDAO: The flat store's bounded window.
+
+        Raises:
+            ValueError: Invalid identity or bounds.
+            OSError: Read failure; the loader translates it to a safe stale view.
+        """
+        return await self._flat.load_observation_window(
+            session_id=session_id,
+            max_bytes=max_bytes,
+            max_events=max_events,
+        )
 
     async def session_exists(self, *, session_id: str) -> bool:
         """Return ``True`` iff the session directory and metadata exist.

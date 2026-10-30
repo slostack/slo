@@ -12,6 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from rich.color import Color
 from textual.geometry import Offset
+from textual.pilot import Pilot
 from textual.selection import SELECT_ALL, Selection
 from textual.style import Style as TextualStyle
 
@@ -25,6 +26,7 @@ from src.tui.widgets.assistant_stream_thinking_block import (
     AssistantThinkingBody,
 )
 from src.tui.widgets.user_message_block import UserMessageBlock
+from tests.tui.selection_fixture_fence import SelectionFixtureFence
 
 
 def _build_session() -> SloAgentSession:
@@ -41,6 +43,29 @@ def _selection_background(*, app: SloTUI) -> Color:
     style = TextualStyle.from_styles(app.screen.get_component_styles("screen--selection"))
     assert style.rich_style.bgcolor is not None
     return style.rich_style.bgcolor
+
+
+async def _await_follow_pin(*, pilot: Pilot[None], app: SloTUI) -> None:
+    """Wait until every queued follow pin has settled at the transcript bottom.
+
+    A fixed pause raced the pins: under load, a pin queued by an earlier write
+    landed after the test's explicit ``scroll_visible`` and scrolled the block
+    back out of view. Reaching the bottom once is not enough, because later pins
+    may still be queued, so the bottom must hold across several idle cycles.
+    """
+    scroll = app._transcript_scroll
+    assert scroll is not None
+    settled: int = 0
+    last_max: float = -1.0
+    for _ in range(100):
+        await pilot.pause()
+        await pilot.pause(delay=0.05)
+        pinned: bool = scroll.max_scroll_y > 0 and scroll.scroll_y == scroll.max_scroll_y
+        settled = settled + 1 if pinned and scroll.max_scroll_y == last_max else 0
+        last_max = scroll.max_scroll_y
+        if settled >= 4:
+            return
+    raise AssertionError("transcript follow pins never settled at the bottom")
 
 
 def _location_for_offset(*, app: SloTUI, body: Widget, target: Offset) -> tuple[int, int]:
@@ -123,12 +148,14 @@ class TestPilotVisibleSelection:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["answer", "thinking", "user"])
     @pytest.mark.parametrize("theme_name", ["slo-default", "slo-dark"])
+    @pytest.mark.usefixtures("theme_colors")
     async def test_selection_paint_and_scroll_remain_native_for_every_visible_body_and_theme(
-        self, kind: str, theme_name: str
+        self, kind: str, theme_name: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Native selection paint and range state remain scroll-attached in both Slo themes."""
         app = SloTUI(session=_build_session())
         async with app.run_test(size=(80, 24)) as pilot:
+            fence = SelectionFixtureFence(app=app, monkeypatch=monkeypatch)
             app.theme = theme_name
             for index in range(20):
                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
@@ -150,18 +177,17 @@ class TestPilotVisibleSelection:
                 body = user_block._body
             for index in range(20, 40):
                 app._write_adapter_line(content=f"filler {index}", classes="tool-result")
-            await pilot.pause(delay=0.1)
-            block.scroll_visible(animate=False)
-            await pilot.pause(delay=1.0)  # Wait for the queued mount's follow pin and layout refresh.
-            if kind == "user":
-                block.scroll_visible(top=True, animate=False)
-                await pilot.pause(delay=0.1)
+            await fence.fixture_completed()
+            block.scroll_visible(top=kind == "user", animate=False)
+            await fence.paint_committed()
             start = _location_for_offset(app=app, body=body, target=Offset(x=6, y=0))
             end = _location_for_offset(app=app, body=body, target=Offset(x=10, y=0))
             await pilot.mouse_down(offset=start)
             await pilot.hover(offset=end)
             await pilot.mouse_up(offset=end)
             await pilot.pause()
+            assert app.screen.get_selected_text() == "bravo"
+            assert app._clipboard == "bravo"
             background = _selection_background(app=app)
             assert app.screen.get_style_at(x=start[0], y=start[1]).bgcolor == background
             assert app._transcript_scroll is not None

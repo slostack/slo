@@ -1,9 +1,7 @@
 ---
 name: typescript-code-test-loop
-description: TypeScript code-test loop — the cycle of write code, identify decision points, write one
-  test per path, run the suite, fix failures, repeat.
-when_to_use: Use when implementing any TypeScript feature or fix to enforce the discipline of testing
-  each decision point before moving to the next unit of work.
+description: TypeScript behavioral increments with focused verification and project-scoped final gates.
+when_to_use: Use when implementing TypeScript features or fixes in verified behavioral increments.
 group: languages
 kind: skill
 ---
@@ -13,8 +11,8 @@ kind: skill
 ## Skill summary
 
 - **Name:** `typescript-code-test-loop`
-- **Description:** TypeScript code-test loop — the cycle of write code, identify decision points, write one test per path, run the suite, fix failures, repeat.
-- **When to use:** Use when implementing any TypeScript feature or fix to enforce the discipline of testing each decision point before moving to the next unit of work.
+- **Description:** TypeScript behavioral increments with focused verification and project-scoped final gates.
+- **When to use:** Implement TypeScript features or fixes in verified behavioral increments.
 - **Group:** `languages`
 - **Kind:** `skill`
 
@@ -28,22 +26,24 @@ kind: skill
 
 **Scope:** TypeScript; load `skills/languages/typescript/typescript-conventions/SKILL.md`. Framework examples apply only to the declared stack. This is a vendored snapshot; installed same-name user skills still override it in the runtime manifest.
 
+**Testing policy:** `skills/coding/test-verification-policy/SKILL.md` owns how to test (levels, doubles, journeys). This skill covers TypeScript cadence only.
+
 ### The loop in six steps
 
 ```
-1. Write or modify the production code
-2. Identify every decision point in what you just wrote
-3. Write one test per path BEFORE running the suite
-4. Run only the file you changed: pnpm vitest run path/to/file.test.ts
-5. Fix any failures — code or test — until all pass
-6. Run the full suite: pnpm vitest run
+1. Select one observable behavior and its existing/missing evidence
+2. Implement and test the increment in project/user-approved order
+3. Cover meaningful decisions and relevant failure paths
+4. Run focused tests using the project routing commands
+5. Diagnose failures against the contract; verify the correction
+6. Run affected suites at milestones and required full gates before acceptance
 ```
 
 Never leave a failing test behind. Never move to the next unit of work until the current one is green.
 
 ### Step 1: Write the production code
 
-Write the method or function. Keep it small and focused — one decision per method (see the declarative method structure convention). Resist the urge to run the tests first; write the code so you can identify what needs covering.
+Implement a small cohesive behavior, potentially across a few files. Preserve TypeScript declarative-method conventions; method boundaries need not define test increments. Implementation-first is permitted by the default cadence, but never overrides user/project test-first requirements. Follow `skills/coding/code-test-loop/SKILL.md`.
 
 ### Step 2: Identify every decision point
 
@@ -51,23 +51,23 @@ After writing, scan the code for every branch:
 
 ```typescript
 // Example service method with 4 decision points:
-async processOrder(orderId: string, userId: string): Promise<OrderResult> {
-  const order = await this.orderRepo.findById(orderId)  // ① may be null
+async processOrder({ orderId, userId }: { orderId: string; userId: string }): Promise<OrderDAO> {
+  const order: OrderDAO | null = await this.options.orderRepo.findById({ id: orderId }) // ① may be null
   if (!order) throw new NotFoundError(`Order ${orderId} not found`)
 
-  if (order.status !== 'pending') {                      // ② status check
+  if (order.status !== 'pending') {                                                      // ② status check
     throw new ConflictError(`Order is already ${order.status}`)
   }
 
-  const user = await this.userRepo.findById(userId)      // ③ may be null
+  const user: UserDAO | null = await this.options.userRepo.findById({ id: userId })      // ③ may be null
   if (!user) throw new NotFoundError(`User ${userId} not found`)
 
-  const charged = await this.paymentClient.charge({      // ④ may throw
+  const charged: ChargeDAO = await this.options.paymentClient.charge({                   // ④ may throw (third-party)
     userId,
     amount: order.totalAmount,
   })
 
-  return this.orderRepo.update(orderId, { status: 'completed', chargeId: charged.id })
+  return this.options.orderRepo.update({ id: orderId, changes: { status: 'completed', chargeId: charged.id } })
 }
 ```
 
@@ -77,101 +77,110 @@ Decision points found:
 3. `user` is null → NotFoundError
 4. `paymentClient.charge` throws → propagate
 
-That means **4 tests beyond the happy path**, plus **1 happy path test** = **5 tests total**.
+These are the outcomes to prove: four failure outcomes plus the happy path.
 
 ### Step 3: Write one test per path
 
-Write all tests before running any of them. This forces you to think about the design before verifying it.
+Add missing behavioral evidence and run focused tests promptly. Existing tests may already cover paths; one test can traverse multiple branches. The example illustrates meaningful outcomes, not a mandatory branch-to-test formula.
+
+- Repositories are real and run against the test database; `resetTestDatabase()` runs in `beforeEach`.
+- Only `paymentClient` (a third-party API) is faked, through an injected class that implements `PaymentClient`. `msw` against the real client is an equally valid choice.
+- Assert outcomes: returned value, persisted order read back, recorded charges.
 
 ```typescript
 // tests/services/order.service.test.ts
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { OrderService } from '../../src/services/order.service'
-import { NotFoundError, ConflictError } from '../../src/errors'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { db } from '@/connectors/db'
+import type { ChargeDAO, ChargeInput, PaymentClient } from '@/clients/payment.client'
+import { OrderRepository } from '@/domains/order/order.repository'
+import { UserRepository } from '@/domains/user/user.repository'
+import { ConflictError, NotFoundError } from '@/errors'
+import { OrderService } from '@/services/order.service'
+import { buildCreateOrderInput, buildCreateUserInput } from '../helpers/factories'
+import { resetTestDatabase } from '../helpers/db'
 
-const makeOrderRepo = () => ({ findById: vi.fn(), update: vi.fn() })
-const makeUserRepo = () => ({ findById: vi.fn() })
-const makePaymentClient = () => ({ charge: vi.fn() })
+/** Third-party fake: records charges and returns a fixed charge id. */
+class RecordingPaymentClient implements PaymentClient {
+  readonly charges: ChargeInput[] = []
 
-const buildOrder = (overrides = {}) => ({
-  id: 'order-1',
-  totalAmount: 100,
-  status: 'pending',
-  ...overrides,
-})
+  async charge(input: ChargeInput): Promise<ChargeDAO> {
+    this.charges.push(input)
+    return { id: 'charge-99' }
+  }
+}
 
-const buildUser = (overrides = {}) => ({
-  id: 'user-1',
-  name: 'Alice',
-  ...overrides,
-})
+/** Third-party fake: every charge is declined. */
+class DecliningPaymentClient implements PaymentClient {
+  async charge(_input: ChargeInput): Promise<ChargeDAO> {
+    throw new Error('Card declined')
+  }
+}
 
-describe('OrderService.processOrder', () => {
-  let orderRepo: ReturnType<typeof makeOrderRepo>
-  let userRepo: ReturnType<typeof makeUserRepo>
-  let paymentClient: ReturnType<typeof makePaymentClient>
-  let service: OrderService
+describe('OrderService.processOrder', (): void => {
+  let orderRepo: OrderRepository
+  let userRepo: UserRepository
+  let paymentClient: RecordingPaymentClient
+  let user: UserDAO
 
-  beforeEach(() => {
-    orderRepo = makeOrderRepo()
-    userRepo = makeUserRepo()
-    paymentClient = makePaymentClient()
-    service = new OrderService(orderRepo, userRepo, paymentClient)
-    vi.clearAllMocks()
+  const buildService = ({ paymentClient }: { paymentClient: PaymentClient }): OrderService =>
+    new OrderService({ orderRepo, userRepo, paymentClient })
+
+  beforeEach(async (): Promise<void> => {
+    await resetTestDatabase()
+    orderRepo = new OrderRepository({ db })
+    userRepo = new UserRepository({ db })
+    paymentClient = new RecordingPaymentClient()
+    user = await userRepo.create({ input: buildCreateUserInput() })
   })
 
   // Happy path
-  it('charges the user and marks the order as completed when input is valid', async () => {
-    const order = buildOrder()
-    const user = buildUser()
-    vi.mocked(orderRepo.findById).mockResolvedValue(order)
-    vi.mocked(userRepo.findById).mockResolvedValue(user)
-    vi.mocked(paymentClient.charge).mockResolvedValue({ id: 'charge-99' })
-    vi.mocked(orderRepo.update).mockResolvedValue({ ...order, status: 'completed', chargeId: 'charge-99' })
+  it('charges the user and persists the completed order when the order is pending', async (): Promise<void> => {
+    const order: OrderDAO = await orderRepo.create({ input: buildCreateOrderInput({ totalAmount: 100 }) })
 
-    const result = await service.processOrder('order-1', 'user-1')
+    const result: OrderDAO = await buildService({ paymentClient }).processOrder({ orderId: order.id, userId: user.id })
 
-    expect(result.status).toBe('completed')
-    expect(result.chargeId).toBe('charge-99')
-    expect(paymentClient.charge).toHaveBeenCalledWith({ userId: 'user-1', amount: 100 })
-    expect(orderRepo.update).toHaveBeenCalledWith('order-1', { status: 'completed', chargeId: 'charge-99' })
+    expect(result).toMatchObject({ status: 'completed', chargeId: 'charge-99' })
+    expect(await orderRepo.findById({ id: order.id })).toMatchObject({ status: 'completed', chargeId: 'charge-99' })
+    expect(paymentClient.charges).toEqual([{ userId: user.id, amount: 100 }])
   })
 
   // ① order not found
-  it('throws NotFoundError when the order does not exist', async () => {
-    vi.mocked(orderRepo.findById).mockResolvedValue(null)
-
-    await expect(service.processOrder('missing', 'user-1')).rejects.toThrow(NotFoundError)
-    expect(userRepo.findById).not.toHaveBeenCalled()
-    expect(paymentClient.charge).not.toHaveBeenCalled()
+  it('throws NotFoundError and charges nothing when the order does not exist', async (): Promise<void> => {
+    await expect(
+      buildService({ paymentClient }).processOrder({ orderId: 'missing', userId: user.id }),
+    ).rejects.toThrow(NotFoundError)
+    expect(paymentClient.charges).toEqual([])
   })
 
   // ② order already processed
-  it('throws ConflictError when the order status is not pending', async () => {
-    vi.mocked(orderRepo.findById).mockResolvedValue(buildOrder({ status: 'completed' }))
+  it('throws ConflictError and charges nothing when the order status is not pending', async (): Promise<void> => {
+    const order: OrderDAO = await orderRepo.create({ input: buildCreateOrderInput({ status: 'completed' }) })
 
-    await expect(service.processOrder('order-1', 'user-1')).rejects.toThrow(ConflictError)
-    expect(userRepo.findById).not.toHaveBeenCalled()
-    expect(paymentClient.charge).not.toHaveBeenCalled()
+    await expect(
+      buildService({ paymentClient }).processOrder({ orderId: order.id, userId: user.id }),
+    ).rejects.toThrow(ConflictError)
+    expect(paymentClient.charges).toEqual([])
   })
 
   // ③ user not found
-  it('throws NotFoundError when the user does not exist', async () => {
-    vi.mocked(orderRepo.findById).mockResolvedValue(buildOrder())
-    vi.mocked(userRepo.findById).mockResolvedValue(null)
+  it('throws NotFoundError and leaves the order pending when the user does not exist', async (): Promise<void> => {
+    const order: OrderDAO = await orderRepo.create({ input: buildCreateOrderInput() })
 
-    await expect(service.processOrder('order-1', 'missing')).rejects.toThrow(NotFoundError)
-    expect(paymentClient.charge).not.toHaveBeenCalled()
+    await expect(
+      buildService({ paymentClient }).processOrder({ orderId: order.id, userId: 'missing' }),
+    ).rejects.toThrow(NotFoundError)
+    expect(paymentClient.charges).toEqual([])
+    expect(await orderRepo.findById({ id: order.id })).toMatchObject({ status: 'pending' })
   })
 
   // ④ payment client throws
-  it('propagates payment errors and does not update the order', async () => {
-    vi.mocked(orderRepo.findById).mockResolvedValue(buildOrder())
-    vi.mocked(userRepo.findById).mockResolvedValue(buildUser())
-    vi.mocked(paymentClient.charge).mockRejectedValue(new Error('Card declined'))
+  it('propagates the payment error and leaves the order pending when the charge is declined', async (): Promise<void> => {
+    const order: OrderDAO = await orderRepo.create({ input: buildCreateOrderInput() })
 
-    await expect(service.processOrder('order-1', 'user-1')).rejects.toThrow('Card declined')
-    expect(orderRepo.update).not.toHaveBeenCalled()
+    await expect(
+      buildService({ paymentClient: new DecliningPaymentClient() }).processOrder({ orderId: order.id, userId: user.id }),
+    ).rejects.toThrow('Card declined')
+    expect(await orderRepo.findById({ id: order.id })).toMatchObject({ status: 'pending', chargeId: null })
   })
 })
 ```
@@ -179,9 +188,9 @@ describe('OrderService.processOrder', () => {
 ### Step 4: Run only the changed file
 
 ```bash
-pnpm vitest run src/services/order.service.test.ts
+pnpm vitest run tests/services/order.service.test.ts
 # or
-npx vitest run src/services/order.service.test.ts
+npx vitest run tests/services/order.service.test.ts
 ```
 
 This is fast. Run it immediately after writing the tests. You will often see failures.
@@ -190,10 +199,10 @@ This is fast. Run it immediately after writing the tests. You will often see fai
 
 Common failure categories and their fixes:
 
-**Test is wrong (most common when code is fresh):**
+**Incorrect test oracle (establish from the contract, not from current output):**
 ```bash
 AssertionError: expected "charge-98" to equal "charge-99"
-# → the mock returned the wrong fixture value; fix the mock
+# → the payment fake returned the wrong fixture value; fix the fake
 ```
 
 **Code is wrong:**
@@ -202,29 +211,34 @@ TypeError: Cannot read properties of null (reading 'status')
 # → forgot to guard against null before accessing .status
 ```
 
-**Mock is incomplete:**
+**Fake is incomplete:**
 ```bash
-TypeError: userRepo.findById is not a function
-# → factory function is missing a method; add it to makeUserRepo()
+TypeError: this.options.paymentClient.refund is not a function
+# → the third-party fake does not implement the full PaymentClient interface; add the method
 ```
+
+**Test data is missing:**
+```bash
+NotFoundError: User user-1 not found
+# → the test did not seed the row; create it through the real repository in the test
 
 Never silently skip a failing test. Either fix the code or fix the test — but understand which one is wrong before changing anything.
 
 ### Step 6: Run the full suite
 
-Before you declare the unit of work done:
+At coherent milestones run affected suites; before final acceptance run all required project gates. For a Vitest project, for example:
 
 ```bash
 pnpm vitest run
 ```
 
-A change that fixes five tests but breaks two others is not done. The suite must be fully green.
+Introduced regressions block acceptance. Required gates must pass; baseline exclusions require explicit approval, and blocked checks remain unverified.
 
 ### Vitest CLI reference
 
 ```bash
 # Run a single test file
-pnpm vitest run src/services/order.service.test.ts
+pnpm vitest run tests/services/order.service.test.ts
 
 # Run all tests matching a pattern
 pnpm vitest run --reporter=verbose order
@@ -247,17 +261,19 @@ pnpm vitest run --reporter=verbose
 | Anti-pattern | Why it breaks the loop |
 |---|---|
 | Writing all code before any tests | You lose track of which decision points need coverage |
-| Running tests after every line | Context switching kills focus; write all tests for a method first |
+| Running tests after every line | Verify a coherent behavior rather than following a line-count ritual |
 | Skipping the full suite run | A local green does not mean no regressions |
 | Using `.skip` to silence a failure | The failure is still there — you just can't see it |
 | Writing "it ran" tests | `expect(result).toBeDefined()` doesn't test any decision |
-| Testing the mock, not the code | `expect(repo.create).toHaveBeenCalled()` without asserting the outcome |
+| Testing the mock, not the code | `expect(repo.create).toHaveBeenCalled()` instead of reading the persisted row back |
+| Mocking repositories or internal services | A mocked repository proves nothing about queries, constraints or transactions |
 
 ### Checklist before marking a unit of work complete
 
-- [ ] Every decision point in the changed code has a test
+- [ ] Meaningful changed decisions, required outcomes and critical failure paths have passing evidence
 - [ ] The targeted test file runs green: `pnpm vitest run <file>`
-- [ ] The full suite runs green: `pnpm vitest run`
+- [ ] Affected suites pass at milestones; required full gates pass before final acceptance
 - [ ] No `.skip` or `.todo` left without an explanatory comment
 - [ ] Test names describe the specific path, not just the method
-- [ ] Guard clause tests verify downstream mocks were NOT called
+- [ ] Repositories run against the test database; only third-party clients are faked
+- [ ] Guard clause tests assert no later effect: no recorded third-party call and no changed row

@@ -429,7 +429,6 @@ orders_service $ mkdir -p tests/domains tests/services tests/routers
 5. Add the following code within it
 
 ```python
-from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 

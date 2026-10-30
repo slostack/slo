@@ -1,0 +1,1 @@
+python -B -m pytest -q tests/integration/test_herdr_two_process_restore.py tests/integration/test_herdr_full_flow.py tests/integration/test_herdr_lifetime_matrix.py tests/tui/test_herdr_activation_composed.py tests/tui/test_herdr_attached_composed.py 

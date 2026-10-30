@@ -1,0 +1,8 @@
+Baseline: t5-88-lint.log (298 errors/63 files)
+Current: t5-100-lint.log (296 errors/61 files)
+NEW diagnostics (line numbers normalized only):
+tests/tui/test_herdr_inbox_cutoffs.py: error: Item "None" of "Timer | None" has no attribute "stop"  [union-attr]
+REMOVED diagnostics:
+tests/agents/skills/test_reorganization.py: error: Library stubs not installed for "yaml"  [import-untyped]
+tests/agents/skills/test_design_skill_additions.py: error: Library stubs not installed for "yaml"  [import-untyped]
+tests/agents/skills/test_api_response_generic_owner.py: error: Library stubs not installed for "yaml"  [import-untyped]

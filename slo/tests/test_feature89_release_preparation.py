@@ -20,6 +20,14 @@ def test_release_candidate_version_and_notes_agree() -> None:
     assert "not live entitlement" in notes
 
 
+def test_v031_release_metadata_preserves_packaging_owned_launchers() -> None:
+    """The requested patch version keeps both pipx-generated launcher contracts."""
+    project: dict[str, object] = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())["project"]
+    assert project["version"] == "0.3.1"
+    assert project["scripts"] == {"slo": "src.cli:main", "slo-entry": "src.cli:main"}
+    assert "## [0.3.1] — " in (APP_ROOT / "CHANGELOG.md").read_text()
+
+
 def test_runner_defaults_cover_inherited_jobs_and_preserve_macos() -> None:
     """Require both runner tags, including jobs supplied by GitLab's include."""
     pipeline = yaml.safe_load((APP_ROOT.parent / ".gitlab-ci.yml").read_text())

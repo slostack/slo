@@ -24,8 +24,9 @@ test:  ## Run the full non-E2E test suite in parallel (PYTEST_WORKERS=0 for seri
 	@if [ -r ./environments/tests.env ]; then \
 		set -a && . ./environments/tests.env && set +a; \
 	else \
-		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
+		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_HERDR_DISABLED=1 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
 	fi; \
+	export SLO_HERDR_DISABLED=1; \
 	PYTHONPATH="$(PWD)" poetry run pytest -n $(PYTEST_WORKERS) -m "not e2e"
 
 test-env:  ## Print whether make test will load tests.env or its clean-checkout fallback
@@ -35,8 +36,9 @@ smoke:  ## Run smoke tests only
 	@if [ -r ./environments/tests.env ]; then \
 		set -a && . ./environments/tests.env && set +a; \
 	else \
-		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
+		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_HERDR_DISABLED=1 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
 	fi; \
+	export SLO_HERDR_DISABLED=1; \
 	PYTHONPATH="$(PWD)" poetry run pytest -m "not e2e" tests/test_smoke.py -v
 
 install-smoke:  ## Real public-installer Ubuntu/Debian smoke (needs Docker)

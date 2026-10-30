@@ -29,7 +29,12 @@ async def test_feature89_child_model_selection(
     monkeypatch.setenv(name="SLO_OPENAI_API_KEY", value="fixture-filtered-openai")
     monkeypatch.setenv(name="SLO_OPENROUTER_API_KEY", value="fixture-forwarded-router")
     task = SubAgentTaskDAO(
-        task_id="child89", prompt="offline", model=model_name, reasoning_level="off", cwd=str(root)
+        task_summary="Check model request compatibility",
+        task_id="child89",
+        prompt="offline",
+        model=model_name,
+        reasoning_level="off",
+        cwd=str(root),
     )
     fake = MagicMock(pid=424242, returncode=0)
     fake.stdout = asyncio.StreamReader()
@@ -37,12 +42,21 @@ async def test_feature89_child_model_selection(
     fake.stderr = asyncio.StreamReader()
     fake.stderr.feed_eof()
     fake.wait = AsyncMock(return_value=0)
+    registry = ProcessRegistry()
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
+    execution_id = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444",
+        task_id=task.task_id,
+        session_id="child89",
+        task=task,
+    )
     process = SubAgentProcess(
         task=task,
         session_id="child89",
         model=task.model,
         relay=AsyncMock(),
-        registry=ProcessRegistry(),
+        registry=registry,
+        execution_id=execution_id,
         parent_session_id="parent89",
         slo_home=home,
     )

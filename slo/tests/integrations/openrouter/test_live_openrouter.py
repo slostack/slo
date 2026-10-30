@@ -13,7 +13,7 @@ import json
 from datetime import datetime, timezone
 from src.agents.model_catalog.openrouter import OpenRouterCatalogConverter
 from src.agents.providers.openrouter import OpenRouterChatOpenAI
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -63,11 +63,20 @@ class BoundedFixtureTransport(httpx.MockTransport):
 
     def _admit_inference(self, *, request: httpx.Request) -> None:
         """Count every admitted attempt, including failures; never reset on failure."""
-        if not self.paid or self.attempts >= 2 or request.method != "POST" or request.url.path != "/api/v1/chat/completions":
+        if (
+            not self.paid
+            or self.attempts >= 2
+            or request.method != "POST"
+            or request.url.path != "/api/v1/chat/completions"
+        ):
             raise ValueError("Fixture inference request bound violated.")
         body = json.loads(request.content)
         cap = body.get("max_tokens", body.get("max_completion_tokens"))
-        if body.get("model") != (self.model_name or "").removeprefix("openrouter:") or type(cap) is not int or not 0 < cap <= 256:
+        if (
+            body.get("model") != (self.model_name or "").removeprefix("openrouter:")
+            or type(cap) is not int
+            or not 0 < cap <= 256
+        ):
             raise ValueError("Fixture route/output bound violated.")
         self.attempts += 1
 
@@ -99,8 +108,12 @@ class OpenRouterLiveHarness:
 
     @classmethod
     async def invoke_fixture(
-        cls, *, environment: dict[str, str], credential_resolver: Callable[[], CredentialDAO],
-        handler: FixtureRequestHandler, model_name: str | None,
+        cls,
+        *,
+        environment: dict[str, str],
+        credential_resolver: Callable[[], CredentialDAO],
+        handler: FixtureRequestHandler,
+        model_name: str | None,
     ) -> FixtureHarnessResult:
         """Run consented synthetic discovery through the production GET/converter boundary.
 
@@ -117,7 +130,9 @@ class OpenRouterLiveHarness:
         if config.mode == "paid_smoke" and not model_name:
             raise ValueError("Select one exact discovered route for fixture smoke.")
         config, client = cls.open_fixture_client_when_enabled(
-            environment=environment, credential_resolver=credential_resolver, handler=handler,
+            environment=environment,
+            credential_resolver=credential_resolver,
+            handler=handler,
             model_name=model_name,
         )
         assert client._http_client is not None
@@ -128,15 +143,25 @@ class OpenRouterLiveHarness:
             names = tuple(converted.available_model_names)
             if config.mode == "authenticated_discovery":
                 return FixtureHarnessResult(model_names=names)
-            entries = [entry for entry in converted.entries if entry.model_name == model_name and entry.visible_in_picker]
+            entries = [
+                entry
+                for entry in converted.entries
+                if entry.model_name == model_name and entry.visible_in_picker
+            ]
             if len(entries) != 1:
                 raise ValueError("Select one exact discovered route for fixture smoke.")
             entry = entries[0]
             model = OpenRouterChatOpenAI(
-                slo_model_name=entry.model_name, model=entry.api_model_name,
-                api_key=client._credential.access_token, base_url="https://openrouter.ai/api/v1",
-                http_async_client=client._http_client, max_retries=0, max_tokens=config.output_token_cap,
-                streaming=True, use_responses_api=False, slo_capabilities=entry.capabilities,
+                slo_model_name=entry.model_name,
+                model=entry.api_model_name,
+                api_key=client._credential.access_token,
+                base_url="https://openrouter.ai/api/v1",
+                http_async_client=client._http_client,
+                max_retries=0,
+                max_tokens=config.output_token_cap,
+                streaming=True,
+                use_responses_api=False,
+                slo_capabilities=entry.capabilities,
                 slo_output_ceiling=config.output_token_cap,
             )
             return await cls._round_trip(model=model, names=names)
@@ -148,13 +173,19 @@ class OpenRouterLiveHarness:
         bound = model.bind_tools([tool])
         prompt = HumanMessage(content="Call fixture_echo once, then report its result.")
         assistant = await bound.ainvoke([prompt])
+        assert isinstance(assistant, AIMessage)
         calls = assistant.tool_calls
         if len(calls) != 1 or calls[0]["name"] != tool.name or calls[0]["args"] != {}:
             raise ValueError("Fixture smoke requires exactly one harmless tool call.")
         output = await tool.ainvoke(calls[0]["args"])
-        answer = await bound.ainvoke([
-            prompt, assistant, ToolMessage(content=output, tool_call_id=calls[0]["id"]),
-        ])
+        answer = await bound.ainvoke(
+            [
+                prompt,
+                assistant,
+                ToolMessage(content=output, tool_call_id=calls[0]["id"]),
+            ]
+        )
+        assert isinstance(answer, AIMessage)
         if answer.tool_calls:
             raise ValueError("Fixture smoke request bound reached; refusing another tool call.")
         return FixtureHarnessResult(model_names=names, inference_requests=2, tool_round_trips=1)
@@ -224,9 +255,13 @@ class OpenRouterLiveHarness:
         credential: CredentialDAO = credential_resolver()
         if credential.provider is not ProviderName.OPENROUTER:
             raise ValueError("OpenRouter fixture harness requires an OpenRouter credential.")
-        http_client: httpx.AsyncClient = httpx.AsyncClient(transport=BoundedFixtureTransport(
-            handler=handler, model_name=model_name, paid=config.mode == "paid_smoke",
-        ))
+        http_client: httpx.AsyncClient = httpx.AsyncClient(
+            transport=BoundedFixtureTransport(
+                handler=handler,
+                model_name=model_name,
+                paid=config.mode == "paid_smoke",
+            )
+        )
         return config, OpenRouterAPIClient(credential=credential, http_client=http_client)
 
 
@@ -305,7 +340,9 @@ def test_live_harness_when_paid_fixture_mode_is_enabled_sets_documented_bounds(
     """Document the paid opt-in cap without making a paid inference request."""
     monkeypatch.setenv(_LIVE_HARNESS_ENVIRONMENT_VARIABLE, "fixture-paid-smoke")
 
-    config: OpenRouterLiveHarnessConfig = OpenRouterLiveHarness.require_opt_in(environment={"SLO_OPENROUTER_LIVE_HARNESS": "fixture-paid-smoke"})
+    config: OpenRouterLiveHarnessConfig = OpenRouterLiveHarness.require_opt_in(
+        environment={"SLO_OPENROUTER_LIVE_HARNESS": "fixture-paid-smoke"}
+    )
 
     assert config.mode == "paid_smoke"
     assert config.paid_request_cap == 2

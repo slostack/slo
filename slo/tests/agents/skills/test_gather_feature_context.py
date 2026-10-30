@@ -17,7 +17,7 @@ def test_source_status_and_scope() -> None:
     assert metadata["kind"] == "workflow"
     for phrase in ("consulted-with-findings", "unavailable", "empty", "contradictions"):
         assert phrase in text
-    for source in ("Knowledge base", "Jira / Confluence", "Code", "Documentation / READMEs", "Tests"):
+    for source in ("Knowledge base", "Issue tracker / wiki", "Code", "Documentation / READMEs", "Tests"):
         assert f"| {source} |" in text
     assert "orders_service" not in text
     assert "not a second default pre-hook" in text

@@ -10,6 +10,7 @@ Per parent spec §5.9 and sub-spec 01.b §4.2.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from typing import Any, AsyncIterator, Iterator, Optional, Sequence
 from uuid import uuid4
 
@@ -21,7 +22,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 __all__ = ["FauxScriptUnderrun", "FauxChatModel"]
 
@@ -46,9 +47,16 @@ class FauxChatModel(BaseChatModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    queue: deque[AIMessage]
-    chunk_queue: deque[list[AIMessageChunk]]
-    bound_tools: list[BaseTool] = []
+    queue: deque[AIMessage] = Field(
+        default_factory=deque, description="Remaining scripted completed responses in consumption order."
+    )
+    chunk_queue: deque[list[AIMessageChunk]] = Field(
+        default_factory=deque,
+        description="Remaining per-response streaming chunk scripts in consumption order.",
+    )
+    bound_tools: list[dict[str, object] | type | Callable[..., object] | BaseTool] = Field(
+        default_factory=list, description="Tool definitions captured on the clone returned by bind_tools."
+    )
     model_name: str = "faux"
     _call_count: int = 0
 
@@ -70,26 +78,31 @@ class FauxChatModel(BaseChatModel):
                 streamed as one single chunk containing the full content.
             **data (Any): Pydantic/BaseChatModel passthrough.
         """
-        super().__init__(
-            queue=deque(responses),
-            chunk_queue=deque(
-                [list(script) for script in chunk_scripts]
-                if chunk_scripts is not None
-                else [self._default_chunks(response=response) for response in responses]
-            ),
-            **data,
+        super().__init__(**data)
+        self.queue = deque(responses)
+        self.chunk_queue = deque(
+            [list(script) for script in chunk_scripts]
+            if chunk_scripts is not None
+            else [self._default_chunks(response=response) for response in responses]
         )
 
     @property
     def _llm_type(self) -> str:
         return "faux"
 
-    def bind_tools(self, tools: Sequence[BaseTool], **kwargs: Any) -> "FauxChatModel":
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, object] | type | Callable[..., object] | BaseTool],
+        *,
+        tool_choice: Optional[str] = None,
+        **kwargs: object,
+    ) -> "FauxChatModel":
         """Return a clone preserving both responses and chunk scripts.
 
         Args:
-            tools (Sequence[BaseTool]): Tools to bind.
-            **kwargs (Any): Unused LangChain passthrough.
+            tools: Upstream-supported tool schemas, classes, callables or tools.
+            tool_choice: Unused upstream tool-choice option.
+            **kwargs: Unused LangChain passthrough.
 
         Returns:
             FauxChatModel: Cloned model with identical scripted behavior.

@@ -103,7 +103,9 @@ async def test_nonstream_reasoning_tool_continuation_strips_visible_reasoning_wi
         )
 
     assert first_response.content == original_content
-    assistant = requests[1]["messages"][1]
+    messages = requests[1]["messages"]
+    assert isinstance(messages, list)
+    assistant = messages[1]
     assert isinstance(assistant, dict)
     assert assistant["content"] == [{"type": "text", "text": "ordinary answer"}]
     assert assistant["reasoning_details"] == [{"type": "encrypted", "data": "private-anchor"}]

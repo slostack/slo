@@ -190,8 +190,13 @@ async def test_child_capture_secret_stays_in_spawn_environment(
     root = tmp_path.resolve()
     store = FleetStore(history_root=root / "sessions/history", orchestrator_session_id="parent")
     registry = ProcessRegistry(fleet_store=store)
-    task = SubAgentTaskDAO(task_id="task", prompt="Harmless task")
-    registry.register(task_id="task", session_id="child", task=task)
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
+    task = SubAgentTaskDAO(
+        task_summary="Check provider capture secrecy", task_id="task", prompt="Harmless task"
+    )
+    execution_id = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444", task_id="task", session_id="child", task=task
+    )
     relay = AsyncMock()
     lifecycle = MagicMock()
     logs = MagicMock()
@@ -216,11 +221,11 @@ async def test_child_capture_secret_stays_in_spawn_environment(
         model=None,
         relay=relay,
         registry=registry,
+        execution_id=execution_id,
         parent_session_id="parent",
         slo_home=root,
     )
     result = await process.run()
-    registry.mark_terminal(session_id="child", status=result.status, answer=result.answer)
     assert spawn.call_args.kwargs["env"]["SLO_OPENROUTER_API_KEY"] == secret
     assert spawn.call_args.kwargs["env"]["SLO_PLUGINS_DISABLED"] == "1"
     assert "SLO_OTHER_SECRET" not in spawn.call_args.kwargs["env"]
@@ -271,8 +276,13 @@ async def test_child_artifacts_preserve_admitted_redaction_after_rotation_or_res
     credential_b = credential_a.model_copy(update={"access_token": rotated_key})
     store = FleetStore(history_root=root / "sessions/history", orchestrator_session_id="parent")
     registry = ProcessRegistry(fleet_store=store)
-    task = SubAgentTaskDAO(task_id="task", prompt="Harmless task")
-    registry.register(task_id="task", session_id="child", task=task)
+    registry.begin_dispatch(dispatch_id="44444444-4444-4444-8444-444444444444")
+    task = SubAgentTaskDAO(
+        task_summary="Check provider capture secrecy", task_id="task", prompt="Harmless task"
+    )
+    execution_id = registry.register(
+        dispatch_id="44444444-4444-4444-8444-444444444444", task_id="task", session_id="child", task=task
+    )
     relay = AsyncMock()
     logs = MagicMock()
     lifecycle = MagicMock()
@@ -332,6 +342,7 @@ async def test_child_artifacts_preserve_admitted_redaction_after_rotation_or_res
         model=None,
         relay=relay,
         registry=registry,
+        execution_id=execution_id,
         parent_session_id="parent",
         slo_home=root,
     )
@@ -343,7 +354,6 @@ async def test_child_artifacts_preserve_admitted_redaction_after_rotation_or_res
         after_admission.setattr(CredentialResolver, "resolve", resolve_after_admission)
         result = await run_task
 
-    registry.mark_terminal(session_id="child", status=result.status, answer=result.answer)
     capture_dir = root / "sessions/history/parent/children/child"
     artifact_paths = [
         capture_dir / "stdout.jsonl",

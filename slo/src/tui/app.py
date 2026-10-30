@@ -3,29 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Optional, cast
+from time import monotonic
+from typing import Optional, Protocol, cast
 
 from rich.markdown import Markdown
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.document._wrapped_document import WrappedDocument
+from textual.document._document_navigator import DocumentNavigator
 from textual.message import Message
 from textual.timer import Timer
 from textual.widget import Widget
+from textual.worker import Worker, WorkerCancelled, WorkerFailed
 from textual.widgets import Footer, Header, Static, TextArea
 
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
 from config.logger import log_error
+from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO, VisualizerLaunchOutcomeDAO
+from src.agents.slo_agent.herdr.service import HerdrTaskJoin
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.agents.slo_agent.orchestrator.dao import SubAgentStatus
-from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
+from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore, WorkflowResumeLauncher
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
+from src.agents.slo_agent.history.inbox.dao import SessionOwnershipLeaseDAO
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -36,6 +44,8 @@ from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.authentication import AuthenticationScreen
+from src.tui.path_suggestion_engine import PathSuggestionReader
+from src.tui.path_suggestion_controller import PathPromptSnapshotDAO, PathSuggestionController
 from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
 from src.tui.model_catalog import ModelSuggestionProjection
@@ -47,10 +57,12 @@ from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.thinking_spinner import ThinkingSpinner
 from src.tui.transcript_projector import TranscriptProjector
 from src.tui.tree_export_format import TreeExportFormat
+from src.tui.editor_launcher import EditorLauncher
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
+from src.tui.widgets.prompt_document import PromptDocument
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
@@ -60,11 +72,96 @@ from src.tui.widgets.tree_markdown_exporter import TreeMarkdownExporter
 from src.tui.widgets.tree_viewer import SessionTreeViewer
 from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.tui.widgets.user_message_block import UserMessageBlock
-from src.tui.workflows.dao import HandleAdvanceOutcomeDAO, LiveWorkflowLabelDAO
+from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
+from src.tui.workflows.dao import (
+    ChildAbortTargetDAO,
+    HandleAdvanceOutcomeDAO,
+    LiveWorkflowLabelDAO,
+    ProgressViewportDAO,
+    SessionProgressSnapshotDAO,
+    WorkflowListVisibilityOutcomeDAO,
+    WorkflowListVisibilityRequestDAO,
+    WorkflowSessionKeyDAO,
+    WorkflowSessionSnapshotDAO,
+)
+from src.tui.workflows.progress_coordinator import (
+    WorkflowProgressCoordinator,
+    WorkflowProgressSink,
+    WorkflowProgressSource,
+)
 from src.tui.workflows.renderer import DetachedWorkflowRenderer
-from src.tui.workflows.service import DetachedWorkflowAppService
+from src.tui.workflows.service import AttachedChildAbort, DetachedWorkflowAppService
+from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
+from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, ChildControlCapabilityDAO
+from src.tui.workflows.session_progress_screen import SessionProgressScreen
+
+
+class WorkflowCoordinatorFactory(Protocol):
+    """Construct one coordinator with the app-owned source, sink and timer."""
+
+    def __call__(
+        self,
+        *,
+        service: WorkflowProgressSource,
+        sink: WorkflowProgressSink,
+        schedule: Callable[[float, Callable[[], None]], Timer],
+    ) -> WorkflowProgressCoordinator:
+        """Bind observation without starting another timer or owner.
+
+        Args:
+            service: Current observation source.
+            sink: App-owned presentation sink.
+            schedule: App-owned timer registration.
+
+        Returns:
+            WorkflowProgressCoordinator: Unstarted coordinator borrowing these boundaries.
+        """
+        ...
+
+
+class WorkflowAppServiceFactory(Protocol):
+    """Compose a fresh real workflow observation owner for each mounted session."""
+
+    def __call__(
+        self,
+        *,
+        workflow_handle_store: Optional[WorkflowHandleStore],
+        owner_session_id: str,
+        attached_snapshot: Callable[[], AttachedDispatchSnapshotDAO],
+        history_store: Optional[SessionHistoryStoreProtocol],
+        attached_abort: Optional[AttachedChildAbort],
+        attached_capability: Optional[Callable[[], Optional[ChildControlCapabilityDAO]]],
+    ) -> DetachedWorkflowAppService:
+        """Bind the supplied owner and borrowed adapters without starting reads.
+
+        Args:
+            workflow_handle_store: Optional durable handle adapter.
+            owner_session_id: Current session identity.
+            attached_snapshot: Current pool membership supplier.
+            history_store: Optional bounded history source.
+            attached_abort: Optional pool child-abort gateway.
+            attached_capability: Optional current abort capability supplier.
+
+        Returns:
+            DetachedWorkflowAppService: Fresh session-owned observation service.
+        """
+        ...
+
 
 __all__ = ["SloTUI", "PromptInput"]
+
+
+@dataclass(frozen=True)
+class _DeliveryInitialization:
+    """Exact app-owned binding captured before initialization yields."""
+
+    session: SloAgentSession
+    session_id: str
+    owner_id: str
+    lease_store: Optional[SessionOwnershipLeaseStore]
+    inbox_store: Optional[SessionInboxStore]
+    service: Optional[DetachedWorkflowAppService]
+    renderer: Optional[DetachedWorkflowRenderer]
 
 
 _ABORT_HARD_CANCEL_GRACE_SECONDS: float = 2.0
@@ -78,6 +175,35 @@ After this grace, the TUI cancels the asyncio task outright, raising
 _SESSION_LEASE_TTL_SECONDS: float = 30.0
 _SESSION_LEASE_HEARTBEAT_SECONDS: float = 10.0
 _SESSION_INBOX_POLL_SECONDS: float = 1.0
+
+_SUB_AGENT_NOTICE_STATUSES: dict[str, str] = {
+    "sub_agent_spawned": "spawned",
+    "sub_agent_completed": "completed",
+    "sub_agent_failed": "failed",
+}
+"""Child lifecycle kinds that write a one-line ``⊇ task: status`` transcript notice."""
+
+_SUB_AGENT_LIST_REFRESH_KINDS: frozenset[str] = frozenset(
+    {"sub_agent_spawned", "sub_agent_completed", "sub_agent_failed", "sub_agent_aborted"}
+)
+"""Child lifecycle kinds that request an observation refresh (feature 94 a.2).
+
+Content events never touch the list: a row's task label stays stable while
+its child streams. The stream-only ``sub_agent_dispatch_started`` event (no
+``sub_agent_id``) also requests a refresh; see ``_render_event``.
+"""
+
+PROGRESS_VIEWPORT_CACHE_LIMIT: int = 64
+"""Most recently visited session keys whose reading position the progress sink keeps."""
+
+PROGRESS_DIALOG_CONFLICT_NOTICE: str = "Close the current dialog before inspecting progress."
+"""Shown when a list selection arrives while an unrelated modal is open."""
+
+PROGRESS_MEMBERSHIP_REMOVED_NOTICE: str = "This session is no longer in the current workflow list."
+"""Shown when the selected session left the owner's list."""
+
+PROGRESS_REFRESH_FAILED_NOTICE: str = "Progress refresh unavailable; retrying on the next tick."
+"""Shown once per failure streak when an observation refresh fails unexpectedly."""
 
 TRANSCRIPT_WINDOW_SIZE: int = 500
 """Maximum children kept mounted in #transcript-content.
@@ -198,6 +324,27 @@ class PromptInput(TextArea):
         self._suggestion_navigation_enabled: bool = False
         self._prompt_history_navigation_enabled: bool = False
 
+    def _set_document(self, text: str, language: Optional[str]) -> None:
+        """Build the plain prompt document without normalizing literal path characters.
+
+        TextArea calls this on initialization and load_text; retain its normal
+        wrapping/navigation setup and edit history machinery.
+
+        Args:
+            text: Literal prompt buffer.
+            language: Optional syntax language; non-prompt syntax uses TextArea's setup.
+        """
+        if language:
+            super()._set_document(text=text, language=language)
+            return
+        self._highlight_query = None
+        self.document = PromptDocument(text=text)
+        self.wrapped_document = WrappedDocument(self.document, tab_width=self.indent_width)
+        self.navigator = DocumentNavigator(self.wrapped_document)
+        self._build_highlight_map()
+        self.move_cursor(location=(0, 0))
+        self._rewrap_and_refresh_virtual_size()
+
     class Submitted(Message):
         """Posted when the user presses Enter to submit the buffer."""
 
@@ -212,6 +359,9 @@ class PromptInput(TextArea):
 
     class SuggestionAccepted(Message):
         """Posted when the prompt accepts the highlighted suggestion."""
+
+    class PathSuggestionsRequested(Message):
+        """Posted when Tab requests filesystem discovery without a visible menu."""
 
     class SuggestionMoved(Message):
         """Posted when the prompt moves the highlighted suggestion row."""
@@ -260,6 +410,11 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             self.post_message(self.SuggestionAccepted())
+            return
+        if event.key == "tab":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PathSuggestionsRequested())
             return
         if self._should_move_suggestion(event=event):
             event.prevent_default()
@@ -354,7 +509,8 @@ class PromptInput(TextArea):
         Returns:
             bool: True when the suggestion menu should close.
         """
-        return self._suggestion_navigation_enabled and event.key == "escape"
+        # Escape also revokes an in-progress, not-yet-visible filesystem read.
+        return event.key == "escape"
 
     @staticmethod
     def _suggestion_delta(*, event: events.Key) -> int:
@@ -375,6 +531,16 @@ class SloTUI(App):
     """Textual application wrapping a single ``SloAgentSession``."""
 
     CSS_PATH = "app.tcss"
+
+    # Screen size classes consumed by the workflow session list rules in
+    # app.tcss (feature 94 a.2): 60x20 is the minimum interactive size, and
+    # screens shorter than 24 rows keep the list to one row.
+    HORIZONTAL_BREAKPOINTS = [(0, "-workflow-below-minimum-width"), (60, "-workflow-minimum-width")]
+    VERTICAL_BREAKPOINTS = [
+        (0, "-workflow-below-minimum-height"),
+        (20, "-workflow-short-height"),
+        (24, "-workflow-full-height"),
+    ]
 
     BINDINGS = [
         # ``priority=True`` so our interrupt wins over Textual's default
@@ -420,6 +586,11 @@ class SloTUI(App):
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
         workflow_handle_store: Optional[WorkflowHandleStore] = None,
         browser_host: Optional[BrowserHost] = None,
+        workflow_service_factory: Optional[WorkflowAppServiceFactory] = None,
+        workflow_coordinator_factory: Optional[WorkflowCoordinatorFactory] = None,
+        workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
+        path_reader: Optional[PathSuggestionReader] = None,
+        editor_launcher: Optional[EditorLauncher] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -441,14 +612,44 @@ class SloTUI(App):
             browser_host (Optional[BrowserHost]): Optional injected host that
                 decides whether link clicks may open a browser. ``None`` uses
                 ``BrowserHost.current()``.
+            path_reader: Optional off-thread path reader; defaults to real immediate enumeration.
+            editor_launcher: Optional local editor validation/submission boundary.
+            workflow_resume_launcher: Optional workflow process/capture launch boundary.
+            workflow_service_factory: Optional real-service composition boundary.
+            workflow_coordinator_factory: Optional coordinator composition boundary;
+                defaults to the production coordinator with the app-owned sink.
         """
         super().__init__()
+        self._workflow_resume_launcher = workflow_resume_launcher
+        self._escape_deadline: float = 0.0
+        self._editor_launcher = editor_launcher or EditorLauncher()
+        self._editor_launch_tasks: dict[Worker[None], asyncio.Task[None]] = {}
+        self._workflow_service_factory: WorkflowAppServiceFactory = (
+            workflow_service_factory or DetachedWorkflowAppService
+        )
+        self._workflow_coordinator_factory: WorkflowCoordinatorFactory = (
+            workflow_coordinator_factory or WorkflowProgressCoordinator
+        )
+        self._workflow_visibility_lock: asyncio.Lock = asyncio.Lock()
+        self._workflow_observation_close_task: Optional[asyncio.Task[None]] = None
         self._browser_host: BrowserHost = browser_host or BrowserHost.current()
         self.register_theme(SLO_DEFAULT_THEME)
         self.register_theme(SLO_DARK_THEME)
         self.theme = self.DEFAULT_THEME
         self._session: SloAgentSession = session
         self._preparation_task: Optional[asyncio.Task[None]] = None
+        self._candidate_cleanup_task: Optional[asyncio.Task[None]] = None
+        self._mount_runtime_task: Optional[asyncio.Task[None]] = None
+        self._app_closing: bool = False
+        self._app_shutdown_task: Optional[asyncio.Task[None]] = None
+        self._session_replacement_task: Optional[asyncio.Task[None]] = None
+        self._session_transitioning: bool = False
+        self._retired_herdr_session: Optional[SloAgentSession] = None
+        self._retired_herdr_drain_task: Optional[asyncio.Task[None]] = None
+        self._selected_herdr_drain_task: Optional[asyncio.Task[None]] = None
+        self._herdr_successor_suppressed: bool = False
+        self._replacement_delivery_safe: bool = True
+        self._delivery_quiescing: bool = False
         self._attach_pool_to_session(session=self._session)
         self._transcript_scroll: Optional[TranscriptScroll] = None
         self._transcript_content: Optional[Vertical] = None
@@ -484,6 +685,9 @@ class SloTUI(App):
         # ``steering_applied`` event drains one (FIFO), matching the agent's
         # drain order.
         self._pending_steer_blocks: list[SteeringPendingBlock] = []
+        self._path_suggestions = PathSuggestionController(
+            view=self, reader=path_reader, run_worker=self.run_worker
+        )
         self._slash_suggestion_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
         self._picker_catalog_revision: tuple[int, int] = ModelSuggestionProjection.current_revision()
         self._suggestion_engine: SlashSuggestionEngine = SlashSuggestionEngine(
@@ -496,6 +700,7 @@ class SloTUI(App):
         self._fleet_panel: Optional[SubAgentFleetPanel] = None
         # Guards one-per-run auto-launch of the workflow visualizer window.
         self._visualizer_launched_for_run: bool = False
+        self._visualizer_launch_tasks: dict[str, asyncio.Task[None]] = {}
         # Detached-workflow receive path (spec 57.a.5): the app service owns
         # the handle store, legal durable transitions, and the live-state
         # cache; the renderer owns visualizer launch de-duplication and
@@ -503,12 +708,23 @@ class SloTUI(App):
         # app only delegates and executes typed effects.
         self._workflow_handle_store: Optional[WorkflowHandleStore] = workflow_handle_store
         self._workflow_app_service: Optional[DetachedWorkflowAppService] = None
+        # Feature 94 a.3: the sole observation refresh owner and its presentation
+        # adapter, rebuilt together with the service for every owning session.
+        self._workflow_progress_coordinator: Optional[WorkflowProgressCoordinator] = None
+        self._workflow_progress_sink: Optional[_WorkflowProgressSink] = None
+        # Session the observation trio is bound to; None while unbound. Recorded
+        # only after the coordinator's no-await start completes, and cleared first
+        # on close, so a matching session ID alone never proves a healthy binding:
+        # rollback and rebind require coordinator, service and sink to be present
+        # and unclosed for that exact identity.
+        self._workflow_observation_session_id: Optional[str] = None
         self._workflow_renderer: Optional[DetachedWorkflowRenderer] = None
         self._inbox_store: Optional[SessionInboxStore] = inbox_store
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
         self._lease_timer: Optional[Timer] = None
         self._inbox_timer: Optional[Timer] = None
+        self._failed_delivery_timers: tuple[Timer, ...] = ()
 
     def compose(self) -> ComposeResult:
         """Build the widget tree.
@@ -530,9 +746,8 @@ class SloTUI(App):
             self._adapter = _TranscriptAdapter(tui=self)
             self._input = PromptInput()
             yield self._input
-            # Fleet panel: below PromptInput; hidden until first sub_agent_spawned.
-            # Shows live sub-agent status rows; the orchestrator transcript always
-            # stays in the foreground above the prompt.
+            # Workflow session list: below PromptInput, hidden while it has no
+            # rows. The orchestrator transcript always stays in the foreground.
             self._fleet_panel = SubAgentFleetPanel()
             yield self._fleet_panel
             self._usage_status_bar = UsageStatusBar()
@@ -582,20 +797,51 @@ class SloTUI(App):
         so live events from a new prompt cannot interleave with the
         replay tail.
         """
+        session = self._session
+        if not self._runtime_may_start(session=session):
+            return
         ModelSuggestionProjection.refresh_authentication()
         await self._hydrate_transcript_from_history()
-        await self._maybe_render_startup_notice()
+        if not self._runtime_may_start(session=session):
+            return
+        try:
+            await self._maybe_render_startup_notice()
+        except Exception:
+            # A closed or displaced owner must not repaint even a fixed failure
+            # notice; revalidate the captured owner before rendering (C7.13).
+            if self._runtime_may_start(session=session):
+                self._write_lifecycle_notice(
+                    content="Session startup notice unavailable.", classes="tool-result"
+                )
+        if not self._runtime_may_start(session=session):
+            return
         self._session.subscribe(handler=self._render_event)
-        await self._initialize_session_delivery()
-        self._refresh_title_bar()
-        await self._session.refresh_context_window_snapshot()
-        self._refresh_usage_status_bar()
+        # The initial owner's observation binds here, once; the mount runtime
+        # task below (and every later adoption) goes through the guarded
+        # ``_ensure_workflow_observation_bound`` re-entry point instead.
+        await self._bind_workflow_observation()
+        self._mount_runtime_task = asyncio.create_task(coro=self._initialize_mounted_delivery())
+        cancelled = await HerdrTaskJoin.wait(task=self._mount_runtime_task)
+        self._mount_runtime_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        if not self._runtime_may_start(session=session):
+            return
         if self._input is not None:
             self._input.focus()
-        if self._session.preparation_status != "ready":
-            self._start_session_preparation()
         if not self._has_credential_for_active_model():
             self._push_auth_modal()
+
+    def _runtime_may_start(self, *, session: SloAgentSession) -> bool:
+        """Check captured identity against the irreversible app cutoff.
+
+        Args:
+            session: Owner captured before the asynchronous continuation.
+
+        Returns:
+            bool: Whether that owner remains selected and the app is open.
+        """
+        return not self._app_closing and self._session is session
 
     def _start_session_preparation(self) -> None:
         """Start one tracked catalog worker after mount or explicit recovery.
@@ -603,12 +849,16 @@ class SloTUI(App):
         The session owns discovery and atomic adoption; the app owns task lifetime
         and safe status rendering. Repeated retry requests join the active worker.
         """
+        if self._app_closing:
+            return
         if self._preparation_task is not None and not self._preparation_task.done():
             return
         if self._session.preparation_status == "ready":
             return
         session: SloAgentSession = self._session
-        self._write_adapter_line(content="Preparing model catalog; limits unknown.", classes="tool-result")
+        self._write_lifecycle_notice(
+            content="Preparing model catalog; limits unknown.", classes="tool-result"
+        )
         self._preparation_task = asyncio.create_task(self._prepare_mounted_session(session=session))
 
     async def _prepare_mounted_session(self, *, session: SloAgentSession) -> None:
@@ -622,15 +872,15 @@ class SloTUI(App):
         except asyncio.CancelledError:
             raise
         except Exception:
-            if self._session is session:
-                self._write_adapter_line(
+            if self._runtime_may_start(session=session):
+                self._write_lifecycle_notice(
                     content="Model preparation failed; use /auth or /model refresh to retry.",
                     classes="tool-result",
                 )
         else:
-            if self._session is session:
-                self._write_adapter_line(content="Model catalog ready.", classes="tool-result")
-        if self._session is session:
+            if self._runtime_may_start(session=session):
+                self._write_lifecycle_notice(content="Model catalog ready.", classes="tool-result")
+        if self._runtime_may_start(session=session):
             self._refresh_title_bar()
             self._refresh_usage_status_bar()
 
@@ -653,17 +903,35 @@ class SloTUI(App):
         live session that produced it. No canonical write happens here —
         replay is a pure read path. Runs before the live renderer
         subscribes so replay and live events cannot interleave.
+
+        The session is captured at entry and revalidated after the real
+        replay read, after each real replay mount, and after the real
+        summary mount: ``on_mount`` is not yet registered as
+        ``_mount_runtime_task`` while it awaits this helper, so public
+        ``on_unmount`` may complete first. A closed or displaced owner must
+        not mount the next replay entry, update the summary, or scroll after
+        that cutoff (C7.13). Replay mounts and the summary mount already
+        admitted before the cutoff remain owned and are never cancelled; the
+        final scroll is a new effect initiated after the summary await, so
+        it is gated by its own revalidation.
         """
         self._load_older_cursor = 0
+        session = self._session
         try:
-            entries: list[TranscriptEntryDAO] = await self._session.hydrate_transcript_entries()
+            entries: list[TranscriptEntryDAO] = await session.hydrate_transcript_entries()
         except Exception:  # noqa: BLE001 — replay must never crash boot
+            return
+        if not self._runtime_may_start(session=session):
             return
         mountable: list[TranscriptEntryDAO] = self._newest_hydration_entries(entries=entries)
         self._load_older_cursor = len(entries) - len(mountable)
         for entry in mountable:
             await self._projector.project_replay_entry(entry=entry)
+            if not self._runtime_may_start(session=session):
+                return
         await self._update_earlier_summary()
+        if not self._runtime_may_start(session=session):
+            return
         self._scroll_transcript_to_end()
 
     @staticmethod
@@ -692,21 +960,34 @@ class SloTUI(App):
         return entries[-TRANSCRIPT_HYDRATION_ENTRY_LIMIT:]
 
     async def _maybe_render_startup_notice(self) -> None:
-        """Render the one-time startup notice for new sessions only."""
-        if self._session.preparation_status != "ready":
+        """Render the one-time startup notice for new sessions only.
+
+        The session is captured at entry and revalidated after the real
+        history predicate await and before any rendering or marker
+        persistence: ``on_mount`` is not yet registered as
+        ``_mount_runtime_task`` while it awaits this helper, so public
+        ``on_unmount`` may complete first. A closed or displaced owner must
+        not repaint or persist ``startup_notice_shown_at`` after that
+        cutoff (C7.13). A marker write already admitted before the cutoff
+        remains owned and is never cancelled.
+        """
+        session = self._session
+        if session.preparation_status != "ready":
             return
-        if not await self._session.should_show_startup_notice():
+        if not await session.should_show_startup_notice():
             return
-        fallback_notice: Optional[str] = self._session.startup_fallback_notice
+        if not self._runtime_may_start(session=session):
+            return
+        fallback_notice: Optional[str] = session.startup_fallback_notice
         if fallback_notice:
             self._write_adapter_line(
                 content=fallback_notice,
                 classes="tool-result",
             )
         resolved_reasoning = resolve_reasoning_config(
-            model_name=self._session.active_model_name,
-            requested_level=self._session.active_reasoning_level,
-            snapshot=self._session.catalog_snapshot,
+            model_name=session.active_model_name,
+            requested_level=session.active_reasoning_level,
+            snapshot=session.catalog_snapshot,
         )
         reasoning_detail: str = self._reasoning_detail_text(
             provider_effort=resolved_reasoning.provider_effort,
@@ -723,14 +1004,14 @@ class SloTUI(App):
         self._write_adapter_line(
             content=(
                 "Tip: use /help to see available commands. "
-                f"Session: {self._session.session_id}. "
-                f"Initialized model: {self._session.active_model_name}. "
-                f"Reasoning: {self._session.active_reasoning_level}. "
+                f"Session: {session.session_id}. "
+                f"Initialized model: {session.active_model_name}. "
+                f"Reasoning: {session.active_reasoning_level}. "
                 f"Provider detail: {reasoning_detail}."
             ),
             classes="tool-result",
         )
-        await self._session.mark_startup_notice_shown()
+        await session.mark_startup_notice_shown()
 
     @staticmethod
     def _reasoning_detail_text(
@@ -780,8 +1061,21 @@ class SloTUI(App):
         self._write_adapter_line(content=f"theme: {next_theme}", classes="tool-result")
 
     def _push_auth_modal(self) -> None:
-        """Push ``AuthenticationScreen`` with the dismissal callback wired up."""
-        self.push_screen(AuthenticationScreen(), callback=self._on_auth_dismissed)
+        """Push ``AuthenticationScreen`` only while the app lifetime is open."""
+        if getattr(self, "_app_closing", False):
+            return
+        session = self._session
+        token = session.set_operator_attention(reason="Authentication required")
+
+        def dismiss(value: Optional[CredentialDAO]) -> None:
+            """Complete only the auth request owned by this captured session."""
+            if not self._runtime_may_start(session=session):
+                return
+            if value is not None or self._has_credential_for_active_model():
+                session.clear_operator_attention(token=token)
+            self._on_auth_dismissed(value)
+
+        self.push_screen(AuthenticationScreen(), callback=dismiss)
 
     def _on_auth_dismissed(self, value: Optional[CredentialDAO]) -> None:
         """Refresh the active model and title state after auth success.
@@ -790,6 +1084,8 @@ class SloTUI(App):
             value (Optional[CredentialDAO]): ``CredentialDAO`` on success,
                 ``None`` on cancel.
         """
+        if getattr(self, "_app_closing", False):
+            return
         ModelSuggestionProjection.refresh_authentication(verified_credential=value)
         self._refresh_slash_suggestions()
         if value is None:
@@ -861,22 +1157,17 @@ class SloTUI(App):
         return f"~/{relative_path}"
 
     def _refresh_title_bar(self, *, subject: Optional[str] = None) -> None:
-        """Render title and subtitle from the session's active runtime state.
+        """Refresh the main header from the selected session after lifecycle changes.
+
+        Model, authentication and usage details remain on their separate surfaces.
 
         Args:
-            subject (Optional[str]): Optional authenticated subject to
-                append to the subtitle.
+            subject (Optional[str]): Accepted for auth-callback compatibility;
+                authenticated identity is not displayed in the header.
         """
         workdir_text: str = self._collapse_home_in_path(path=self._session.workdir)
-        self.title = (
-            f"slo · {workdir_text} · {self._session.routed_model_name} · "
-            f"reasoning {self._session.active_reasoning_level}"
-        )
-        if self._session.session_name is not None:
-            session_identity: str = f"session {self._session.session_name} · {self._session.session_id}"
-        else:
-            session_identity = f"session {self._session.session_id}"
-        self.sub_title = f"{session_identity} · {subject}" if subject else session_identity
+        self.title = f"slo · {workdir_text} · session {self._session.session_id}"
+        self.sub_title = ""
 
     def _refresh_usage_status_bar(self) -> None:
         """Refresh the persistent usage-and-limits widget."""
@@ -888,13 +1179,242 @@ class SloTUI(App):
         )
 
     async def on_unmount(self) -> None:
-        """Detach the renderer. No subprocess to tear down."""
-        await self._cancel_session_preparation()
-        self._session.unsubscribe(handler=self._render_event)
-        await self._release_session_lease()
+        """Seal admission before awaiting the single retained shutdown task."""
+        self._app_closing = True
+        self._path_suggestions.close()
+        self._delivery_quiescing = True
+        self._session.begin_external_reporting_close()
+        if self._app_shutdown_task is None:
+            self._app_shutdown_task = asyncio.create_task(coro=self._finish_app_shutdown())
+        cancelled = await HerdrTaskJoin.wait(task=self._app_shutdown_task)
+        self._app_shutdown_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _finish_app_shutdown(self) -> None:
+        """Join commit outside its caller's gate, then drain the adopted owner."""
+        if self._mount_runtime_task is not None:
+            await HerdrTaskJoin.wait(task=self._mount_runtime_task)
+        replacement = self._session_replacement_task
+        if replacement is not None:
+            await HerdrTaskJoin.wait(task=replacement)
+        await self._shutdown_step(cleanup=self._drain_editor_launches)
+        await self._shutdown_step(cleanup=self._cancel_visualizer_launches)
+        async with self._prompt_submission_lock:
+            session = self._session
+            session.begin_external_reporting_close()
+            await self._shutdown_step(cleanup=self._cancel_session_preparation)
+            await self._shutdown_step(cleanup=self._close_workflow_observation)
+            await self._shutdown_step(cleanup=session.close_external_reporting)
+            await self._shutdown_step(cleanup=self._close_selected_delivery)
+        await self._drain_shutdown_owners(session=session)
+        await self._shutdown_step(cleanup=self._path_suggestions.join)
+        # A failed viewer helper is not evidence that its retained workers ended.
+        for task in tuple(self._visualizer_launch_tasks.values()):
+            await HerdrTaskJoin.wait(task=task)
+
+    async def _drain_shutdown_owners(self, *, session: SloAgentSession) -> None:
+        """Start both final attempts before joining either potentially retained owner.
+
+        Args:
+            session: Selected owner captured under the submission gate.
+        """
+        if self._selected_herdr_drain_task is None:
+            self._selected_herdr_drain_task = asyncio.create_task(
+                coro=self._finish_shutdown_owner(session=session)
+            )
+        if self._retired_herdr_session is not None and self._retired_herdr_drain_task is None:
+            self._retired_herdr_drain_task = asyncio.create_task(coro=self._finish_retired_session_drain())
+        for task in (self._selected_herdr_drain_task, self._retired_herdr_drain_task):
+            if task is not None:
+                await HerdrTaskJoin.wait(task=task)
+                task.result()
+
+    async def _finish_shutdown_owner(self, *, session: SloAgentSession) -> None:
+        """Retain failed final cleanup rather than falsely completing graceful teardown.
+
+        Args:
+            session: Strongly retained owner of this single final attempt.
+        """
+        try:
+            outcome = await session.finish_retired_reporting_cleanup()
+            if outcome.resources == "drained":
+                return
+        except Exception:
+            self._write_lifecycle_notice(content="Session cleanup incomplete.", classes="tool-result")
+        await asyncio.Future()
+
+    async def _shutdown_step(self, *, cleanup: Callable[[], Awaitable[object]]) -> None:
+        """Attempt an independent owner even when prior cleanup or diagnostics fail.
+
+        Args:
+            cleanup: Bound cleanup for one retained owner.
+        """
+        try:
+            await cleanup()
+        except Exception:
+            self._write_lifecycle_notice(content="Session cleanup incomplete.", classes="tool-result")
+
+    async def _close_selected_delivery(self) -> None:
+        """Release the captured binding even if subscription removal fails."""
+        session = self._session
+        try:
+            session.unsubscribe(handler=self._render_event)
+        finally:
+            self._stop_delivery_timers()
+            await self._release_replaced_session_lease(session=session)
+
+    async def _drain_retired_session_at_unmount(self) -> None:
+        """Join the quarantined session's one final local attempt, never remote retry."""
+        if self._retired_herdr_session is None:
+            return
+        if self._retired_herdr_drain_task is None:
+            self._retired_herdr_drain_task = asyncio.create_task(coro=self._finish_retired_session_drain())
+        cancelled = await HerdrTaskJoin.wait(task=self._retired_herdr_drain_task)
+        self._retired_herdr_drain_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _finish_retired_session_drain(self) -> None:
+        """Keep the explicit owner reachable until its session gateway proves drain."""
+        session = self._retired_herdr_session
+        assert session is not None
+        await self._finish_shutdown_owner(session=session)
+        self._retired_herdr_session = None
+
+    async def _initialize_mounted_delivery(self) -> None:
+        """Retain mount-owned filesystem work under the submission gate."""
+        async with self._prompt_submission_lock:
+            await self._finish_replacement_runtime()
 
     async def _initialize_session_delivery(self) -> None:
-        """Start lease heartbeats and inbox polling for history-backed sessions."""
+        """Contain partial startup before mount or replacement continues."""
+        if self._lease_timer is not None or self._inbox_timer is not None:
+            return
+        session = self._session
+        owner_id = self._session_owner_id
+        self._delivery_quiescing = True
+        if not self._replacement_delivery_safe or not self._session_supports_inbox_delivery():
+            return
+        try:
+            self._build_session_delivery(session=session)
+        except Exception:
+            await self._rollback_session_delivery(session=session, owner_id=owner_id, timers=())
+            self._write_lifecycle_notice(
+                content="Session inbox unavailable; local prompts remain available.", classes="tool-result"
+            )
+            return
+        binding = _DeliveryInitialization(
+            session=session,
+            session_id=session.session_id,
+            owner_id=owner_id,
+            lease_store=self._lease_store,
+            inbox_store=self._inbox_store,
+            service=self._workflow_app_service,
+            renderer=self._workflow_renderer,
+        )
+        timers: list[Timer] = []
+        try:
+            await self._prepare_session_delivery(binding=binding)
+            if binding.service is not None:
+                self._publish_delivery_timers(binding=binding, timers=timers)
+        except Exception:
+            await self._rollback_session_delivery(
+                session=session,
+                owner_id=owner_id,
+                binding=binding,
+                timers=tuple(timers),
+            )
+            self._write_lifecycle_notice(
+                content="Session inbox unavailable; local prompts remain available.",
+                classes="tool-result",
+            )
+
+    async def _rollback_session_delivery(
+        self,
+        *,
+        session: SloAgentSession,
+        owner_id: str,
+        binding: Optional[_DeliveryInitialization] = None,
+        timers: Optional[tuple[Timer, ...]] = None,
+    ) -> None:
+        """Unwind partial delivery while retaining timer handles whose stop failed.
+
+        Args:
+            session (SloAgentSession): Captured initialization owner, never its successor.
+            owner_id (str): Owner captured before the first initialization await.
+        """
+        self._delivery_quiescing = True
+        self._replacement_delivery_safe = False
+        try:
+            self._stop_delivery_timers(timers=timers)
+        finally:
+            try:
+                await self._release_captured_session_lease(
+                    lease_store=self._lease_store if binding is None else binding.lease_store,
+                    session_id=session.session_id if binding is None else binding.session_id,
+                    owner_id=owner_id,
+                )
+            finally:
+                if binding is not None:
+                    if self._workflow_renderer is binding.renderer:
+                        self._workflow_renderer = None
+                    if self._workflow_app_service is binding.service:
+                        await self._close_captured_observation_owner(binding=binding)
+                elif self._session is session and self._session_owner_id == owner_id:
+                    self._workflow_app_service = None
+                    self._workflow_renderer = None
+
+    async def _close_captured_observation_owner(self, *, binding: _DeliveryInitialization) -> None:
+        """Retire the still-published owner captured by a failed delivery initialization.
+
+        WHAT: When rollback runs for a binding whose captured service is still
+            the app's published observation service, the whole captured
+            coordinator → service → sink trio is closed and the panel reset
+            once, in the canonical teardown order, so a failed inbox/timer setup
+            never orphans a live reader the app can no longer reach. When any
+            successor binding (rebind, adoption or an earlier close) displaced
+            the capture, nothing is touched: a displaced successor owns its own
+            close, and clearing or closing after the lease-release await is
+            forbidden.
+        WHO: ``_rollback_session_delivery`` only, after the captured lease
+            release has been joined.
+        WHEN: While the captured identity is still the selected one; a matching
+            session ID without the surviving trio is never treated as the
+            captured owner.
+
+        Args:
+            binding (_DeliveryInitialization): Captured initialization whose
+                service is still published.
+        """
+        coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        sink: Optional[_WorkflowProgressSink] = self._workflow_progress_sink
+        if not (
+            self._workflow_observation_session_id == binding.session_id
+            and self._session is binding.session
+            and coordinator is not None
+            and service is not None
+            and sink is not None
+        ):
+            return
+        self._workflow_observation_session_id = None
+        self._workflow_progress_coordinator = None
+        self._workflow_app_service = None
+        self._workflow_progress_sink = None
+        await coordinator.close()
+        await service.close()
+        sink.dispose()
+        await self._reset_session_list()
+
+    def _build_session_delivery(self, *, session: SloAgentSession) -> None:
+        """Build inert delivery collaborators before initialization captures ownership.
+
+        Args:
+            session: Session whose unchanged history root owns delivery.
+        """
+        if not self._runtime_may_start(session=session):
+            return
         if not self._session_supports_inbox_delivery():
             return
         history_root: Path = cast(Path, self._session.history_root)
@@ -902,24 +1422,239 @@ class SloTUI(App):
             self._lease_store = SessionOwnershipLeaseStore(history_root=history_root)
         if self._inbox_store is None:
             self._inbox_store = SessionInboxStore(history_root=history_root)
-        if self._workflow_handle_store is None:
-            self._workflow_handle_store = WorkflowHandleStore(history_root=history_root)
-        if self._workflow_app_service is None:
-            self._workflow_app_service = DetachedWorkflowAppService(
-                workflow_handle_store=self._workflow_handle_store,
-                owner_session_id=self._session.session_id,
+
+    def _require_initialization_binding(self, *, binding: _DeliveryInitialization) -> None:
+        """Reject any displaced collaborator before continuing initialization.
+
+        Args:
+            binding: Immutable pre-await identity and collaborator capture.
+
+        Raises:
+            RuntimeError: The captured initialization no longer owns delivery.
+        """
+        if not (
+            self._runtime_may_start(session=binding.session)
+            and binding.session.session_id == binding.session_id
+            and self._session_owner_id == binding.owner_id
+            and self._lease_store is binding.lease_store
+            and self._inbox_store is binding.inbox_store
+            and self._workflow_app_service is binding.service
+            and self._workflow_renderer is binding.renderer
+        ):
+            raise RuntimeError("Session delivery unavailable")
+
+    async def _prepare_session_delivery(self, *, binding: _DeliveryInitialization) -> None:
+        """Prepare delivery under the retained mount or replacement task.
+
+        Args:
+            binding (_DeliveryInitialization): Captured session, lease owner and
+                delivery collaborators, revalidated after each awaited boundary.
+        """
+        if binding.service is None or binding.inbox_store is None:
+            return
+        await binding.service.reconcile_snapshot()
+        self._require_initialization_binding(binding=binding)
+        lease = await self._acquire_session_lease(session=binding.session, owner_id=binding.owner_id)
+        self._require_initialization_binding(binding=binding)
+        if lease.session_id != binding.session_id or lease.owner_id != binding.owner_id:
+            raise RuntimeError("Session lease unavailable")
+        await binding.inbox_store.ensure_session_inbox(session_id=binding.session_id)
+        self._require_initialization_binding(binding=binding)
+
+    def _publish_delivery_timers(self, *, binding: _DeliveryInitialization, timers: list[Timer]) -> None:
+        """Publish both timers only while the captured lifetime remains open.
+
+        Args:
+            binding (_DeliveryInitialization): Captured lifetime whose preparation
+                completed and whose authority is checked before publication.
+            timers (list[Timer]): Caller-owned rollback list receiving each created
+                timer before its authority check and publication.
+
+        Raises:
+            RuntimeError: Shutdown or identity change requires caller-owned rollback.
+        """
+        self._require_initialization_binding(binding=binding)
+        for slot, interval, callback in (
+            ("_lease_timer", _SESSION_LEASE_HEARTBEAT_SECONDS, self._renew_session_lease),
+            ("_inbox_timer", _SESSION_INBOX_POLL_SECONDS, self._poll_session_inbox),
+        ):
+            timer = self.set_interval(interval=interval, callback=callback)
+            timers.append(timer)
+            self._require_initialization_binding(binding=binding)
+            if getattr(self, slot) is not None:
+                raise RuntimeError("Session delivery unavailable")
+            setattr(self, slot, timer)
+        self._require_initialization_binding(binding=binding)
+        self._delivery_quiescing = False
+
+    def _require_delivery_start(self, *, session: SloAgentSession) -> None:
+        """Reject a late setup continuation so its caller rolls back acquired resources.
+
+        Args:
+            session (SloAgentSession): Exact owner captured before initialization.
+
+        Raises:
+            RuntimeError: The captured owner no longer has startup authority.
+        """
+        if not self._runtime_may_start(session=session):
+            raise RuntimeError("Session delivery unavailable")
+
+    async def _bind_workflow_observation(self) -> None:
+        """Bind workflow observation to the current session, replacing any prior owner.
+
+        WHAT: Tears the previous owner down (``_close_workflow_observation``), then
+            builds the service for the current session, the progress sink and the
+            single refresh coordinator, and starts it (five-second timer plus an
+            immediate read). Every session observes its attached batch, with or
+            without history; history-backed sessions also get the durable handle
+            store and history adapter, and only they keep launch effects
+            (``_history_backed_workflow_service``). The mount-time handle store is
+            reused across ``/new`` because the replacement session copies the old
+            session's ``history_root``.
+        WHO: ``on_mount`` before inbox delivery, and ``/new`` session adoption.
+        WHEN: Once per owning session, so no rows, caches or timers cross sessions.
+        """
+        await self._close_workflow_observation()
+        self._workflow_observation_close_task = None
+        self._workflow_app_service = self._build_workflow_service()
+        self._workflow_progress_sink = _WorkflowProgressSink(tui=self)
+        self._workflow_progress_coordinator = self._workflow_coordinator_factory(
+            service=self._workflow_app_service,
+            sink=self._workflow_progress_sink,
+            schedule=self._schedule_workflow_refresh,
+        )
+        self._workflow_progress_coordinator.start()
+        self._workflow_observation_session_id = self._session.session_id
+
+    async def _ensure_workflow_observation_bound(self) -> None:
+        """Rebind observation only when the selected session lost or never had it.
+
+        WHAT: Mount and ``/new`` adoption both converge on runtime delivery;
+            rebinding the identical already-bound owner would tear down and
+            recreate the one five-second timer, so an intact, unclosed binding
+            for the selected session is kept and only a missing, mid-teardown
+            or foreign one is rebuilt. A coordinator/service pair whose
+            ``close`` already started is always rebuilt, never reused.
+        WHO: ``_finish_replacement_runtime`` for the current session.
+        WHEN: At every runtime delivery point, mount or replacement.
+        """
+        if (
+            self._workflow_observation_session_id == self._session.session_id
+            and self._workflow_progress_coordinator is not None
+            and self._workflow_app_service is not None
+            and self._workflow_progress_sink is not None
+        ):
+            return
+        await self._bind_workflow_observation()
+
+    async def _close_workflow_observation(self) -> None:
+        """Join the current owner's observation in the fixed teardown order.
+
+        WHAT: ``coordinator.close`` (no read task survives) → ``service.close``
+            (caches cleared, later reads empty) → ``sink.dispose`` (owned screens
+            dismissed, viewports forgotten) → panel reset, which joins any
+            shielded row application before clearing. Never cancels execution.
+        WHO: ``_bind_workflow_observation`` before adopting a new owner, and
+            ``on_unmount``.
+        WHEN: Once per owner replacement or app teardown. Genuinely inert when
+            unbound: with no coordinator, service or sink left to retire there
+            is no owner whose panel rows must be cleared, so the panel is not
+            reset again.
+        """
+        if self._workflow_observation_close_task is None:
+            self._workflow_observation_close_task = asyncio.create_task(self._dispose_workflow_observation())
+        task = self._workflow_observation_close_task
+        cancelled: bool = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError()
+        task.result()
+
+    async def _dispose_workflow_observation(self) -> None:
+        """Invalidate old references, join owned work, dispose the sink, then reset."""
+        self._workflow_observation_session_id = None
+        coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        sink: Optional[_WorkflowProgressSink] = self._workflow_progress_sink
+        self._workflow_progress_coordinator = None
+        self._workflow_app_service = None
+        self._workflow_progress_sink = None
+        if coordinator is None and service is None and sink is None:
+            return
+        try:
+            if coordinator is not None:
+                await coordinator.close()
+        finally:
+            try:
+                if service is not None:
+                    await service.close()
+            finally:
+                if sink is not None:
+                    sink.dispose()
+                await self._reset_session_list()
+
+    def _build_workflow_service(self) -> DetachedWorkflowAppService:
+        """Build the owner-scoped workflow service for the current session.
+
+        Returns:
+            DetachedWorkflowAppService: Service bound to this session's id, attached
+                supplier and child-abort seams (with or without history) and, when
+                history-backed, handle store and history adapter.
+        """
+        history_backed: bool = self._session_supports_inbox_delivery()
+        if history_backed and self._workflow_handle_store is None:
+            self._workflow_handle_store = WorkflowHandleStore(
+                history_root=cast(Path, self._session.history_root)
             )
-        await self._workflow_app_service.reconcile_snapshot()
-        await self._acquire_session_lease()
-        await self._inbox_store.ensure_session_inbox(session_id=self._session.session_id)
-        self._lease_timer = self.set_interval(
-            _SESSION_LEASE_HEARTBEAT_SECONDS,
-            self._renew_session_lease,
+        return self._workflow_service_factory(
+            workflow_handle_store=self._workflow_handle_store if history_backed else None,
+            owner_session_id=self._session.session_id,
+            attached_snapshot=self._session.attached_dispatch_snapshot,
+            history_store=self._session.history_store if history_backed else None,
+            attached_abort=self._session.abort_child,
+            attached_capability=self._session.child_control_capability,
         )
-        self._inbox_timer = self.set_interval(
-            _SESSION_INBOX_POLL_SECONDS,
-            self._poll_session_inbox,
-        )
+
+    def _schedule_workflow_refresh(self, seconds: float, callback: Callable[[], None]) -> Timer:
+        """Register the coordinator's interval timer on this app.
+
+        WHO: ``WorkflowProgressCoordinator.start`` through its injected factory,
+            which invokes it positionally.
+        WHEN: Once per owning session, after mount.
+
+        Args:
+            seconds (float): Interval in seconds.
+            callback (Callable[[], None]): Tick callback.
+
+        Returns:
+            Timer: The Textual interval timer the coordinator stops on close.
+        """
+        return self.set_interval(interval=seconds, callback=callback)
+
+    def _history_backed_workflow_service(self) -> Optional[DetachedWorkflowAppService]:
+        """Return the workflow service for whole-workflow launch effects, if allowed.
+
+        WHAT: Every session gets a service so its session list observes attached
+            children, but launch-result handling and the live-workflow exit hint
+            stay history-gated (a.2: existing launch effects remain unchanged).
+        WHO: ``_maybe_launch_workflow_visualizer`` and ``_live_workflow_labels``.
+        WHEN: On each launch result and each exit-hint render.
+
+        Returns:
+            Optional[DetachedWorkflowAppService]: The bound service for a
+                history-backed session, else ``None``.
+        """
+        if not self._session_supports_inbox_delivery():
+            return None
+        return self._workflow_app_service
 
     def _session_supports_inbox_delivery(self) -> bool:
         """Return whether this TUI session should expose inbox delivery.
@@ -939,25 +1674,39 @@ class SloTUI(App):
             return False
         return isinstance(self._session.history_root, Path)
 
-    async def _acquire_session_lease(self) -> None:
-        """Acquire the active-session lease for the mounted TUI session."""
+    async def _acquire_session_lease(
+        self, *, session: SloAgentSession, owner_id: str
+    ) -> SessionOwnershipLeaseDAO:
+        """Acquire a lease for the captured binding, never the later selected owner.
+
+        Args:
+            session: Session captured before initialization awaits.
+            owner_id: App owner captured before acquisition.
+
+        Returns:
+            The store's typed acquisition evidence, validated by the initializer.
+
+        Raises:
+            RuntimeError: No lease store was constructed.
+        """
         if self._lease_store is None:
-            return
-        await self._lease_store.acquire(
-            session_id=self._session.session_id,
-            owner_id=self._session_owner_id,
+            raise RuntimeError("Session lease unavailable")
+        return await self._lease_store.acquire(
+            session_id=session.session_id,
+            owner_id=owner_id,
             ttl_seconds=_SESSION_LEASE_TTL_SECONDS,
         )
 
     async def _renew_session_lease(self) -> None:
-        """Refresh the mounted TUI session lease."""
-        if self._lease_store is None:
-            return
-        await self._lease_store.renew(
-            session_id=self._session.session_id,
-            owner_id=self._session_owner_id,
-            ttl_seconds=_SESSION_LEASE_TTL_SECONDS,
-        )
+        """Resolve the committed lease binding only after acquiring the swap gate."""
+        async with self._prompt_submission_lock:
+            if self._lease_store is None or self._delivery_quiescing or not self._replacement_delivery_safe:
+                return
+            await self._lease_store.renew(
+                session_id=self._session.session_id,
+                owner_id=self._session_owner_id,
+                ttl_seconds=_SESSION_LEASE_TTL_SECONDS,
+            )
 
     async def _release_session_lease(self) -> None:
         """Release the mounted TUI session lease on app shutdown."""
@@ -987,20 +1736,39 @@ class SloTUI(App):
         WHO: ``_poll_session_inbox`` calls it while owning the submission gate.
         WHEN: The inbox timer finds a configured store.
         """
-        if self._inbox_store is None or self._in_flight_task is not None:
+        if self._inbox_store is None or not self._inbox_delivery_may_start():
             return
-        message: Optional[SessionInboxMessageDAO] = await self._inbox_store.claim_next(
-            session_id=self._session.session_id,
-        )
+        session: SloAgentSession = self._session
+        store: SessionInboxStore = self._inbox_store
+        message: Optional[SessionInboxMessageDAO] = await store.claim_next(session_id=session.session_id)
         if message is None:
             return
-        await self._handle_inbox_message(message=message)
-        await self._inbox_store.ack(
-            session_id=self._session.session_id,
-            message_id=message.message_id,
+        if self._session is not session or not self._inbox_delivery_may_start():
+            self._notice_retained_inbox_claim()
+            return
+        if not await self._handle_inbox_message(message=message):
+            self._notice_retained_inbox_claim()
+            return
+        await store.ack(session_id=session.session_id, message_id=message.message_id)
+
+    def _notice_retained_inbox_claim(self) -> None:
+        """Report deferred admission without private content or disposition changes."""
+        self._write_lifecycle_notice(
+            content="Inbox delivery deferred during shutdown; claimed item retained.",
+            classes="tool-result",
         )
 
-    async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> None:
+    def _inbox_delivery_may_start(self) -> bool:
+        """Return delivery authority under the caller-owned submission gate."""
+        return (
+            not self._app_closing
+            and not self._session_transitioning
+            and not self._delivery_quiescing
+            and self._replacement_delivery_safe
+            and self._in_flight_task is None
+        )
+
+    async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> bool:
         """Route one claimed inbox item according to its delivery mode.
 
         Workflow lifecycle messages (spec 57.a.5) additionally advance the
@@ -1010,23 +1778,28 @@ class SloTUI(App):
         Args:
             message (SessionInboxMessageDAO): Claimed inbox item.
         """
+        if not self._inbox_delivery_may_start():
+            return False
+        session = self._session
         await self._advance_workflow_handle_state(message=message)
+        if self._session is not session or not self._inbox_delivery_may_start():
+            return False
         if message.delivery_mode == "ui_notice":
             self._write_adapter_line(
                 content=self._format_inbox_notice(message=message),
                 classes="tool-result",
             )
-            return
+            return True
         if message.delivery_mode == "transcript_note":
             self._write_adapter_line(
                 content=self._format_inbox_note(message=message),
                 classes="tool-result",
             )
-            return
+            return True
         if message.delivery_mode == "context_note":
             await self._deliver_context_note(message=message)
-            return
-        await self._start_inbox_chat_turn(message=message)
+            return True
+        return await self._start_inbox_chat_turn(message=message)
 
     async def _deliver_context_note(self, *, message: SessionInboxMessageDAO) -> None:
         """Render a context note AND persist it into model context (spec 57.a.4).
@@ -1076,7 +1849,7 @@ class SloTUI(App):
         title: str = message.title or message.kind.replace("_", " ")
         return f"[scheduled update] {title}: {message.text}"
 
-    async def _start_inbox_chat_turn(self, *, message: SessionInboxMessageDAO) -> None:
+    async def _start_inbox_chat_turn(self, *, message: SessionInboxMessageDAO) -> bool:
         """Submit one claimed inbox item as a real chat turn.
 
         Called while the caller holds ``_prompt_submission_lock`` (see
@@ -1088,11 +1861,13 @@ class SloTUI(App):
         Args:
             message (SessionInboxMessageDAO): Claimed inbox item.
         """
+        if not self._inbox_delivery_may_start():
+            return False
         self._write_adapter_line(
             content=self._format_inbox_note(message=message),
             classes="tool-result",
         )
-        self._in_flight_task = asyncio.create_task(self._run_prompt(text=message.text))
+        return self._register_prompt_task(text=message.text)
 
     # ---- Detached-workflow receive path (spec 57.a.5) ----------------------
 
@@ -1132,6 +1907,7 @@ class SloTUI(App):
         if self._workflow_renderer is None:
             self._workflow_renderer = DetachedWorkflowRenderer(
                 notice_sink=_WorkflowNoticeAdapter(tui=self),
+                schedule=self._schedule_visualizer_launch,
             )
         return self._workflow_renderer
 
@@ -1140,18 +1916,19 @@ class SloTUI(App):
 
         Invoked from ``_render_event`` when a ``launch_workflow`` tool result
         streams through. The app service validates the result (seeding the
-        live-state cache on success); the renderer re-validates and opens the
-        window. Malformed or error JSON is a safe no-op on both layers.
+        live-state cache on success); the renderer schedules its typed effects.
+        Malformed or error JSON produces no effects, and any result in a session
+        without history is a safe no-op (launch effects are history-gated, as
+        before the session list observed every session).
 
         Args:
             result_text (str): Raw ``launch_workflow`` tool-result text.
         """
-        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        service: Optional[DetachedWorkflowAppService] = self._history_backed_workflow_service()
         if service is None:
             return
-        if service.advance_from_launch_result(result_text=result_text) == "ignored":
-            return
-        self._ensure_workflow_renderer().handle_launch_result(result_text=result_text)
+        outcome = service.advance_from_launch_result(result_text=result_text)
+        self._ensure_workflow_renderer().apply_effects(effects=outcome.effects)
 
     # ---- Input handling ---------------------------------------------------
 
@@ -1163,6 +1940,7 @@ class SloTUI(App):
         """
         if event.text_area is not self._input:
             return
+        self._reset_escape_sequence()
         if self._setting_prompt_from_history:
             self._setting_prompt_from_history = False
         elif self._prompt_history.is_navigating:
@@ -1170,6 +1948,12 @@ class SloTUI(App):
             if self._input is not None:
                 self._input.set_prompt_history_navigation_enabled(enabled=False)
         self._refresh_slash_suggestions()
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        """Invalidate cursor-local completions when the prompt insertion point moves."""
+        if event.text_area is self._input:
+            self._reset_escape_sequence()
+            self._refresh_slash_suggestions()
 
     def on_assistant_stream_block_rendered(self, event: AssistantStreamBlock.Rendered) -> None:
         """Re-check scroll-follow after an answer or thinking flush renders a block.
@@ -1189,6 +1973,48 @@ class SloTUI(App):
         """
         if event.was_following:
             self._scroll_transcript_to_end()
+
+    async def on_event(self, event: events.Event) -> None:
+        """Observe original input before Textual forwards it to consuming widgets.
+
+        Escape remains widget-owned dismissal on the first press. Only a second
+        prompt-focused Escape within 0.5 seconds dispatches the real /abort path.
+        Forwarded/bubbled keys must not be counted twice.
+        """
+        if isinstance(event, (events.DescendantFocus, events.DescendantBlur, events.AppBlur, events.Paste)):
+            self._reset_escape_sequence()
+        if isinstance(event, events.Key) and not event.is_forwarded:
+            if await self._consume_double_escape(event=event):
+                return
+        await super().on_event(event)
+
+    def _reset_escape_sequence(self) -> None:
+        """Revoke the armed key when input, focus, session or run context changes."""
+        self._escape_deadline = 0.0
+
+    async def _consume_double_escape(self, *, event: events.Key) -> bool:
+        """Translate only consecutive main-prompt Escapes into existing abort dispatch.
+
+        Args:
+            event: Original, not-yet-forwarded terminal key.
+
+        Returns:
+            True when the second Escape was consumed by /abort.
+        """
+        if event.key != "escape" or self._input is None or self.focused is not self._input:
+            self._reset_escape_sequence()
+            return False
+        if self._input.screen is not self.screen:
+            self._reset_escape_sequence()
+            return False
+        now = monotonic()
+        if now > self._escape_deadline:
+            self._escape_deadline = now + 0.5
+            return False
+        self._reset_escape_sequence()
+        self._hide_slash_suggestions()
+        await self._dispatch_slash_command(line="/abort")
+        return True
 
     async def on_key(self, event: events.Key) -> None:
         """Redirect a printable keystroke back to the prompt input.
@@ -1284,6 +2110,9 @@ class SloTUI(App):
         row = self._slash_suggestion_state.highlighted_row
         if row is None or self._input is None:
             return
+        if self._slash_suggestion_state.kind == "path":
+            self._path_suggestions.accept(insert_text=row.insert_text)
+            return
         updated_text: str = self._replace_prompt_text(
             insert_text=row.insert_text,
             state=self._slash_suggestion_state,
@@ -1362,12 +2191,16 @@ class SloTUI(App):
         Args:
             text (str): Normalized ordinary prompt text.
         """
+        if self._app_closing or self._session_transitioning:
+            return
         if self._session.preparation_status != "ready":
             self._write_adapter_line(
                 content="Model preparation required; use /auth or /model refresh.", classes="tool-result"
             )
             return
         async with self._prompt_submission_lock:
+            if self._app_closing or self._session_transitioning:
+                return
             if self._in_flight_task is not None:
                 await self._queue_prompt(text=text)
                 return
@@ -1385,9 +2218,28 @@ class SloTUI(App):
         Args:
             text (str): Accepted text to persist through the normal session invoke path.
         """
+        if self._app_closing or self._session_transitioning:
+            return
         self._prompt_history.record(text=text)
         await self._echo_user_line(text=text)
-        self._in_flight_task = asyncio.create_task(self._run_prompt(text=text))
+        self._register_prompt_task(text=text)
+
+    def _register_prompt_task(self, *, text: str) -> bool:
+        """Commit prompt admission under the caller-owned submission lock.
+
+        No rendering, callback or suspension may separate the closing check from
+        task registration. Already registered runs retain their execution policy.
+
+        Args:
+            text (str): Accepted prompt text, never logged by this gate.
+
+        Returns:
+            bool: Whether the app registered the task before shutdown.
+        """
+        if self._app_closing or self._session_transitioning:
+            return False
+        self._in_flight_task = asyncio.create_task(coro=self._run_prompt(text=text))
+        return True
 
     async def _queue_prompt(self, *, text: str) -> None:
         """Store the newest held text and mount or update its one visible block.
@@ -1399,6 +2251,8 @@ class SloTUI(App):
         Args:
             text (str): Newest ordinary prompt text.
         """
+        if self._app_closing or self._session_transitioning:
+            return
         self._queued_prompt_text = text
         if self._queued_prompt_block is not None:
             self._queued_prompt_block.replace_text(text=text)
@@ -1631,11 +2485,12 @@ class SloTUI(App):
 
         Returns:
             list[LiveWorkflowLabelDAO]: Live labels, empty when the workflow
-                receive path is not initialized.
+                receive path is not initialized or the session has no history.
         """
-        if self._workflow_app_service is None:
+        service: Optional[DetachedWorkflowAppService] = self._history_backed_workflow_service()
+        if service is None:
             return []
-        return self._workflow_app_service.live_workflow_labels()
+        return service.live_workflow_labels()
 
     async def action_clear(self) -> None:
         """Clear transcript state and discard any held ordinary prompt.
@@ -1812,6 +2667,10 @@ class SloTUI(App):
         """Recompute slash suggestions from the current prompt buffer."""
         if self._input is None:
             return
+        if self._suggestion_engine.owns_arguments(buffer_text=self._input.text):
+            self._path_suggestions.invalidate()
+        elif self._path_suggestions.request():
+            return
         self._picker_catalog_revision = ModelSuggestionProjection.current_revision()
         state: SlashSuggestionStateDAO = self._suggestion_engine.evaluate(
             buffer_text=self._input.text,
@@ -1826,6 +2685,62 @@ class SloTUI(App):
         self._slash_suggestion_state = state
         self._render_slash_suggestion_state(state=state)
 
+    def on_prompt_input_path_suggestions_requested(self, event: PromptInput.PathSuggestionsRequested) -> None:
+        """Forward Tab discovery unless enumerated slash arguments own input.
+
+        Args:
+            event: Prompt-local path discovery intent.
+        """
+        del event
+        if self._input is not None and not self._suggestion_engine.owns_arguments(
+            buffer_text=self._input.text
+        ):
+            self._path_suggestions.request(explicit=True)
+
+    def capture_path_prompt(self) -> Optional[PathPromptSnapshotDAO]:
+        """Adapt mounted TextArea state and selected cwd to immutable completion input.
+
+        Returns:
+            Current prompt authority, or None after closing/before composition.
+        """
+        if self._input is None or self._app_closing:
+            return None
+        return PathPromptSnapshotDAO(
+            text=self._input.text,
+            cursor=self._input.cursor_location,
+            workdir=self._session.workdir,
+            selection_empty=self._input.selection.is_empty,
+        )
+
+    def publish_path_suggestions(self, *, state: SlashSuggestionStateDAO) -> None:
+        """Adapt controller output to the existing shared menu/navigation state.
+
+        Args:
+            state: Completion presentation, containing no file contents.
+        """
+        self._slash_suggestion_state = state
+        self._render_slash_suggestion_state(state=state)
+
+    def replace_path_span(
+        self, *, insert_text: str, start: tuple[int, int], end: tuple[int, int], cursor_inside_quote: bool
+    ) -> None:
+        """Apply the controller's range edit as one undoable TextArea transaction.
+
+        Args:
+            insert_text: Encoded literal replacement including any closing quote.
+            start: Inclusive range location.
+            end: Exclusive range location.
+            cursor_inside_quote: Keep navigation before a retained closing quote.
+        """
+        if self._input is None:
+            return
+        self._input.history.checkpoint()
+        self._input.replace(insert=insert_text, start=start, end=end, maintain_selection_offset=False)
+        if cursor_inside_quote:
+            row, column = self._input.cursor_location
+            self._input.move_cursor(location=(row, column - 1))
+        self._input.history.checkpoint()
+
     def _refresh_visible_slash_suggestions_when_catalog_changed(self) -> None:
         """Refresh an open picker after a public catalog-status publication.
 
@@ -1834,7 +2749,7 @@ class SloTUI(App):
         WHO: The mounted app calls this from Textual's idle loop.
         WHEN: Only while a visible ``/model`` suggestion menu is on screen.
         """
-        if not self._slash_suggestion_state.visible:
+        if not self._slash_suggestion_state.visible or self._slash_suggestion_state.kind != "slash":
             return
         revision = ModelSuggestionProjection.current_revision()
         if revision == self._picker_catalog_revision:
@@ -1857,10 +2772,8 @@ class SloTUI(App):
             self._input.set_suggestion_navigation_enabled(enabled=state.visible)
 
     def _hide_slash_suggestions(self) -> None:
-        """Hide the slash suggestion menu and disable suggestion navigation."""
-        hidden_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
-        self._slash_suggestion_state = hidden_state
-        self._render_slash_suggestion_state(state=hidden_state)
+        """Dismiss current completion work as well as its visible menu."""
+        self._path_suggestions.dismiss()
 
     def _replace_prompt_text(
         self,
@@ -1916,19 +2829,22 @@ class SloTUI(App):
         Args:
             line (str): The full input line including the leading slash.
         """
+        self._reset_escape_sequence()
         self._hide_slash_suggestions()
         if self._session.preparation_status != "ready":
             command = line.strip().split(maxsplit=1)[0]
             if line.strip() == "/model refresh":
                 self._start_session_preparation()
                 return
-            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model"}:
+            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model", "/code"}:
                 self._write_adapter_line(content="Model preparation required.", classes="tool-result")
                 return
         mounted_activity: bool = await self._mount_slash_activity(line=line)
         previous_model = self._session.active_model_name
         try:
-            result = await SlashRouter.dispatch(line=line, session=self._session)
+            result = await SlashRouter.dispatch(
+                line=line, session=self._session, workflow_resume_launcher=self._workflow_resume_launcher
+            )
             if self._session.active_model_name != previous_model:
                 self._suggestion_engine.record_selection(model_name=self._session.active_model_name)
             if line.strip() == "/model refresh":
@@ -1936,6 +2852,9 @@ class SloTUI(App):
         finally:
             if mounted_activity:
                 await self._unmount_spinner()
+        if isinstance(result.code_path, str):
+            self._schedule_editor_launch(argument=result.code_path)
+            return
         if result.should_clear:
             await self.action_clear()
         if result.replace_session:
@@ -1955,8 +2874,17 @@ class SloTUI(App):
         if git_diff_path is not None:
             await self._open_git_diff(path=git_diff_path)
             return
+        tui_visibility: Optional[WorkflowListVisibilityRequestDAO] = (
+            result.tui_visibility
+            if isinstance(result.tui_visibility, WorkflowListVisibilityRequestDAO)
+            else None
+        )
+        if tui_visibility is not None:
+            await self._apply_workflow_list_visibility(request=tui_visibility)
+            return
         if result.rendered is not None:
             self._write_adapter_line(content=result.rendered, classes="tool-result")
+        self._apply_workflow_command_result(result=result)
         if result.refresh_title:
             self._refresh_title_bar()
             self._session.refresh_usage_snapshot()
@@ -1974,6 +2902,64 @@ class SloTUI(App):
             self._push_auth_modal()
         if result.should_exit:
             self.exit()
+
+    def _schedule_editor_launch(self, *, argument: str) -> None:
+        """Capture the session before background validation without blocking prompt input.
+
+        Args:
+            argument: Raw single-path slash intent.
+        """
+        if self._app_closing or self._session_transitioning:
+            return
+        worker: Worker[None] = self.run_worker(
+            work=partial(self._run_editor_launch, argument=argument, session=self._session),
+            group="editor-launch",
+            exit_on_error=False,
+        )
+        self._editor_launch_tasks[worker] = asyncio.create_task(
+            coro=self._wait_for_editor_worker(worker=worker)
+        )
+
+    async def _run_editor_launch(self, *, argument: str, session: SloAgentSession) -> None:
+        """Render submission evidence only while its captured owner remains selected.
+
+        Args:
+            argument: Raw operator token for off-thread validation.
+            session: Selected session captured synchronously at registration.
+        """
+        notice = await self._editor_launcher.invoke(argument=argument, session=session)
+        if not self._app_closing and not self._session_transitioning and session is self._session:
+            self._write_adapter_line(content=notice, classes="tool-result")
+
+    async def _drain_editor_launches(self) -> None:
+        """Cancel/join request mechanics, never close user-owned editor panes."""
+        tasks = tuple(self._editor_launch_tasks.items())
+        for worker, _wait in tasks:
+            worker.cancel()
+        for _worker, wait in tasks:
+            await HerdrTaskJoin.wait(task=wait)
+            wait.result()
+
+    async def _wait_for_editor_worker(self, *, worker: Worker[None]) -> None:
+        """Retire a launch only after actual completion, including pre-entry cancellation.
+
+        Started and retained at admission, this wait does not depend on Textual's
+        state messages. In-flight cancellation keeps the handle until validation
+        and terminal request cleanup have joined their work. Unexpected failures
+        are accounted with a fixed diagnostic, never exception details or a late
+        transcript notice, before the retained wait releases ownership.
+
+        Args:
+            worker: App-owned editor worker whose request mechanics must finish.
+        """
+        try:
+            await worker.wait()
+        except WorkerCancelled:
+            pass
+        except WorkerFailed:
+            log_error(msg="editor_launch_worker_failed", stack_trace=False)
+        finally:
+            self._editor_launch_tasks.pop(worker, None)
 
     async def _open_git_diff(self, *, path: str) -> None:
         """Load Git diff content and push its focused screen when it is safe.
@@ -2016,38 +3002,266 @@ class SloTUI(App):
             requested_name (Optional[str]): Optional replacement session name.
         """
         async with self._prompt_submission_lock:
+            if self._app_closing or self._session_transitioning:
+                return
             if self._in_flight_task is not None or self._session.is_running:
                 self._write_adapter_line(
                     content="cannot start a new session while a prompt is in flight; run /abort first",
                     classes="tool-result",
                 )
                 return
-            await self._replace_idle_session_and_clear_queue(requested_name=requested_name)
+            replacement = await self._replace_idle_session_and_clear_queue(requested_name=requested_name)
+        if replacement is None:
+            return
+        cancelled = await HerdrTaskJoin.wait(task=replacement)
+        replacement.result()
+        if self._session_replacement_task is replacement:
+            self._session_replacement_task = None
+        if cancelled:
+            raise asyncio.CancelledError
 
-    async def _replace_idle_session_and_clear_queue(self, *, requested_name: Optional[str]) -> None:
-        """Swap in a fresh session and clear transcript plus queue state.
+    async def _replace_idle_session_and_clear_queue(
+        self, *, requested_name: Optional[str]
+    ) -> Optional[asyncio.Task[None]]:
+        """Prepare and register a retained replacement while holding the gate.
 
-        WHAT: Runs the unsubscribe/build/rename/assign/re-subscribe sequence and
-        clears the transcript through the gate-held clear body, so no queue
-        reference can cross into the replacement session.
+        WHAT: Prepares the candidate before touching the selected session, then
+        revokes the captured predecessor and returns the owned commit task.
+        Preparation failure preserves the old queue and delivery binding.
         WHO: ``_start_new_session`` calls it only while holding
         ``_prompt_submission_lock`` after establishing the app is idle.
         WHEN: The operator requests `/new` while no run is active.
 
         Args:
             requested_name (Optional[str]): Optional initial human-readable session name.
+
+        Returns:
+            Optional[asyncio.Task[None]]: Commit to join outside the gate, or no replacement.
         """
-        old_session: SloAgentSession = self._session
-        await self._cancel_session_preparation()
-        old_session.unsubscribe(handler=self._render_event)
-        new_session: SloAgentSession = SloAgentSession.build(
-            config=self._build_replacement_session_config(old_session=old_session),
-            allow_pending_preparation=True,
+        if self._app_closing:
+            return None
+        candidate = await self._prepare_replacement_session(requested_name=requested_name)
+        if candidate is None:
+            return None
+        if self._app_closing:
+            await self._discard_replacement_session(candidate=candidate)
+            return None
+        old_session = self._session
+        self._session_transitioning = True
+        self._delivery_quiescing = True
+        old_session.begin_external_reporting_close()
+        self._session_replacement_task = asyncio.create_task(
+            coro=self._commit_replacement_session(old_session=old_session, candidate=candidate)
         )
-        self._attach_pool_to_session(session=new_session)
-        if requested_name is not None:
-            await new_session.rename_session(session_name=requested_name)
-        self._session = new_session
+        return self._session_replacement_task
+
+    async def _commit_replacement_session(
+        self, *, old_session: SloAgentSession, candidate: SloAgentSession
+    ) -> None:
+        """Drain viewers outside their finalizer gate, then serialize adoption.
+
+        Args:
+            old_session: Revoked predecessor captured at commit registration.
+            candidate: Fully prepared inactive successor.
+        """
+        try:
+            await self._drain_editor_launches()
+            await self._cancel_visualizer_launches()
+        except Exception:
+            self._replacement_delivery_safe = False
+            self._write_lifecycle_notice(content="Viewer cleanup incomplete.", classes="tool-result")
+        async with self._prompt_submission_lock:
+            await self._finish_replacement_commit(old_session=old_session, candidate=candidate)
+            self._session_transitioning = False
+
+    async def _finish_replacement_commit(
+        self, *, old_session: SloAgentSession, candidate: SloAgentSession
+    ) -> None:
+        """Close and adopt captured owners under the retained transaction's gate."""
+        try:
+            await self._cancel_session_preparation()
+        except Exception:
+            self._replacement_delivery_safe = False
+        await self._transfer_replacement_delivery(old_session=old_session)
+        try:
+            outcome = await old_session.close_external_reporting()
+        except Exception:
+            outcome = HerdrReporterCloseOutcomeDAO(replacement="uncertain", resources="retained")
+        await self._close_workflow_observation()
+        self._adopt_replacement_session(old_session=old_session, candidate=candidate, outcome=outcome)
+        await self._finish_replacement_ui()
+
+    async def _transfer_replacement_delivery(self, *, old_session: SloAgentSession) -> None:
+        """Release the captured old binding before establishing any successor lease.
+
+        WHAT: Stops delivery timers and releases the old inbox lease. The old
+            owner's workflow observation stays bound until predecessor retirement;
+            ``_finish_replacement_commit`` closes it before adoption through the canonical
+            coordinator → service → sink → panel teardown so no rows, caches
+            or timers cross sessions.
+        WHO: ``_finish_replacement_commit`` before reporter close/adoption.
+
+        Args:
+            old_session (SloAgentSession): Predecessor captured before adoption.
+        """
+        self._delivery_quiescing = True
+        self._stop_delivery_timers()
+        await self._release_replaced_session_lease(session=old_session)
+        self._workflow_renderer = None
+
+    def _stop_delivery_timers(self, *, timers: Optional[tuple[Timer, ...]] = None) -> None:
+        """Stop captured handles; omitted input selects normal teardown's current pair.
+
+        Args:
+            timers: Exact init-owned handles, or None for selected-owner teardown.
+        """
+        selected = (self._lease_timer, self._inbox_timer) if timers is None else timers
+        retained = self._failed_delivery_timers
+        timers_to_stop = tuple(dict.fromkeys((*retained, *selected) if timers is None else selected))
+        failed: list[Timer] = [timer for timer in retained if timer not in timers_to_stop]
+        for timer in timers_to_stop:
+            if timer is None:
+                continue
+            try:
+                timer.stop()
+            except Exception:
+                self._replacement_delivery_safe = False
+                failed.append(timer)
+            else:
+                for slot in ("_lease_timer", "_inbox_timer"):
+                    if getattr(self, slot) is timer:
+                        setattr(self, slot, None)
+        # Failed startup permanently disables subsequent timer creation, bounding
+        # retained initialization resources to its two original handles.
+        self._failed_delivery_timers = tuple(failed)
+
+    async def _release_replaced_session_lease(
+        self,
+        *,
+        session: SloAgentSession,
+    ) -> None:
+        """Capture current delivery ownership for replacement or global teardown."""
+        await self._release_captured_session_lease(
+            lease_store=self._lease_store, session_id=session.session_id, owner_id=self._session_owner_id
+        )
+
+    async def _release_captured_session_lease(
+        self,
+        *,
+        lease_store: Optional[SessionOwnershipLeaseStore],
+        session_id: str,
+        owner_id: str,
+    ) -> None:
+        """Join release of exactly the supplied capture; absent storage is a no-op.
+
+        Args:
+            lease_store: Captured store, never resolved from current app state.
+            session_id: Immutable ID belonging to the captured initialization.
+            owner_id: Captured lease owner.
+        """
+        if lease_store is None:
+            return
+        release_task = asyncio.create_task(coro=lease_store.release(session_id=session_id, owner_id=owner_id))
+        cancellation: Optional[asyncio.CancelledError] = None
+        try:
+            await asyncio.shield(release_task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+            await HerdrTaskJoin.wait(task=release_task)
+        except Exception:
+            pass
+        try:
+            self._replacement_delivery_safe &= release_task.result()
+        except Exception:
+            self._replacement_delivery_safe = False
+            self._write_lifecycle_notice(
+                content="Previous inbox lease could not be released; new inbox disabled.",
+                classes="tool-result",
+            )
+        if cancellation is not None:
+            raise cancellation
+
+    def _adopt_replacement_session(
+        self,
+        *,
+        old_session: SloAgentSession,
+        candidate: SloAgentSession,
+        outcome: HerdrReporterCloseOutcomeDAO,
+    ) -> None:
+        """Publish the successor subscription without yielding after irreversible close.
+
+        Args:
+            old_session (SloAgentSession): Closed predecessor.
+            candidate (SloAgentSession): Prepared successor.
+            outcome (HerdrReporterCloseOutcomeDAO): Independent remote/local evidence.
+        """
+        if outcome.resources == "retained":
+            if self._retired_herdr_session is not None and self._retired_herdr_session is not old_session:
+                raise RuntimeError("Multiple quarantined integration owners")
+            self._retired_herdr_session = old_session
+        self._herdr_successor_suppressed |= outcome.replacement == "uncertain"
+        if self._herdr_successor_suppressed or self._app_closing:
+            candidate.suppress_external_reporting()
+        try:
+            old_session.unsubscribe(handler=self._render_event)
+        except Exception:
+            self._write_lifecycle_notice(
+                content="Previous subscription cleanup incomplete.", classes="tool-result"
+            )
+        self._reset_escape_sequence()
+        self._path_suggestions.dismiss()
+        self._session = candidate
+        candidate.subscribe(handler=self._render_event)
+
+    async def _finish_replacement_ui(self) -> None:
+        """Refresh only the adopted session; never reinstall its closed predecessor."""
+        session = self._session
+        if not self._runtime_may_start(session=session):
+            return
+        try:
+            await self._refresh_replacement_ui()
+        except Exception:
+            self._write_lifecycle_notice(
+                content="New session selected; some UI state could not refresh.", classes="tool-result"
+            )
+        if self._runtime_may_start(session=session):
+            await self._finish_replacement_runtime()
+
+    async def _finish_replacement_runtime(self) -> None:
+        """Activate current-session delivery/reporting before refreshing presentation."""
+        session = self._session
+        if not self._runtime_may_start(session=session):
+            return
+        await self._ensure_workflow_observation_bound()
+        if not self._runtime_may_start(session=session):
+            return
+        try:
+            await self._initialize_session_delivery()
+        except Exception:
+            await self._rollback_session_delivery(session=session, owner_id=self._session_owner_id)
+        if not self._runtime_may_start(session=session):
+            return
+        try:
+            await session.start_external_reporting(interactive=True)
+        except Exception:
+            self._write_lifecycle_notice(content="External reporting unavailable.", classes="tool-result")
+        if not self._runtime_may_start(session=session):
+            return
+        try:
+            await session.refresh_context_window_snapshot()
+            if not self._runtime_may_start(session=session):
+                return
+            self._refresh_title_bar()
+            self._refresh_usage_status_bar()
+        except Exception:
+            self._write_lifecycle_notice(
+                content="Session selected; usage refresh unavailable.", classes="tool-result"
+            )
+        if self._runtime_may_start(session=session) and session.preparation_status != "ready":
+            self._start_session_preparation()
+
+    async def _refresh_replacement_ui(self) -> None:
+        """Clear the adopted transcript and input independently of runtime refresh."""
         await self._clear_transcript_and_prompt_queue()
         self._prompt_history.clear_navigation()
         self._prompt_history = PromptHistoryNavigator()
@@ -2055,12 +3269,72 @@ class SloTUI(App):
             self._input.load_text("")
             self._input.set_prompt_history_navigation_enabled(enabled=False)
         await self._maybe_render_startup_notice()
-        self._session.subscribe(handler=self._render_event)
-        self._refresh_title_bar()
-        await self._session.refresh_context_window_snapshot()
-        self._refresh_usage_status_bar()
-        if self._session.preparation_status != "ready":
-            self._start_session_preparation()
+
+    async def _prepare_replacement_session(
+        self, *, requested_name: Optional[str]
+    ) -> Optional[SloAgentSession]:
+        """Build an inactive candidate without mutating the selected session.
+
+        Args:
+            requested_name (Optional[str]): Name persisted only on the candidate.
+
+        Returns:
+            Optional[SloAgentSession]: Prepared candidate, or None on ordinary failure.
+
+        Raises:
+            asyncio.CancelledError: After candidate-owned cleanup has joined.
+        """
+        candidate: Optional[SloAgentSession] = None
+        try:
+            candidate = SloAgentSession.build(
+                config=self._build_replacement_session_config(old_session=self._session),
+                allow_pending_preparation=True,
+            )
+            if candidate.history_root != self._session.history_root:
+                raise ValueError("Replacement history root must remain unchanged")
+            self._attach_pool_to_session(session=candidate)
+            if requested_name is not None:
+                await candidate.rename_session(session_name=requested_name)
+            return candidate
+        except asyncio.CancelledError:
+            await self._discard_replacement_session(candidate=candidate)
+            raise
+        except Exception:
+            await self._discard_replacement_session(candidate=candidate)
+            self._write_lifecycle_notice(
+                content="New session could not be prepared; current session retained.", classes="tool-result"
+            )
+            return None
+
+    async def _discard_replacement_session(self, *, candidate: Optional[SloAgentSession]) -> None:
+        """Join failed preparation's resources before returning to the mounted owner.
+
+        Args:
+            candidate (Optional[SloAgentSession]): Inactive partial build, if available.
+
+        Raises:
+            asyncio.CancelledError: After retained candidate disposal finishes.
+        """
+        if candidate is None:
+            return
+        self._candidate_cleanup_task = asyncio.create_task(coro=candidate.dispose_unmounted_session())
+        cancelled = await HerdrTaskJoin.wait(task=self._candidate_cleanup_task)
+        self._candidate_cleanup_task.result()
+        self._candidate_cleanup_task = None
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _write_lifecycle_notice(self, *, content: str, classes: str) -> None:
+        """Render fixed lifecycle copy without making cleanup depend on the sink.
+
+        Args:
+            content (str): Fixed lifecycle diagnostic, never exception text.
+            classes (str): Existing transcript presentation class.
+        """
+        try:
+            self._write_adapter_line(content=content, classes=classes)
+        except Exception:
+            return
 
     async def _rename_current_session(self, *, session_name: str) -> None:
         """Rename the active session and refresh visible title state.
@@ -2079,137 +3353,345 @@ class SloTUI(App):
     # ---- Sub-agent routing and fleet panel --------------------------------
 
     async def _route_sub_agent_event(self, event: AgentStreamEventDAO) -> None:
-        """Route a tagged sub-agent event to the fleet panel.
+        """Route a tagged sub-agent event to transcript notices and the session list.
 
-        The orchestrator transcript is always in the foreground; sub-agent
-        content never appears there. Lifecycle events write a one-line notice
-        to the main transcript. Content events — including child
-        ``thinking_delta`` events, which update fleet activity only and never
-        mount an ``AssistantStreamThinkingBlock`` — update the fleet panel's
-        live-activity field so the user can see what each sub-agent is doing
-        without leaving the orchestrator view.
+        WHAT: The orchestrator transcript stays in the foreground; child content
+            never appears there and never changes the session list, so a row's
+            task label stays stable while its child streams. Lifecycle events
+            write their one-line notice, open the workflow visualizer on the first
+            spawn of a run, then ask the observation coordinator for a coalesced
+            refresh (rows come only from the service snapshot).
+        WHO: ``_render_event`` for every event carrying ``sub_agent_id``.
+        WHEN: As the attached orchestrator streams child events.
 
         Args:
             event (AgentStreamEventDAO): Event carrying a non-``None`` ``sub_agent_id``.
         """
-        task_id: str = event.task_id or ""
-        session_id: str = event.sub_agent_id or ""
-
+        self._write_sub_agent_notice(event=event)
         if event.kind == "sub_agent_spawned":
-            prompt_preview: str = event.content or ""
-            if self._adapter is not None:
-                self._adapter.write(
-                    content=f"⊇ {task_id}: spawned",
-                    classes="sub-agent-notice",
-                )
-            if self._fleet_panel is not None:
-                await self._fleet_panel.register_row(
-                    session_id=session_id,
-                    task_id=task_id,
-                    prompt_preview=prompt_preview,
-                )
             self._maybe_launch_visualizer()
+        if event.kind not in _SUB_AGENT_LIST_REFRESH_KINDS:
             return
+        self._request_workflow_refresh()
 
-        if event.kind in ("sub_agent_completed", "sub_agent_failed"):
-            terminal_status: SubAgentStatus = "completed" if event.kind == "sub_agent_completed" else "failed"
-            if self._adapter is not None:
-                self._adapter.write(
-                    content=f"⊇ {task_id}: {terminal_status}",
-                    classes="sub-agent-notice",
-                )
-            if self._fleet_panel is not None:
-                self._fleet_panel.mark_terminal(
-                    session_id=session_id,
-                    status=terminal_status,
-                )
-            return
-
-        # Content events: update fleet row last-activity only.
-        # Sub-agent content never reaches the orchestrator transcript.
-        if self._fleet_panel is None:
-            return
-        activity: Optional[str] = self._sub_agent_activity_text(event=event)
-        if activity is not None:
-            self._fleet_panel.update_last_text(
-                session_id=session_id,
-                text=activity,
-            )
-
-    @staticmethod
-    def _sub_agent_activity_text(*, event: AgentStreamEventDAO) -> Optional[str]:
-        """Return a brief activity string for the fleet row from a content event.
-
-        Extracts the most human-readable fragment from each content event kind
-        so the fleet row always shows what the sub-agent is currently doing.
-        Returns ``None`` for event kinds that carry no useful display text.
+    def _write_sub_agent_notice(self, *, event: AgentStreamEventDAO) -> None:
+        """Write the ``⊇ task: status`` transcript notice for a noticed lifecycle kind.
 
         Args:
-            event (AgentStreamEventDAO): A sub-agent content event.
+            event (AgentStreamEventDAO): Child event; other kinds write nothing.
+        """
+        status: Optional[str] = _SUB_AGENT_NOTICE_STATUSES.get(event.kind)
+        if status is None or self._adapter is None:
+            return
+        self._adapter.write(content=f"⊇ {event.task_id or ''}: {status}", classes="sub-agent-notice")
+
+    def _request_workflow_refresh(self) -> None:
+        """Ask the observation coordinator for one coalesced refresh, if bound.
+
+        WHO: Child lifecycle and dispatch-start events, typed dismiss/resume
+            slash results and ``/workflows tui dismiss``.
+        WHEN: Whenever list membership or status may have changed; the five-second
+            tick repairs anything missed.
+        """
+        if self._workflow_progress_coordinator is None:
+            return
+        self._workflow_progress_coordinator.request_refresh()
+
+    def on_sub_agent_fleet_panel_session_selected(self, message: SubAgentFleetPanel.SessionSelected) -> None:
+        """Open progress for the exact row the user activated (Enter or click).
+
+        Args:
+            message (SubAgentFleetPanel.SessionSelected): Selected composite key.
+        """
+        if self._workflow_progress_coordinator is None:
+            return
+        self._workflow_progress_coordinator.select(key=message.key)
+
+    def on_session_progress_screen_minimized(self, message: SessionProgressScreen.Minimized) -> None:
+        """Close progress observation on Escape/Minimize without touching execution.
+
+        Args:
+            message (SessionProgressScreen.Minimized): Minimize intent.
+        """
+        if self._workflow_progress_coordinator is None:
+            return
+        self._workflow_progress_coordinator.minimize()
+
+    def on_session_progress_screen_abort_requested(
+        self, message: SessionProgressScreen.AbortRequested
+    ) -> None:
+        """Ask the sink to confirm the exact target the progress view displayed.
+
+        Args:
+            message (SessionProgressScreen.AbortRequested): Captured confirmation target.
+        """
+        if self._workflow_progress_sink is None:
+            return
+        self._workflow_progress_sink.confirm_abort(target=message.target)
+
+    def _on_child_abort_confirmed(self, *, target: ChildAbortTargetDAO) -> None:
+        """Hand an explicitly confirmed target to the service and refresh at once.
+
+        WHAT: The service owns the submission (minimizing never withdraws it);
+            the immediate refresh paints the pending notice and disabled Abort.
+        WHO: ``_WorkflowProgressSink`` from its confirmation callback, only on True.
+        WHEN: Once per explicit Abort child choice.
+
+        Args:
+            target (ChildAbortTargetDAO): Identity captured when confirmation opened.
+        """
+        if self._workflow_app_service is None:
+            return
+        self._workflow_app_service.begin_child_abort(target=target)
+        self._request_workflow_refresh()
+
+    def _on_progress_incarnation_changed(self, *, key: WorkflowSessionKeyDAO) -> None:
+        """Close the old execution view when the sink observes same-key reuse.
+
+        WHAT: The coordinator invalidates its generation first, then asks the sink
+            to dismiss the view; the reader must select the session again.
+        WHO: ``_WorkflowProgressSink.apply_sessions`` only, while reconciling the
+            selected identity against fresh rows.
+        WHEN: When the open view's key now names a different execution or dispatch.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Selected key whose incarnation changed.
+        """
+        if self._workflow_progress_coordinator is not None:
+            self._workflow_progress_coordinator.minimize()
+        self.notify(message=f"Session execution changed; select {key.session_id} again.", markup=False)
+
+    def _apply_workflow_command_result(self, *, result: SlashCommandResultDAO) -> None:
+        """Route typed ``/workflows dismiss|resume`` outcomes to observation.
+
+        WHAT: A successful dismissal suppresses that group in memory; a successful
+            resume clears the suppression; either requests a refresh. Never parses
+            the rendered text.
+        WHO: ``_dispatch_slash_command`` after every slash result.
+        WHEN: Immediately after the router returns.
+
+        Args:
+            result (SlashCommandResultDAO): Router result with typed workflow ids.
+        """
+        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
+        if service is None or (result.dismissed_workflow_id is None and result.resumed_workflow_id is None):
+            return
+        if result.dismissed_workflow_id is not None:
+            service.dismiss_group(workflow_id=result.dismissed_workflow_id)
+        if result.resumed_workflow_id is not None:
+            service.resume_group(workflow_id=result.resumed_workflow_id)
+        self._request_workflow_refresh()
+
+    async def _apply_workflow_list_visibility(self, *, request: WorkflowListVisibilityRequestDAO) -> None:
+        """Commit and paint local visibility before acknowledging the command.
+
+        Args:
+            request: Router-validated display operation, never execution control.
+        """
+        async with self._workflow_visibility_lock:
+            service = self._workflow_app_service
+            coordinator = self._workflow_progress_coordinator
+            if service is None or coordinator is None:
+                self._write_adapter_line(
+                    content="Workflow list unavailable in this session.", classes="tool-result"
+                )
+                return
+            outcome = service.apply_list_visibility(request=request)
+            try:
+                painted = await coordinator.apply_local_snapshot(snapshot=outcome.snapshot)
+            except Exception:
+                painted = False
+            if (
+                service is not self._workflow_app_service
+                or coordinator is not self._workflow_progress_coordinator
+            ):
+                return
+            content = (
+                "Workflow visibility saved; display refresh pending."
+                if not painted and outcome.outcome == "changed"
+                else outcome.rendered
+            )
+            self._write_adapter_line(content=content, classes="tool-result")
+            coordinator.request_refresh()
+
+    async def _apply_session_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
+        """Apply a snapshot to the panel and return focus if its list vanished.
+
+        WHAT: The panel never focuses anything itself. When an empty snapshot hides
+            a list that held focus, focus returns to the prompt editor, but only on
+            the base screen (never behind a modal).
+        WHO: ``_WorkflowProgressSink.apply_sessions`` for every coordinator refresh.
+        WHEN: Whenever a fresh session snapshot is available.
+
+        Args:
+            snapshot (WorkflowSessionSnapshotDAO): Ordered rows to display.
+        """
+        if self._fleet_panel is None:
+            return
+        list_focused: bool = self._session_list_holds_focus()
+        await self._fleet_panel.apply_snapshot(snapshot=snapshot)
+        if snapshot.rows:
+            return
+        self._return_focus_from_hidden_list(list_focused=list_focused)
+
+    async def _reset_session_list(self) -> None:
+        """Empty and hide the session list, returning focus if the list held it.
+
+        WHAT: The single app-owned reset path, so every emptying of the panel
+            carries the same base-screen focus-return rule as an empty snapshot.
+        WHO: ``_close_workflow_observation`` on owner replacement and unmount.
+        WHEN: After the coordinator, service and sink of the old owner are closed.
+        """
+        if self._fleet_panel is None:
+            return
+        list_focused: bool = self._session_list_holds_focus()
+        await self._fleet_panel.reset()
+        self._return_focus_from_hidden_list(list_focused=list_focused)
+
+    def _session_list_holds_focus(self) -> bool:
+        """Return whether the session list (or one of its rows) holds focus.
 
         Returns:
-            Optional[str]: Activity text for the fleet row, or ``None``.
+            bool: True when the mounted panel or a descendant is focused.
         """
-        if event.kind in ("text_delta", "thinking_delta"):
-            return event.delta or None
-        if event.kind == "tool_call_end":
-            # Show what tool the agent just dispatched and its primary argument.
-            if not event.tool_name:
-                return None
-            tool_name: str = event.tool_name
-            if not event.tool_input:
-                return tool_name
-            first_val: object = next(iter(event.tool_input.values()), None)
-            if first_val is None:
-                return tool_name
-            preview: str = str(first_val)[:50].replace("\n", " ")
-            return f"{tool_name}: {preview}"
-        if event.kind == "tool_result":
-            return f"✓ {event.tool_name}" if event.tool_name else "✓ tool result"
-        return None
+        if self._fleet_panel is None:
+            return False
+        return self._fleet_panel.has_focus or self._fleet_panel.has_focus_within
+
+    def _focus_after_progress(self) -> None:
+        """Return focus to the list, or to the prompt when the list is empty, on the base screen.
+
+        WHO: ``_WorkflowProgressSink`` once its progress view has left the stack.
+        WHEN: Only when no other modal remains above the base screen.
+        """
+        if len(self.screen_stack) > 1 or self._fleet_panel is None or self._input is None:
+            return
+        if self._fleet_panel.display:
+            self._fleet_panel.focus_sessions()
+            return
+        self._input.focus()
+
+    def _return_focus_from_hidden_list(self, *, list_focused: bool) -> None:
+        """Focus the prompt editor after a focused list was hidden on the base screen.
+
+        Args:
+            list_focused (bool): Whether the list held focus before it was emptied.
+        """
+        if not list_focused or len(self.screen_stack) > 1 or self._input is None:
+            return
+        self._input.focus()
+
+    def _schedule_visualizer_launch(self, *, parent_session_id: str) -> None:
+        """Capture the selected owner and register one pending request per parent.
+
+        Args:
+            parent_session_id: Requested workflow parent, not a later session lookup.
+        """
+        from src.tui.visualizer_launcher import VisualizerLauncher
+
+        if self._app_closing or self._session_transitioning:
+            return
+        if self._delivery_quiescing and self._session_supports_inbox_delivery():
+            return
+        if not VisualizerLauncher._auto_visualize_enabled():
+            return
+        if parent_session_id in self._visualizer_launch_tasks:
+            return
+        task = asyncio.create_task(
+            coro=self._run_visualizer_launch(parent_session_id=parent_session_id, session=self._session)
+        )
+        self._visualizer_launch_tasks[parent_session_id] = task
+        task.add_done_callback(partial(self._on_visualizer_launch_done, parent_session_id=parent_session_id))
+
+    async def _cancel_visualizer_launches(self) -> None:
+        """Drain registered workers before reporter close, outside the submission gate.
+
+        Scheduling must already be revoked by the owning lifetime transition.
+        Each worker receives one cancellation; repeated caller cancellation cannot
+        abandon its platform thread or finalizer. Identity cleanup preserves any
+        newer entry rather than blindly clearing the registry.
+        """
+        pending = tuple(self._visualizer_launch_tasks.items())
+        for _, task in pending:
+            task.cancel()
+        failure: Optional[Exception] = None
+        for parent_session_id, task in pending:
+            try:
+                await HerdrTaskJoin.wait(task=task)
+                self._on_visualizer_launch_done(task, parent_session_id=parent_session_id)
+            except Exception as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
+
+    def _on_visualizer_launch_done(self, task: asyncio.Task[None], *, parent_session_id: str) -> None:
+        """Retrieve completion and remove only the identical registered task.
+
+        Args:
+            task: Positional asyncio completion callback input.
+            parent_session_id: Captured request key.
+        """
+        if not task.cancelled():
+            task.exception()
+        if self._visualizer_launch_tasks.get(parent_session_id) is task:
+            del self._visualizer_launch_tasks[parent_session_id]
+
+    async def _run_visualizer_launch(self, *, parent_session_id: str, session: SloAgentSession) -> None:
+        """Delegate a still-current captured request to the existing async gateway.
+
+        Args:
+            parent_session_id: Requested workflow parent.
+            session: Owner captured at synchronous registration.
+        """
+        from src.tui.visualizer_launcher import VisualizerLauncher
+
+        if (
+            self._app_closing
+            or self._session_transitioning
+            or (self._delivery_quiescing and self._session_supports_inbox_delivery())
+            or self._session is not session
+        ):
+            return
+        try:
+            outcome = await VisualizerLauncher.launch_async(
+                parent_session_id=parent_session_id, session=session
+            )
+        except Exception:
+            outcome = VisualizerLaunchOutcomeDAO(status="failed")
+        if (
+            self._app_closing
+            or self._session_transitioning
+            or (self._delivery_quiescing and self._session_supports_inbox_delivery())
+            or self._session is not session
+        ):
+            return
+        try:
+            self._ensure_workflow_renderer().write_launch_outcome(
+                parent_session_id=parent_session_id, outcome=outcome
+            )
+        except Exception:
+            pass  # Optional notice failure must not escape into the workflow.
+        finally:
+            if outcome.status == "failed":
+                self._visualizer_launched_for_run = False
 
     def _maybe_launch_visualizer(self) -> None:
-        """Open the workflow visualizer window on the first sub-agent of a run.
-
-        Launches ``slo visualize --session <id> --follow`` in a new terminal
-        window exactly once per run so the operator sees the sub-agent workflow
-        live without running the command by hand. Best-effort: when the launch
-        is skipped or fails (auto-visualize disabled, unsupported platform, no
-        terminal emulator), a one-line hint with the manual command is written
-        to the transcript instead. A no-op after the first spawn of a run.
-        """
+        """Schedule the attached parent's viewer without blocking event routing."""
         if self._visualizer_launched_for_run:
             return
         self._visualizer_launched_for_run = True
-        from src.tui.visualizer_launcher import VisualizerLauncher  # noqa: PLC0415
-
-        parent_session_id: str = self._session.session_id
-        launched: bool = VisualizerLauncher.launch(parent_session_id=parent_session_id)
-        if self._adapter is None:
-            return
-        if launched:
-            self._adapter.write(
-                content=f"⊇ Opened workflow visualizer in a new window (session {parent_session_id}).",
-                classes="sub-agent-notice",
-            )
-            return
-        self._adapter.write(
-            content=("⊇ Watch sub-agents live: " f"slo visualize --session {parent_session_id} --follow"),
-            classes="sub-agent-notice",
-        )
+        self._schedule_visualizer_launch(parent_session_id=self._session.session_id)
 
     async def _cleanup_sub_agent_state(self) -> None:
-        """Reset the fleet panel at the end of a run.
+        """Reset per-run sub-agent state at the end of a run.
 
         Called from ``_run_prompt``'s ``finally`` block after
-        ``_unmount_spinner``. Hides and clears the fleet panel so the layout
-        returns to the idle state and subsequent runs start cleanly. Also clears
-        the per-run visualizer-launch guard so the next run that spawns
-        sub-agents opens a fresh visualizer window. A no-op when no sub-agents
-        were spawned in this run.
+        ``_unmount_spinner``. Clears the per-run visualizer-launch guard so the
+        next run that spawns sub-agents opens a fresh visualizer window. The
+        session list is deliberately kept: group retention belongs to the
+        workflow service and the observation coordinator (feature 94 a.2), so a
+        finished prompt never hides or clears rows.
         """
-        if self._fleet_panel is not None:
-            await self._fleet_panel.reset()
         self._visualizer_launched_for_run = False
         self._refresh_title_bar()
 
@@ -2247,7 +3729,11 @@ class SloTUI(App):
         return SessionConfigDAO(
             workdir=old_session.workdir,
             model_name=old_session.active_model_name,
-            model_pool_dao=old_session.model_pool_dao,
+            model_pool_dao=(
+                old_session.model_pool_dao.model_copy(deep=True)
+                if old_session.model_pool_dao is not None
+                else None
+            ),
             reasoning_level=old_session.active_reasoning_level,
             history_root=old_session.history_root,
             enable_history=old_session.history_enabled,
@@ -2675,6 +4161,7 @@ class SloTUI(App):
         Args:
             text (str): The user prompt.
         """
+        self._reset_escape_sequence()
         self._projector.reset_for_new_run()
         await self._mount_spinner()
         saw_failed_event: bool = False
@@ -2695,6 +4182,7 @@ class SloTUI(App):
             if not saw_failed_event:
                 self._render_run_error(exc=exc)
         finally:
+            self._reset_escape_sequence()
             await self._refresh_context_window_after_prompt()
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
@@ -2736,6 +4224,9 @@ class SloTUI(App):
                 still own the app run guard for the handoff to proceed.
         """
         if self._in_flight_task is not completed_task:
+            return
+        if self._app_closing or self._session_transitioning:
+            self._in_flight_task = None
             return
 
         text: Optional[str] = self._queued_prompt_text
@@ -2877,6 +4368,10 @@ class SloTUI(App):
             self._maybe_launch_workflow_visualizer(result_text=event.content or "")
         if event.sub_agent_id is not None:
             await self._route_sub_agent_event(event=event)
+            return
+        if event.kind == "sub_agent_dispatch_started":
+            # Stream-only batch start (no sub_agent_id): the list shows the new group.
+            self._request_workflow_refresh()
             return
         if event.kind == "steering_applied":
             # The queued steer has now been folded into the model context —
@@ -3448,3 +4943,256 @@ class _WorkflowNoticeAdapter:
             classes (str): Semantic render class (default ``""``).
         """
         self._tui._write_adapter_line(content=content, classes=classes)
+
+
+class _WorkflowProgressSink:
+    """App adapter implementing ``WorkflowProgressSink`` for one owning session (feature 94 a.3).
+
+    Owns only presentation state: the single progress screen reference, the
+    selected row identity captured at open, the latest list identities and the
+    bounded LRU of saved viewports. It never builds services, never touches the
+    coordinator's state and never cancels execution; lifecycle intents go back
+    through the app (``_on_progress_incarnation_changed``). Unrelated modals are
+    never dismissed: only a screen this sink pushed is ever closed.
+    """
+
+    def __init__(self, *, tui: SloTUI) -> None:
+        """Bind the sink to the owning app with empty presentation state.
+
+        Args:
+            tui (SloTUI): App whose screens, panel and prompt the sink drives.
+        """
+        self._tui: SloTUI = tui
+        self._screen: Optional[SessionProgressScreen] = None
+        # Most recently visited last; at most PROGRESS_VIEWPORT_CACHE_LIMIT keys.
+        self._viewports: OrderedDict[WorkflowSessionKeyDAO, ProgressViewportDAO] = OrderedDict()
+        # (execution_id, dispatch_id) per key from the latest applied list.
+        self._identities: dict[WorkflowSessionKeyDAO, tuple[str, str]] = {}
+        # Identity of the open view's row when it was opened; None when unknown.
+        self._selected_identity: Optional[tuple[str, str]] = None
+        self._failure_notified: bool = False
+        # The one confirmation this sink pushed above its progress view, if open.
+        self._confirmation: Optional[AbortConfirmationScreen] = None
+
+    def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
+        """Open one owned view, refusing to stack behind unrelated modals.
+
+        WHAT: Keeps an already open view of the same key (double click never
+            stacks), refuses while another modal is active, otherwise replaces any
+            previous view with a new screen opened at the key's saved viewport.
+        WHO: ``WorkflowProgressCoordinator.select``.
+        WHEN: On each list activation.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Exact selected session.
+
+        Returns:
+            bool: Whether the coordinator may adopt this selection.
+        """
+        if self._screen is not None and self._screen.key == key:
+            return True
+        if len(self._tui.screen_stack) > 1 and self._tui.screen is not self._screen:
+            self._tui.notify(message=PROGRESS_DIALOG_CONFLICT_NOTICE, markup=False)
+            return False
+        self.minimize_progress()
+        self._screen = SessionProgressScreen(
+            key=key, viewport=self._viewports.get(key, ProgressViewportDAO())
+        )
+        self._selected_identity = self._identities.get(key)
+        self._tui.push_screen(screen=self._screen, callback=self._progress_closed)
+        return True
+
+    def minimize_progress(self) -> None:
+        """Save the current viewport and give up this sink's progress screen.
+
+        WHAT: Withdraws an owned confirmation first (answering False, so no
+            abort is submitted), then retires the view: it closes at once when it
+            is on top, or as soon as the modal above it closes; an unrelated
+            modal is never popped. Focus returns when the view leaves the stack.
+        WHO: The coordinator's ``minimize`` (Escape, removal, incarnation change),
+            ``open_progress`` when replacing a view, and ``dispose``.
+        WHEN: After the coordinator invalidated its generation.
+        """
+        screen: Optional[SessionProgressScreen] = self._screen
+        if screen is None:
+            return
+        self._withdraw_confirmation()
+        self._remember_viewport(screen=screen)
+        self._screen = None
+        self._selected_identity = None
+        screen.retire()
+
+    async def apply_sessions(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
+        """Paint rows without stealing focus and invalidate obsolete saved positions.
+
+        WHAT: Routes a same-key incarnation change of the open view through the
+            app before overwriting identities, prunes viewports of removed or
+            reused keys, then paints the panel (which returns focus only from an
+            emptied, focused base list).
+        WHO: The coordinator after every list read.
+        WHEN: Before the selected progress read of the same refresh.
+
+        Args:
+            snapshot (WorkflowSessionSnapshotDAO): Current or explicitly retained rows.
+        """
+        self._failure_notified = False
+        self._close_reused_selection(snapshot=snapshot)
+        self._prune_viewports(snapshot=snapshot)
+        await self._tui._apply_session_snapshot(snapshot=snapshot)
+
+    def confirm_abort(self, *, target: ChildAbortTargetDAO) -> None:
+        """Open one owned confirmation for the exact target the active view displayed.
+
+        WHAT: Ignores targets of another key and requests while the view is not
+            the active screen, which includes repeats while a confirmation is open. The target is
+            retained in the callback closure, never replaced by refreshed rows.
+        WHO: SloTUI's ``AbortRequested`` handler.
+        WHEN: When the operator activates Abort child on the progress view.
+
+        Args:
+            target (ChildAbortTargetDAO): Identity captured from the displayed snapshot.
+        """
+        screen: Optional[SessionProgressScreen] = self._screen
+        # An open confirmation is the active screen, so this also absorbs repeats.
+        if screen is None or screen.key != target.key or self._tui.screen is not screen:
+            return
+        confirmation: AbortConfirmationScreen = AbortConfirmationScreen(target=target)
+        self._confirmation = confirmation
+        self._tui.push_screen(
+            screen=confirmation,
+            callback=partial(self._confirmed, confirmation=confirmation, target=target),
+        )
+
+    def apply_progress(self, *, snapshot: SessionProgressSnapshotDAO) -> None:
+        """Deliver bounded public content only to the still-selected screen object.
+
+        Args:
+            snapshot (SessionProgressSnapshotDAO): Service-validated observation.
+        """
+        screen: Optional[SessionProgressScreen] = self._screen
+        if screen is None or screen.key != snapshot.key:
+            return
+        if not screen.is_live:
+            self._tui.call_after_refresh(self._deliver_progress, screen=screen, snapshot=snapshot)
+            return
+        self._deliver_progress(screen=screen, snapshot=snapshot)
+
+    def membership_removed(self, *, key: WorkflowSessionKeyDAO) -> None:
+        """Forget a removed view after the coordinator invalidated its generation.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Former selected identity.
+        """
+        self._viewports.pop(key, None)
+        self._tui.notify(message=PROGRESS_MEMBERSHIP_REMOVED_NOTICE, markup=False)
+
+    def observation_failed(self) -> None:
+        """Keep last-good paint and notify once per failure streak (reset by a good list)."""
+        if self._failure_notified:
+            return
+        self._failure_notified = True
+        self._tui.notify(message=PROGRESS_REFRESH_FAILED_NOTICE, markup=False, severity="warning")
+
+    def dispose(self) -> None:
+        """Discard observation UI only after coordinator and service work are joined.
+
+        WHO: ``SloTUI._close_workflow_observation``.
+        WHEN: On owner replacement and unmount, after ``coordinator.close``.
+        """
+        self.minimize_progress()
+        self._viewports.clear()
+        self._identities.clear()
+        self._selected_identity = None
+
+    def _confirmed(
+        self,
+        confirmed: Optional[bool],
+        *,
+        confirmation: AbortConfirmationScreen,
+        target: ChildAbortTargetDAO,
+    ) -> None:
+        """Forget the closed confirmation; submit only on an explicit True.
+
+        Args:
+            confirmed (Optional[bool]): Confirmation result; False/None submit nothing.
+            confirmation (AbortConfirmationScreen): Screen this callback belongs to.
+            target (ChildAbortTargetDAO): Target captured when it opened.
+        """
+        if self._confirmation is confirmation:
+            self._confirmation = None
+        if confirmed is True:
+            self._tui._on_child_abort_confirmed(target=target)
+
+    def _withdraw_confirmation(self) -> None:
+        """Close only the owned confirmation (answering False) before its view goes."""
+        confirmation: Optional[AbortConfirmationScreen] = self._confirmation
+        self._confirmation = None
+        if confirmation is not None:
+            confirmation.withdraw()
+
+    def _progress_closed(self, _result: None) -> None:
+        """Return focus once an owned view has actually left the screen stack.
+
+        Args:
+            _result (None): Unused dismissal result of the progress screen.
+        """
+        self._tui._focus_after_progress()
+
+    def _remember_viewport(self, *, screen: SessionProgressScreen) -> None:
+        """Bound saved positions whenever the sink minimizes or replaces a view.
+
+        Args:
+            screen (SessionProgressScreen): Owned screen being dismissed.
+        """
+        if not screen.is_live:
+            return
+        self._viewports[screen.key] = screen.capture_viewport()
+        self._viewports.move_to_end(screen.key)
+        while len(self._viewports) > PROGRESS_VIEWPORT_CACHE_LIMIT:
+            self._viewports.popitem(last=False)
+
+    def _close_reused_selection(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
+        """Route an incarnation change of the open view through the app, before pruning.
+
+        A key absent from the rows is left to the coordinator's removal path. Any
+        other identity mismatch, including a view opened before its identity was
+        known, closes the view so a reader is never silently retargeted to
+        another execution. The old viewport is purged by the pruning that follows.
+
+        Args:
+            snapshot (WorkflowSessionSnapshotDAO): Fresh or retained list evidence.
+        """
+        if self._screen is None:
+            return
+        key: WorkflowSessionKeyDAO = self._screen.key
+        row = next((row for row in snapshot.rows if row.key == key), None)
+        identity: tuple[str, str] = (row.execution_id, row.dispatch_id) if row is not None else ("", "")
+        if row is None or self._selected_identity == identity:
+            return
+        self._tui._on_progress_incarnation_changed(key=key)
+
+    def _prune_viewports(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
+        """Forget removed or reused keys after authoritative service reconciliation.
+
+        Args:
+            snapshot (WorkflowSessionSnapshotDAO): Retains rows on transient failures.
+        """
+        identities: dict[WorkflowSessionKeyDAO, tuple[str, str]] = {
+            row.key: (row.execution_id, row.dispatch_id) for row in snapshot.rows
+        }
+        for key in tuple(self._viewports):
+            if key not in identities or self._identities.get(key) != identities[key]:
+                self._viewports.pop(key, None)
+        self._identities = identities
+
+    def _deliver_progress(
+        self, *, screen: SessionProgressScreen, snapshot: SessionProgressSnapshotDAO
+    ) -> None:
+        """Reject deferred paint addressed to a dismissed instance with the same key.
+
+        Args:
+            screen (SessionProgressScreen): Object captured when scheduling delivery.
+            snapshot (SessionProgressSnapshotDAO): Validated progress to paint.
+        """
+        if self._screen is screen and screen.is_live:
+            screen.apply_snapshot(snapshot=snapshot)

@@ -16,11 +16,14 @@ def _make_process(
 ) -> SubAgentProcess:
     """Build a minimal SubAgentProcess for argv inspection."""
     return SubAgentProcess(
-        task=SubAgentTaskDAO(task_id=task_id, prompt=prompt),
+        task=SubAgentTaskDAO(
+            task_summary="Check model request compatibility", task_id=task_id, prompt=prompt
+        ),
         session_id="s1",
         model=model,
         relay=None,  # type: ignore[arg-type]
         registry=None,  # type: ignore[arg-type]
+        execution_id="0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40",
         system_prompt="",
         parent_session_id=None,
         slo_home=None,

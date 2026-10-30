@@ -1,7 +1,7 @@
 ---
 name: naming-and-clarity
-description: Explicit self-describing names and a Build/Create/BuildAndCreate + publish/consume lifecycle verb vocabulary. Clarity over cleverness.
-when_to_use: Apply whenever naming a function, method, or identifier — especially constructors, lifecycle helpers, and paired producer/consumer readers across a boundary.
+description: Explicit self-describing names drawn from the domain's ubiquitous language — entity-named variables, domain-verb + domain-noun methods, no invented nouns, no generic verbs, no working vocabulary — plus a Build/Create/BuildAndCreate + publish/consume lifecycle verb vocabulary. Clarity over cleverness.
+when_to_use: Apply whenever naming or renaming a function, method, variable, parameter, DAO, error code, or docstring — always for domain, service, and persistence code, and for constructors, lifecycle helpers, and paired producer/consumer readers across a boundary. Load for every implementation and every review.
 group: coding
 kind: skill
 source_prompt: naming-and-clarity.md
@@ -12,8 +12,8 @@ source_prompt: naming-and-clarity.md
 ## Skill summary
 
 - **Name:** `naming-and-clarity`
-- **Description:** Explicit self-describing names and a Build/Create/BuildAndCreate + publish/consume lifecycle verb vocabulary. Clarity over cleverness.
-- **When to use:** Apply whenever naming a function, method, or identifier — especially constructors, lifecycle helpers, and paired producer/consumer readers across a boundary.
+- **Description:** Explicit self-describing names drawn from the domain's ubiquitous language, plus a Build/Create/BuildAndCreate + publish/consume lifecycle verb vocabulary. Clarity over cleverness.
+- **When to use:** Every implementation and every review — especially domain, service, and persistence code, constructors, lifecycle helpers, and paired producer/consumer readers across a boundary.
 - **Group:** `coding`
 - **Kind:** `skill`
 - **Source prompt:** `naming-and-clarity.md`
@@ -25,10 +25,35 @@ The snippets in this skill are illustrative examples, not copied production code
 - The user asks you to name a new constructor, worker loop, or producer/consumer pair.
 - You are reviewing a diff and a function name reads clever rather than descriptive.
 - You need to decide between `build`, `create`, `start`, or `new` for a new helper.
+- You are about to write `row = await session.get(...)`, `request: SomeDAO`, or `target = ...` in a domain service.
+- A name you are about to write contains a noun (`voice_request`, `known_identity`, `requested_update`) that you cannot point to in the model.
+- You are writing a docstring and reach for words like "evidence", "effects", or "projection".
 
 ## Guidance
 
 **Clarity over cleverness is the overriding tie-breaker.** Whenever two names are in tension, pick the one a new reader understands without context. A clever name that saves a few characters costs every future reader a lookup.
+
+A name has two sources of truth, and both must be honoured:
+
+1. **The domain vocabulary** decides the *nouns*: entities, their fields, their states. (§0, §6)
+2. **The operation actually performed** decides the *verb*. (§1, §2, §7)
+
+A name that gets the verb right but invents the noun (`_lock_voice_request` — there is no "voice request") fails as badly as a clever verb.
+
+---
+
+## 0. Before naming anything: list the domain vocabulary
+
+Do this once per task, before writing or reviewing code, and keep the list in your working notes:
+
+1. **Entities** — the model/entity classes the task touches (e.g. `ContactObservation`, `Customer`).
+2. **Fields and states** — their columns/attributes and enumerated states (e.g. `account_association`, `voice_completion_workflow_id`, `accepted`).
+3. **Glossary** — terms used by the project's glossary, specification, README, or knowledge base for those entities (e.g. "contact statistics", "restriction").
+4. **Operations** — what the domain says happens to them (e.g. "an interpretation is accepted", "a call is associated with a customer account").
+
+**Every noun in a new identifier must come from this list.** If an honest name needs a noun that is not on it, you are inventing a concept. Stop and either (a) find the existing term, or (b) ask the user to name it. Never coin a term silently.
+
+The project's own vocabulary always wins over this skill's examples. If the domain genuinely uses a word this skill discourages (for example, an interpreter whose spec defines an "evidence quote"), use it **for that concept only**.
 
 ---
 
@@ -45,6 +70,8 @@ Real examples that were rejected and fixed:
 | `wireOverlay` | `buildOverlay` | "wire" as a verb is jargon; the function builds the overlay |
 
 Banned as verbs: **`demux`, `pump`, `wire`** (and anything in the same clever-jargon family). If you catch yourself reaching for a metaphor, use the plain verb for the actual operation instead.
+
+Equally banned — **generic verbs that name no operation**: **`apply`, `handle`, `process`, `patch`, `perform`, `execute`, `manage`, `do`, `run`** (outside a CLI/task entry point). `associate`, `resolve`, `project`, and `effect` are banned unless the domain vocabulary (§0) uses that exact word for that exact operation.
 
 Rule of thumb: if a colleague cannot predict what the function does from its name alone, rename it.
 
@@ -150,6 +177,13 @@ Clarity does not stop at the name. Every non-trivial function carries a document
 - **WHO** calls it,
 - **WHEN** in the flow it runs.
 
+The comment uses **the same domain vocabulary as the name** (§0). It says which entity is read or changed and what changes, in words a domain expert would use. Abstract process prose is a naming failure in sentence form:
+
+| Rejected docstring | Fixed docstring |
+|---|---|
+| "Replace current source effects while retaining caller transaction ownership." | "Recalculate the customer account's voice contact statistics from its accepted inbound-call contact observations. Called by `UpdateCustomerStateAppService` after a voice interpretation is accepted. Commits unless `autocommit=False`." |
+| "Returns: Independent material-effect flags and explicit policy uncertainty." | "Returns: The updated contact statistics and whether the observation limit was reached." |
+
 This pairs with the applicable language documentation owner: Python uses `skills/languages/python/method-docstrings/SKILL.md`, Go uses the selected Go Godoc conventions, and TypeScript uses the selected TypeScript JSDoc conventions. This generic skill owns the WHAT/WHO/WHEN intent; language roots own concrete comment syntax and format. A good name plus a rich doc comment means the reader never has to reverse-engineer the body.
 
 ---
@@ -160,15 +194,176 @@ When any naming or documentation decision is genuinely a toss-up, choose the opt
 
 ---
 
+## 6. A variable holding an entity is named after the entity
+
+The variable's name is the snake_case (Python, Go locals) or camelCase (TypeScript) form of the entity's type. Do not shorten it, generalise it, or describe how it was stored or fetched. This applies equally to parameters, attributes, loop variables, and test fixtures.
+
+| Rejected | Fixed | Why |
+|---|---|---|
+| `row`, `record`, `obj`, `item`, `entity`, `data`, `instance` holding a `ContactObservation` | `contact_observation: ContactObservation` | Describes the storage, not the thing |
+| `observation` holding a `ContactObservation` | `contact_observation` | Drops the qualifier; other kinds of observation become indistinguishable |
+| `target` / `result` / `match` holding a tuple | Unpack into `customer`, `account_index`, `customer_account` | A role word hides which entities were found |
+| `index` | `account_index` | Index *of what*? |
+| `association` | `customer_account_association` | Association *of what with what*? |
+| `request` holding an update DAO | `voice_contact_update: CustomerVoiceContactUpdateDAO` | "request" is transport vocabulary; name the payload's domain meaning |
+| `previous` / `updated` | `previous_contact_statistics` / `updated_contact_statistics` | Say *what* changed, not only *when* |
+
+Rules:
+
+- **Two instances of the same type** get a domain qualifier, never a number: `incoming_customer_account` / `stored_customer_account`, not `account1` / `account2`.
+- **ORM entity vs. its DAO** get distinguishable names when both are in scope: `contact_observation` / `contact_observation_dao`. Annotate each with its real type; never annotate an ORM `Customer` as `CustomerDAO`.
+- **Collections** are the plural entity name, or `<entity>_by_<key>` for maps: `contact_observations`, `contact_observations_by_source_call_id`.
+- **Optional lookups** keep the entity name; the type carries the optionality: `contact_observation: ContactObservation | None`.
+
+```typescript
+// TypeScript: the same rule in camelCase.
+const contactObservation: ContactObservation = await findContactObservation(contactObservationId) // not: const row = ...
+```
+
+```go
+// Go: short receiver names are idiomatic; entity locals still use the entity name.
+contactObservation, err := store.GetContactObservation(ctx, contactObservationID) // not: row, err := ...
+```
+
+---
+
+## 7. A method name is a domain verb on a domain noun
+
+Shape: **`<verb>_<domain noun>[_<qualifier>]`**. The noun comes from §0. The verb comes from §2 or the table below and names the operation the body performs.
+
+| Verb | Use for | Example |
+|---|---|---|
+| `get_` | Read one; absence is an error | `get_customer_account_for_voice_contact` |
+| `find_` | Read one; absence is a valid `None` | `find_contact_observation` |
+| `list_` | Read many | `list_account_voice_contact_observations` |
+| `lock_` | Acquire a row or advisory lock on the entity | `lock_voice_contact_observation` |
+| `create_` / `save_` / `update_` / `delete_` | Persist (see §2) | `update_customer_contact_statistics` |
+| `replace_` | Remove and re-insert a well-defined subset | `replace_customer_contact_restrictions_for_call` |
+| `mark_<state>` | Move the entity into a named domain state | `mark_voice_interpretation_workflow_completion` |
+| `calculate_` | Derive a value without persisting | `calculate_customer_voice_contact_statistics` |
+| `validate_` | Reject invalid input or state; returns nothing or raises | `validate_voice_contact_observation_account_association` |
+| `build_` | Assemble an in-memory value (see §2) | `build_customer_account_association` |
+
+Rules:
+
+- **The name must survive a noun audit.** Split the name into words; every noun must be in the §0 list. `_lock_voice_request` fails ("voice request" is not an entity). `lock_voice_contact_observation` passes.
+- **A method that only forwards to one branch is not a method.** `_apply_requested_update` that chooses between two calls belongs inline in the caller as an explicit `if`.
+- **Two effects, two verbs, or a split.** If an honest name needs `and` (`update_contact_statistics_and_replace_restrictions`), either keep the `and` so the second side effect is visible, or split it into two methods. Never name it after one effect and hide the other.
+- **Conditional methods state the condition in domain terms**, using fields from §0: `_save_contact_observation_if_customer_account_known`, not `_save_if_scope_complete`.
+- **Error codes and exception classes follow the same rule.** `ErrorCustomerAccountNotFound("customer_account_not_found")`, not `ValueError("unpersisted_voice_evidence")`.
+
+Rejected → fixed, from a real review (illustrative, not copied production code):
+
+| Rejected | Fixed | What was wrong |
+|---|---|---|
+| `_lock_voice_request` | `lock_voice_contact_observation` | No such thing as a "voice request"; it locks a voice `ContactObservation` |
+| `replace_voice_evidence` | `update_customer_contact_statistics` | "evidence" is not a domain term; it updates contact statistics |
+| `_apply_requested_update` | inline the branch into `invoke()` | "requested update" is no entity; "apply" is no operation |
+| `_associate_known_identity` | `_save_contact_observation_to_customer_account` | "known identity" is no entity; it saves a `ContactObservation` against a customer account |
+| `_load_voice_evidence` | `list_account_voice_contact_observations` | "load" + invented noun; it lists the account's voice contact observations |
+| `_patch_voice_observed_evidence` | `update_customer_contact_statistics` | "patch" is no operation; "observed evidence" is no entity |
+| `_voice_effect_result` | `build_customer_voice_contact_update_result` | "effect" is no domain term; it builds a result DAO |
+| `mark_voice_completion(row=...)` | `mark_voice_interpretation_workflow_completion(contact_observation=...)` | Completion *of what*; `row` names storage |
+
+---
+
+## 8. Never leak working vocabulary into domain code
+
+Your own process has a vocabulary: verification, review, orchestration, specifications, transport. Those words describe *your work*, not the *domain*, and they must not appear in identifiers, DAO names, error codes, log messages, or docstrings unless §0 lists them for that concept.
+
+Banned unless the domain vocabulary contains them: **`evidence`, `effect`, `material effect`, `source effects`, `projection`, `phase`, `contract`, `target`, `request`, `payload`, `context`, `uncertainty`, `artifact`, `handoff`, `scope`, `identity` (as a stand-in for a specific entity)**.
+
+How it leaks, and the fix:
+
+- A verification step "records evidence" → the code gets `voice_evidence`. Name the entity: `contact_observation`.
+- A spec talks about "effects" of an update → the DAO becomes `...EffectResultDAO`. Name what changed: `CustomerVoiceContactUpdateResultDAO`.
+- An HTTP or queue layer uses "request" → a domain service parameter becomes `request`. Name the domain payload: `voice_contact_update`.
+
+---
+
+## 9. Existing names are history, not precedent
+
+"Stay consistent with existing naming" covers **style**: casing, prefixes, `get_` vs. `find_` conventions, file layout. It does **not** cover **vocabulary**.
+
+- If the file you are editing uses `row` 100 times, new and changed code still uses `contact_observation`. Do not rename untouched code as a side quest; do not copy the bad name forward either.
+- If a **persisted column or external contract** carries a non-domain name (e.g. a JSON key `observed_evidence`), keep that exact name **at the boundary only** (model column, serialised key, API field), use the domain name everywhere else, and **report the mismatch** to the user as a candidate migration. Never derive new method or DAO names from it (`_patch_voice_observed_evidence` is what happens when you do).
+- If the user or a review rejected a name, the replacement must pass §0 and §7 too. Renaming `known_identity` to `customer_scope` swaps one invented noun for another.
+
+---
+
+## 10. Worked example
+
+Illustrative, not copied production code. The method reads correctly only when every name passes §0–§9.
+
+**Rejected:**
+
+```python
+async def replace_voice_evidence(*, request: CustomerVoiceUpdateDAO, db_session: AsyncSession) -> CustomerVoiceUpdateResultDAO:
+    """Replace current source effects while retaining caller transaction ownership."""
+    observation = await CustomerService._lock_voice_request(request=request, db_session=db_session)
+    target = await CustomerService._find_account_for_call(request=request, observation=observation, db_session=db_session)
+    customer, index, account = target
+    evidence = await CustomerService._load_voice_evidence(association=association, db_session=db_session)
+    previous = account.calls.observed_evidence
+    updated = CustomerService._build_observed_voice(request=request, previous=previous, evidence=evidence)
+```
+
+Problems: invented nouns (`voice_request`, `voice_evidence`, `source effects`), storage/role names (`observation`, `target`, `index`, `account`, `request`), generic verbs (`replace`, `load`, `patch`), and no local types.
+
+**Fixed:**
+
+```python
+async def update_customer_contact_statistics(
+    *,
+    voice_contact_update: CustomerVoiceContactUpdateDAO,
+    db_session: AsyncSession,
+    autocommit: bool = True,
+) -> CustomerVoiceContactStatsDAO:
+    """Recalculate a customer account's voice contact statistics after an accepted call.
+
+    Called by UpdateCustomerStateAppService once a voice interpretation is accepted.
+    Locks the call's ContactObservation, associates it with the existing customer account,
+    and recalculates statistics from the account's accepted voice contact observations.
+    Commits unless ``autocommit=False``.
+    """
+    contact_observation: ContactObservation = await ContactObservationService.lock_voice_contact_observation(
+        contact_observation_id=voice_contact_update.contact_observation_id, db_session=db_session
+    )
+    customer: Customer
+    account_index: int
+    customer_account: CustomerAccountDAO
+    customer, account_index, customer_account = await CustomerService.get_customer_account_for_voice_contact(
+        contact_observation=contact_observation, db_session=db_session
+    )
+    contact_observations: list[ContactObservation] = (
+        await ContactObservationService.list_account_voice_contact_observations(
+            customer_account=customer_account, db_session=db_session
+        )
+    )
+    updated_contact_statistics: CustomerVoiceContactStatsDAO = (
+        CustomerService.calculate_customer_voice_contact_statistics(contact_observations=contact_observations)
+    )
+```
+
+Every noun is an entity or glossary term, every verb is from §2/§7, every local is entity-named and typed, and the docstring says WHAT, WHO, and WHEN in domain words.
+
+---
+
 ## Quick checklist
 
+- [ ] Did you list the domain vocabulary (entities, fields, states, glossary) before naming? (§0)
+- [ ] Every noun in every new name is on that list — none invented? (§0, §7)
 - [ ] Can a reader predict what the function does from its name alone?
-- [ ] No clever/jargon verbs (`demux`, `pump`, `wire`) — plain verb for the real operation?
+- [ ] No clever/jargon verbs (`demux`, `pump`, `wire`) and no generic verbs (`apply`, `handle`, `process`, `patch`) — plain verb for the real operation?
 - [ ] `build…` = in-memory assembly, no persistence, no background execution?
 - [ ] `Create…` / `Save…` = persistence of an already-built object?
 - [ ] `BuildAndCreate…` = build then persist?
 - [ ] `start…` / `launch…` left as-is for background-task/loop spawning (not folded into `build`)?
 - [ ] Does any language-specific constructor spelling follow the applicable language owner rather than this generic skill?
 - [ ] Producer/consumer pair across a boundary named `publish…` / `consume…` with a shared noun?
-- [ ] Rich doc comment states WHAT, WHO, and WHEN?
+- [ ] Every variable holding an entity is named after its type (`contact_observation`, never `row` / `observation` / `target` / `request`) and annotated with its real type? (§6)
+- [ ] Every side effect visible in the method name — no second effect hidden behind the first? (§7)
+- [ ] No working vocabulary (`evidence`, `effect`, `projection`, `scope`, `request`) in names, error codes, or docstrings? (§8)
+- [ ] No bad existing name copied forward for "consistency"; non-domain persisted names kept at the boundary only and reported? (§9)
+- [ ] Rich doc comment states WHAT, WHO, and WHEN in domain words?
 - [ ] When in doubt, did clarity win over cleverness?

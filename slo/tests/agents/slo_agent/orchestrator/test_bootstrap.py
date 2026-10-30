@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
 from src.agents.reasoning_capabilities import ReasoningLevel
-
+from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -43,6 +44,7 @@ def _make_session(
     session.active_model_name = active_model_name
     session.active_reasoning_level = active_reasoning_level
     session.event_relay = MagicMock()
+    session.history_root = Path("/history-root-for-test")
     session._assembled_system_prompt = MagicMock(return_value=assembled_system_prompt)
     return session
 
@@ -176,7 +178,7 @@ class TestOrchestratorSessionBootstrapAttach:
     """``OrchestratorSessionBootstrap.attach`` promotes sessions to orchestrator mode."""
 
     def test_attach_calls_session_attach_sub_agent_pool(self) -> None:
-        """Successful attach calls ``session.attach_sub_agent_pool`` with the tool list."""
+        """Successful attach calls ``session._attach_sub_agent_pool`` with the tool list."""
         session: MagicMock = _make_session()
 
         with (
@@ -195,7 +197,7 @@ class TestOrchestratorSessionBootstrapAttach:
 
             OrchestratorSessionBootstrap.attach(session=session)
 
-        session.attach_sub_agent_pool.assert_called_once_with(
+        session._attach_sub_agent_pool.assert_called_once_with(
             pool=mock_pool,
             spawn_tools=[mock_spawn_tool],
         )
@@ -217,8 +219,50 @@ class TestOrchestratorSessionBootstrapAttach:
             orchestrator_session_id="my-session",
             default_model="gpt-5.4",
             relay=session.event_relay,
+            owner_session_id="my-session",
+            run_id=ANY,
+            history_root=Path("/history-root-for-test"),
             child_system_prompt=session._assembled_system_prompt(),
         )
+        run_id: str = MockPool.call_args.kwargs["run_id"]
+        assert str(UUID(run_id)) == run_id
+
+    def test_attach_passes_explicit_headless_owner(self) -> None:
+        """Headless composition receives the notifier launch owner explicitly."""
+        session: MagicMock = _make_session(session_id="orch-session")
+
+        with (
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"),
+        ):
+            OrchestratorSessionBootstrap.attach(session=session, headless=True, owner_session_id="tui-owner")
+
+        assert MockPool.call_args.kwargs["owner_session_id"] == "tui-owner"
+
+    def test_attach_allocates_fresh_run_id_per_composition(self) -> None:
+        """Every pool composition, including a resumed runner, gets a new run id."""
+        with (
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"),
+        ):
+            OrchestratorSessionBootstrap.attach(session=_make_session(session_id="a"))
+            OrchestratorSessionBootstrap.attach(session=_make_session(session_id="a"))
+
+        first, second = (call.kwargs["run_id"] for call in MockPool.call_args_list)
+        assert first != second
+
+    def test_attach_uses_default_history_root_when_history_disabled(self) -> None:
+        """A no-history session composes its pool under the default history root."""
+        session: MagicMock = _make_session()
+        session.history_root = None
+
+        with (
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool") as MockPool,
+            patch("src.agents.slo_agent.orchestrator.bootstrap.SpawnSubAgentsTool"),
+        ):
+            OrchestratorSessionBootstrap.attach(session=session)
+
+        assert MockPool.call_args.kwargs["history_root"] == default_history_root()
 
     def test_attach_is_noop_when_agent_already_built(self) -> None:
         """No pool is built when the session's lazy agent already exists."""
@@ -229,7 +273,7 @@ class TestOrchestratorSessionBootstrapAttach:
             OrchestratorSessionBootstrap.attach(session=session)
 
         MockPool.assert_not_called()
-        session.attach_sub_agent_pool.assert_not_called()
+        session._attach_sub_agent_pool.assert_not_called()
 
     def test_attach_is_noop_when_pool_already_attached(self) -> None:
         """No pool is built when ``_sub_agent_pool`` is already set."""
@@ -240,7 +284,7 @@ class TestOrchestratorSessionBootstrapAttach:
             OrchestratorSessionBootstrap.attach(session=session)
 
         MockPool.assert_not_called()
-        session.attach_sub_agent_pool.assert_not_called()
+        session._attach_sub_agent_pool.assert_not_called()
 
     def test_attach_builds_spawn_tool_from_pool(self) -> None:
         """``SpawnSubAgentsTool.build`` is called with the freshly created pool."""
@@ -274,7 +318,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
-        spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == [
             "spawn_sub_agents",
             "launch_workflow",
@@ -294,7 +338,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
-        spawn_tools = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == ["spawn_sub_agents"]
 
     def test_workflow_tools_bound_to_session_identity(
@@ -343,7 +387,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session, headless=True)
 
-        spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools: list = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == ["spawn_sub_agents"]
 
     def test_attach_tui_default_keeps_three_tools(
@@ -364,7 +408,7 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
         with patch("src.agents.slo_agent.orchestrator.bootstrap.SubAgentPool"):
             OrchestratorSessionBootstrap.attach(session=session)
 
-        spawn_tools: list = session.attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
+        spawn_tools: list = session._attach_sub_agent_pool.call_args.kwargs["spawn_tools"]
         assert [tool.name for tool in spawn_tools] == [
             "spawn_sub_agents",
             "launch_workflow",

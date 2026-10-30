@@ -49,16 +49,3 @@ def test_headless_isolation_boundary_is_historical_not_checkout_relative() -> No
     assert "verify the actual runtime version independently" in section
     assert "Do not remove `-I`" in section
     assert "Shell/CI" in section
-
-
-def test_research_distinguishes_relocation_baseline_from_accepted_amendments() -> None:
-    """Keep preservation provenance historical while retaining frozen exclusions."""
-    text = (ROOT / "RESEARCH.md").read_text(encoding="utf-8")
-    section = text.split("## Feature 95 scoped skill maintenance")[1].split("## Verification")[0]
-    assert "original relocation baseline" in section
-    assert "mode-removal" in section
-    assert "headless reasoning" in section
-    assert "five moved bodies" in section
-    assert "runtime user/workflow override precedence are unchanged" in section
-    assert "scheduled TUI skills are explicitly frozen" in section
-    assert "only that exact source/target pair" in section

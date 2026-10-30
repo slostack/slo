@@ -16,9 +16,12 @@ SKILLS = ROOT / "skills"
 
 
 def test_source_inventory_has_live_destinations() -> None:
-    inventory = json.loads((ROOT / "docs/skills-reorganization/inventory.json").read_text())
+    inventory = json.loads((ROOT / "tests/agents/skills/fixtures/reorganization/inventory.json").read_text())
     for item in inventory:
         if item["tier"] == "project-reference":
+            continue
+        if item["status"] == "removed":
+            assert not (ROOT / item["destination"]).exists(), item["source"]
             continue
         assert item["status"] != "pending", item["source"]
         assert item["destination"], item["source"]
@@ -134,7 +137,9 @@ def test_routing_contract_covers_positive_and_negative_scenarios() -> None:
         "override",
     ):
         assert phrase in text
-    scenarios = json.loads((ROOT / "docs/skills-reorganization/routing-scenarios.json").read_text())
+    scenarios = json.loads(
+        (ROOT / "tests/agents/skills/fixtures/reorganization/routing-scenarios.json").read_text()
+    )
     assert len(scenarios) >= 5
     for case in scenarios:
         for path in case["required"]:
@@ -146,17 +151,11 @@ def test_concrete_skill_references_resolve() -> None:
     pattern = re.compile(r"(?<![/\w])skills/[A-Za-z0-9_./-]+(?:SKILL\.md|workflows/[A-Za-z0-9_-]+\.md)")
     for path in SKILLS.rglob("*.md"):
         for reference in pattern.findall(path.read_text()):
-            # 95.a.1 explicitly freezes this file; only this exact stale target is permitted.
-            if (
-                path == SKILLS / "tui/tui-scheduled-workflows/SKILL.md"
-                and reference == "skills/design-and-analysis/headless-orchestration/SKILL.md"
-            ):
-                continue
             assert (ROOT / reference).is_file(), (path, reference)
 
 
 def test_go_canonical_skills_do_not_collide_with_imported_legacy_names() -> None:
-    inventory = json.loads((ROOT / "docs/skills-reorganization/inventory.json").read_text())
+    inventory = json.loads((ROOT / "tests/agents/skills/fixtures/reorganization/inventory.json").read_text())
     legacy = {row.get("name") for row in inventory if row["tier"] == "installed-user"}
     for path in (SKILLS / "languages/go").rglob("SKILL.md"):
         meta = yaml.safe_load(path.read_text().split("---", 2)[1])
@@ -197,7 +196,7 @@ def test_index_is_reproducible() -> None:
 
 
 def test_python_and_vue_recipe_sections_are_preserved() -> None:
-    inventory = json.loads((ROOT / "docs/skills-reorganization/inventory.json").read_text())
+    inventory = json.loads((ROOT / "tests/agents/skills/fixtures/reorganization/inventory.json").read_text())
     for row in inventory:
         if row["tier"] != "bundled":
             continue

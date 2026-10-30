@@ -77,11 +77,12 @@ async def test_compaction_summary_emits_human_message() -> None:
         *_make_completed_turn(turn_id="t2", start_seq=6, user_content="now do this"),
     ]
     messages = await SessionHistoryProjector.build_message_history(events=events)
-    summary_msgs = [
-        m
-        for m in messages
-        if isinstance(m, HumanMessage) and m.content.startswith("[Previous conversation summary]")
-    ]
+    summary_msgs = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            assert isinstance(message.content, str)
+            if message.content.startswith("[Previous conversation summary]"):
+                summary_msgs.append(message)
     assert len(summary_msgs) == 1
     assert "The session so far:" in summary_msgs[0].content
 
@@ -240,6 +241,7 @@ async def test_append_only_summary_preserves_retained_tail() -> None:
     contents = [m.content for m in messages]
 
     assert isinstance(messages[0], HumanMessage)
+    assert isinstance(messages[0].content, str)
     assert messages[0].content.startswith("[Previous conversation summary]")
     assert any("KEEP this message" in c for c in contents)
     assert not any("OLD message" in c for c in contents)
@@ -334,9 +336,10 @@ async def test_empty_assistant_message_event_is_not_replayed() -> None:
     messages = await SessionHistoryProjector.build_message_history(events=events)
 
     # No empty assistant message survives.
-    assert not any(
-        isinstance(m, AIMessage) and not m.tool_calls and not (m.content or "").strip() for m in messages
-    )
+    for message in messages:
+        if isinstance(message, AIMessage) and not message.tool_calls:
+            assert isinstance(message.content, str)
+            assert (message.content or "").strip()
     contents = [m.content for m in messages if isinstance(m.content, str)]
     assert any("hi" in c for c in contents)
     assert any("Are you done?" in c for c in contents)

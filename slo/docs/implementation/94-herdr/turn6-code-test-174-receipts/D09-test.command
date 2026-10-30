@@ -1,0 +1,1 @@
+python -m pytest -m not\ e2e tests/agents/slo_agent/herdr tests/tui/test_herdr_visualizer.py tests/tui/test_visualizer_launcher.py tests/tui/workflows tests/tui/test_workflow_receive_path.py tests/integration/test_herdr_full_flow.py 

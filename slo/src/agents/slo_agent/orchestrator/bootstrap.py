@@ -13,11 +13,14 @@ Sub-spec 53.a.3.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+from uuid import uuid4
 
 from langchain_core.tools import BaseTool
 
 import config.cfg as cfg_module
+from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool
 
@@ -42,7 +45,13 @@ class OrchestratorSessionBootstrap:
     """
 
     @classmethod
-    def attach(cls, *, session: "SloAgentSession", headless: bool = False) -> None:  # type: ignore[name-defined]
+    def attach(  # type: ignore[name-defined]
+        cls,
+        *,
+        session: "SloAgentSession",
+        headless: bool = False,
+        owner_session_id: Optional[str] = None,
+    ) -> None:
         """Attach a ``SubAgentPool`` and the orchestrator tools to ``session``.
 
         No-ops when the session already has a built agent (e.g. a test session
@@ -57,18 +66,41 @@ class OrchestratorSessionBootstrap:
                 --orchestrator`` session; withholds the detached-workflow tools
                 so a detached orchestrator can never recurse. Defaults to
                 ``False`` (TUI path — all three tools).
+            owner_session_id (Optional[str]): Owner identity bound into the pool.
+                Headless runs pass the notifier launch owner; None resolves to the
+                session's own id (normal TUI path). Never taken from a request.
         """
         if cls._already_has_agent(session=session):
             return
         if cls._already_has_pool(session=session):
             return
-        pool: SubAgentPool = cls._build_pool(session=session)
+        session_id: str = session.session_id
+        permitted: bool = session._begin_standard_orchestrator_attachment()
+        policy_sources = session._snapshot_herdr_policy_sources() if permitted else None
+        pool: SubAgentPool = cls._build_pool(
+            session=session,
+            owner_session_id=owner_session_id or session.session_id,
+        )
         spawn_tool: BaseTool = SpawnSubAgentsTool.build(pool=pool)
         extra_tools: list[BaseTool] = [spawn_tool] + cls._build_workflow_tools(
             session=session,
             headless=headless,
         )
-        session.attach_sub_agent_pool(pool=pool, spawn_tools=extra_tools)
+        permitted = (
+            permitted
+            and session._begin_standard_orchestrator_attachment()
+            and session._herdr_policy_sources_match(expected=policy_sources)
+            and session.session_id == session_id
+        )
+        session._attach_sub_agent_pool(pool=pool, spawn_tools=extra_tools)
+        session._finish_standard_orchestrator_attachment(
+            permitted=(
+                permitted
+                and session._herdr_policy_sources_match(expected=policy_sources)
+                and session.session_id == session_id
+            ),
+            expected_tools=tuple(extra_tools),
+        )
 
     # ── private helpers ──────────────────────────────────────────────────────
 
@@ -157,19 +189,30 @@ class OrchestratorSessionBootstrap:
         return getattr(session, "_sub_agent_pool", None) is not None
 
     @classmethod
-    def _build_pool(cls, *, session: SloAgentSession) -> SubAgentPool:
-        """Build a ``SubAgentPool`` bound to ``session``.
+    def _build_pool(cls, *, session: SloAgentSession, owner_session_id: str) -> SubAgentPool:
+        """Build a ``SubAgentPool`` bound to ``session`` and its immutable identities.
+
+        WHAT: The sole normal pool composition owner. Resolves the owner, a fresh
+            run UUID (new on every composition, including a resumed runner) and the
+            session's history root (default root when history is disabled).
+        WHO: Called only by ``attach``.
+        WHEN: Once per session promotion to orchestrator mode.
 
         Args:
             session (SloAgentSession): The orchestrator session; provides its id,
-                active model, event relay, and assembled system prompt to the pool.
+                active model, event relay, history root and assembled system prompt.
+            owner_session_id (str): Resolved owner identity for this composition.
 
         Returns:
             SubAgentPool: A fresh pool for this session.
         """
+        history_root: Optional[Path] = session.history_root
         return SubAgentPool(
             orchestrator_session_id=session.session_id,
             default_model=session.active_model_name,
             relay=session.event_relay,
+            owner_session_id=owner_session_id,
+            run_id=str(uuid4()),
+            history_root=history_root if history_root is not None else default_history_root(),
             child_system_prompt=session._assembled_system_prompt(),
         )

@@ -8,7 +8,7 @@ so one compositor-reading implementation exists.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from rich.segment import Segment
 from textual.app import App
@@ -86,6 +86,31 @@ def painted_link_targets(*, strips: list[Strip]) -> set[str]:
     """
     segments: list[Segment] = [segment for strip in strips for segment in strip]
     return {segment.style.link for segment in segments if segment.style is not None and segment.style.link}
+
+
+async def wait_for_condition(*, pilot: Pilot, predicate: Callable[[], bool], description: str) -> None:
+    """Pause until ``predicate`` holds or a bounded wait lapses, then fail with ``description``.
+
+    Fixed-count ``pilot.pause()`` loops lose the render race under parallel test
+    execution, where cross-process CPU contention delays mounting past any chosen
+    pause count. Poll the observable condition instead so the wait adapts to load.
+
+    WHO: Pilot tests that assert on asynchronously mounted widgets.
+    WHEN: After an action whose visible result arrives from a background task.
+
+    Args:
+        pilot (Pilot): Pilot driving the harness.
+        predicate (Callable[[], bool]): Condition polled after each pause.
+        description (str): Human-readable condition named in the failure message.
+
+    Raises:
+        AssertionError: The condition never held within the bounded wait.
+    """
+    for _attempt in range(_PAINT_ATTEMPTS):
+        await pilot.pause(_PAINT_ATTEMPT_DELAY_SECONDS)
+        if predicate():
+            return
+    raise AssertionError(f"Condition never held within the bounded wait: {description}")
 
 
 async def wait_until_painted(*, pilot: Pilot, text: str, widget: Optional[Widget] = None) -> str:

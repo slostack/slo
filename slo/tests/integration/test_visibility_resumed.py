@@ -18,6 +18,7 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import PromptInput, SloTUI
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.widgets.user_message_block import UserMessageBlock
+from tests.tui.authentication._painted_output import wait_for_condition
 from tests.tui.workflows.test_session_snapshot import _Files, _entry, _handle
 
 
@@ -70,7 +71,11 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
         assert list(app.query(SubAgentFleetRow)) == []
         editor.text = "/workflows tui show"
         await pilot.press("enter")
-        await pilot.pause()
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: len(app.query(SubAgentFleetRow)) == 2,
+            description="both resumed fleet rows are mounted",
+        )
         assert len(app.query(SubAgentFleetRow)) == 2
         assert (await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")).state == "failed"
         editor.text = "/workflows tui dismiss"
@@ -91,7 +96,12 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
         assert list(restarted.query(SubAgentFleetRow)) == []
         editor.text = "/workflows tui show"
         await pilot.press("enter")
-        await pilot.pause()
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: restarted._adapter is not None
+            and any(text == "No hidden workflow groups to show." for text, _ in restarted._adapter.lines),
+            description="empty-show notice is published",
+        )
         assert restarted._adapter is not None
         assert any(text == "No hidden workflow groups to show." for text, _ in restarted._adapter.lines)
         assert (await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")).state == "failed"
@@ -196,5 +206,9 @@ async def test_durable_resume_reveals_same_mounted_visibility_group(tmp_path: Pa
             assert not list(app.query(SubAgentFleetRow))
             editor.text = "/workflows tui show"
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_for_condition(
+                pilot=pilot,
+                predicate=lambda: len(app.query(SubAgentFleetRow)) == 2,
+                description="re-shown resumed fleet rows are mounted",
+            )
             assert tuple(row.row.key for row in app.query(SubAgentFleetRow)) == keys

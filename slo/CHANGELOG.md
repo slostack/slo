@@ -35,6 +35,32 @@
 - **`feature-specifications-pre-hook` and `feature-specifications-post-hook`.**
   The overview author's own checklist and the family review replace them.
 
+## [0.30.0] — 2026-10-30
+
+### Changed
+
+- Correct the requested release numbering to v0.30.0 with matching package
+  metadata. Existing v0.3.0 and v0.3.1 tags remain immutable; v0.30.0 sorts
+  above v0.22.0 for plain `slo update` selection.
+
+### Fixed
+
+- Provision Linux release CI pipx in a pinned, tool-owned virtual environment
+  so recovery and hosted smoke tests can change HOME without losing its module.
+  Linux acceptance gates remain mandatory; the existing macOS exclusion is unchanged.
+
+- Support pipx 1.0's authoritative `list` venv-root header when the modern
+  environment query is unavailable, without guessing a filesystem layout.
+- Recognize the exact observed modern pip/uv console-script bodies and validated
+  Python `-E` shebangs; retain fail-closed rejection of modified launchers.
+
+### Preserved
+
+- Retain the v0.3.1 header simplification and v0.3.0 Finder, `/code` and
+  double-Escape behavior. Keep the updater, packaging-owned `slo-entry`, Python
+  `-I` wrapper, containment validation and atomic launcher replacement contracts.
+  Installer compatibility changes above do not weaken these security boundaries.
+
 ## [0.3.1] — 2026-10-30
 
 ### Fixed

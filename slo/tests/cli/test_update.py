@@ -65,6 +65,17 @@ class TestResolveLatestReleaseTag:
         # ls-remote invoked against the (clean) auth URL
         assert run.call_args.kwargs["args"][:3] == ["git", "ls-remote", "--tags"]
 
+    def test_v0300_beats_prior_release_numbering(self) -> None:
+        """Select the corrected release numerically rather than aliasing v0.3.1."""
+        tags: str = (
+            "aaa\trefs/tags/v0.22.0\n"
+            "bbb\trefs/tags/v0.3.1\n"
+            "ccc\trefs/tags/v0.30.0\n"
+            "ddd\trefs/tags/v0.30.0^{}\n"
+        )
+        with patch("src.cli.update.subprocess.run", return_value=_completed(stdout=tags)):
+            assert Updater.resolve_latest_release_tag() == "v0.30.0"
+
     def test_no_version_tags_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLO_USERNAME", raising=False)
         monkeypatch.delenv("SLO_TOKEN", raising=False)

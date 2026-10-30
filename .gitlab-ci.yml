@@ -148,15 +148,17 @@ publish-installer:
   before_script:
   - python3.11 -c 'import sys; assert sys.version_info[:2] == (3, 11)'
   - python3.11 -m pip install "poetry==$POETRY_VERSION"
-  - python3.11 -m pip install --user pipx
-  - export PATH="$(python3.11 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+  # Tool-owned venv survives HOME replacement; recovery explicitly covers pip and uv.
+  - python3.11 -m venv "$CI_PROJECT_DIR/.ci-pipx"
+  - '"$CI_PROJECT_DIR/.ci-pipx/bin/python" -m pip install pipx==1.18.10 uv==0.13.6'
+  - export PATH="$CI_PROJECT_DIR/.ci-pipx/bin:$PATH"
   - command -v pipx
   - pipx --version
   - cd slo
   - poetry install --no-interaction
   script:
   - poetry build --format wheel
-  - export PATH="$(python3.11 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+  - export PATH="$CI_PROJECT_DIR/.ci-pipx/bin:$PATH"
   - command -v pipx
   - pipx --version
   - export SLO_LOCAL_WHEEL="$(find "$CI_PROJECT_DIR/slo/dist" -maxdepth 1 -name 'slo-*.whl' -type f -print -quit)"
@@ -194,8 +196,10 @@ release-docker-installer-matrix:
   - apt-get update && apt-get install -y --no-install-recommends docker-cli
   - python3.11 -c 'import sys; assert sys.version_info[:2] == (3, 11)'
   - python3.11 -m pip install "poetry==$POETRY_VERSION"
-  - python3.11 -m pip install --user pipx
-  - export PATH="$(python3.11 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+  # Tool-owned venv survives the smoke tests replacing HOME.
+  - python3.11 -m venv "$CI_PROJECT_DIR/.ci-pipx"
+  - '"$CI_PROJECT_DIR/.ci-pipx/bin/python" -m pip install pipx==1.18.10 uv==0.13.6'
+  - export PATH="$CI_PROJECT_DIR/.ci-pipx/bin:$PATH"
   - command -v pipx
   - pipx --version
   - docker info
@@ -203,7 +207,7 @@ release-docker-installer-matrix:
   - poetry install --no-interaction
   script:
   - poetry build --format wheel
-  - export PATH="$(python3.11 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+  - export PATH="$CI_PROJECT_DIR/.ci-pipx/bin:$PATH"
   - command -v pipx
   - pipx --version
   - docker info
@@ -224,14 +228,16 @@ release-docker-installer-matrix:
   before_script:
   - python3.11 -c 'import sys; assert sys.version_info[:2] == (3, 11)'
   - python3.11 -m pip install "poetry==$POETRY_VERSION"
-  - python3.11 -m pip install --user pipx
-  - export PATH="$(python3.11 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+  # Tool-owned venv survives the smoke tests replacing HOME.
+  - python3.11 -m venv "$CI_PROJECT_DIR/.ci-pipx"
+  - '"$CI_PROJECT_DIR/.ci-pipx/bin/python" -m pip install pipx==1.18.10 uv==0.13.6'
+  - export PATH="$CI_PROJECT_DIR/.ci-pipx/bin:$PATH"
   - command -v pipx
   - pipx --version
   - cd slo
   - poetry install --no-interaction
   script:
-  - export PATH="$(python3.11 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+  - export PATH="$CI_PROJECT_DIR/.ci-pipx/bin:$PATH"
   - command -v pipx
   - pipx --version
   - poetry run pytest -o addopts='' tests/cli/test_hosted_installer_smoke.py -m e2e -v

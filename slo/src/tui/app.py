@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from time import monotonic
 from typing import Optional, Protocol, cast
 
 from textual import events
@@ -15,6 +16,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.timer import Timer
 from textual.widget import Widget
+from textual.worker import Worker, WorkerCancelled, WorkerFailed
 from textual.widgets import Footer, Header, Static
 
 from config.ai_model_config import default_model_for_provider
@@ -39,12 +41,15 @@ from src.tui.components.chat_transcript.component import ChatTranscript
 from src.tui.components.workflow_progress.component import WorkflowProgress
 from src.tui.components.prompt_input.component import PromptInput as _PromptInput
 from src.tui.authentication import AuthenticationScreen
+from src.tui.path_suggestion_engine import PathSuggestionReader
+from src.tui.path_suggestion_controller import PathPromptSnapshotDAO, PathSuggestionController
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
 from src.tui.model_catalog import ModelSuggestionProjection
-from src.tui.slash_suggestion_engine import SlashSuggestionEngine
+from src.tui.slash_suggestion_engine import SlashSuggestionEngine, SlashSuggestionStateDAO
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.thinking_spinner import ThinkingSpinner
 from src.tui.tree_export_format import TreeExportFormat
+from src.tui.editor_launcher import EditorLauncher
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
@@ -252,6 +257,8 @@ class SloTUI(App):
         workflow_service_factory: Optional[WorkflowAppServiceFactory] = None,
         workflow_coordinator_factory: Optional[WorkflowCoordinatorFactory] = None,
         workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
+        path_reader: Optional[PathSuggestionReader] = None,
+        editor_launcher: Optional[EditorLauncher] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -273,6 +280,8 @@ class SloTUI(App):
             browser_host (Optional[BrowserHost]): Optional injected host that
                 decides whether link clicks may open a browser. ``None`` uses
                 ``BrowserHost.current()``.
+            path_reader: Optional off-thread path reader; defaults to real immediate enumeration.
+            editor_launcher: Optional local editor validation/submission boundary.
             workflow_resume_launcher: Optional workflow process/capture launch boundary.
             workflow_service_factory: Optional real-service composition boundary.
             workflow_coordinator_factory: Optional coordinator composition boundary;
@@ -282,6 +291,9 @@ class SloTUI(App):
         self._session_factory = session_factory
         self._visualizer_launcher = visualizer_launcher
         self._workflow_resume_launcher = workflow_resume_launcher
+        self._escape_deadline: float = 0.0
+        self._editor_launcher = editor_launcher or EditorLauncher()
+        self._editor_launch_tasks: dict[Worker[None], asyncio.Task[None]] = {}
         self._workflow_service_factory: WorkflowAppServiceFactory = (
             workflow_service_factory or DetachedWorkflowAppService
         )
@@ -328,6 +340,9 @@ class SloTUI(App):
         self._queued_prompt_block: Optional[QueuedPromptBlock] = None
         """Mounted visual counterpart of ``_queued_prompt_text``, when mounted."""
         self._spinner: Optional[ThinkingSpinner] = None
+        self._path_suggestions = PathSuggestionController(
+            view=self, reader=path_reader, run_worker=self.run_worker
+        )
         # Workflow progress owns the fleet panel and its observation-lifetime adapter.
         self._workflow_progress: Optional[WorkflowProgress] = None
         # Guards one-per-run auto-launch of the workflow visualizer window.
@@ -447,6 +462,7 @@ class SloTUI(App):
         ModelSuggestionProjection.refresh_authentication()
         if self._input is not None and self._suggestion_menu is not None and not self._suggestions_bound:
             self._input.bind_suggestions(
+                path_controller=self._path_suggestions,
                 menu=self._suggestion_menu,
                 engine=SlashSuggestionEngine(registry=SlashRouter.registry()),
                 active_model_name=session.active_model_name,
@@ -825,6 +841,7 @@ class SloTUI(App):
     async def on_unmount(self) -> None:
         """Seal admission before awaiting the single retained shutdown task."""
         self._app_closing = True
+        self._path_suggestions.close()
         self._delivery_quiescing = True
         self._session.begin_external_reporting_close()
         if self._app_shutdown_task is None:
@@ -841,6 +858,7 @@ class SloTUI(App):
         replacement = self._session_replacement_task
         if replacement is not None:
             await HerdrTaskJoin.wait(task=replacement)
+        await self._shutdown_step(cleanup=self._drain_editor_launches)
         await self._shutdown_step(cleanup=self._cancel_visualizer_launches)
         async with self._prompt_submission_lock:
             session = self._session
@@ -850,6 +868,7 @@ class SloTUI(App):
             await self._shutdown_step(cleanup=session.close_external_reporting)
             await self._shutdown_step(cleanup=self._close_selected_delivery)
         await self._drain_shutdown_owners(session=session)
+        await self._shutdown_step(cleanup=self._path_suggestions.join)
         # A failed viewer helper is not evidence that its retained workers ended.
         for task in tuple(self._visualizer_launch_tasks.values()):
             await HerdrTaskJoin.wait(task=task)
@@ -1583,6 +1602,98 @@ class SloTUI(App):
         outcome = service.advance_from_launch_result(result_text=result_text)
         self._ensure_workflow_renderer().apply_effects(effects=outcome.effects)
 
+    async def on_event(self, event: events.Event) -> None:
+        """Observe original input before Textual forwards it to consuming widgets.
+
+        Escape remains widget-owned dismissal on the first press. Only a second
+        prompt-focused Escape within 0.5 seconds dispatches the real /abort path.
+        Forwarded/bubbled keys must not be counted twice.
+        """
+        if isinstance(event, (events.DescendantFocus, events.DescendantBlur, events.AppBlur, events.Paste)):
+            self._reset_escape_sequence()
+        if isinstance(event, events.Key) and not event.is_forwarded:
+            if await self._consume_double_escape(event=event):
+                return
+        await super().on_event(event)
+
+    def _reset_escape_sequence(self) -> None:
+        """Revoke the armed key when input, focus, session or run context changes."""
+        self._escape_deadline = 0.0
+
+    async def _consume_double_escape(self, *, event: events.Key) -> bool:
+        """Translate only consecutive main-prompt Escapes into existing abort dispatch.
+
+        Args:
+            event: Original, not-yet-forwarded terminal key.
+
+        Returns:
+            True when the second Escape was consumed by /abort.
+        """
+        if event.key != "escape" or self._input is None or self.focused is not self._input:
+            self._reset_escape_sequence()
+            return False
+        if self._input.screen is not self.screen:
+            self._reset_escape_sequence()
+            return False
+        now = monotonic()
+        if now > self._escape_deadline:
+            self._escape_deadline = now + 0.5
+            return False
+        self._reset_escape_sequence()
+        if self._input is not None:
+            self._input.hide_suggestions()
+        await self._dispatch_slash_command(line="/abort")
+        return True
+
+    def capture_path_prompt(self) -> Optional[PathPromptSnapshotDAO]:
+        """Adapt mounted TextArea state and selected cwd to immutable completion input.
+
+        Returns:
+            Current prompt authority, or None after closing/before composition.
+        """
+        if self._input is None or self._app_closing:
+            return None
+        return PathPromptSnapshotDAO(
+            text=self._input.text,
+            cursor=self._input.cursor_location,
+            workdir=self._session.workdir,
+            selection_empty=self._input.selection.is_empty,
+        )
+
+    def publish_path_suggestions(self, *, state: SlashSuggestionStateDAO) -> None:
+        """Adapt controller output to the existing shared menu/navigation state.
+
+        Args:
+            state: Completion presentation, containing no file contents.
+        """
+        if self._input is not None:
+            self._input.publish_path_suggestions(state=state)
+
+    def replace_path_span(
+        self, *, insert_text: str, start: tuple[int, int], end: tuple[int, int], cursor_inside_quote: bool
+    ) -> None:
+        """Apply the controller's range edit as one undoable TextArea transaction.
+
+        Args:
+            insert_text: Encoded literal replacement including any closing quote.
+            start: Inclusive range location.
+            end: Exclusive range location.
+            cursor_inside_quote: Keep navigation before a retained closing quote.
+        """
+        if self._input is None:
+            return
+        self._input.history.checkpoint()
+        self._input.replace(insert=insert_text, start=start, end=end, maintain_selection_offset=False)
+        if cursor_inside_quote:
+            row, column = self._input.cursor_location
+            self._input.move_cursor(location=(row, column - 1))
+        self._input.history.checkpoint()
+
+    def on_prompt_input_edited(self, event: _PromptInput.Edited) -> None:
+        """Revoke double-Escape when the prompt buffer or selection changes."""
+        event.stop()
+        self._reset_escape_sequence()
+
     # ---- Input handling ---------------------------------------------------
 
     async def on_key(self, event: events.Key) -> None:
@@ -2103,12 +2214,13 @@ class SloTUI(App):
         """
         if self._input is not None:
             self._input.hide_suggestions()
+        self._reset_escape_sequence()
         if self._session.preparation_status != "ready":
             command = line.strip().split(maxsplit=1)[0]
             if line.strip() == "/model refresh":
                 self._start_session_preparation()
                 return
-            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model"}:
+            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model", "/code"}:
                 if self._chat_transcript is not None:
                     self._chat_transcript.write_transcript_line(
                         content="Model preparation required.", classes="tool-result"
@@ -2132,6 +2244,9 @@ class SloTUI(App):
         finally:
             if mounted_activity:
                 await self._unmount_spinner()
+        if isinstance(result.code_path, str):
+            self._schedule_editor_launch(argument=result.code_path)
+            return
         if result.should_clear:
             await self.action_clear()
         if result.replace_session:
@@ -2181,6 +2296,65 @@ class SloTUI(App):
             self._push_auth_modal()
         if result.should_exit:
             self.exit()
+
+    def _schedule_editor_launch(self, *, argument: str) -> None:
+        """Capture the session before background validation without blocking prompt input.
+
+        Args:
+            argument: Raw single-path slash intent.
+        """
+        if self._app_closing or self._session_transitioning:
+            return
+        worker: Worker[None] = self.run_worker(
+            work=partial(self._run_editor_launch, argument=argument, session=self._session),
+            group="editor-launch",
+            exit_on_error=False,
+        )
+        self._editor_launch_tasks[worker] = asyncio.create_task(
+            coro=self._wait_for_editor_worker(worker=worker)
+        )
+
+    async def _run_editor_launch(self, *, argument: str, session: SloAgentSession) -> None:
+        """Render submission evidence only while its captured owner remains selected.
+
+        Args:
+            argument: Raw operator token for off-thread validation.
+            session: Selected session captured synchronously at registration.
+        """
+        notice = await self._editor_launcher.invoke(argument=argument, session=session)
+        if not self._app_closing and not self._session_transitioning and session is self._session:
+            if self._chat_transcript is not None:
+                self._chat_transcript.write_transcript_line(content=notice, classes="tool-result")
+
+    async def _drain_editor_launches(self) -> None:
+        """Cancel/join request mechanics, never close user-owned editor panes."""
+        tasks = tuple(self._editor_launch_tasks.items())
+        for worker, _wait in tasks:
+            worker.cancel()
+        for _worker, wait in tasks:
+            await HerdrTaskJoin.wait(task=wait)
+            wait.result()
+
+    async def _wait_for_editor_worker(self, *, worker: Worker[None]) -> None:
+        """Retire a launch only after actual completion, including pre-entry cancellation.
+
+        Started and retained at admission, this wait does not depend on Textual's
+        state messages. In-flight cancellation keeps the handle until validation
+        and terminal request cleanup have joined their work. Unexpected failures
+        are accounted with a fixed diagnostic, never exception details or a late
+        transcript notice, before the retained wait releases ownership.
+
+        Args:
+            worker: App-owned editor worker whose request mechanics must finish.
+        """
+        try:
+            await worker.wait()
+        except WorkerCancelled:
+            pass
+        except WorkerFailed:
+            log_error(msg="editor_launch_worker_failed", stack_trace=False)
+        finally:
+            self._editor_launch_tasks.pop(worker, None)
 
     async def _open_git_diff(self, *, path: str) -> None:
         """Load Git diff content and push its focused screen when it is safe.
@@ -2290,6 +2464,7 @@ class SloTUI(App):
             candidate: Fully prepared inactive successor.
         """
         try:
+            await self._drain_editor_launches()
             await self._cancel_visualizer_launches()
         except Exception:
             self._replacement_delivery_safe = False
@@ -2432,6 +2607,8 @@ class SloTUI(App):
             self._write_lifecycle_notice(
                 content="Previous subscription cleanup incomplete.", classes="tool-result"
             )
+        self._reset_escape_sequence()
+        self._path_suggestions.dismiss()
         self._session = candidate
         candidate.subscribe(handler=self._render_event)
 
@@ -2997,6 +3174,7 @@ class SloTUI(App):
         """
         assert self._chat_transcript is not None
         self._chat_transcript.begin_run()
+        self._reset_escape_sequence()
         await self._mount_spinner()
         saw_failed_event: bool = False
         try:
@@ -3018,6 +3196,7 @@ class SloTUI(App):
             if not saw_failed_event:
                 self._render_run_error(exc=exc)
         finally:
+            self._reset_escape_sequence()
             await self._refresh_context_window_after_prompt()
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()

@@ -38,6 +38,7 @@ from ..sessions.identity import is_canonical_uuid_session_id
 from .service import HerdrCliTransport, HerdrTaskJoin, HerdrEnvironmentGate
 
 if TYPE_CHECKING:
+    from .editor import HerdrEditorLauncher
     from .visualizer import HerdrVisualizerLauncher
 
 HERDR_TOKEN_KEYS: tuple[str, ...] = get_args(HerdrDisplayKey)
@@ -977,6 +978,25 @@ class HerdrReporter:
         await self._release_lease()
         return HerdrReporterCloseOutcomeDAO(
             replacement="uncertain", resources="retained" if self.retains_external_resources else "drained"
+        )
+
+    def build_editor(self) -> "HerdrEditorLauncher":
+        """Build an inert editor adapter on this reporter's captured owner/transport.
+
+        Returns:
+            HerdrEditorLauncher: Session-owned requests, user-owned visible panes.
+
+        Raises:
+            HerdrRestoreUnavailableError: Live pane authority is unavailable.
+        """
+        if not self.allows_viewer_admission():
+            raise HerdrRestoreUnavailableError()
+        from .editor import HerdrEditorLauncher
+
+        return HerdrEditorLauncher(
+            transport=self._transport,
+            owner_pane_id=self._config.pane_id,
+            authority=self.allows_viewer_admission,
         )
 
     def build_visualizer(self) -> HerdrVisualizerLauncher:

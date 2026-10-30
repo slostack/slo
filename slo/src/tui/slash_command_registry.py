@@ -181,6 +181,14 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         display_order=30,
     ),
     SlashCommandSpecDAO(
+        name="code",
+        description="open an existing file or directory in a separate editor pane",
+        argument_mode="free_text",
+        usage="/code <path>",
+        argument_hint="path",
+        display_order=39,
+    ),
+    SlashCommandSpecDAO(
         name="cwd",
         description="show the workdir",
         display_order=40,

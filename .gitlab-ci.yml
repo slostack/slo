@@ -132,6 +132,9 @@ publish-installer:
 # They start only after tagged Worker publication succeeds; local verification
 # only parses/collects these contracts and never claims Docker or macOS runs.
 # The macOS job requires a registered tagged GitLab runner with the named runner tag.
+# Linux images already provide the verified interpreter. With virtualenvs.create=false,
+# `poetry env use` tries to write envs.toml into a nonexistent cold-cache directory.
+# Install directly, as the default pytest job does; no cache is a correctness prerequisite.
 .release-e2e:
   stage: release-verify
   image: python:3.11
@@ -150,7 +153,6 @@ publish-installer:
   - command -v pipx
   - pipx --version
   - cd slo
-  - poetry env use python3.11
   - poetry install --no-interaction
   script:
   - poetry build --format wheel
@@ -187,7 +189,9 @@ release-docker-installer-matrix:
     matrix:
     - SLO_INSTALL_SMOKE_IMAGE: [ubuntu:22.04, ubuntu:24.04, debian:12, debian:13]
   before_script:
-  - apt-get update && apt-get install -y --no-install-recommends docker.io
+  # Debian trixie splits the CLI from docker.io (only a recommendation).
+  # The daemon is the dind service; this image needs only the explicit client.
+  - apt-get update && apt-get install -y --no-install-recommends docker-cli
   - python3.11 -c 'import sys; assert sys.version_info[:2] == (3, 11)'
   - python3.11 -m pip install "poetry==$POETRY_VERSION"
   - python3.11 -m pip install --user pipx
@@ -196,7 +200,6 @@ release-docker-installer-matrix:
   - pipx --version
   - docker info
   - cd slo
-  - poetry env use python3.11
   - poetry install --no-interaction
   script:
   - poetry build --format wheel
@@ -226,7 +229,6 @@ release-docker-installer-matrix:
   - command -v pipx
   - pipx --version
   - cd slo
-  - poetry env use python3.11
   - poetry install --no-interaction
   script:
   - export PATH="$(python3.11 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
@@ -241,6 +243,10 @@ hosted-installer-smoke:
 
 macos-installer-smoke:
   extends: .hosted-installer-smoke
+  # Operator-authorized release repair: skip ONLY macOS, whose runner is unavailable.
+  # Linux recovery, all four Docker images and hosted Linux remain mandatory.
+  rules:
+  - when: never
   needs:
   - job: publish-installer
   image: null
@@ -271,8 +277,8 @@ macos-installer-smoke:
   - pipx --version
   - poetry run pytest -o addopts='' tests/cli/test_hosted_installer_smoke.py -m e2e -v
 
-# GitLab is the sole release authority. This API call starts only after both
-# post-publication hosted smoke jobs succeed in the same protected tag pipeline.
+# GitLab is the sole release authority. This API call starts only after all
+# mandatory Linux evidence succeeds in the same protected tag pipeline.
 create-gitlab-release:
   stage: release
   image: curlimages/curl:8.12.1
@@ -281,6 +287,7 @@ create-gitlab-release:
   - job: release-docker-installer-matrix
   - job: hosted-installer-smoke
   - job: macos-installer-smoke
+    optional: true
   script:
   - test -n "$GITLAB_RELEASE_TOKEN" || { echo "GITLAB_RELEASE_TOKEN is empty — configure a protected API token." >&2; exit 1; }
   - |

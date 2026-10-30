@@ -7,6 +7,10 @@ from typing import ClassVar, Optional
 
 from textual import events
 from textual.message import Message
+from textual.document._wrapped_document import WrappedDocument
+from textual.document._document_navigator import DocumentNavigator
+from src.tui.widgets.prompt_document import PromptDocument
+from src.tui.path_suggestion_controller import PathSuggestionController
 from textual.widgets import TextArea
 
 from src.tui.model_catalog import ModelSuggestionProjection
@@ -52,6 +56,34 @@ class PromptInput(TextArea):
         self._suggestion_menu: Optional[SlashSuggestionMenu] = None
         self._active_model_name: str = ""
         self._closed: bool = False
+        self._path_controller: Optional[PathSuggestionController] = None
+
+    def _set_document(self, text: str, language: Optional[str]) -> None:
+        """Build the plain prompt document without normalizing literal path characters.
+
+        TextArea calls this on initialization and load_text; retain its normal
+        wrapping/navigation setup and edit history machinery.
+
+        Args:
+            text: Literal prompt buffer.
+            language: Optional syntax language; non-prompt syntax uses TextArea's setup.
+        """
+        if language:
+            super()._set_document(text=text, language=language)
+            return
+        self._highlight_query = None
+        self.document = PromptDocument(text=text)
+        self.wrapped_document = WrappedDocument(self.document, tab_width=self.indent_width)
+        self.navigator = DocumentNavigator(self.wrapped_document)
+        self._build_highlight_map()
+        self.move_cursor(location=(0, 0))
+        self._rewrap_and_refresh_virtual_size()
+
+    class Edited(Message):
+        """Notify the application of buffer or selection changes, without exposing state."""
+
+    class PathSuggestionsRequested(Message):
+        """Request explicit path discovery for the current cursor."""
 
     class Submitted(Message):
         """Posted when the user presses Enter to submit the buffer."""
@@ -104,6 +136,7 @@ class PromptInput(TextArea):
         menu: SlashSuggestionMenu,
         engine: SlashSuggestionEngine,
         active_model_name: str,
+        path_controller: Optional[PathSuggestionController] = None,
     ) -> None:
         """Bind the borrowed menu and engine once, then evaluate the latest draft.
 
@@ -131,6 +164,7 @@ class PromptInput(TextArea):
             active_model_name=active_model_name,
             catalog_revision=catalog_revision,
         )
+        self._path_controller = path_controller
         try:
             self._refresh_slash_suggestions()
         except Exception:
@@ -171,6 +205,7 @@ class PromptInput(TextArea):
             menu.update_state(state=SlashSuggestionStateDAO(visible=False))
         except Exception:
             pass
+        self._path_controller = None
         self._suggestion_engine = None
         self._suggestion_menu = None
         self._active_model_name = ""
@@ -181,6 +216,9 @@ class PromptInput(TextArea):
     def hide_suggestions(self) -> None:
         """Hide the bound menu without touching draft, cursor, recall or recency."""
         if self._closed:
+            return
+        if self._path_controller is not None:
+            self._path_controller.dismiss()
             return
         hidden_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
         self._slash_suggestion_state = hidden_state
@@ -231,7 +269,7 @@ class PromptInput(TextArea):
         """Refresh a visible picker when the published catalog revision changed."""
         if self._closed or not self._is_bound:
             return
-        if not self._slash_suggestion_state.visible:
+        if not self._slash_suggestion_state.visible or self._slash_suggestion_state.kind != "slash":
             return
         if ModelSuggestionProjection.current_revision() == self._picker_catalog_revision:
             return
@@ -257,6 +295,11 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             self.post_message(self.SuggestionAccepted())
+            return
+        if event.key == "tab":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PathSuggestionsRequested())
             return
         if self._should_move_suggestion(event=event):
             event.prevent_default()
@@ -351,7 +394,7 @@ class PromptInput(TextArea):
         Returns:
             bool: True when the suggestion menu should close.
         """
-        return self._suggestion_navigation_enabled and event.key == "escape"
+        return event.key == "escape"
 
     @staticmethod
     def _suggestion_delta(*, event: events.Key) -> int:
@@ -378,6 +421,7 @@ class PromptInput(TextArea):
         event.stop()
         if self._closed:
             return
+        self.post_message(self.Edited())
         if self._setting_prompt_from_history:
             self._setting_prompt_from_history = False
         elif self._prompt_history.is_navigating:
@@ -421,6 +465,9 @@ class PromptInput(TextArea):
             return
         row = self._slash_suggestion_state.highlighted_row
         if row is None:
+            return
+        if self._slash_suggestion_state.kind == "path" and self._path_controller is not None:
+            self._path_controller.accept(insert_text=row.insert_text)
             return
         updated_text: str = self._replace_prompt_text(
             insert_text=row.insert_text,
@@ -471,6 +518,7 @@ class PromptInput(TextArea):
         self._prompt_history_navigation_enabled = False
         self._setting_prompt_from_history = False
         self._slash_suggestion_state = SlashSuggestionStateDAO(visible=False)
+        self._path_controller = None
         self._suggestion_engine = None
         self._suggestion_menu = None
 
@@ -479,6 +527,11 @@ class PromptInput(TextArea):
         if self._closed or not self._is_bound:
             return
         assert self._suggestion_engine is not None
+        if self._path_controller is not None:
+            if self._suggestion_engine.owns_arguments(buffer_text=self.text):
+                self._path_controller.invalidate()
+            elif self._path_controller.request():
+                return
         self._picker_catalog_revision = ModelSuggestionProjection.current_revision()
         state: SlashSuggestionStateDAO = self._suggestion_engine.evaluate(
             buffer_text=self.text,
@@ -536,3 +589,29 @@ class PromptInput(TextArea):
         self._prompt_history_navigation_enabled = self._prompt_history.is_navigating
         self.load_text(text)
         self._move_cursor_to_end()
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        """Invalidate cursor-local completion when the owned selection moves."""
+        if event.text_area is not self:
+            return
+        event.stop()
+        if not self._closed:
+            self.post_message(self.Edited())
+            self._refresh_slash_suggestions()
+
+    def on_prompt_input_path_suggestions_requested(
+        self, event: "PromptInput.PathSuggestionsRequested"
+    ) -> None:
+        """Request explicit discovery unless enumerated slash arguments own input."""
+        event.stop()
+        if self._closed or self._path_controller is None or self._suggestion_engine is None:
+            return
+        if not self._suggestion_engine.owns_arguments(buffer_text=self.text):
+            self._path_controller.request(explicit=True)
+
+    def publish_path_suggestions(self, *, state: SlashSuggestionStateDAO) -> None:
+        """Paint a current controller result through the single owned menu state."""
+        if self._closed:
+            return
+        self._slash_suggestion_state = state
+        self._render_slash_suggestion_state(state=state)

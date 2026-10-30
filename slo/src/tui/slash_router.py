@@ -117,6 +117,7 @@ class SlashCommandResultDAO(BaseModel):
     refresh_context_window: bool = False
     refresh_usage_status: bool = False
     git_diff_path: Optional[str] = None
+    code_path: Optional[str] = Field(default=None, description="Raw local editor path intent.")
     dismissed_workflow_id: Optional[str] = None
     resumed_workflow_id: Optional[str] = None
     tui_visibility: Optional[WorkflowListVisibilityRequestDAO] = Field(
@@ -308,6 +309,7 @@ class SlashRouter:
             "new": cls._handle_new,
             "compact": cls._handle_compact,
             "diff": cls._handle_diff,
+            "code": cls._handle_code,
             "rename": cls._handle_rename,
             "preferences": cls._handle_preferences,
             "plugins": cls._handle_plugins,
@@ -402,6 +404,20 @@ class SlashRouter:
             return SlashCommandResultDAO(rendered="usage: /steer <message>")
         session.steer(message=rest)
         return SlashCommandResultDAO(steer_pending_message=rest)
+
+    @classmethod
+    async def _handle_code(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Return a local editor intent; validation/launch never enter the model.
+
+        Args:
+            rest: Literal raw path token, interpreted by the editor boundary.
+            session: Active session, unused until the app captures launch ownership.
+
+        Returns:
+            Typed intent, including empty input for the common validation path.
+        """
+        del session
+        return SlashCommandResultDAO(code_path=rest)
 
     @classmethod
     async def _handle_diff(

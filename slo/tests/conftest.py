@@ -147,6 +147,15 @@ def _never_spawn_real_terminals(monkeypatch: pytest.MonkeyPatch) -> None:
         staticmethod(_stubbed_spawn),
     )
 
+    def _refuse_editor_request(self: object, *, argv: tuple[str, ...]) -> None:
+        """Refuse editor APIs under inherited tmux/iTerm hints; tests inject recorders."""
+        raise AssertionError("Real editor terminal API forbidden in tests; inject process=")
+
+    monkeypatch.setattr(
+        target="src.tui.editor_platform_terminal.LocalEditorTerminalProcess.run",
+        name=_refuse_editor_request,
+    )
+
 
 @pytest.fixture
 def fake_herdr_guard(tmp_path: Path) -> "FakeHerdrSpawnGuard":

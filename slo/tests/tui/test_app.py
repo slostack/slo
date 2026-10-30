@@ -4426,7 +4426,19 @@ class TestLoadOlderEntries:
             app: SloTUI = self._build_history_app(entries=entries)
             async with app.run_test(size=(80, 24)) as pilot:
                 await pilot.pause()
-                await app.query_one(ChatTranscript).load_older()
+                transcript = app.query_one(ChatTranscript)
+                # Hydration's deferred bottom pin must settle before an explicit
+                # prepend; otherwise its queued scroll-to-top event can start a
+                # second load after this test's requested batch has completed.
+                async with asyncio.timeout(5):
+                    while (
+                        transcript._active_pin is not None
+                        or transcript._transcript_scroll.scroll_y
+                        != transcript._transcript_scroll.max_scroll_y
+                    ):
+                        await pilot.pause()
+                assert transcript._load_older_cursor == 7
+                await transcript.load_older()
                 await pilot.pause()
                 visible_answers: list[str] = self._visible_assistant_answers(app=app)
                 assert visible_answers == [

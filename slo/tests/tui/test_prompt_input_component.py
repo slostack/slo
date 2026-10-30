@@ -274,7 +274,7 @@ async def test_key_precedence_and_single_submit(tmp_path: Path) -> None:
 
 
 async def test_suggestion_span_and_empty_menu(tmp_path: Path) -> None:
-    """Acceptance splices the engine span, keeps the suffix and no-ops on empty rows."""
+    """Acceptance completes a command token and no-ops once arguments own the buffer."""
     session: SloAgentSession = _build_session(workdir=tmp_path)
     app: SloTUI = SloTUI(session=session)
     invoke_log: list[str] = []
@@ -288,13 +288,13 @@ async def test_suggestion_span_and_empty_menu(tmp_path: Path) -> None:
             await pilot.pause()
             editor: PromptInput = _require_prompt_input(app=app)
 
-            editor.load_text("/mo suffix kept")
+            editor.load_text("/mo")
             await pilot.pause()
             assert editor._slash_suggestion_state.visible is True
             await pilot.press("tab")
             await pilot.pause()
-            assert editor.text == "/model  suffix kept"
-            assert editor.cursor_location == (0, len("/model  suffix kept"))
+            assert editor.text == "/model "
+            assert editor.cursor_location == (0, len("/model "))
             assert invoke_log == []
 
             editor.load_text("/zzzz")

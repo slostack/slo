@@ -1,1 +1,0 @@
-Compared 292 diagnostics: normalized line numbers and canonical projector rename; diff exit=0

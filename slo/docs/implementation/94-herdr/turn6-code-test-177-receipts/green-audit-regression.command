@@ -1,1 +1,0 @@
-python -m pytest -q tests/implementation_checks/test_conventions_audit_paths.py -v 

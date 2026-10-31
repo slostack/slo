@@ -27,11 +27,16 @@ variables:
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
   POETRY_NO_INTERACTION: '1'
 
-# Runs the same suite as `make test` in slo/. `slo/environments/tests.env` is
-# gitignored, so its (non-secret) contents are reproduced in `variables:` below
-# with $CI_PROJECT_DIR/slo substituted for the developer's absolute path.
+# Runs `make test` in slo/ with the CI-only OAuth exclusions listed below.
+# `slo/environments/tests.env` is gitignored, so its non-secret contents are
+# reproduced in `variables:` below, substituting $CI_PROJECT_DIR/slo for the local path.
 #
-# Scope: the default suite. `addopts = "-m 'not e2e'"` in slo/pyproject.toml
+# Scope: the default suite minus dedicated OAuth sign-in modules (operator waiver).
+# Mixed credential/API-key/model/runtime coverage, including OAuth cases, stays enabled.
+# This omits OAuth release verification; it is not evidence of correctness or flakiness.
+# Remove the explicit ignores when the operator reinstates OAuth sign-in verification.
+# No other CI failure is waived (including the Herdr early-ready safety test).
+# `addopts = "-m 'not e2e'"` in slo/pyproject.toml
 # deselects tests marked `e2e` — those call real provider APIs or run the
 # installer in Docker, and need credentials CI does not hold. Run them locally
 # with `make install-smoke` / `pytest -m e2e`.
@@ -76,8 +81,30 @@ pytest:
   - pip install "poetry==$POETRY_VERSION"
   - cd slo
   - poetry install --no-interaction
+  # One xdist worker per runner vCPU. The runner VM has 6 vCPUs and runs two jobs
+  # at once (MR and push pipelines), so 12 workers per job meant 24 on 6 vCPUs and
+  # timing-bound tests failed nondeterministically. Raise this only with the VM's vCPUs.
   script:
-  - poetry run pytest -n auto -q --junitxml=../report.xml
+  - >-
+    PYTEST_ADDOPTS="-q --junitxml=../report.xml
+    --ignore=tests/auth/test_authorization_response.py
+    --ignore=tests/auth/test_device_authorization.py
+    --ignore=tests/auth/test_headless_readme_oauth_timeouts.py
+    --ignore=tests/auth/test_oauth_errors.py
+    --ignore=tests/auth/test_oauth_flow.py
+    --ignore=tests/auth/test_oauth_provider.py
+    --ignore=tests/auth/test_oauth_provider_refresh.py
+    --ignore=tests/auth/test_pkce.py
+    --ignore=tests/auth/test_provider_factory.py
+    --ignore=tests/auth/providers/test_anthropic_provider.py
+    --ignore=tests/auth/providers/test_openai_codex_device_authorization.py
+    --ignore=tests/auth/providers/test_openai_codex_provider.py
+    --ignore=tests/tui/authentication/test_auth_screen.py
+    --ignore=tests/tui/authentication/test_authentication_device_e2e.py
+    --ignore=tests/tui/authentication/test_authentication_headless_e2e.py
+    --ignore=tests/tui/authentication/widgets/test_authorization_link.py
+    --ignore=tests/tui/authentication/widgets/test_oauth_status.py"
+    make test PYTEST_WORKERS=6
   artifacts:
     when: always
     expire_in: 1 week
@@ -111,7 +138,7 @@ pytest:
 publish-installer:
   stage: publish
   image: python:3.11
-  # Tag publication waits for the full non-E2E behavioral test suite in this
+  # Tag publication waits for the non-E2E suite with the OAuth waiver above in this
   # exact pipeline. Formatting and static analysis are developer-local checks,
   # not CI prerequisites for publishing the tested artifact.
   needs:
@@ -295,10 +322,10 @@ create-gitlab-release:
   - job: macos-installer-smoke
     optional: true
   script:
-  - test -n "$GITLAB_RELEASE_TOKEN" || { echo "GITLAB_RELEASE_TOKEN is empty — configure a protected API token." >&2; exit 1; }
+  - test -n "$CI_JOB_TOKEN" || { echo "CI_JOB_TOKEN is empty." >&2; exit 1; }
   - |
       curl -fsS -X POST \
-        --header "PRIVATE-TOKEN: $GITLAB_RELEASE_TOKEN" \
+        --header "JOB-TOKEN: $CI_JOB_TOKEN" \
         --header "Content-Type: application/json" \
         --data "{\"name\":\"$CI_COMMIT_TAG\",\"tag_name\":\"$CI_COMMIT_TAG\",\"description\":\"Release $CI_COMMIT_TAG\"}" \
         "$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases"

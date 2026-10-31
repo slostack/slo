@@ -20,12 +20,12 @@ def test_release_candidate_version_and_notes_agree() -> None:
     assert "not live entitlement" in notes
 
 
-def test_v0300_release_metadata_preserves_packaging_owned_launchers() -> None:
+def test_v0301_release_metadata_preserves_packaging_owned_launchers() -> None:
     """The corrected release version keeps both pipx-generated launcher contracts."""
     project: dict[str, object] = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())["project"]
-    assert project["version"] == "0.30.0"
+    assert project["version"] == "0.30.1"
     assert project["scripts"] == {"slo": "src.cli:main", "slo-entry": "src.cli:main"}
-    assert "## [0.30.0] — " in (APP_ROOT / "CHANGELOG.md").read_text()
+    assert "## [0.30.1] — " in (APP_ROOT / "CHANGELOG.md").read_text()
 
 
 def test_runner_defaults_cover_inherited_jobs_and_preserve_macos() -> None:

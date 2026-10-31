@@ -220,9 +220,25 @@ async def test_lifetime_cutoff_matrix(
         admitted = phase.startswith("admitted_")
         entered, release = asyncio.Event(), asyncio.Event()
         original_collect = transport._collect_result
+        admitted_command: HerdrCliCommandDAO | None = None
 
         async def collect(*, command: HerdrCliCommandDAO) -> HerdrCommandResultDAO:
-            """Hold a real tracked child after admission, before terminal accounting."""
+            """Hold the selected actor's real child before terminal accounting.
+
+            The matrix installs this barrier after mount. A reporter batch may
+            still be finishing after its display acknowledgement; it must not
+            impersonate viewer admission merely by reaching this shared seam.
+
+            Args:
+                command (HerdrCliCommandDAO): Actual lock-admitted command.
+
+            Returns:
+                HerdrCommandResultDAO: Unchanged real child result after release.
+            """
+            nonlocal admitted_command
+            if phase.endswith("viewer") and command.argv[:2] != ("pane", "split"):
+                return await original_collect(command=command)
+            admitted_command = command
             entered.set()
             await release.wait()
             return await original_collect(command=command)
@@ -244,7 +260,17 @@ async def test_lifetime_cutoff_matrix(
             if admitted:
                 await asyncio.wait_for(entered.wait(), timeout=10)
                 assert transport._active is not None
-                await eventually(predicate=lambda: len(commands(fake_herdr)) > boundary)
+                assert admitted_command is not None
+                await eventually(
+                    predicate=lambda: list(admitted_command.argv) in commands(fake_herdr)[boundary:]
+                )
+                if phase.endswith("viewer"):
+                    attempt = session._herdr_visualizer._attempt_by_parent[session.session_id]
+                    assert attempt.admitted_operations == frozenset(("split",))
+                    assert reporter._admitted_ticket is None
+                    # Earlier reporter commands are allowed. From this exact
+                    # admitted child onward, cutoff must permit no further work.
+                    boundary += commands(fake_herdr)[boundary:].index(list(admitted_command.argv))
             else:
                 await eventually(predicate=lambda: bool(transport._command_lock._waiters))
             if viewer is not None:
@@ -559,6 +585,13 @@ async def _matrix140_precommit_platform(
                     await asyncio.wait_for(viewer, timeout=5)
                     spawn.assert_called_once()
                     notice.assert_called_once()
+                if trigger == "runtime_disable":
+                    # The independent platform viewer does not join an already
+                    # admitted periodic report. Disable fences credit immediately;
+                    # the transport holds its lock through reap and accounting.
+                    async with asyncio.timeout(10):
+                        async with reporter._transport._command_lock:
+                            pass
                 acknowledgements.assert_no_late_credit(reporter=reporter)
                 await owners.assert_settled(app=app, trigger=trigger)
     finally:

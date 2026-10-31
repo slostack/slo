@@ -1262,6 +1262,55 @@ def test_actual_owned_python_child(tmp_path: Path, timeout_case: bool) -> None:
         os.waitpid(owner._process.pid, os.WNOHANG)
 
 
+@pytest.mark.parametrize("startup_allowance", [0.0, 0.5])
+def test_actual_owned_python_child_budget_ordering(tmp_path: Path, startup_allowance: float) -> None:
+    """Release real guarded work only when its parent wait covers execution and cleanup."""
+    import json
+    import subprocess
+    import sys
+    from tests.integration.herdr_restore_process_bootstrap import OwnedProcessRun
+
+    release = tmp_path / "release"
+
+    class ReleaseOnEnclosingWait(OwnedProcessRun):
+        """Make budget ordering, rather than scheduler speed, admit legitimate completion."""
+
+        def wait_supervisor(self, *, process: subprocess.Popen[str], timeout: float) -> None:
+            """Check the enclosing budget before releasing the contained workload."""
+            assert timeout == 1 + startup_allowance + 5
+            assert self.retained is not None
+            wrapper = (self.retained.directory / "supervisor.py").read_text()
+            assert f"timeout={1 + startup_allowance!r},ready_fd=" in wrapper
+            self.safety.contained(path=release)
+            release.touch()
+            super().wait_supervisor(process=process, timeout=timeout)
+
+    owner = ReleaseOnEnclosingWait(root=tmp_path)
+    script = tmp_path / "budget.py"
+    owner.safety.contained(path=script)
+    script.write_text(
+        "import sys,time,os\nfrom pathlib import Path\n"
+        f"sys.path.insert(0,{str(Path(__file__).resolve().parents[2])!r})\n"
+        "from tests.integration.herdr_restore_process_bootstrap import ProcessSafety\n"
+        f"ProcessSafety(root=Path({str(tmp_path)!r}),stdio=(1,2)).install()\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(.005)\n"
+        "print(os.getpid(),flush=True)\n"
+    )
+    allowance = {"startup_allowance": startup_allowance} if startup_allowance else {}
+    result = owner.run_supervised(
+        args=[sys.executable, "-I", "-B", str(script)],
+        env={},
+        timeout=1.0,
+        **allowance,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "reaped.json").read_text())[result.stdout.strip()] == 0
+    assert owner.retained is None
+    assert owner._process is not None
+    with pytest.raises(ChildProcessError):
+        os.waitpid(owner._process.pid, os.WNOHANG)
+
+
 @pytest.mark.parametrize("mode", ["early", "timeout", "ignore"])
 def test_supervisor_reaps_real_descendants(tmp_path: Path, mode: str) -> None:
     """Only disposable Python descendants run; wait receipts identify each reaped PID."""
@@ -1336,8 +1385,9 @@ def test_supervisor_reaps_real_descendants(tmp_path: Path, mode: str) -> None:
     assert "leader-ready" in result.stdout
 
 
-def test_parent_timeout_joins_supervisor_and_descendant(tmp_path: Path) -> None:
-    """Parent timeout requests cleanup, never kills the adopter before its waits."""
+@pytest.mark.parametrize("startup_allowance", [0.0, 0.25])
+def test_parent_timeout_joins_supervisor_and_descendant(tmp_path: Path, startup_allowance: float) -> None:
+    """Noncompleting work stays fatal and the adopter reaps even a TERM-ignoring child."""
     import json
     import subprocess
     import sys
@@ -1353,20 +1403,27 @@ def test_parent_timeout_joins_supervisor_and_descendant(tmp_path: Path) -> None:
         "import os,time,signal\nfrom pathlib import Path\n"
         "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
         f"Path({str(tmp_path / 'ready')!r}).write_text(str(os.getpid()))\n"
-        "time.sleep(4)\n"
+        "while True: signal.pause()\n"
     )
     leader.write_text(
         "import subprocess,sys,time\nfrom pathlib import Path\n"
         f"subprocess.Popen([sys.executable,'-I','-B',{str(child)!r}])\n"
         f"while not Path({str(tmp_path / 'ready')!r}).exists(): time.sleep(.005)\n"
-        "print('ready',flush=True)\ntime.sleep(4)\n"
+        "print('ready',flush=True)\nwhile True: time.sleep(1)\n"
     )
     with pytest.raises(subprocess.TimeoutExpired) as failure:
-        owner.run_supervised(args=[sys.executable, "-I", "-B", str(leader)], env={}, timeout=0.5)
+        owner.run_supervised(
+            args=[sys.executable, "-I", "-B", str(leader)],
+            env={},
+            timeout=0.5,
+            startup_allowance=startup_allowance,
+        )
     assert failure.value.output == b"ready\n"
     reaped = json.loads((tmp_path / "reaped.json").read_text())
     assert reaped[(tmp_path / "ready").read_text()] == -9
-    assert owner._process is not None
+    assert failure.value.timeout == 0.5
+    assert owner.retained is None
+    assert owner._process is not None and owner._process.returncode == 124
     with pytest.raises(ChildProcessError):
         os.waitpid(owner._process.pid, os.WNOHANG)
 
@@ -2575,7 +2632,9 @@ def test_actual_atomic_writer_and_lease_under_child_guard(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     owner = OwnedProcessRun(root=tmp_path)
-    result = owner.run_supervised(args=[sys.executable, "-I", "-B", str(script)], env={}, timeout=5)
+    result = owner.run_supervised(
+        args=[sys.executable, "-I", "-B", str(script)], env={}, timeout=5, startup_allowance=5
+    )
     assert result.returncode == 0 and result.stdout == "PERSISTENCE_OK\n", result.stderr
 
 

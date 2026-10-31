@@ -265,7 +265,9 @@ async def test_feedback_readiness_waits_for_both_committed_groups(tmp_path: Path
         before = services.service.current_list_snapshot()
         sink.fail = True
         command = asyncio.create_task(
-            app.on_prompt_input_submitted(PromptInput.Submitted(text="/workflows tui dismiss shared-parent"))
+            app.on_prompt_input_component_submitted(
+                PromptInputComponent.Submitted(text="/workflows tui dismiss shared-parent")
+            )
         )
         try:
             await asyncio.wait_for(sink.entered.wait(), timeout=5)

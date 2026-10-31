@@ -364,6 +364,9 @@ class TestReleaseAutomation:
         assert "macos-installer-smoke" in release_job
         assert "CI_COMMIT_TAG" in release_job
         assert "curl -fsS -X POST" in release_job
+        assert '--header "JOB-TOKEN: $CI_JOB_TOKEN"' in release_job
+        assert "GITLAB_RELEASE_TOKEN" not in release_job
+        assert "PRIVATE-TOKEN" not in release_job
 
     def test_gitlab_tag_pipeline_runs_non_e2e_tests_before_publication(self) -> None:
         """The release pipeline makes behavioral tests, not local lint, the publication prerequisite."""

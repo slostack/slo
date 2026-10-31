@@ -8,7 +8,8 @@ render, keyboard block copy, window eviction) after the Textual major bump.
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
@@ -56,8 +57,8 @@ def _find_literal_line(*, app: SloTUI, needle: str) -> Optional[LiteralTextStati
     Returns:
         Optional[LiteralTextStatic]: The matching widget, or ``None``.
     """
-    assert app.query_one(ChatTranscript)._transcript_content is not None
-    for child in app.query_one(ChatTranscript)._transcript_content.children:
+    assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
+    for child in app.query_one(ChatTranscriptComponent)._transcript_content.children:
         if isinstance(child, LiteralTextStatic) and needle in str(child.render()):
             return child
     return None
@@ -73,7 +74,7 @@ class TestMouseSelectionE2E:
 
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            block: AssistantStreamBlock = await app.query_one(ChatTranscript).mount_assistant_block()
+            block: AssistantStreamBlock = await app.query_one(ChatTranscriptComponent).mount_assistant_block()
             block.finalize(
                 final_text="# Plan\n\n[answer label](https://example.test)\n\n```python\nvalue = 1\n```"
             )
@@ -101,7 +102,7 @@ class TestMouseSelectionE2E:
 
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            block: UserMessageBlock = await app.query_one(ChatTranscript).mount_user_message_block(
+            block: UserMessageBlock = await app.query_one(ChatTranscriptComponent).mount_user_message_block(
                 text="# Plan\n\n[user label](https://example.test)\n\n```python\nvalue = 1\n```"
             )
             await pilot.pause(delay=0.1)
@@ -128,7 +129,9 @@ class TestMouseSelectionE2E:
 
         async with app.run_test(size=(48, 30)) as pilot:
             await pilot.pause()
-            block: AssistantStreamThinkingBlock = await app.query_one(ChatTranscript).mount_thinking_block()
+            block: AssistantStreamThinkingBlock = await app.query_one(
+                ChatTranscriptComponent
+            ).mount_thinking_block()
             block.set_thinking(
                 content=(
                     "# Reasoning plan\n\n"
@@ -174,8 +177,8 @@ class TestMouseSelectionE2E:
 
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            app.query_one(ChatTranscript).write_transcript_line(
-                content="copy me please", classes="tool-result"
+            await app.query_one(ChatTranscriptComponent).handle(
+                command=TranscriptNoticeDAO(content="copy me please", classes="tool-result")
             )
             await pilot.pause()
 
@@ -228,8 +231,8 @@ class TestNoRegressionSweep:
 
             thinking_block: Optional[AssistantStreamThinkingBlock] = None
             answer_block: Optional[AssistantStreamBlock] = None
-            assert app.query_one(ChatTranscript)._transcript_content is not None
-            for child in app.query_one(ChatTranscript)._transcript_content.children:
+            assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
+            for child in app.query_one(ChatTranscriptComponent)._transcript_content.children:
                 if isinstance(child, AssistantStreamThinkingBlock):
                     thinking_block = child
                 if isinstance(child, AssistantStreamBlock):
@@ -239,7 +242,9 @@ class TestNoRegressionSweep:
             assert "list[str]" in thinking_block.thinking_text
             assert "[a-z]+" in answer_block.answer_text
 
-            tool: ToolExecutionBlock = await app.query_one(ChatTranscript).mount_tool_execution_block(
+            tool: ToolExecutionBlock = await app.query_one(
+                ChatTranscriptComponent
+            ).mount_tool_execution_block(
                 tool_call_id="call_1",
                 tool_name="grep",
             )
@@ -255,9 +260,9 @@ class TestNoRegressionSweep:
 
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            assert app.query_one(ChatTranscript)._transcript_content is not None
+            assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
             block: SteeringPendingBlock = SteeringPendingBlock(message="apply list[str] then [a-z]+")
-            await app.query_one(ChatTranscript)._transcript_content.mount(block)
+            await app.query_one(ChatTranscriptComponent)._transcript_content.mount(block)
             await pilot.pause()
 
             rendered: str = str(block.render())
@@ -271,7 +276,9 @@ class TestNoRegressionSweep:
 
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            tool: ToolExecutionBlock = await app.query_one(ChatTranscript).mount_tool_execution_block(
+            tool: ToolExecutionBlock = await app.query_one(
+                ChatTranscriptComponent
+            ).mount_tool_execution_block(
                 tool_call_id="call_1",
                 tool_name="read",
             )
@@ -294,8 +301,8 @@ class TestNoRegressionSweep:
         with patch("src.tui.components.chat_transcript.component.TRANSCRIPT_WINDOW_SIZE", 5):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
-                app.query_one(ChatTranscript).write_transcript_line(
-                    content="select then evict", classes="tool-result"
+                await app.query_one(ChatTranscriptComponent).handle(
+                    command=TranscriptNoticeDAO(content="select then evict", classes="tool-result")
                 )
                 await pilot.pause()
 
@@ -307,8 +314,8 @@ class TestNoRegressionSweep:
                 await pilot.pause()
 
                 for index in range(20):
-                    app.query_one(ChatTranscript).write_transcript_line(
-                        content=f"filler line {index}", classes="tool-result"
+                    await app.query_one(ChatTranscriptComponent).handle(
+                        command=TranscriptNoticeDAO(content=f"filler line {index}", classes="tool-result")
                     )
                 for _ in range(4):
                     await pilot.pause()

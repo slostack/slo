@@ -1,7 +1,7 @@
 """Mounted C14 optional-notice continuation, with controlled session boundaries."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
@@ -85,7 +85,7 @@ async def test_open_runtime_notice_failure_preserves_preparation(tmp_path: Path,
                 patch.object(session, "prepare_startup", side_effect=prepare),
                 patch.object(
                     app._chat_transcript,
-                    "write_transcript_line",
+                    "handle",
                     side_effect=RuntimeError("private notice sentinel"),
                 ) as notice,
             ):
@@ -136,12 +136,12 @@ async def test_public_unmount_refuses_late_auth(tmp_path: Path, success: bool) -
             )
             with (
                 patch("src.tui.app.ModelSuggestionProjection.refresh_authentication") as projection,
-                patch.object(app._input, "update_model_context") as suggestions,
+                patch.object(app._input, "_update_model_context") as suggestions,
                 patch.object(app, "_refresh_title_bar") as title,
                 patch.object(session, "refresh_usage_snapshot") as usage,
                 patch.object(app, "push_screen") as screen,
             ):
-                app._on_auth_dismissed(value)
+                await app._on_auth_dismissed(value)
                 app._push_auth_modal()
                 projection.assert_not_called()
                 suggestions.assert_not_called()

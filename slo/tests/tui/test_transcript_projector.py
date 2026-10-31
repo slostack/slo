@@ -8,6 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from src.tui.components.chat_transcript.commands import (
+    ProjectUserTurnDAO,
+    ProjectReplayEntryDAO,
+    BeginTranscriptRunDAO,
+)
+
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
@@ -199,7 +205,7 @@ class FakeHost:
         self.mount_order.append("user")
         return block
 
-    def mount_turn_separator_if_needed(self, *, before: int | None = None) -> bool:
+    async def mount_turn_separator_if_needed(self, *, before: int | None = None) -> bool:
         del before
         if any(classes != "turn-separator" for _content, classes in self.recorded):
             self.separators += 1
@@ -251,7 +257,7 @@ class FakeHost:
         self.mount_order.append("tool")
         return block
 
-    def write_transcript_line(self, *, content: str, classes: str, before: int | None = None) -> None:
+    async def mount_transcript_line(self, *, content: str, classes: str, before: int | None = None) -> None:
         del before
         self.lines.append((content, classes))
 
@@ -266,9 +272,9 @@ class TestTranscriptProjectionAdapter:
     async def test_first_visible_delta_mounts_block(self) -> None:
         """The first visible thinking delta mounts a thinking block and writes into it."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta",
                 delta="working",
@@ -285,12 +291,12 @@ class TestTranscriptProjectionAdapter:
     async def test_text_end_can_replace_partial_answer_with_completed_text(self) -> None:
         """Completed text-end content replaces partial streamed answer text."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="part", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_end", content="partial answer", iteration=0),
         )
 
@@ -300,9 +306,9 @@ class TestTranscriptProjectionAdapter:
     async def test_thinking_end_can_replace_partial_reasoning_with_completed_text(self) -> None:
         """Completed thinking-end content replaces partial streamed reasoning text."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta",
                 delta="Ineed",
@@ -310,7 +316,7 @@ class TestTranscriptProjectionAdapter:
                 block_id="thinking:0:0",
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
                 content="I need spacing.",
@@ -334,9 +340,9 @@ class TestTranscriptProjectionAdapter:
         correctly formatted truth and seals the segment.
         """
         host: FakeHost = FakeHost()
-        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter(host=host)
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta",
                 delta="I",
@@ -344,7 +350,7 @@ class TestTranscriptProjectionAdapter:
                 block_id="thinking:0:0",
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta",
                 delta="can",
@@ -352,7 +358,7 @@ class TestTranscriptProjectionAdapter:
                 block_id="thinking:0:0",
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta",
                 delta="outline",
@@ -362,7 +368,7 @@ class TestTranscriptProjectionAdapter:
         )
 
         # The contentless implicit-close emitted by _emit_text_delta.
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
                 iteration=0,
@@ -376,7 +382,7 @@ class TestTranscriptProjectionAdapter:
 
         # The repair event emitted by finalize_open_blocks re-applies to the
         # original block_id widget.
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
                 iteration=0,
@@ -399,9 +405,9 @@ class TestTranscriptProjectionAdapter:
         sealed reasoning is immutable.
         """
         host: FakeHost = FakeHost()
-        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter(host=host)
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta",
                 delta="draft",
@@ -409,7 +415,7 @@ class TestTranscriptProjectionAdapter:
                 block_id="thinking:0:0",
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
                 iteration=0,
@@ -420,7 +426,7 @@ class TestTranscriptProjectionAdapter:
 
         assert host.thinking_blocks[0].sealed is True
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
                 iteration=0,
@@ -436,9 +442,9 @@ class TestTranscriptProjectionAdapter:
     async def test_tool_call_delta_updates_tool_block_with_parsed_arguments(self) -> None:
         """Streamed tool-call JSON updates the live tool block before execution ends."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_start",
                 tool_call_id="call_1",
@@ -446,7 +452,7 @@ class TestTranscriptProjectionAdapter:
                 iteration=0,
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_delta",
                 tool_call_id="call_1",
@@ -455,7 +461,7 @@ class TestTranscriptProjectionAdapter:
                 iteration=0,
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_end",
                 tool_call_id="call_1",
@@ -472,9 +478,9 @@ class TestTranscriptProjectionAdapter:
     async def test_tool_result_updates_live_tool_block_and_records_summary(self) -> None:
         """Matched tool results update the widget instead of writing duplicate log lines."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_start",
                 tool_call_id="call_1",
@@ -482,7 +488,7 @@ class TestTranscriptProjectionAdapter:
                 iteration=0,
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_end",
                 tool_call_id="call_1",
@@ -491,7 +497,7 @@ class TestTranscriptProjectionAdapter:
                 iteration=0,
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_result",
                 tool_call_id="call_1",
@@ -512,9 +518,9 @@ class TestTranscriptProjectionAdapter:
     async def test_tool_result_without_tool_block_writes_fallback_line(self) -> None:
         """Tool results without a live tool block fall back to append-only rendering."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_result",
                 tool_name="read",
@@ -529,12 +535,12 @@ class TestTranscriptProjectionAdapter:
     async def test_run_completed_finalizes_block_with_completed_text(self) -> None:
         """Terminal completion finalizes with completed runtime truth."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="partial", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="completed truth", iteration=0),
         )
 
@@ -546,9 +552,9 @@ class TestTranscriptProjectionAdapter:
     async def test_run_completed_without_visible_delta_mounts_terminal_only_block(self) -> None:
         """A terminal-only answer still renders through an assistant block."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="done", iteration=0),
         )
 
@@ -560,12 +566,12 @@ class TestTranscriptProjectionAdapter:
     async def test_empty_text_delta_does_not_mount_block(self) -> None:
         """An empty ``text_delta`` never mounts an orphaned empty block (spec 32.a)."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta=None, iteration=0),
         )
 
@@ -575,12 +581,12 @@ class TestTranscriptProjectionAdapter:
     async def test_empty_thinking_delta_does_not_mount_block(self) -> None:
         """An empty ``thinking_delta`` never mounts an orphaned empty block (spec 32.a)."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="thinking_delta", delta="", iteration=0, block_id="thinking:0:0"),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta=None, iteration=0, block_id="thinking:0:0"
             ),
@@ -592,14 +598,14 @@ class TestTranscriptProjectionAdapter:
     async def test_run_completed_empty_content_seals_existing_block_without_clearing(self) -> None:
         """Empty completion seals a streamed block, preserving its text (spec 32.a)."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="text_delta", delta="I'll prepare the read call now.", iteration=0
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="", iteration=0),
         )
 
@@ -612,9 +618,9 @@ class TestTranscriptProjectionAdapter:
     async def test_run_completed_empty_content_without_block_creates_nothing(self) -> None:
         """Empty completion with no streamed block creates no empty block (spec 32.a)."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="", iteration=0),
         )
 
@@ -625,12 +631,12 @@ class TestTranscriptProjectionAdapter:
     async def test_second_iteration_mounts_a_new_assistant_block_in_order(self) -> None:
         """Later assistant iterations mount new answer blocks instead of rewriting older ones."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_start",
                 tool_call_id="call_1",
@@ -638,7 +644,7 @@ class TestTranscriptProjectionAdapter:
                 iteration=0,
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
 
@@ -650,12 +656,12 @@ class TestTranscriptProjectionAdapter:
     async def test_run_aborted_marks_active_block_and_records_terminal_line(self) -> None:
         """Abort preserves partial content and records the terminal marker."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="partial", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_aborted", content="<aborted>", iteration=0),
         )
 
@@ -666,12 +672,12 @@ class TestTranscriptProjectionAdapter:
     async def test_run_failed_marks_active_block_and_records_terminal_line(self) -> None:
         """Failures preserve partial content and record a one-line error marker."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="partial", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=0),
         )
 
@@ -682,9 +688,9 @@ class TestTranscriptProjectionAdapter:
     async def test_run_failed_without_visible_delta_falls_back_to_line_render(self) -> None:
         """Failures before any visible delta still render an error line."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=0),
         )
 
@@ -698,9 +704,9 @@ class TestTranscriptProjectionAdapter:
         via tool_call_delta or tool_call_end.
         """
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_start",
                 tool_call_id="call_1",
@@ -723,9 +729,9 @@ class TestTranscriptProjectionAdapter:
         tool_call_delta or tool_call_end.
         """
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_delta",
                 tool_call_id="call_1",
@@ -739,7 +745,7 @@ class TestTranscriptProjectionAdapter:
         assert host.lines == []
         assert host.recorded == []
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_end",
                 tool_call_id="call_1",
@@ -752,17 +758,17 @@ class TestTranscriptProjectionAdapter:
         assert list(host.tool_blocks) == ["call_1"]
         assert host.tool_blocks["call_1"].tool_input == {"path": "README.md"}
 
-    def test_reset_for_new_run_clears_run_scoped_state(self) -> None:
+    async def test_reset_for_new_run_clears_run_scoped_state(self) -> None:
         """Reset clears run-scoped assistant, thinking, and tool state between prompts."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
         projector._assistant_blocks = {0: FakeAssistantBlock()}  # type: ignore[attr-defined]
         projector._tool_blocks = {"call_1": FakeToolBlock(tool_call_id="call_1", tool_name="read")}  # type: ignore[attr-defined]
         projector._thinking_blocks = {"thinking:0:0": FakeThinkingBlock()}
         projector._thinking_block_iterations = {"thinking:0:0": 0}
         projector._open_thinking_block_ids = {"thinking:0:0"}
 
-        projector.reset_for_new_run()
+        await projector.reset()
 
         assert projector._assistant_blocks == {}  # type: ignore[attr-defined]
         assert projector._tool_blocks == {}  # type: ignore[attr-defined]
@@ -778,15 +784,15 @@ class TestTranscriptProjectionAdapter:
     ) -> None:
         """The sweep seals every tracked block except the exempt iteration."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="c", iteration=2),
         )
 
@@ -802,9 +808,9 @@ class TestTranscriptProjectionAdapter:
     ) -> None:
         """The sweep is a guaranteed no-op when only the exempt iteration is tracked."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
 
@@ -820,14 +826,14 @@ class TestTranscriptProjectionAdapter:
     ) -> None:
         """The run-end sweep seals a prior iteration even when D2 never fires for the terminal one."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="partial", iteration=0),
         )
-        # No delta was ever sent for iteration=1, so _ensure_assistant_block is
+        # No delta was ever sent for iteration=1, so _get_or_create_assistant_block is
         # never called for it and D2 never fires for this run.
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="", iteration=1),
         )
 
@@ -838,15 +844,15 @@ class TestTranscriptProjectionAdapter:
     async def test_run_completed_with_content_seals_every_other_tracked_block(self) -> None:
         """A confirmed-text completion seals every other tracked block via the sweep."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="final answer", iteration=1),
         )
 
@@ -860,15 +866,15 @@ class TestTranscriptProjectionAdapter:
     async def test_run_aborted_seals_every_other_tracked_block(self) -> None:
         """Abort seals every other tracked block while marking the current one aborted."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_aborted", content="<aborted>", iteration=1),
         )
 
@@ -882,12 +888,12 @@ class TestTranscriptProjectionAdapter:
     ) -> None:
         """The sweep reaches a prior iteration even on the no-current-block fallback branch."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_aborted", content="<aborted>", iteration=1),
         )
 
@@ -900,15 +906,15 @@ class TestTranscriptProjectionAdapter:
     async def test_run_failed_seals_every_other_tracked_block(self) -> None:
         """Failure seals every other tracked block while marking the current one failed."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=1),
         )
 
@@ -922,12 +928,12 @@ class TestTranscriptProjectionAdapter:
     ) -> None:
         """The sweep reaches a prior iteration even on the no-current-block fallback branch."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=1),
         )
 
@@ -942,21 +948,21 @@ class TestTranscriptProjectionAdapter:
     ) -> None:
         """Reset genuinely clears the dict after a sweep-then-terminal-event cycle."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="b", iteration=1),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="done", iteration=1),
         )
 
-        projector.reset_for_new_run()
+        await projector.reset()
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="next", iteration=0),
         )
 
@@ -964,20 +970,20 @@ class TestTranscriptProjectionAdapter:
         assert host.blocks[2] is not host.blocks[0]
         assert host.blocks[2] is not host.blocks[1]
 
-    # -- 61.a.2: seal-on-advance in _ensure_assistant_block --
+    # -- 61.a.2: seal-on-advance in _get_or_create_assistant_block --
 
     @pytest.mark.asyncio
-    async def test_ensure_assistant_block_seals_the_previous_block_when_a_second_iteration_mounts(
+    async def test_get_or_create_assistant_block_seals_the_previous_block_when_a_second_iteration_mounts(
         self,
     ) -> None:
         """Mounting a second iteration's block seals the block it supersedes."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
 
@@ -986,20 +992,20 @@ class TestTranscriptProjectionAdapter:
         assert len(host.blocks) == 2
 
     @pytest.mark.asyncio
-    async def test_ensure_assistant_block_leaves_earlier_sealed_blocks_untouched_when_a_third_iteration_mounts(
+    async def test_get_or_create_assistant_block_leaves_earlier_sealed_blocks_untouched_when_a_third_iteration_mounts(
         self,
     ) -> None:
         """A third iteration's mount re-seals an already-sealed earlier block without error."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="third", iteration=2),
         )
 
@@ -1008,21 +1014,21 @@ class TestTranscriptProjectionAdapter:
         assert host.blocks[2].sealed is False
 
     @pytest.mark.asyncio
-    async def test_ensure_assistant_block_seals_nothing_when_the_iteration_block_already_exists(
+    async def test_get_or_create_assistant_block_seals_nothing_when_the_iteration_block_already_exists(
         self,
     ) -> None:
         """The cache-hit branch returns early and does not re-run the sweep."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="first", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="second", iteration=1),
         )
         host.blocks[0].sealed = False
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="more", iteration=1),
         )
 
@@ -1037,9 +1043,9 @@ class TestThinkingSegmentRouting:
     async def test_thinking_delta_without_block_id_mounts_nothing(self) -> None:
         """A malformed thinking delta with no ``block_id`` is ignored, never guessed."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="thinking_delta", delta="orphan", iteration=0),
         )
 
@@ -1050,14 +1056,14 @@ class TestThinkingSegmentRouting:
     async def test_thinking_delta_with_same_block_id_reuses_the_mounted_block(self) -> None:
         """Two deltas for one normalized ``block_id`` stream into one widget."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="part1 ", iteration=0, block_id="thinking:0:0"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="part2", iteration=0, block_id="thinking:0:0"
             ),
@@ -1070,17 +1076,17 @@ class TestThinkingSegmentRouting:
     async def test_two_thinking_block_ids_in_one_iteration_mount_separate_blocks_in_order(self) -> None:
         """Two normalized thinking blocks in one iteration mount as separate children."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="working", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
             ),
@@ -1097,17 +1103,17 @@ class TestThinkingSegmentRouting:
     ) -> None:
         """A late repair ``thinking_end`` targets its original ``block_id`` widget."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="I will", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_end",
                 tool_call_id="call_1",
@@ -1116,14 +1122,14 @@ class TestThinkingSegmentRouting:
                 iteration=0,
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
             ),
         )
 
         # The repair end for t0 arrives after answer/tool/t1 output.
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
                 iteration=0,
@@ -1142,14 +1148,14 @@ class TestThinkingSegmentRouting:
     async def test_thinking_end_with_unknown_block_id_cannot_mutate_a_newer_block(self) -> None:
         """An unknown ``block_id`` end event is a no-op, never applied to another block."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_end",
                 iteration=0,
@@ -1166,14 +1172,14 @@ class TestThinkingSegmentRouting:
     async def test_thinking_end_without_block_id_is_ignored(self) -> None:
         """A malformed thinking end with no ``block_id`` cannot seal or mutate anything."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="thinking_end", iteration=0, content="bad"),
         )
 
@@ -1184,17 +1190,17 @@ class TestThinkingSegmentRouting:
     async def test_text_and_tool_events_do_not_seal_an_open_thinking_segment(self) -> None:
         """Answer/tool routing retains an open segment for its later repair end."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="text_delta", delta="I will", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_end",
                 tool_call_id="call_1",
@@ -1210,19 +1216,19 @@ class TestThinkingSegmentRouting:
     async def test_run_completed_seals_every_retained_thinking_block(self) -> None:
         """Terminal completion settles all thinking segments before answer treatment."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="verify", iteration=0, block_id="thinking:0:1"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_completed", content="done", iteration=0),
         )
 
@@ -1234,14 +1240,14 @@ class TestThinkingSegmentRouting:
     async def test_run_aborted_seals_every_retained_thinking_block(self) -> None:
         """Terminal abort settles all thinking segments before answer treatment."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_aborted", content="<aborted>", iteration=0),
         )
 
@@ -1252,14 +1258,14 @@ class TestThinkingSegmentRouting:
     async def test_run_failed_seals_every_retained_thinking_block(self) -> None:
         """Terminal failure settles all thinking segments before answer treatment."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="thinking_delta", delta="plan", iteration=0, block_id="thinking:0:0"
             ),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="run_failed", content="boom", iteration=0),
         )
 
@@ -1273,7 +1279,7 @@ class TestTranscriptProjectionAdapterHasNoChildRoute:
     def test_projector_has_no_sub_agent_route_or_registries(self) -> None:
         """All projector-side child rendering state and helpers are deleted."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
         assert not hasattr(projector, "_project_sub_agent_event")
         assert not hasattr(projector, "_ensure_sub_agent_assistant_block")
@@ -1293,9 +1299,9 @@ class TestUserTurn:
     @pytest.mark.asyncio
     async def test_user_turn_mounts_block_and_records_line(self) -> None:
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_user_turn(text="hello **world**")
+        await projector.handle(event=ProjectUserTurnDAO(text="hello **world**"))
 
         assert [block.text for block in host.user_blocks] == ["hello **world**"]
         assert ("> hello **world**", "user-line") in host.recorded
@@ -1303,12 +1309,12 @@ class TestUserTurn:
     @pytest.mark.asyncio
     async def test_first_turn_has_no_separator_second_turn_does(self) -> None:
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_user_turn(text="one")
+        await projector.handle(event=ProjectUserTurnDAO(text="one"))
         assert host.separators == 0
 
-        await projector.project_user_turn(text="two")
+        await projector.handle(event=ProjectUserTurnDAO(text="two"))
         assert host.separators == 1
 
 
@@ -1318,9 +1324,9 @@ class TestProjectReplayEntry:
     @pytest.mark.asyncio
     async def test_user_entry_mounts_user_block(self) -> None:
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(entry=_user_entry(content="hi"))
+        await projector.handle(event=ProjectReplayEntryDAO(entry=_user_entry(content="hi")))
 
         assert [block.text for block in host.user_blocks] == ["hi"]
         assert ("> hi", "user-line") in host.recorded
@@ -1328,10 +1334,12 @@ class TestProjectReplayEntry:
     @pytest.mark.asyncio
     async def test_completed_assistant_entry_finalizes_block(self) -> None:
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(
-            entry=_assistant_entry(reasoning="why", answer="answer"),
+        await projector.handle(
+            event=ProjectReplayEntryDAO(
+                entry=_assistant_entry(reasoning="why", answer="answer"),
+            )
         )
 
         block = host.blocks[-1]
@@ -1345,10 +1353,12 @@ class TestProjectReplayEntry:
     ) -> None:
         """Persisted reasoning mounts one sealed thinking block ahead of the answer."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(
-            entry=_assistant_entry(reasoning="why", answer="answer"),
+        await projector.handle(
+            event=ProjectReplayEntryDAO(
+                entry=_assistant_entry(reasoning="why", answer="answer"),
+            )
         )
 
         assert len(host.thinking_blocks) == 1
@@ -1362,9 +1372,9 @@ class TestProjectReplayEntry:
     async def test_replay_assistant_entry_without_reasoning_mounts_answer_only(self) -> None:
         """An entry with no reasoning mounts no thinking block."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(entry=_assistant_entry(answer="answer"))
+        await projector.handle(event=ProjectReplayEntryDAO(entry=_assistant_entry(answer="answer")))
 
         assert host.thinking_blocks == []
         assert host.mount_order == ["answer"]
@@ -1373,10 +1383,12 @@ class TestProjectReplayEntry:
     @pytest.mark.asyncio
     async def test_aborted_assistant_entry_marks_aborted_not_finalized(self) -> None:
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(
-            entry=_assistant_entry(answer="partial", terminal_note="aborted"),
+        await projector.handle(
+            event=ProjectReplayEntryDAO(
+                entry=_assistant_entry(answer="partial", terminal_note="aborted"),
+            )
         )
 
         block = host.blocks[-1]
@@ -1388,10 +1400,12 @@ class TestProjectReplayEntry:
     @pytest.mark.asyncio
     async def test_failed_assistant_entry_marks_failed(self) -> None:
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(
-            entry=_assistant_entry(answer="partial", terminal_note="boom"),
+        await projector.handle(
+            event=ProjectReplayEntryDAO(
+                entry=_assistant_entry(answer="partial", terminal_note="boom"),
+            )
         )
 
         block = host.blocks[-1]
@@ -1402,10 +1416,12 @@ class TestProjectReplayEntry:
     @pytest.mark.asyncio
     async def test_tool_entry_mounts_and_records_two_lines(self) -> None:
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(
-            entry=_tool_entry(tool_name="read", tool_input={"path": "a.py"}, output="3 lines"),
+        await projector.handle(
+            event=ProjectReplayEntryDAO(
+                entry=_tool_entry(tool_name="read", tool_input={"path": "a.py"}, output="3 lines"),
+            )
         )
 
         tool_block = next(iter(host.tool_blocks.values()))
@@ -1419,7 +1435,7 @@ class TestProjectReplayEntry:
     async def test_orphaned_tool_entry_marks_incomplete_and_records_note(self) -> None:
         """A replay tool entry with no recorded result renders an incomplete note, not a blank result."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
         orphan: TranscriptEntryDAO = TranscriptEntryDAO(
             kind="tool",
@@ -1427,7 +1443,7 @@ class TestProjectReplayEntry:
             tool_input={"command": "readline"},
             output=None,
         )
-        await projector.project_replay_entry(entry=orphan)
+        await projector.handle(event=ProjectReplayEntryDAO(entry=orphan))
 
         tool_block = next(iter(host.tool_blocks.values()))
         assert getattr(tool_block, "incomplete", False) is True
@@ -1444,9 +1460,9 @@ class TestCompactionEventProjection:
     async def test_compaction_started_writes_transcript_line(self) -> None:
         """compaction_started writes a visible notice to the transcript."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(event=AgentStreamEventDAO(kind="compaction_started"))
+        await projector.handle(event=AgentStreamEventDAO(kind="compaction_started"))
 
         assert len(host.lines) == 1
         content, classes = host.lines[0]
@@ -1456,9 +1472,9 @@ class TestCompactionEventProjection:
     async def test_compaction_completed_writes_transcript_line(self) -> None:
         """compaction_completed writes a visible notice to the transcript."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(event=AgentStreamEventDAO(kind="compaction_completed"))
+        await projector.handle(event=AgentStreamEventDAO(kind="compaction_completed"))
 
         assert len(host.lines) == 1
         content, _ = host.lines[0]
@@ -1468,9 +1484,9 @@ class TestCompactionEventProjection:
     async def test_compaction_retrying_writes_transcript_line(self) -> None:
         """compaction_retrying writes a visible notice to the transcript."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(event=AgentStreamEventDAO(kind="compaction_retrying"))
+        await projector.handle(event=AgentStreamEventDAO(kind="compaction_retrying"))
 
         assert len(host.lines) == 1
         content, _ = host.lines[0]
@@ -1480,9 +1496,9 @@ class TestCompactionEventProjection:
     async def test_compaction_failed_with_content_writes_safe_notice(self) -> None:
         """compaction_failed with content writes exactly one safe notice."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="compaction_failed",
                 content="RuntimeError: Unsupported parameter: max_output_tokens",
@@ -1498,9 +1514,9 @@ class TestCompactionEventProjection:
     async def test_compaction_failed_without_content_writes_fallback_notice(self) -> None:
         """compaction_failed without content keeps the terse fallback notice."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project(event=AgentStreamEventDAO(kind="compaction_failed"))
+        await projector.handle(event=AgentStreamEventDAO(kind="compaction_failed"))
 
         assert len(host.lines) == 1
         content, _ = host.lines[0]
@@ -1510,7 +1526,7 @@ class TestCompactionEventProjection:
     async def test_compaction_events_do_not_affect_assistant_blocks(self) -> None:
         """Compaction events must not mount assistant or tool blocks."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
         for kind in (
             "compaction_started",
@@ -1518,7 +1534,7 @@ class TestCompactionEventProjection:
             "compaction_retrying",
             "compaction_failed",
         ):
-            await projector.project(event=AgentStreamEventDAO(kind=kind))  # type: ignore[arg-type]
+            await projector.handle(event=AgentStreamEventDAO(kind=kind))  # type: ignore[arg-type]
 
         assert len(host.blocks) == 0, "no assistant blocks should be mounted"
         assert len(host.tool_blocks) == 0, "no tool blocks should be mounted"
@@ -1527,10 +1543,10 @@ class TestCompactionEventProjection:
     async def test_compaction_sequence_produces_ordered_transcript_lines(self) -> None:
         """The full compaction cycle writes transcript lines in the correct order."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
         for kind in ("compaction_started", "compaction_completed", "compaction_retrying"):
-            await projector.project(event=AgentStreamEventDAO(kind=kind))  # type: ignore[arg-type]
+            await projector.handle(event=AgentStreamEventDAO(kind=kind))  # type: ignore[arg-type]
 
         assert len(host.lines) == 3
         assert "compact" in host.lines[0][0].lower()
@@ -1544,10 +1560,12 @@ class TestProjectReplayNote:
     async def test_note_entry_writes_sub_agent_notice_line(self) -> None:
         """A replayed workflow note re-renders the live ``⊛`` line."""
         host = FakeHost()
-        projector = TranscriptProjectionAdapter(host=host)
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(
-            entry=TranscriptEntryDAO(kind="note", content="⊛ [workflow wf-3f2a] phase 1: COMPLETE"),
+        await projector.handle(
+            event=ProjectReplayEntryDAO(
+                entry=TranscriptEntryDAO(kind="note", content="⊛ [workflow wf-3f2a] phase 1: COMPLETE"),
+            )
         )
 
         assert ("⊛ [workflow wf-3f2a] phase 1: COMPLETE", "sub-agent-notice") in host.lines
@@ -1560,9 +1578,9 @@ class TestProjectReplayNote:
         original_separator = host.mount_turn_separator_if_needed
         original_mount = host.mount_user_message_block
 
-        def _record_separator(*, before: int | None = None) -> bool:
+        async def _record_separator(*, before: int | None = None) -> bool:
             recorded_before.append(before)
-            return original_separator(before=before)
+            return await original_separator(before=before)
 
         async def _record_user_mount(*, text: str, before: int | None = None) -> FakeUserBlock:
             recorded_before.append(before)
@@ -1570,11 +1588,11 @@ class TestProjectReplayNote:
 
         host.mount_turn_separator_if_needed = _record_separator  # type: ignore[method-assign]
         host.mount_user_message_block = _record_user_mount  # type: ignore[method-assign]
-        projector = TranscriptProjectionAdapter(host=host)
-        await projector.project_user_turn(text="prior turn")
+        projector = TranscriptProjectionAdapter.register(host=host)
+        await projector.handle(event=ProjectUserTurnDAO(text="prior turn"))
 
         recorded_before.clear()
-        await projector.project_replay_entry(entry=_user_entry(content="older turn"), before=1)
+        await projector.handle(event=ProjectReplayEntryDAO(entry=_user_entry(content="older turn"), before=1))
 
         assert recorded_before == [1, 2]  # separator precedes its user in the same replay entry
 
@@ -1583,18 +1601,20 @@ class TestProjectReplayNote:
         """A replayed note forwards the prepend index through the raw transcript write path."""
         host = FakeHost()
         recorded_before: list[int | None] = []
-        original_write = host.write_transcript_line
+        original_write = host.mount_transcript_line
 
-        def _record_write(*, content: str, classes: str, before: int | None = None) -> None:
+        async def _record_write(*, content: str, classes: str, before: int | None = None) -> None:
             recorded_before.append(before)
-            original_write(content=content, classes=classes, before=before)
+            await original_write(content=content, classes=classes, before=before)
 
-        host.write_transcript_line = _record_write  # type: ignore[method-assign]
-        projector = TranscriptProjectionAdapter(host=host)
+        host.mount_transcript_line = _record_write  # type: ignore[method-assign]
+        projector = TranscriptProjectionAdapter.register(host=host)
 
-        await projector.project_replay_entry(
-            entry=TranscriptEntryDAO(kind="note", content="older note"),
-            before=1,
+        await projector.handle(
+            event=ProjectReplayEntryDAO(
+                entry=TranscriptEntryDAO(kind="note", content="older note"),
+                before=1,
+            )
         )
 
         assert recorded_before == [1]

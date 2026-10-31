@@ -1,5 +1,6 @@
 """Pre-mutation snapshot transport at real mounted stream-widget boundaries."""
 
+import asyncio
 from collections.abc import Callable
 
 import pytest
@@ -34,7 +35,7 @@ class SnapshotApp(App[None]):
 @pytest.mark.parametrize("pending", [False, True])
 async def test_terminal_warning_captures_once_before_any_render(terminal: str, pending: bool) -> None:
     """Warning-only and dirty-answer terminal updates share one pre-mutation capture."""
-    snapshot = FollowSnapshotDAO(was_following=True, presentation_generation=7, viewport_revision=9)
+    snapshot = FollowSnapshotDAO(was_following=True, transcript_version=7, viewport_revision=9)
     observations: list[tuple[str, bool]] = []
 
     def capture() -> FollowSnapshotDAO:
@@ -63,7 +64,7 @@ async def test_terminal_warning_captures_once_before_any_render(terminal: str, p
 
 async def test_thinking_expansion_captures_before_visibility_and_transports_identity() -> None:
     """A direct expansion is a layout mutation even when no new text is dirty."""
-    snapshot = FollowSnapshotDAO(was_following=False, presentation_generation=2, viewport_revision=4)
+    snapshot = FollowSnapshotDAO(was_following=False, transcript_version=2, viewport_revision=4)
     observations: list[bool] = []
 
     def capture() -> FollowSnapshotDAO:
@@ -88,7 +89,7 @@ async def test_thinking_expansion_captures_before_visibility_and_transports_iden
 @pytest.mark.parametrize("terminal", [False, True])
 async def test_stream_flush_transports_exact_pre_mutation_snapshot(thinking: bool, terminal: bool) -> None:
     """Both timer and terminal flushes capture the old visible buffer exactly once."""
-    snapshot = FollowSnapshotDAO(was_following=True, presentation_generation=2, viewport_revision=3)
+    snapshot = FollowSnapshotDAO(was_following=True, transcript_version=2, viewport_revision=3)
     observations: list[str] = []
     visible: Callable[[], str]
 
@@ -114,7 +115,11 @@ async def test_stream_flush_transports_exact_pre_mutation_snapshot(thinking: boo
             block.append_thinking(delta=" second")
         if terminal:
             block.seal()
-        await pilot.pause()
+        # Pilot idle is not a timer barrier. Wait for the actual Rendered message
+        # from the 30 Hz flush, retaining the exact once/before/identity assertions.
+        async with asyncio.timeout(2):
+            while not app.messages:
+                await pilot.pause(delay=0.01)
         assert observations == [""]
         assert "first" in block.get_copyable_text()
         assert len(app.messages) == 1

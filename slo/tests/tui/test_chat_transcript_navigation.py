@@ -12,12 +12,13 @@ from textual.widgets import Static
 from textual.scrollbar import ScrollUp, ScrollTo
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.tui.components.chat_transcript.component import ChatTranscript, TranscriptScroll
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent, TranscriptScrollComponent
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from src.tui.theme import SLO_DEFAULT_THEME, SLO_DARK_THEME
 from tests.tui.test_chat_transcript import TranscriptTestApp
 
 
-class OrderedTranscript(ChatTranscript):
+class OrderedTranscript(ChatTranscriptComponent):
     """Hold selected real after-refresh calls; never replace layout or animation."""
 
     def __init__(self) -> None:
@@ -78,7 +79,7 @@ async def test_native_destination_survives_growth(
         body.styles.height = 160
         await transcript.mount_tree_output(widget=body)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.scroll_to(y=100, animate=False, immediate=True)
         await pilot.pause()
         # Observe the exact requested destination before returning to the input origin.
@@ -105,7 +106,7 @@ async def test_native_destination_survives_growth(
         if growth_above:
             upper.set_answer(content="\n\n".join(f"growth-{i}" for i in range(12)))
         else:
-            transcript.write_transcript_line(content="END-MARKER", classes="tool-result")
+            await transcript.handle(command=TranscriptNoticeDAO(content="END-MARKER", classes="tool-result"))
         await pilot.pause()
         transcript.hold.clear()
         while transcript.calls:
@@ -128,7 +129,7 @@ async def test_delayed_starts_and_duplicate_completions_respect_latest_input(
         block = await transcript.mount_assistant_block()
         block.set_answer(content="\n\n".join(f"ROW-{i:03}" for i in range(100)))
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.focus()
         transcript.hold = {"_start_native_navigation", "_native_navigation_completed"}
         await pilot.press(*keys)
@@ -170,7 +171,7 @@ async def test_stale_two_axis_callbacks_after_visibility_or_reset(during_motion:
         wide.styles.height = 100
         await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         transcript.hold = {"_settle_native_navigation"} if during_motion else {"_start_native_navigation"}
         scroll.post_message(ScrollTo(x=70, y=40, animate=True))
@@ -231,11 +232,21 @@ async def test_x_first_real_history_preserves_reading(
         wide.styles.height = 100
         await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         await pilot.pause()
         if reach == "focus":
             wide.focus()
+            # Focus queues its reveal after refresh; an animator wait can precede its start.
+            async with asyncio.timeout(5):
+                while True:
+                    await pilot.pause()
+                    if (
+                        app.focused is wide
+                        and wide.region.y == scroll.scrollable_content_region.y
+                        and scroll.scroll_y == scroll.scroll_target_y
+                    ):
+                        break
         else:
             scroll.scroll_to(
                 y=wide.region.y - scroll.scrollable_content_region.y + scroll.scroll_y + 10,
@@ -270,7 +281,7 @@ async def test_x_first_real_history_preserves_reading(
             await pilot.pause()
         assert transcript.calls
         upper.set_answer(content="\n\n".join(f"upper-{i}" for i in range(15)))
-        transcript.write_transcript_line(content="END-MARKER", classes="tool-result")
+        await transcript.handle(command=TranscriptNoticeDAO(content="END-MARKER", classes="tool-result"))
         await pilot.pause()
         transcript.hold.clear()
         while transcript.calls:
@@ -305,7 +316,7 @@ async def test_horizontal_interruption_retains_vertical_destination(
         wide.styles.height = 100
         await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.scroll_to(y=60, animate=False, immediate=True)
         await pilot.pause()
@@ -364,7 +375,7 @@ async def test_x_only_pending_pin_survives_old_release(
         block.styles.width = 300
         transcript.query_one("#transcript-content").styles.width = 300
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.focus()
         await pilot.press("pageup")
@@ -407,7 +418,7 @@ async def test_removed_reading_candidate_uses_clamped_numeric_fallback() -> None
             wide.styles.height = 100
             await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.scroll_to(y=40, animate=False, immediate=True)
         await pilot.pause()
@@ -443,7 +454,7 @@ async def test_two_axis_completion_order_and_no_movement(release_cover_first: bo
         wide.styles.height = 100
         await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.scroll_to(y=70, animate=False, immediate=True)
         await pilot.pause()
@@ -485,7 +496,7 @@ async def test_programmatic_reveal_interrupts_pending_native_operation(first: st
         block = await transcript.mount_assistant_block()
         block.set_answer(content="\n\n".join(f"FOCUS-{i:03}" for i in range(100)))
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         transcript.hold = {"_start_native_navigation"}
         scroll.focus()
         await pilot.press(first)
@@ -518,14 +529,14 @@ async def test_synchronous_notice_above_tree_keeps_reading_line() -> None:
         wide.styles.height = 100
         await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.focus()
         await pilot.press("pageup")
         await pilot.wait_for_scheduled_animations()
         await pilot.pause()
         literal = next(line.strip() for line in painted_rows(app=app) if "NOTICE-" in line)
         row = named_row(app=app, literal=literal)
-        transcript.write_transcript_line(content="new notice", classes="tool-result")
+        await transcript.handle(command=TranscriptNoticeDAO(content="new notice", classes="tool-result"))
         for _ in range(4):
             await pilot.pause()
         assert named_row(app=app, literal=literal) == row

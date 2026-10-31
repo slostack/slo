@@ -180,11 +180,17 @@ async def test_hidden_loader_lifetime_follows_committed_groups(tmp_path: Path, s
     assert sum(reference() is not None for reference in references) == int(shared_visible)
     constructions = len(references)
     before = tree_state(root)
-    reads = tuple(reference().reads if reference() is not None else None for reference in references)
+
+    def loader_reads(reference: weakref.ReferenceType[CountingLoader]) -> int | None:
+        """Inspect one weak reference without retaining its loader across assertions."""
+        loader = reference()
+        return None if loader is None else loader.reads
+
+    reads = tuple(loader_reads(reference) for reference in references)
     restored = service.apply_list_visibility(request=WorkflowListVisibilityRequestDAO(action="show"))
     assert restored.snapshot.rows
     assert len(references) == constructions
-    assert tuple(reference().reads if reference() is not None else None for reference in references) == reads
+    assert tuple(loader_reads(reference) for reference in references) == reads
     assert tree_state(root) == before
     await service.load_session_snapshot()
     assert len(references) == constructions + int(not shared_visible)
@@ -804,7 +810,7 @@ async def test_attached_execution_replacement_during_capability_never_restores_a
 
     world = _Attached()
 
-    def capability() -> ChildControlCapabilityDAO:
+    def capability() -> ChildControlCapabilityDAO | None:
         """Replace registry evidence at the final control boundary."""
         world.execution_id = _EXEC_B
         return world.capability

@@ -11,9 +11,10 @@ or window is used.
 
 import asyncio
 import inspect
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -73,7 +74,7 @@ async def test_notice_inner_await_cutoff_blocks_late_render_and_marker(tmp_path:
     entered, release = asyncio.Event(), asyncio.Event()
     original = session.should_show_startup_notice
     late_lines: list[str] = []
-    original_write = app._chat_transcript.write_transcript_line
+    original_write = app._chat_transcript.handle
 
     async def predicate() -> bool:
         """Retain the actual history result before the notice continuation resumes."""
@@ -82,11 +83,15 @@ async def test_notice_inner_await_cutoff_blocks_late_render_and_marker(tmp_path:
         await release.wait()
         return result
 
-    def write(*, content: str, classes: str) -> None:
+    async def write(*, command: TranscriptCommand) -> None:
         """Observe actual notice output after the monotonic cutoff."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_write(command=command)
+            return
+        content, classes = command.content, command.classes
         if app._app_closing or app._session is not session:
             late_lines.append(content)
-        original_write(content=content, classes=classes)
+        await original_write(command=command)
 
     async def seal_during_predicate() -> None:
         """Seal the selected cutoff while on_mount is suspended inside its helper."""
@@ -109,7 +114,7 @@ async def test_notice_inner_await_cutoff_blocks_late_render_and_marker(tmp_path:
 
     with (
         patch.object(session, "should_show_startup_notice", side_effect=predicate),
-        patch.object(app._chat_transcript, "write_transcript_line", side_effect=write),
+        patch.object(app._chat_transcript, "handle", side_effect=write),
     ):
         driver = asyncio.create_task(coro=seal_during_predicate())
         try:
@@ -134,14 +139,18 @@ async def test_notice_open_path_renders_once_with_marker(tmp_path: Path, mode: s
     )
     app = SloTUI(session=session)
     lines: list[str] = []
-    original_write = app._chat_transcript.write_transcript_line
+    original_write = app._chat_transcript.handle
 
-    def write(*, content: str, classes: str) -> None:
+    async def write(*, command: TranscriptCommand) -> None:
         """Record ordinary open-path startup output."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_write(command=command)
+            return
+        content, classes = command.content, command.classes
         lines.append(content)
-        original_write(content=content, classes=classes)
+        await original_write(command=command)
 
-    with patch.object(app._chat_transcript, "write_transcript_line", side_effect=write):
+    with patch.object(app._chat_transcript, "handle", side_effect=write):
         async with app.run_test() as pilot:
             await pilot.pause()
     assert len(lines) == 2
@@ -158,14 +167,18 @@ async def test_replacement_startup_uses_successor_only(tmp_path: Path) -> None:
     old = SloAgentSession.build(config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history"))
     app = SloTUI(session=old)
     lines: list[tuple[str, str]] = []
-    original_write = app._chat_transcript.write_transcript_line
+    original_write = app._chat_transcript.handle
 
-    def write(*, content: str, classes: str) -> None:
+    async def write(*, command: TranscriptCommand) -> None:
         """Record startup output attributed to the session selected at render time."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_write(command=command)
+            return
+        content, classes = command.content, command.classes
         lines.append((app._session.session_id, content))
-        original_write(content=content, classes=classes)
+        await original_write(command=command)
 
-    with patch.object(app._chat_transcript, "write_transcript_line", side_effect=write):
+    with patch.object(app._chat_transcript, "handle", side_effect=write):
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._start_new_session(requested_name=None)
@@ -243,7 +256,7 @@ async def test_hydration_inner_await_cutoff_blocks_late_replay(tmp_path: Path, c
 
     with (
         patch.object(app._chat_transcript, "_history_reader", side_effect=read),
-        patch.object(app._chat_transcript._projector, "project_replay_entry", side_effect=project),
+        patch.object(app._chat_transcript._projector, "_project_replay_entry", side_effect=project),
     ):
         driver = asyncio.create_task(coro=seal_during_read())
         try:
@@ -261,14 +274,14 @@ async def test_hydration_open_path_mounts_seeded_replay(tmp_path: Path) -> None:
     await _seed_complete_turn(session=session, prompt="hydrate me")
     app = SloTUI(session=session)
     mounted: list[TranscriptEntryDAO] = []
-    original = app._chat_transcript._projector.project_replay_entry
+    original = app._chat_transcript._projector._project_replay_entry
 
-    async def project(*, entry: TranscriptEntryDAO) -> None:
+    async def project(*, entry: TranscriptEntryDAO, before: int | None = None) -> None:
         """Observe open-path replay mounting through the real projector."""
         mounted.append(entry)
         await original(entry=entry)
 
-    with patch.object(app._chat_transcript._projector, "project_replay_entry", side_effect=project):
+    with patch.object(app._chat_transcript._projector, "_project_replay_entry", side_effect=project):
         async with app.run_test() as pilot:
             await pilot.pause()
     assert len(mounted) == 2
@@ -281,7 +294,7 @@ async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path) -> N
     entered, release = asyncio.Event(), asyncio.Event()
     original = session.mark_startup_notice_shown
     lines: list[str] = []
-    original_write = app._chat_transcript.write_transcript_line
+    original_write = app._chat_transcript.handle
 
     async def marker() -> None:
         """Hold the already-admitted marker write at the final boundary."""
@@ -289,10 +302,14 @@ async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path) -> N
         await release.wait()
         await original()
 
-    def write(*, content: str, classes: str) -> None:
+    async def write(*, command: TranscriptCommand) -> None:
         """Record startup output admitted before the cutoff."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_write(command=command)
+            return
+        content, classes = command.content, command.classes
         lines.append(content)
-        original_write(content=content, classes=classes)
+        await original_write(command=command)
 
     async def close_during_marker() -> None:
         """Seal public shutdown after rendering but during the owned marker write."""
@@ -304,7 +321,7 @@ async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path) -> N
 
     with (
         patch.object(session, "mark_startup_notice_shown", side_effect=marker),
-        patch.object(app._chat_transcript, "write_transcript_line", side_effect=write),
+        patch.object(app._chat_transcript, "handle", side_effect=write),
     ):
         driver = asyncio.create_task(coro=close_during_marker())
         try:
@@ -323,7 +340,7 @@ async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path) -> N
 async def test_hydration_per_entry_cutoff_blocks_next_replay_mount(tmp_path: Path, cutoff: str) -> None:
     """Seal shutdown or displace after the first real replay mount completes.
 
-    Every ``project_replay_entry`` await is a real mount; the captured-owner
+    Every ``_project_replay_entry`` await is a real mount; the captured-owner
     cutoff must be revalidated after each one so no later entry, the earlier
     summary, or the final scroll can follow the cutoff. The real projector and
     real seeded history are retained; only the mount continuation is held.
@@ -332,11 +349,11 @@ async def test_hydration_per_entry_cutoff_blocks_next_replay_mount(tmp_path: Pat
     await _seed_complete_turn(session=session, prompt="per-entry replay cutoff")
     app = SloTUI(session=session)
     entered, release = asyncio.Event(), asyncio.Event()
-    original = app._chat_transcript._projector.project_replay_entry
+    original = app._chat_transcript._projector._project_replay_entry
     late_entries: list[str] = []
     calls = 0
 
-    async def project(*, entry: TranscriptEntryDAO) -> None:
+    async def project(*, entry: TranscriptEntryDAO, before: int | None = None) -> None:
         """Retain real mounting and hold its first completion at the await boundary."""
         nonlocal calls
         calls += 1
@@ -360,7 +377,7 @@ async def test_hydration_per_entry_cutoff_blocks_next_replay_mount(tmp_path: Pat
         finally:
             release.set()
 
-    with patch.object(app._chat_transcript._projector, "project_replay_entry", side_effect=project):
+    with patch.object(app._chat_transcript._projector, "_project_replay_entry", side_effect=project):
         driver = asyncio.create_task(coro=seal_after_first_mount())
         try:
             async with app.run_test():
@@ -382,7 +399,7 @@ async def test_notice_ordinary_failure_after_shutdown_renders_nothing(tmp_path: 
     app = SloTUI(session=session)
     entered, release = asyncio.Event(), asyncio.Event()
     original = session.should_show_startup_notice
-    original_write = app._chat_transcript.write_transcript_line
+    original_write = app._chat_transcript.handle
     late_lines: list[str] = []
 
     async def predicate() -> bool:
@@ -392,11 +409,15 @@ async def test_notice_ordinary_failure_after_shutdown_renders_nothing(tmp_path: 
         await release.wait()
         raise OSError("synthetic predicate failure")
 
-    def write(*, content: str, classes: str) -> None:
+    async def write(*, command: TranscriptCommand) -> None:
         """Observe late fixed diagnostics without changing rendering."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_write(command=command)
+            return
+        content, classes = command.content, command.classes
         if app._app_closing:
             late_lines.append(content)
-        original_write(content=content, classes=classes)
+        await original_write(command=command)
 
     async def close_during_predicate() -> None:
         """Close publicly while startup is waiting on the failing predicate."""
@@ -408,7 +429,7 @@ async def test_notice_ordinary_failure_after_shutdown_renders_nothing(tmp_path: 
 
     with (
         patch.object(session, "should_show_startup_notice", side_effect=predicate),
-        patch.object(app._chat_transcript, "write_transcript_line", side_effect=write),
+        patch.object(app._chat_transcript, "handle", side_effect=write),
     ):
         driver = asyncio.create_task(coro=close_during_predicate())
         try:
@@ -435,7 +456,7 @@ async def test_hydration_cutoff_accepts_absent_metadata_without_late_effects(tmp
     app = SloTUI(session=session)
     entered, release = asyncio.Event(), asyncio.Event()
     original = session.should_show_startup_notice
-    original_write = app._chat_transcript.write_transcript_line
+    original_write = app._chat_transcript.handle
     late_lines: list[str] = []
 
     async def predicate() -> bool:
@@ -445,11 +466,15 @@ async def test_hydration_cutoff_accepts_absent_metadata_without_late_effects(tmp
         await release.wait()
         return result
 
-    def write(*, content: str, classes: str) -> None:
+    async def write(*, command: TranscriptCommand) -> None:
         """Observe actual notice output after the monotonic cutoff."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_write(command=command)
+            return
+        content, classes = command.content, command.classes
         if app._app_closing:
             late_lines.append(content)
-        original_write(content=content, classes=classes)
+        await original_write(command=command)
 
     async def close_during_predicate() -> None:
         """Use public shutdown while on_mount is suspended inside its notice helper."""
@@ -462,7 +487,7 @@ async def test_hydration_cutoff_accepts_absent_metadata_without_late_effects(tmp
 
     with (
         patch.object(session, "should_show_startup_notice", side_effect=predicate),
-        patch.object(app._chat_transcript, "write_transcript_line", side_effect=write),
+        patch.object(app._chat_transcript, "handle", side_effect=write),
     ):
         driver = asyncio.create_task(coro=close_during_predicate())
         try:

@@ -1,7 +1,7 @@
 """Mounted replacement drains viewer workers without holding their finalizer gate."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
 from unittest.mock import patch
@@ -214,9 +214,7 @@ async def test_viewer_cleanup_error_still_commits(tmp_path: Path) -> None:
         assert await store.read(session_id=old.session_id) is not None
         with (
             patch.object(app, "_cancel_visualizer_launches", side_effect=RuntimeError("private fault")),
-            patch.object(
-                app._chat_transcript, "write_transcript_line", side_effect=RuntimeError("notice fault")
-            ),
+            patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice fault")),
             patch.object(old, "close_external_reporting", wraps=old.close_external_reporting) as close,
         ):
             await app._start_new_session(requested_name=None)

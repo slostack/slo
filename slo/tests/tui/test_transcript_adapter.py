@@ -14,7 +14,7 @@ import pytest
 
 from src.tui.components.chat_transcript.adapters.transcript import TranscriptNoticeDisplayAdapter
 from src.tui.components.chat_transcript.adapters.workflow_notice import WorkflowNoticeAdapter
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 
 
@@ -25,13 +25,21 @@ async def empty_history() -> list[TranscriptEntryDAO]:
 
 def test_register_returns_fresh_instances_with_correct_owners() -> None:
     """Transcript adapters borrow the component; each registration returns a fresh owner."""
-    transcript = ChatTranscript(history_reader=empty_history)
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
     first = TranscriptNoticeDisplayAdapter.register(tui=transcript)
     second = TranscriptNoticeDisplayAdapter.register(tui=transcript)
     first.record(content="one", classes="tool-result")
+    assert first.is_prior_turn_content_present()
+    assert not second.is_prior_turn_content_present()
     assert second.lines == []
     assert first is not second
-    assert WorkflowNoticeAdapter.register(tui=transcript)._tui is transcript
+    workflow_first = WorkflowNoticeAdapter.register(tui=transcript)
+    workflow_second = WorkflowNoticeAdapter.register(tui=transcript)
+    assert workflow_first is not workflow_second
+    assert workflow_first._tui is transcript
+    assert workflow_first._loop is second._loop is None
+    assert not transcript.is_mounted
+    assert list(transcript.children) == []
 
 
 @pytest.mark.parametrize("adapter_first", [True, False])
@@ -49,7 +57,7 @@ def test_imports_are_acyclic_in_a_fresh_interpreter(
 ) -> None:
     """Both import orders work without eager owner imports or old forwarding modules."""
     adapter_import = f"from src.tui.components.chat_transcript.adapters.{module} import {class_name}\n"
-    owner_import = "from src.tui.components.chat_transcript.component import ChatTranscript\n"
+    owner_import = "from src.tui.components.chat_transcript.component import ChatTranscriptComponent\n"
     script = (
         adapter_import + "assert 'src.tui.app' not in sys.modules\n" + owner_import
         if adapter_first
@@ -63,3 +71,37 @@ def test_imports_are_acyclic_in_a_fresh_interpreter(
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_projection_registration_is_inert_without_a_running_loop() -> None:
+    """Registration borrows the host without mounting or pinning a delivery loop."""
+    from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
+    from tests.tui.test_transcript_projector import FakeHost
+
+    host = FakeHost()
+    first = TranscriptProjectionAdapter.register(host=host)
+    second = TranscriptProjectionAdapter.register(host=host)
+    assert first is not second
+    assert first._host is second._host is host
+    assert first._loop is second._loop is None
+    assert host.mount_order == host.recorded == host.lines == []
+
+
+async def test_registered_projection_lifetimes_leave_borrowed_host_reusable() -> None:
+    """Closing one registration rejects its work but cannot close a sibling's host."""
+    from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
+    from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+    from tests.tui.test_transcript_projector import FakeHost
+
+    host = FakeHost()
+    first = TranscriptProjectionAdapter.register(host=host)
+    second = TranscriptProjectionAdapter.register(host=host)
+    await first.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        await first.handle(event=AgentStreamEventDAO(kind="text_delta", delta="rejected"))
+    await second.handle(event=AgentStreamEventDAO(kind="text_delta", delta="accepted"))
+    assert [block.answer for block in host.blocks] == ["accepted"]
+    await second.reset()
+    await second.handle(event=AgentStreamEventDAO(kind="text_delta", delta="reused"))
+    assert [block.answer for block in host.blocks] == ["accepted", "reused"]
+    await second.close()

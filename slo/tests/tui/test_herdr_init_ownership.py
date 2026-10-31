@@ -3,9 +3,10 @@
 import asyncio
 import threading
 from copy import copy
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from typing import ParamSpec, Protocol, TypeVar
 
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
@@ -59,9 +60,7 @@ async def test_preparation_notice_failure_still_registers_task(tmp_path: Path) -
                 type(session), "preparation_status", new_callable=PropertyMock, return_value="pending"
             ),
             patch.object(session, "prepare_startup", side_effect=prepare),
-            patch.object(
-                app._chat_transcript, "write_transcript_line", side_effect=RuntimeError("notice failure")
-            ),
+            patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice failure")),
         ):
             try:
                 app._start_session_preparation()
@@ -94,7 +93,7 @@ async def test_direct_preparation_cancellation_preserves_delivery(tmp_path: Path
         lease = await app._lease_store.read(session_id=session.session_id)
         with (
             patch.object(session, "prepare_startup", side_effect=prepare),
-            patch.object(app._chat_transcript, "write_transcript_line") as notice,
+            patch.object(app._chat_transcript, "handle") as notice,
             patch.object(app, "_refresh_title_bar") as title,
             patch.object(app, "_refresh_usage_status_bar") as usage,
         ):
@@ -104,7 +103,11 @@ async def test_direct_preparation_cancellation_preserves_delivery(tmp_path: Path
                 task.cancel("direct preparation")
                 with pytest.raises(asyncio.CancelledError, match="direct preparation"):
                     await task
-                notice.assert_not_called()
+                notice.assert_awaited_once_with(
+                    command=TranscriptNoticeDAO(
+                        content="Preparing model catalog; limits unknown.", classes="tool-result"
+                    )
+                )
                 title.assert_not_called()
                 usage.assert_not_called()
                 assert (app._lease_timer, app._inbox_timer) == timers

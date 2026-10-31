@@ -9,6 +9,12 @@ from uuid import uuid4
 
 import pytest
 
+from src.tui.components.chat_transcript.commands import (
+    ProjectUserTurnDAO,
+    ProjectReplayEntryDAO,
+    BeginTranscriptRunDAO,
+)
+
 from src.tui.agent_pane_manager import AgentPaneDAO, AgentPaneManager
 
 
@@ -41,9 +47,9 @@ async def test_registered_real_projector_renders_through_structural_host() -> No
     assert retrieved is projector
     assert manager.projector_for_task(task_id="unknown") is None
 
-    await retrieved.project_user_turn(text="question")
-    await retrieved.project(event=AgentStreamEventDAO(kind="text_delta", delta="partial"))
-    await retrieved.project(event=AgentStreamEventDAO(kind="run_completed", content="answer"))
+    await retrieved.handle(event=ProjectUserTurnDAO(text="question"))
+    await retrieved.handle(event=AgentStreamEventDAO(kind="text_delta", delta="partial"))
+    await retrieved.handle(event=AgentStreamEventDAO(kind="run_completed", content="answer"))
 
     assert host.mount_order == ["user", "answer"]
     assert [block.text for block in host.user_blocks] == ["question"]

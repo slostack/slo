@@ -1,7 +1,7 @@
 """Build real archives in disposable source and import the extracted CSS resource."""
 
 import os
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
 import shutil
@@ -54,11 +54,11 @@ def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Pat
         "import src.tui.components.workflow_progress.component as w; "
         "assert Path(c.__file__).is_relative_to(root); "
         "assert Path(w.__file__).is_relative_to(root); "
-        "assert 'ChatTranscript .transcript-prepend-boundary' in c.ChatTranscript.DEFAULT_CSS; "
-        "assert 'WorkflowProgress SubAgentFleetPanel' in w.WorkflowProgress.DEFAULT_CSS; "
+        "assert 'ChatTranscriptComponent .transcript-prepend-boundary' in c.ChatTranscriptComponent.DEFAULT_CSS; "
+        "assert 'WorkflowProgressComponent SubAgentFleetPanel' in w.WorkflowProgressComponent.DEFAULT_CSS; "
         "import src.tui.components.prompt_input.component as p; "
         "assert Path(p.__file__).is_relative_to(root); "
-        "assert 'PromptInput:focus' in p.PromptInput.DEFAULT_CSS"
+        "assert 'PromptInputComponent:focus' in p.PromptInputComponent.DEFAULT_CSS"
     )
     subprocess.run(
         [sys.executable, "-I", "-c", program],

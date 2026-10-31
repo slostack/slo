@@ -35,7 +35,7 @@ APP_TCSS: Path = Path(__file__).resolve().parents[2] / "src" / "tui" / "app.tcss
 FLEET_TCSS: Path = (
     Path(__file__).resolve().parents[2] / "src" / "tui" / "components" / "workflow_progress" / "css.tcss"
 )
-"""Production fleet stylesheet (feature 96.f.1); scoped under WorkflowProgress, so
+"""Production fleet stylesheet (feature 96.f.1); scoped under WorkflowProgressComponent, so
 the standalone host wraps the panel in the same selector ancestor."""
 
 ORCHESTRATOR_ID: str = "orch-1"
@@ -270,11 +270,11 @@ def _key(*, session_id: str) -> WorkflowSessionKeyDAO:
     return WorkflowSessionKeyDAO(orchestrator_session_id=ORCHESTRATOR_ID, session_id=session_id)
 
 
-class WorkflowProgress(Vertical):
+class WorkflowProgressComponent(Vertical):
     """Stand-in carrying the component's type name so fleet selectors match.
 
     The production fleet stylesheet scopes its selectors under the
-    ``WorkflowProgress`` component type; Textual matches type selectors by the
+    ``WorkflowProgressComponent`` component type; Textual matches type selectors by the
     node's class name, so the standalone host wraps the panel in a same-named
     container rather than importing the real component (which needs an app).
     """
@@ -293,13 +293,13 @@ class _PanelHost(_ThemedHost):
     def compose(self) -> ComposeResult:
         """Yield the editor first so Tab moves from it into the list.
 
-        The panel stands in for the one a real ``WorkflowProgress`` composes in
+        The panel stands in for the one a real ``WorkflowProgressComponent`` composes in
         ``SloTUI``; a bare container carries the wrapper type as a class so the
-        production fleet selectors (scoped under ``WorkflowProgress``) apply
+        production fleet selectors (scoped under ``WorkflowProgressComponent``) apply
         exactly as they do to the real composition.
         """
         yield self.editor
-        with WorkflowProgress():
+        with WorkflowProgressComponent():
             yield self.panel
 
     @on(SubAgentFleetPanel.SessionSelected)

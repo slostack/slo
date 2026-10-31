@@ -54,7 +54,7 @@ async def test_captured_auth_callback_refuses_displaced_owner(
                 patch.object(selected, "switch_model") as switch,
                 patch.object(selected, "clear_operator_attention") as clear,
             ):
-                callback(value)
+                await callback(value)
                 projection.assert_not_called()
                 preparation.assert_not_called()
                 switch.assert_not_called()
@@ -94,7 +94,7 @@ async def test_auth_attention_clears_only_matching_request(tmp_path: Path, outco
             with patch.object(
                 app, "_has_credential_for_active_model", return_value=outcome == "cancel_present"
             ):
-                push.call_args.kwargs["callback"](value)
+                await push.call_args.kwargs["callback"](value)
             if outcome in {"success", "cancel_present"}:
                 assert session._operator_attention is None
             else:

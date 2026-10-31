@@ -1,6 +1,6 @@
 """Mounted delivery rollback with real temporary lease and inbox storage."""
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
 from collections.abc import Callable
@@ -254,9 +254,7 @@ async def test_failed_stops_retain_handles_until_later_cleanup(
             with (
                 patch.object(Timer, "stop", new=stop),
                 patch.object(app._lease_store, "release", side_effect=release),
-                patch.object(
-                    app._chat_transcript, "write_transcript_line", side_effect=RuntimeError("notice failure")
-                ),
+                patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice failure")),
             ):
                 await app._rollback_session_delivery(session=session, owner_id=app._session_owner_id)
             assert calls == ["lease", "inbox", "release"]

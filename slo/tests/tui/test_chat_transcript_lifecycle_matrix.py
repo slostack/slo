@@ -7,6 +7,12 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import StructuredTool
 
+from src.tui.components.chat_transcript.commands import (
+    ProjectUserTurnDAO,
+    ProjectReplayEntryDAO,
+    BeginTranscriptRunDAO,
+)
+
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -15,7 +21,7 @@ from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHisto
 from src.agents.slo_agent.history.transcript import ReplayEntryProjector, TranscriptEntryDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
@@ -84,7 +90,7 @@ async def test_mixed_replay_and_empty_prepend_preserve_order_and_bytes(tmp_path:
         """Read actual canonical bytes on every request."""
         return ReplayEntryProjector.build_entries(events=await store.load_events(session_id="mixed"))
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.hydrate()
         await transcript.load_older()
@@ -119,7 +125,7 @@ async def test_partial_older_failure_preserves_active_tool_identity(tmp_path: Pa
     transcript = FailingOlderTranscript(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.hydrate()
-        transcript.begin_run()
+        await transcript.handle(command=BeginTranscriptRunDAO())
         await transcript.present_event(
             event=AgentStreamEventDAO(
                 kind="tool_call_end", tool_call_id="active", tool_name="echo", iteration=1
@@ -218,7 +224,7 @@ async def test_active_inference_tool_result_survives_presentation_change(
             await asyncio.wait_for(entered.wait(), timeout=5)
             assert session.is_running
             if operation == "blocked_clear":
-                transcript = app.query_one(ChatTranscript)
+                transcript = app.query_one(ChatTranscriptComponent)
                 await transcript.bind_history(history_reader=held_reader)
                 await transcript.hydrate()
                 older = asyncio.create_task(transcript.load_older())
@@ -239,16 +245,16 @@ async def test_active_inference_tool_result_survives_presentation_change(
             elif operation == "clear":
                 await app.action_clear()
             else:
-                app.set_transcript_visible(visible=False)
+                await app.set_transcript_visible(visible=False)
             assert session.is_running
         finally:
             release.set()
             cleanup_release.set()
         if app._in_flight_task is not None:
             await asyncio.wait_for(app._in_flight_task, timeout=10)
-        app.set_transcript_visible(visible=True)
+        await app.set_transcript_visible(visible=True)
         await pilot.pause()
-        transcript = app.query_one(ChatTranscript)
+        transcript = app.query_one(ChatTranscriptComponent)
         assert transcript.query(AssistantStreamBlock).last().get_copyable_text() == "final inference answer"
         assert "persisted tool result" in transcript.logical_copy_text()
         if operation == "hide":
@@ -288,7 +294,7 @@ async def test_concurrent_clear_bind_close_join_before_live_delivery(tmp_path: P
         """Reuse genuine history only after the prior lifetime has retired."""
         return entries
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.hydrate()
         older = asyncio.create_task(transcript.load_older())
@@ -311,15 +317,19 @@ async def test_concurrent_clear_bind_close_join_before_live_delivery(tmp_path: P
             assert not any(task.done() for task in (clear, bind, close, delivery))
         finally:
             release.set()
-        await asyncio.wait_for(asyncio.gather(older, clear, bind, close, delivery), timeout=5)
+        await asyncio.wait_for(asyncio.gather(older, clear, bind, close), timeout=5)
+        with pytest.raises(RuntimeError, match="closed|retired"):
+            await delivery
         await pilot.pause()
         assert transcript.logical_copy_text() == ""
         assert not transcript.query_one("#transcript-content").children
-        await transcript.bind_history(history_reader=fresh)
-        await transcript.present_event(
-            event=AgentStreamEventDAO(
-                kind="tool_result", tool_call_id="new", tool_name="echo", content="new result"
+        with pytest.raises(RuntimeError, match="closed"):
+            await transcript.bind_history(history_reader=fresh)
+        with pytest.raises(RuntimeError, match="closed"):
+            await transcript.present_event(
+                event=AgentStreamEventDAO(
+                    kind="tool_result", tool_call_id="new", tool_name="echo", content="new result"
+                )
             )
-        )
         await pilot.pause()
         assert transcript.logical_copy_text() == ""

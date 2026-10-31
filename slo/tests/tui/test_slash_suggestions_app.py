@@ -14,7 +14,7 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from textual.widgets import Static
 
 
@@ -38,14 +38,14 @@ def _build_session() -> SloAgentSession:
     )
 
 
-def _require_prompt_input(*, app: SloTUI) -> PromptInput:
+def _require_prompt_input(*, app: SloTUI) -> PromptInputComponent:
     """Return the mounted prompt input.
 
     Args:
         app (SloTUI): App under test.
 
     Returns:
-        PromptInput: Mounted prompt input widget.
+        PromptInputComponent: Mounted prompt input widget.
     """
     assert app._input is not None
     return app._input
@@ -61,7 +61,7 @@ class TestSloTUISlashSuggestions:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            prompt_input: PromptInput = _require_prompt_input(app=app)
+            prompt_input: PromptInputComponent = _require_prompt_input(app=app)
 
             prompt_input.load_text("/")
             await pilot.pause()
@@ -77,7 +77,7 @@ class TestSloTUISlashSuggestions:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            prompt_input: PromptInput = _require_prompt_input(app=app)
+            prompt_input: PromptInputComponent = _require_prompt_input(app=app)
 
             prompt_input.load_text("/")
             await pilot.pause()
@@ -99,7 +99,7 @@ class TestSloTUISlashSuggestions:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            prompt_input: PromptInput = _require_prompt_input(app=app)
+            prompt_input: PromptInputComponent = _require_prompt_input(app=app)
 
             prompt_input.load_text("/mo")
             await pilot.pause()
@@ -116,7 +116,7 @@ class TestSloTUISlashSuggestions:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            prompt_input: PromptInput = _require_prompt_input(app=app)
+            prompt_input: PromptInputComponent = _require_prompt_input(app=app)
 
             prompt_input.load_text("/")
             await pilot.pause()
@@ -137,7 +137,7 @@ class TestSloTUISlashSuggestions:
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
-                prompt_input: PromptInput = _require_prompt_input(app=app)
+                prompt_input: PromptInputComponent = _require_prompt_input(app=app)
 
                 prompt_input.load_text("/model ")
                 await pilot.pause()
@@ -160,7 +160,7 @@ class TestSloTUISlashSuggestions:
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
-                prompt_input: PromptInput = _require_prompt_input(app=app)
+                prompt_input: PromptInputComponent = _require_prompt_input(app=app)
 
                 prompt_input.load_text("/model ")
                 await pilot.pause()
@@ -212,7 +212,7 @@ class TestSloTUISlashSuggestions:
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
-                prompt_input: PromptInput = _require_prompt_input(app=app)
+                prompt_input: PromptInputComponent = _require_prompt_input(app=app)
 
                 prompt_input.load_text("/model ")
                 await pilot.pause()

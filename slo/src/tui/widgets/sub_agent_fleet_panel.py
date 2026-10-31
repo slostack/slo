@@ -1,7 +1,7 @@
 """Navigable workflow session list below the Slo prompt (feature 94 a.2).
 
 ``SubAgentFleetPanel`` keeps its historical location and class identity: SloTUI
-mounts exactly one below ``PromptInput`` and above ``UsageStatusBar``. It is a
+mounts exactly one below ``PromptInputComponent`` and above ``UsageStatusBar``. It is a
 presentation-only consumer of ``WorkflowSessionSnapshotDAO``: a heading and one
 stable native ``ListView`` of ``SubAgentFleetRow`` items keyed by the composite
 ``(orchestrator_session_id, session_id)``. It never reads files, owns execution

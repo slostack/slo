@@ -12,7 +12,7 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.path_suggestion_engine import PathSuggestionEngine, PathSuggestionQueryDAO
 from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
@@ -57,15 +57,18 @@ class TestPathSuggestionJourney:
         app = SloTUI(session=build_path_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             menu = app.query_one(SlashSuggestionMenu)
             prompt.load_text("Review\nuse src later")
             prompt.move_cursor(location=(1, 7))
             await pilot.press("/")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
-            assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
+            assert [
+                row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+            ] == [
                 "alpha/",
                 "zeta/",
                 "abc.py",
@@ -83,9 +86,11 @@ class TestPathSuggestionJourney:
             await pilot.press("a")
             await pump_until(
                 pilot=pilot,
-                predicate=lambda: len(app.query_one(PromptInput)._slash_suggestion_state.rows) == 2,
+                predicate=lambda: len(app.query_one(PromptInputComponent)._slash_suggestion_state.rows) == 2,
             )
-            assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
+            assert [
+                row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+            ] == [
                 "alpha/",
                 "abc.py",
             ]
@@ -110,11 +115,12 @@ class TestPathSuggestionJourney:
             target.touch()
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test(size=(120, 40)) as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             menu = app.query_one(SlashSuggestionMenu)
             await pilot.press(".", "/")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             lines = str(menu.query_one(Static).content).splitlines()
             assert lines[0] == "› file-00.py"
@@ -127,14 +133,15 @@ class TestPathSuggestionJourney:
             await pilot.press("tab")
             await pilot.pause()
             assert prompt.text == "./file-29.py"
-            assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
 
             prompt.load_text("/he")
             prompt.move_cursor(location=(0, 3))
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
-            row = app.query_one(PromptInput)._slash_suggestion_state.rows[0]
+            row = app.query_one(PromptInputComponent)._slash_suggestion_state.rows[0]
             assert row.label == "/help" and row.detail
             assert str(menu.query_one(Static).content).splitlines()[:2] == [
                 "› /help",
@@ -170,10 +177,11 @@ class TestPathSuggestionJourney:
         target.touch()
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test(size=(60, 16)) as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             await pilot.press(".", "/")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             menu = app.query_one(SlashSuggestionMenu)
             assert str(menu.query_one(Static).content).splitlines() == [
@@ -181,7 +189,7 @@ class TestPathSuggestionJourney:
                 "Showing 1 of 1 — type to narrow",
             ]
             assert menu.region.bottom <= prompt.region.y
-            insert_text = app.query_one(PromptInput)._slash_suggestion_state.rows[0].insert_text
+            insert_text = app.query_one(PromptInputComponent)._slash_suggestion_state.rows[0].insert_text
             await pilot.press("tab")
             await pilot.pause()
             assert shlex.split(prompt.text) == [f"./{filename}"]
@@ -212,18 +220,19 @@ class TestPathSuggestionJourney:
         target.touch()
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test() as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             original = f"before\nuse {quote}./li{quote} later"
             prompt.load_text(original)
             prompt.move_cursor(location=(1, len(f"use {quote}./li")))
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             await pilot.press("tab")
             await pump_until(
                 pilot=pilot,
                 predicate=lambda: [
-                    row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows
+                    row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
                 ]
                 == ["child.py"],
             )
@@ -268,20 +277,21 @@ class TestPathSuggestionJourney:
         app = SloTUI(session=build_path_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             menu = app.query_one(SlashSuggestionMenu)
             await pilot.press("s", "r", "c", "/")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
-            assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
-                "alpha/"
-            ]
+            assert [
+                row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+            ] == ["alpha/"]
             await pilot.press("tab")
             await pump_until(
                 pilot=pilot,
                 predicate=lambda: [
-                    row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows
+                    row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
                 ]
                 == ["one.py"],
             )
@@ -318,7 +328,7 @@ class TestPathSuggestionJourney:
             target.write_text(data="private contents", encoding="utf-8")
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test(size=(120, 40)) as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             prompt.load_text(
                 entered + ('junk"' if '"' in entered else "junk'" if "'" in entered else "junk") + " later"
             )
@@ -327,14 +337,15 @@ class TestPathSuggestionJourney:
             if "/" not in entered:
                 await pilot.press("tab")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
-            assert app.query_one(PromptInput)._slash_suggestion_state.kind == "path"
+            assert app.query_one(PromptInputComponent)._slash_suggestion_state.kind == "path"
             await pilot.press("tab")
             await pilot.pause()
             assert prompt.text == expected
             assert prompt.cursor_location == (0, len(expected) - len(" later"))
-            assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             prompt.action_undo()
             await pilot.pause()
             assert prompt.text.endswith(" later") and "junk" in prompt.text
@@ -385,7 +396,7 @@ class TestPathReaderLifetime:
         shutdown: asyncio.Task[None] | None = None
         async with app.run_test(size=(120, 40)) as pilot:
             try:
-                prompt = app.query_one(PromptInput)
+                prompt = app.query_one(PromptInputComponent)
                 await pilot.press(*"old/")
                 await pump_until(pilot=pilot, predicate=reader.entered.is_set)
                 assert reader.entered.is_set()
@@ -412,17 +423,17 @@ class TestPathReaderLifetime:
                     assert app._render_event not in session._subscribers
                     assert shutdown is not None and not shutdown.done()
                 assert len(reader.calls) == 1
-                assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+                assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
                 reader.release.set()
                 await pump_until(pilot=pilot, predicate=lambda: app._path_suggestions._task is None)
                 assert app._path_suggestions._task is None
                 if cutoff == "edit":
-                    assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
-                        "new.py"
-                    ]
+                    assert [
+                        row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+                    ] == ["new.py"]
                     assert len(reader.calls) == 2
                 else:
-                    assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+                    assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
                     assert len(reader.calls) == 1
                 if shutdown is not None:
                     await asyncio.wait_for(fut=shutdown, timeout=3)
@@ -445,7 +456,7 @@ class TestPathReaderLifetime:
                 reader.release.set()
                 await asyncio.wait_for(fut=shutdown, timeout=3)
                 assert app._render_event not in session._subscribers
-                assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+                assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             finally:
                 reader.release.set()
         assert app._path_suggestions._task is None
@@ -473,15 +484,16 @@ async def test_path_worker_repeated_cancel_blocks_parallel_read_until_join(tmp_p
             assert app._path_suggestions._task is not None
             reader.release.set()
             await pump_until(pilot=pilot, predicate=lambda: worker.is_finished)
-            assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             assert len(reader.calls) == 1
             await pilot.press("tab")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
-            assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
-                "one.py"
-            ]
+            assert [
+                row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+            ] == ["one.py"]
         finally:
             reader.release.set()
 
@@ -515,22 +527,22 @@ class TestPathContextJourneys:
         prefix = prefixes[form]
         app = SloTUI(session=build_path_session(workdir=workdir))
         async with app.run_test(size=(120, 40)) as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             await pilot.press(*prefix)
             await pump_until(
                 pilot=pilot,
-                predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
-                and app.query_one(PromptInput)._slash_suggestion_state.kind == "path",
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible
+                and app.query_one(PromptInputComponent)._slash_suggestion_state.kind == "path",
             )
             if form == "quote-directory":
-                assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
-                    "src/"
-                ]
+                assert [
+                    row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+                ] == ["src/"]
                 await pilot.press("tab")
                 await pump_until(
                     pilot=pilot,
                     predicate=lambda: [
-                        row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows
+                        row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
                     ]
                     == ["one.py"],
                 )
@@ -539,7 +551,7 @@ class TestPathContextJourneys:
             await pilot.press("up", "tab")
             await pilot.pause()
             assert prompt.text == prefix + "one.py" + ('"' if form == "quote-directory" else "")
-            assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             assert not app._session.is_running
 
     async def test_tab_discovery_stays_live_while_narrowing_and_can_reopen(self, tmp_path: Path) -> None:
@@ -550,28 +562,33 @@ class TestPathContextJourneys:
             target.touch()
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test() as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             await pilot.press("a", "tab")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             await pilot.press("l", "p", "h")
             await pump_until(
                 pilot=pilot,
                 predicate=lambda: [
-                    row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows
+                    row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
                 ]
                 == ["alpha.py"],
             )
-            assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
-                "alpha.py"
-            ]
+            assert [
+                row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+            ] == ["alpha.py"]
             await pilot.press("escape")
             await pilot.pause()
-            assert prompt.text == "alph" and not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert (
+                prompt.text == "alph"
+                and not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
+            )
             await pilot.press("tab")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             await pilot.press("tab")
             await pilot.pause()
@@ -588,13 +605,14 @@ class TestPathContextJourneys:
         async with app.run_test() as pilot:
             await pilot.press("a", "tab")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
-            assert app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             count = len(reader.calls)
             await pilot.press(" ", "p", "r", "o", "s", "e")
             await pilot.pause()
-            assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             assert len(reader.calls) == count
 
     async def test_path_enter_submits_literal_prompt_to_real_history(self, tmp_path: Path) -> None:
@@ -625,14 +643,16 @@ class TestPathContextJourneys:
         async with app.run_test() as pilot:
             await pilot.press(*"use src/")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             await pilot.press("enter")
             await pump_until(
                 pilot=pilot,
-                predicate=lambda: app._in_flight_task is None and app.query_one(PromptInput).text == "",
+                predicate=lambda: app._in_flight_task is None
+                and app.query_one(PromptInputComponent).text == "",
             )
-            assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         events = await store.load_events(session_id=session.session_id)
         assert [event.payload.content for event in events if event.kind == "user_message"] == ["use src/"]
         assert "SECRET_NEVER_ATTACHED" not in "".join(event.model_dump_json() for event in events)
@@ -649,20 +669,24 @@ async def test_quoted_directory_navigation_preserves_following_prose(tmp_path: P
     target.touch()
     app = SloTUI(session=build_path_session(workdir=tmp_path))
     async with app.run_test() as pilot:
-        prompt = app.query_one(PromptInput)
+        prompt = app.query_one(PromptInputComponent)
         prompt.load_text('use "./s" later')
         prompt.move_cursor(location=(0, len('use "./s')))
         await pump_until(
-            pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+            pilot=pilot, predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         )
-        assert app.query_one(PromptInput)._slash_suggestion_state.rows[0].label == "src dir/"
+        assert app.query_one(PromptInputComponent)._slash_suggestion_state.rows[0].label == "src dir/"
         await pilot.press("tab")
         await pump_until(
             pilot=pilot,
-            predicate=lambda: [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows]
+            predicate=lambda: [
+                row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+            ]
             == ["one.py"],
         )
-        assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == ["one.py"]
+        assert [row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows] == [
+            "one.py"
+        ]
         assert prompt.text == 'use "./src dir/" later'
         assert prompt.cursor_location == (0, len('use "./src dir/'))
         await pilot.press("tab")
@@ -686,11 +710,11 @@ class TestPathFailureJourneys:
         target.touch()
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test() as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             await pilot.press(*prefix)
             await pump_until(pilot=pilot, predicate=lambda: app._path_suggestions._task is None)
             assert app._path_suggestions._task is None
-            assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+            assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             await pilot.press("x")
             assert prompt.text == prefix + "x"
 
@@ -716,12 +740,15 @@ class TestPathFailureJourneys:
             link.symlink_to(destination)
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test() as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             await pilot.press(*"src/")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
-            assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
+            assert [
+                row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+            ] == [
                 "dir-link/",
                 "broken",
                 "file-link",
@@ -730,18 +757,19 @@ class TestPathFailureJourneys:
             await pilot.pause()
             assert (
                 prompt.text == "src/file-link"
-                and not app.query_one(PromptInput)._slash_suggestion_state.visible
+                and not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             )
             prompt.load_text("src/")
             prompt.move_cursor(location=(0, 4))
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             await pilot.press("tab")
             await pump_until(
                 pilot=pilot,
                 predicate=lambda: [
-                    row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows
+                    row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
                 ]
                 == ["one.py"],
             )
@@ -754,14 +782,15 @@ class TestPathFailureJourneys:
             await pump_until(
                 pilot=pilot,
                 predicate=lambda: [
-                    row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows
+                    row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
                 ]
                 == ["broken"],
             )
             await pilot.press("tab")
             await pilot.pause()
             assert (
-                prompt.text == "src/broken" and not app.query_one(PromptInput)._slash_suggestion_state.visible
+                prompt.text == "src/broken"
+                and not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
             )
 
     @pytest.mark.parametrize(argnames="change", argvalues=["text", "cursor", "selection"])
@@ -779,10 +808,11 @@ class TestPathFailureJourneys:
         target.touch()
         app = SloTUI(session=build_path_session(workdir=tmp_path))
         async with app.run_test() as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             await pilot.press(*"src/")
             await pump_until(
-                pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
             )
             if change == "text":
                 prompt.load_text("do not replace")
@@ -791,7 +821,9 @@ class TestPathFailureJourneys:
             else:
                 prompt.selection = Selection(start=(0, 0), end=(0, 2))
             expected = (prompt.text, prompt.selection)
-            app.query_one(PromptInput).on_prompt_input_suggestion_accepted(PromptInput.SuggestionAccepted())
+            await app.query_one(PromptInputComponent).on_prompt_input_component_suggestion_accepted(
+                PromptInputComponent.SuggestionAccepted()
+            )
             assert (prompt.text, prompt.selection) == expected
             await pilot.pause()
 
@@ -811,9 +843,9 @@ async def test_permission_failure_is_hidden_and_typing_recovers(tmp_path: Path) 
         await pilot.press(*"src/")
         await pump_until(pilot=pilot, predicate=lambda: app._path_suggestions._task is None)
         assert app._path_suggestions._task is None
-        assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+        assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         await pilot.press("escape", "x")
-        assert app.query_one(PromptInput).text == "src/x"
+        assert app.query_one(PromptInputComponent).text == "src/x"
 
 
 async def test_unchanged_refresh_does_no_read_or_menu_replacement(tmp_path: Path) -> None:
@@ -827,20 +859,20 @@ async def test_unchanged_refresh_does_no_read_or_menu_replacement(tmp_path: Path
     async with app.run_test() as pilot:
         await pilot.press(".", "/")
         await pump_until(
-            pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+            pilot=pilot, predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         )
-        assert app.query_one(PromptInput)._slash_suggestion_state.visible
+        assert app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         menu = app.query_one(SlashSuggestionMenu)
         original_state = menu._state
-        app.query_one(PromptInput)._refresh_slash_suggestions()
-        app.query_one(PromptInput)._refresh_slash_suggestions()
+        await app.query_one(PromptInputComponent)._refresh_slash_suggestions()
+        await app.query_one(PromptInputComponent)._refresh_slash_suggestions()
         menu.update_state(state=original_state.model_copy())
         await pilot.pause()
         assert len(reader.calls) == 1
         assert menu._state is original_state
         await pilot.press("escape")
         await pilot.pause()
-        app.query_one(PromptInput)._refresh_slash_suggestions()
+        await app.query_one(PromptInputComponent)._refresh_slash_suggestions()
         await pilot.pause()
         assert len(reader.calls) == 1
-        assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+        assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible

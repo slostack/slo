@@ -1,9 +1,10 @@
 """Real retained-child ownership composed with mounted inbox shutdown cutoffs."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
@@ -68,17 +69,21 @@ async def test_all_owner_claim_pending(
         return await original_close(reporter)
 
     monkeypatch.setattr(target=HerdrReporter, name="close", value=close_reporter)
-    original_sink = ChatTranscript.write_transcript_line
+    original_sink = ChatTranscriptComponent.handle
 
-    def diagnostic(app: SloTUI, *, content: str, classes: str) -> None:
+    async def diagnostic(transcript: ChatTranscriptComponent, *, command: TranscriptCommand) -> None:
         """Exercise the contained sink while genuine shutdown owners continue."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_sink(transcript, command=command)
+            return
+        content, classes = command.content, command.classes
         if content == "Session cleanup incomplete.":
             cleanup_notices.append(content)
             if throwing_notice:
                 raise RuntimeError("synthetic cleanup diagnostic fault")
-        original_sink(app, content=content, classes=classes)
+        await original_sink(transcript, command=command)
 
-    monkeypatch.setattr(target=ChatTranscript, name="write_transcript_line", value=diagnostic)
+    monkeypatch.setattr(target=ChatTranscriptComponent, name="handle", value=diagnostic)
 
     async def prepare(app: SloTUI) -> None:
         """Pause the real claim until the public shutdown has sealed admission."""
@@ -226,7 +231,7 @@ async def test_all_owner_claim_pending(
             return await original_ack(session_id=session_id, message_id=message_id)
 
         original_advance = app._advance_workflow_handle_state
-        original_write = app._chat_transcript.write_transcript_line
+        original_write = app._chat_transcript.handle
 
         async def advance(*, message: SessionInboxMessageDAO) -> None:
             """Hold only after actual durable workflow advancement."""
@@ -235,13 +240,17 @@ async def test_all_owner_claim_pending(
                 entered.set()
                 await eventually(predicate=lambda: app._app_closing)
 
-        def write(*, content: str, classes: str) -> None:
+        async def write(*, command: TranscriptCommand) -> None:
             """Seal the final synchronous registration boundary after its notice."""
+            if not isinstance(command, TranscriptNoticeDAO):
+                await original_write(command=command)
+                return
+            content, classes = command.content, command.classes
             if content == "Inbox delivery deferred during shutdown; claimed item retained.":
                 notices.append(content)
                 if throwing_notice:
                     raise RuntimeError("synthetic diagnostic sink fault")
-            original_write(content=content, classes=classes)
+            await original_write(command=command)
             if cutoff == "before_chat_registration" and content.startswith("[scheduled update]"):
                 app._app_closing = True
                 entered.set()
@@ -259,7 +268,7 @@ async def test_all_owner_claim_pending(
                 patch.object(app, "_run_prompt", side_effect=run),
                 patch.object(app, "_register_prompt_task", wraps=app._register_prompt_task) as register,
                 patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
-                patch.object(app._chat_transcript, "write_transcript_line", side_effect=write),
+                patch.object(app._chat_transcript, "handle", side_effect=write),
             ):
                 await app._poll_session_inbox()
                 if admitted:

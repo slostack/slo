@@ -16,7 +16,7 @@ from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleSt
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.widgets.user_message_block import UserMessageBlock
 from tests.tui.workflows.test_session_snapshot import _Files, _entry, _handle
@@ -62,7 +62,7 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
         await pilot.pause()
         assert app.query_one(UserMessageBlock).text == "persisted legacy prompt"
         assert len(app.query(SubAgentFleetRow)) == 2
-        editor = app.query_one(PromptInput)
+        editor = app.query_one(PromptInputComponent)
         editor.text = "/workflows dismiss wf-legacy"
         await pilot.press("enter")
         await pilot.pause()
@@ -73,7 +73,8 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
         await pilot.press("enter")
         await pilot.pause()
         assert len(app.query(SubAgentFleetRow)) == 2
-        assert (await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")).state == "failed"
+        handle = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        assert handle is not None and handle.state == "failed"
         editor.text = "/workflows tui dismiss"
         await pilot.press("enter")
         await pilot.pause()
@@ -82,7 +83,7 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
     async with restarted.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         assert len(restarted.query(SubAgentFleetRow)) == 2
-        editor = restarted.query_one(PromptInput)
+        editor = restarted.query_one(PromptInputComponent)
         editor.text = "/workflows tui dismiss"
         await pilot.press("enter")
         await pilot.pause()
@@ -98,7 +99,8 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
             text == "No hidden workflow groups to show."
             for text, _ in restarted._chat_transcript._adapter.lines
         )
-        assert (await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")).state == "failed"
+        handle = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        assert handle is not None and handle.state == "failed"
 
 
 @dataclass
@@ -176,7 +178,7 @@ async def test_durable_resume_reveals_same_mounted_visibility_group(tmp_path: Pa
         await pilot.pause()
         keys = tuple(row.row.key for row in app.query(SubAgentFleetRow))
         assert len(keys) == 2
-        editor = app.query_one(PromptInput)
+        editor = app.query_one(PromptInputComponent)
         editor.text = "/workflows tui dismiss"
         await pilot.press("enter")
         await pilot.pause()

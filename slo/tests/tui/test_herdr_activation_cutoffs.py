@@ -1,7 +1,7 @@
 """Finite shared-runtime continuation cutoffs in a mounted, offline Textual app."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +14,17 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
+
+_original_delivery = ChatTranscriptComponent.handle
+
+
+async def fail_notices(transcript: ChatTranscriptComponent, *, command: TranscriptCommand) -> None:
+    """Fail only diagnostic delivery; retain real replay/control behavior."""
+    if isinstance(command, TranscriptNoticeDAO):
+        raise RuntimeError("notice fault")
+    await _original_delivery(transcript, command=command)
 
 
 @pytest.mark.parametrize("phase", ["delivery", "activation", "context"])
@@ -73,9 +83,7 @@ async def test_shared_runtime_await_cutoff(tmp_path: Path, phase: str, cutoff: s
                 patch.object(app, "_refresh_title_bar") as title,
                 patch.object(app, "_refresh_usage_status_bar") as usage,
                 patch.object(app, "_start_session_preparation") as preparation,
-                patch.object(
-                    ChatTranscript, "write_transcript_line", side_effect=RuntimeError("notice fault")
-                ),
+                patch.object(ChatTranscriptComponent, "handle", new=fail_notices),
             ):
                 task = asyncio.create_task(coro=app._finish_replacement_runtime())
                 try:
@@ -122,7 +130,7 @@ async def test_preparation_completion_cutoff(tmp_path: Path, cutoff: str, fails:
 
         with (
             patch.object(session, "prepare_startup", side_effect=prepare),
-            patch.object(app._chat_transcript, "write_transcript_line") as notice,
+            patch.object(app._chat_transcript, "handle") as notice,
             patch.object(app, "_refresh_title_bar") as title,
             patch.object(app, "_refresh_usage_status_bar") as usage,
         ):
@@ -135,7 +143,11 @@ async def test_preparation_completion_cutoff(tmp_path: Path, cutoff: str, fails:
                     app._session = successor
                 release.set()
                 await asyncio.wait_for(task, timeout=5)
-                notice.assert_not_called()
+                notice.assert_awaited_once_with(
+                    command=TranscriptNoticeDAO(
+                        content="Preparing model catalog; limits unknown.", classes="tool-result"
+                    )
+                )
                 title.assert_not_called()
                 usage.assert_not_called()
             finally:
@@ -171,7 +183,7 @@ async def test_mount_public_unmount_blocks_focus_and_auth(tmp_path: Path, phase:
         release = asyncio.Event()
         sealed = asyncio.Event()
         calls: list[str] = []
-        hydrate = ChatTranscript.hydrate
+        hydrate = ChatTranscriptComponent.hydrate
         notice = app._maybe_render_startup_notice
         delivery = app._initialize_session_delivery
         activate = session.start_external_reporting
@@ -188,7 +200,7 @@ async def test_mount_public_unmount_blocks_focus_and_auth(tmp_path: Path, phase:
             if fails and phase != "hydration":
                 raise RuntimeError("private mount sentinel")
 
-        async def hydration(transcript: ChatTranscript, **kwargs) -> None:
+        async def hydration(transcript: ChatTranscriptComponent, **kwargs) -> None:
             """Run actual replay before its continuation barrier."""
             await hydrate(transcript, **kwargs)
             await barrier("hydration")
@@ -232,17 +244,17 @@ async def test_mount_public_unmount_blocks_focus_and_auth(tmp_path: Path, phase:
             await asyncio.wait_for(shutdown, timeout=5)
 
         with (
-            patch.object(ChatTranscript, "hydrate", new=hydration),
+            patch.object(ChatTranscriptComponent, "hydrate", new=hydration),
             patch.object(app, "_maybe_render_startup_notice", side_effect=startup_notice),
             patch.object(app, "_initialize_session_delivery", side_effect=initialize),
             patch.object(session, "start_external_reporting", side_effect=reporting),
             patch.object(session, "refresh_context_window_snapshot", side_effect=refresh_context),
             patch.object(session, "begin_external_reporting_close", side_effect=closing),
-            patch.object(PromptInput, "focus", autospec=True) as focus,
+            patch.object(PromptInputComponent, "focus", autospec=True) as focus,
             patch.object(app, "_has_credential_for_active_model", return_value=False) as credential,
             patch.object(app, "_push_auth_modal") as auth,
             patch.object(app, "_start_session_preparation") as preparation,
-            patch.object(ChatTranscript, "write_transcript_line", side_effect=RuntimeError("notice fault")),
+            patch.object(ChatTranscriptComponent, "handle", new=fail_notices),
         ):
             driver = asyncio.create_task(coro=close_at_barrier())
             try:

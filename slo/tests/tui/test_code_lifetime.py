@@ -18,7 +18,7 @@ from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from uuid import uuid4
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.editor_launcher import EditorLauncher, SessionEditorTerminal
 from src.tui.editor_platform_terminal import PlatformEditorTerminal
 from tests.tui.test_editor_platform_terminal import RecordingTerminalProcess
@@ -64,7 +64,7 @@ async def test_code_pending_submission_does_not_block_prompt_or_slash(tmp_path: 
         ),
     )
     async with app.run_test() as pilot:
-        prompt = app.query_one(PromptInput)
+        prompt = app.query_one(PromptInputComponent)
         prompt.load_text("/code one.py")
         await pilot.press("enter")
         await asyncio.wait_for(fut=terminal.entered.wait(), timeout=2)
@@ -109,7 +109,7 @@ async def test_code_pending_editor_allows_real_prompt_history_journey(tmp_path: 
         ),
     )
     async with app.run_test() as pilot:
-        prompt = app.query_one(PromptInput)
+        prompt = app.query_one(PromptInputComponent)
         prompt.load_text("/code one.py")
         await pilot.press("enter")
         await asyncio.wait_for(fut=terminal.entered.wait(), timeout=2)
@@ -145,14 +145,14 @@ async def test_code_uses_same_completion_then_expands_home(
         ),
     )
     async with app.run_test() as pilot:
-        prompt = app.query_one(PromptInput)
+        prompt = app.query_one(PromptInputComponent)
         prompt.load_text('/code "~/sp')
         prompt.move_cursor(location=(0, len(prompt.text)))
         await pilot.press("tab")
         await pump_until(
-            pilot=pilot, predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible
+            pilot=pilot, predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         )
-        assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == [
+        assert [row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows] == [
             "space ü.py"
         ]
         await pilot.press("tab", "enter")
@@ -172,7 +172,7 @@ async def test_code_unmount_cancels_request_without_closing_editor(tmp_path: Pat
         ),
     )
     async with app.run_test() as pilot:
-        app.query_one(PromptInput).load_text("/code one.py")
+        app.query_one(PromptInputComponent).load_text("/code one.py")
         await pilot.press("enter")
         await asyncio.wait_for(fut=terminal.entered.wait(), timeout=2)
     assert terminal.finished.is_set()
@@ -208,7 +208,7 @@ async def test_editor_cancel_before_worker_entry_retires_without_shutdown_join(t
         assert terminal.calls == []
         assert transcript_lines(app=app) == before
 
-        app.query_one(PromptInput).load_text("/code one.py")
+        app.query_one(PromptInputComponent).load_text("/code one.py")
         await pilot.press("enter")
         await pump_until(pilot=pilot, predicate=terminal.finished.is_set)
         await pilot.pause()
@@ -256,7 +256,7 @@ async def test_editor_worker_failure_is_accounted_before_idle_retirement(
             assert transcript_lines(app=app) == before
             assert terminal.calls == []
 
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             prompt.load_text("/cwd")
             await pilot.press("enter")
             assert any(str(tmp_path) in text for text, _ in transcript_lines(app=app))
@@ -343,7 +343,7 @@ async def test_editor_worker_repeated_cancel_joins_validation_without_notice(tmp
     )
     async with app.run_test() as pilot:
         try:
-            app.query_one(PromptInput).load_text("/code one.py")
+            app.query_one(PromptInputComponent).load_text("/code one.py")
             await pilot.press("enter")
             await pump_until(pilot=pilot, predicate=entered.is_set)
             worker = next(worker for worker in app.workers if worker.group == "editor-launch")
@@ -376,7 +376,7 @@ async def test_code_platform_displays_impossibility_without_launch(
         ),
     )
     async with app.run_test() as pilot:
-        app.query_one(PromptInput).load_text("/code one.py")
+        app.query_one(PromptInputComponent).load_text("/code one.py")
         await pilot.press("enter")
         await pump_until(
             pilot=pilot, predicate=lambda: any("not possible" in t for t, _ in transcript_lines(app=app))
@@ -424,7 +424,7 @@ async def test_code_native_session_uses_reporter_transport_and_captured_owner(
             assert session.workflow_visualizer_destination == "herdr"
             # Ambient focus/settings drift after capture must not retarget the request.
             monkeypatch.setenv(name="HERDR_PANE_ID", value="focus-drift")
-            app.query_one(PromptInput).load_text("/code " + shlex.quote(target.name))
+            app.query_one(PromptInputComponent).load_text("/code " + shlex.quote(target.name))
             await pilot.press("enter")
             await pump_until(
                 pilot=pilot,
@@ -438,7 +438,7 @@ async def test_code_native_session_uses_reporter_transport_and_captured_owner(
                 ["pane", "run", "editor-pane", shlex.join(("/test-only/nvim", "--", str(target)))],
             ]
             session.begin_external_reporting_close()
-            app.query_one(PromptInput).load_text("/code " + shlex.quote(target.name))
+            app.query_one(PromptInputComponent).load_text("/code " + shlex.quote(target.name))
             await pilot.press("enter")
             await pump_until(
                 pilot=pilot,

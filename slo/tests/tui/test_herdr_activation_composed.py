@@ -7,7 +7,7 @@ import os
 import weakref
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

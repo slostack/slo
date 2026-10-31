@@ -12,7 +12,7 @@ liveness probe. ``os.kill`` is patched to fail the test if anything signals.
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -406,8 +406,10 @@ class TestDetachedChildAbortFromModal:
                 )
                 target_pid: int = world.pid(session_id=_TARGET)
                 await _tick(app=app, pilot=pilot)
-                assert app.query_one(ChatTranscript)._adapter is not None
-                foreground: list[tuple[str, str]] = list(app.query_one(ChatTranscript)._adapter.lines)
+                assert app.query_one(ChatTranscriptComponent)._adapter is not None
+                foreground: list[tuple[str, str]] = list(
+                    app.query_one(ChatTranscriptComponent)._adapter.lines
+                )
                 assert _rows(app=app) == {_PARENT: "running", _TARGET: "running", _SIBLING: "running"}
 
                 with patch.object(world.session, "abort") as whole_abort:
@@ -425,7 +427,7 @@ class TestDetachedChildAbortFromModal:
                     terminal_state: str = _state(screen=screen)
                     rows: dict[str, str] = _rows(app=app)
 
-                foreground_after = list(app.query_one(ChatTranscript)._adapter.lines)
+                foreground_after = list(app.query_one(ChatTranscriptComponent)._adapter.lines)
                 assert not dispatch.done()  # the sibling still runs
                 whole_abort.assert_not_called()
 

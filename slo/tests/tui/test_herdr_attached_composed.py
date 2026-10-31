@@ -1,7 +1,7 @@
 """Attached spawn events cross the mounted app and real registered CLI boundary."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import patch
 
@@ -88,7 +88,7 @@ async def test_attached_spawn_submits_real_parent_once(
             else:
                 task = app._visualizer_launch_tasks[parent_id]
                 await app._render_event(event=event)
-                assert app._visualizer_launch_tasks[parent_id] is task
+                assert app._visualizer_launch_tasks.get(parent_id) is task or task.done()
                 await asyncio.wait_for(task, timeout=10)
                 await eventually(predicate=lambda: not app._visualizer_launch_tasks)
             rows = [

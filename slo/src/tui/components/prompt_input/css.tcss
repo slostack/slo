@@ -5,7 +5,7 @@
  * Colours resolve through the active Textual theme via $surface / $accent.
  */
 
-PromptInput, PromptInput:focus {
+PromptInputComponent, PromptInputComponent:focus {
     border: none;
     border-top: solid $accent;
     border-bottom: solid $accent;

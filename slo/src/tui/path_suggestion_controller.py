@@ -23,6 +23,7 @@ class PathPromptSnapshotDAO(BaseModel):
     cursor: tuple[int, int]
     workdir: Path
     selection_empty: bool = True
+    prompt_version: int = 0
 
     def query(self, *, explicit: bool) -> Optional[PathSuggestionQueryDAO]:
         """Parse a collapsed cursor only, without filesystem work.
@@ -48,12 +49,25 @@ class PathSuggestionView(Protocol):
         """Capture the live collapsed-selection/cursor/cwd authority, or no mounted input."""
         ...
 
-    def publish_path_suggestions(self, *, state: SlashSuggestionStateDAO) -> None:
+    async def publish_path_suggestions(
+        self,
+        *,
+        state: SlashSuggestionStateDAO,
+        controller: PathSuggestionController,
+        snapshot: PathPromptSnapshotDAO,
+    ) -> None:
         """Paint a controller-owned menu state through the shared suggestion menu."""
         ...
 
-    def replace_path_span(
-        self, *, insert_text: str, start: tuple[int, int], end: tuple[int, int], cursor_inside_quote: bool
+    async def replace_path_span(
+        self,
+        *,
+        insert_text: str,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        cursor_inside_quote: bool,
+        controller: PathSuggestionController,
+        snapshot: PathPromptSnapshotDAO,
     ) -> None:
         """Apply one undo-aware range edit; optionally keep the cursor before its closing quote."""
         ...
@@ -111,12 +125,12 @@ class PathSuggestionController:
         self._query = None
         self._snapshot = None
 
-    def dismiss(self) -> None:
+    async def dismiss(self) -> None:
         """Remember the current prompt so unchanged events cannot reopen the menu."""
         self._explicit = False
         self.invalidate()
         self._dismissed = self._view.capture_path_prompt()
-        self._publish(state=SlashSuggestionStateDAO(visible=False))
+        await self._publish(state=SlashSuggestionStateDAO(visible=False))
 
     def close(self) -> None:
         """Seal admission and revoke output synchronously before app teardown yields."""
@@ -124,7 +138,7 @@ class PathSuggestionController:
         self._explicit = False
         self.invalidate()
 
-    def request(self, *, explicit: bool = False) -> bool:
+    async def request(self, *, explicit: bool = False) -> bool:
         """Coalesce latest prompt context; return whether paths own this menu.
 
         Args:
@@ -141,7 +155,7 @@ class PathSuggestionController:
             self._explicit = False
             self.invalidate()
             return False
-        self._admit_query(snapshot=snapshot, query=query)
+        await self._admit_query(snapshot=snapshot, query=query)
         return True
 
     def _discover_query(
@@ -161,14 +175,17 @@ class PathSuggestionController:
             return snapshot.query(explicit=False)
         return query
 
-    def _admit_query(self, *, snapshot: PathPromptSnapshotDAO, query: PathSuggestionQueryDAO) -> None:
+    async def _admit_query(self, *, snapshot: PathPromptSnapshotDAO, query: PathSuggestionQueryDAO) -> None:
         """Skip dismissed/identical work and start at most one reader task."""
         self._retire_completed_worker()
         if snapshot == self._dismissed or (snapshot == self._snapshot and query == self._query):
             return
         self.invalidate()
         self._snapshot, self._query = snapshot, query
-        self._publish(state=SlashSuggestionStateDAO(visible=False))
+        generation = self._generation
+        await self._publish(state=SlashSuggestionStateDAO(visible=False))
+        if self._closed or generation != self._generation:
+            return
         if self._worker_wait is None:
             self._worker = self._run_worker(
                 work=self._run_queries, group="path-suggestions", exit_on_error=False
@@ -181,11 +198,16 @@ class PathSuggestionController:
         """Revoke cancelled snapshots only after the retained wait has joined all work."""
         if self._worker_wait is None or not self._worker_wait.done():
             return
-        self._worker_wait.result()
-        if self._worker is not None and self._worker.is_cancelled:
+        try:
+            self._worker_wait.result()
+        except Exception:
             self.invalidate()
-        self._worker = None
-        self._worker_wait = None
+            raise
+        finally:
+            if self._worker is not None and self._worker.is_cancelled:
+                self.invalidate()
+            self._worker = None
+            self._worker_wait = None
 
     async def _run_queries(self) -> None:
         """Supervise a retained reader; worker cancellation revokes then joins OS work.
@@ -220,7 +242,9 @@ class PathSuggestionController:
             if generation != self._generation:
                 continue
             if self._snapshot_is_current():
-                self._publish(state=state)
+                await self._publish(state=state)
+            if generation != self._generation:
+                continue
             return
 
     async def _read(self, *, query: PathSuggestionQueryDAO) -> SlashSuggestionStateDAO:
@@ -242,18 +266,30 @@ class PathSuggestionController:
             and self._snapshot == self._view.capture_path_prompt()
         )
 
-    def _publish(self, *, state: SlashSuggestionStateDAO) -> None:
+    async def _publish(self, *, state: SlashSuggestionStateDAO) -> None:
         """Retain the replacement span that corresponds to the painted rows."""
         self._state = state
-        if not self._closed:
-            self._view.publish_path_suggestions(state=state)
+        snapshot = self._view.capture_path_prompt()
+        if not self._closed and snapshot is not None:
+            await self._view.publish_path_suggestions(state=state, controller=self, snapshot=snapshot)
 
     async def join(self) -> None:
         """Join retained filesystem work; cancellation never abandons its thread."""
         wait = self._worker_wait
         if wait is not None:
-            await HerdrTaskJoin.wait(task=wait)
-            wait.result()
+            cancelled = await HerdrTaskJoin.wait(task=wait)
+            try:
+                wait.result()
+            except Exception:
+                self.invalidate()
+                raise
+            finally:
+                # Completed failure is reported once, not retained as an immortal
+                # failed join. Reader ownership has ended before references leave.
+                self._worker_wait = None
+                self._worker = None
+            if cancelled:
+                raise asyncio.CancelledError
 
     @staticmethod
     async def _wait_for_worker(*, worker: Worker[None]) -> None:
@@ -263,7 +299,7 @@ class PathSuggestionController:
         except WorkerCancelled:
             pass
 
-    def accept(self, *, insert_text: str) -> None:
+    async def accept(self, *, insert_text: str) -> None:
         """Apply the selected token only under its still-current snapshot authority.
 
         Args:
@@ -271,22 +307,38 @@ class PathSuggestionController:
         """
         if not self._snapshot_is_current() or self._snapshot is None:
             return
-        text = self._snapshot.text
+        snapshot = self._snapshot
+        text = snapshot.text
         start = self._location(text=text, offset=self._state.replacement_start)
         end = self._location(text=text, offset=self._state.replacement_end)
         self.invalidate()
-        self._replace_token(insert_text=insert_text, start=start, end=end)
-        if insert_text.endswith("/"):
-            self.request()
+        generation = self._generation
+        await self._replace_token(insert_text=insert_text, start=start, end=end, snapshot=snapshot)
+        if self._closed or generation != self._generation:
             return
-        self.dismiss()
+        if insert_text.endswith("/"):
+            await self.request()
+            return
+        await self.dismiss()
 
-    def _replace_token(self, *, insert_text: str, start: tuple[int, int], end: tuple[int, int]) -> None:
+    async def _replace_token(
+        self,
+        *,
+        insert_text: str,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        snapshot: PathPromptSnapshotDAO,
+    ) -> None:
         """Keep a directory's closing quote while continuing navigation inside it."""
         quoted_directory = insert_text.endswith("/") and insert_text[0] in "\"'"
         replacement = insert_text + insert_text[0] if quoted_directory else insert_text
-        self._view.replace_path_span(
-            insert_text=replacement, start=start, end=end, cursor_inside_quote=quoted_directory
+        await self._view.replace_path_span(
+            insert_text=replacement,
+            start=start,
+            end=end,
+            cursor_inside_quote=quoted_directory,
+            controller=self,
+            snapshot=snapshot,
         )
 
     @staticmethod

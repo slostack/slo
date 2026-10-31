@@ -1,9 +1,10 @@
 """Shutdown admission regressions for the app-owned prompt registration boundary."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
 from unittest.mock import patch
 
 import pytest
@@ -94,7 +95,7 @@ async def test_claim_retained_on_shutdown(tmp_path: Path, cutoff: str) -> None:
             release = asyncio.Event()
             original_claim = store.claim_next
             original_advance = app._advance_workflow_handle_state
-            original_write = app._chat_transcript.write_transcript_line
+            original_write = app._chat_transcript.handle
 
             async def claim(*, session_id: str) -> SessionInboxMessageDAO | None:
                 """Pause the real claim before its original storage call."""
@@ -110,16 +111,20 @@ async def test_claim_retained_on_shutdown(tmp_path: Path, cutoff: str) -> None:
                     entered.set()
                     await release.wait()
 
-            def write(*, content: str, classes: str) -> None:
+            async def write(*, command: TranscriptCommand) -> None:
                 """Set the synchronous closing prefix at the final notice seam."""
-                original_write(content=content, classes=classes)
+                if not isinstance(command, TranscriptNoticeDAO):
+                    await original_write(command=command)
+                    return
+                content, classes = command.content, command.classes
+                await original_write(command=command)
                 if cutoff == "registration" and content.startswith("[scheduled update]"):
                     app._app_closing = True
 
             with (
                 patch.object(store, "claim_next", side_effect=claim),
                 patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
-                patch.object(app._chat_transcript, "write_transcript_line", side_effect=write),
+                patch.object(app._chat_transcript, "handle", side_effect=write),
                 patch.object(session, "invoke", wraps=session.invoke) as invoke,
             ):
                 poll = asyncio.create_task(coro=app._poll_session_inbox())

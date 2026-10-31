@@ -1,4 +1,4 @@
-"""Mounted journey tests for the extracted PromptInput component (spec 96.f.2)."""
+"""Mounted journey tests for the extracted PromptInputComponent component (spec 96.f.2)."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.app import SloTUI
 from src.tui.components.chat_transcript.component import HistoryReader
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.model_catalog import ModelSuggestionProjection, model_suggestion_entries
 from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
@@ -68,14 +68,14 @@ def _build_session(
     )
 
 
-def _require_prompt_input(*, app: SloTUI) -> PromptInput:
+def _require_prompt_input(*, app: SloTUI) -> PromptInputComponent:
     """Return the mounted prompt editor.
 
     Args:
         app (SloTUI): Mounted application.
 
     Returns:
-        PromptInput: The mounted prompt editor.
+        PromptInputComponent: The mounted prompt editor.
     """
     assert app._input is not None
     return app._input
@@ -138,8 +138,8 @@ def _gated_real_invoke(
     return _invoke
 
 
-class _PromptInputHost(App):
-    """Minimal mounted host for PromptInput binding boundaries."""
+class _PromptInputComponentHost(App):
+    """Minimal mounted host for PromptInputComponent binding boundaries."""
 
     def compose(self) -> ComposeResult:
         """Compose the borrowed menu and the editor under test.
@@ -148,7 +148,7 @@ class _PromptInputHost(App):
             ComposeResult: Menu followed by the editor.
         """
         self.menu: SlashSuggestionMenu = SlashSuggestionMenu()
-        self.editor: PromptInput = PromptInput()
+        self.editor: PromptInputComponent = PromptInputComponent()
         yield self.menu
         yield self.editor
 
@@ -169,11 +169,11 @@ class _ModalHost(ModalScreen[None]):
 class _ChangedStub:
     """Minimal owned Changed event for the post-unmount cutoff."""
 
-    def __init__(self, *, text_area: PromptInput) -> None:
+    def __init__(self, *, text_area: PromptInputComponent) -> None:
         """Capture the owner and seed the stopped marker.
 
         Args:
-            text_area (PromptInput): Event owner.
+            text_area (PromptInputComponent): Event owner.
         """
         self.text_area = text_area
         self.stopped: bool = False
@@ -227,7 +227,7 @@ async def test_key_precedence_and_single_submit(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
 
             editor.load_text("/mo")
             await pilot.pause()
@@ -270,7 +270,7 @@ async def test_key_precedence_and_single_submit(tmp_path: Path) -> None:
             await pilot.press("enter")
             await pilot.pause()
             assert invoke_log == ["plain"]
-            assert not hasattr(SloTUI, "on_prompt_input_suggestion_accepted")
+            assert not hasattr(SloTUI, "on_prompt_input_component_suggestion_accepted")
 
 
 async def test_suggestion_span_and_empty_menu(tmp_path: Path) -> None:
@@ -286,7 +286,7 @@ async def test_suggestion_span_and_empty_menu(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
 
             editor.load_text("/mo")
             await pilot.pause()
@@ -301,7 +301,7 @@ async def test_suggestion_span_and_empty_menu(tmp_path: Path) -> None:
             await pilot.pause()
             assert editor._slash_suggestion_state.visible is False
             before: str = editor.text
-            editor.post_message(PromptInput.SuggestionAccepted())
+            editor.post_message(PromptInputComponent.SuggestionAccepted())
             await pilot.pause()
             assert editor.text == before
             assert invoke_log == []
@@ -323,7 +323,7 @@ async def test_recall_restores_draft(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
 
             await _submit_prompt(app=app, pilot=pilot, text="first prompt")
             await _wait_for_app_idle(app=app, pilot=pilot)
@@ -345,7 +345,7 @@ async def test_recall_restores_draft(tmp_path: Path) -> None:
             assert editor.text == ""
             assert editor._prompt_history.is_navigating is False
 
-            editor.record_accepted_prompt(text="/model open")
+            editor._record_accepted_prompt(text="/model open")
             editor.load_text("")
             await pilot.press("up")
             await pilot.pause()
@@ -387,10 +387,14 @@ async def test_submit_queue_and_history(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
 
             await _submit_prompt(app=app, pilot=pilot, text="first")
-            await pump_until(pilot=pilot, predicate=lambda: session.is_running)
+            # Admission sets is_running before the asynchronous history write.
+            async with asyncio.timeout(5):
+                while await _history_user_texts(session=session) != ["first"]:
+                    await pilot.pause()
+            assert session.is_running
             assert await _history_user_texts(session=session) == ["first"]
 
             await _submit_prompt(app=app, pilot=pilot, text="held one")
@@ -425,7 +429,7 @@ async def test_commands_keep_queue_policy(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
 
             await _submit_prompt(app=app, pilot=pilot, text="first")
             await _submit_prompt(app=app, pilot=pilot, text="held")
@@ -464,15 +468,15 @@ async def test_session_adoption_resets_editor_only(tmp_path: Path) -> None:
     )
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        editor: PromptInput = _require_prompt_input(app=app)
+        editor: PromptInputComponent = _require_prompt_input(app=app)
         engine: SlashSuggestionEngine = editor._suggestion_engine  # type: ignore[assignment]
         assert engine is not None
-        editor.record_accepted_prompt(text="remembered")
-        editor.record_model_selection(model_name="gpt-4o")
+        editor._record_accepted_prompt(text="remembered")
+        editor._record_model_selection(model_name="gpt-4o")
         old_navigator: PromptHistoryNavigator = editor._prompt_history
         editor.load_text("draft")
 
-        with patch.object(editor, "update_model_context", wraps=editor.update_model_context) as update:
+        with patch.object(editor, "_update_model_context", wraps=editor._update_model_context) as update:
             await app._start_new_session(requested_name=None)
         await pilot.pause()
         assert app._session is candidate
@@ -487,8 +491,8 @@ async def test_session_adoption_resets_editor_only(tmp_path: Path) -> None:
     failed_app: SloTUI = SloTUI(session=failed)
     async with failed_app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        failed_editor: PromptInput = _require_prompt_input(app=failed_app)
-        failed_editor.record_accepted_prompt(text="kept")
+        failed_editor: PromptInputComponent = _require_prompt_input(app=failed_app)
+        failed_editor._record_accepted_prompt(text="kept")
         failed_navigator: PromptHistoryNavigator = failed_editor._prompt_history
         failed_editor.load_text("draft kept")
         with patch.object(SloAgentSession, "build", side_effect=ValueError("private failure")):
@@ -533,7 +537,7 @@ async def test_published_catalog_refresh(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
             editor.load_text("/model ")
             await pilot.pause()
             assert editor._slash_suggestion_state.visible is True
@@ -571,7 +575,7 @@ async def test_focus_and_teardown_cutoffs(tmp_path: Path) -> None:
 
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        editor: PromptInput = _require_prompt_input(app=app)
+        editor: PromptInputComponent = _require_prompt_input(app=app)
         editor.load_text("draft")
         await pilot.pause()
         await app.push_screen(_ModalHost())
@@ -591,11 +595,11 @@ async def test_focus_and_teardown_cutoffs(tmp_path: Path) -> None:
     assert menu is not None
     menu_state = menu._state
     for _ in range(3):
-        app.on_idle()
-        editor.update_model_context(active_model_name="late-model")
-        editor.refresh_published_suggestions()
+        await app.on_idle()
+        await editor._update_model_context(active_model_name="late-model")
+        await editor._refresh_published_suggestions()
     changed = _ChangedStub(text_area=editor)
-    editor.on_text_area_changed(changed)  # type: ignore[arg-type]
+    await editor.on_text_area_changed(changed)  # type: ignore[arg-type]
     assert changed.stopped is True
     assert menu._state == menu_state
     assert editor._closed is True
@@ -615,7 +619,7 @@ async def test_layout_and_packaged_styles(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
 
             for theme in (SLO_DARK_THEME, SLO_DEFAULT_THEME):
                 app.theme = theme.name
@@ -696,12 +700,12 @@ async def test_submission_lifetime_guards(tmp_path: Path) -> None:
     ):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            editor: PromptInput = _require_prompt_input(app=app)
+            editor: PromptInputComponent = _require_prompt_input(app=app)
             await _submit_prompt(app=app, pilot=pilot, text="first")
             await pump_until(pilot=pilot, predicate=lambda: session.is_running)
 
             app._app_closing = True
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="late"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="late"))
             assert invoke_log == ["first"]
             assert app._queued_prompt_text is None
             assert list(editor._prompt_history._entries) == ["first"]
@@ -720,7 +724,7 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
 
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        editor: PromptInput = _require_prompt_input(app=app)
+        editor: PromptInputComponent = _require_prompt_input(app=app)
         engine: SlashSuggestionEngine = editor._suggestion_engine  # type: ignore[assignment]
         assert engine is not None
 
@@ -735,9 +739,11 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
                 return_value=(901, 901),
             ),
             patch("src.tui.app.ModelSuggestionProjection.refresh_authentication"),
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as cancel_update,
+            patch.object(
+                editor, "_update_model_context", wraps=editor._update_model_context
+            ) as cancel_update,
         ):
-            app._on_auth_dismissed(None)
+            await app._on_auth_dismissed(None)
         cancel_update.assert_called_once_with(active_model_name=session.active_model_name)
         assert editor._picker_catalog_revision == (901, 901)
 
@@ -753,9 +759,9 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
                 return_value=(902, 902),
             ),
             patch("src.tui.app.ModelSuggestionProjection.refresh_authentication"),
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as same_update,
+            patch.object(editor, "_update_model_context", wraps=editor._update_model_context) as same_update,
         ):
-            app._on_auth_dismissed(same_provider)
+            await app._on_auth_dismissed(same_provider)
         same_update.assert_called_once_with(active_model_name=session.active_model_name)
         assert editor._picker_catalog_revision == (902, 902)
 
@@ -766,9 +772,9 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
             patch("src.tui.app.default_model_for_provider", return_value="openrouter:vendor/model"),
             patch.object(session, "switch_model") as switch,
             patch("src.tui.app.ModelSuggestionProjection.refresh_authentication"),
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as busy_update,
+            patch.object(editor, "_update_model_context", wraps=editor._update_model_context) as busy_update,
         ):
-            app._on_auth_dismissed(
+            await app._on_auth_dismissed(
                 CredentialDAO(
                     provider=ProviderName.OPENROUTER,
                     auth_type=AuthType.API_KEY,
@@ -796,9 +802,9 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
         with (
             patch("src.tui.app.SlashRouter.dispatch", new=unchanged_dispatch),
             patch.object(
-                editor, "record_model_selection", wraps=editor.record_model_selection
+                editor, "_record_model_selection", wraps=editor._record_model_selection
             ) as recency_spy,
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as update_spy,
+            patch.object(editor, "_update_model_context", wraps=editor._update_model_context) as update_spy,
         ):
             await app._dispatch_slash_command(line="/model gpt-5.4")
         recency_spy.assert_not_called()
@@ -809,9 +815,11 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
         with (
             patch("src.tui.app.SlashRouter.dispatch", new=unchanged_dispatch),
             patch.object(
-                editor, "record_model_selection", wraps=editor.record_model_selection
+                editor, "_record_model_selection", wraps=editor._record_model_selection
             ) as recency_spy,
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as refresh_update,
+            patch.object(
+                editor, "_update_model_context", wraps=editor._update_model_context
+            ) as refresh_update,
         ):
             await app._dispatch_slash_command(line="/model refresh")
         recency_spy.assert_not_called()
@@ -838,9 +846,9 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
         with (
             patch("src.tui.app.SlashRouter.dispatch", new=displaced_dispatch),
             patch.object(
-                editor, "record_model_selection", wraps=editor.record_model_selection
+                editor, "_record_model_selection", wraps=editor._record_model_selection
             ) as recency_spy,
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as update_spy,
+            patch.object(editor, "_update_model_context", wraps=editor._update_model_context) as update_spy,
         ):
             await app._dispatch_slash_command(line="/model stale-selection")
         recency_spy.assert_not_called()
@@ -864,7 +872,7 @@ async def test_model_context_publication_paths(tmp_path: Path) -> None:
         with (
             patch("src.tui.app.SlashRouter.dispatch", new=changed_dispatch),
             patch.object(
-                editor, "record_model_selection", wraps=editor.record_model_selection
+                editor, "_record_model_selection", wraps=editor._record_model_selection
             ) as recency_spy,
         ):
             await app._dispatch_slash_command(line="/model changed-model")
@@ -880,14 +888,16 @@ async def test_preparation_and_replacement_context_guards(tmp_path: Path) -> Non
 
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        editor: PromptInput = _require_prompt_input(app=app)
+        editor: PromptInputComponent = _require_prompt_input(app=app)
 
         async def prepare_ok() -> None:
             """Complete preparation successfully."""
 
         with (
             patch.object(session, "prepare_startup", new=prepare_ok),
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as success_update,
+            patch.object(
+                editor, "_update_model_context", wraps=editor._update_model_context
+            ) as success_update,
         ):
             await app._prepare_mounted_session(session=session)
         success_update.assert_called_once_with(active_model_name=session.active_model_name)
@@ -898,7 +908,9 @@ async def test_preparation_and_replacement_context_guards(tmp_path: Path) -> Non
 
         with (
             patch.object(session, "prepare_startup", new=prepare_fail),
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as failed_update,
+            patch.object(
+                editor, "_update_model_context", wraps=editor._update_model_context
+            ) as failed_update,
         ):
             await app._prepare_mounted_session(session=session)
         failed_update.assert_not_called()
@@ -912,7 +924,7 @@ async def test_preparation_and_replacement_context_guards(tmp_path: Path) -> Non
         with (
             patch.object(session, "prepare_startup", new=prepare_displaced),
             patch.object(
-                editor, "update_model_context", wraps=editor.update_model_context
+                editor, "_update_model_context", wraps=editor._update_model_context
             ) as displaced_update,
         ):
             await app._prepare_mounted_session(session=session)
@@ -931,8 +943,8 @@ async def test_preparation_and_replacement_context_guards(tmp_path: Path) -> Non
 
         with (
             patch.object(app._chat_transcript, "bind_history", new=displace_bind_history),
-            patch.object(editor, "reset_session", wraps=editor.reset_session) as reset_spy,
-            patch.object(editor, "update_model_context", wraps=editor.update_model_context) as update_spy,
+            patch.object(editor, "_reset_session", wraps=editor._reset_session) as reset_spy,
+            patch.object(editor, "_update_model_context", wraps=editor._update_model_context) as update_spy,
         ):
             await app._refresh_replacement_ui()
         reset_spy.assert_not_called()
@@ -945,20 +957,20 @@ async def test_preparation_and_replacement_context_guards(tmp_path: Path) -> Non
 
 async def test_binding_and_changed_ordering() -> None:
     """Unbound intents are safe, bind evaluates the latest draft, duplicate bind raises."""
-    host: _PromptInputHost = _PromptInputHost()
+    host: _PromptInputComponentHost = _PromptInputComponentHost()
     engine: SlashSuggestionEngine = SlashSuggestionEngine(registry=SlashRouter.registry())
 
     async with host.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
-        editor: PromptInput = host.editor
+        editor: PromptInputComponent = host.editor
         assert editor._suggestion_engine is None
         assert editor._suggestion_menu is None
 
-        editor.post_message(PromptInput.SuggestionMoved(delta=1))
-        editor.post_message(PromptInput.SuggestionAccepted())
-        editor.post_message(PromptInput.SuggestionDismissed())
-        editor.post_message(PromptInput.PromptHistoryOlderRequested())
-        editor.post_message(PromptInput.PromptHistoryNewerRequested())
+        editor.post_message(PromptInputComponent.SuggestionMoved(delta=1))
+        editor.post_message(PromptInputComponent.SuggestionAccepted())
+        editor.post_message(PromptInputComponent.SuggestionDismissed())
+        editor.post_message(PromptInputComponent.PromptHistoryOlderRequested())
+        editor.post_message(PromptInputComponent.PromptHistoryNewerRequested())
         await pilot.pause()
         assert editor.text == ""
         assert editor._slash_suggestion_state.visible is False
@@ -969,13 +981,13 @@ async def test_binding_and_changed_ordering() -> None:
         assert editor._slash_suggestion_state.visible is False
         assert host.menu._state.visible is False
 
-        editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="gpt-5.4")
+        await editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="gpt-5.4")
         assert editor._slash_suggestion_state.visible is True
         assert host.menu._state.visible is True
         assert host.menu._state.rows[0].label == "/model"
 
         with pytest.raises(RuntimeError):
-            editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="other")
+            await editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="other")
         assert editor._suggestion_engine is engine
         assert editor._suggestion_menu is host.menu
         assert editor._active_model_name == "gpt-5.4"
@@ -985,24 +997,24 @@ async def test_binding_and_changed_ordering() -> None:
     assert editor._suggestion_engine is None
     assert editor._suggestion_menu is None
     with pytest.raises(RuntimeError):
-        editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="gpt-5.4")
+        await editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="gpt-5.4")
     assert editor._suggestion_engine is None
 
 
 async def test_closed_bind_while_menu_mounted() -> None:
     """Closing the unbound editor alone makes bind raise and leaves no collaborators."""
-    host: _PromptInputHost = _PromptInputHost()
+    host: _PromptInputComponentHost = _PromptInputComponentHost()
     engine: SlashSuggestionEngine = SlashSuggestionEngine(registry=SlashRouter.registry())
 
     async with host.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
-        editor: PromptInput = host.editor
+        editor: PromptInputComponent = host.editor
         await editor.remove()
         await pilot.pause()
         assert editor._closed is True
         assert host.menu.is_mounted is True
         with pytest.raises(RuntimeError):
-            editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="gpt-5.4")
+            await editor.bind_suggestions(menu=host.menu, engine=engine, active_model_name="gpt-5.4")
         assert editor._suggestion_engine is None
         assert editor._suggestion_menu is None
         assert host.menu._state == SlashSuggestionStateDAO(visible=False)
@@ -1010,16 +1022,16 @@ async def test_closed_bind_while_menu_mounted() -> None:
 
 async def test_failed_bind_releases_collaborators() -> None:
     """Evaluation failure renders hidden state then keeps no menu or engine reference."""
-    host: _PromptInputHost = _PromptInputHost()
+    host: _PromptInputComponentHost = _PromptInputComponentHost()
 
     async with host.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
-        editor: PromptInput = host.editor
+        editor: PromptInputComponent = host.editor
         editor.load_text("/mo")
         await pilot.pause()
 
         with pytest.raises(RuntimeError, match="suggestion evaluation failed"):
-            editor.bind_suggestions(
+            await editor.bind_suggestions(
                 menu=host.menu,
                 engine=_FailingSuggestionEngine(),
                 active_model_name="gpt-5.4",

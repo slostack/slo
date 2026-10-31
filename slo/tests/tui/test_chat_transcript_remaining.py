@@ -8,17 +8,27 @@ from textual import events
 from textual.widgets import Static
 from textual.theme import Theme
 
+from src.tui.components.chat_transcript.commands import (
+    ProjectUserTurnDAO,
+    ProjectReplayEntryDAO,
+    BeginTranscriptRunDAO,
+)
+
 from src.tui.theme import SLO_DEFAULT_THEME, SLO_DARK_THEME
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.tui.components.chat_transcript.component import ChatTranscript, TranscriptScroll
+from src.tui.components.chat_transcript.component import (
+    ChatTranscriptComponent,
+    TranscriptScrollComponent,
+    _NativeScrollRequestDAO,
+)
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from tests.tui.test_chat_transcript import TranscriptTestApp, seed_history
 from tests.tui.test_chat_transcript_navigation import OrderedTranscript, named_row, painted_rows
 
 
-class HiddenPrependTranscript(ChatTranscript):
+class HiddenPrependTranscript(ChatTranscriptComponent):
     """Hide at the actual first prepend mount and optionally fail the next mount."""
 
     prepend_mounts = 0
@@ -67,7 +77,7 @@ async def test_hidden_real_prepend_and_upper_growth(
     app.theme = theme.name
     async with app.run_test(size=size) as pilot:
         await transcript.hydrate()
-        transcript.begin_run()
+        await transcript.handle(command=BeginTranscriptRunDAO())
         await transcript.present_event(
             event=AgentStreamEventDAO(kind="thinking_delta", block_id="upper", content="thought", iteration=1)
         )
@@ -75,7 +85,7 @@ async def test_hidden_real_prepend_and_upper_growth(
             event=AgentStreamEventDAO(kind="text_delta", content="answer", iteration=1)
         )
         await transcript.echo_user(text="\n\n".join(f"READ-LATER-{i:02}" for i in range(60)))
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         # Reading starts only after the real append/layout pin has settled.
         # A single pause can leave PageUp targeting the pre-append viewport.
         async with asyncio.timeout(5):
@@ -143,7 +153,7 @@ async def test_hidden_real_prepend_and_upper_growth(
     assert (tmp_path / "seed" / "events.jsonl").read_bytes() == before
 
 
-class EmptyPrependTranscript(ChatTranscript):
+class EmptyPrependTranscript(ChatTranscriptComponent):
     """Observe the real sentinel and append a tail notice during the first mount."""
 
     saw_sentinel = False
@@ -157,7 +167,7 @@ class EmptyPrependTranscript(ChatTranscript):
             sentinel = self.query_one(".transcript-prepend-boundary")
             assert not sentinel.can_focus
             self.saw_sentinel = True
-            self.workflow_notice.write(content="concurrent tail", classes="tool-result")
+            await self.mount_transcript_line(content="concurrent tail", classes="tool-result")
         return block
 
 
@@ -234,7 +244,7 @@ async def test_genuine_stale_rendered_after_native_wheel(input_kind: str) -> Non
         block = await transcript.mount_assistant_block()
         block.set_answer(content="\n\n".join(f"RACE-{i:03}" for i in range(100)))
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.focus()
         for _ in range(4):
             await pilot.pause()
@@ -293,10 +303,46 @@ async def test_genuine_stale_rendered_after_native_wheel(input_kind: str) -> Non
         assert "NEW-USER" in "\n".join(painted_rows(app=app))
 
 
+class MovingRowTranscript(OrderedTranscript):
+    """Observe real native input at admission, without replacing its animation or routing."""
+
+    moving_literal: str = ""
+    moving_row: int = -1
+    moving_y: float = 0.0
+
+    def capture_moving_row(self) -> None:
+        """Record the current painted line immediately before an interruption."""
+        app = self.app
+        assert isinstance(app, TranscriptTestApp)
+        scroll = self.query_one(TranscriptScrollComponent)
+        assert 0 < scroll.scroll_x < 100
+        self.moving_y = scroll.scroll_y
+        # Reflow the animator's current offset before queued scroll notifications arrive.
+        # No event-loop yield can advance the animation between this paint and input.
+        app.screen._refresh_layout(scroll=True)
+        self.moving_literal = next(
+            word
+            for line in painted_rows(app=app)
+            for word in line.split()
+            if word.startswith("MOTION-") and len(word) == 10
+        )
+        self.moving_row = named_row(app=app, literal=self.moving_literal)
+
+    def _navigate_native(self, request: _NativeScrollRequestDAO) -> bool:
+        """Observe the real callback, then check the immediate paint as well as final settlement."""
+        self.capture_moving_row()
+        moved = super()._navigate_native(request=request)
+        app = self.app
+        assert isinstance(app, TranscriptTestApp)
+        app.screen._refresh_layout(scroll=True)
+        assert named_row(app=app, literal=self.moving_literal) == self.moving_row
+        return moved
+
+
 @pytest.mark.parametrize("interruption", ["right", "hide", "home"])
 async def test_public_animation_interrupted_while_actually_moving(interruption: str) -> None:
-    """Observe a genuine intermediate frame before x input, hide, or edge Home."""
-    transcript = OrderedTranscript()
+    """Preserve the exact painted row at real input admission during public animation."""
+    transcript = MovingRowTranscript()
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test() as pilot:
         wide = Static("\n".join(f"MOTION-{i:03} " * 24 for i in range(160)))
@@ -304,7 +350,7 @@ async def test_public_animation_interrupted_while_actually_moving(interruption: 
         wide.styles.height = 160
         await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.scroll_to(x=0, y=0, animate=False, immediate=True)
         await pilot.pause()
@@ -321,18 +367,17 @@ async def test_public_animation_interrupted_while_actually_moving(interruption: 
         assert 0 < scroll.scroll_x < 100
         if interruption != "home":
             assert 0 < scroll.scroll_y < 100
-        await pilot.pause()
-        before = painted_rows(app=app)
-        literal = next(
-            word for line in before for word in line.split() if word.startswith("MOTION-") and len(word) == 10
-        )
-        row = named_row(app=app, literal=literal)
         if interruption == "hide":
+            transcript.capture_moving_row()
             transcript.set_visible(visible=False)
             transcript.set_visible(visible=True)
         else:
             await pilot.press(interruption)
+        if interruption != "home":
+            assert 0 < transcript.moving_y < 100
+        else:
+            assert transcript.moving_y == 0
         await pilot.wait_for_scheduled_animations()
         await pilot.pause()
-        assert named_row(app=app, literal=literal) == row
+        assert named_row(app=app, literal=transcript.moving_literal) == transcript.moving_row
         assert transcript._native_navigation is None

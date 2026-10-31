@@ -1,9 +1,10 @@
 """Mounted candidate preparation preserves the selected session until commit."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand
 from unittest.mock import patch
 
 import pytest
@@ -81,16 +82,16 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
 
             preparation = asyncio.create_task(coro=hold_preparation())
             app._preparation_task = preparation
-            original_notice = app._chat_transcript.write_transcript_line
+            original_notice = app._chat_transcript.handle
 
-            def notice(*, content: str, classes: str) -> None:
+            async def notice(*, command: TranscriptCommand) -> None:
                 """A failing diagnostic sink cannot invalidate preserved ownership."""
                 if failure == "notice":
                     raise RuntimeError("private notice sentinel")
-                original_notice(content=content, classes=classes)
+                await original_notice(command=command)
 
             with (
-                patch.object(app._chat_transcript, "write_transcript_line", side_effect=notice),
+                patch.object(app._chat_transcript, "handle", side_effect=notice),
                 patch.object(SloAgentSession, "build", side_effect=build),
                 patch.object(app, "_attach_pool_to_session", side_effect=attach),
                 patch.object(SloAgentSession, "rename_session", new=rename),
@@ -252,9 +253,7 @@ async def test_candidate_cleanup_joins_repeated_cancellation(
             patch.object(app, "_attach_pool_to_session", side_effect=attach),
             patch.object(SubAgentPool, "abort_and_drain", side_effect=drain),
             patch.object(NullHerdrReporter, "close", new=close),
-            patch.object(
-                app._chat_transcript, "write_transcript_line", side_effect=RuntimeError("notice defect")
-            ),
+            patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice defect")),
         ):
             task = asyncio.create_task(coro=app._start_new_session(requested_name=None))
             await asyncio.wait_for(entered.wait(), timeout=5)

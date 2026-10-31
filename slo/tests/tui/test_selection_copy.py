@@ -6,7 +6,7 @@ Covers ``SloTUI.on_text_selected`` (sub-spec 68.b.3) and
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -21,7 +21,7 @@ from textual.app import App
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 
 from src.agents.providers.faux import FauxChatModel
@@ -123,17 +123,17 @@ class TestRawMarkdownCopy:
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
             if kind == "answer":
-                answer = await app.query_one(ChatTranscript).mount_assistant_block()
+                answer = await app.query_one(ChatTranscriptComponent).mount_assistant_block()
                 answer.finalize(final_text="# answer")
                 body: Widget = answer._answer_body
                 expected_raw = answer.get_raw_markdown_for_copy()
             elif kind == "thinking":
-                thinking = await app.query_one(ChatTranscript).mount_thinking_block()
+                thinking = await app.query_one(ChatTranscriptComponent).mount_thinking_block()
                 thinking.set_thinking(content="# thinking")
                 body = thinking._body
                 expected_raw = thinking.get_raw_markdown_for_copy()
             else:
-                user = await app.query_one(ChatTranscript).mount_user_message_block(text="# user")
+                user = await app.query_one(ChatTranscriptComponent).mount_user_message_block(text="# user")
                 body = user._body
                 expected_raw = user.get_raw_markdown_for_copy()
             app.screen.focused = body  # type: ignore[attr-defined]
@@ -150,7 +150,7 @@ class TestRawMarkdownCopy:
             if kind == "prompt":
                 target = app._input
             elif kind == "tool":
-                target = await app.query_one(ChatTranscript).mount_tool_execution_block(
+                target = await app.query_one(ChatTranscriptComponent).mount_tool_execution_block(
                     tool_call_id="call", tool_name="read"
                 )
             elif kind == "notice":
@@ -224,7 +224,7 @@ class TestRawMarkdownCopy:
         """A provider success invokes only the established clipboard writer exactly once."""
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
-            block = await app.query_one(ChatTranscript).mount_user_message_block(text="# raw")
+            block = await app.query_one(ChatTranscriptComponent).mount_user_message_block(text="# raw")
             app.screen.focused = block  # type: ignore[attr-defined]
             app.copy_to_clipboard = MagicMock()  # type: ignore[method-assign]
 

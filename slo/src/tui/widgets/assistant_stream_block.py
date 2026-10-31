@@ -34,7 +34,7 @@ class FollowSnapshotDAO:
     """Immutable pre-mutation viewport intent, invalid without an attached owner."""
 
     was_following: bool = False
-    presentation_generation: int = -1
+    transcript_version: int = -1
     viewport_revision: int = -1
 
 

@@ -1,4 +1,4 @@
-"""Consumer-owned bridge from the WorkflowProgress component to the app's global UI (96.f.1).
+"""Consumer-owned bridge from the WorkflowProgressComponent component to the app's global UI (96.f.1).
 
 The component and its observation-lifetime adapter never import the app at
 runtime: every screen-stack, notice, focus and control operation they need is
@@ -9,7 +9,7 @@ panel, the coordinator or the service.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Optional, Protocol
 
 from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
@@ -42,12 +42,17 @@ class WorkflowProgressHost(Protocol):
         """
         ...
 
-    def present_progress(self, *, screen: SessionProgressScreen, on_closed: Callable[[None], None]) -> None:
+    def present_progress(
+        self, *, screen: SessionProgressScreen, on_closed: Callable[[None], None]
+    ) -> Awaitable[None]:
         """Push one owned progress view and deliver its dismissal once.
 
         Args:
             screen (SessionProgressScreen): Fresh view to present.
             on_closed (Callable[[None], None]): Callback after the view leaves the stack.
+
+        Returns:
+            Awaitable[None]: Native mount completion, not dismissal or paint completion.
         """
         ...
 

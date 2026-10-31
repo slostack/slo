@@ -19,8 +19,8 @@ from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDA
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.prompt_input.component import PromptInputComponent
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
 from src.tui.workflows.dao import ProgressViewportDAO, WorkflowSessionKeyDAO
@@ -123,10 +123,10 @@ async def test_injected_factory_new_session_persists_only_to_replacement(tmp_pat
     initial = factory(config=session_config(tmp_path=tmp_path), allow_pending_preparation=True)
     app = SloTUI(session=initial, session_factory=factory)
     async with app.run_test() as pilot:
-        transcript = app.query_one(ChatTranscript)
+        transcript = app.query_one(ChatTranscriptComponent)
         await transcript.echo_user(text="old presentation")
         factory.trace.clear()
-        app.query_one(PromptInput).load_text("/new replacement")
+        app.query_one(PromptInputComponent).load_text("/new replacement")
         await pilot.press("enter")
         await pilot.pause()
         assert len(factory.calls) == 2
@@ -142,11 +142,11 @@ async def test_injected_factory_new_session_persists_only_to_replacement(tmp_pat
         assert config.session_id is None
         assert replacement.session_id != initial.session_id
         assert replacement.session_name == "replacement"
-        assert app.query_one(ChatTranscript) is transcript
+        assert app.query_one(ChatTranscriptComponent) is transcript
         assert not list(transcript.query(UserMessageBlock))
         await initial.event_relay(AgentStreamEventDAO(kind="text_delta", delta="retired output", iteration=1))
         assert "retired output" not in transcript.logical_copy_text()
-        app.query_one(PromptInput).load_text("replacement prompt")
+        app.query_one(PromptInputComponent).load_text("replacement prompt")
         await pilot.press("enter")
         await wait_for_answer(app=app)
         await pilot.pause()
@@ -182,7 +182,7 @@ async def test_replay_is_mounted_before_startup_and_live_subscription(tmp_path: 
 
     def assert_replay_mounted() -> None:
         """Fail if subscription precedes projection, even after the reader returned."""
-        transcript = app.query_one(ChatTranscript)
+        transcript = app.query_one(ChatTranscriptComponent)
         assert [block.get_copyable_text() for block in transcript.query(UserMessageBlock)] == [
             "persisted prompt"
         ]
@@ -195,7 +195,7 @@ async def test_replay_is_mounted_before_startup_and_live_subscription(tmp_path: 
     async with app.run_test() as pilot:
         assert resumed.trace == ["hydrate:start", "hydrate:return", "startup", "subscribe"]
         assert history_file.read_bytes() == before
-        app.query_one(PromptInput).load_text("live prompt")
+        app.query_one(PromptInputComponent).load_text("live prompt")
         await pilot.press("enter")
         await wait_for_answer(app=app)
         await pilot.pause()
@@ -262,17 +262,17 @@ async def test_hide_show_retains_progress_modal_focus_and_usable_prompt(tmp_path
     session = ObservedSession(config=session_config(tmp_path=tmp_path), trace=[])
     app = SloTUI(session=session)
     async with app.run_test() as pilot:
-        transcript = app.query_one(ChatTranscript)
-        prompt = app.query_one(PromptInput)
+        transcript = app.query_one(ChatTranscriptComponent)
+        prompt = app.query_one(PromptInputComponent)
         await transcript.echo_user(text="retained entry")
         retained = transcript.query_one(UserMessageBlock)
         retained.focus()
         await pilot.pause()
         assert app.focused is retained
-        app.set_transcript_visible(visible=False)
+        await app.set_transcript_visible(visible=False)
         await pilot.pause()
         assert app.focused is prompt
-        app.set_transcript_visible(visible=True)
+        await app.set_transcript_visible(visible=True)
         await pilot.pause()
         assert app.focused is prompt
         modal = SessionProgressScreen(
@@ -284,12 +284,12 @@ async def test_hide_show_retains_progress_modal_focus_and_usable_prompt(tmp_path
         focused = app.focused
         assert focused is not None and focused.screen is modal
         reads = session.trace.count("hydrate:start")
-        app.set_transcript_visible(visible=False)
+        await app.set_transcript_visible(visible=False)
         await session.event_relay(AgentStreamEventDAO(kind="text_delta", delta="hidden output", iteration=1))
         await pilot.pause()
         assert app.screen is modal and app.focused is focused
         assert not transcript.display
-        app.set_transcript_visible(visible=True)
+        await app.set_transcript_visible(visible=True)
         await pilot.pause()
         assert app.screen is modal and app.focused is focused
         assert transcript.query_one(UserMessageBlock) is retained

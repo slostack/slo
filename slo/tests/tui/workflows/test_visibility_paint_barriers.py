@@ -1,5 +1,6 @@
 """Public coordinator barriers for visibility paint and shutdown ownership."""
 
+from src.tui.components.workflow_progress.events import SessionsUpdatedDAO
 import asyncio
 
 import pytest
@@ -75,7 +76,7 @@ async def test_repeated_close_cancellation_joins_one_paint(fail: bool) -> None:
     assert sink.settled.is_set()
     assert await coordinator.apply_local_snapshot(snapshot=_sessions()) is False
     before = list(sink.events)
-    coordinator.minimize()
+    await coordinator.minimize()
     assert sink.events == before
 
 

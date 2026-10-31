@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from src.tui.components.chat_transcript.component import TranscriptScroll
+from src.tui.components.chat_transcript.component import TranscriptScrollComponent
 from tests.tui.test_chat_transcript import TranscriptTestApp
 from tests.tui.test_chat_transcript_navigation import OrderedTranscript, named_row, painted_rows
 
@@ -18,7 +18,7 @@ async def test_native_supersession_during_observed_motion(first: str, second: st
         block = await transcript.mount_assistant_block()
         block.set_answer(content="\n\n".join(f"MIDDLE-{i:03}" for i in range(150)))
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.focus()
         for _ in range(4):
             await pilot.pause()
@@ -60,7 +60,7 @@ async def test_old_show_callbacks_do_not_override_current_intent(reset: str, rev
         block = await transcript.mount_assistant_block()
         block.set_answer(content="\n\n".join(f"SHOW-{i:03}" for i in range(100)))
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.focus()
         await pilot.press("pageup")
         await pilot.wait_for_scheduled_animations()

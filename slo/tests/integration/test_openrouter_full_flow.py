@@ -8,8 +8,8 @@ separate contracts, not claims made by this test.
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+from src.tui.components.prompt_input.component import PromptInputComponent
 from pathlib import Path
 from collections.abc import Iterator
 from unittest.mock import patch
@@ -312,7 +312,7 @@ async def test_mounted_rejected_replacement_preserves_store_and_session(
             await screen.action_cancel()
             await pilot.pause()
             assert session.active_model_name == "gpt-5.4"
-            assert candidate not in app.query_one(ChatTranscript).logical_copy_text()
+            assert candidate not in app.query_one(ChatTranscriptComponent).logical_copy_text()
     assert requests == ["/api/v1/key"]
     assert candidate not in caplog.text + service.result.model_dump_json()
 
@@ -588,7 +588,9 @@ async def test_mounted_openrouter_auth_picker_router_session_and_resume_flow(
                 first_app._input.load_text("/model mounted unseeded")
                 await pilot.pause()
                 assert first_app._input._slash_suggestion_state.rows[0].insert_text == route
-                first_app._input.on_prompt_input_suggestion_accepted(PromptInput.SuggestionAccepted())
+                await first_app._input.on_prompt_input_component_suggestion_accepted(
+                    PromptInputComponent.SuggestionAccepted()
+                )
                 await pilot.pause()
                 assert first_app._input.text == f"/model {route}"
                 await first_app._dispatch_slash_command(line=f"/model {route}")
@@ -599,7 +601,7 @@ async def test_mounted_openrouter_auth_picker_router_session_and_resume_flow(
                     if not first_session.is_running:
                         break
                 assert not first_session.is_running
-                first_transcript = first_app.query_one(ChatTranscript).logical_copy_text()
+                first_transcript = first_app.query_one(ChatTranscriptComponent).logical_copy_text()
                 assert "first mounted answer" in first_transcript
                 assert reasoning_secret not in first_transcript
 
@@ -624,7 +626,7 @@ async def test_mounted_openrouter_auth_picker_router_session_and_resume_flow(
                     if not resumed_session.is_running:
                         break
                 assert not resumed_session.is_running
-                resumed_transcript = resumed_app.query_one(ChatTranscript).logical_copy_text()
+                resumed_transcript = resumed_app.query_one(ChatTranscriptComponent).logical_copy_text()
                 assert "second mounted answer" in resumed_transcript
                 assert reasoning_secret not in resumed_transcript
             ModelCatalogService.reset()

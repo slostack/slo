@@ -50,12 +50,12 @@ async def test_verified_dismissal_paints_status_before_long_label(size: tuple[in
     ):
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
-            app._on_auth_dismissed(value=credential)
+            await app._on_auth_dismissed(value=credential)
             assert app._input is not None
             app._input.load_text("/model openrouter:")
             await pilot.pause()
             with patch.object(CredentialResolver, "resolve", side_effect=AssertionError("typing I/O")):
-                app._input.update_model_context(active_model_name=app._session.active_model_name)
+                await app._input._update_model_context(active_model_name=app._session.active_model_name)
                 rows = model_suggestion_entries(active_model_name=session.active_model_name)
                 assert next(row for row in rows if row.model_name == route).status_summary.startswith(
                     "key verified"

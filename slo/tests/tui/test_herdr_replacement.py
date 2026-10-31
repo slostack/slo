@@ -1,7 +1,7 @@
 """Mounted irreversible replacement uses actual session lifetime gateways."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
 from unittest.mock import patch
@@ -83,9 +83,7 @@ async def test_new_committed_fault_never_restores_old(tmp_path: Path, failure: s
         }[failure]
         with (
             patch.object(target, name, side_effect=RuntimeError("private defect")),
-            patch.object(
-                app._chat_transcript, "write_transcript_line", side_effect=RuntimeError("sink defect")
-            ),
+            patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("sink defect")),
         ):
             await app._start_new_session(requested_name=None)
         assert app._session is not old

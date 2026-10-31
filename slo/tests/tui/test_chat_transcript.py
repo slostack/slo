@@ -6,6 +6,13 @@ from pathlib import Path
 import pytest
 
 from textual.widgets import Static
+from src.tui.components.chat_transcript.commands import (
+    ProjectUserTurnDAO,
+    ProjectReplayEntryDAO,
+    BeginTranscriptRunDAO,
+)
+
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.dao import (
     HistoryEventKind,
@@ -19,7 +26,7 @@ from textual.app import App, ComposeResult
 
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
-from src.tui.components.chat_transcript.component import ChatTranscript, HistoryReader
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent, HistoryReader
 from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
@@ -50,7 +57,7 @@ async def test_terminal_growth_follows_and_hidden_growth_retains_reading() -> No
         """Supply an empty canonical history boundary."""
         return []
 
-    transcript = ChatTranscript(history_reader=empty_history)
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test(size=(80, 24)) as pilot:
         await transcript.echo_user(text="question")
@@ -60,7 +67,7 @@ async def test_terminal_growth_follows_and_hidden_growth_retains_reading() -> No
         await pilot.pause()
         painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         assert "line-079" in painted, (
-            transcript._capture_follow_snapshot(),
+            transcript._update_reading_anchor_and_build_follow_snapshot(),
             transcript._active_pin,
             transcript._transcript_scroll.scroll_y,
             transcript._transcript_scroll.max_scroll_y,
@@ -71,7 +78,7 @@ async def test_terminal_growth_follows_and_hidden_growth_retains_reading() -> No
         await pilot.pause()
         before = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         transcript.set_visible(visible=False)
-        transcript.write_transcript_line(content="hidden-tail", classes="tool-result")
+        await transcript.handle(command=TranscriptNoticeDAO(content="hidden-tail", classes="tool-result"))
         await pilot.pause()
         transcript.set_visible(visible=True)
         await pilot.pause()
@@ -93,13 +100,13 @@ async def test_production_app_mounts_single_component_and_routes_parent_output(t
     )
     app = SloTUI(session=session)
     async with app.run_test() as pilot:
-        transcript = app.query_one(ChatTranscript)
+        transcript = app.query_one(ChatTranscriptComponent)
         await app._submit_or_queue_prompt(text="cutover-question")
         await pilot.pause()
         if app._in_flight_task is not None:
             await app._in_flight_task
         await pilot.pause()
-        assert len(app.query(ChatTranscript)) == 1
+        assert len(app.query(ChatTranscriptComponent)) == 1
         assert transcript.query_one(UserMessageBlock).get_copyable_text() == "cutover-question"
         assert transcript.query_one(AssistantStreamBlock).get_copyable_text() == "cutover-answer"
         await app.action_clear()
@@ -112,7 +119,7 @@ async def test_production_app_mounts_single_component_and_routes_parent_output(t
 class TranscriptTestApp(App[None]):
     """Mount the production component without the production app stylesheet."""
 
-    def __init__(self, *, transcript: ChatTranscript) -> None:
+    def __init__(self, *, transcript: ChatTranscriptComponent) -> None:
         """Borrow the component for this one Pilot lifetime."""
         super().__init__()
         self.transcript = transcript
@@ -135,7 +142,7 @@ async def test_mounted_history_tail_is_read_only_and_live_turn_is_persisted_once
         await _drain_session(session=session, text=f"question-{index:02}")
     history_file = tmp_path / "history" / session.session_id / "events.jsonl"
     before = history_file.read_bytes()
-    transcript = ChatTranscript(history_reader=session.hydrate_transcript_entries)
+    transcript = ChatTranscriptComponent(history_reader=session.hydrate_transcript_entries)
     app = TranscriptTestApp(transcript=transcript)
 
     async with app.run_test() as pilot:
@@ -149,7 +156,7 @@ async def test_mounted_history_tail_is_read_only_and_live_turn_is_persisted_once
         assert [block.get_copyable_text() for block in transcript.query(AssistantStreamBlock)] == [
             f"answer-{index:02}" for index in range(1, 16)
         ]
-        transcript.begin_run()
+        await transcript.handle(command=BeginTranscriptRunDAO())
         await transcript.echo_user(text="live-question")
         async for event in session.invoke(text="live-question"):
             await transcript.present_event(event=event)
@@ -174,7 +181,7 @@ async def test_failed_initial_history_read_leaves_mounted_surface_usable() -> No
         """Fail at the injected read boundary, without replacing projection."""
         raise OSError("history unavailable")
 
-    transcript = ChatTranscript(history_reader=unavailable_history)
+    transcript = ChatTranscriptComponent(history_reader=unavailable_history)
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test() as pilot:
         await transcript.hydrate()
@@ -205,7 +212,7 @@ async def test_initial_read_cannot_publish_after_lifecycle_reset(tmp_path: Path,
             await release.wait()
         return entries
 
-    transcript = ChatTranscript(history_reader=gated_reader)
+    transcript = ChatTranscriptComponent(history_reader=gated_reader)
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test() as pilot:
         hydration = asyncio.create_task(transcript.hydrate())
@@ -233,7 +240,11 @@ async def test_initial_read_cannot_publish_after_lifecycle_reset(tmp_path: Path,
         finally:
             release.set()
             await asyncio.gather(hydration, cleanup, return_exceptions=True)
-        await delivery
+        if operation == "close":
+            with pytest.raises(RuntimeError, match="closed"):
+                await delivery
+        else:
+            await delivery
         await pilot.pause()
         expected = [] if operation == "close" else ["after reset"]
         assert [block.get_copyable_text() for block in transcript.query(UserMessageBlock)] == expected
@@ -255,7 +266,7 @@ async def test_history_loads_30_then_30_then_5_without_writes(tmp_path: Path) ->
         """Return the canonical real-store projection."""
         return entries
 
-    transcript = ChatTranscript(history_reader=read_history)
+    transcript = ChatTranscriptComponent(history_reader=read_history)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.hydrate()
         for start in (35, 5, 0):
@@ -277,14 +288,16 @@ async def test_window_501st_mount_and_terminal_do_not_deadlock() -> None:
         """No persisted entries exist for this live-only journey."""
         return []
 
-    transcript = ChatTranscript(history_reader=empty_history)
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.present_event(
             event=AgentStreamEventDAO(kind="text_delta", delta="live", iteration=0)
         )
         live = transcript.query_one(AssistantStreamBlock)
         for index in range(510):
-            transcript.write_transcript_line(content=f"notice-{index}", classes="tool-result")
+            await transcript.handle(
+                command=TranscriptNoticeDAO(content=f"notice-{index}", classes="tool-result")
+            )
         await asyncio.wait_for(
             transcript.present_event(event=AgentStreamEventDAO(kind="text_end")), timeout=5
         )
@@ -301,13 +314,13 @@ async def test_window_501st_mount_and_terminal_do_not_deadlock() -> None:
 
 
 async def test_tree_and_steering_are_separate_from_clear_and_expansion() -> None:
-    """Clear drops ordinary/pending content but retains tree identity and expansion policy."""
+    """Reusable clear drops all transient content and expansion policy."""
 
     async def empty_history() -> list[TranscriptEntryDAO]:
         """Supply an empty read-only history."""
         return []
 
-    transcript = ChatTranscript(history_reader=empty_history)
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         tree = Static("tree")
         await transcript.mount_tree_output(widget=tree)
@@ -319,7 +332,8 @@ async def test_tree_and_steering_are_separate_from_clear_and_expansion() -> None
         transcript.toggle_expandable_details()
         await transcript.clear()
         await pilot.pause()
-        assert tree.parent is transcript.query_one("#transcript-scroll")
+        assert tree.parent is None
+        assert transcript._global_expand_all is None
         assert not list(transcript.query_one("#transcript-content").children)
         assert transcript.logical_copy_text() == ""
         await transcript.present_event(
@@ -348,7 +362,7 @@ async def test_older_read_cannot_publish_after_reset(tmp_path: Path, operation: 
                 await release.wait()
         return entries
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.hydrate()
         older = asyncio.create_task(transcript.load_older())
@@ -368,7 +382,11 @@ async def test_older_read_cannot_publish_after_reset(tmp_path: Path, operation: 
         finally:
             release.set()
             await asyncio.gather(older, repeated, cleanup, return_exceptions=True)
-        await delivery
+        if operation == "close":
+            with pytest.raises(RuntimeError, match="closed"):
+                await delivery
+        else:
+            await delivery
         await pilot.pause()
         assert not list(transcript.query(AssistantStreamBlock))
         assert not list(transcript.query("#transcript-earlier-summary"))
@@ -377,7 +395,7 @@ async def test_older_read_cannot_publish_after_reset(tmp_path: Path, operation: 
         )
 
 
-class FailingOlderTranscript(ChatTranscript):
+class FailingOlderTranscript(ChatTranscriptComponent):
     """Inject a failure at the existing public mount boundary, never the projector."""
 
     fail_older: bool = False
@@ -390,7 +408,7 @@ class FailingOlderTranscript(ChatTranscript):
         if before is not None:
             self.older_mounts += 1
             if self.fail_older and self.older_mounts == 2:
-                self.workflow_notice.write(content="concurrent notice", classes="tool-result")
+                await self.mount_transcript_line(content="concurrent notice", classes="tool-result")
                 raise RuntimeError("private failure detail")
         return await super().mount_assistant_block(title_prefix=title_prefix, before=before)
 
@@ -446,7 +464,7 @@ async def test_older_read_failure_is_retryable(tmp_path: Path, failed_read: str)
             return []
         return entries
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test():
         await transcript.hydrate()
         await transcript.load_older()
@@ -464,17 +482,19 @@ async def test_local_adapters_record_without_rendering_and_before_is_visual_only
         """No replay is needed for display admission."""
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     first = TranscriptNoticeDisplayAdapter.register(tui=transcript)
     second = TranscriptNoticeDisplayAdapter.register(tui=transcript)
     first.record(content=first.TURN_SEPARATOR, classes="turn-separator")
-    assert not first.has_prior_turn_content() and second.lines == []
+    assert not first.is_prior_turn_content_present() and second.lines == []
     first.record(content="record only", classes="tool-result")
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         assert not list(transcript.query_one("#transcript-content").children)
-        first.write(content="tail", classes="tool-result")
-        first.write(content="prefix", classes="tool-result", before=0)
-        WorkflowNoticeAdapter.register(tui=transcript).write(content="literal [text]", classes="tool-line")
+        await first.handle(event=TranscriptNoticeDAO(content="tail", classes="tool-result"))
+        await first.handle(event=TranscriptNoticeDAO(content="prefix", classes="tool-result", before=0))
+        await WorkflowNoticeAdapter.register(tui=transcript).handle(
+            event=TranscriptNoticeDAO(content="literal [text]", classes="tool-line")
+        )
         await pilot.pause()
         children = list(transcript.query_one("#transcript-content").children)
         assert [str(child.render()) for child in children] == ["prefix", "tail", "literal [text]"]
@@ -482,11 +502,14 @@ async def test_local_adapters_record_without_rendering_and_before_is_visual_only
         assert first.lines[-2:] == [("tail", "tool-result"), ("prefix", "tool-result")]
         assert second.lines == []
         await transcript.close()
-        transcript.workflow_notice.write(content="late", classes="tool-result")
+        with pytest.raises(RuntimeError, match="closed"):
+            await transcript.workflow_notice.handle(
+                event=TranscriptNoticeDAO(content="late", classes="tool-result")
+            )
         assert transcript.logical_copy_text() == ""
 
 
-class TailNoticeTranscript(ChatTranscript):
+class TailNoticeTranscript(ChatTranscriptComponent):
     """Inject a synchronous notice during the first older mount."""
 
     notice_sent: bool = False
@@ -496,7 +519,7 @@ class TailNoticeTranscript(ChatTranscript):
         block = await super().mount_user_message_block(text=text, before=before)
         if before is not None and not self.notice_sent:
             self.notice_sent = True
-            self.workflow_notice.write(content="concurrent tail", classes="tool-result")
+            await self.mount_transcript_line(content="concurrent tail", classes="tool-result")
         return block
 
 
@@ -556,14 +579,14 @@ async def test_component_css_is_scoped_without_app_styles(theme_name: str, size:
         """No history is needed to inspect mounted semantic styling."""
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     app = TranscriptTestApp(transcript=transcript)
     app.register_theme(SLO_DARK_THEME)
     app.theme = SLO_DARK_THEME.name if theme_name == "dark" else SLO_DEFAULT_THEME.name
     async with app.run_test(size=size) as pilot:
         sibling = Static("outside", classes="tool-line")
         await app.mount(sibling)
-        transcript.write_transcript_line(content="inside", classes="tool-line")
+        await transcript.handle(command=TranscriptNoticeDAO(content="inside", classes="tool-line"))
         await pilot.pause()
         inside = transcript.query_one(".tool-line")
         assert inside.styles.color != sibling.styles.color
@@ -579,7 +602,7 @@ async def test_protected_saturation_does_not_busy_loop() -> None:
         """Supply empty history for a live-only saturation case."""
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         for index in range(501):
             await transcript.present_event(
@@ -610,7 +633,7 @@ async def test_hidden_surface_retains_identity_and_accepts_output_without_reread
         reads += 1
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.hydrate()
         await transcript.present_event(event=AgentStreamEventDAO(kind="text_delta", delta="before"))
@@ -633,7 +656,7 @@ async def test_hidden_surface_retains_identity_and_accepts_output_without_reread
         assert not list(transcript.query(AssistantStreamBlock))
 
 
-class GatedProjectionTranscript(ChatTranscript):
+class GatedProjectionTranscript(ChatTranscriptComponent):
     """Hold a public mount while lifecycle admission waits behind live delivery."""
 
     def __init__(self, *, history_reader: HistoryReader) -> None:
@@ -672,7 +695,11 @@ async def test_lifecycle_waits_for_admitted_projection(operation: str) -> None:
         assert not cleanup.done()
         later = asyncio.create_task(transcript.echo_user(text="later"))
         transcript.release.set()
-        await asyncio.wait_for(asyncio.gather(echo, cleanup, later), timeout=5)
+        await asyncio.wait_for(asyncio.gather(echo, cleanup), timeout=5)
+        with pytest.raises(RuntimeError, match="closed|retired"):
+            await later
+        if operation != "close":
+            await transcript.echo_user(text="later")
         await pilot.pause()
         assert [block.get_copyable_text() for block in transcript.query(UserMessageBlock)] == (
             [] if operation == "close" else ["later"]
@@ -681,18 +708,18 @@ async def test_lifecycle_waits_for_admitted_projection(operation: str) -> None:
 
 async def test_hidden_programmatic_scroll_does_not_change_geometry() -> None:
     """Public and direct framework starts cannot move a hidden transcript."""
-    from src.tui.components.chat_transcript.component import TranscriptScroll
+    from src.tui.components.chat_transcript.component import TranscriptScrollComponent
 
     async def reader() -> list[TranscriptEntryDAO]:
         """Supply no replay for the native geometry journey."""
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         block = await transcript.mount_assistant_block()
         block.finalize(final_text="\n\n".join(f"line-{i}" for i in range(100)))
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         transcript.set_visible(visible=False)
         before = scroll.scroll_y
         scroll.scroll_to(y=0, animate=False, immediate=True)
@@ -701,7 +728,7 @@ async def test_hidden_programmatic_scroll_does_not_change_geometry() -> None:
         assert scroll.scroll_y == before
 
 
-class FailingInitialTranscript(ChatTranscript):
+class FailingInitialTranscript(ChatTranscriptComponent):
     """Fail a public replay mount once, after a visible prefix was committed."""
 
     mounts: int = 0
@@ -742,20 +769,20 @@ async def test_partial_initial_hydration_does_not_duplicate_prefix_on_retry(tmp_
 @pytest.mark.parametrize("keys", [("pageup", "end"), ("end", "pageup")])
 async def test_native_supersession_and_final_growth(keys: tuple[str, str]) -> None:
     """The last native input owns settlement even without a rescue output delta."""
-    from src.tui.components.chat_transcript.component import TranscriptScroll
+    from src.tui.components.chat_transcript.component import TranscriptScrollComponent
 
     async def reader() -> list[TranscriptEntryDAO]:
         """Supply an empty replay boundary."""
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test() as pilot:
         block = await transcript.mount_assistant_block()
         block.append_text(delta="\n\n".join(f"READ-{i:03}" for i in range(100)))
         block._flush_dirty_regions()
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.focus()
         await pilot.press(*keys)
         block.finalize(final_text=block.get_copyable_text() + "\n\nEND-MARKER")
@@ -768,13 +795,13 @@ async def test_native_supersession_and_final_growth(keys: tuple[str, str]) -> No
 
 async def test_horizontal_first_input_preserves_programmatic_reading_viewport() -> None:
     """An x input reconciles a public programmatic y move before upper growth."""
-    from src.tui.components.chat_transcript.component import TranscriptScroll
+    from src.tui.components.chat_transcript.component import TranscriptScrollComponent
 
     async def reader() -> list[TranscriptEntryDAO]:
         """Supply an empty replay boundary."""
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test() as pilot:
         upper = await transcript.mount_assistant_block()
@@ -784,7 +811,7 @@ async def test_horizontal_first_input_preserves_programmatic_reading_viewport() 
         wide.styles.height = 80
         await transcript.mount_tree_output(widget=wide)
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.scroll_to(y=30, animate=False, immediate=True)
         await pilot.pause()
@@ -821,7 +848,7 @@ async def test_clear_backpressures_real_subscriber_and_joins_repeated_cancellati
         return entries
 
     session = _build_session_with_history(workdir=tmp_path, history_root=tmp_path / "session", responses=[])
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
 
     async def subscriber(event: AgentStreamEventDAO) -> None:
         """Use the same awaited component boundary as the production subscriber."""
@@ -859,19 +886,19 @@ async def test_clear_backpressures_real_subscriber_and_joins_repeated_cancellati
 
 async def test_ancestor_hidden_rejects_native_admission_without_changing_intent() -> None:
     """An ancestor-hidden surface cannot acquire a navigation operation or read geometry."""
-    from src.tui.components.chat_transcript.component import TranscriptScroll
+    from src.tui.components.chat_transcript.component import TranscriptScrollComponent
 
     async def reader() -> list[TranscriptEntryDAO]:
         """Supply an empty replay boundary."""
         return []
 
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test() as pilot:
         block = await transcript.mount_assistant_block()
         block.finalize(final_text="\n\n".join(f"row-{i}" for i in range(80)))
         await pilot.pause()
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         revision = transcript._viewport_revision
         app.screen.display = False
         try:
@@ -905,7 +932,7 @@ async def test_notice_after_clear_snapshot_survives_removal() -> None:
         return []
 
     entered, release = asyncio.Event(), asyncio.Event()
-    transcript = ChatTranscript(history_reader=reader)
+    transcript = ChatTranscriptComponent(history_reader=reader)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.query_one("#transcript-content").mount(
             RemovalGatedUser(entered=entered, release=release)
@@ -913,10 +940,15 @@ async def test_notice_after_clear_snapshot_survives_removal() -> None:
         cleanup = asyncio.create_task(transcript.clear())
         try:
             await asyncio.wait_for(entered.wait(), timeout=5)
-            transcript.workflow_notice.write(content="surviving notice", classes="tool-result")
+            notice = asyncio.create_task(
+                transcript.workflow_notice.handle(
+                    event=TranscriptNoticeDAO(content="surviving notice", classes="tool-result")
+                )
+            )
         finally:
             release.set()
         await asyncio.wait_for(cleanup, timeout=5)
+        await notice
         await pilot.pause()
         assert transcript.logical_copy_text() == "surviving notice"
         assert [str(child.render()) for child in transcript.query_one("#transcript-content").children] == [

@@ -6,7 +6,8 @@ import pytest
 from textual.widgets import Static
 from textual.events import Key
 
-from src.tui.components.chat_transcript.component import TranscriptScroll
+from src.tui.components.chat_transcript.component import TranscriptScrollComponent
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from tests.tui.test_chat_transcript import TranscriptTestApp
 from tests.tui.test_chat_transcript_navigation import OrderedTranscript, named_row, painted_rows
 
@@ -22,8 +23,10 @@ class PaintObservedApp(TranscriptTestApp):
         self.interrupt_frame: list[str] | None = None
 
     def on_key(self, event: Key) -> None:
-        """Capture the painted reading row at actual input dispatch, not before queueing."""
+        """Paint the current animator offset at input dispatch before saving its reading row."""
         if self.observe and event.key == "right":
+            # The scroll notification can still be queued behind this input event.
+            self.screen._refresh_layout(scroll=True)
             self.interrupt_frame = painted_rows(app=self)
 
     def post_display_hook(self) -> None:
@@ -48,7 +51,7 @@ async def test_unequal_axes_retire_with_cover_before_or_after_native(cover_first
     app = TranscriptTestApp(transcript=transcript)
     async with app.run_test() as pilot:
         await mount_wide_rows(transcript=transcript)
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.focus()
         await pilot.pause()
@@ -82,7 +85,8 @@ async def test_unequal_axes_retire_with_cover_before_or_after_native(cover_first
         assert transcript.calls
         if cover_first:
             transcript.release_at(duplicate=True)
-            await pilot.pause()
+            # Observe the callback synchronously; Pilot.pause may consume the
+            # remaining real animation and invalidate the intermediate oracle.
             assert transcript._native_navigation is operation
             assert target < scroll.scroll_y < 100
         await pilot.wait_for_scheduled_animations()
@@ -96,7 +100,7 @@ async def test_unequal_axes_retire_with_cover_before_or_after_native(cover_first
         await pilot.pause()
         assert transcript._native_navigation is None
         assert named_row(app=app, literal=literal) == row
-        transcript.write_transcript_line(content="LATER-GROWTH", classes="tool-result")
+        await transcript.handle(command=TranscriptNoticeDAO(content="LATER-GROWTH", classes="tool-result"))
         await pilot.pause()
         assert named_row(app=app, literal=literal) == row
         assert scroll.scroll_x == 1
@@ -108,7 +112,7 @@ async def test_every_compositor_frame_excludes_interrupted_public_y_endpoint() -
     app = PaintObservedApp(transcript=transcript)
     async with app.run_test() as pilot:
         await mount_wide_rows(transcript=transcript)
-        scroll = transcript.query_one(TranscriptScroll)
+        scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
         scroll.focus()
         await pilot.pause()
@@ -133,7 +137,7 @@ async def test_every_compositor_frame_excludes_interrupted_public_y_endpoint() -
         settled = painted_rows(app=app)
         literal = next(line.split()[0] for line in settled if "PRECISE-" in line)
         row = named_row(app=app, literal=literal)
-        transcript.write_transcript_line(content="LATER-GROWTH", classes="tool-result")
+        await transcript.handle(command=TranscriptNoticeDAO(content="LATER-GROWTH", classes="tool-result"))
         await pilot.pause()
         app.observe = False
         assert len(app.frames) >= 3

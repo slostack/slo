@@ -7,7 +7,7 @@ from textual.document._document import Location
 class PromptDocument(Document):
     """Keep CR and Unicode separators as text, not implicit editor line breaks.
 
-    PromptInput uses this document for normal TextArea edits, including undo and
+    PromptInputComponent uses this document for normal TextArea edits, including undo and
     redo. Only LF is structural, matching the completion controller's locations;
     no token encoding or shell interpretation belongs at this boundary.
     """

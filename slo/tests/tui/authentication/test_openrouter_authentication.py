@@ -214,7 +214,7 @@ async def test_mounted_post_save_cancellation_paints_saved_state(tmp_path: Path)
     assert service.result.replacement_saved
 
 
-def test_auth_dismissal_without_landing_model_preserves_active_route() -> None:
+async def test_auth_dismissal_without_landing_model_preserves_active_route() -> None:
     """A newly authenticated provider without a default cannot switch to None."""
     from src.tui.app import SloTUI
 
@@ -222,7 +222,7 @@ def test_auth_dismissal_without_landing_model_preserves_active_route() -> None:
     app._input = None
     app._session = Mock(active_model_name="gpt-6-astra")
     with patch("src.tui.app.default_model_for_provider", return_value=None):
-        SloTUI._on_auth_dismissed(
+        await SloTUI._on_auth_dismissed(
             app,
             value=CredentialDAO(
                 provider=ProviderName.OPENROUTER,

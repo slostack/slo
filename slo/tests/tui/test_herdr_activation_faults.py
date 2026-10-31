@@ -1,7 +1,7 @@
 """Mounted fault composition; errno mechanics remain in the T2 adapter matrix."""
 
 import asyncio
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

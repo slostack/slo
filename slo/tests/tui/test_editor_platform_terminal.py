@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.editor_launcher import EditorLauncher, SessionEditorTerminal
 from tests.tui._scroll_settle import pump_until
 from tests.tui.test_code_command import EditorLookup, transcript_lines
@@ -52,7 +52,7 @@ async def test_code_active_tmux_captures_owner_and_submits_literal_command(
         ),
     )
     async with app.run_test() as pilot:
-        app.query_one(PromptInput).load_text("/code " + shlex.quote(target.name))
+        app.query_one(PromptInputComponent).load_text("/code " + shlex.quote(target.name))
         await pilot.press("enter")
         await pump_until(
             pilot=pilot,
@@ -287,7 +287,7 @@ async def test_code_iterm_mounted_submission_uses_supported_existing_owner(tmp_p
         ),
     )
     async with app.run_test() as pilot:
-        app.query_one(PromptInput).load_text("/code " + shlex.quote(target.name))
+        app.query_one(PromptInputComponent).load_text("/code " + shlex.quote(target.name))
         await pilot.press("enter")
         await pump_until(
             pilot=pilot,

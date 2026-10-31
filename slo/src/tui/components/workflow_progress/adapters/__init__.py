@@ -1,1 +1,1 @@
-"""Observation-lifetime adapters owned by the WorkflowProgress component."""
+"""Observation-lifetime adapters owned by the WorkflowProgressComponent component."""

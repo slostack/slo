@@ -565,12 +565,14 @@ class DetachedWorkflowAppService:
         handles = await self._read_owned_handles()
         if self._observation_invalid(revision=visibility_revision):
             return None
-        order = await self._gather_detached_groups(
+        detached_order = await self._gather_detached_groups(
             groups=groups, order=order, admission=handles, visibility_revision=visibility_revision
         )
-        if order is None:
+        if detached_order is None:
             return None
-        order = self._gather_attached_group(groups=groups, order=order, attached=attached, rows=attached_rows)
+        order = self._gather_attached_group(
+            groups=groups, order=detached_order, attached=attached, rows=attached_rows
+        )
         return _ObservationCandidateDAO(
             visibility_revision=visibility_revision,
             attached=attached,
@@ -709,7 +711,7 @@ class DetachedWorkflowAppService:
         hidden_parents = {
             group.orchestrator_session_id
             for group in self._list_groups.values()
-            if group.key.kind == "detached" and group.hidden
+            if group.key.kind == "detached" and group.hidden and group.orchestrator_session_id is not None
         }
         visible_parents = {
             group.orchestrator_session_id
@@ -1104,7 +1106,7 @@ class DetachedWorkflowAppService:
             ValueError: When the group is unavailable or untrusted.
         """
         row = self._rows.get(key)
-        handle = None if row is None else self._handles.get(row.workflow_id)
+        handle = None if row is None or row.workflow_id is None else self._handles.get(row.workflow_id)
         if handle is None or row is None:
             return None
         revision: int = self._visibility_revision

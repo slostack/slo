@@ -3,9 +3,10 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import ExitStack, asynccontextmanager
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
 from unittest.mock import patch
 
 import pytest
@@ -387,16 +388,20 @@ async def test_durable_advance_then_shutdown(tmp_path: Path, throwing_notice: bo
                 entered.set()
                 await release.wait()
 
-        original_write = app._chat_transcript.write_transcript_line
+        original_write = app._chat_transcript.handle
 
-        def write(*, content: str, classes: str) -> None:
+        async def write(*, command: TranscriptCommand) -> None:
             """Fault only the diagnostic, not the actual lifecycle service."""
+            if not isinstance(command, TranscriptNoticeDAO):
+                await original_write(command=command)
+                return
+            content, classes = command.content, command.classes
             if (
                 throwing_notice
                 and content == "Inbox delivery deferred during shutdown; claimed item retained."
             ):
                 raise RuntimeError("private diagnostic sentinel")
-            original_write(content=content, classes=classes)
+            await original_write(command=command)
             if cutoff == "before_chat_registration" and content.startswith("[scheduled update]"):
                 app._app_closing = True
                 entered.set()
@@ -410,7 +415,7 @@ async def test_durable_advance_then_shutdown(tmp_path: Path, throwing_notice: bo
             patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
             patch.object(app, "_queue_prompt", wraps=app._queue_prompt) as queue,
             patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
-            patch.object(app._chat_transcript, "write_transcript_line", side_effect=write),
+            patch.object(app._chat_transcript, "handle", side_effect=write),
             patch.object(store, "ack", wraps=store.ack) as ack,
             patch.object(session, "invoke", wraps=session.invoke) as invoke,
         ):

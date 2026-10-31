@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from pathlib import Path
 from typing import Optional
 
@@ -54,7 +55,7 @@ async def _await_follow_pin(*, pilot: Pilot[None], app: SloTUI) -> None:
     back out of view. Reaching the bottom once is not enough, because later pins
     may still be queued, so the bottom must hold across several idle cycles.
     """
-    scroll = app.query_one(ChatTranscript)._transcript_scroll
+    scroll = app.query_one(ChatTranscriptComponent)._transcript_scroll
     assert scroll is not None
     settled: int = 0
     last_max: float = -1.0
@@ -124,20 +125,20 @@ class TestPilotVisibleSelection:
         async with app.run_test(size=(100, 30)) as pilot:
             if kind == "answer":
                 answer_block: AssistantStreamBlock = await app.query_one(
-                    ChatTranscript
+                    ChatTranscriptComponent
                 ).mount_assistant_block()
                 answer_block.finalize(final_text="# alpha bravo charlie")
                 body: Widget = answer_block._answer_body
             elif kind == "thinking":
                 thinking_block: AssistantStreamThinkingBlock = await app.query_one(
-                    ChatTranscript
+                    ChatTranscriptComponent
                 ).mount_thinking_block()
                 thinking_block.set_thinking(content="# alpha bravo charlie")
                 body = thinking_block._body
             else:
-                user_block: UserMessageBlock = await app.query_one(ChatTranscript).mount_user_message_block(
-                    text="# alpha bravo charlie"
-                )
+                user_block: UserMessageBlock = await app.query_one(
+                    ChatTranscriptComponent
+                ).mount_user_message_block(text="# alpha bravo charlie")
                 body = user_block._body
             await pilot.pause(delay=0.1)
             start = _location_for_offset(app=app, body=body, target=Offset(x=6, y=0))
@@ -163,32 +164,32 @@ class TestPilotVisibleSelection:
             fence = SelectionFixtureFence(app=app, monkeypatch=monkeypatch)
             app.theme = theme_name
             for index in range(20):
-                app.query_one(ChatTranscript).write_transcript_line(
-                    content=f"filler {index}", classes="tool-result"
+                await app.query_one(ChatTranscriptComponent).handle(
+                    command=TranscriptNoticeDAO(content=f"filler {index}", classes="tool-result")
                 )
             if kind == "answer":
                 answer_block: AssistantStreamBlock = await app.query_one(
-                    ChatTranscript
+                    ChatTranscriptComponent
                 ).mount_assistant_block()
                 answer_block.finalize(final_text="# alpha bravo charlie")
                 block: Widget = answer_block
                 body: Widget = answer_block._answer_body
             elif kind == "thinking":
                 thinking_block: AssistantStreamThinkingBlock = await app.query_one(
-                    ChatTranscript
+                    ChatTranscriptComponent
                 ).mount_thinking_block()
                 thinking_block.set_thinking(content="# alpha bravo charlie")
                 block = thinking_block
                 body = thinking_block._body
             else:
-                user_block: UserMessageBlock = await app.query_one(ChatTranscript).mount_user_message_block(
-                    text="# alpha bravo charlie"
-                )
+                user_block: UserMessageBlock = await app.query_one(
+                    ChatTranscriptComponent
+                ).mount_user_message_block(text="# alpha bravo charlie")
                 block = user_block
                 body = user_block._body
             for index in range(20, 40):
-                app.query_one(ChatTranscript).write_transcript_line(
-                    content=f"filler {index}", classes="tool-result"
+                await app.query_one(ChatTranscriptComponent).handle(
+                    command=TranscriptNoticeDAO(content=f"filler {index}", classes="tool-result")
                 )
             await fence.fixture_completed()
             block.scroll_visible(top=kind == "user", animate=False)
@@ -203,8 +204,8 @@ class TestPilotVisibleSelection:
             assert app._clipboard == "bravo"
             background = _selection_background(app=app)
             assert app.screen.get_style_at(x=start[0], y=start[1]).bgcolor == background
-            assert app.query_one(ChatTranscript)._transcript_scroll is not None
-            before = app.query_one(ChatTranscript)._transcript_scroll.scroll_y
-            app.query_one(ChatTranscript)._transcript_scroll.scroll_to(y=before - 2, animate=False)
+            assert app.query_one(ChatTranscriptComponent)._transcript_scroll is not None
+            before = app.query_one(ChatTranscriptComponent)._transcript_scroll.scroll_y
+            app.query_one(ChatTranscriptComponent)._transcript_scroll.scroll_to(y=before - 2, animate=False)
             await pilot.pause(delay=0.2)
             assert app.screen.get_selected_text() == "bravo"

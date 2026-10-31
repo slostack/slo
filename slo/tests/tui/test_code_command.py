@@ -9,7 +9,7 @@ import pytest
 
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from tests.tui.test_path_suggestions_app import build_path_session
 from tests.tui._scroll_settle import pump_until
 
@@ -68,21 +68,21 @@ async def test_code_tab_discovers_argument_then_accepts_and_submits_file(tmp_pat
     )
 
     async with app.run_test() as pilot:
-        prompt: PromptInput = app.query_one(PromptInput)
+        prompt: PromptInputComponent = app.query_one(PromptInputComponent)
         entered: str = "/code " + prefix
         for key in entered:
             await pilot.press(key)
         await pilot.pause()
-        assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+        assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
 
         await pilot.press("tab")
         await pump_until(
             pilot=pilot,
-            predicate=lambda: app.query_one(PromptInput)._slash_suggestion_state.visible,
+            predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
         )
         assert prompt.text == entered
-        assert app.query_one(PromptInput)._slash_suggestion_state.kind == "path"
-        assert [row.label for row in app.query_one(PromptInput)._slash_suggestion_state.rows] == (
+        assert app.query_one(PromptInputComponent)._slash_suggestion_state.kind == "path"
+        assert [row.label for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows] == (
             ["assets/", "README.md"] if not prefix else ["README.md"]
         )
         if not prefix:
@@ -91,7 +91,7 @@ async def test_code_tab_discovers_argument_then_accepts_and_submits_file(tmp_pat
         await pilot.pause()
         assert prompt.text == "/code README.md"
         assert prompt.cursor_location == (0, len(prompt.text))
-        assert not app.query_one(PromptInput)._slash_suggestion_state.visible
+        assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
 
         await pilot.press("enter")
         await pump_until(pilot=pilot, predicate=terminal.finished.is_set)
@@ -118,7 +118,7 @@ async def test_code_keyboard_submits_literal_existing_directory(tmp_path: Path, 
         editor_launcher=EditorLauncher(terminal=terminal, executable_lookup=EditorLookup()),
     )
     async with app.run_test() as pilot:
-        app.query_one(PromptInput).load_text("/code " + shlex.quote(name))
+        app.query_one(PromptInputComponent).load_text("/code " + shlex.quote(name))
         await pilot.press("enter")
         await pump_until(
             pilot=pilot,
@@ -156,7 +156,7 @@ async def test_code_keyboard_resolves_literal_file_without_model(tmp_path: Path,
         editor_launcher=EditorLauncher(terminal=terminal, executable_lookup=EditorLookup()),
     )
     async with app.run_test() as pilot:
-        prompt = app.query_one(PromptInput)
+        prompt = app.query_one(PromptInputComponent)
         prompt.load_text("/code " + shlex.quote(name))
         await pilot.press("enter")
         await pump_until(pilot=pilot, predicate=terminal.finished.is_set)
@@ -195,14 +195,14 @@ async def test_code_rejects_invalid_request_without_launch(
         ),
     )
     async with app.run_test() as pilot:
-        app.query_one(PromptInput).load_text("/code " + argument)
+        app.query_one(PromptInputComponent).load_text("/code " + argument)
         await pilot.press("enter")
         await pump_until(
             pilot=pilot, predicate=lambda: any(message in text for text, _ in transcript_lines(app=app))
         )
         assert any(message in text for text, _ in transcript_lines(app=app))
         assert terminal.calls == []
-        app.query_one(PromptInput).load_text("/cwd")
+        app.query_one(PromptInputComponent).load_text("/cwd")
         await pilot.press("enter")
         await pilot.pause()
         assert any(str(tmp_path) in text for text, _ in transcript_lines(app=app))

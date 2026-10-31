@@ -1,6 +1,6 @@
-"""WorkflowProgress — the one composed owner of workflow-progress presentation (feature 96.f.1).
+"""WorkflowProgressComponent — the one composed owner of workflow-progress presentation (feature 96.f.1).
 
-The app composes one ``WorkflowProgress`` below the editor. It contains the
+The app composes one ``WorkflowProgressComponent`` below the editor. It contains the
 existing ``SubAgentFleetPanel``, owns one observation-lifetime
 ``WorkflowProgressUpdatesAdapter`` per ``bind_observation``, and carries the
 list apply/reset mechanics that used to live on ``SloTUI``. The app keeps the
@@ -22,22 +22,23 @@ from textual.containers import Vertical
 from src.tui.components.workflow_progress.adapters.workflow_progress import (
     WorkflowProgressUpdatesAdapter,
 )
+from src.tui.components.workflow_progress.commands import WorkflowProgressCommand, PresentSessionsDAO
+from src.tui.components.workflow_progress.events import ConfirmAbortDAO
 from src.tui.components.workflow_progress.host import WorkflowProgressHost
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
-from src.tui.workflows.dao import ChildAbortTargetDAO, WorkflowSessionSnapshotDAO
+from src.tui.workflows.dao import WorkflowSessionSnapshotDAO
 from src.tui.workflows.progress_coordinator import WorkflowProgressSink
 
-__all__ = ["WorkflowProgress"]
+__all__ = ["WorkflowProgressComponent"]
 
 
-class WorkflowProgress(Vertical):
-    """Compose the fleet panel and own its observation-lifetime adapter.
+class WorkflowProgressComponent(Vertical):
+    """Show running agents and their workflow progress.
 
-    Invariants: at most one sink is bound or retiring at a time; the binding is
-    released only after a successful, joined retirement; a failed retirement
-    blocks binding permanently; a closed (unmounted) widget never binds again.
-    The widget stays mounted across ``/new``; adapter disposal is irreversible.
-    """
+    Connect one progress listener at a time and clean it up before connecting
+    another. If cleanup fails, finish that cleanup before accepting a new
+    listener. Stay mounted when the user starts a new session, but do not
+    accept new listeners after the component is closed."""
 
     DEFAULT_CSS: ClassVar[str] = (
         files("src.tui.components.workflow_progress").joinpath("css.tcss").read_text(encoding="utf-8")
@@ -47,107 +48,154 @@ class WorkflowProgress(Vertical):
     """Textual's default CSS scoping would prefix every rule with the component
     type, breaking the deliberate ``Screen``-level breakpoint selectors."""
 
-    def __init__(self, *, host: WorkflowProgressHost) -> None:
-        """Build the wrapper and its panel without starting any observation work.
-
-        Args:
-            host (WorkflowProgressHost): App-implemented global UI and control bridge.
-        """
+    def __init__(self, *, host: WorkflowProgressHost, panel: Optional[SubAgentFleetPanel] = None) -> None:
+        """Create the session panel without starting any progress listeners."""
         super().__init__()
         self._host: WorkflowProgressHost = host
-        self._fleet_panel: SubAgentFleetPanel = SubAgentFleetPanel()
+        self._fleet_panel: SubAgentFleetPanel = panel if panel is not None else SubAgentFleetPanel()
         self._bound_sink: Optional[WorkflowProgressUpdatesAdapter] = None
         self._retiring: bool = False
         self._retirement_task: Optional[asyncio.Task[None]] = None
         self._retirement_failure: Optional[BaseException] = None
-        self._closed: bool = False
+        self._delivery_closed: bool = False
+        self._delivery_lock = asyncio.Lock()
+        self._binding_version = 0
+        self._resetting = 0
+        self._close_task: Optional[asyncio.Task[None]] = None
         self.display = False
 
+    def _ensure_workflow_progress_open(self) -> None:
+        """Reject closed component delivery before inspecting native mount or loop state."""
+        if self._delivery_closed:
+            raise RuntimeError("Workflow progress component is closed")
+
+    def _ensure_workflow_progress_mounted(self) -> None:
+        """Require native mounting before accessing the owning application."""
+        if not self.is_mounted:
+            raise RuntimeError("Workflow progress delivery requires the mounted UI loop")
+
+    def _ensure_workflow_progress_ui_loop(self) -> None:
+        """Raise RuntimeError unless the caller uses the mounted owner's event loop."""
+        if asyncio.get_running_loop() is not self.app._loop:
+            raise RuntimeError("Workflow progress delivery requires the mounted UI loop")
+
+    def _get_binding_version(self) -> int:
+        """Return the row-presentation lifetime captured before waiting for delivery."""
+        return self._binding_version
+
+    def _update_binding_version(self) -> None:
+        """Retire queued row commands before reset, close or sink replacement."""
+        self._binding_version += 1
+
+    def _is_binding_version(self, *, expected_version: int) -> bool:
+        """Compare a saved binding lifetime without changing or retiring its sink."""
+        return expected_version == self._binding_version
+
+    async def handle(self, *, command: WorkflowProgressCommand) -> None:
+        """Apply a supported progress command on the UI loop and report errors to the caller."""
+        self._ensure_workflow_progress_open()
+        self._ensure_workflow_progress_mounted()
+        self._ensure_workflow_progress_ui_loop()
+        if isinstance(command, ConfirmAbortDAO):
+            if self._bound_sink is not None and not self._retiring and not self._resetting:
+                await self._bound_sink.handle(event=command)
+            return
+        binding_version = self._get_binding_version()
+        async with self._delivery_lock:
+            self._ensure_workflow_progress_open()
+            self._ensure_workflow_progress_mounted()
+            self._ensure_workflow_progress_ui_loop()
+            if not self._is_binding_version(expected_version=binding_version) or self._resetting:
+                raise RuntimeError("Workflow command belongs to a retired presentation")
+            if not isinstance(command, PresentSessionsDAO):
+                raise TypeError(f"Unsupported workflow command: {type(command).__name__}")
+            await self._present_session_rows(sink=command.sink, snapshot=command.snapshot)
+
+    async def reset(self) -> None:
+        """Clear displayed progress while keeping the same progress listener connected."""
+        self._ensure_workflow_progress_open()
+        self._ensure_workflow_progress_mounted()
+        self._ensure_workflow_progress_ui_loop()
+        self._update_binding_version()
+        self._resetting += 1
+        task = asyncio.create_task(self._reset_bound_presentation())
+        try:
+            await WorkflowProgressUpdatesAdapter._join_retirement(task=task)
+        finally:
+            self._resetting -= 1
+
+    async def _reset_bound_presentation(self) -> None:
+        """Wait for adapter updates outside the component lock, then clear the session rows."""
+        if self._bound_sink is not None:
+            await self._bound_sink.reset()
+        async with self._delivery_lock:
+            await self._clear_session_rows()
+
+    async def close(self) -> None:
+        """Finish display cleanup without closing the app or its services. Allow failed cleanup to be retried."""
+        self._delivery_closed = True
+        self._update_binding_version()
+        if self._bound_sink is not None:
+            self._bound_sink.begin_close()
+        if self._close_task is None or (self._close_task.done() and self._close_task.exception() is not None):
+            self._close_task = asyncio.create_task(self._close_presentation())
+        await WorkflowProgressUpdatesAdapter._join_retirement(task=self._close_task)
+
+    async def _close_presentation(self) -> None:
+        """Stop the connected listener before finishing session-row cleanup."""
+        if self._bound_sink is not None:
+            await self.retire_observation(sink=self._bound_sink)
+        else:
+            # Without a binding, the previous row cleanup has already finished.
+            async with self._delivery_lock:
+                pass
+
     def compose(self) -> ComposeResult:
-        """Yield the single composed fleet panel."""
+        """Add the session panel to this component."""
         yield self._fleet_panel
 
     def bind_observation(self) -> WorkflowProgressSink:
-        """Bind one fresh observation-lifetime adapter to this component.
+        """Create and return one new progress adapter without reading any data.
 
-        Synchronous; starts no reads. The coordinator receives the returned sink
-        directly, so it cannot forward old work into a successor.
-
-        Returns:
-            WorkflowProgressSink: The fresh adapter for this observation lifetime.
-
-        Raises:
-            RuntimeError: While a sink is bound or retiring, after a failed
-                retirement, or after the widget is closed.
+        Reject the request if an adapter is still connected or being cleaned up,
+        previous cleanup failed, or this component is closed. Give the coordinator
+        the new adapter directly so old updates cannot reach a replacement.
         """
-        if self._closed or self._retirement_failure is not None:
+        if self._delivery_closed:
+            raise RuntimeError("Workflow progress component is closed")
+        if self._retirement_failure is not None or self._resetting:
             raise RuntimeError("Workflow observation binding unavailable")
         if self._bound_sink is not None:
             raise RuntimeError("Workflow observation already bound")
-        sink: WorkflowProgressUpdatesAdapter = WorkflowProgressUpdatesAdapter(host=self._host, presenter=self)
+        sink: WorkflowProgressUpdatesAdapter = WorkflowProgressUpdatesAdapter.register(
+            host=self._host, presenter=self
+        )
         self._bound_sink = sink
         return sink
 
     async def retire_observation(self, *, sink: WorkflowProgressSink) -> None:
-        """Retire the exact bound sink, joining any retirement already in progress.
+        """Disconnect the specified adapter and wait for its cleanup.
 
-        WHAT: A stale, foreign or already retired sink is a no-op and never
-            resets current rows. The first caller for the bound sink disposes it
-            synchronously, then starts the one tracked presentation reset;
-            concurrent callers join the same task. The binding is released only
-            on success; a failed reset keeps the binding reserved and is
-            re-raised to later callers.
-        WHO: ``SloTUI._dispose_workflow_observation``, after the captured
-            coordinator and service close attempts.
-        WHEN: Once per owner replacement or teardown; safe to repeat.
-
-        Args:
-            sink (WorkflowProgressSink): The exact sink ``bind_observation`` returned.
-
-        Raises:
-            BaseException: The recorded failure of a previous retirement attempt.
+        Ignore adapters that are not the current binding. Concurrent callers wait
+        for the same cleanup task. Release the binding only after cleanup succeeds;
+        on failure, keep it reserved so a later call can retry safely.
         """
         if sink is not self._bound_sink:
             return
-        if self._retirement_failure is not None:
-            raise self._retirement_failure
-        if self._retirement_task is None:
+        if self._retirement_task is None or (
+            self._retirement_task.done() and self._retirement_task.exception() is not None
+        ):
             self._retiring = True
-            self._bound_sink.dispose()
+            self._bound_sink.begin_close()
+            self._update_binding_version()
             self._retirement_task = asyncio.create_task(self._reset_presentation(sink=self._bound_sink))
-        task: asyncio.Task[None] = self._retirement_task
-        cancelled: bool = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-            except Exception:
-                break
-        if cancelled:
-            if not task.cancelled():
-                task.exception()
-            raise asyncio.CancelledError()
-        task.result()
-
-    def confirm_abort(self, *, target: ChildAbortTargetDAO) -> None:
-        """Ask the bound sink to confirm the exact target the progress view displayed.
-
-        No-op while unbound or retiring, so a request arriving during teardown
-        never reaches a disposed adapter.
-
-        Args:
-            target (ChildAbortTargetDAO): Identity captured from the displayed snapshot.
-        """
-        if self._bound_sink is None or self._retiring:
-            return
-        self._bound_sink.confirm_abort(target=target)
+        await WorkflowProgressUpdatesAdapter._join_retirement(task=self._retirement_task)
 
     def focus_sessions(self) -> None:
         """Focus the session list when it has rows; safe whether or not a sink is bound."""
         self._fleet_panel.focus_sessions()
 
-    def sessions_hold_focus(self) -> bool:
+    def is_session_list_focused(self) -> bool:
         """Return whether the session list (or one of its rows) holds focus.
 
         Returns:
@@ -155,7 +203,7 @@ class WorkflowProgress(Vertical):
         """
         return self._fleet_panel.has_focus or self._fleet_panel.has_focus_within
 
-    def has_visible_sessions(self) -> bool:
+    def is_session_list_visible(self) -> bool:
         """Return whether the panel is displaying session rows.
 
         Returns:
@@ -163,32 +211,23 @@ class WorkflowProgress(Vertical):
         """
         return bool(self._fleet_panel.display)
 
-    async def present_session_rows(
+    async def _present_session_rows(
         self, *, sink: WorkflowProgressSink, snapshot: WorkflowSessionSnapshotDAO
     ) -> None:
-        """Paint list rows for the exact bound sink, joining the shielded apply.
+        """Display rows only for the current, open adapter.
 
-        WHAT: Paints only while ``sink`` is still the bound, unretired sink and
-            the widget is open; the identity is rechecked after the awaited
-            apply so a retirement that started meanwhile owns visibility and
-            focus. An emptied list that held focus returns focus to the prompt
-            through the host, on the base screen only.
-        WHO: The bound adapter's ``apply_sessions`` for every coordinator refresh.
-        WHEN: Serialized through the panel's own shielded apply.
-
-        Args:
-            sink (WorkflowProgressSink): Adapter asking to paint.
-            snapshot (WorkflowSessionSnapshotDAO): Ordered rows to display.
+        Recheck the binding after waiting for the panel update. If the list becomes
+        empty while it has focus on the base screen, return focus to the prompt.
         """
-        if sink is not self._bound_sink or self._retiring or self._closed:
+        if sink is not self._bound_sink or self._retiring or self._delivery_closed:
             return
-        list_focused: bool = self.sessions_hold_focus()
+        list_focused: bool = self.is_session_list_focused()
         try:
             await self._fleet_panel.apply_snapshot(snapshot=snapshot)
         except BaseException:
-            # Includes cancellation of this waiter: the panel's shielded apply
-            # continues independently, so reconcile the wrapper's display with
-            # the panel's actual display before the exception escapes.
+            # The panel update continues even if this caller is cancelled.
+            # Match the wrapper’s visibility to the panel’s actual visibility
+            # before passing the error back to the caller.
             if sink is self._bound_sink and not self._retiring:
                 self.display = self._fleet_panel.display
             raise
@@ -199,46 +238,36 @@ class WorkflowProgress(Vertical):
             self._host.return_prompt_focus()
 
     async def _reset_presentation(self, *, sink: WorkflowProgressSink) -> None:
-        """Reset the panel for the retiring sink, releasing the binding last.
+        """Clear the retiring adapter’s rows before allowing a new adapter to bind.
 
-        Joins any unfinished shielded apply through the panel's reset, hides the
-        wrapper, returns focus when the emptied list held it, and only then
-        frees the binding for a successor. A failed reset keeps the binding
-        reserved and records the failure against any later bind or retire.
-
-        Args:
-            sink (WorkflowProgressSink): The disposed sink this reset belongs to.
-
-        Raises:
-            BaseException: Whatever the panel's reset raised.
+        Wait for pending panel updates, hide the wrapper, and return focus if the
+        list had it. Keep the binding reserved if cleanup fails so it can be retried.
         """
-        list_focused: bool = self.sessions_hold_focus()
         try:
-            await self._fleet_panel.reset()
+            await sink.close()
+            async with self._delivery_lock:
+                await self._clear_session_rows()
         except BaseException as error:
             self._retirement_failure = error
-            self.display = self._fleet_panel.display
             raise
-        self.display = False
-        if list_focused:
-            self._host.return_prompt_focus()
         self._bound_sink = None
         self._retiring = False
+        self._retirement_failure = None
         self._retirement_task = None
 
-    async def on_unmount(self) -> None:
-        """Close the component: join any retirement, or retire the bound sink as a cutoff.
+    async def _clear_session_rows(self) -> None:
+        """Wait for accepted row updates, empty the list, and return focus only if the list had it."""
+        list_focused = self.is_session_list_focused()
+        try:
+            await self._fleet_panel.reset()
+        finally:
+            self.display = self._fleet_panel.display
+        if list_focused:
+            self._host.return_prompt_focus()
 
-        WHAT: Sets the closed flag immediately so no paint or bind can follow,
-            then joins an existing retirement or starts one for a still-bound
-            sink. It never closes services or cancels execution; the app's own
-            observation close remains the owner teardown.
-        WHO: Textual when the widget leaves the DOM, after the app's observation
-            close in the normal unmount order.
-        WHEN: Once; a closed widget never binds again.
+    async def on_unmount(self) -> None:
+        """Close this component and wait for any pending listener cleanup.
+
+        Do not close services or cancel agents; the app owns those operations.
         """
-        self._closed = True
-        sink: Optional[WorkflowProgressUpdatesAdapter] = self._bound_sink
-        if sink is None:
-            return
-        await self.retire_observation(sink=sink)
+        await self.close()

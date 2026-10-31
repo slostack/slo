@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from uuid import uuid4
 from unittest.mock import patch
@@ -86,9 +86,10 @@ class TestStartupNotice:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one(ChatTranscript)._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
-                "/help" in content for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                "/help" in content
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
         assert session.history_store is not None
@@ -118,10 +119,10 @@ class TestStartupNotice:
         resumed_app: SloTUI = SloTUI(session=resumed_session)
         async with resumed_app.run_test() as pilot:
             await pilot.pause()
-            assert resumed_app.query_one(ChatTranscript)._adapter is not None
+            assert resumed_app.query_one(ChatTranscriptComponent)._adapter is not None
             assert all(
                 "/help" not in content
-                for content, _classes in resumed_app.query_one(ChatTranscript)._adapter.lines
+                for content, _classes in resumed_app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
     @pytest.mark.asyncio
@@ -140,14 +141,14 @@ class TestStartupNotice:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one(ChatTranscript)._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
                 "Reasoning: xhigh" in content
-                for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
             assert any(
                 "Provider detail: effort max" in content
-                for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
     @pytest.mark.asyncio
@@ -166,14 +167,14 @@ class TestStartupNotice:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one(ChatTranscript)._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
                 "mistral-large" in content
-                for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
             assert any(
                 "falling back" in content
-                for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
     async def test_should_show_startup_notice_when_resumed_with_fallback_renders_existing_block(
@@ -201,9 +202,9 @@ class TestStartupNotice:
             app = SloTUI(session=session)
             async with app.run_test() as pilot:
                 await pilot.pause()
-                assert app.query_one(ChatTranscript)._adapter is not None
+                assert app.query_one(ChatTranscriptComponent)._adapter is not None
                 lines: list[str] = [
-                    content for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                    content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
                 ]
                 assert lines[0] == notice
                 assert "Copyright (C)" in lines[1]
@@ -255,8 +256,10 @@ class TestStartupNotice:
         app = SloTUI(session=session)
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one(ChatTranscript)._adapter is not None
-            lines: list[str] = [content for content, _classes in app.query_one(ChatTranscript)._adapter.lines]
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
+            lines: list[str] = [
+                content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
+            ]
             assert config.fallback_notice in lines
             assert any("Copyright (C)" in line for line in lines)
             assert any("Initialized model: claude-sonnet-4-6." in line for line in lines)

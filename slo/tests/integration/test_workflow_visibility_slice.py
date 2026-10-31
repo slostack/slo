@@ -25,7 +25,7 @@ from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleSt
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.service import AttachedChildAbort, DetachedWorkflowAppService
@@ -141,7 +141,7 @@ async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
         app.theme = theme
         await pilot.pause()
         panel = app.query_one(SubAgentFleetPanel)
-        editor = app.query_one(PromptInput)
+        editor = app.query_one(PromptInputComponent)
         assert app.focused is editor
         original = tuple(row.row for row in panel.query(SubAgentFleetRow))
         assert len(original) == 6
@@ -255,7 +255,9 @@ async def test_new_waits_for_old_service_disposal_before_session_assignment(tmp_
     app = SloTUI(session=session, workflow_service_factory=factory)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        command = asyncio.create_task(app.on_prompt_input_submitted(PromptInput.Submitted(text="/new")))
+        command = asyncio.create_task(
+            app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text="/new"))
+        )
         await asyncio.wait_for(entered.wait(), timeout=5)
         command.cancel()
         await checkpoint()
@@ -366,7 +368,9 @@ async def test_new_joins_observation_then_accepted_abort_before_retiring_sink(tm
         assert app._workflow_progress_coordinator is not None
         app._workflow_progress_coordinator.request_refresh()
         await asyncio.wait_for(entered.wait(), timeout=5)
-        command = asyncio.create_task(app.on_prompt_input_submitted(PromptInput.Submitted(text="/new")))
+        command = asyncio.create_task(
+            app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text="/new"))
+        )
         await asyncio.wait_for(cancelled.wait(), timeout=5)
         command.cancel()
         await checkpoint()

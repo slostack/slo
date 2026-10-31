@@ -1,4 +1,4 @@
-"""Extraction boundary tests for the WorkflowProgress component (feature 96.f.1).
+"""Extraction boundary tests for the WorkflowProgressComponent component (feature 96.f.1).
 
 The component owns the fleet panel, one observation-lifetime adapter per bind
 and the apply/reset presentation mechanics that used to live on ``SloTUI``.
@@ -10,22 +10,25 @@ processes or terminals.
 
 from __future__ import annotations
 
+from src.tui.components.workflow_progress.events import ConfirmAbortDAO, SessionsUpdatedDAO
+
 import asyncio
 from pathlib import Path
-from typing import Optional
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
+from typing import ContextManager, Optional
 from unittest.mock import patch
 
 import pytest
 from textual.pilot import Pilot
 
 from src.tui.app import SloTUI
-from src.tui.components.workflow_progress.component import WorkflowProgress
+from src.tui.components.workflow_progress.component import WorkflowProgressComponent
 from src.tui.components.workflow_progress.adapters.workflow_progress import (
     WorkflowProgressUpdatesAdapter,
 )
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
-from src.tui.workflows.dao import ChildAbortTargetDAO, WorkflowSessionSnapshotDAO
+from src.tui.workflows.dao import ChildAbortTargetDAO, WorkflowSessionRowDAO, WorkflowSessionSnapshotDAO
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator, WorkflowProgressSink
 from tests.tui.test_workflow_session_list import (
     _build_session,
@@ -49,13 +52,13 @@ class TestComponentCompositionAndBinding:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
 
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
-            assert len(app.query(WorkflowProgress)) == 1
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
+            assert len(app.query(WorkflowProgressComponent)) == 1
             assert len(app.query(SubAgentFleetPanel)) == 1
             assert len(wrapper.query(SubAgentFleetPanel)) == 1
             assert wrapper.display is False
-            assert wrapper.has_visible_sessions() is False
-            assert wrapper.sessions_hold_focus() is False
+            assert wrapper.is_session_list_visible() is False
+            assert wrapper.is_session_list_focused() is False
 
     @pytest.mark.asyncio
     async def test_bind_returns_fresh_sink_and_rejects_a_second_bind(self, tmp_path: Path) -> None:
@@ -64,7 +67,7 @@ class TestComponentCompositionAndBinding:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             sink: WorkflowProgressSink = app._workflow_progress_updates_adapter  # type: ignore[assignment]
             assert isinstance(sink, WorkflowProgressUpdatesAdapter)
 
@@ -81,7 +84,7 @@ class TestComponentCompositionAndBinding:
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             await _populated_app(app=app, pilot=pilot, children=2)
             sink: WorkflowProgressSink = app._workflow_progress_updates_adapter  # type: ignore[assignment]
             assert isinstance(sink, WorkflowProgressUpdatesAdapter)
@@ -100,12 +103,12 @@ class TestComponentCompositionAndBinding:
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             await _populated_app(app=app, pilot=pilot, children=2)
             bound: WorkflowProgressSink = app._workflow_progress_updates_adapter  # type: ignore[assignment]
             # The foreign sink comes from a second real component's public bind,
             # never from direct adapter construction outside the owning component.
-            foreign_wrapper: WorkflowProgress = WorkflowProgress(host=app)
+            foreign_wrapper: WorkflowProgressComponent = WorkflowProgressComponent(host=app)
             foreign: WorkflowProgressSink = foreign_wrapper.bind_observation()
 
             await wrapper.retire_observation(sink=foreign)
@@ -119,7 +122,7 @@ class TestComponentCompositionAndBinding:
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             await _populated_app(app=app, pilot=pilot, children=2)
             sink: WorkflowProgressSink = app._workflow_progress_updates_adapter  # type: ignore[assignment]
             assert isinstance(sink, WorkflowProgressUpdatesAdapter)
@@ -130,7 +133,8 @@ class TestComponentCompositionAndBinding:
 
             await wrapper.retire_observation(sink=sink)
             assert _rows(app=app) == {}
-            await sink.apply_sessions(snapshot=snapshot)
+            with pytest.raises(RuntimeError, match="closed"):
+                await sink.handle(event=SessionsUpdatedDAO(snapshot=snapshot))
 
             assert _rows(app=app) == {}
             assert app.query_one(SubAgentFleetPanel).display is False
@@ -161,11 +165,11 @@ class TestConfirmationIdentityGate:
             execution_id="11111111-1111-4111-8111-111111111111",
         )
 
-    def _record_submissions(self, *, app: SloTUI) -> tuple[list[ChildAbortTargetDAO], object]:
+    def _record_submissions(self, *, app: SloTUI) -> tuple[list[ChildAbortTargetDAO], ContextManager[object]]:
         """Patch the host's control entry to record every submitted target.
 
         Returns:
-            tuple[list[ChildAbortTargetDAO], object]: The recording list and the patcher.
+            tuple[list[ChildAbortTargetDAO], ContextManager[object]]: The recording list and patch lifetime.
         """
         submissions: list[ChildAbortTargetDAO] = []
         real_child_abort_confirmed = SloTUI.child_abort_confirmed
@@ -187,7 +191,7 @@ class TestConfirmationIdentityGate:
                 sink, target = await self._mounted_sink_with_open_view(app=app, pilot=pilot)
 
                 # The real confirmation path submits exactly one host call for the captured target.
-                sink.confirm_abort(target=target)
+                await sink.handle(event=ConfirmAbortDAO(target=target))
                 await pilot.pause()
                 first: AbortConfirmationScreen = sink._confirmation  # type: ignore[assignment]
                 assert first is not None
@@ -203,7 +207,7 @@ class TestConfirmationIdentityGate:
                 assert submissions == [target]
 
                 # A fresh confirmation opens; the old callback cannot act while it is stored.
-                sink.confirm_abort(target=target)
+                await sink.handle(event=ConfirmAbortDAO(target=target))
                 await pilot.pause()
                 second: AbortConfirmationScreen = sink._confirmation  # type: ignore[assignment]
                 assert second is not None and second is not first
@@ -220,7 +224,7 @@ class TestConfirmationIdentityGate:
                 assert submissions == [target, target]
 
                 # Disposal retires the sink; every later callback is a no-op.
-                sink.dispose()
+                await sink.close()
                 second_callback(True)
                 first_callback(True)
                 assert submissions == [target, target]
@@ -235,7 +239,7 @@ class TestConfirmationIdentityGate:
             async with app.run_test(size=(120, 40)) as pilot:
                 sink, target = await self._mounted_sink_with_open_view(app=app, pilot=pilot)
 
-                sink.confirm_abort(target=target)
+                await sink.handle(event=ConfirmAbortDAO(target=target))
                 await pilot.pause()
                 confirmation: AbortConfirmationScreen = sink._confirmation  # type: ignore[assignment]
                 assert confirmation is not None
@@ -262,12 +266,12 @@ class TestComponentPresentationThroughTheApp:
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             await _populated_app(app=app, pilot=pilot, children=2)
 
             assert set(_rows(app=app)) == {app._session.session_id, "child-00", "child-01"}
             assert wrapper.display is True
-            assert wrapper.has_visible_sessions() is True
+            assert wrapper.is_session_list_visible() is True
 
             _supplier(app=app).snapshot = _supplier(app=app).snapshot.model_copy(update={"entries": ()})
             await _refresh(app=app, pilot=pilot)
@@ -290,7 +294,7 @@ class TestCancellationReconciliation:
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             await _populated_app(app=app, pilot=pilot, children=2)
             sink: WorkflowProgressSink = app._workflow_progress_updates_adapter  # type: ignore[assignment]
             assert isinstance(sink, WorkflowProgressUpdatesAdapter)
@@ -307,7 +311,7 @@ class TestCancellationReconciliation:
             apply_entered: asyncio.Event = asyncio.Event()
             real_apply_rows = panel._apply_rows
 
-            async def gated_apply_rows(*, rows: object) -> None:
+            async def gated_apply_rows(*, rows: tuple[WorkflowSessionRowDAO, ...]) -> None:
                 apply_entered.set()
                 await apply_gate.wait()
                 await real_apply_rows(rows=rows)
@@ -319,7 +323,9 @@ class TestCancellationReconciliation:
             assert panel.display is True
 
             with patch.object(panel, "_apply_rows", new=gated_apply_rows):
-                apply_task: asyncio.Task[None] = asyncio.create_task(sink.apply_sessions(snapshot=snapshot))
+                apply_task: asyncio.Task[None] = asyncio.create_task(
+                    sink.handle(event=SessionsUpdatedDAO(snapshot=snapshot))
+                )
                 await pilot.pause()
                 apply_task.cancel()
                 with pytest.raises(asyncio.CancelledError):
@@ -372,7 +378,8 @@ class TestCancellationReconciliation:
 
                 # Stale deferred delivery from the retired sink is inert against
                 # the populated successor: only the successor's own paint lands.
-                await sink.apply_sessions(snapshot=snapshot)
+                with pytest.raises(RuntimeError, match="closed"):
+                    await sink.handle(event=SessionsUpdatedDAO(snapshot=snapshot))
                 assert _rows(app=app) == {}
 
                 async def gated_successor_apply_rows(*, rows: object) -> None:
@@ -382,14 +389,15 @@ class TestCancellationReconciliation:
 
                 with patch.object(panel, "_apply_rows", new=gated_successor_apply_rows):
                     successor_apply_task = asyncio.create_task(
-                        successor.apply_sessions(snapshot=successor_snapshot)
+                        successor.handle(event=SessionsUpdatedDAO(snapshot=successor_snapshot))
                     )
                     try:
                         await asyncio.wait_for(successor_apply_entered.wait(), timeout=5)
                         # While the successor's accepted apply is pending, the
                         # retired sink still cannot paint and the binding is
                         # reserved exactly once.
-                        await sink.apply_sessions(snapshot=snapshot)
+                        with pytest.raises(RuntimeError, match="closed"):
+                            await sink.handle(event=SessionsUpdatedDAO(snapshot=snapshot))
                         assert _rows(app=app) == {}
                         with pytest.raises(RuntimeError):
                             wrapper.bind_observation()
@@ -420,16 +428,16 @@ class TestBindStartupFailures:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             events: list[str] = []
             recording: list[bool] = [False]
-            real_dispose = WorkflowProgressUpdatesAdapter.dispose
+            real_dispose = WorkflowProgressUpdatesAdapter.close
             real_close = WorkflowProgressCoordinator.close
 
-            def recorded_dispose(self: WorkflowProgressUpdatesAdapter) -> None:
+            async def recorded_dispose(self: WorkflowProgressUpdatesAdapter) -> None:
                 if recording[0]:
                     events.append("sink-dispose")
-                real_dispose(self)
+                await real_dispose(self)
 
             async def recorded_close(self: WorkflowProgressCoordinator) -> None:
                 if recording[0]:
@@ -443,7 +451,7 @@ class TestBindStartupFailures:
 
             app._workflow_coordinator_factory = failing_factory  # type: ignore[assignment]
             with (
-                patch.object(WorkflowProgressUpdatesAdapter, "dispose", new=recorded_dispose),
+                patch.object(WorkflowProgressUpdatesAdapter, "close", new=recorded_dispose),
                 patch.object(WorkflowProgressCoordinator, "close", new=recorded_close),
                 pytest.raises(ValueError) as caught,
             ):
@@ -473,21 +481,21 @@ class TestBindStartupFailures:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             events: list[str] = []
             recording: list[bool] = [False]
             real_close = WorkflowProgressCoordinator.close
-            real_dispose = WorkflowProgressUpdatesAdapter.dispose
+            real_dispose = WorkflowProgressUpdatesAdapter.close
 
             async def recorded_close(self: WorkflowProgressCoordinator) -> None:
                 if recording[0]:
                     events.append("coordinator-close")
                 await real_close(self)
 
-            def recorded_dispose(self: WorkflowProgressUpdatesAdapter) -> None:
+            async def recorded_dispose(self: WorkflowProgressUpdatesAdapter) -> None:
                 if recording[0]:
                     events.append("sink-dispose")
-                real_dispose(self)
+                await real_dispose(self)
 
             real_factory = app._workflow_coordinator_factory
             start_error: RuntimeError = RuntimeError("start boom")
@@ -509,7 +517,7 @@ class TestBindStartupFailures:
             app._workflow_coordinator_factory = partial_start_factory  # type: ignore[assignment]
             with (
                 patch.object(WorkflowProgressCoordinator, "close", new=recorded_close),
-                patch.object(WorkflowProgressUpdatesAdapter, "dispose", new=recorded_dispose),
+                patch.object(WorkflowProgressUpdatesAdapter, "close", new=recorded_dispose),
                 pytest.raises(RuntimeError) as caught,
             ):
                 recording[0] = True
@@ -539,7 +547,7 @@ class TestBindStartupFailures:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             factory_error: ValueError = ValueError("factory boom")
             cleanup_error: RuntimeError = RuntimeError("cleanup boom")
             real_dispose = SloTUI._dispose_workflow_observation
@@ -559,8 +567,8 @@ class TestBindStartupFailures:
                 patch.object(SloTUI, "_dispose_workflow_observation", new=failing_dispose),
                 patch.object(
                     app._chat_transcript,
-                    "write_transcript_line",
-                    wraps=app._chat_transcript.write_transcript_line,
+                    "handle",
+                    wraps=app._chat_transcript.handle,
                 ) as notice,
                 pytest.raises(ValueError) as caught,
             ):
@@ -569,7 +577,9 @@ class TestBindStartupFailures:
             # chained context, reported through the fixed lifecycle diagnostic.
             assert caught.value is factory_error
             assert caught.value.__context__ is cleanup_error
-            notice.assert_called_with(content="Session cleanup incomplete.", classes="tool-result")
+            notice.assert_called_with(
+                command=TranscriptNoticeDAO(content="Session cleanup incomplete.", classes="tool-result")
+            )
             # The failed close task stays published and permanently blocks reuse:
             # a completed failed task is re-raised, never retried.
             assert app._workflow_observation_close_task is not None
@@ -592,7 +602,7 @@ class TestComponentStylesAndSizeLimits:
 
     @pytest.mark.asyncio
     async def test_unrelated_row_outside_wrapper_is_not_styled_by_fleet_rules(self, tmp_path: Path) -> None:
-        """A fleet-shaped row outside WorkflowProgress does not receive wrapper-scoped rules."""
+        """A fleet-shaped row outside WorkflowProgressComponent does not receive wrapper-scoped rules."""
         from textual.containers import Vertical
         from textual.widgets import Static
         from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
@@ -621,22 +631,22 @@ class TestComponentStylesAndSizeLimits:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             outside_host = OutsideHost()
             await app.mount(outside_host)
             await pilot.pause()
             outside_row = outside_host.query_one(SubAgentFleetRow)
-            # The wrapper-scoped row rule `WorkflowProgress SubAgentFleetRow` must
-            # not match this row: it has no WorkflowProgress ancestor.
+            # The wrapper-scoped row rule `WorkflowProgressComponent SubAgentFleetRow` must
+            # not match this row: it has no WorkflowProgressComponent ancestor.
             assert wrapper not in outside_row.ancestors
             # The wrapper's own panel remains the only fleet panel inside it.
             assert len(wrapper.query(SubAgentFleetRow)) == 0
             # Computed-style proof: the wrapper-scoped rule
-            # `WorkflowProgress SubAgentFleetRow { height: 1; }` does not apply
+            # `WorkflowProgressComponent SubAgentFleetRow { height: 1; }` does not apply
             # to the outside row, whose height stays at the default auto.
             assert outside_row.styles.height != 1
             # The wrapper-scoped row Static rule
-            # `WorkflowProgress SubAgentFleetRow > Static { padding: 0 1; }`
+            # `WorkflowProgressComponent SubAgentFleetRow > Static { padding: 0 1; }`
             # does not apply to the outside row's Static child either.
             outside_static = outside_row.query_one(Static)
             assert outside_static.styles.padding == (0, 0, 0, 0)
@@ -650,12 +660,12 @@ class TestRunAsyncShutdownIntegration:
         """Headless run_async exit retires observation before framework pruning; no false success."""
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
         events: list[str] = []
-        real_dispose = WorkflowProgressUpdatesAdapter.dispose
+        real_dispose = WorkflowProgressUpdatesAdapter.close
         real_close = WorkflowProgressCoordinator.close
 
-        def recorded_dispose(self: WorkflowProgressUpdatesAdapter) -> None:
+        async def recorded_dispose(self: WorkflowProgressUpdatesAdapter) -> None:
             events.append("sink-dispose")
-            real_dispose(self)
+            await real_dispose(self)
 
         async def recorded_close(self: WorkflowProgressCoordinator) -> None:
             events.append("coordinator-close")
@@ -669,7 +679,7 @@ class TestRunAsyncShutdownIntegration:
             app.exit()
 
         with (
-            patch.object(WorkflowProgressUpdatesAdapter, "dispose", new=recorded_dispose),
+            patch.object(WorkflowProgressUpdatesAdapter, "close", new=recorded_dispose),
             patch.object(WorkflowProgressCoordinator, "close", new=recorded_close),
         ):
             await app.run_async(headless=True, size=(120, 40), auto_pilot=autopilot)
@@ -693,10 +703,10 @@ class TestClosedWidgetRejection:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            wrapper: WorkflowProgress = app.query_one(WorkflowProgress)
+            wrapper: WorkflowProgressComponent = app.query_one(WorkflowProgressComponent)
             # Component-only removal triggers the safety cutoff and closes it.
             await wrapper.remove()
             await pilot.pause()
-            assert wrapper._closed is True
+            assert wrapper._delivery_closed is True
             with pytest.raises(RuntimeError):
                 wrapper.bind_observation()

@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import List, Protocol
 
 from src.agents.slo_agent.herdr.dao import VisualizerLaunchOutcomeDAO
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from src.tui.workflows.dao import DetachedWorkflowUiEffectDAO
 
 __all__ = ["DetachedWorkflowRenderer", "DetachedWorkflowNoticeSink", "DetachedVisualizerSchedule"]
@@ -17,13 +18,8 @@ __all__ = ["DetachedWorkflowRenderer", "DetachedWorkflowNoticeSink", "DetachedVi
 class DetachedWorkflowNoticeSink(Protocol):
     """Narrow transcript seam the renderer writes notices into."""
 
-    def write(self, *, content: str, classes: str = "") -> None:
-        """Write one transcript notice line.
-
-        Args:
-            content (str): Notice text.
-            classes (str): Semantic render class.
-        """
+    async def handle(self, *, event: TranscriptNoticeDAO) -> None:
+        """Apply one formatted notice before returning; propagate delivery failures."""
         ...
 
 
@@ -102,7 +98,7 @@ class DetachedWorkflowRenderer:
         self._launched_for.add(orchestrator_session_id)
         self._schedule(parent_session_id=orchestrator_session_id)
 
-    def write_launch_outcome(
+    async def write_launch_outcome(
         self,
         *,
         parent_session_id: str,
@@ -115,12 +111,12 @@ class DetachedWorkflowRenderer:
             outcome: Safe typed execution result, never raw CLI output.
         """
         try:
-            self._write_launch_notice(parent_session_id=parent_session_id, outcome=outcome)
+            await self._write_launch_notice(parent_session_id=parent_session_id, outcome=outcome)
         finally:
             if outcome.status == "failed":
                 self._launched_for.discard(parent_session_id)
 
-    def _write_launch_notice(
+    async def _write_launch_notice(
         self,
         *,
         parent_session_id: str,
@@ -141,4 +137,6 @@ class DetachedWorkflowRenderer:
             content += " Otherwise run in a pane you choose:"
         if outcome.status in ("failed", "skipped", "reused"):
             content += f" slo visualize --session {parent_session_id} --follow"
-        self._notice_sink.write(content=f"⊇ {content}", classes="sub-agent-notice")
+        await self._notice_sink.handle(
+            event=TranscriptNoticeDAO(content=f"⊇ {content}", classes="sub-agent-notice")
+        )

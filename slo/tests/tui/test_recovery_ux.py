@@ -24,7 +24,7 @@ class TestRecoveryNoticeLines:
         host = FakeHost()
         projector = TranscriptProjectionAdapter(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="recovery_started", iteration=0),
         )
 
@@ -38,7 +38,7 @@ class TestRecoveryNoticeLines:
         host = FakeHost()
         projector = TranscriptProjectionAdapter(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="recovery_succeeded", iteration=1),
         )
 
@@ -52,7 +52,7 @@ class TestRecoveryNoticeLines:
         host = FakeHost()
         projector = TranscriptProjectionAdapter(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="recovery_exhausted", iteration=1),
         )
 
@@ -66,7 +66,7 @@ class TestRecoveryNoticeLines:
         host = FakeHost()
         projector = TranscriptProjectionAdapter(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="recovery_started", iteration=0),
         )
 
@@ -77,13 +77,13 @@ class TestRecoveryNoticeLines:
         host = FakeHost()
         projector = TranscriptProjectionAdapter(host=host)
 
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="recovery_started", iteration=0),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="recovery_succeeded", iteration=1),
         )
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(kind="recovery_exhausted", iteration=2),
         )
 

@@ -25,7 +25,7 @@ from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.session_progress_screen import SessionProgressScreen
@@ -286,7 +286,7 @@ async def test_task_summary_survives_registration_to_detail(
         try:
             await asyncio.wait_for(factory.entered.wait(), timeout=5)
             # A real command requests coalesced observation without private timer access.
-            editor = app.query_one(PromptInput)
+            editor = app.query_one(PromptInputComponent)
             editor.text = "/workflows tui show"
             await pilot.press("enter")
             for _ in range(5):

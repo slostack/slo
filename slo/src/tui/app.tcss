@@ -35,4 +35,4 @@ Footer {
 }
 
 /* Component styling lives in ThinkingSpinner.DEFAULT_CSS,
- * PromptInput.DEFAULT_CSS, and WorkflowProgress.DEFAULT_CSS. */
+ * PromptInputComponent.DEFAULT_CSS, and WorkflowProgressComponent.DEFAULT_CSS. */

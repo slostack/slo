@@ -1,7 +1,7 @@
 """Regression for the finite signature audit's nested-product Git enumeration (R173-2).
 
-The audit at ``docs/implementation/94-herdr/conventions-revision-159-receipts/audit.py``
-runs from the product subdirectory. Its tracked-changed enumeration must use
+The preserved audit fixture at ``fixtures/conventions_audit.py`` runs from
+the product subdirectory. Its tracked-changed enumeration must use
 ``git diff --relative --name-only`` so repository-root-relative ``slo/...``
 paths cannot silently skip real tracked files, and a missing candidate path
 must fail the audit instead of being skipped. These tests copy the real audit
@@ -56,10 +56,7 @@ from pathlib import Path
 
 import pytest
 
-AUDIT = (
-    Path(__file__).resolve().parents[2]
-    / "docs/implementation/94-herdr/conventions-revision-159-receipts/audit.py"
-)
+AUDIT = Path(__file__).resolve().parent / "fixtures/conventions_audit.py"
 
 _TRACKED_ENUMERATION = """changed = subprocess.check_output(
         ["git", "diff", "--relative", "--name-only", BASE, "--", "src", "tests"], text=True

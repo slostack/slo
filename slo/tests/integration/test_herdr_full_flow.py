@@ -5,7 +5,7 @@ import difflib
 import json
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from contextlib import ExitStack
@@ -1055,7 +1055,7 @@ async def test_high_level_viewer_public_outcome_privacy(
     from tests.tui.workflows.test_workflow_renderer import _build_renderer
 
     renderer, sink, _ = _build_renderer()
-    renderer.write_launch_outcome(parent_session_id=session.session_id, outcome=outcome)
+    await renderer.write_launch_outcome(parent_session_id=session.session_id, outcome=outcome)
     assert len(sink.lines) == 1
     assert secret not in str(sink.lines)
     assert str(tmp_path) not in str(sink.lines)
@@ -1463,7 +1463,7 @@ async def test_pilot_configuration_and_typed_viewer_journey(
 
         renderer, sink, _ = _build_renderer()
         for result in viewer_results:
-            renderer.write_launch_outcome(parent_session_id=parent.session_id, outcome=result)
+            await renderer.write_launch_outcome(parent_session_id=parent.session_id, outcome=result)
         public += str(sink.lines)
         for owner in (session, successor):
             reporter = owner._herdr_reporter

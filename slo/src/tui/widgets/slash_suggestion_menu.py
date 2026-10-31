@@ -53,7 +53,7 @@ class SlashSuggestionMenu(Vertical):
     def update_state(self, *, state: SlashSuggestionStateDAO) -> None:
         """Render the provided suggestion state, skipping unchanged updates.
 
-        ``PromptInput.on_text_area_changed`` calls this on every prompt keystroke,
+        ``PromptInputComponent.on_text_area_changed`` calls this on every prompt keystroke,
         including ordinary prose where ``state.visible`` is ``False`` every time.
         Each ``Static.update`` forces Textual to reflow the whole transcript
         (O(N) in mounted widgets), so re-rendering an unchanged state is the

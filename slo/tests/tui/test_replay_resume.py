@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -178,7 +178,7 @@ class TestTUIStreamReconnect:
                 await app._run_prompt(text="functional retry")
             await pilot.pause()
             transcript: list[str] = [
-                content for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             ]
 
         assert invocation_count == 2
@@ -199,9 +199,10 @@ class TestTUIHydration:
         app = SloTUI(session=session)
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one(ChatTranscript)._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
-                "/help" in content for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                "/help" in content
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
     async def test_on_mount_hydrates_transcript_from_persisted_history(self, tmp_path: Path) -> None:
@@ -227,9 +228,9 @@ class TestTUIHydration:
         app = SloTUI(session=resumed)
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one(ChatTranscript)._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             # Logical lines are recorded (copy/replay seam) ...
-            contents: list[str] = [c for c, _ in app.query_one(ChatTranscript)._adapter.lines]
+            contents: list[str] = [c for c, _ in app.query_one(ChatTranscriptComponent)._adapter.lines]
             assert any("seeded prompt" in c for c in contents)
             assert any("seeded reply" in c for c in contents)
             # ... and replay mounts the same components the live path mounts.
@@ -310,8 +311,8 @@ class TestReplayThinkingParity:
             list[tuple[AssistantStreamThinkingBlock, AssistantStreamBlock]]:
                 DOM-ordered ``(thinking, answer)`` pairs.
         """
-        assert app.query_one(ChatTranscript)._transcript_content is not None
-        children = list(app.query_one(ChatTranscript)._transcript_content.children)
+        assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
+        children = list(app.query_one(ChatTranscriptComponent)._transcript_content.children)
         pairs: list[tuple[AssistantStreamThinkingBlock, AssistantStreamBlock]] = []
         for index, child in enumerate(children[:-1]):
             next_child = children[index + 1]
@@ -353,7 +354,7 @@ class TestReplayThinkingParity:
             app: SloTUI = self._build_history_app(entries=entries)
             async with app.run_test(size=(80, 24)) as pilot:
                 await pilot.pause()
-                await app.query_one(ChatTranscript).load_older()
+                await app.query_one(ChatTranscriptComponent).load_older()
                 await pilot.pause()
 
                 pairs = self._thinking_answer_children(app=app)
@@ -414,7 +415,7 @@ class TestTUIStreamReconnectAstra:
                 await app._run_prompt(text="functional retry")
             await pilot.pause()
             transcript: list[str] = [
-                content for content, _classes in app.query_one(ChatTranscript)._adapter.lines
+                content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             ]
 
         assert invocation_count == 2

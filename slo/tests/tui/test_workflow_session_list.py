@@ -13,7 +13,9 @@ No test touches files outside ``tmp_path``, providers, processes or terminals.
 
 from __future__ import annotations
 
-from src.tui.components.chat_transcript.component import ChatTranscript
+from src.tui.components.workflow_progress.events import SessionsUpdatedDAO
+
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import asyncio
 from pathlib import Path
 from typing import Any, Optional
@@ -33,14 +35,15 @@ from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, SubAgentStatusDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
-from src.tui.components.prompt_input.component import PromptInput
+from src.tui.components.workflow_progress.adapters.workflow_progress import WorkflowProgressUpdatesAdapter
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.slash_router import SlashCommandResultDAO
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList, SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.widgets.usage_status_bar import UsageStatusBar
-from src.tui.components.workflow_progress.component import WorkflowProgress
+from src.tui.components.workflow_progress.component import WorkflowProgressComponent
 from src.tui.workflows.dao import (
     WorkflowSessionKeyDAO,
     WorkflowSessionRowDAO,
@@ -120,7 +123,7 @@ def _build_session(*, workdir: Path, supplier: Optional[_AttachedSupplier] = Non
 class _ListApp(SloTUI):
     """Mount a real visibility owner through the public service factory."""
 
-    CSS_PATH = Path(__file__).resolve().parents[2] / "src/tui/app.tcss"
+    CSS_PATH = str(Path(__file__).resolve().parents[2] / "src/tui/app.tcss")
 
     def __init__(self, *, workdir: Path) -> None:
         """Bind the controlled registry without replacing session methods."""
@@ -323,7 +326,7 @@ class TestSessionListLayout:
             await pilot.resize_terminal(width=120, height=40)
             await pilot.pause()
 
-            assert app.query_one(WorkflowProgress).display is True
+            assert app.query_one(WorkflowProgressComponent).display is True
             assert panel.query_one(FleetSessionList).region.height == 5
             assert panel.query_one(".workflow-sessions-resize-notice", Static).display is False
 
@@ -585,7 +588,7 @@ class TestObservationLifecycle:
             panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
             assert service is not None and sink is not None and panel is not None
             real_close, real_service_close = coordinator.close, service.close
-            real_dispose, real_reset = sink.dispose, panel.reset
+            real_dispose, real_reset = sink.close, panel.reset
 
             async def close() -> None:
                 order.append("coordinator")
@@ -595,9 +598,9 @@ class TestObservationLifecycle:
                 order.append("service")
                 await real_service_close()
 
-            def dispose() -> None:
+            async def dispose() -> None:
                 order.append("sink")
-                real_dispose()
+                await real_dispose()
 
             async def reset() -> None:
                 order.append("panel")
@@ -605,7 +608,7 @@ class TestObservationLifecycle:
 
             coordinator.close = close  # type: ignore[method-assign]
             service.close = service_close  # type: ignore[method-assign]
-            sink.dispose = dispose  # type: ignore[method-assign]
+            sink.close = dispose  # type: ignore[method-assign]
             panel.reset = reset  # type: ignore[method-assign]
             # The application ``_shutdown`` override joins the observation
             # barrier before Textual prunes the presentation tree, so the
@@ -936,7 +939,8 @@ class TestProgressLifecycleEdges:
             await _settle(app=app, pilot=pilot)
             [new_screen] = _progress_screens(app=app)
             sink = app._workflow_progress_updates_adapter
-            assert sink is not None and new_screen is not old_screen
+            assert isinstance(sink, WorkflowProgressUpdatesAdapter)
+            assert new_screen is not old_screen
             service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
             assert service is not None
             snapshot = await service.load_session_progress(key=key)
@@ -992,7 +996,7 @@ class TestProgressLifecycleEdges:
             await app.push_screen(modal)
             await pilot.pause()
 
-            _coordinator(app=app).minimize()
+            await _coordinator(app=app).minimize()
             await pilot.pause()
 
             assert app.screen is modal
@@ -1106,7 +1110,7 @@ class TestProgressLifecycleEdges:
                 task_text_complete=False,
             )
             with patch.object(app, "progress_incarnation_changed") as handler:
-                await sink.apply_sessions(snapshot=WorkflowSessionSnapshotDAO(rows=(row,)))
+                await sink.handle(event=SessionsUpdatedDAO(snapshot=WorkflowSessionSnapshotDAO(rows=(row,))))
 
             handler.assert_called_once_with(key=key)
 
@@ -1162,8 +1166,8 @@ def _transcript(*, app: SloTUI) -> list[str]:
     Returns:
         list[str]: Line contents in order.
     """
-    assert app.query_one(ChatTranscript)._adapter is not None
-    return [content for content, _classes in app.query_one(ChatTranscript)._adapter.lines]
+    assert app.query_one(ChatTranscriptComponent)._adapter is not None
+    return [content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines]
 
 
 class TestClearFinishedGroups:
@@ -1183,7 +1187,7 @@ class TestClearFinishedGroups:
 
             assert _rows(app=app) == {}
             assert panel.display is False
-            assert app.query_one(WorkflowProgress).display is False
+            assert app.query_one(WorkflowProgressComponent).display is False
             assert panel.region.height == 0
             assert app.focused is app._input
             new_lines: list[str] = _transcript(app=app)[lines_before:]
@@ -1192,14 +1196,14 @@ class TestClearFinishedGroups:
 
     @pytest.mark.asyncio
     async def test_focused_list_returns_focus_to_the_prompt(self, tmp_path: Path) -> None:
-        """When the emptied list held focus, focus returns to PromptInput."""
+        """When the emptied list held focus, focus returns to PromptInputComponent."""
         app: SloTUI = _ListApp(workdir=tmp_path)
 
         async with app.run_test(size=(120, 40)) as pilot:
             panel: SubAgentFleetPanel = await _finished_app(app=app, pilot=pilot)
             panel.query_one(FleetSessionList).focus()
             await pilot.pause()
-            assert app.query_one(WorkflowProgress).sessions_hold_focus()
+            assert app.query_one(WorkflowProgressComponent).is_session_list_focused()
 
             await app._dispatch_slash_command(line="/workflows tui dismiss")
             await _settle(app=app, pilot=pilot)
@@ -1292,7 +1296,7 @@ class TestClearFinishedGroups:
             await _settle(app=app, pilot=pilot)
             service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
             assert service is not None
-            await app.on_prompt_input_submitted(PromptInput.Submitted(text=line))
+            await app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text=line))
             await _settle(app=app, pilot=pilot)
             assert service.current_list_snapshot().rows == ()
             expected = (
@@ -1324,7 +1328,9 @@ class TestClearFinishedGroups:
         app = _ListApp(workdir=tmp_path)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
-            await app.on_prompt_input_submitted(PromptInput.Submitted(text="/workflows tui dismiss"))
+            await app.on_prompt_input_component_submitted(
+                PromptInputComponent.Submitted(text="/workflows tui dismiss")
+            )
             assert _transcript(app=app)[-1] == "No visible workflow groups to hide."
 
     @pytest.mark.asyncio
@@ -1337,7 +1343,9 @@ class TestClearFinishedGroups:
             service: Optional[DetachedWorkflowAppService] = app._workflow_app_service
             assert service is not None
             before = service.current_list_snapshot()
-            await app.on_prompt_input_submitted(PromptInput.Submitted(text="/workflows tui"))
+            await app.on_prompt_input_component_submitted(
+                PromptInputComponent.Submitted(text="/workflows tui")
+            )
             assert service.current_list_snapshot() == before
             assert _transcript(app=app)[-1].startswith("usage: /workflows [")
 
@@ -1351,14 +1359,18 @@ async def test_hide_selected_row_acknowledges_once(tmp_path: Path) -> None:
         app.post_message(SubAgentFleetPanel.SessionSelected(key=key))
         await _settle(app=app, pilot=pilot)
         assert len(_progress_screens(app=app)) == 1
-        await app.on_prompt_input_submitted(PromptInput.Submitted(text="/workflows tui dismiss"))
+        await app.on_prompt_input_component_submitted(
+            PromptInputComponent.Submitted(text="/workflows tui dismiss")
+        )
         await _settle(app=app, pilot=pilot)
         assert _progress_screens(app=app) == []
         assert _rows(app=app) == {}
         assert _transcript(app=app).count(_CLEARED_ONE) == 1
         assert "Workflow visibility saved; display refresh pending." not in _transcript(app=app)
         assert app.focused is app._input
-        await app.on_prompt_input_submitted(PromptInput.Submitted(text="/workflows tui show"))
+        await app.on_prompt_input_component_submitted(
+            PromptInputComponent.Submitted(text="/workflows tui show")
+        )
         await _settle(app=app, pilot=pilot)
         assert app.focused is app._input
         assert _progress_screens(app=app) == []
@@ -1371,10 +1383,12 @@ async def test_public_tab_grammar_restores_hidden_attached_owner(tmp_path: Path,
     app = _ListApp(workdir=tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await _populated_app(app=app, pilot=pilot, children=1)
-        await app.on_prompt_input_submitted(PromptInput.Submitted(text="/wf\ttui\tdismiss"))
+        await app.on_prompt_input_component_submitted(
+            PromptInputComponent.Submitted(text="/wf\ttui\tdismiss")
+        )
         await _settle(app=app, pilot=pilot)
         assert _rows(app=app) == {}
-        await app.on_prompt_input_submitted(PromptInput.Submitted(text=line))
+        await app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text=line))
         await _settle(app=app, pilot=pilot)
         assert len(_rows(app=app)) == 2
         assert (

@@ -1,0 +1,8 @@
+# Local commit guard. Install once per clone with `make hooks` (from slo/).
+# gitleaks scans only the staged changes, so a secret is caught before it is
+# committed or pushed. CI's secret_detection job remains the shared gate.
+repos:
+- repo: https://github.com/gitleaks/gitleaks
+  rev: v8.29.1
+  hooks:
+  - id: gitleaks

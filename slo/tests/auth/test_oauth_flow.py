@@ -360,20 +360,20 @@ class TestOAuthFlowManualResponse:
             """Accept initial browser instructions without retaining their secret-bearing URL."""
 
         def _present_callback_unavailable() -> None:
-            """Record the callback-deadline presentation downgrade."""
-            unavailable_calls.append(True)
+            """Record the downgrade, then answer manually as a user reading it would.
 
-        async def submit_later() -> None:
-            """Wait beyond callback deadline before providing an opaque response."""
-            await asyncio.sleep(0.05)
-            await receiver.put("manual-code")
+            Submitting from here, rather than after a fixed sleep, guarantees the
+            response arrives only once the callback deadline has passed. A sleep
+            raced flow setup on loaded machines and could answer before the deadline.
+            """
+            unavailable_calls.append(True)
+            receiver.put_nowait("manual-code")
 
         with patch.object(
             provider,
             "exchange_code",
             new=AsyncMock(return_value=provider.parse_token_response(payload={})),
         ):
-            task: asyncio.Task[None] = asyncio.create_task(submit_later())
             flow: OAuthFlow = OAuthFlow(
                 provider=provider,
                 present_authorization=_present_authorization,
@@ -384,7 +384,6 @@ class TestOAuthFlowManualResponse:
                 webbrowser_open=lambda url: False,
             )
             credential = await flow.invoke()
-            await task
 
         assert credential.auth_type is AuthType.OAUTH
         assert unavailable_calls == [True]

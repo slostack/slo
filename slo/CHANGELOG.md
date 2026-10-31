@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.30.1] — 2026-10-31
+
+### Changed
+
+- Authenticate GitLab release creation with the automatically supplied `CI_JOB_TOKEN`.
+- Run CI through `make test PYTEST_WORKERS=6` (one worker per runner vCPU), retaining JUnit reporting and local worker defaults. Twelve workers oversubscribed the runner and was reverted before release.
+
+### Fixed
+
+- Isolate nested pytest collection from inherited CI options and update parallel-invocation assertions.
+- Await admitted Herdr report settlement before lifecycle assertions and repair the child-supervisor test deadline handling.
+- Preserve the isolated installer launcher and packaging-owned `slo-entry` contract.
+
 ## [Unreleased]
 
 ### Fixed
@@ -34,6 +47,53 @@
 
 - **`feature-specifications-pre-hook` and `feature-specifications-post-hook`.**
   The overview author's own checklist and the family review replace them.
+
+## [0.30.0] — 2026-10-30
+
+### Changed
+
+- Correct the requested release numbering to v0.30.0 with matching package
+  metadata. Existing v0.3.0 and v0.3.1 tags remain immutable; v0.30.0 sorts
+  above v0.22.0 for plain `slo update` selection.
+
+### Fixed
+
+- Provision Linux release CI pipx in a pinned, tool-owned virtual environment
+  so recovery and hosted smoke tests can change HOME without losing its module.
+  Linux acceptance gates remain mandatory; the existing macOS exclusion is unchanged.
+
+- Support pipx 1.0's authoritative `list` venv-root header when the modern
+  environment query is unavailable, without guessing a filesystem layout.
+- Recognize the exact observed modern pip/uv console-script bodies and validated
+  Python `-E` shebangs; retain fail-closed rejection of modified launchers.
+
+### Preserved
+
+- Retain the v0.3.1 header simplification and v0.3.0 Finder, `/code` and
+  double-Escape behavior. Keep the updater, packaging-owned `slo-entry`, Python
+  `-I` wrapper, containment validation and atomic launcher replacement contracts.
+  Installer compatibility changes above do not weaken these security boundaries.
+
+## [0.3.1] — 2026-10-30
+
+### Fixed
+
+- Keep the main TUI header to `slo · <working directory> · session <session_id>`
+  and the existing status indicator. Use the selected session's working directory
+  and full ID, retain home-directory abbreviation, and omit model, reasoning,
+  authentication and session-name metadata from the header only.
+- Include the Linux release CI repairs merged after v0.3.0: install dependencies
+  directly in the verified Python 3.11 image without activating a disabled Poetry
+  virtualenv, and explicitly install Debian's `docker-cli` for the dind matrix.
+  Only the operator-waived macOS gate is excluded; Linux pipx recovery, all four
+  Docker installer images and hosted installer verification remain release-fatal.
+
+### Preserved
+
+- Keep the packaging-owned `slo-entry` trampoline, isolated `slo` wrapper,
+  installer validation and recovery contracts unchanged.
+- Retain the v0.3.0 dirs-first Finder with literal separators, safe `/code`
+  file/directory arguments and session authority, and double-Escape abort/reset.
 
 ## [0.3.0] — 2026-10-29
 

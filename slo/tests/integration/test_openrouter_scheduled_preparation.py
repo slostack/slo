@@ -71,11 +71,17 @@ def contained_writes(tmp_path: Path) -> Iterator[list[Path]]:
             writes.append(resolved)
         assert event not in {"subprocess.Popen", "os.system", "socket.connect"}, event
 
+    # A module first imported inside the guarded window would otherwise have the
+    # import system cache its bytecode under src/, which the guard rightly rejects.
+    # That write belongs to Python, not to the code under test, so disable it here.
+    writes_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     sys.addaudithook(audit)
     try:
         yield writes
     finally:
         active = False
+        sys.dont_write_bytecode = writes_bytecode
 
 
 @tool
@@ -260,6 +266,12 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
                 async with app.run_test(size=(80, 24)) as pilot:
                     await pilot.pause()
                     assert await leases.is_active(session_id="scheduled-target")
+                    # This test drives inbox delivery itself (`_poll_session_inbox` below).
+                    # The app's own 1 s poll timer would otherwise claim the queued
+                    # message before the pending-state assertions, whenever a slow
+                    # machine stretches the gap between enqueue and assertion past a tick.
+                    assert app._inbox_timer is not None
+                    app._inbox_timer.pause()
                     definition = ScheduleDefinitionDAO(
                         schedule_id="scheduled-mounted",
                         name="Scheduled mounted acceptance",

@@ -5,7 +5,7 @@
 ### Changed
 
 - Authenticate GitLab release creation with the automatically supplied `CI_JOB_TOKEN`.
-- Run CI through `make test PYTEST_WORKERS=12`, retaining JUnit reporting and local worker defaults.
+- Run CI through `make test PYTEST_WORKERS=6` (one worker per runner vCPU), retaining JUnit reporting and local worker defaults. Twelve workers oversubscribed the runner and was reverted before release.
 
 ### Fixed
 

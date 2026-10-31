@@ -18,7 +18,9 @@ def test_parallel_dependency_and_ci_are_declared() -> None:
     project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
     assert any(dependency.startswith("pytest-xdist ") for dependency in project["dependency-groups"]["dev"])
     pipeline = yaml.safe_load((PROJECT.parent / ".gitlab-ci.yml").read_text(encoding="utf-8"))
-    assert "poetry run pytest -n auto -q --junitxml=../report.xml" in pipeline["pytest"]["script"]
+    assert 'PYTEST_ADDOPTS="-q --junitxml=../report.xml" make test PYTEST_WORKERS=12' in pipeline["pytest"][
+        "script"
+    ]
 
 
 @pytest.mark.parametrize(

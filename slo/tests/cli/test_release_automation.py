@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml  # type: ignore[import-untyped]
 
 REPOSITORY_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -187,10 +188,17 @@ class TestReleaseAutomation:
         assert "- job: pytest" in publish_job
         assert "format-and-lint" not in publish_job
 
+    @pytest.mark.parametrize(argnames="parent_options", argvalues=["inherited", "ci-options", "no-options"])
     def test_gitlab_hosted_release_jobs_override_default_e2e_deselection_and_collect_the_smoke(
-        self,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parent_options: str
     ) -> None:
-        """Hosted release jobs and local collection explicitly select the installer smoke."""
+        """Collect named smoke tests without inheriting parent selection or report options.
+
+        Args:
+            tmp_path (Path): Owns the parent report sentinel.
+            monkeypatch (pytest.MonkeyPatch): Restores parent option variants after the test.
+            parent_options (str): Inherited, CI-like, or absent parent pytest options.
+        """
         pipeline: dict[str, object] = yaml.safe_load(GITLAB_CI.read_text())
         template_job: dict[str, object] = pipeline[".hosted-installer-smoke"]  # type: ignore[assignment]
         hosted_job: dict[str, object] = pipeline["hosted-installer-smoke"]  # type: ignore[assignment]
@@ -204,8 +212,18 @@ class TestReleaseAutomation:
         assert macos_job["extends"] == ".hosted-installer-smoke"
         assert expected_command in macos_job["script"]  # type: ignore[operator]
 
+        parent_report: Path = tmp_path / "parent-report.xml"
+        assert parent_report.resolve().is_relative_to(tmp_path.resolve())
+        parent_report.write_text(data="parent-report-sentinel", encoding="utf-8")
+        if parent_options == "ci-options":
+            monkeypatch.setenv(name="PYTEST_ADDOPTS", value=f"-q --junitxml={parent_report}")
+        elif parent_options == "no-options":
+            monkeypatch.delenv(name="PYTEST_ADDOPTS", raising=False)
+        parent_environment: dict[str, str] = dict(os.environ)
+
         collection_environment: dict[str, str] = {
-            **os.environ,
+            # This independent collection owns its options and must not write the parent's JUnit report.
+            **{name: value for name, value in os.environ.items() if name != "PYTEST_ADDOPTS"},
             "SLO_ENV": "test",
             "SLO_ROOT_DIR": str(REPOSITORY_ROOT),
             "SLO_APP_DIR": str(REPOSITORY_ROOT),
@@ -237,8 +255,11 @@ class TestReleaseAutomation:
             capture_output=True,
             text=True,
             check=False,
+            timeout=30,
         )
 
+        assert dict(os.environ) == parent_environment
+        assert parent_report.read_text(encoding="utf-8") == "parent-report-sentinel"
         assert collection.returncode == 0, collection.stderr
         assert "test_hosted_installer_installs_and_runs_the_tagged_product" in collection.stdout
         assert "test_direct_pipx_regeneration_recovers_through_packaged_finalizer[pip]" in collection.stdout

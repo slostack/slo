@@ -1,4 +1,4 @@
-.PHONY: help tui test test-serial smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release release-installer-smoke
+.PHONY: help tui test test-serial smoke install-smoke lint format hooks build-skill-index refresh-skills kb-snapshot install publish-installer release release-installer-smoke
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -46,6 +46,11 @@ install-smoke:  ## Real public-installer Ubuntu/Debian smoke (needs Docker)
 
 lint:  ## Type-check src/ and tests/ with mypy
 	poetry run mypy src/ tests/
+
+# pre-commit reads ../.pre-commit-config.yaml (the git root) and builds gitleaks
+# with Go into its own cache; nothing is installed on PATH.
+hooks:  ## Install the gitleaks pre-commit hook for this clone (needs Go)
+	poetry run pre-commit install
 
 format:  ## Auto-format src/ and tests/ with black
 	poetry run black src/ tests/

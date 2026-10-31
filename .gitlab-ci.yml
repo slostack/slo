@@ -81,6 +81,9 @@ pytest:
   - pip install "poetry==$POETRY_VERSION"
   - cd slo
   - poetry install --no-interaction
+  # One xdist worker per runner vCPU. The runner VM has 6 vCPUs and runs two jobs
+  # at once (MR and push pipelines), so 12 workers per job meant 24 on 6 vCPUs and
+  # timing-bound tests failed nondeterministically. Raise this only with the VM's vCPUs.
   script:
   - >-
     PYTEST_ADDOPTS="-q --junitxml=../report.xml
@@ -101,7 +104,7 @@ pytest:
     --ignore=tests/tui/authentication/test_authentication_headless_e2e.py
     --ignore=tests/tui/authentication/widgets/test_authorization_link.py
     --ignore=tests/tui/authentication/widgets/test_oauth_status.py"
-    make test PYTEST_WORKERS=12
+    make test PYTEST_WORKERS=6
   artifacts:
     when: always
     expire_in: 1 week

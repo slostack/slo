@@ -40,7 +40,7 @@ def test_parallel_dependency_and_ci_are_declared() -> None:
     pipeline = yaml.safe_load((PROJECT.parent / ".gitlab-ci.yml").read_text(encoding="utf-8"))
     exclusions: str = " ".join(f"--ignore={path}" for path in CI_OAUTH_IGNORES)
     assert pipeline["pytest"]["script"] == [
-        f'PYTEST_ADDOPTS="-q --junitxml=../report.xml {exclusions}" make test PYTEST_WORKERS=12'
+        f'PYTEST_ADDOPTS="-q --junitxml=../report.xml {exclusions}" make test PYTEST_WORKERS=6'
     ]
 
 

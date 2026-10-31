@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tomllib
@@ -12,25 +11,6 @@ import pytest
 import yaml
 
 PROJECT: Path = Path(__file__).resolve().parents[1]
-CI_OAUTH_IGNORES: tuple[str, ...] = (
-    "tests/auth/test_authorization_response.py",
-    "tests/auth/test_device_authorization.py",
-    "tests/auth/test_headless_readme_oauth_timeouts.py",
-    "tests/auth/test_oauth_errors.py",
-    "tests/auth/test_oauth_flow.py",
-    "tests/auth/test_oauth_provider.py",
-    "tests/auth/test_oauth_provider_refresh.py",
-    "tests/auth/test_pkce.py",
-    "tests/auth/test_provider_factory.py",
-    "tests/auth/providers/test_anthropic_provider.py",
-    "tests/auth/providers/test_openai_codex_device_authorization.py",
-    "tests/auth/providers/test_openai_codex_provider.py",
-    "tests/tui/authentication/test_auth_screen.py",
-    "tests/tui/authentication/test_authentication_device_e2e.py",
-    "tests/tui/authentication/test_authentication_headless_e2e.py",
-    "tests/tui/authentication/widgets/test_authorization_link.py",
-    "tests/tui/authentication/widgets/test_oauth_status.py",
-)
 
 
 def test_parallel_dependency_and_ci_are_declared() -> None:
@@ -38,73 +18,9 @@ def test_parallel_dependency_and_ci_are_declared() -> None:
     project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
     assert any(dependency.startswith("pytest-xdist ") for dependency in project["dependency-groups"]["dev"])
     pipeline = yaml.safe_load((PROJECT.parent / ".gitlab-ci.yml").read_text(encoding="utf-8"))
-    exclusions: str = " ".join(f"--ignore={path}" for path in CI_OAUTH_IGNORES)
-    assert pipeline["pytest"]["script"] == [
-        f'PYTEST_ADDOPTS="-q --junitxml=../report.xml {exclusions}" make test PYTEST_WORKERS=6'
+    assert 'PYTEST_ADDOPTS="-q --junitxml=../report.xml" make test PYTEST_WORKERS=6' in pipeline["pytest"][
+        "script"
     ]
-
-
-def test_ci_oauth_exclusions_preserve_mixed_auth_and_readiness_collection(tmp_path: Path) -> None:
-    """Apply CI's real options to bounded collection, never executing OAuth or process tests.
-
-    Args:
-        tmp_path (Path): Owns child pytest state; no reports or caches touch the checkout.
-    """
-    pipeline = yaml.safe_load((PROJECT.parent / ".gitlab-ci.yml").read_text(encoding="utf-8"))
-    assignment: str = shlex.split(pipeline["pytest"]["script"][0])[0]
-    options: list[str] = shlex.split(assignment.removeprefix("PYTEST_ADDOPTS="))
-    collection_options: list[str] = [option for option in options if not option.startswith("--junitxml=")]
-    retained_nodes: tuple[str, ...] = (
-        "tests/agents/test_base.py::TestLLMFactoryOpenAIRouting::test_oauth_credential_routes_to_chatgpt_backend",
-        "tests/agents/providers/test_feature89_credentials.py::test_environment_key_beats_real_stored_oauth",
-        "tests/agents/providers/test_openai_responses_sequencing.py::test_calls_keep_arguments_and_replay_when_streams_interleave",
-        "tests/integration/test_herdr_restore_harness_safety.py::test_supervisor_reaps_real_descendants[early]",
-    )
-    assert (tmp_path / "pytest").resolve().is_relative_to(tmp_path.resolve())
-    completed = subprocess.run(
-        args=[
-            sys.executable,
-            "-B",
-            "-m",
-            "pytest",
-            "--collect-only",
-            "-p",
-            "no:cacheprovider",
-            "--basetemp",
-            str(tmp_path / "pytest"),
-            "tests/auth",
-            "tests/tui/authentication",
-            *retained_nodes,
-        ],
-        cwd=PROJECT,
-        env={
-            **{name: value for name, value in os.environ.items() if name != "PYTEST_ADDOPTS"},
-            "PYTEST_ADDOPTS": shlex.join(collection_options),
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "TMPDIR": str(tmp_path),
-        },
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    collected: list[str] = [line for line in completed.stdout.splitlines() if line.startswith("tests/")]
-    assert collected
-    assert not any(node.startswith(path + "::") for path in CI_OAUTH_IGNORES for node in collected)
-    for module in (
-        "tests/auth/test_browser_host.py",
-        "tests/auth/test_credential_dao.py",
-        "tests/auth/test_credential_store.py",
-        "tests/auth/test_credential_resolver.py",
-        "tests/auth/test_credential_refresher.py",
-        "tests/auth/test_openrouter_authentication.py",
-        "tests/tui/authentication/test_openrouter_authentication.py",
-        "tests/tui/authentication/widgets/test_method_select.py",
-        "tests/tui/authentication/widgets/test_api_key_input.py",
-    ):
-        assert any(node.startswith(module + "::") for node in collected), module
-    for node in retained_nodes:
-        assert any(item == node or item.startswith(node + "[") for item in collected), node
 
 
 @pytest.mark.parametrize(

@@ -210,12 +210,18 @@ def test_python_and_vue_recipe_sections_are_preserved() -> None:
                 continue
             if row["source"] == "coding/test-verification-policy/SKILL.md" and heading == "### Example":
                 continue
-            if row["source"] == "coding/naming-and-clarity/SKILL.md" and heading in {
-                "### `Create…` / `Save…`",
-                "### `BuildAndCreate…`",
-                "### Idiomatic Go `newX`",
-            }:
-                continue
+            if row["source"] == "coding/naming-and-clarity/SKILL.md":
+                if heading == "### Idiomatic Go `newX`":
+                    continue  # Go-specific constructor guidance moved to the Go owner.
+                # Lifecycle subsections are now one table; comments are proportionate.
+                heading = {
+                    "## 2. Constructor / lifecycle verb vocabulary": "## 2. State and lifecycle verb vocabulary",
+                    "### `Build…` / `build…`": "| `build` | Assemble a transient value",
+                    "### `Create…` / `Save…`": "| `create` | Establish new owned state",
+                    "### `BuildAndCreate…`": "`build_and_create` means assemble then establish owned state",
+                    "### `start…` / `launch…`": "| `start` / `launch` | Begin background execution",
+                    "## 4. Rich documentation comments": "## 4. Proportionate documentation comments",
+                }.get(heading, heading)
             assert heading in text, (row["source"], heading)
 
 

@@ -290,15 +290,33 @@ class OwnedProcessRun:
         self._capture_admission = Lock()
 
     def run_supervised(
-        self, *, args: list[str], env: dict[str, str], timeout: float
+        self, *, args: list[str], env: dict[str, str], timeout: float, startup_allowance: float = 0
     ) -> subprocess.CompletedProcess[str]:
         """Join the disposable adopter, whose deadline includes descendant cleanup.
 
         Parent does not signal a saved workload PID. The supervisor alone owns
         that unreaped anchor. Missing cleanup evidence fails closed, not READY.
+        READY startup still has its own timeout. After READY, the supervisor owns
+        timeout + startup_allowance for the workload; the parent adds five seconds
+        for bounded TERM/KILL/drain and scheduling headroom. The allowance is not
+        an independently enforced import/startup phase boundary.
+
+        Args:
+            args: Validated isolated Python workload command.
+            env: Explicit contained workload environment.
+            timeout: Execution budget in seconds, also used for the READY wait.
+            startup_allowance: Optional workload startup budget in seconds; defaults to zero.
+
+        Returns:
+            Captured workload result only after the supervisor has joined.
+
+        Raises:
+            subprocess.TimeoutExpired: READY, workload, or enclosing wait expired.
+            RetainedResourceError: Cleanup could not prove resource release.
         """
         import tempfile
 
+        workload_timeout = timeout + startup_allowance
         self.validate_launch(args=args, env=env)
         if self._process is not None:
             raise RuntimeError("supervised owner is single use")
@@ -313,7 +331,7 @@ class OwnedProcessRun:
                 f"sys.path.insert(0,{str(Path(__file__).resolve().parents[2])!r})\n"
                 "from tests.integration.herdr_restore_process_bootstrap import OwnedSupervisor\n"
                 f"raise SystemExit(OwnedSupervisor(root=Path({str(self.safety.root)!r})).run_entry("
-                f"args={args!r},timeout={timeout + 5!r},ready_fd={ready_write}))\n"
+                f"args={args!r},timeout={workload_timeout!r},ready_fd={ready_write}))\n"
             )
             out, err = Path(directory) / "stdout", Path(directory) / "stderr"
             self.safety.contained(path=out)
@@ -334,7 +352,7 @@ class OwnedProcessRun:
                 try:
                     write_owner.close()
                     self.await_supervisor_ready(process=process, fd=ready_read, timeout=timeout)
-                    process.wait(timeout=timeout)
+                    self.wait_supervisor(process=process, timeout=workload_timeout + 5)
                 except BaseException as failure:
                     try:
                         try:
@@ -365,6 +383,15 @@ class OwnedProcessRun:
                 stdout=self.read_capture(fd=stdout).decode(),
                 stderr=self.read_capture(fd=stderr).decode(),
             )
+
+    def wait_supervisor(self, *, process: subprocess.Popen[str], timeout: float) -> None:
+        """Bound the enclosing join; tests may release controlled work at this seam.
+
+        Args:
+            process: The owned supervisor after its READY handshake.
+            timeout: Enclosing workload and cleanup budget in seconds.
+        """
+        process.wait(timeout=timeout)
 
     def read_capture(self, *, fd: int) -> bytes:
         """Read the still-owned capture after join without allocating a second handle."""

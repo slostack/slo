@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.30.1] — 2026-10-31
+
+### Changed
+
+- Authenticate GitLab release creation with the automatically supplied `CI_JOB_TOKEN`.
+- Run CI through `make test PYTEST_WORKERS=12`, retaining JUnit reporting and local worker defaults.
+
+### Fixed
+
+- Isolate nested pytest collection from inherited CI options and update parallel-invocation assertions.
+- Await admitted Herdr report settlement before lifecycle assertions and repair the child-supervisor test deadline handling.
+- Preserve the isolated installer launcher and packaging-owned `slo-entry` contract.
+
 ## [Unreleased]
 
 ### Fixed

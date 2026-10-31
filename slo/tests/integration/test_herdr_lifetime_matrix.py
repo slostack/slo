@@ -559,6 +559,13 @@ async def _matrix140_precommit_platform(
                     await asyncio.wait_for(viewer, timeout=5)
                     spawn.assert_called_once()
                     notice.assert_called_once()
+                if trigger == "runtime_disable":
+                    # The independent platform viewer does not join an already
+                    # admitted periodic report. Disable fences credit immediately;
+                    # the transport holds its lock through reap and accounting.
+                    async with asyncio.timeout(10):
+                        async with reporter._transport._command_lock:
+                            pass
                 acknowledgements.assert_no_late_credit(reporter=reporter)
                 await owners.assert_settled(app=app, trigger=trigger)
     finally:

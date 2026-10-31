@@ -302,7 +302,7 @@ def test_naming_owner_is_language_neutral_and_go_constructor_rule_is_scoped() ->
     naming = (ROOT / "skills/coding/naming-and-clarity/SKILL.md").read_text(encoding="utf-8")
     go = (ROOT / "skills/languages/go/go-conventions/SKILL.md").read_text(encoding="utf-8")
 
-    assert "background execution/concurrency" in naming
+    assert "Begin background execution" in naming
     assert "Spawns goroutines?" not in naming
     assert "goroutine" not in naming
     assert "Python" in naming and "Go" in naming and "TypeScript" in naming

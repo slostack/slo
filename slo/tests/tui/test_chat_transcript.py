@@ -1,6 +1,10 @@
 """Mounted presentation journeys using the existing real session/history fixtures."""
 
 import asyncio
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+from tests.tui.authentication._painted_output import wait_for_condition
+from src.tui.components.chat_transcript.component import TranscriptScrollComponent
 from pathlib import Path
 
 import pytest
@@ -793,12 +797,13 @@ async def test_native_supersession_and_final_growth(keys: tuple[str, str]) -> No
         assert transcript._native_navigation is None
 
 
-async def test_horizontal_first_input_preserves_programmatic_reading_viewport() -> None:
-    """An x input reconciles a public programmatic y move before upper growth."""
-    from src.tui.components.chat_transcript.component import TranscriptScrollComponent
+@asynccontextmanager
+async def horizontal_reading_viewport() -> (
+    AsyncIterator[tuple[ChatTranscriptComponent, TranscriptScrollComponent, TranscriptTestApp, int]]
+):
+    """Establish painted programmatic scroll before delivering horizontal input."""
 
     async def reader() -> list[TranscriptEntryDAO]:
-        """Supply an empty replay boundary."""
         return []
 
     transcript = ChatTranscriptComponent(history_reader=reader)
@@ -810,21 +815,55 @@ async def test_horizontal_first_input_preserves_programmatic_reading_viewport() 
         wide.styles.width = 300
         wide.styles.height = 80
         await transcript.mount_tree_output(widget=wide)
-        await pilot.pause()
         scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
+        # Wait for layout before applying a programmatic scroll: a pending layout
+        # can otherwise replace the requested position before any key is pressed.
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: scroll.max_scroll_y >= 30,
+            description="wide transcript layout is scrollable",
+        )
+        await pilot.wait_for_scheduled_animations()
         scroll.scroll_to(y=30, animate=False, immediate=True)
-        await pilot.pause()
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: any(
+                "READ-032" in strip.text for strip in app.screen._compositor.render_strips()
+            ),
+            description="programmatic reading marker is painted before horizontal input",
+        )
         before = [strip.text for strip in app.screen._compositor.render_strips()]
         row = next(i for i, line in enumerate(before) if "READ-032" in line)
         scroll.focus()
         await pilot.press("right")
         upper.finalize(final_text="\n\n".join(f"growth-{i}" for i in range(10)))
         await pilot.wait_for_scheduled_animations()
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: transcript._native_navigation is None,
+            description="native horizontal navigation completes",
+        )
         await pilot.pause()
+        yield transcript, scroll, app, row
+
+
+async def test_horizontal_input_preserves_reading_row_after_upper_growth() -> None:
+    """Upper-content growth does not move the reader's painted marker."""
+    async with horizontal_reading_viewport() as (_, _, app, row):
         after = [strip.text for strip in app.screen._compositor.render_strips()]
         assert "READ-032" in after[row]
+
+
+async def test_horizontal_input_scrolls_x_after_programmatic_y_move() -> None:
+    """A programmatic vertical move does not consume the next horizontal key."""
+    async with horizontal_reading_viewport() as (_, scroll, _, _):
         assert scroll.scroll_x > 0
+
+
+async def test_horizontal_input_releases_native_navigation() -> None:
+    """The completed key action leaves no native-navigation ownership behind."""
+    async with horizontal_reading_viewport() as (transcript, _, _, _):
         assert transcript._native_navigation is None
 
 

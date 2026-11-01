@@ -17,44 +17,49 @@ or treat repeated authoring dispatches as completed workflow turns.
 Explicit user instructions override the default workflow-turn and per-turn dispatch
 budgets: raise, lower or remove either limit as requested. Record and pass on the
 effective limits without resetting consumed counts; runtime caps and other
-policies remain separate. See the shared rules above for defaults and scope.
-
+policies remain separate.
 
 Before Step 1 read `skills/engineering/engineering-routing/SKILL.md` and
 `skills/engineering/engineering-testing/SKILL.md`. Record affected languages,
-frameworks, test categories, project contracts, selected skill paths/source tiers,
-and actual project verification commands. Pass this record to every phase.
-Load language/component recipes on demand; do not impose Python syntax or tooling
-on Go, TypeScript or an unsupported language. For Go use the test-first cadence.
+frameworks, test categories, project contracts, selected skill paths and the
+actual project verification commands. Pass this record to every phase. Load
+language and component recipes on demand; do not impose Python syntax or tooling
+on Go, TypeScript or an unsupported language.
 
 Each phase returns a terminal verdict (READY/COMPLETE, REVISE, or FAILED), concrete
-artifact paths, requirement-to-evidence mapping, exact commands/results, deviations
-and unresolved blockers. Verify artifacts exist before advancing; a success exit
-code without the required evidence is not READY. Revision changes invalidate later
-review/completion evidence: return to the responsible implementation/spec phase,
-retest and re-review.
+artifact paths, requirement-to-evidence mapping, deviations and unresolved blockers.
+Verify artifacts exist before advancing. A revision invalidates later review
+evidence for the changed documents and everything that depends on them: return to
+the responsible phase, retest and re-review.
 An execution failure stops progression; a recoverable failed task may be retried
 up to three times after the initial attempt, with its cause addressed and within
-the current workflow turn's dispatch budget. Never retry an aborted task, even when
-the reported cause is a timeout. User cancellation is not permission to restart work.
-Do not claim another agent independently reviewed work that was reviewed solo.
+the current workflow turn's dispatch budget. Never retry an aborted task.
+User cancellation is not permission to restart work. Do not claim another agent
+independently reviewed work that was reviewed solo.
 
 For dynamic workflows use in-session spawn_sub_agents unless explicitly detached;
 ordinary workflow execution does not itself grant permission to spawn. A detached
-orchestrator never launches another detached workflow. A missing optional knowledge
-base is non-blocking; follow `skills/design-and-analysis/locate-knowledge-base/SKILL.md`.
+orchestrator never launches another detached workflow. A missing knowledge base is
+non-blocking; follow `skills/design-and-analysis/locate-knowledge-base/SKILL.md`.
 
 ## Skills used in this workflow
 
-Load these on demand as each step calls for them — also load the scoped language/component companions selected by the routing record:
+Load these on demand as each step calls for them, plus the language and component skills selected by the routing record:
 
 | Step | Skill |
 |---|---|
-| 1 — Author (gather/draft/self-check/revise) | `skills/design-and-analysis/feature-specifications/SKILL.md` |
-| 2 — Verification | `skills/design-and-analysis/feature-specification-verification/SKILL.md` |
-| 3 — Task breakdown | `skills/design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md` |
+| 1 — Overview | `skills/design-and-analysis/feature-specifications/SKILL.md` |
+| 2 — Standalone engineering sub-specs | `skills/design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md` |
+| 3 — Family verification | `skills/design-and-analysis/feature-specification-verification/SKILL.md` |
+| Optional context briefing before Step 1 | `skills/design-and-analysis/gather-feature-context/SKILL.md` |
 | Ubiquitous language | `skills/design-and-analysis/ubiquitous-language/SKILL.md` |
 
+```text
+request ──► 1. overview.md ──► 2. <NN>.a.n sub-specs + task-list.md ──► 3. family review
+                 ▲                        ▲                                   │
+                 └──── REVISE: overview ──┴──── REVISE: sub-spec/task list ◄──┘
+                                                         READY ──► hand off
+```
 
 ---
 
@@ -66,8 +71,8 @@ Activate this workflow whenever the operator asks to:
 - "Spec out …"
 - "Generate a feature specification …"
 - "Plan the implementation of …"
-- "Create a spec for [JIRA ticket or Confluence page]"
-- break a large feature description into tasks or sub-specs
+- "Create a spec for [issue, task or design page]"
+- break a large feature description into sub-specs
 
 The trigger is intent to produce a specification document.
 
@@ -77,185 +82,97 @@ The trigger is intent to produce a specification document.
 
 Before the first step begins, confirm:
 
-- The operator has provided a feature description, JIRA ticket, Confluence URL, or verbal brief.
-- `AGENTS.md` and `docs/RESEARCH.md` have been read (or are already in context). If either is empty, populate it before proceeding — see the CLAUDE.md instruction on empty `AGENTS.md` / `docs/RESEARCH.md`.
-- The knowledge base has been looked for with `skills/design-and-analysis/locate-knowledge-base/SKILL.md`. This check is
-  non-blocking: read the entry point (`Welcome.md` or `index.md` under
-  `$SLO_KB_DIR`) when it exists. When no KB is found, tell the user, offer to
-  create one, and continue the workflow without it. A missing KB is never a
-  reason to stop.
+- The operator has provided a feature description, an issue or task from any source-control or project-management tool, a design page, or a verbal brief.
+- `AGENTS.md` and `RESEARCH.md` (or `docs/RESEARCH.md`) have been read when present.
+- The knowledge base has been looked for with `skills/design-and-analysis/locate-knowledge-base/SKILL.md`. A missing KB is never a reason to stop.
 
 ---
 
 ## Steps
 
-### Step 1 — Feature Specification (Gather context → Draft → Self-check → Revise)
+### Step 1 — Overview
 
 **Governing skill:** `skills/design-and-analysis/feature-specifications/SKILL.md`
 
-Execute its Gather context → Draft → Self-check → Revise stages in order.
+**Input consumed:** the operator's request and its source issue or task. Optionally, a briefing from `gather-feature-context` when the operator asks for one.
 
-**Input consumed:** the operator's feature description, ticket, or brief.
+**What this step does:** writes `overview.md` for the feature: purpose, current state, the duplicate-code table, domains and data, journeys, module interfaces, behaviour to prove, open decisions and a delivery order of vertical slices. It finishes with the skill's "Before saving" checklist.
 
-**What this step does:**
+**Output produced:** `<feature-specifications-root>/<NN>-<feature>/overview.md`. Never name a spec `request.md`.
 
-Execute the Gather context stage first. The Gather context stage produces the **Context Bundle** — a structured synthesis of: specification family, affected surface area, conventions in force, second-order requirements, KB lessons, and the narrative plan. The bundle must exist in the conversation before any spec text is drafted.
+**READY condition:** the "Before saving" checklist passes and no duplicate is unresolved. Open decisions are allowed; they carry forward as blockers.
 
-Apply the style guide from `skills/design-and-analysis/feature-specifications/SKILL.md` to draft the specification. Every feature must have overview.md with product framing and one or more separate standalone engineering sub-specs. Declare the complete family before drafting; neither part is optional and small features do not combine them into one file.
-
-### Required implementation-details pass — do not skim
-
-Before the draft is eligible for the Self-check stage, perform a dedicated implementation-details pass for every engineering slice. The file-by-file implementation contracts are the coding agent's build brief, not a high-level recap. Read the packaged granularity sample at `skills/samples/implementation-details-granularity.md` as the required standard; it is shipped with Slo and is therefore available in installed environments.
-
-The pass must ensure the sub-spec leaves no material implementation decision ambiguous. It must name the exact repository-relative files and folders involved; exact symbols and call sites to add, change, remove, or rewire; implementation order; current and target behavior; input/output, state, error, configuration, edge-case, and unchanged-behavior rules; convention-compliant implementation-ready code detail for non-trivial work; and consolidation or deletion work needed to preserve single ownership.
-
-The same pass must prescribe validation rather than merely saying “add tests”: identify exact test file paths, existing tests to update or replace, new test scenarios or names, fixtures/setup, expected assertions, required test levels, verification commands, and manual smoke steps where applicable. The prescribed code and tests must honor the conventions established by the Context Bundle. If an implementing agent could reasonably make different choices about code placement, behavior, or test coverage, revise the draft before running the Self-check stage.
-
-Perform a final editorial pass before self-check: remove repeated framing, present
-interfaces by production file in the target language, consolidate rules under one
-owner, and separate current contracts from historical findings. Keep review and
-workflow records outside the specification body, preserving them in the conversation
-or linked evidence artifacts. Compare the shortened contract against requirements:
-no lost types/defaults, invariants, failures, ordering, authorization or test coverage.
-The overview stays a product journey and delivery map, not an interface reference.
-
-Once the spec body is drafted, execute the Self-check stage. Independent verification runs once at Step 2, not nested in authoring. The Self-check stage runs the complete author-owned requirements/architecture/flow/error audit, audits narrative sections, cross-checks against coding conventions, **always runs the DRY consolidation pass**, assesses granularity, audits example richness, and validates test coverage. If the verdict is REVISE, edit the spec in place and re-run the Self-check stage until the verdict is READY.
-
-The consolidation pass is the step that keeps the system design DRY. A generated specification frequently proposes functionality that already exists in the code — doing the same work wholly, doing part of it, or owning the responsibility the new design duplicates. Redundant artefacts, entities, and domains cause confusion that outlives the feature, so every artefact the spec introduces is checked against the existing code and consolidated by deleting and replacing it, encapsulating it within our conventions, or re-designing the existing component to absorb the new functionality. Responsibilities stay single, isolated, and clean, with distinguishable boundaries documented in the comments and explicit interfaces to adjacent responsibilities. Any surviving redundancy is an automatic REVISE.
-
-**Output produced:**
-
-- Context Bundle (in conversation)
-- Product overview written to `specifications/<number>-<title>/overview.md`, plus
-  one or more separate standalone engineering sub-specs in the same family
-  - The primary spec document is always named `overview.md` inside its numbered folder.
-  - Sub-specs (drafted in Step 1 and refined during Step 3 breakdown) follow `<spec-number>.<letter>.<index>-<title>.md`
-    (e.g., `28.a.1-moonshot-credential-lane.md`). Never name a spec file `request.md`.
-- Author Self-check Report (in conversation, verdict = READY)
-
-**READY condition:** Self-check stage returns READY. No outstanding REVISE loops.
-
-**Context carried forward to Step 2:**
-- The full specification document
-- The Author Self-check Report (especially the JIRA traceability matrix and any open questions)
-- The Context Bundle (specification family, affected surface area, conventions in force)
+**Context carried forward:** the overview, its open decisions, and the routing record.
 
 ---
 
-Report the phase result and verify its required artifacts before advancing.
-
----
-
-### Step 2 — Feature Specification Verification
-
-**Governing skill:** `skills/design-and-analysis/feature-specification-verification/SKILL.md`
-
-**Input consumed:**
-- The specification document from Step 1
-- The Author Self-check Report from Step 1
-- The JIRA ticket (if provided — fetch it if not already in context)
-
-**What this step does:**
-
-Run the full verification procedure from `feature-specification-verification.md`. This is an independent, adversarial review of the spec produced in Step 1 — not a rubber-stamp. It re-derives requirements from the JIRA source of truth, maps them against the spec, audits the full architectural stack for completeness, independently searches the code for existing owners of every artefact the spec introduces, traces the control flow, checks for missing error paths, and assesses specification family and structure compliance independently. It must also verify the implementation-details contract as a CRITICAL gate: granular code placement, symbol-level changes and behavior, convention compliance, and concrete test coverage must leave no material ambiguity for the implementing agent.
-
-The verification must produce a formal report with:
-- JIRA Requirement Traceability Matrix
-- Architectural layer checklist results
-- Redundancy gaps (if any) — treated as CRITICAL
-- Critical gaps (if any)
-- Minor gaps (if any)
-- Ambiguities (if any)
-- Family/structure gaps (if any)
-- Executive summary with pass/fail/revision verdict
-
-If CRITICAL gaps are found, the agent must return to Step 1 and revise the specification before completing Step 2.
-
-**Output produced:**
-
-- Specification Verification Report (in conversation) with executive summary and full traceability matrix
-
-**READY condition:** verification report is complete; no CRITICAL gaps remain unaddressed.
-
-**Context carried forward to Step 3:**
-- The specification document (potentially revised by Step 2's findings)
-- The Specification Verification Report
-- The dependency structure and requirements list from the traceability matrix
-
----
-
-Report the phase result and verify its required artifacts before advancing.
-
----
-
-### Step 3 — Breakdown to Tasks
+### Step 2 — Standalone engineering sub-specs
 
 **Governing skill:** `skills/design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md`
 
-**Input consumed:**
-- The final verified specification from Steps 1–2
-- The Specification Verification Report (especially the traceability matrix and dependency notes)
-- The JIRA parent ticket and project key (the operator must supply these if not already provided)
+**Input consumed:** `overview.md` from Step 1, any existing sub-specs, the implementation repository and the convention skills from the routing record.
 
-**What this step does:**
+**What this step does:** expands each delivery step into one standalone engineering sub-spec: one vertical slice, its current state, ownership and interfaces, schema contract, complete core logic, files and handoff, and acceptance rows backed by behaviour tests (unit tests only for complex computation). Schema work comes first. It then writes `task-list.md` in dependency order.
 
-Decompose the verified specification into dependency-ordered implementation tasks. Keep the product overview and map each implementation task to standalone engineering sub-specs; create or refine the required sub-specs without copying shared contracts. Preserve
-semantic coverage rather than historical code blocks. Material contract changes in
-breakdown return to authoring/self-check and independent verification before publication. Group cohesive work, split at dependency boundaries, identify parallelizable tasks, and prefer single-repo tasks.
+Every consolidation the overview committed to (delete and replace, encapsulate, re-design) is assigned to a specific sub-spec, sequenced so the replacement lands before or with the deletion.
 
-Each child task must:
-- Use the concise purpose/scope and file-oriented contract required by `skills/design-and-analysis/feature-specifications/SKILL.md` for its artifact role
-- Carry any consolidation work the spec committed to — the deletions, replacements, encapsulations, and re-designs that keep the system DRY belong in the dependency-ordered tasks, not in a follow-up nobody schedules
-- Assign each required contract and meaningful example to one authoritative sub-spec
-- State explicit acceptance criteria (specific and testable)
-- Reference the adjacent feature or pattern to follow
+**Output produced:** `<NN>.a.n-<slice>.md` standalone engineering sub-specs and `task-list.md` beside `overview.md`.
 
-After writing all tasks, produce an ASCII dependency graph showing which tasks block which, which can be parallelized, and the critical path.
+**READY condition:** the skill's review checklist passes. Sub-specs that depend on an open decision are marked BLOCKED, not READY.
 
-If a JIRA project key was provided, push the tasks to JIRA as sub-tasks of the parent issue. Report the full summary table with actual issue keys and the dependency graph.
-
-**Output produced:**
-
-- Dependency-ordered task list (in conversation)
-- Per-task standalone engineering sub-specs linked to the product overview
-- ASCII dependency graph
-- JIRA sub-tasks created (if project key was provided), with summary table
-
-**READY condition:** task list is complete, dependency graph has no cycles, every required contract and meaningful example has one authoritative owner, JIRA tasks are created if applicable.
+**Context carried forward:** the complete family and the list of blockers.
 
 ---
 
-Present the task breakdown and dependency graph. State:
+### Step 3 — Family verification
 
-> "Step 3 complete — specification is broken down into [N] tasks. [JIRA sub-tasks created / not pushed to JIRA.] Workflow complete."
+**Governing skill:** `skills/design-and-analysis/feature-specification-verification/SKILL.md`
 
+**Input consumed:** the whole family (`overview.md`, every sub-spec, `task-list.md`) and the source issue or task.
 
-Before creating any JIRA sub-tasks or publishing the spec to the wiki, pause and confirm with the operator:
+**What this step does:** an independent, adversarial review of the whole family, not a rubber stamp. It traces every source requirement to a document, audits each touched layer, searches the code for existing owners of every new artefact, traces the control flow and error paths, checks the overview and each sub-spec against their skills, and checks the family for consistency. Implementation ambiguity in a sub-spec is a CRITICAL gap.
 
-> "Specification Development Workflow complete. Ready to [create JIRA sub-tasks / publish to wiki / hand off to developer]. Confirm?"
+**Output produced:** the Specification Verification Report (in conversation) with the traceability matrix, findings per document and a READY or REVISE verdict.
+
+**On REVISE:**
+
+1. Route each finding to the skill that owns the document: `overview.md` → Step 1; sub-specs and `task-list.md` → Step 2.
+2. A change to the overview that alters a contract also sends the affected sub-specs back through Step 2.
+3. Re-run Step 3 on the changed documents and everything that depends on them.
+4. Each loop counts against the workflow-turn limit.
+
+**READY condition:** the report is complete and no CRITICAL, REDUNDANCY or STRUCTURE gaps remain.
+
+---
+
+Report each phase result and verify its artifacts before advancing. When Step 3 returns READY, state:
+
+> "Specification Development complete — `overview.md` and [N] sub-specs verified READY ([M] BLOCKED on open decisions). Ready to commit, publish, or hand off to implementation. Confirm?"
+
+Commit, publication to any external tool, and implementation each need explicit operator confirmation.
 
 ---
 
 ## Exit Condition
 
-The Specification Development Workflow is complete when:
+The workflow is complete when:
 
-- Step 1: The specification is drafted, Self-check stage returns READY.
-- Step 2: Verification report is complete, no CRITICAL gaps remain.
-- Step 3: Tasks are broken down with dependency graph, JIRA sub-tasks created (if applicable).
+- Step 1: `overview.md` passes its checklist.
+- Step 2: every delivery step has a sub-spec, and `task-list.md` is acyclic.
+- Step 3: the verification verdict is READY.
 
 ---
 
 ## What Does Not Change
 
-The following rules remain in effect throughout this workflow. The workflow does not relax or override them:
+These rules stay in effect throughout. The workflow does not relax them:
 
-- All coding conventions from `AGENTS.md` and the always-on rules in `CLAUDE.md`.
-- The requirement to read matching `build-*.md` files before specifying any layer that a spec touches.
-- The KB consultation requirement — the Gather context stage's Step 3 is not optional.
-- The requirement to seek confirmation before committing or publishing (`ALWAYS SEEK CONFIRMATION BEFORE COMMITTING CODE`).
-- Ubiquitous language — every concept introduced in the spec must follow the single-name-across-all-layers rule from `ubiquitous-language.md`.
-- DRY design — no step of this workflow may produce a spec that adds a redundant artefact, entity, or domain for work the code already does. Responsibilities stay single, isolated, and clean, with documented boundaries and explicit interfaces to adjacent responsibilities. The Self-check stage's consolidation pass in Step 1 and the redundancy review in Step 2 both enforce this, and Step 3's child tasks must carry the deletions and re-designs that consolidation requires.
+- All coding conventions from `AGENTS.md`, `SLO.md` and `CLAUDE.md`.
+- Reading the matching convention skills before specifying any layer.
+- The knowledge-base consultation in Step 1.
+- Confirmation before committing or publishing.
+- Ubiquitous language: one name per concept across every document and layer.
+- DRY with cohesion: no redundant artefact, entity or domain for work the code already does, and no trivial extraction (such as moving a flush out of its method) that breaks the readability of a cohesive unit. Steps 1 and 2 record and consolidate duplicates; Step 3 independently searches for any that survive.
 
 ---
 
@@ -264,15 +181,11 @@ The following rules remain in effect throughout this workflow. The workflow does
 ```
 Trigger: "write a feature spec for X"
 
-Step 1: Gather context → Draft → Self-check → Revise (loop until READY)
-        └─ Output: spec document + Author Self-check Report
-
-Step 2: Verification (adversarial; returns to Step 1 if CRITICAL gaps)
-        └─ Output: verification report with traceability matrix
-
-Step 3: Task breakdown → dependency graph → JIRA push (if applicable)
-        └─ Output: child specs + dependency graph + JIRA sub-tasks
+Step 1: feature-specifications            → overview.md
+Step 2: breakdown-feature-spec-to-tasks   → <NN>.a.n sub-specs + task-list.md
+Step 3: feature-specification-verification → READY / REVISE
+        REVISE → overview to Step 1, sub-specs to Step 2, then Step 3 again
 
 Verify READY artifacts at every phase; report progress.
-Obtain explicit authorization before publishing or committing.
+Obtain explicit authorization before committing, publishing or implementing.
 ```

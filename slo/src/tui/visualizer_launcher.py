@@ -24,15 +24,21 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import shutil
 import subprocess
 import sys
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from config import cfg as cfg_module
 from config.logger import log_warning
+from src.agents.slo_agent.herdr.dao import VisualizerLaunchOutcomeDAO
+from src.agents.slo_agent.herdr.service import HerdrTaskJoin
+
+if TYPE_CHECKING:
+    from src.agents.slo_agent.sessions.service import SloAgentSession
 
 __all__ = ["VisualizerLauncher"]
 
@@ -72,9 +78,12 @@ _LINUX_TERMINAL_CANDIDATES: tuple[str, ...] = (
 class VisualizerLauncher:
     """Open the workflow visualiser for a session in a new terminal window.
 
-    The single public entry point is :meth:`launch`. All other methods are
-    pure helpers that build the argv/command strings and are exercised directly
-    by unit tests.
+    :meth:`launch` synchronously admits platform work using the current auto-launch
+    policy and returns bool spawn-submission evidence, not viewer readiness.
+    :meth:`launch_async` selects one destination for the captured session; platform
+    work runs in an owned thread joined before cancellation propagates. Discovery
+    and spawn perform effects; admitted work may finish after the caller closes.
+    Herdr work delegates to the session-owned adapter without platform fallback.
     """
 
     @classmethod
@@ -115,6 +124,58 @@ class VisualizerLauncher:
         if argv is None:
             return False
         return cls._spawn_detached(argv=argv, spawn=spawn)
+
+    @classmethod
+    async def launch_async(
+        cls, *, parent_session_id: str, session: SloAgentSession
+    ) -> VisualizerLaunchOutcomeDAO:
+        """Select one destination for the caller's captured session and parent.
+
+        Args:
+            parent_session_id (str): Requested workflow parent, not a child identity.
+            session (SloAgentSession): Owner retained by the app launch worker.
+
+        Returns:
+            VisualizerLaunchOutcomeDAO: Submission evidence without a liveness claim.
+
+        Raises:
+            asyncio.CancelledError: Platform work is joined before propagation;
+                shared Herdr work remains owned by the session adapter.
+        """
+        if not cls._auto_visualize_enabled():
+            return VisualizerLaunchOutcomeDAO(status="skipped")
+        destination = session.workflow_visualizer_destination
+        if destination == "platform":
+            return await cls._launch_platform_joined(parent_session_id=parent_session_id)
+        if destination == "herdr":
+            return await session.open_workflow_visualizer(parent_session_id=parent_session_id)
+        return VisualizerLaunchOutcomeDAO(status="failed")
+
+    @classmethod
+    async def _launch_platform_joined(cls, *, parent_session_id: str) -> VisualizerLaunchOutcomeDAO:
+        """Retain committed platform work until terminal, even during cancellation.
+
+        The async destination selector delegates here. Its app worker retains this
+        coroutine until the thread finishes; a window already committed is user-owned.
+
+        Args:
+            parent_session_id (str): Captured workflow parent identity.
+
+        Returns:
+            VisualizerLaunchOutcomeDAO: Spawn result, not viewer readiness.
+
+        Raises:
+            asyncio.CancelledError: After the retained platform thread finishes.
+        """
+        task = asyncio.create_task(coro=asyncio.to_thread(cls.launch, parent_session_id=parent_session_id))
+        cancelled = await HerdrTaskJoin.wait(task=task)
+        try:
+            opened = task.result()
+        except Exception:
+            opened = False
+        if cancelled:
+            raise asyncio.CancelledError
+        return VisualizerLaunchOutcomeDAO(status="opened" if opened else "failed")
 
     # ── argv construction ────────────────────────────────────────────────────
 
@@ -330,8 +391,9 @@ class VisualizerLauncher:
         try:
             spawner(argv)
             return True
-        except Exception as exc:  # noqa: BLE001 — best-effort; never crash the TUI.
-            log_warning(msg="visualizer_launch_failed", error=str(exc), argv=argv)
+        except Exception:  # noqa: BLE001 — best-effort; never crash the TUI.
+            # Exception text and launch argv can contain private configuration.
+            log_warning(msg="visualizer_launch_failed", category="platform_spawn_failed")
             return False
 
     @staticmethod

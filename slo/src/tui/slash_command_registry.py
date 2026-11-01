@@ -20,7 +20,7 @@ SlashArgumentMode = Literal["none", "free_text", "enumerated"]
 
 WORKFLOWS_USAGE: str = (
     "/workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>"
-    " | tui dismiss [<workflow-id>]]"
+    " | tui dismiss [<workflow-id>] | tui show]"
 )
 """``/workflows`` usage shared by the registry, ``/help`` and the router's usage line."""
 
@@ -181,6 +181,14 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         display_order=30,
     ),
     SlashCommandSpecDAO(
+        name="code",
+        description="open an existing file or directory in a separate editor pane",
+        argument_mode="free_text",
+        usage="/code <path>",
+        argument_hint="path",
+        display_order=39,
+    ),
+    SlashCommandSpecDAO(
         name="cwd",
         description="show the workdir",
         display_order=40,
@@ -207,7 +215,7 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         name="workflows",
         description=(
             "list detached workflows; abort <id>; dismiss <id>; resume <id>; "
-            "tui dismiss [<id>] clears finished groups from the list"
+            "tui dismiss [<id>] hides displayed groups; tui show restores them"
         ),
         aliases=["wf"],
         argument_mode="enumerated",

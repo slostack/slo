@@ -12,7 +12,7 @@ class QueuedPromptBlock(LiteralTextStatic):
 
     WHAT: Shows literal user text with the ``⏳ Queued:`` prefix and supports
     in-place latest-wins replacement.
-    WHO: ``SloTUI`` mounts it into ``#chat-shell`` directly above ``PromptInput``
+    WHO: ``SloTUI`` mounts it into ``#chat-shell`` directly above ``PromptInputComponent``
     while its app-owned prompt slot is occupied — anchored outside the scroll
     region, never as a transcript entry.
     WHEN: It exists from a busy ordinary submission until run-finally drain or

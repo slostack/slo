@@ -103,7 +103,7 @@ class UserMessageBlock(Vertical):
 
         WHAT: Builds the child Content visual from the same string used for
         focused copy and native range extraction.
-        WHO: ``SloTUI`` mounts this through ``TranscriptProjector`` for live,
+        WHO: ``SloTUI`` mounts this through ``TranscriptProjectionAdapter`` for live,
         steering, and replayed user turns.
         WHEN: Before parent mount, avoiding the existing child-mount render race.
 

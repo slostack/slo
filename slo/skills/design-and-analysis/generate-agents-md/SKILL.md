@@ -147,7 +147,7 @@ The ``skills/design-and-analysis/`` directory contains guides for navigating and
 | File | Purpose |
 |------|---------|
 | `find-how-it-works/SKILL.md` | How to trace a feature from entry point through to database |
-| `feature-specifications/SKILL.md` | Style guide for writing technical feature specifications |
+| `feature-specifications/SKILL.md` | How to write a feature's specification overview (`overview.md`) |
 | `generate-agents-md/SKILL.md` | How to generate or regenerate this AGENTS.md file |
 | `generate-research-md/SKILL.md` | How to generate or regenerate RESEARCH.md |
 ```

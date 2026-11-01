@@ -21,6 +21,7 @@ from textual.pilot import Pilot
 from textual.screen import ModalScreen
 from textual.scrollbar import ScrollTo
 from textual.theme import Theme
+from textual.widget import Widget
 from textual.widgets import Button, RichLog, Static
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
@@ -126,6 +127,24 @@ class TestProgressViewport:
 
             ProgressViewportDAO(x=10_000.0, y=10_000.0, following=False).restore(log=log)
             assert (log.scroll_x, log.scroll_y) == (log.max_scroll_x, log.max_scroll_y)
+
+    async def test_restore_waits_for_horizontal_scrolling_to_be_enabled(self) -> None:
+        """A reachable saved pan is not restored before Textual enables its scrollbar."""
+        app: _LogHost = _LogHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            log: RichLog = app.fill()
+            await pilot.pause()
+            viewport: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+            assert log.max_scroll_x >= viewport.x
+
+            # Content measurement can precede the scrollbar-visibility layout pass.
+            log.show_horizontal_scrollbar = False
+            assert viewport.restore(log=log) is False
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+
+            log.show_horizontal_scrollbar = True
+            assert viewport.restore(log=log) is True
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
 
     def test_viewport_is_frozen_and_defaults_to_following(self) -> None:
         """A fresh viewport is the tail-following initial intent and cannot be mutated."""
@@ -311,6 +330,65 @@ class _DeferredRestores:
         callbacks, self.callbacks = self.callbacks, []
         for callback, kwargs in callbacks:
             callback(**kwargs)
+
+
+class TestThinkingFormatting:
+    """Readable reasoning survives mounted refresh, replay projection and reopen."""
+
+    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("size", [(60, 20), (120, 40)])
+    async def test_markdown_spacing_wrap_refresh_and_reopen(
+        self, theme: Theme, size: tuple[int, int]
+    ) -> None:
+        """RichLog paints spaced wrapped prose, styled text and exact fenced indentation."""
+        source = (
+            "**Readable thinking** with spaces between every word " * 4
+            + "\n\nSecond paragraph.  \nHard break.\n\n```text\n    x  =  1\n```"
+        )
+        thinking = TranscriptEntryDAO(kind="thinking", content=source)
+        answer = TranscriptEntryDAO(kind="assistant", answer="Assistant keeps spaces.")
+        app = _ScreenHost(viewport=ProgressViewportDAO(following=False))
+        async with app.run_test(size=size) as pilot:
+            app.theme = theme.name
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(thinking, answer)))
+            log = _log(app=app)
+            painted = [line.text for line in log.lines]
+            assert sum("Readable thinking" in line for line in painted) >= 2
+            assert all(len(line.rstrip()) <= log.scrollable_content_region.width for line in painted), (
+                log.scrollable_content_region.width,
+                painted,
+            )
+            assert any("    x  =  1" in line for line in painted)
+            assert any("Assistant keeps spaces." in line for line in painted)
+            assert any(
+                segment.style and segment.style.bold and "Readable" in segment.text
+                for line in log.lines
+                for segment in line
+            )
+            assert "**" not in "\n".join(painted)
+            assert any(not line.strip() for line in painted)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(thinking, answer)))
+            assert [line.text for line in log.lines] == painted
+            # Canonical replay carries reasoning on an assistant entry rather than a thinking entry.
+            replay = TranscriptEntryDAO(kind="assistant", reasoning=source, answer=answer.answer)
+            await _paint(
+                app=app,
+                pilot=pilot,
+                snapshot=_snapshot(entries=(replay,), revision="replay", source_generation="canonical:1"),
+            )
+            replay_lines = [line.text for line in log.lines]
+            assert sum("x  =  1" in line for line in replay_lines) == 1
+            assert sum("Assistant keeps spaces." in line for line in replay_lines) == 1
+            app.screen_under_test.dismiss()
+            await pilot.pause()
+            app.screen_under_test = SessionProgressScreen(
+                key=_KEY, viewport=ProgressViewportDAO(following=False)
+            )
+            await app.push_screen(app.screen_under_test)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=(replay,), revision="reopen"))
+            assert [line.text.rstrip() for line in _log(app=app).lines] == [
+                line.rstrip() for line in replay_lines
+            ]
 
 
 class TestFirstPaint:
@@ -939,6 +1017,27 @@ class TestRestoreConvergence:
             assert ProgressViewportDAO(x=5.0, y=30.0, following=False).restore(log=log) is True
             assert ProgressViewportDAO(x=10_000.0, y=10_000.0, following=False).restore(log=log) is False
 
+    async def test_saved_pan_retries_after_scrollbar_visibility_changes(self) -> None:
+        """A reopened modal keeps its saved pan while scrollbar layout catches up."""
+        saved: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+        app: _ScreenHost = _ScreenHost(viewport=saved)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen: SessionProgressScreen = app.screen_under_test
+            deferred: _DeferredRestores = _DeferredRestores(screen=screen)
+            screen.apply_snapshot(snapshot=_snapshot(entries=_entries(count=40)))
+            await pilot.pause()
+            log: ProgressLog = _log(app=app)
+            assert log.max_scroll_x >= saved.x
+
+            log.show_horizontal_scrollbar = False
+            deferred.run_all()
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+            log.show_horizontal_scrollbar = True
+            await pilot.pause()
+
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
+
     async def test_clamped_restore_retries_when_the_log_is_laid_out(self) -> None:
         """Reopening before wide lines are laid out must not lose the saved pan."""
         app: _ScreenHost = _ScreenHost(viewport=ProgressViewportDAO(x=4.0, y=5.0, following=False))
@@ -991,3 +1090,152 @@ class TestRestoreConvergence:
                 await pilot.pause()
 
             assert restore.call_count == 1
+
+    async def test_zero_sized_restore_waits_for_layout(self) -> None:
+        """A restore delivered before the log's first layout stays pending and lands after it.
+
+        Regression for the twenty-child journey reopen at 120x40 under a congested
+        event loop: the progress snapshot is written while the RichLog's first
+        resize is still queued, so every write is deferred and the restore runs
+        against a zero scrollable range. The 4.0 pan must not be clamped away
+        there; it must land once the deferred wide content is actually rendered.
+        """
+        saved: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+        app: _ScreenHost = _ScreenHost(viewport=saved)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            screen: SessionProgressScreen = app.screen_under_test
+            log: ProgressLog = _log(app=app)
+            # Simulate the congested reopen: the log's first resize is still
+            # queued, so writes accumulate as deferred renders and the paint's
+            # scheduled restore runs against the provisional zero range.
+            log._size_known = False
+            deferred: _DeferredRestores = _DeferredRestores(screen=screen)
+            screen.apply_snapshot(snapshot=_snapshot(entries=_entries(count=40)))
+            assert not log.lines and len(log._deferred_renders) == 120
+
+            deferred.run_all()
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+            assert screen._pending_restore == saved
+
+            # The queued resize lands: it marks the size known and drains the
+            # deferred renders at that width. Each append grows the scrollable
+            # range and retries the pending restore, but while deferred renders
+            # remain the restore correctly stays pending.
+            log.on_resize(
+                events.Resize(size=log.size, virtual_size=log.virtual_size, container_size=log.size)
+            )
+            assert not log._deferred_renders and log.max_scroll_x >= saved.x
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+            assert screen._pending_restore == saved
+
+            # The resize's LayoutChanged hook retries with layout settled; the
+            # saved pan lands exactly.
+            log.post_message(ProgressLog.LayoutChanged())
+            await pilot.pause()
+            await pilot.pause()
+
+            assert log.max_scroll_x >= saved.x
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
+            assert screen._pending_restore is None
+
+    async def test_settled_narrow_content_clamps_x_and_restores_y(self) -> None:
+        """A legitimately absent horizontal range clamps x and still restores y.
+
+        Regression for the early-review ER-03 finding: a reopened view over
+        narrow content has a settled zero horizontal scrollable range (no
+        horizontal scrollbar is ever shown), which is a valid layout, not a
+        race. The saved pan clamps x to zero while the reachable saved
+        vertical offset still lands. The unfulfilled pan intent stays pending
+        so a later narrower layout can still land it.
+        """
+        app: _ScreenHost = _ScreenHost(viewport=ProgressViewportDAO(x=4.0, y=5.0, following=False))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen: SessionProgressScreen = app.screen_under_test
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=_entries(count=40, width=1)))
+
+            log: ProgressLog = _log(app=app)
+            assert log.max_scroll_x == 0
+            assert log.allow_horizontal_scroll is False
+            assert log.max_scroll_y > 5.0
+            assert (log.scroll_x, log.scroll_y) == (0.0, 5.0)
+            assert screen._pending_restore == ProgressViewportDAO(x=4.0, y=5.0, following=False)
+
+    async def test_pending_pan_lands_when_the_scrollbar_appears(self) -> None:
+        """Only scrollbar availability retries a measurable pending pan.
+
+        Regression for the twenty-child CI signature ``(0.0, 5.0)``: the saved
+        pan is inside the settled scrollable range, but the horizontal
+        scrollbar is still pending layout, so ``scroll_to`` would silently
+        drop x. The restore stays pending and lands exactly once scrollbar
+        availability changes — removing the ``show_horizontal_scrollbar``
+        watcher fails this test.
+        """
+        saved: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+        app: _ScreenHost = _ScreenHost(viewport=saved)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            screen: SessionProgressScreen = app.screen_under_test
+            log: ProgressLog = _log(app=app)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=_entries(count=40)))
+            assert log.max_scroll_x >= saved.x
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
+            assert screen._pending_restore is None
+
+            log.scroll_to(x=0, y=0, animate=False, immediate=True)
+            await pilot.pause()
+            log.set_reactive(Widget.show_horizontal_scrollbar, False)
+            assert log.allow_horizontal_scroll is False
+            assert log.max_scroll_x >= saved.x
+
+            screen._schedule_restore(viewport=saved)
+            await pilot.pause()
+            await pilot.pause()
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+            assert screen._pending_restore == saved
+
+            # A non-scrollbar layout signal alone must not land the pending pan.
+            log.post_message(ProgressLog.LayoutChanged())
+            await pilot.pause()
+            assert (log.scroll_x, log.scroll_y) == (0.0, 0.0)
+            assert screen._pending_restore == saved
+
+            log.show_horizontal_scrollbar = True
+            await pilot.pause()
+            await pilot.pause()
+
+            assert (log.scroll_x, log.scroll_y) == (4.0, 5.0)
+            assert screen._pending_restore is None
+
+    async def test_navigation_cancels_a_scrollbar_blocked_pending_restore(self) -> None:
+        """Reader input while the scrollbar is blocked wins; the late bar cannot snap back."""
+        saved: ProgressViewportDAO = ProgressViewportDAO(x=4.0, y=5.0, following=False)
+        app: _ScreenHost = _ScreenHost(viewport=saved)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            screen: SessionProgressScreen = app.screen_under_test
+            log: ProgressLog = _log(app=app)
+            await _paint(app=app, pilot=pilot, snapshot=_snapshot(entries=_entries(count=40)))
+            assert screen._pending_restore is None
+
+            log.scroll_to(x=0, y=0, animate=False, immediate=True)
+            await pilot.pause()
+            log.set_reactive(Widget.show_horizontal_scrollbar, False)
+
+            screen._schedule_restore(viewport=saved)
+            await pilot.pause()
+            await pilot.pause()
+            assert screen._pending_restore == saved
+
+            await pilot.press("up")
+            await pilot.pause()
+            user_offsets: tuple[float, float] = (log.scroll_x, log.scroll_y)
+            assert user_offsets != (4.0, 5.0)
+
+            log.show_horizontal_scrollbar = True
+            await pilot.pause()
+            await pilot.pause()
+
+            assert (log.scroll_x, log.scroll_y) == user_offsets
+            assert screen._pending_restore is None

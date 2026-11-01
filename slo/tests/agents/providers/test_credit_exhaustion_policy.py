@@ -21,6 +21,15 @@ from src.auth.credential_dao import ProviderName
 # ---------------------------------------------------------------------------
 
 
+class _HeaderError(RuntimeError):
+    """Synthetic provider failure carrying explicitly owned response headers."""
+
+    def __init__(self, *, headers: dict[str, object]) -> None:
+        """Build a rate-limit failure with test-owned header values."""
+        super().__init__("429 rate limit")
+        self.headers = headers
+
+
 def _status_error(*, status_code: int) -> MagicMock:
     """Build a mock exception with a ``status_code`` attribute.
 
@@ -149,9 +158,7 @@ class TestCreditExhaustionPolicyAnthropic:
 
     def test_credit_balance_body_is_credit_exhausted(self) -> None:
         """Error message mentioning credit balance → CREDIT_EXHAUSTED."""
-        err: MagicMock = MagicMock()
-        err.status_code = None
-        err.__str__ = lambda s: "Your credit balance is too low to make this request"
+        err = RuntimeError("Your credit balance is too low to make this request")
         assert (
             CreditExhaustionPolicy.classify(
                 error=err,
@@ -291,8 +298,7 @@ class TestProviderErrorInspection:
     )
     def test_inspect_rejects_nonfinite_or_nonpositive_retry_after(self, header_value: object) -> None:
         """Invalid Retry-After values do not leak into a retry plan."""
-        error = RuntimeError("429 rate limit")
-        setattr(error, "headers", {"Retry-After": header_value})
+        error = _HeaderError(headers={"Retry-After": header_value})
 
         signal = ProviderErrorClassifier.inspect(error=error, provider=ProviderName.OPENAI)
 
@@ -300,12 +306,13 @@ class TestProviderErrorInspection:
 
     def test_inspect_keeps_only_safe_positive_rate_limit_headers(self) -> None:
         """Only positive decimal request and token limits are retained in the signal."""
-        error = RuntimeError("429 rate limit")
-        error.headers = {
-            "X-RateLimit-Limit-Requests": "20",
-            "X-RateLimit-Limit-Tokens": "4000",
-            "Authorization": "secret",
-        }  # type: ignore[attr-defined]
+        error = _HeaderError(
+            headers={
+                "X-RateLimit-Limit-Requests": "20",
+                "X-RateLimit-Limit-Tokens": "4000",
+                "Authorization": "secret",
+            }
+        )
 
         signal = ProviderErrorClassifier.inspect(error=error, provider=ProviderName.OPENAI)
 

@@ -73,7 +73,7 @@ async def test_equal_entries_status_revision_paints(size: tuple[int, int]) -> No
             with patch.object(CredentialResolver, "resolve_with_source", return_value=None):
                 await ModelCatalogService.refresh(provider=ProviderName.OPENROUTER)
             with patch.object(CredentialResolver, "resolve", side_effect=AssertionError("typing I/O")):
-                app._refresh_slash_suggestions()
+                await app._input._refresh_published_suggestions()
                 await pilot.pause()
                 after = next(
                     row

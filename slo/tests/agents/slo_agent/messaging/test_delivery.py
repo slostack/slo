@@ -489,7 +489,7 @@ class RecordingModel(FauxChatModel):
             if not isinstance(candidate, BaseTool):
                 raise ValueError("This deterministic fixture requires actual tools")
             bound.append(candidate)
-        self.bound_tools = bound
+        self.bound_tools = list(bound)
         return self
 
     async def _astream(

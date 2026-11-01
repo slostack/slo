@@ -10,10 +10,21 @@ import json
 import os
 import signal
 import stat
-from contextlib import contextmanager
+from contextlib import AbstractAsyncContextManager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterator, List, Literal, Optional, Protocol, TextIO, TypeAlias
+from typing import (
+    TYPE_CHECKING,
+    Awaitable,
+    Callable,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    TextIO,
+    TypeAlias,
+)
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -1373,6 +1384,61 @@ class WorkflowStatusTool:
         return workflow_status
 
 
+class RelaunchProcess(Protocol):
+    """Process identity consumed during durable adoption."""
+
+    @property
+    def pid(self) -> int:
+        """Return the newly launched workload PID.
+
+        Returns:
+            int: Positive workload identity.
+        """
+        ...
+
+
+class RelaunchOwnership(Protocol):
+    """Launch lifetime retained until durable adoption completes."""
+
+    @property
+    def process(self) -> RelaunchProcess:
+        """Return the owned workload.
+
+        Returns:
+            RelaunchProcess: Newly launched process identity.
+        """
+        ...
+
+    def activate(self, *, expected_pid: int) -> Awaitable[None] | None:
+        """Activate capture only after durable adoption.
+
+        Args:
+            expected_pid: PID committed to the workflow handle.
+
+        Returns:
+            Awaitable[None] | None: Optional activation completion.
+        """
+        ...
+
+
+class WorkflowResumeLauncher(Protocol):
+    """Constructor-injected process/capture boundary; command retains adoption policy."""
+
+    def __call__(
+        self, *, handle: WorkflowHandleDAO, history_root: Path
+    ) -> AbstractAsyncContextManager[RelaunchOwnership]:
+        """Open a launch lifetime for a reserved handle.
+
+        Args:
+            handle: Durably reserved launching handle.
+            history_root: Root for the existing history and capture files.
+
+        Returns:
+            AbstractAsyncContextManager[RelaunchOwnership]: Owned process and capture lifetime.
+        """
+        ...
+
+
 class WorkflowCommandService:
     """Slash-command façade for detached workflow supervision (spec 57.a.6).
 
@@ -1397,10 +1463,12 @@ class WorkflowCommandService:
         kill: Optional[ProcessGroupKiller] = None,
         pid_alive: Optional[PidAliveProbe] = None,
         schedule: Optional[EscalationScheduler] = None,
+        resume_launcher: Optional[WorkflowResumeLauncher] = None,
     ) -> None:
         """Bind the service to a session's handles.
 
         Args:
+            resume_launcher: Optional launch lifetime factory; defaults to WorkflowRelauncher.
             store (WorkflowHandleStore): Handle store for the owning session.
             owner_session_id (str): The TUI session whose workflows are managed.
             kill (Optional[KillCallable]): Injectable signal sender for tests.
@@ -1411,6 +1479,7 @@ class WorkflowCommandService:
                 scheduler for tests. ``None`` uses the running event loop's
                 ``call_later``.
         """
+        self._resume_launcher = resume_launcher
         self._store: WorkflowHandleStore = store
         self._history_root: Path = store._history_root
         self._owner_session_id: str = owner_session_id
@@ -1588,7 +1657,7 @@ class WorkflowCommandService:
         adopted_pid: int | None = None
         adoption_committed: bool = False
         try:
-            async with WorkflowRelauncher.spawn_for_adoption(
+            async with (self._resume_launcher or WorkflowRelauncher.spawn_for_adoption)(
                 handle=reserved_handle,
                 history_root=self._history_root,
             ) as ownership:

@@ -170,14 +170,22 @@ async def test_compact_context_reports_unreadable_history_with_exact_detail() ->
 
 
 @pytest.mark.asyncio
-async def test_compact_context_ensures_history_after_viable_cut_before_model_readiness() -> None:
+async def test_compact_context_ensures_history_after_viable_cut_before_model_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The viable manual path establishes durable metadata before waking the model."""
     viable_events: list[SessionHistoryEventDAO] = _viable_events()
     session, store = _session(events=viable_events)
     calls: list[str] = []
-    session._ensure_history_session = AsyncMock(side_effect=lambda: calls.append("history"))
-    session._ensure_manual_compaction_agent_ready = AsyncMock(side_effect=lambda: calls.append("model"))
-    session._run_manual_compaction = AsyncMock(return_value=MagicMock(status="compacted"))
+    monkeypatch.setattr(
+        session, "_ensure_history_session", AsyncMock(side_effect=lambda: calls.append("history"))
+    )
+    monkeypatch.setattr(
+        session, "_ensure_manual_compaction_agent_ready", AsyncMock(side_effect=lambda: calls.append("model"))
+    )
+    monkeypatch.setattr(
+        session, "_run_manual_compaction", AsyncMock(return_value=MagicMock(status="compacted"))
+    )
 
     await session.compact_context()
 
@@ -185,16 +193,20 @@ async def test_compact_context_ensures_history_after_viable_cut_before_model_rea
 
 
 @pytest.mark.asyncio
-async def test_compact_context_passes_validated_events_without_a_second_load() -> None:
+async def test_compact_context_passes_validated_events_without_a_second_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The forced pipeline receives exactly the one measured durable event list."""
     viable_events: list[SessionHistoryEventDAO] = _viable_events()
     session, store = _session(events=viable_events)
-    session._run_compaction_if_needed = AsyncMock()
+    run_compaction = AsyncMock()
+    monkeypatch.setattr(session, "_run_compaction_if_needed", run_compaction)
 
     result = await session.compact_context()
 
     assert result.status == "compacted"
-    kwargs = session._run_compaction_if_needed.await_args.kwargs
+    assert run_compaction.await_args is not None
+    kwargs = run_compaction.await_args.kwargs
     assert kwargs["events"] is viable_events
     assert kwargs["force"] is True
     assert store.load_events.await_count == 2  # validated handoff plus one post-operation refresh

@@ -458,6 +458,7 @@ async def test_managed_phase_medium_is_independent_of_high_parent(
                         "tasks": [
                             {
                                 "task_id": "phase-medium",
+                                "task_summary": "Exercise child dispatch transport",
                                 "prompt": "bounded phase",
                                 "model": "gpt-5.4",
                                 "reasoning_level": "medium",

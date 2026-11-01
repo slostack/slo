@@ -16,9 +16,12 @@ SKILLS = ROOT / "skills"
 
 
 def test_source_inventory_has_live_destinations() -> None:
-    inventory = json.loads((ROOT / "docs/skills-reorganization/inventory.json").read_text())
+    inventory = json.loads((ROOT / "tests/agents/skills/fixtures/reorganization/inventory.json").read_text())
     for item in inventory:
         if item["tier"] == "project-reference":
+            continue
+        if item["status"] == "removed":
+            assert not (ROOT / item["destination"]).exists(), item["source"]
             continue
         assert item["status"] != "pending", item["source"]
         assert item["destination"], item["source"]
@@ -134,7 +137,9 @@ def test_routing_contract_covers_positive_and_negative_scenarios() -> None:
         "override",
     ):
         assert phrase in text
-    scenarios = json.loads((ROOT / "docs/skills-reorganization/routing-scenarios.json").read_text())
+    scenarios = json.loads(
+        (ROOT / "tests/agents/skills/fixtures/reorganization/routing-scenarios.json").read_text()
+    )
     assert len(scenarios) >= 5
     for case in scenarios:
         for path in case["required"]:
@@ -150,7 +155,7 @@ def test_concrete_skill_references_resolve() -> None:
 
 
 def test_go_canonical_skills_do_not_collide_with_imported_legacy_names() -> None:
-    inventory = json.loads((ROOT / "docs/skills-reorganization/inventory.json").read_text())
+    inventory = json.loads((ROOT / "tests/agents/skills/fixtures/reorganization/inventory.json").read_text())
     legacy = {row.get("name") for row in inventory if row["tier"] == "installed-user"}
     for path in (SKILLS / "languages/go").rglob("SKILL.md"):
         meta = yaml.safe_load(path.read_text().split("---", 2)[1])
@@ -191,7 +196,7 @@ def test_index_is_reproducible() -> None:
 
 
 def test_python_and_vue_recipe_sections_are_preserved() -> None:
-    inventory = json.loads((ROOT / "docs/skills-reorganization/inventory.json").read_text())
+    inventory = json.loads((ROOT / "tests/agents/skills/fixtures/reorganization/inventory.json").read_text())
     for row in inventory:
         if row["tier"] != "bundled":
             continue
@@ -205,12 +210,18 @@ def test_python_and_vue_recipe_sections_are_preserved() -> None:
                 continue
             if row["source"] == "coding/test-verification-policy/SKILL.md" and heading == "### Example":
                 continue
-            if row["source"] == "coding/naming-and-clarity/SKILL.md" and heading in {
-                "### `Create…` / `Save…`",
-                "### `BuildAndCreate…`",
-                "### Idiomatic Go `newX`",
-            }:
-                continue
+            if row["source"] == "coding/naming-and-clarity/SKILL.md":
+                if heading == "### Idiomatic Go `newX`":
+                    continue  # Go-specific constructor guidance moved to the Go owner.
+                # Lifecycle subsections are now one table; comments are proportionate.
+                heading = {
+                    "## 2. Constructor / lifecycle verb vocabulary": "## 2. State and lifecycle verb vocabulary",
+                    "### `Build…` / `build…`": "| `build` | Assemble a transient value",
+                    "### `Create…` / `Save…`": "| `create` | Establish new owned state",
+                    "### `BuildAndCreate…`": "`build_and_create` means assemble then establish owned state",
+                    "### `start…` / `launch…`": "| `start` / `launch` | Begin background execution",
+                    "## 4. Rich documentation comments": "## 4. Proportionate documentation comments",
+                }.get(heading, heading)
             assert heading in text, (row["source"], heading)
 
 

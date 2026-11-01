@@ -45,6 +45,12 @@ class TestStoredStrictness:
             ("rolled_back", str(uuid4()), ()),
             ("prepared", None, ("duplicate",)),
         ],
+        ids=[
+            "committed-without-summary",
+            "prepared-with-summary",
+            "rolled-back-with-summary",
+            "duplicate-members",
+        ],
     )
     async def test_invalid_compaction_dao_is_rejected(
         self, state: str, summary: str | None, ids: tuple[str, ...]

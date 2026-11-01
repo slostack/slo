@@ -560,7 +560,15 @@ class TestSubAgentHistoryPersistence:
 
         with patch.object(SubAgentProcess, "run", new=finish):
             await pool.dispatch(
-                mode="single", tasks=[SubAgentTaskDAO(task_id="t1", prompt="x", session_id="child-1")]
+                mode="single",
+                tasks=[
+                    SubAgentTaskDAO(
+                        task_summary="Verify session child delegation",
+                        task_id="t1",
+                        prompt="x",
+                        session_id="child-1",
+                    )
+                ],
             )
 
         snapshot = pool.attached_dispatch_snapshot()

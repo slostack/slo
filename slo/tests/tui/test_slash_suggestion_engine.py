@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.tui.slash_router import SlashRouter
 from src.tui.slash_suggestion_engine import SlashSuggestionEngine
 
@@ -27,6 +29,23 @@ class TestSlashSuggestionEngine:
         assert any(row.label == "/model" for row in state.rows)
         assert any(row.label == "/new" for row in state.rows)
         assert any(row.label == "/rename" for row in state.rows)
+
+    @pytest.mark.parametrize(
+        argnames="buffer_text",
+        argvalues=["/code ", "/code RE", "  /code RE", "/rename session", "/cwd "],
+    )
+    def test_argument_entry_never_suggests_replacing_the_command_token(self, buffer_text: str) -> None:
+        """Stop command-token suggestions when composition has reached arguments.
+
+        Args:
+            buffer_text (str): Completed command followed by argument spacing/text.
+        """
+        engine = SlashSuggestionEngine(registry=SlashRouter.registry())
+
+        state = engine.evaluate(buffer_text=buffer_text, active_model_name="gpt-5.4")
+
+        assert not state.visible
+        assert state.rows == []
 
     def test_partial_command_sets_ghost_suffix(self) -> None:
         """A partial command exposes the remaining best-match suffix."""

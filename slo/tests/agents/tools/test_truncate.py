@@ -1,9 +1,12 @@
 """Tests for ``src.agents.tools._truncate`` (sub-spec 01.c §5.1)."""
 
+import pytest
+
 from src.agents.tools._truncate import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
     GREP_MAX_LINE_LENGTH,
+    TruncationResult,
     Truncator,
 )
 
@@ -68,3 +71,61 @@ def test_default_constants_match_pi() -> None:
     assert DEFAULT_MAX_LINES == 2000
     assert DEFAULT_MAX_BYTES == 65536
     assert GREP_MAX_LINE_LENGTH == 500
+
+
+class TestTruncationMetadata:
+    @pytest.mark.parametrize(argnames="text,count", argvalues=[("", 0), ("é\r\nx", 2)])
+    def test_retains_counts_and_text_when_within_budgets(self, text: str, count: int) -> None:
+        """Both shared directions preserve literal complete content and its counts."""
+        for truncate in (Truncator.head, Truncator.tail):
+            result: TruncationResult = truncate(text=text)
+            assert result.text == text
+            assert result.kept_lines == result.original_lines == count
+            assert result.original_bytes == len(text.encode("utf-8"))
+            assert result.truncated is False
+
+    @pytest.mark.parametrize(
+        argnames="max_bytes,kept,head_text,tail_text",
+        argvalues=[
+            (6, 2, "é\nx\n", "é\nx\n"),
+            (5, 2, "é\nx\n", "é\nx\n"),
+            (
+                4,
+                1,
+                "é\n\n\n[output truncated — kept first 1 of 2 lines, 3B of 5B]",
+                "[output truncated — kept last 1 of 2 lines, 2B of 5B]\nx\n",
+            ),
+            (
+                1,
+                0,
+                "\n\n[output truncated — kept first 0 of 2 lines, 0B of 5B]",
+                "[output truncated — kept last 0 of 2 lines, 0B of 5B]\n",
+            ),
+        ],
+    )
+    def test_counts_complete_lines_when_utf8_byte_budget_is_reached(
+        self, max_bytes: int, kept: int, head_text: str, tail_text: str
+    ) -> None:
+        """Metadata excludes generic footers and existing shared output remains exact."""
+        head: TruncationResult = Truncator.head(text="é\nx\n", max_bytes=max_bytes)
+        tail: TruncationResult = Truncator.tail(text="é\nx\n", max_bytes=max_bytes)
+        assert head.kept_lines == tail.kept_lines == kept
+        assert head.text == head_text
+        assert tail.text == tail_text
+        assert head.truncated == tail.truncated == (max_bytes < 5)
+        assert head.original_lines == tail.original_lines == 2
+        assert head.original_bytes == tail.original_bytes == 5
+
+    @pytest.mark.parametrize(argnames="max_lines,kept", argvalues=[(0, 0), (1, 1), (2, 2), (3, 2)])
+    def test_counts_lines_when_line_budget_is_reached(self, max_lines: int, kept: int) -> None:
+        """Both directions report the actual complete-line selection at each edge."""
+        for truncate in (Truncator.head, Truncator.tail):
+            result: TruncationResult = truncate(text="a\nb", max_lines=max_lines)
+            assert result.kept_lines == kept
+            assert result.truncated == (max_lines < 2)
+
+    def test_constructs_result_when_only_legacy_fields_are_supplied(self) -> None:
+        """The added metadata does not require changes to existing result constructors."""
+        result = TruncationResult(text="a", truncated=False, original_lines=1, original_bytes=1)
+        assert result.text == "a"
+        assert result.kept_lines == 0

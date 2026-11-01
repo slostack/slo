@@ -34,51 +34,74 @@ def test_module_depth_guidance_preserves_hard_rules_and_language_boundaries() ->
         assert requirement in text
 
 
-def test_authoring_has_one_ordered_lifecycle_and_complete_artifacts() -> None:
-    """Require author stages and retained evidence artifacts before handoff."""
+def test_overview_author_has_ordered_procedure_and_document() -> None:
+    """The overview author gathers context before writing and orders the document for the reader."""
     text = (SKILLS_DIR / "design-and-analysis/feature-specifications/SKILL.md").read_text(encoding="utf-8")
-    stages = ("## Gather context", "## Draft", "## Self-check", "## Revise and hand off")
-    positions = [text.index(stage) for stage in stages]
+    procedure = (
+        "## Artifact paths and skill discovery",
+        "## Inputs",
+        "## Mandatory first task: establish knowledge-base context",
+        "## Read before writing",
+        "## Duplicate-code check",
+        "## Cohesion over line-level DRY",
+        "## The document",
+        "## Before saving",
+    )
+    positions = [text.index(section) for section in procedure]
     assert positions == sorted(positions)
-    for artifact in (
-        "PRE-Hook Context Bundle",
-        "POST-Hook Report",
-        "STRUCTURE GAP",
-        "NARRATIVE GAP",
-        "CONVENTION GAP",
-        "REDUNDANCY GAP",
-        "EXAMPLE GAP",
-        "TEST GAP",
-        "Caller-burden check",
+    document = (
+        "**What this feature does.**",
+        "**Domains and data.**",
+        "**Journeys and workflows.**",
+        "**Modules, interfaces and caller use.**",
+        "**Tests, limits and next steps.**",
+    )
+    positions = [text.index(section) for section in document]
+    assert positions == sorted(positions)
+    for requirement in (
         "overview.md",
         "standalone engineering sub-specs",
-        "independent verification",
+        "breakdown-feature-spec-to-tasks",
+        "feature-specification-verification",
+        "gather-feature-context",
+        "The deletion test, verbatim",
+        "Open decisions",
+        "one vertical piece of functionality end to end",
     ):
-        assert artifact in text
+        assert requirement in text
 
-
-def test_legacy_hooks_redirect_without_duplicate_authoring_procedures() -> None:
-    """Keep installed callers working without retaining competing owners."""
-    for hook, anchor in (("pre", "gather-context"), ("post", "self-check")):
-        path = SKILLS_DIR / f"design-and-analysis/feature-specifications-{hook}-hook/SKILL.md"
+def test_legacy_hooks_are_removed_and_unreferenced() -> None:
+    """The overview author replaced the PRE/POST hooks; nothing may route to them."""
+    for hook in ("pre", "post"):
+        assert not (SKILLS_DIR / f"design-and-analysis/feature-specifications-{hook}-hook").exists()
+    for path in SKILLS_DIR.rglob("*.md"):
         text = path.read_text(encoding="utf-8")
-        assert f"../feature-specifications/SKILL.md#{anchor}" in text
-        assert "compatibility" in text.lower()
-        assert "## Step " not in text
+        for hook in ("feature-specifications-pre-hook", "feature-specifications-post-hook"):
+            assert hook not in text, (path, hook)
 
-
-def test_workflow_sequences_author_review_and_breakdown_only() -> None:
-    """Preserve formal routing and independent gates without nested hook calls."""
+def test_workflow_sequences_overview_sub_specs_then_family_review() -> None:
+    """Both documents exist before one independent review, and REVISE returns to the owner."""
     path = SKILLS_DIR / "orchestration/workflows/specification-development.md"
     text = path.read_text(encoding="utf-8")
-    assert "feature-specifications-pre-hook/SKILL.md" not in text
-    assert "feature-specifications-post-hook/SKILL.md" not in text
+    steps = (
+        "### Step 1 — Overview",
+        "### Step 2 — Standalone engineering sub-specs",
+        "### Step 3 — Family verification",
+    )
+    positions = [text.index(step) for step in steps]
+    assert positions == sorted(positions)
+    owners = (
+        "skills/design-and-analysis/feature-specifications/SKILL.md",
+        "skills/design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md",
+        "skills/design-and-analysis/feature-specification-verification/SKILL.md",
+    )
+    positions = [text.index(owner) for owner in owners]
+    assert positions == sorted(positions)
     assert "independent, adversarial review" in text
+    assert "`overview.md` → Step 1; sub-specs and `task-list.md` → Step 2" in text
     assert "#progression-and-authorization" in text
-    assert "Before creating any JIRA sub-tasks or publishing the spec" in text
-    assert "Mode A" not in text and "Mode B" not in text
-    assert "Gather context → Draft → Self-check → Revise" in text
-
+    for obsolete in ("pre-hook", "post-hook", "Self-check stage", "Gather context", "JIRA", "Mode A", "Mode B"):
+        assert obsolete not in text, obsolete
 
 def test_code_review_links_canonical_depth_guidance() -> None:
     """Make caller burden an evidence-based review concern in all languages."""
@@ -161,7 +184,7 @@ def test_refresh_rebuilds_index_for_new_authored_skill(
 
 
 def test_context_companion_metadata_and_paths_use_canonical_author() -> None:
-    """Discovery must describe an on-request companion, not a mandatory pre-hook."""
+    """Discovery must describe an optional on-request companion that feeds the overview author."""
     registry = next(
         skill for skill in SkillRegistry.load(skills_dir=SKILLS_DIR) if skill.name == "gather-feature-context"
     )
@@ -171,24 +194,62 @@ def test_context_companion_metadata_and_paths_use_canonical_author() -> None:
     assert runtime.description == registry.description
     for description in (runtime.description, registry.when_to_use):
         assert "on-request" in description.lower()
-        assert "mandatory Gather context" in description
+        assert "feature-specifications" in description
+        assert "Gather context" not in description
         assert not description.lower().startswith("pre-hook")
     text = (SKILLS_DIR / "design-and-analysis/gather-feature-context/SKILL.md").read_text(encoding="utf-8")
     assert "../feature-specifications/SKILL.md#artifact-paths-and-skill-discovery" in text
+    assert "../feature-specifications/SKILL.md#inputs" in text
     assert "SLO_FEATURE_SPECIFICATIONS_DIR" not in text
     assert "This pre-hook" not in text
-    assert "**Keep everything you gathered alive for Step 6.**" in text
     assert "Stop here and wait for user sign-off" in text
 
+def test_convention_lists_cover_each_language_and_resolve() -> None:
+    """Both authors route to Python, Go and TypeScript conventions through real skill paths."""
+    for relative in (
+        "design-and-analysis/feature-specifications/SKILL.md",
+        "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md",
+    ):
+        text = (SKILLS_DIR / relative).read_text(encoding="utf-8")
+        for gateway in (
+            "languages/python/python-conventions/SKILL.md",
+            "languages/go/go-conventions/SKILL.md",
+            "languages/typescript/typescript-conventions/SKILL.md",
+            "coding/test-verification-policy/SKILL.md",
+        ):
+            assert gateway in text, (relative, gateway)
+    text = (SKILLS_DIR / "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md").read_text(encoding="utf-8")
+    section = text.split("#### Convention skills by language and layer", 1)[1].split("\n### ", 1)[0]
+    roots = ("", "languages/python/", "languages/go/", "languages/typescript/")
+    for reference in re.findall(pattern=r"`([a-z0-9/-]+/SKILL\.md)`", string=section):
+        assert any((SKILLS_DIR / f"{root}{reference}").is_file() for root in roots), reference
 
-def test_shared_authoring_documentation_uses_language_specific_styles() -> None:
-    """Shared example and audit rules must not impose Python docs on Go or TS."""
-    text = (SKILLS_DIR / "design-and-analysis/feature-specifications/SKILL.md").read_text(encoding="utf-8")
-    for heading in ("### `## Code Reference` Rules", "### Check 2 —", "### Shared example expectations"):
-        section = text.split(heading, 1)[1].split("\n### ", 1)[0]
-        for style in ("Python Google-style", "Go godoc", "TypeScript JSDoc"):
-            assert style in section
 
+def test_specification_skills_keep_dry_with_cohesion() -> None:
+    """Every specification skill demands consolidation without extracting a flush from its write."""
+    for relative in (
+        "design-and-analysis/feature-specifications/SKILL.md",
+        "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md",
+        "design-and-analysis/feature-specification-verification/SKILL.md",
+    ):
+        text = (SKILLS_DIR / relative).read_text(encoding="utf-8")
+        assert "No existing owner found" in text or "none exists" in text, relative
+        assert "await db_session.flush()" in text, relative
+        assert "autocommit" not in text, relative
+        assert "owns the commit" in text, relative
+
+
+def test_specification_skills_prioritise_behaviour_tests_without_tool_specific_sources() -> None:
+    """Behaviour tests lead, unit tests cover complex computation, and sources are tool-neutral."""
+    for relative in (
+        "design-and-analysis/feature-specifications/SKILL.md",
+        "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md",
+        "design-and-analysis/feature-specification-verification/SKILL.md",
+    ):
+        text = (SKILLS_DIR / relative).read_text(encoding="utf-8")
+        assert "complex computation" in text, relative
+        assert "Playwright" in text, relative
+        assert "JIRA" not in text and "Jira" not in text, relative
 
 def test_generated_index_matches_registry() -> None:
     """Verify generated discovery metadata rather than hand-maintained keywords."""
@@ -217,7 +278,8 @@ def test_authoring_relative_links_and_anchors_resolve() -> None:
         )
     )
     for path in paths:
-        text = path.read_text(encoding="utf-8")
+        # Links inside fenced blocks are document templates, not live references.
+        text = re.sub(pattern=r"^```.*?^```", repl="", string=path.read_text(encoding="utf-8"), flags=re.MULTILINE | re.DOTALL)
         for target in re.findall(pattern=r"\]\(([^)]+)\)", string=text):
             if "://" in target:
                 continue

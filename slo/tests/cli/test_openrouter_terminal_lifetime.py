@@ -9,19 +9,26 @@ import pytest
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
-from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO, StreamEventKind
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
 from src.auth.credential_resolver import CredentialResolver
+from src.auth.credential_dao import CredentialDAO
 from src.cli.headless import HeadlessRunner
-from tests.agents.slo_agent.test_key_rotation_admission import TestOpenRouterCredentialSerializationLifetime as Fixture
+from tests.agents.slo_agent.test_key_rotation_admission import (
+    TestOpenRouterCredentialSerializationLifetime as Fixture,
+)
 
 
 @pytest.mark.parametrize("cleanup", ["success", "error", "cancel"])
 @pytest.mark.parametrize("kind", ["run_completed", "run_failed"])
 @pytest.mark.parametrize("resolver_failure", [False, True])
 async def test_terminal_after_stream_exit_retains_admitted_redaction(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], kind: str, resolver_failure: bool, cleanup: str
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    kind: StreamEventKind,
+    resolver_failure: bool,
+    cleanup: str,
 ) -> None:
     """Actual runner completion must persist a redacted ordinary terminal inbox item."""
     first = Fixture._credential(access_token="TERMINAL_ADMITTED_A")
@@ -31,8 +38,12 @@ async def test_terminal_after_stream_exit_retains_admitted_redaction(
     root = (tmp_path / "inbox").resolve()
     assert root.is_relative_to(tmp_path.resolve())
     inbox = SessionInboxStore(history_root=root)
-    notifier = WorkflowNotifier(target_session_id="owner", orchestrator_session_id=session.session_id,
-                                workflow_id="wf-terminal", inbox_store=inbox)
+    notifier = WorkflowNotifier(
+        target_session_id="owner",
+        orchestrator_session_id=session.session_id,
+        workflow_id="wf-terminal",
+        inbox_store=inbox,
+    )
     runner = HeadlessRunner(config=session._config, notify_session_id="owner", notifier=notifier)
     stream_exited = asyncio.Event()
 
@@ -45,7 +56,9 @@ async def test_terminal_after_stream_exit_retains_admitted_redaction(
             if resolver_failure:
                 resolver.side_effect = OSError("controlled resolver failure")
             await Fixture._append_terminal_history(session=actual_session, content=first.access_token)
-            await runner._emit(AgentStreamEventDAO(kind=kind, content="ordinary terminal " + first.access_token))
+            await runner._emit(
+                AgentStreamEventDAO(kind=kind, content="ordinary terminal " + first.access_token)
+            )
         assert CredentialResolver._build_credential.get() is None
         stream_exited.set()
 
@@ -66,9 +79,15 @@ async def test_terminal_after_stream_exit_retains_admitted_redaction(
 
     with (
         patch.object(CredentialResolver, "resolve", return_value=first) as resolver,
-        patch.object(ModelCatalogService, "prepare_models", new=AsyncMock(return_value=session.catalog_snapshot)),
+        patch.object(
+            ModelCatalogService, "prepare_models", new=AsyncMock(return_value=session.catalog_snapshot)
+        ),
         patch.object(session, "_refresh_oauth_credential_if_needed", new=AsyncMock()),
-        patch.object(session, "_build_agent", return_value=SloAgent(llm=FauxChatModel(responses=[]), cwd=str(tmp_path), tools=[])),
+        patch.object(
+            session,
+            "_build_agent",
+            return_value=SloAgent(llm=FauxChatModel(responses=[]), cwd=str(tmp_path), tools=[]),
+        ),
         patch.object(runner, "_prepare_session", new=AsyncMock(return_value=session)),
         patch.object(runner, "_drain_session_stream", new=drain),
         patch.object(runner, "_notify_terminal", new=notify),
@@ -102,7 +121,7 @@ async def test_concurrent_runners_keep_distinct_admitted_captures(tmp_path: Path
     """Concurrent session tasks hand off only their own capture to delayed notification."""
     from contextvars import ContextVar
 
-    current = ContextVar("test_effective_credential", default=None)
+    current: ContextVar[CredentialDAO | None] = ContextVar("test_effective_credential", default=None)
     both_admitted = asyncio.Event()
     admitted: list[str] = []
 
@@ -117,8 +136,12 @@ async def test_concurrent_runners_keep_distinct_admitted_captures(tmp_path: Path
         assert session._config is not None
         inbox = SessionInboxStore(history_root=root / "inbox")
         runner = HeadlessRunner(config=session._config)
-        runner._notifier = WorkflowNotifier(target_session_id="owner", orchestrator_session_id=name,
-                                           workflow_id="wf-isolation", inbox_store=inbox)
+        runner._notifier = WorkflowNotifier(
+            target_session_id="owner",
+            orchestrator_session_id=name,
+            workflow_id="wf-isolation",
+            inbox_store=inbox,
+        )
         with patch.object(session, "_prepare_run_snapshot", wraps=session._prepare_run_snapshot):
             async with session._session_run_scope():
                 await runner._emit(AgentStreamEventDAO(kind="run_completed", content=credential.access_token))
@@ -137,6 +160,10 @@ async def test_concurrent_runners_keep_distinct_admitted_captures(tmp_path: Path
 
     with (
         patch.object(CredentialResolver, "resolve", side_effect=lambda **kwargs: current.get()),
-        patch.object(ModelCatalogService, "prepare_models", new=AsyncMock(return_value=Fixture._build_session(tmp_path=tmp_path).catalog_snapshot)),
+        patch.object(
+            ModelCatalogService,
+            "prepare_models",
+            new=AsyncMock(return_value=Fixture._build_session(tmp_path=tmp_path).catalog_snapshot),
+        ),
     ):
         await asyncio.gather(run_one("A"), run_one("B"))

@@ -28,7 +28,7 @@ from config.logger import log_error, log_info
 from src.agents.slo_agent.tool_execution.dao import ToolResultDAO
 from src.agents.tools._blocking import run_blocking_tool_call
 from src.agents.tools._image_content import ImageContent, ImageResizeResult
-from src.agents.tools._truncate import Truncator
+from src.agents.tools._truncate import DEFAULT_MAX_BYTES, TruncationResult, Truncator
 
 __all__ = [
     "ReadSchemaDAO",
@@ -123,12 +123,12 @@ class ReadTool:
                 return f"Error: {path} appears to be a binary file and cannot be read as text."
 
             try:
-                raw: str = target.read_text(encoding="utf-8")
+                with target.open(mode="r", encoding="utf-8", newline="") as handle:
+                    raw: str = handle.read()
             except UnicodeDecodeError as exc:
                 return f"Error: cannot decode {path} as UTF-8 text: {exc}"
 
-            sliced: str = cls._slice(text=raw, offset=offset, limit=limit)
-            return Truncator.head(text=sliced).text
+            return cls._format_text(text=raw, offset=offset, limit=limit)
         except Exception as exc:  # noqa: BLE001 — surface to model
             log_error(msg=f"ReadTool failed for {path}", e=exc, stack_trace=False)
             return f"Error: read failed: {exc}"
@@ -146,14 +146,72 @@ class ReadTool:
         return b"\x00" in sample
 
     @classmethod
-    def _slice(cls, text: str, offset: Optional[int], limit: Optional[int]) -> str:
-        """Apply offset/limit line slicing if either is set; otherwise pass through."""
-        if offset is None and limit is None:
-            return text
-        lines = text.splitlines(keepends=True)
-        start = max(0, (offset or 1) - 1)
-        end = start + limit if limit is not None else None
-        return "".join(lines[start:end])
+    def _format_text(cls, *, text: str, offset: Optional[int], limit: Optional[int]) -> str:
+        """Select complete lines and attach file-wide continuation guidance.
+
+        Args:
+            text (str): Full decoded file content.
+            offset (Optional[int]): One-based starting line, clamped to one.
+            limit (Optional[int]): Caller line limit, or None for the remaining file.
+
+        Returns:
+            str: Selected content with guidance only when unread lines remain.
+        """
+        lines: list[str] = text.splitlines(keepends=True)
+        start: int = max(0, (offset or 1) - 1)
+        end: Optional[int] = start + limit if limit is not None else None
+        selected: list[str] = lines[start:end]
+        truncated: TruncationResult = Truncator.head(text="".join(selected))
+        if not truncated.kept_lines:
+            return cls._no_progress(start=start, total=len(lines), oversized=truncated.truncated)
+        body: str = "".join(selected[: truncated.kept_lines])
+        return body + cls._continuation(
+            start=start, end=start + truncated.kept_lines, total=len(lines), truncated=truncated.truncated
+        )
+
+    @classmethod
+    def _no_progress(cls, *, start: int, total: int, oversized: bool) -> str:
+        """Explain why an empty read cannot advance, without skipping any content.
+
+        Args:
+            start (int): Zero-based index of the requested first line.
+            total (int): Full-file line count.
+            oversized (bool): Whether the first selected line exceeds the byte budget.
+
+        Returns:
+            str: Bounded guidance for the blocking line or caller limit; empty at EOF.
+        """
+        if oversized:
+            return (
+                f"[Line {start + 1} exceeds the {DEFAULT_MAX_BYTES}-byte read limit. No lines were read. "
+                f"Use bash to inspect at most {DEFAULT_MAX_BYTES} bytes of that line, or create a copy "
+                "with shorter lines and read the copy.]"
+            )
+        if start >= total:
+            return ""
+        return (
+            f"[{total - start} more lines. No lines were read. "
+            f"Use offset={start + 1} and change or omit limit to continue.]"
+        )
+
+    @classmethod
+    def _continuation(cls, *, start: int, end: int, total: int, truncated: bool) -> str:
+        """Describe the next unread line after a nonempty text selection.
+
+        Args:
+            start (int): Zero-based index of the first displayed line.
+            end (int): Exclusive index of the last displayed line.
+            total (int): Full-file line count, before caller slicing.
+            truncated (bool): Whether the output budget shortened the selection.
+
+        Returns:
+            str: A separated continuation footer, or an empty string at EOF.
+        """
+        if end >= total:
+            return ""
+        if truncated:
+            return f"\n\n[Showing lines {start + 1}-{end} of {total}. Use offset={end + 1} to continue.]"
+        return f"\n\n[{total - end} more lines. Use offset={end + 1} to continue.]"
 
 
 @tool(name_or_callable="read", args_schema=ReadSchemaDAO)

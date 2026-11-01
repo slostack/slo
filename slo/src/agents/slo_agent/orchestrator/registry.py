@@ -226,6 +226,7 @@ class ProcessRegistry:
             raise ValueError("unknown dispatch identity")
         if not self.accepts_new_execution(session_id=session_id):
             raise ExecutionConflictError("session already has a non-terminal execution in this pool")
+        preview = TaskPreview.encode_summary(task_summary=task.task_summary)
         execution_id: str = str(uuid4())
         pending: ChildExecutionEvidenceDAO = ChildExecutionEvidenceDAO.pending(
             session_id=session_id, execution_id=execution_id, dispatch_id=dispatch_id
@@ -235,7 +236,7 @@ class ProcessRegistry:
             task_id=task_id,
             session_id=session_id,
             status="pending",
-            prompt_preview=TaskPreview.build(task_text=task.prompt),
+            prompt_preview=preview,
             execution_id=execution_id,
         )
         self._publish_evidence(evidence=pending)

@@ -1,6 +1,8 @@
 """Real schema-2 admission delivery races and reversible operator overrides."""
 
 import asyncio
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,9 @@ from src.auth.credential_dao import (
 from src.auth.credential_resolver import CredentialResolver
 from src.integrations.openrouter.dao import credential_fingerprint
 from tests.agents.model_catalog.test_openrouter_converter_metadata import _entry
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 @pytest.mark.parametrize("rotation", [False, True])
@@ -56,7 +61,7 @@ async def test_first_actual_store_read_cannot_admit_after_winner(tmp_path: Path,
     original_thread = asyncio.to_thread
     first = True
 
-    async def deliver_read(function: object, *args: object, **kwargs: object) -> object:
+    async def deliver_read(function: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute the real loader before pausing only its first async delivery."""
         nonlocal first
         result = await original_thread(function, *args, **kwargs)

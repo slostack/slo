@@ -15,6 +15,14 @@ from typing import Optional
 
 import pytest
 
+from src.tui.components.workflow_progress.events import (
+    WorkflowProgressUpdate,
+    SessionsUpdatedDAO,
+    ProgressUpdatedDAO,
+    MinimizeProgressDAO,
+    MembershipRemovedDAO,
+    ObservationFailedDAO,
+)
 from src.tui.workflows.dao import (
     SessionProgressSnapshotDAO,
     WorkflowSessionKeyDAO,
@@ -219,6 +227,28 @@ class _RecordingSink:
         self.applied_sessions: list[WorkflowSessionSnapshotDAO] = []
         self.applied_progress: list[SessionProgressSnapshotDAO] = []
         self.on_apply_sessions: Optional[Callable[[], None]] = None
+
+    async def handle(self, *, event: WorkflowProgressUpdate) -> None:
+        """Record the actual typed coordinator delivery."""
+        if isinstance(event, SessionsUpdatedDAO):
+            await self.apply_sessions(snapshot=event.snapshot)
+        elif isinstance(event, ProgressUpdatedDAO):
+            self.apply_progress(snapshot=event.snapshot)
+        elif isinstance(event, MinimizeProgressDAO):
+            self.minimize_progress()
+        elif isinstance(event, MembershipRemovedDAO):
+            self.membership_removed(key=event.key)
+        elif isinstance(event, ObservationFailedDAO):
+            self.observation_failed()
+        else:
+            raise TypeError(type(event).__name__)
+
+    async def reset(self) -> None:
+        """Clear recorded transient presentation."""
+        self.events.clear()
+
+    async def close(self) -> None:
+        """No owned work exists in this recording boundary."""
 
     def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
         """Record an open request.
@@ -429,7 +459,7 @@ class TestSelection:
     async def test_sink_minimize_during_list_paint_skips_the_read(self, harness: _Harness) -> None:
         """An incarnation-change minimize routed during ``apply_sessions`` prevents a stale read."""
         harness.service.default_sessions = _sessions(_row())
-        harness.sink.on_apply_sessions = harness.coordinator.minimize
+        harness.sink.on_apply_sessions = harness.coordinator.invalidate_selection
 
         harness.coordinator.select(key=_CHILD_KEY)
         await harness.settle()
@@ -448,7 +478,7 @@ class TestGenerationDiscard:
         harness.coordinator.select(key=_CHILD_KEY)
         await harness.service.progress_entered.wait()
 
-        harness.coordinator.minimize()
+        await harness.coordinator.minimize()
         harness.service.progress_gate.set()
         await harness.settle()
 
@@ -544,7 +574,7 @@ class TestTerminalSuppression:
         harness.service.default_progress = _progress(final_read_complete=True)
         harness.coordinator.select(key=_CHILD_KEY)
         await harness.settle()
-        harness.coordinator.minimize()
+        await harness.coordinator.minimize()
 
         harness.coordinator.select(key=_CHILD_KEY)
         await harness.settle()
@@ -596,6 +626,41 @@ class TestTerminalSuppression:
         await harness.settle()
 
         assert len(harness.service.progress_reads) == 2
+
+
+async def test_reselection_during_awaited_progress_does_not_restore_old_terminal_suppression() -> None:
+    """A reopened same-key view still reads after an older delivery finishes."""
+
+    class GatedProgressSink(_RecordingSink):
+        """Hold first terminal delivery while a new selection is admitted."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.held = False
+
+        async def handle(self, *, event: WorkflowProgressUpdate) -> None:
+            """Block only the first progress event, retaining ordinary recording."""
+            if isinstance(event, ProgressUpdatedDAO) and not self.held:
+                self.held = True
+                self.entered.set()
+                await self.release.wait()
+            await super().handle(event=event)
+
+    service = _FakeService()
+    service.default_sessions = _sessions(_row(status="completed"))
+    service.default_progress = _progress(final_read_complete=True)
+    sink = GatedProgressSink()
+    coordinator = WorkflowProgressCoordinator(service=service, sink=sink, schedule=_Scheduler())  # type: ignore[arg-type]
+    coordinator.select(key=_CHILD_KEY)
+    await sink.entered.wait()
+    coordinator.select(key=_CHILD_KEY)
+    sink.release.set()
+    assert coordinator._task is not None
+    await coordinator._task
+    assert len(service.progress_reads) == 2
+    await coordinator.close()
 
 
 class TestFailures:

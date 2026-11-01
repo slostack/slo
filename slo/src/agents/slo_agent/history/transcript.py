@@ -116,8 +116,10 @@ class _ThinkingSegment(BaseModel):
         Args:
             content (Optional[str]): Completed segment text, if supplied.
         """
-        self.ended = True
+        # A contentless stream boundary may precede the authoritative repair end.
+        # Keep accepting that same block, just like the live thinking widget.
         if content:
+            self.ended = True
             self.text = content
 
 

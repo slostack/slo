@@ -39,6 +39,7 @@ class TestSlashCommandRegistry:
             "help",
             "clear",
             "exit",
+            "code",
             "cwd",
             "abort",
             "steer",

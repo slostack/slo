@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import sys
+import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -268,6 +270,65 @@ class TestScheduleSubprocessRunner:
         argv = create_subprocess_exec.await_args.args
         assert argv[argv.index("--model") + 1] == "openrouter:vendor/scheduled"
         assert argv[argv.index("--resume") + 1] == "scheduled-session"
+
+
+@pytest.mark.parametrize("resume", [False, True])
+async def test_scheduler_child_drops_inherited_herdr_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resume: bool
+) -> None:
+    """Actual scheduled children lose only HERDR-prefixed keys, never parent state."""
+    removed = (
+        "HERDR_ENV",
+        "HERDR_SESSION",
+        "HERDR_PANE",
+        "HERDR_SOCKET",
+        "HERDR_TEST",
+        "herdr_future",
+        "HERDR_OTHER",
+    )
+    preserved = (
+        "HERDR",
+        "HERDRFOO",
+        "herdrFuture",
+        "SLO_TEST_SETTING",
+        "SLO_OPENAI_API_KEY",
+        "OTHER_HERDR_TEST",
+    )
+    for key in (*removed, *preserved):
+        monkeypatch.setenv(key, "synthetic-only")
+    parent = dict(os.environ)
+    root = tmp_path.resolve(strict=True)
+    executable = root / "scheduled-child"
+    assert executable.resolve().is_relative_to(root) and not executable.exists()
+    executable.write_text(
+        f"#!{sys.executable}\nimport json, os\n"
+        f"print(json.dumps([key in os.environ for key in {(*removed, *preserved)!r}]))\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    identity = executable.stat()
+    definition = _build_definition(schedule_id="environment", session_mode="fresh").model_copy(
+        update={"cwd": str(root)}
+    )
+    with patch(
+        "src.scheduling.runtime.subprocess_runner.ScheduleExecutableLocator.locate",
+        return_value=executable,
+    ):
+        assert not executable.is_symlink()
+        assert executable.stat().st_ino == identity.st_ino
+        runner = ScheduleSubprocessRunner()
+        if resume:
+            result = await runner.run_resume(
+                definition=definition, session_reference="synthetic", target_session_id="synthetic"
+            )
+        else:
+            result = await runner.run_fresh(definition=definition)
+    assert result.exit_code == 0
+    presence = dict(zip((*removed, *preserved), json.loads(result.stdout_summary)))
+    assert all(not presence[key] for key in removed)
+    for key in preserved:
+        assert presence[key], f"unrelated inherited key removed: {key}"
+    assert dict(os.environ) == parent
 
 
 class TestScheduleReportWriter:

@@ -7,6 +7,8 @@ separate pending milestones; clean drain does not establish those contracts.
 
 from __future__ import annotations
 
+from io import IOBase
+
 import ctypes
 import json
 import os
@@ -491,6 +493,7 @@ def test_production_capture_opener_uses_exact_isolated_entry_without_spawn(
         assert kwargs["start_new_session"] is True and kwargs["close_fds"] is True
         assert kwargs["stderr"] == subprocess.DEVNULL
         output = kwargs["stdout"]
+        assert isinstance(output, IOBase)
         destination = Path(os.readlink(f"/proc/self/fd/{output.fileno()}")).resolve(strict=True)
         assert destination == root / "child" / "stdout.jsonl"
         assert destination.is_relative_to(root)

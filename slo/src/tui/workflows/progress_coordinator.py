@@ -6,20 +6,28 @@ progress. It owns one five-second timer, at most one in-flight read task, the
 observation generation and the selected key. It never owns, cancels or signals
 agent execution; closing it stops observation only.
 
-Presentation is behind the consumer-owned ``WorkflowProgressSink`` protocol (the
-app adapter in ``src/tui/app.py`` and a recording fake in tests), and reads go
-through ``WorkflowProgressSource`` (``DetachedWorkflowAppService`` in production).
-The sink owns screen references and saved viewports; this coordinator owns
-scheduling and selected identity only.
+Presentation is behind the consumer-owned ``WorkflowProgressSink`` protocol,
+implemented by ``WorkflowProgressUpdatesAdapter`` in
+``src/tui/components/workflow_progress/adapters/workflow_progress.py`` and a recording fake in tests.
+Reads go through ``WorkflowProgressSource`` (``DetachedWorkflowAppService`` in
+production). The adapter owns screen references and saved viewports; this
+coordinator owns scheduling and selected identity only.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import Optional, Protocol
+from typing import Optional, Protocol, runtime_checkable
 
-from textual.timer import Timer
+from src.tui.components.workflow_progress.events import (
+    WorkflowProgressUpdate,
+    SessionsUpdatedDAO,
+    ProgressUpdatedDAO,
+    MinimizeProgressDAO,
+    MembershipRemovedDAO,
+    ObservationFailedDAO,
+)
 
 from config.logger import log_error
 from src.tui.workflows.dao import (
@@ -37,6 +45,14 @@ _MAX_READS_PER_DRAIN: int = 2
 """Initial refresh plus at most one coalesced refresh before waiting for the next tick."""
 
 
+class WorkflowObservationTimer(Protocol):
+    """Interval registration owned and stopped by the observation coordinator."""
+
+    def stop(self) -> None:
+        """Stop future interval callbacks when observation retires."""
+        ...
+
+
 class WorkflowProgressSource(Protocol):
     """Owner-scoped, read-only observation reads the coordinator schedules."""
 
@@ -49,35 +65,24 @@ class WorkflowProgressSource(Protocol):
         ...
 
 
+@runtime_checkable
 class WorkflowProgressSink(Protocol):
-    """Presentation boundary for the list and the selected progress view.
-
-    Implementations never raise from these callbacks and never reach into the
-    coordinator's state; the app routes lifecycle intents back to it.
-    """
+    """Typed observation delivery with explicit selection acceptance/refusal."""
 
     def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
-        """Open (or keep) the view for ``key``; False refuses the selection."""
+        """Return whether selection was accepted; never discard this acknowledgement."""
         ...
 
-    def minimize_progress(self) -> None:
-        """Save the viewport and dismiss the owned progress view, if any."""
+    async def handle(self, *, event: WorkflowProgressUpdate) -> None:
+        """Apply an observation update, propagating presentation failures."""
         ...
 
-    async def apply_sessions(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
-        """Paint list rows without stealing focus."""
+    async def reset(self) -> None:
+        """Clear transient presentation while keeping borrowed dependencies."""
         ...
 
-    def apply_progress(self, *, snapshot: SessionProgressSnapshotDAO) -> None:
-        """Paint progress on the still-selected mounted view only."""
-        ...
-
-    def membership_removed(self, *, key: WorkflowSessionKeyDAO) -> None:
-        """Forget a removed selection and show a fixed notice."""
-        ...
-
-    def observation_failed(self) -> None:
-        """Keep the last good paint and show a fixed retry notice."""
+    async def close(self) -> None:
+        """Join owned presentation without closing service or host."""
         ...
 
 
@@ -94,7 +99,7 @@ class WorkflowProgressCoordinator:
         *,
         service: WorkflowProgressSource,
         sink: WorkflowProgressSink,
-        schedule: Callable[[float, Callable[[], None]], Timer],
+        schedule: Callable[[float, Callable[[], None]], WorkflowObservationTimer],
     ) -> None:
         """Bind one owner and its mounted presentation boundary without starting work.
 
@@ -105,17 +110,21 @@ class WorkflowProgressCoordinator:
         Args:
             service (WorkflowProgressSource): Current owner-scoped service.
             sink (WorkflowProgressSink): App adapter for panel/modal presentation.
-            schedule (Callable[[float, Callable[[], None]], Timer]): Textual interval
+            schedule (Callable[[float, Callable[[], None]], WorkflowObservationTimer]): Interval
                 timer factory, invoked positionally as ``schedule(seconds, callback)``.
         """
         self._service: WorkflowProgressSource = service
         self._sink: WorkflowProgressSink = sink
-        self._schedule: Callable[[float, Callable[[], None]], Timer] = schedule
-        self._timer: Optional[Timer] = None
+        self._schedule: Callable[[float, Callable[[], None]], WorkflowObservationTimer] = schedule
+        self._timer: Optional[WorkflowObservationTimer] = None
         self._task: Optional[asyncio.Task[None]] = None
         self._selected: Optional[WorkflowSessionKeyDAO] = None
         # Bumped on every select/minimize/close; a read applies only if unchanged.
         self._generation: int = 0
+        self._presentation_revision: int = 0
+        self._presentation_lock: asyncio.Lock = asyncio.Lock()
+        self._paint_task: Optional[asyncio.Task[None]] = None
+        self._close_task: Optional[asyncio.Task[None]] = None
         # True while a refresh was requested but not yet started by the drain.
         self._pending: bool = False
         self._closed: bool = False
@@ -152,16 +161,27 @@ class WorkflowProgressCoordinator:
         self._terminal_read = None
         self.request_refresh()
 
-    def minimize(self) -> None:
+    async def minimize(self) -> None:
         """Invalidate any in-flight paint, drop the selection and let the sink dismiss.
 
         WHO: SloTUI for Escape/Minimize and for a same-key incarnation change; the
             coordinator itself when the selected member is removed.
         WHEN: Before the sink dismisses the view, so no late result can paint it.
         """
+        if self._closed:
+            return
         self._generation += 1
         self._selected = None
-        self._sink.minimize_progress()
+        await self._sink.handle(event=MinimizeProgressDAO())
+
+    def invalidate_selection(self) -> None:
+        """Invalidate an incarnation synchronously before the sink releases its view.
+
+        Called by the app during list delivery; does not reenter the sink lock.
+        """
+        self._generation += 1
+        self._selected = None
+        self._terminal_read = None
 
     def request_refresh(self) -> None:
         """Coalesce timer, lifecycle and open requests while one bounded read runs.
@@ -182,20 +202,28 @@ class WorkflowProgressCoordinator:
         WHAT: Marks closed and invalidates the generation before stopping the
             timer, then cancels and awaits the drain task. A cancelled off-loop
             leaf read may finish in its thread; its result is discarded.
-        WHO: SloTUI teardown, before ``service.close`` and ``sink.dispose``.
+        WHO: SloTUI teardown, before ``service.close`` and ``sink.close``.
         WHEN: On ``/new`` adoption and on unmount; idempotent.
         """
-        self._closed = True
-        self._generation += 1
-        self._selected = None
-        self._pending = False
+        if self._close_task is None:
+            self._closed = True
+            self._generation += 1
+            self._presentation_revision += 1
+            self._selected = None
+            self._pending = False
+            self._close_task = asyncio.create_task(self._close_observation())
+        await self._join_paint(task=self._close_task)
+
+    async def _close_observation(self) -> None:
+        """Stop the timer, join the drain, then cross the final paint barrier."""
         self._stop_timer()
         task: Optional[asyncio.Task[None]] = self._task
         self._task = None
-        if task is None:
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        async with self._presentation_lock:
+            pass
 
     def _stop_timer(self) -> None:
         """Stop and forget the interval timer, if one was registered."""
@@ -225,17 +253,69 @@ class WorkflowProgressCoordinator:
             await self._refresh_current_view()
         except Exception:  # noqa: BLE001 - top-level boundary of one observation refresh
             log_error(msg="workflow_observation_refresh_failed")
-            self._sink.observation_failed()
+            if not self._closed:
+                await self._sink.handle(event=ObservationFailedDAO())
+
+    async def apply_local_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> bool:
+        """Paint committed local visibility without waiting for observation reads.
+
+        Args:
+            snapshot: Current service projection.
+        Returns:
+            bool: Whether this presentation revision painted successfully.
+        """
+        if self._closed:
+            return False
+        self._generation += 1
+        self._presentation_revision += 1
+        return await self._paint_sessions(snapshot=snapshot, generation=self._presentation_revision)
+
+    async def _paint_sessions(self, *, snapshot: WorkflowSessionSnapshotDAO, generation: int) -> bool:
+        """Serialize list paint and join shielded panel work before releasing ownership."""
+        async with self._presentation_lock:
+            if self._closed or generation != self._presentation_revision:
+                return False
+            self._paint_task = asyncio.create_task(
+                self._sink.handle(event=SessionsUpdatedDAO(snapshot=snapshot))
+            )
+            try:
+                await self._join_paint(task=self._paint_task)
+            finally:
+                self._paint_task = None
+            if self._closed or generation != self._presentation_revision:
+                return False
+            key = self._selected
+            if key is not None and not any(row.key == key for row in snapshot.rows):
+                await self._close_removed(key=key)
+            return True
+
+    @staticmethod
+    async def _join_paint(*, task: asyncio.Task[None]) -> None:
+        """Join a started sink operation even across repeated caller cancellation."""
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError()
+        task.result()
 
     async def _refresh_current_view(self) -> None:
         """Read the list, paint it, then refresh the selection captured before the read."""
         generation: int = self._generation
+        presentation_revision: int = self._presentation_revision
         key: Optional[WorkflowSessionKeyDAO] = self._selected
         sessions: WorkflowSessionSnapshotDAO = await self._service.load_session_snapshot()
-        if self._closed:
+        if self._closed or presentation_revision != self._presentation_revision:
             return
-        await self._sink.apply_sessions(snapshot=sessions)
-        if self._closed or key is None or generation != self._generation:
+        painted = await self._paint_sessions(snapshot=sessions, generation=presentation_revision)
+        if not painted or key is None or generation != self._generation:
             return
         await self._refresh_member(key=key, generation=generation, sessions=sessions)
 
@@ -255,7 +335,7 @@ class WorkflowProgressCoordinator:
         """
         row = next((row for row in sessions.rows if row.key == key), None)
         if row is None:
-            self._close_removed(key=key)
+            await self._close_removed(key=key)
             return
         identity: tuple[WorkflowSessionKeyDAO, str] = (key, row.execution_id or row.dispatch_id)
         if self._terminal_read == identity and row.availability == "available":
@@ -273,19 +353,20 @@ class WorkflowProgressCoordinator:
         if self._closed or generation != self._generation or key != self._selected:
             return
         if snapshot.membership_removed:
-            self._close_removed(key=key)
+            await self._close_removed(key=key)
             return
-        self._sink.apply_progress(snapshot=snapshot)
-        self._remember_final_read(key=key, snapshot=snapshot)
+        await self._sink.handle(event=ProgressUpdatedDAO(snapshot=snapshot))
+        if not self._closed and generation == self._generation and key == self._selected:
+            self._remember_final_read(key=key, snapshot=snapshot)
 
-    def _close_removed(self, *, key: WorkflowSessionKeyDAO) -> None:
+    async def _close_removed(self, *, key: WorkflowSessionKeyDAO) -> None:
         """Minimize first (invalidating paint), then let the sink forget the key.
 
         Args:
             key (WorkflowSessionKeyDAO): Selection no longer in the owner's list.
         """
-        self.minimize()
-        self._sink.membership_removed(key=key)
+        await self.minimize()
+        await self._sink.handle(event=MembershipRemovedDAO(key=key))
 
     def _remember_final_read(
         self, *, key: WorkflowSessionKeyDAO, snapshot: SessionProgressSnapshotDAO

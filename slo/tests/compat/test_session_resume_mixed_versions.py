@@ -27,9 +27,15 @@ from tests.compat.released_scripts import RELEASED_RESUME_SESSION, RELEASED_WRIT
 
 @pytest.mark.parametrize(argnames="store_kind", argvalues=["tree", "flat"])
 async def test_build_session_config_when_released_slo_wrote_session_new_slo_continues_it(
-    released_slo_source: Path, isolated_slo_home: Path, store_kind: str
+    released_slo_source: Path,
+    isolated_slo_home: Path,
+    store_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Old -> new continue/metadata rewrite -> old continue -> new retains exact text."""
+    # Match the released runner's explicit default in the current process too;
+    # the operator's startup model must not change this compatibility contract.
+    monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
     inputs = {"COMPAT_SESSION_ID": "released-session", "COMPAT_STORE": store_kind}
     written = run_released_slo(
         source=released_slo_source,

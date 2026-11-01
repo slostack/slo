@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -19,6 +20,7 @@ from src.agents.slo_agent.history.filesystem_store import (
     FilesystemSessionHistoryStore,
 )
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.providers.stream_recovery.dao import (
     ProviderStreamFailure,
@@ -175,10 +177,11 @@ class TestTUIStreamReconnect:
             with patch.object(session.agent, "invoke", _scripted_invoke):
                 await app._run_prompt(text="functional retry")
             await pilot.pause()
+            transcript: list[str] = [
+                content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
+            ]
 
         assert invocation_count == 2
-        assert app._adapter is not None
-        transcript: list[str] = [content for content, _classes in app._adapter.lines]
         assert any("provider_stream_disconnected" in content for content in transcript)
         assert session.is_running is False
         assert app._in_flight_task is None
@@ -196,8 +199,11 @@ class TestTUIHydration:
         app = SloTUI(session=session)
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._adapter is not None
-            assert any("/help" in content for content, _classes in app._adapter.lines)
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
+            assert any(
+                "/help" in content
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
+            )
 
     async def test_on_mount_hydrates_transcript_from_persisted_history(self, tmp_path: Path) -> None:
         history_root: Path = tmp_path / "history"
@@ -222,9 +228,9 @@ class TestTUIHydration:
         app = SloTUI(session=resumed)
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             # Logical lines are recorded (copy/replay seam) ...
-            contents: list[str] = [c for c, _ in app._adapter.lines]
+            contents: list[str] = [c for c, _ in app.query_one(ChatTranscriptComponent)._adapter.lines]
             assert any("seeded prompt" in c for c in contents)
             assert any("seeded reply" in c for c in contents)
             # ... and replay mounts the same components the live path mounts.
@@ -267,6 +273,10 @@ class TestReplayThinkingParity:
             SloTUI: App under test.
         """
         session: MagicMock = MagicMock(spec=SloAgentSession)
+        # This replay-only double owns no external resources.
+        session.finish_retired_reporting_cleanup.return_value = HerdrReporterCloseOutcomeDAO(
+            replacement="safe", resources="drained"
+        )
         session.workdir = Path(".").resolve()
         session.session_id = "session-history-1234"
         session.session_name = None
@@ -301,8 +311,8 @@ class TestReplayThinkingParity:
             list[tuple[AssistantStreamThinkingBlock, AssistantStreamBlock]]:
                 DOM-ordered ``(thinking, answer)`` pairs.
         """
-        assert app._transcript_content is not None
-        children = list(app._transcript_content.children)
+        assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
+        children = list(app.query_one(ChatTranscriptComponent)._transcript_content.children)
         pairs: list[tuple[AssistantStreamThinkingBlock, AssistantStreamBlock]] = []
         for index, child in enumerate(children[:-1]):
             next_child = children[index + 1]
@@ -338,13 +348,13 @@ class TestReplayThinkingParity:
         """A prepended batch keeps every thinking block adjacent to its answer block."""
         entries: list[TranscriptEntryDAO] = self._reasoning_entries(count=8)
         with (
-            patch("src.tui.app.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 4),
-            patch("src.tui.app.LOAD_OLDER_BATCH_SIZE", 2),
+            patch("src.tui.components.chat_transcript.component.TRANSCRIPT_HYDRATION_ENTRY_LIMIT", 4),
+            patch("src.tui.components.chat_transcript.component.LOAD_OLDER_BATCH_SIZE", 2),
         ):
             app: SloTUI = self._build_history_app(entries=entries)
             async with app.run_test(size=(80, 24)) as pilot:
                 await pilot.pause()
-                await app._load_older_entries()
+                await app.query_one(ChatTranscriptComponent).load_older()
                 await pilot.pause()
 
                 pairs = self._thinking_answer_children(app=app)
@@ -404,10 +414,11 @@ class TestTUIStreamReconnectAstra:
             ):
                 await app._run_prompt(text="functional retry")
             await pilot.pause()
+            transcript: list[str] = [
+                content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
+            ]
 
         assert invocation_count == 2
-        assert app._adapter is not None
-        transcript: list[str] = [content for content, _classes in app._adapter.lines]
         reconnect_lines: list[str] = [
             content for content in transcript if "provider_stream_disconnected" in content
         ]

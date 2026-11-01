@@ -1,316 +1,5 @@
 # Slo — A Reader's Guide to the Code
 
-## Dual-lane GPT-6 models and Jev Router (Feature 89)
-
-This worktree implements the following routes; release approval remains pending.
-Offline tests do not establish account entitlement or live provider availability.
-
-| Exact selection | Credential lane | Fresh reasoning default | Selected `off` |
-|---|---|---|---|
-| `gpt-6-luna` | OpenAI API key or ChatGPT OAuth | medium | explicit provider `none`, disabled |
-| `gpt-6.1-sol` | OpenAI API key or ChatGPT OAuth | medium | effective `low`, reasoning required |
-| `gpt-6-sol` | OpenAI API key or ChatGPT OAuth | medium | explicit provider `none`, disabled |
-| `openrouter:typesafe/jev-router` | Authenticated OpenRouter discovery | provider default | controls unavailable unless advertised |
-
-Use `/model <exact selection>` or `slo --model <exact selection>`. The three
-direct routes use Responses at every level in both credential lanes. API keys
-use api.openai.com; ChatGPT OAuth uses the existing chatgpt.com Codex backend,
-subscription headers, instructions adaptation and cap removal. Strict Platform
-option protection never intercepts OAuth. `/auth` configures either lane; an
-environment API key still wins over stored OAuth. No automatic lane fallback occurs. Explicit/saved reasoning survives normal selection and resume;
-medium is a fresh default, not a reset on every switch. The global/provider
-OpenAI default remains `gpt-5.4`.
-
-Direct context is **1,050,000 total tokens**, with a default output cap of
-128,000 on Platform (Codex omits output caps). The 500 RPM / 500,000 TPM values are conservative local policy, not
-account rate-tier entitlements. Published pricing and rate tiers are metadata
-only; usage accounting is not an exact invoice calculator and pricing thresholds
-do not change compaction policy.
-
-Jev is never seeded: `/model refresh` must obtain eligible authenticated
-`/models/user` membership. An old cached ineligible Jev row needs a successful
-authenticated refresh; merely opening the picker does not repair or authorize it.
-Unknown output capacity uses a conservative local cap (normally 4,096), not an
-invented provider maximum. Unknown reasoning is shown as
-`provider default; controls unavailable`, not disabled. OpenRouter credentials
-and Chat Completions remain separate from the Platform lane.
-
-## Mixed-version state and rollback (86.b)
-
-No action needed for released users. New Slo puts provider cache data in
-`$SLO_HOME/global/model_catalog_cache.v2.json` (lease `.v2.lock`) and OpenRouter
-credentials in `authentication.additional-providers.json`. Released
-`authentication.json` keeps only Anthropic, OpenAI and Kimi credentials.
-Rollback ignores the new files; sessions remain shared. Unknown saved direct
-models fall back to the preferred/default model with a startup notice, without
-losing history. Released compaction can drop private provider continuation fields
-from rewritten events; its pre-compaction archive retains them.
-
-`CredentialStore` owns both files. A future version adding providers unknown to
-this version must use another sibling filename: the additional-provider file has
-a closed enum and unknown values would break rollback credential lookups and
-fail-closed history writes. There is no automatic migration or cleanup.
-
-### Only for machines that ran an unreleased pre-fix Feature 86 build
-
-These are manual operator steps, **not performed by this feature or its tests**.
-With no Slo process running:
-
-1. Stop using every pre-fix build first; a later run would recreate incompatible files.
-2. Back up `$SLO_HOME/global/authentication.json`, preserving permissions.
-3. Move non-released provider rows (OpenRouter today) into the sibling
-   `authentication.additional-providers.json`, preserving the envelope
-   `{"schema_version": 1, "providers": {...}}`. Keep both files mode `0600`.
-   Alternatively remove the misplaced row and save the key again through `/auth`.
-   Do this **before running new Slo**: an ignored misplaced key is not known to
-   history redaction. New Slo warns on every lookup and preserves misplaced rows;
-   it does not repair them. Released Slo keeps rejecting them until manual cleanup.
-4. If the released `model_catalog_cache.json` contains schema `"2"`, rename it
-   aside. Do not remove a valid released schema-1 cache. New refresh rebuilds its
-   own `.v2.json` file.
-5. Check released `slo --version` and `slo visualize --help` print no catalog ERROR.
-
-The executable offline proof is `tests/compat` against frozen tag `v0.20.1`, plus
-the real CLI visualize audit test. Current 86.b evidence and remaining gate
-limitations are in [b5 implementation](docs/implementation/86b-model-catalog/b5-implementation.md);
-historical Feature 86.a reports below are not 86.b waivers or release approval.
-
-## Latest Step-1 bounded window correction — 2026-10-03
-
-The prior final gate is retained unchanged: `.f86-final-remediation-hldebc_g/full-final.log`
-reports **1 failed, 5155 passed, 18 deselected, 196 warnings**, exit 1. The exact
-bounded-model-window failure reproduced in isolation. Direct-provider summaries
-incorrectly acquired the gateway `; provider default` suffix, expanding the normal
-rows from two to three lines (five rather than eight rows). The existing suggestion
-projection now preserves direct-provider summaries; OpenRouter evidence is unchanged.
-A stronger eight-label/footer compositor assertion then exposed detail width exceeding
-the inner menu width by four cells. The menu now uses the same inner width for both.
-No count/window expectation was relaxed, no sleeps/skips added, and no R1/R3 changes.
-
-Focused partition: 38 passed; intermediate strengthened-paint run: 1 failed/173 passed;
-paint correction: 30 passed; final affected: **174 passed, 5 warnings**; additional
-surrounding picker/status regressions: **48 passed, 2 warnings**. Full expanded
-commands/logs/exits: `.f86-window-correction-tPhyAzET/`. The fresh complete gate
-is `full.log`, `full-command.txt`, `full.exit` there, generated AFTER these final
-documentation edits. Its actual exit/summary controls readiness; no anticipated pass.
-Final source/test/current-doc manifest: `source-test-manifest.sha256`, digest in
-`manifest.sha256`, generated after full gate and read-only checks; no edits thereafter.
-
-R1 router truth, R2 two-size compositor/hidden-paint sensitivity and R3 real schema-2
-public preparation/valid SDK no-budget proof remain retained. R4 points to this new
-receipt, not a reconstructed missing directory. E1 removal still injects refresh
-outcome (not all-real zero-HTTP removal). Historical selection offset has no claimed
-causal repair. Auth sensitivity remains retained. Black/mypy waived, not green;
-provider evidence remains offline synthetic, not live authorization or paid inference.
-Independent sequential Step2/Step3 remain pending; readiness is not feature approval.
-Earlier current/latest headings below are preserved historical receipts.
-
-## Current sequential remediation — 2026-10-03 (R1–R4)
-
-R1 control-aware `/reasoning`, R2 genuine two-size picker/router compositor proof,
-and R3 real schema-2 public admission → valid SDK no-budget completion are corrected
-with focused red/green evidence; affected partition: **460 passed, 5 warnings**.
-Initial full gate found five picker status/context clipping regressions (5151 passed,
-18 deselected); its full.log is retained. Corrected menu uses a separate reasoning
-line only for explicit disable semantics, preserving status/context; two-line rows
-retain original capacity and three-line rows use bounded capacity. This is a
-narrow viewport adjustment to the original two-line plan, not weakened assertions.
-Picker regressions now pass 32 tests. The new final gate receipt is `.f86-final-remediation-hldebc_g/full-final.log`, with exact
-command in `full-final-command.txt` and result in `full-final.exit`. These artifacts are produced
-**after this documentation is finalized**; consult their actual result, not an
-anticipated pass. The missing `.f86-step1-1791030546-full` claim is not relied on.
-See `docs/implementation/86-openrouter/sequential-r1-r4-remediation-2026-10-03.md`
-for the finite matrix and source/test freeze contract. Prior headings below are
-historical, not outstanding G1/G2 assertions or current gate pointers.
-
-E1 remains qualified real-loader/stale-delivery/rotation proof: removal injects a
-refresh outcome, not all-real zero-HTTP removal. Historical selection offset has
-no claimed causal repair. Auth compositor/sensitivity evidence is retained.
-Black/mypy remain waived, not green; 18 normal E2E/default-disabled exclusions
-are expected (actual gate log controls). All provider evidence is offline synthetic,
-not live authorization, availability or paid inference. Independent Step2/Step3
-remain pending; no feature-completion or approval claim.
-
-
-## Latest recovery receipt — 2026-10-03 final authorized Call 4: REVISE
-
-Fresh complete post-edit non-E2E gate: **5136 passed, 18 deselected, 196 warnings
-in 327.78s; exit 0**, `.f86-final-recovery-O3ZPKA/full-non-e2e.log`.
-This supersedes earlier receipts as the latest execution, not as approval.
-Budget evidence persistence, nullable-rate override restoration, actual default-effort
-SDK wire assertion and bounded picker detail fixes landed. Remaining: unexplained
-Call3 selection offset failure (passes isolated/full now, no causal repair), `/reasoning`
-presentation and mounted two-size proof, prepared/no-budget evidence, and stronger
-real-store admission proof (new removal test injects refresh outcome).
-See `docs/implementation/86-openrouter/final-recovery-evidence-2026-10-03.md`.
-**STEP1READY withheld.** Independent Step2/3 remain pending. Offline synthetic tests
-are not live authorization/availability/inference evidence; 18 E2E/default-disabled
-live/fixture cases were deselected. Black/mypy waived, not green. Earlier receipts
-below remain historical; no final workflow approval.
-
-
-> *An end-to-end walkthrough of an in-process Textual coding agent, from the
-> keystroke that lands in your terminal to the streaming response that paints
-> back at you. Read this once and you can navigate every file in the
-> repository.*
-
-> **New here?** This document is the *internals* guide. For installation, the
-> architecture in plain language, how to run Slo, and the known limitations,
-> start with the [top-level README](../README.md) instead, or the hosted docs at
-> <https://www.get-slo.sh>.
-
-> **Current capability snapshot (August 2026, v0.15.0):** Slo supports
-> interactive multi-turn conversations via the Textual TUI, headless one-shot
-> runs (`slo run -p "..."`, JSONL on stdout) for scripted/CI use, **sub-agent
-> orchestration** — the parent agent can spawn parallel or sequential child
-> agents via `spawn_sub_agents`, each running as an isolated `slo run` process,
-> watchable live with `slo visualize` — and **scheduled runs** (`slo schedule`)
-> that fire a prompt from `launchd` or `cron`, with a lease-and-inbox model so a
-> timer can feed a live TUI session without creating a second writer.
-> User-defined skills and workflows can be dropped into `~/.slo/user_skills/`
-> and `~/.slo/user_workflows/` and are automatically merged with the 116
-> vendored skills at session start. The vendored skills ship inside the
-> installed pipx package; the installer persists their absolute path as the
-> `SLO_SKILLS_DIR` default in `~/.slo/shell/environment.sh` (see
-> `docs/INSTALL.md` §2.1).
->
-> **Plugin extensions (Feature 75):** Slo supports trusted Python plugins with
-> managed GitHub/GitLab installation (`slo plugin install <url> --yes`, `list`,
-> `uninstall`, and `upgrade`), immutable source/pin provenance, atomic rollback,
-> fail-closed project trust, explicit `--plugin <path>` development loading, and
-> `/plugins [trust|reload]` health visibility. Plugins can observe the normalized
-> stream, add validated tools/commands/renderers, publish live footer status, and
-> use isolated interception points. Core Bash output snapshots travel on the normal
-> event stream and never enter model context; the bundled
-> `plugins/bash_live_output/` plugin is a consumer-only raw-output renderer.
->
-> In a development checkout, dog-food the bundled renderer explicitly with:
-> `slo --plugin plugins/bash_live_output/plugin.py`. Operator installs use the
-> managed lifecycle; the packaged bundled payload records
-> `https://github.com/slo/slo` plus `package:<version>` provenance. (That
-> `github.com/slo/slo` value is the bundled plugin's own provenance record
-> only — the public installer and `slo update` fetch Slo itself from GitLab,
-> `https://gitlab.com/core-27/slo.git`, with `https://github.com/slostack/slo.git`
-> as an outage fallback; see `docs/INSTALL.md` for private-mirror access requirements.)
->
-> v0.8.0 added a **third AI provider: Kimi For Coding (KFC)** — an
-> OpenAI-compatible API from Moonshot AI with a `ModelPool` fallback router and
-> automatic credit-exhaustion handling (see
-> [Section 6.6](#66-kimi-for-coding-kfc-provider)). v0.9.0 **wired that
-> `ModelPool` into the production build path** and layered a three-tier
-> rate-limit defense on top of it — a history-aware preflight, an in-call pool
-> route-switch, and an iteration-scoped retry — opt-in via the `SLO_MODEL_POOL`
-> environment variable or the `default_model_pool` user preference (see
-> [Section 6.7](#67-multi-model-pool-and-rate-limit-defense)).
->
-> Since then: **v0.14.16** registered the spec-54 Anthropic catalog entries
-> (Opus 4.8, Sonnet 4.6, Haiku 4.5, and the 1M-context variants);
-> **v0.14.17** unified provider-error classification behind one
-> `ProviderErrorClassifier`; **v0.14.18** added context-window inspection and
-> transactional manual compaction (`/context-window`, `/compact`); and
-> **v0.15.0** added the clean-room Git diff viewer (`/diff` plus the
-> `show_git_diff` tool, raising the default bundle to **10 tools**),
-> terminal-safe transcript copying (visible Markdown AI/user body drag-range
-> auto-copy plus focused visible/raw full-block copy, requiring `textual >= 8.2.7`), and bounded image reads
-> (1568 px longest edge, 5 MiB payload cap) that store a compact
-> `[image attached: …]` reference in durable history instead of base64.
-
----
-
-## OpenRouter (Feature 86 — partial, not complete)
-
-Feature 86 supports the canonical route syntax `'openrouter:<exact-remote-id>'`;
-OpenRouter owns that route even when its remote ID begins `anthropic/` or `openai/`.
-The effective credential precedence is `SLO_OPENROUTER_API_KEY` then the OpenRouter
-credential stored in `$SLO_HOME/global/authentication.additional-providers.json`;
-there is no legacy OpenRouter credential source. `/auth` provides API-key-only candidate verification,
-authenticated `/key` and `/models/user` discovery feed the canonical catalog, and
-`/model refresh` plus bounded `/model <query>` selection are wired. An explicit
-`--model` or `/model <exact-route>` clears a configured pool; otherwise the existing
-pool/default/resume rules apply.
-
-These are offline-tested implementation paths, not an entitlement or live-inference
-claim. Private reasoning continuation data stays in private runtime/history data and
-must not appear in public stream/headless output. Headless `--model openrouter:<id>`
-and schedules reuse ordinary preparation; they do not have a separate discovery path.
-The retained pre-correction Step 1 gate is **5115 passed, 18 E2E-marked
-deselected, 196 warnings in 373.69s; exit 0**
-(`.f86-integration-retry-ucwY1o/full-non-e2e.log`). The 18 deselections include
-default-disabled live/fixture harness tests; the executed OpenRouter evidence is
-offline, using local/mock transports. It does **not** verify live credentials,
-network access, provider availability, paid inference, or authorization. Black/mypy
-are waived only as static gates, not green. Independent review and feature-completion
-status remain **REVISE** while concurrent source corrections address the current
-findings; this receipt is not a post-correction final gate or approval. Bounded tests
-also cover append ordering/refusal, independent resume admission, append-wait
-cancellation, and an instrumented native-I/O late-writer failure. That qualification
-is not native interpreter-startup equivalence and creates no argv-equality product
-requirement. See
-[`independent-full-rereview-2026-10-03.md`](docs/implementation/86-openrouter/independent-full-rereview-2026-10-03.md)
-and the historical/current record
-[`docs/implementation/86-openrouter/current-status-2026-10-02.md`](docs/implementation/86-openrouter/current-status-2026-10-02.md).
-
-## Reviewing a Git Diff
-
-Use `/diff <repository-relative-path>` in the running TUI to open a full-screen,
-read-only Git-style unified diff of one worktree file against `HEAD`. Added lines
-have a green `+` gutter and removed lines have a red `-` gutter. Press `s` when you
-want an optional side-by-side comparison, `w` for wrapping, `a` for accessible line
-annotations, and `Escape` to return to the transcript. Long diffs scroll vertically.
-The viewer accepts UTF-8 text files up to 1 MB per side; binary, unchanged, unsafe,
-and unavailable files produce a safe transcript message instead of opening a screen.
-
-Agents can call `show_git_diff(repository_relative_path="src/tui/app.py")` to
-receive the same validated before/after content as JSON. The agent tool uses the
-process working directory; `/diff` is session-workdir scoped. Both surfaces reject
-absolute/traversal/.git paths and never modify the repository.
-
-## Image Reads and Durable History
-
-The `read` tool identifies JPEG, PNG, GIF, and WEBP files by Pillow content sniffing.
-Images larger than **1568 px** on either edge are resized in memory before base64 encoding;
-this keeps routine vision inputs within the provider's **5 MB encoded-payload** limit while
-preserving aspect ratio. Dense images that still exceed the cap receive one JPEG fallback;
-if that single fallback remains over the cap, the read fails rather than returning a
-provider-rejected payload. Smaller images retain their original bytes, and source files are
-never modified.
-
-The current turn receives a real multimodal image block. Durable session history stores only
-`[image attached: <name>, <WxH>, ref <absolute_path>]`, rather than base64, so resumed
-sessions retain a useful reference without inflating context/token estimates. Coverage includes
-resize, alpha/paletted formats, payload fallback, text/PDF/binary regressions, executor
-threading, and executor-to-history integration.
-
-## Context Window Visibility and Manual Compaction
-
-The TUI exposes durable replay-history context separately from provider billing telemetry:
-
-- `/context-window` reports the routed model's Context Window capacity, Estimated Used Context, Available Context, and one-decimal percentage. The estimate counts selected durable replay events, not cumulative session billing totals.
-- `/compact` requests one lock-safe Manual Compaction while the session is idle. It mounts the fixed activity spinner immediately and shows `Compacting session history…` while the summary request runs, reports a no-op when there is nothing to compact, and rejects an in-flight prompt without touching history. Its summary request is shaped per lane: ChatGPT-backend OAuth sends top-level `instructions` with no output-token field, direct Anthropic/OpenAI-API-key/Kimi lanes keep `max_tokens`, and a `ModelPool` shapes each selected member itself.
-- Once a durable snapshot reaches `SLO_COMPACTION_ADVISORY_TOKENS` (default 256,000), the transcript prints `Context is above 256,000 tokens; run /compact to help latency.` once while above the threshold; a later below-threshold snapshot re-arms it. The advisory is display-only and never starts compaction; the automatic trigger remains `floor(context_window * 0.70)` over persisted token usage.
-- Manual and forced-overflow compaction failures surface a bounded, redacted `ExceptionClass: message` in the result and a `compaction_failed` notice, and append one replay-excluded `run_failed` audit tagged `failure_scope="compaction"`.
-- The usage footer appends `NN.N% context used` only when a durable Context Window Snapshot is available. It refreshes at bounded lifecycle points rather than on every streamed event.
-
-## Preface
-
-This is not a feature list. This is a **narrative walkthrough** of Slo — a
-single-process Python coding agent built on LangGraph, LangChain, and
-Textual — written for the reader who already knows Python and wants to
-understand exactly how the wires connect.
-
-You will install Slo, send a prompt, then trace that prompt through every
-layer it touches: the Textual `App`, the message-pump machinery, the
-session wrapper, the agent loop, the LangGraph state graph, the tool
-dispatch, the response stream, the renderer, the on-screen widget. Each
-hop is grounded in a real file path and a real line number. When the chain
-involves something Textual-specific that the average Python reader hasn't
-seen — `ComposeResult`, `ModalScreen`, the message handler's snake-cased
-auto-discovery — there is a short primer at the point where you need it.
-
-The aim is the same as O'Reilly's *Designing Data-Intensive Applications*
-or *Crafting Interpreters*: by the time you finish, the code should read
-like prose to you. You should be able to debug a misbehaving prompt by
-naming the layer responsible without looking it up.
 
 ### How to read this book
 
@@ -322,6 +11,12 @@ naming the layer responsible without looking it up.
   for "where does X live?" lookups.
 - **As a primer for Textual**, [Chapter 3](#chapter-3--a-five-minute-textual-primer)
   stands alone.
+- **As a maintainer**, read [Maintainer Reference](#maintainer-reference)
+  at the end: the maintained repository layout, style rules, testing rules,
+  commit/branch conventions, specification conventions, and the rule for
+  keeping this README current. Exact values (timeouts, env-var defaults,
+  caps, on-disk layouts, step-by-step how-tos) live in the knowledge base at
+  KB `slo/operational-reference.md`. The root `RESEARCH.md` is a gitignored, local project-memory file.
 - Every code excerpt cites its source as `path/to/file.py:line-line`. Open
   the file in your editor; the citation is the contract.
 
@@ -343,22 +38,54 @@ Slo lives in a monorepo. This book covers the **`slo/` subdirectory only**
 specifications under `specifications/` and the Knowledge Base under
 `KB/slo/` are referenced where relevant but are not the subject.
 
+This README is the single maintained reference for the codebase (it
+replaces the former `AGENTS.md`). The repository instruction file that
+Slo auto-loads into every agent session is `SLO.md`; durable,
+value-level project knowledge lives in KB `slo/operational-reference.md`.
+
+### What Slo is
+
+Slo is a **Python ReAct coding-agent harness** modelled on
+[pi.dev](https://pi.dev) — a mature TypeScript reference agent. We borrow
+pi's design ideas and re-implement them in Python under our own
+conventions: LangGraph for the state machine, LangChain for the LLM layer,
+and Textual for the TUI. One-line framing: *pi is the teacher; Slo is the
+student we own.*
+
+What Slo does:
+
+- Runs an unbounded ReAct loop (reason → act → observe → repeat) over a
+  cloud LLM with the file/shell tool bundle bound at session start
+  ([§5.4](#54-tools)).
+- Streams progress to the Textual TUI via `AgentStreamEventDAO` events
+  ([Chapter 4](#chapter-4--the-anatomy-of-a-prompt)).
+- Persists a full-fidelity event log per session under
+  `~/.slo/sessions/history/` ([Maintainer Reference → History and
+  persistence](#history-and-persistence)).
+- Loads project instruction files (`SLO.md` / `AGENTS.md` / `CLAUDE.md`,
+  plus `docs/RESEARCH.md`) from the working-directory lineage into the
+  system prompt automatically ([§5.3](#53-the-system-prompt-builder)).
+- Keeps the vendored convention skills (`skills/`) readable on demand via
+  the `read` tool ([Chapter 5.7](#chapter-57--user-defined-skills-and-workflows)).
+- Spawns and supervises headless sub-agents via `spawn_sub_agents` when
+  promoted to orchestrator mode ([Chapter 9](#chapter-9--sub-agent-orchestration)).
+
 ---
 
 ## Chapter 1 — Installing Slo on Your Laptop
 
 > **Installing, updating, or hosting the one-line installer?** See
-> **[`docs/INSTALL.md`](docs/INSTALL.md)** — the authoritative guide to
+> KB **`slo/install-guide.md`** — the authoritative guide to
 > `install.sh`, the credential-free `curl | bash` production flow (Cloudflare
 > Worker hosting at `get-slo.sh`), `slo update`, uninstalling, and
 > troubleshooting. The narrative below is a summary; that document supersedes
 > it wherever the two disagree.
 >
 > **Need architecture and runtime docs?** See
-> **[`docs/RESEARCH.md`](docs/RESEARCH.md)** for the codebase index,
-> **[`docs/SLO_HEADLESS_README.md`](docs/SLO_HEADLESS_README.md)** for headless
+> the knowledge base page KB **`slo/codebase-index.md`** for the codebase index,
+> KB **`slo/headless-guide.md`** for headless
 > execution and orchestrator usage, and
-> **[`docs/SLO_SCHEDULER_README.md`](docs/SLO_SCHEDULER_README.md)** for the
+> KB **`slo/scheduler-guide.md`** for the
 > scheduler CLI, recurring runs, TUI/session delivery, and control-flow
 > walkthroughs.
 
@@ -436,8 +163,12 @@ lookup also falls back when GitLab cannot be reached. Set
 `SLO_REPO_FALLBACK_URL=''` to disable fallback; custom primary URLs require an
 explicit mirror. **While the GitHub mirror is private, installs require existing
 Git read authentication; anonymous fallback requires making the mirror public.**
-No setup/API token is injected into installation URLs. See [the installation
-guide](docs/INSTALL.md#22-public-repository-installation).
+No setup/API token is injected into installation URLs. A private mirror
+requires pre-existing Git read authentication; the push deploy key is not an
+end-user credential. `SLO_REPO_URL` and `SLO_REPO_FALLBACK_URL` configure both
+the installer and `slo update` (`Updater` in `src/cli/update.py`), and
+finalisation still runs only after installation succeeds. See the installation
+guide, KB `slo/install-guide.md` (section "Public repository installation").
 
 `pyproject.toml` declares packaging-owned `slo` and `slo-entry` scripts, both
 currently targeting `src.cli:main`. After pipx generates both artifacts,
@@ -446,7 +177,19 @@ marked POSIX wrapper. The wrapper invokes the pinned pipx interpreter as
 `python -I <absolute slo-entry>`, so hostile Python import paths cannot select
 foreign `src` or `config` modules before the Typer app starts. This installed
 path is distinct from trusted development source execution, which may run
-`python -m src.cli`.
+`python -m src.cli`. `install.sh` is the only wrapper writer; `-I` protects
+initial CLI import resolution while preserving ordinary environment values:
+it is import isolation, not environment scrubbing. Slo never requires, reads,
+or changes a target project's `.envrc`.
+
+The same isolation applies to the processes Slo starts itself (spec 82.a):
+sub-agents, detached workflow orchestrators, and workflow resumes always run
+`sys.executable -I -m src.cli` with the sanitized child environment. Slo must
+therefore be *installed* in that interpreter (an editable install is fine); a
+source checkout on cwd or `PYTHONPATH` alone is not enough. Isolation applies
+to the agent interpreter, not to project commands the agent launches. The
+visualizer source fallback remains trusted-source-only with no forwarded
+`PYTHONPATH`.
 
 To upgrade later, run `slo update` (latest release tag), `slo update
 --development` (`main`), `slo update --ref <ref>`, or re-run the matching
@@ -485,6 +228,21 @@ aiohttp, …), every dev dependency (`pytest`, `black`, `mypy`,
 way `install.sh` does. After this you can run `slo` directly from any
 directory.
 
+Three environment rules matter on the developer path:
+
+- **The pyenv virtualenv named `slo` (Python 3.11.7) is mandatory.** Never
+  use system Python (the macOS default is 3.9).
+- **Run `poetry install`, not `poetry install --no-root`**, while the
+  virtualenv is active. `poetry.toml` sets `virtualenvs.create=false`, so
+  Poetry installs into the pyenv env instead of creating its own.
+- **Non-interactive tool shells** (agents, CI steps) may not fire the
+  `pyenv activate` hooks. Verify that `which python` resolves to
+  `~/.pyenv/versions/slo/bin/python` before running anything.
+
+The Makefile targets (`make test`, `make lint`, `make format`,
+`make build-skill-index`, `make install`, …) are listed in
+[Maintainer Reference → Everyday commands](#everyday-commands).
+
 ### 1.4 Where Things Live
 
 Two directories outside your working tree matter:
@@ -510,15 +268,67 @@ Once installed, three commands prove the surface is alive:
 ```bash
 slo --version            # prints the version from pyproject.toml
 slo --help               # the Typer help block
-make test                # 431 tests pass
+make test                # full non-E2E suite; inspect the actual result
 ```
 
-The Makefile lives at `slo/Makefile`. `make test` sources the
-`environments/tests.env` file (so test runs never use your development
-database) and then runs the full pytest suite. If this is green, you're
-ready to launch.
+The Makefile lives at `slo/Makefile`. Run `make test-env` first: it reports
+`tests.env` when the local file is readable, otherwise `fallback`. Inspect a local
+`environments/tests.env` before sourcing it; it is not a shipped-file assumption.
+The tracked Makefile fallback supplies non-secret test settings, disables automatic
+windows and Herdr, and uses a synthetic credential placeholder. Root test fixtures
+also strip inherited Herdr settings and guard real process/window boundaries.
+Never source development settings for tests. `make test` runs the full non-E2E
+suite; `make smoke` runs only smoke tests; `make lint` checks **src and tests**.
+A passing test suite does not waive a failing static or live-acceptance gate.
 
 ---
+
+## Optional Herdr integration
+
+This checkout adds optional status reporting, private native restore, and workflow
+viewer submission inside Herdr. Slo still owns execution, tools, retries, history,
+and token accounting; a slow or unavailable Herdr must not become a prompt gate.
+**Herdr 0.9.2+ is a target, not verified live compatibility.** Offline implementation
+evidence is not release approval. T6 composed acceptance, independent review and
+live pane/restart evidence have separate gates; static failures remain unwaived.
+
+Start Slo normally from a Herdr pane that supplies `HERDR_ENV=1`, `HERDR_PANE_ID`
+and an absolute `HERDR_BIN_PATH` (`HERDR_SOCKET_PATH` is optional). The compact
+metadata profile is default; `SLO_HERDR_METADATA_PROFILE=detail` explicitly opts
+into additional numeric telemetry. Neither profile publishes conversation text,
+credentials, raw errors, arbitrary model/provider/session labels or private paths.
+See setup, privacy, retention and rollback in KB `slo/install-guide.md` → "Optional Herdr integration"
+before enabling or testing it.
+
+Eligible interactive sessions advertise exactly:
+
+```text
+slo --resume <canonical-UUID> --herdr-restore r1-<32-lowercase-hex>
+```
+
+Use the installed plain `slo` on PATH, the same `SLO_HOME`, and its default history
+root across restart. The reference restores immutable saved configuration with
+**current history**, not a history checkpoint or a replay of a submitted prompt.
+Records are private and retained without automatic garbage collection; missing or
+unsafe records fail closed. Ordinary `--resume` still supports normal name/slug
+resolution but does not promise exact saved policy.
+
+Workflow viewers get one automatic split/run attempt per parent per adapter
+lifetime. A submitted command is not proof that a viewer painted or stayed alive.
+Repeated requests give manual selection/recovery guidance; Slo does not discover,
+focus, replace or close retained panes automatically. Enabled-but-unavailable Herdr
+does not fall back to opening an OS terminal.
+
+A shutdown-refused inbox item stays **claimed and unacknowledged**. Investigate
+privately before explicit resubmission; there is no automatic replay/requeue or
+exactly-once crash guarantee. An already registered task follows its existing
+execution policy; acknowledgement is not completion proof.
+
+To disable integration, set `SLO_HERDR_DISABLED=1` **before restarting Slo**.
+This is not a hot toggle or a cleanup command. Keep history, retained references
+and user-owned viewer panes. Older Slo may not understand `--herdr-restore`;
+remove the saved Herdr command through an explicitly authorized operation or use
+ordinary resume explicitly when rolling back.
 
 ## Chapter 2 — Your First Conversation
 
@@ -699,7 +509,14 @@ command. The router is in `src/tui/slash_router.py:32`:
 | `/abort` | Cancel the in-flight prompt (graceful — the agent finishes its current step) |
 | `/steer <text>` | Queue a steering message that joins the next turn |
 | `/auth` | Re-open the authentication modal |
-| `/workflows` `/wf` | List detached workflows; `abort <id>` SIGTERMs the workflow's process group (SIGKILL after 5 s); `dismiss <id>` acknowledges a stalled one; `tui dismiss [<id>]` clears finished groups from the TUI session list (in memory only; running groups stay) |
+| `/new [session name]` | Replace the current session with a fresh one (optionally named) |
+| `/rename <session name>` | Rename the current session (resumable by name via `--resume`) |
+| `/model <name>` | Switch model; on a pooled session this clears the pool |
+| `/reasoning <level>` | Set the canonical reasoning level |
+| `/diff <repository-relative-path>` | Open the focused HEAD-versus-worktree diff screen for one file |
+| `/context-window` | Report the routed model's capacity and the projector-faithful durable replay estimate |
+| `/compact` | Request one lock-safe, transactional manual compaction (rejected while a prompt owns the session lock) |
+| `/workflows` `/wf` | List detached workflows; `abort <id>` SIGTERMs the workflow's process group (SIGKILL after 5 s); `dismiss <id>` acknowledges a stalled one; `tui dismiss [<id>]` hides matching running or finished groups locally; `tui show` restores hidden groups without affecting execution |
 
 The router is **Textual-free**: every handler returns a
 `SlashCommandResultDAO` (`src/tui/slash_router.py:17`) carrying flags
@@ -707,6 +524,14 @@ like `rendered`, `should_clear`, `should_exit`, `open_auth_modal`. The
 TUI translates those flags into `push_screen`, `exit`, transcript
 writes. This separation is what lets us test the router in plain pytest
 without spinning up a Textual `App`.
+
+Three collaborators sit around the router: `SlashCommandRegistry`
+(`src/tui/slash_command_registry.py`) holds the command metadata as
+`SlashCommandSpecDAO`s; `SlashSuggestionEngine`
+(`src/tui/slash_suggestion_engine.py`) does prefix-match autocomplete; and
+`SlashSuggestionMenu` (`src/tui/widgets/slash_suggestion_menu.py`) renders
+the dropdown. `/workflows resume <workflow-id>` relaunches a stalled or
+failed detached workflow (see [§9.7](#97-detached-workflows-the-session-list-and-child-abort)).
 
 ---
 
@@ -983,6 +808,67 @@ exactly what's in scope.
 > conversational lines left. Replay reconstructs completed turns as
 > `TranscriptEntryDAO`s via `ReplayEntryProjector` and feeds them through the
 > same projector.
+
+### The Runtime Chain at a Glance
+
+Before the hop-by-hop walk, here is the whole chain and who owns what:
+
+```
+slo (pipx isolated wrapper → generated slo-entry → src/cli/__main__.py)
+  └── TyperDispatch (src/cli/typer_dispatch.py)
+        └── SloTUI.run() (src/tui/app.py)               # Textual app, interactive path
+              └── SloAgentSession (src/agents/slo_agent/sessions/service.py)
+                    └── SloAgent (src/agents/slo_agent/agent.py)
+                          └── build_slo_agent() (src/agents/slo_agent/graph/service.py)
+                                └── LangGraph StateGraph
+                                      ├── [agent node]  — llm.ainvoke(messages)
+                                      └── [tools node]  — tool execution
+```
+
+- **`TyperDispatch`** — parses CLI flags, resolves model/provider plus
+  `--resume` session references (session id or name) and optional
+  `--workspace <file.code-workspace>`, launches the TUI or a headless run,
+  and owns the async boundary for `slo plugin install|list|uninstall|upgrade`.
+- **`SloTUI`** — the Textual app. Owns the layout (header, scroll container,
+  `UsageStatusBar`, `PromptInput`, footer), mounts transcript widgets,
+  dispatches slash commands, owns `/new` session replacement and `/rename`,
+  manages in-process prompt-history recall, and subscribes to the session's
+  event stream.
+- **`SloAgentSession`** — the process-level wrapper. Holds one `SloAgent`,
+  enforces one in-flight prompt at a time, owns the subscriber list for render
+  events, discovers/merges trusted plugins and subscribes their dispatcher,
+  persists the history trace, exposes runtime naming (`rename_session`,
+  `session_name`), and exposes slash methods (`abort`, `steer`, …).
+- **`SloAgent`** — the multi-turn ReAct loop. Streams the graph in a loop
+  until the model emits no tool calls, `abort()` fires, or the
+  `should_stop_after_turn_hook` returns `True`; emits normalized
+  `AgentStreamEventDAO` events on every chunk.
+- **One LangGraph pass = one agent turn** — one LLM call followed by
+  execution of whatever tool calls it returned (batch planning is described
+  in [§5.4](#54-tools)).
+
+Some module paths cited in the sections below predate the package split
+(`session.py` → `sessions/service.py`, `graph.py` → `graph/service.py`,
+`stream_event_dao.py` → `events/stream.py`, `rate_limit_policy.py` →
+`rate_limit/`). The maintained tree is in
+[Maintainer Reference → Repository layout](#repository-layout).
+
+### OpenAI streamed tool-call sequencing
+
+`src/agents/providers/openai_responses_sequencing.py` contains the removable
+`SequencedChatOpenAI(ChatOpenAI)` workaround for LangChain OpenAI 0.3.35.
+It overrides `_astream` and introduces `_astream_responses_sequenced` to keep
+interleaved function arguments on the original call's merge index. Both executable
+calls and replay content are corrected. Completed arguments supply only missing
+suffixes; conflicting or unfinished calls fail instead of reaching tool execution.
+Codex, protected Platform, and legacy OpenAI factory paths use this subclass.
+Other providers, synchronous calls, nonstreaming calls and Chat Completions keep
+their existing behavior. No dependency upgrade or global patch is required.
+
+To remove the workaround, restore the stock `ChatOpenAI` construction/base class
+in `openai_codex.py`, `openai_platform.py` and the OpenAI factory in `base.py`,
+then delete the workaround module. Rerun the sequencing HTTP replay tests when
+upgrading LangChain; its private streaming interfaces are not a stable API.
 
 ### 4.1 The Cast of Characters
 
@@ -1312,7 +1198,24 @@ default. Set `SLO_BASH_DEFAULT_TIMEOUT_SECONDS` to a positive number to choose
 a different default, or to `0` to disable that default ceiling. An explicit
 tool-call timeout still takes precedence. For the complete headless and
 orchestrator timeout reference, including reconnect, heartbeat, and child
-inactivity settings, see [`docs/SLO_HEADLESS_README.md`](docs/SLO_HEADLESS_README.md).
+inactivity settings, see KB `slo/headless-guide.md`; the exact values are
+also collected in KB `slo/operational-reference.md`.
+
+**Provider stream disconnection (spec 70).** `StreamRecoveryService`
+(`src/agents/providers/stream_recovery/`) is the sole registry of concrete
+`httpx`/`httpcore` transport-failure families; it never inspects model
+identity. From the exception family plus the agent-owned *commit boundary*
+(has visible output been committed yet?) it returns a redacted decision:
+`RETRY_FRESH_CONNECTION` before commit, `DO_NOT_REPLAY` after. A known
+pre-commit failure classifies as `STREAM_DISCONNECTED`; a `ModelPool` may
+switch members only before its first chunk and records
+`provider_stream_disconnected` rather than raw error text. After committed
+output there is no automatic replay and no mid-stream switch. A reconnect
+delay (`SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS`) completes the fast
+transport policy that sits beneath the unchanged outer watchdogs. The
+`stream_reconnecting` history event is diagnostic only and is excluded from
+replay context. `WatchDogTimer` (`src/agents/slo_agent/watchdog_timer.py`)
+owns the provider deadlines and the local-tool suspension described above.
 
 ### 4.7.1 Normalizing Chunks into Stream Events
 
@@ -1734,6 +1637,105 @@ in a handler dict and awaits the handler — handlers return a
 returns `open_auth_modal=True`; the TUI calls `push_screen` with the
 auth modal; the modal lifecycle from Chapter 2 runs.
 
+### 4.12 TUI Ownership Notes
+
+The sections above follow one prompt. This section collects the TUI
+ownership rules that apply around it.
+
+**Thinking segments and routing.** An `AssistantStreamThinkingBlock` is one
+normalized parent thinking segment, keyed by the normalizer's stable
+`block_id`. It is sealed by its content-bearing repair end or by the
+terminal-run sweep; a contentless `thinking_end` leaves the segment open and
+live. `TranscriptProjector` owns parent `block_id` routing and mounts replay
+reasoning as a sealed thinking block immediately before its answer block
+(replay adjacency). `SloTUI` owns child/sub-agent events: they never mount a
+foreground transcript block; child lifecycle events only request one
+coalesced session-list refresh (feature 94, [§9.7](#97-detached-workflows-the-session-list-and-child-abort)).
+
+**Pi design restyle (spec 72.a.5).** Both `Theme.variables` mappings in
+`src/tui/theme.py` define the same seven Pi-derived semantic tokens —
+`user-msg-bg`, `tool-pending-bg`, `tool-success-bg`, `tool-error-bg`,
+`thinking-text`, `md-heading`, `border-muted` — and widget `DEFAULT_CSS`
+consumes them via `$<token>` references (no hard-coded role colours). A user
+turn is a quiet `user-msg-bg` band; thinking and answers stay bare on the
+canvas (thinking is muted italic `thinking-text`, answer headings use warm
+`md-heading`). A `ToolExecutionBlock` paints pending/success/error fills and
+gains the CSS-state hooks `-done` (added by `update_result()`) and `-error`
+(added by `mark_incomplete()`) purely as styling seams — `_result_output` /
+`is_incomplete` remain the lifecycle truth used by `_is_block_live`. The
+turn separator is a muted `─` rule (`_TranscriptAdapter.TURN_SEPARATOR`,
+`border-muted`). `SloTUI._refresh_title_bar()` collapses the session workdir
+to `~` / `~/...` via `_collapse_home_in_path` (`Path.relative_to` ancestry,
+so home-prefix lookalikes stay absolute); the usage bar owns no cwd display.
+
+**`UsageStatusBar`** (`src/tui/widgets/usage_status_bar.py`) is a `Static`
+fixed above the footer, updated via `session.usage_snapshot` whenever
+`SloAgentSession` emits a `SessionUsageSnapshotDAO` (which accumulates
+`TokenUsageTotalsDAO` across turns). It renders Pi-style compact token
+quantities (`6.0k`, `12k`, `1.0M`) for token values only — rpm, cooldown
+seconds and context percent keep their raw units.
+
+**Queued prompt (spec 72.a.4, input-adjacent anchoring).** An ordinary
+(non-slash) prompt submitted while a run is active is held in a one-deep,
+latest-wins app-owned slot (`_queued_prompt_text` plus its mounted
+`QueuedPromptBlock`, rendered as `⏳ Queued: <text>`); a newer busy
+submission replaces the held text in place. The block mounts into
+`#chat-shell` directly before `PromptInput` — outside the scroll region — so
+it stays visible while the transcript scrolls; it is never a transcript
+child, so window eviction cannot reach it and `_is_block_live` has no
+`QueuedPromptBlock` branch. There is still exactly one `session.invoke()`
+task at a time: `_prompt_submission_lock` serializes acceptance with the
+run-completion handoff (`_finish_prompt_run` → `_start_queued_prompt_if_idle`),
+which removes the anchored block before echoing and starting the held turn.
+`/abort` (and Ctrl+C) preserve the held prompt and write one survival notice;
+`/clear` and an allowed `/new` discard it. Slash commands and inbox
+`chat_turn` items never enter the user queue.
+
+**Copy and output padding (specs 72.a.3 and 81).** No transcript block has a
+card-local copy control. Copy runs through `SloTUI` only: the focus chord
+(`ctrl+shift+c` / `meta+c` → `action_copy_visible_text` → the focused
+block's `get_copyable_text()`) and mouse drag selection (`on_text_selected`)
+both funnel into `copy_to_clipboard` (pyperclip → OSC 52). All four message
+widgets keep the uniform `TRANSCRIPT_OUTPUT_PAD` convention (CSS
+`padding: 0 1`); the `#transcript-content` outer-frame padding is unchanged.
+OSC 133 prompt-zone markers are deferred until Textual offers a
+terminal-output seam that preserves raw zero-cell controls end to end.
+
+**Granular Markdown selection (spec 81.c.1).** `MarkdownContentCompiler`
+(`src/tui/widgets/markdown_content_compiler.py`) is the one app-free
+markdown-it AST-to-visible-text owner for `AssistantAnswerBody`,
+`AssistantThinkingBody` and `UserMessageBody`. Its single append-only writer
+produces `MarkdownContentDAO(raw_markdown, visible_text, spans)`: the message
+block keeps raw Markdown, while `Content` renders, and native drag selection
+extracts, only the readable visible buffer. Role-name spans resolve through the
+active theme only at mounted body boundaries; Pygments adds spans, never display
+text. Every fenced and indented block keeps `markdown-code`; unknown,
+attribute-bearing, unlabeled, and failed fences stay generic-only; diff/patch
+adds `markdown-code-diff-added` / `-removed` / `-hunk` / `-file` line roles
+defined in both themes. There is no offset mapper, Rich visual, custom
+selection paint, second clipboard path, or scroll-time selection clearing.
+`ctrl+shift+m` / `meta+shift+m` resolves the nearest focused transcript-block
+owner and copies its complete raw Markdown through the same
+`copy_to_clipboard()` funnel. Both themes keep native
+`screen-selection-background` / `screen-selection-foreground` ownership.
+Coverage: `test_markdown_content_compiler.py`, `test_user_message_block.py`,
+`test_selection_scroll_highlight.py`, `test_selection_copy.py`,
+`test_selection_copy_e2e.py`.
+
+**Prompt-history recall** is owned by `PromptHistoryNavigator`
+(`src/tui/prompt_history.py`). `PromptInput` only emits semantic older/newer
+history messages; the app records submitted non-slash prompts, gives slash
+suggestions precedence, and restores the preserved draft when history
+navigation exits.
+
+**`ThinkingSpinner`** (`src/tui/thinking_spinner.py`) is a `Horizontal` with
+two child `Static`s: an accent braille activity glyph (`_BRAILLE_FRAMES`) and
+a muted italic text surface that rotates verbs every `interval_seconds` or
+carries a retry/compaction override via `set_override_status(text=...)` —
+overrides never stop the glyph. It is mounted while the agent runs or while a
+slash command whose `SlashCommandSpecDAO.shows_activity` flag is true is
+dispatching; slash dispatch only unmounts a spinner it mounted itself.
+
 ---
 
 ## Chapter 5 — The Agent Loop
@@ -1799,16 +1801,66 @@ LLM produces a tool-free `AIMessage`.
 ### 5.3 The System Prompt Builder
 
 The agent node doesn't just call the LLM. It prepends a system prompt
-built at agent-construction time by `SystemPromptBuilder` (lives in
-`src/agents/prompts/`). The builder assembles:
+built at agent-construction time by `SystemPromptBuilder`
+(`src/agents/slo_agent/prompts/__init__.py`; every static string constant
+— `ROLE_LINE`, `KB_BLOCK_TEMPLATE`, `SKILLS_BLOCK_TEMPLATE`, … — lives in
+`prompts/system_prompt.py`).
 
-- A role line ("You are Slo, a coding agent…").
-- The list of tools with their docstrings.
-- The skills index from `~/.slo/skills/INDEX.md`.
-- Project-context blobs (the contents of `CLAUDE.md`, `AGENTS.md`,
-  and `docs/RESEARCH.md` when present in the repo lineage).
-- Behavioural guidelines (when to abort, when to ask, how to use
-  Markdown).
+**Project context discovery.** `SloAgent.__init__` first calls
+`ProjectContextDiscovery.invoke(cwd=..., workspace_folders=...)`
+(`src/agents/slo_agent/project_context/service.py`). It collects, in this
+filename order, `SLO.md` (preferred), `AGENTS.md`, `CLAUDE.md`, and
+`docs/RESEARCH.md` when present in the repo lineage. The cwd lineage is
+always walked from `cwd` to the filesystem root; files closer to cwd come
+first and the deepest copy of each filename wins within that walk. When
+`--workspace <file.code-workspace>` is active, Slo first loads the workspace
+file via `VscodeWorkspaceLoader.invoke(workspace_file=...)`
+(`workspace/service.py`) and then walks from each declared workspace folder
+to the root as an additive tier, contributing only new absolute paths after
+the cwd-derived entries. The workspace file itself is never treated as an
+instruction file. The collected `ContextFileEntryDAO`s go to the builder.
+(In this repository the instruction file is `SLO.md`.)
+
+**Assembly order.** `SystemPromptBuilder.invoke()` emits these sections in
+order:
+
+1. Role line (`ROLE_LINE`).
+2. Available tools — one `- <name>: <snippet>` line per tool that has a
+   `TOOL_PROMPT_SNIPPETS` entry (`src/agents/tools/prompt_snippets.py`).
+3. Custom tools note.
+4. Guidelines block (adapts to whether bash and the native explorers are
+   both present).
+5. Skills block — the `<available_skills>` XML manifest plus a line naming
+   `SKILLS_LOCATION` (path and source) when skills loaded; otherwise
+   `SKILLS_BLOCK_TEMPLATE`: `<SKILLS_LOCATION.path>/INDEX.md`, its source, and
+   OS-independent recovery steps (`$SLO_SKILLS_DIR` → `$SLO_HOME/skills` →
+   `pipx runpip slo show slo` → `<Location>/skills`).
+6. Knowledge-base block (`KB_BLOCK_TEMPLATE`) — see below.
+7. Optional append block (`append_system_prompt`).
+8. Project context — each discovered file wrapped in
+   `<project_instructions path=…>`.
+9. Current date line.
+10. Current working directory line.
+11. Optional `Current workspace folders:` block when a workspace file is
+    active.
+
+**The knowledge base.** `config.cfg.KB_LOCATION` resolves the KB path from
+`SLO_KB_DIR`, else `KB_DIR` (fallback alias), else
+`$SLO_HOME/KnowledgeBase/KB`; a value pointing at a file resolves to its
+directory. The path may not exist and resolution never creates it. The
+prompt block shows the resolved path and its source, the lookup order, and
+the entry points (`Welcome.md`, `index.md`, `Index.md`, `Home.md`). When no
+KB is found, the agent tells the user, offers to create one (the
+`locate-knowledge-base` skill), and continues — a missing KB never blocks.
+The installer's managed `~/.slo/shell/environment.sh` sets `SLO_KB_DIR` only
+when it is unset.
+
+**Known issue B1 (historical).** Earlier builds passed the raw constructor
+`tools=` argument (default `None`) to the builder, so the tools block
+rendered as `(none)` even though the graph had every tool bound. The
+current `SloAgent.__init__` passes the resolved `list(_build_result.tools)`
+from `build_slo_agent()` into `_resolve_system_prompt`. If the tools block
+ever renders as `(none)` again, check that wiring first.
 
 The builder is invoked once per `SloAgent.__init__` — the system prompt
 is baked into the graph's compiled state. Changing the prompt requires
@@ -1819,22 +1871,37 @@ acceptable).
 
 Tools live under `src/agents/tools/`. Each tool is a `StructuredTool`
 (LangChain's class for tools with typed arguments) bound to a Pydantic
-args schema. The agent's tool registry is assembled by
-`create_extended_tools()` (`src/agents/tools/registry.py`).
+args schema. The agent's tool bundle is assembled by
+`create_extended_tools()` (`src/agents/tools/bundles.py`).
 
 The standard tool set (`create_extended_tools()` — the default bundle):
 
-| Tool | What it does |
-|---|---|
-| `read` | Read a file (text or image) |
-| `write` | Write/overwrite a file |
-| `edit` | Exact-string find-and-replace |
-| `bash` | Run a shell command |
-| `grep` | Regex search across files |
-| `find` | Find files by pattern |
-| `ls` | List directory contents |
-| `now` | Return current UTC timestamp |
-| `read_pdf` | Extract text from a PDF |
+| Tool | File | What it does |
+|---|---|---|
+| `read` | `tools/read.py` | Read a UTF-8 text file or image attachment; rejects PDFs/binary files |
+| `write` | `tools/write.py` | Write/overwrite a file |
+| `edit` | `tools/edit.py` | Exact-string find-and-replace |
+| `bash` | `tools/bash.py` | Run a bash command (semaphore-guarded async) |
+| `grep` | `tools/grep.py` | Regex search across files |
+| `find` | `tools/find.py` | Find files by name/pattern |
+| `ls` | `tools/ls.py` | List directory contents |
+| `read_pdf` | `tools/read_pdf.py` | Extract text from a PDF |
+| `now` | `tools/now.py` | Return the current datetime |
+| `show_git_diff` | `tools/show_git_diff.py` | Return safe JSON HEAD-versus-worktree content for one repository-relative UTF-8 text file |
+
+`tools/tool_output.py` is not a tool: it defines `ToolOutputUpdateDAO`, the
+typed, display-only partial-output snapshot that streaming-capable tools
+(today `bash`) publish — see [Plugins and tool-output
+streaming](#plugins-and-tool-output-streaming). Shared private helpers live
+beside the tools (`_blocking.py`, `_truncate.py`, `_gitignore.py`,
+`_image_content.py`).
+
+Three pi-parity sub-bundles also exist: `create_coding_tools()`
+(read/bash/edit/write), `create_read_only_tools()` (read/grep/find/ls), and
+`create_all_tools()` (all seven pi tools). Tool batches are planned by
+`plan_tool_batch` (`src/agents/slo_agent/tool_execution/service.py`) into
+parallel or sequential execution (`ToolExecutionPlanDAO`) and run by
+`SequentialToolExecutor` / `ConcurrentToolExecutor` (`executors.py`).
 
 Additional tools available but **not** in the default bundle:
 
@@ -1908,6 +1975,15 @@ The pattern each tool follows is: keep `async def invoke(...)` as the API,
 move the body into a sync `_invoke_sync(...)`, and call it via
 `await run_blocking_tool_call(func=cls._invoke_sync, ...)`.
 
+`bash` is split differently. Subprocess ownership (`_spawn`,
+`_communicate_with_timeout`, `_terminate_process_group`) stays async on the
+caller loop; only the synchronous post-processing leaf —
+`BashTool._format_result` (decode, exit-code framing, tail truncation, and
+optional full-output spill after the subprocess completes) — crosses the
+gateway. `_spill_to_tempfile` stays a plain leaf called from
+`_format_result` (no nested offload). That keeps large bash outputs from
+stalling Textual.
+
 ---
 
 ## Chapter 5.7 — User-Defined Skills and Workflows
@@ -1927,6 +2003,120 @@ generic scheduled actions from the TUI such as repeated reminders,
 interval-based in-session output, delayed follow-ups, and schedules that
 run until the user explicitly stops them.
 
+### The vendored skill library
+
+Skills are vendored convention prompts that the agent reads on demand.
+
+- **Location:** `skills/<group>/<slug>/SKILL.md` — 186 skills across 14 groups:
+  `orientation/`, `design-and-analysis/`, `coding/`, `git-ops/`, `cli/`,
+  `tui/`, `integration-tests/`, `frontend-vue/`, `presentation/`,
+  `user-content/`, `engineering/`, `languages/`, `samples/`, and
+  `orchestration/`.
+- **Runtime access:** the system prompt carries the `<available_skills>`
+  manifest and names the skills location ([§5.3](#53-the-system-prompt-builder));
+  when no skills load it falls back to pointing at `skills/INDEX.md`
+  (absolute path via `SKILLS_DIR`). The agent reads the matching `SKILL.md`
+  with the `read` tool.
+- **Index format:** each `INDEX.md` entry has `name`, `description`,
+  `when_to_use`, and a relative `Path:`. The YAML frontmatter in each
+  `SKILL.md` carries the same fields plus `group` and `kind`.
+- **Regeneration:** `make build-skill-index` or `make refresh-skills`
+  rewrites `skills/INDEX.md` from the committed `SKILL.md` tree (same
+  builder). Neither command imports upstream prompts, rewrites skill bodies,
+  or removes workflow definitions, samples, or assets.
+  `SLO_CODE_PROMPTS_DIR` is no longer used.
+- `SkillRegistry` (`src/agents/skills/registry.py`) parses individual
+  `SKILL.md` files but is not wired into the session boot path;
+  `SkillsLoader` (below) is.
+
+**Layered skill discovery (feature 87).** The skills prompt directs
+non-trivial tasks through `skills/engineering/engineering-routing/SKILL.md`:
+shared policy, the affected language root, the component/test-category
+recipe, the relevant framework, then explicit project contracts. Python
+recipes live in `skills/languages/python/`; the old `skills/coding/` paths
+remain as non-invocable forwarders. Go and TypeScript families are bundled
+under `skills/languages/`; Vue and canonical workflow paths are stable. There
+is no automatic routing classifier and no extra project skill-loading tier:
+descriptions carry applicability, because the XML manifest does not expose
+arbitrary metadata fields. The reorganization's source inventory and routing
+scenarios are regression fixtures in
+`tests/agents/skills/fixtures/reorganization/` (its design notes were removed
+on 2026-10-21; see git history for `docs/skills-reorganization/`).
+
+### Workflows vs skills — the routing rule
+
+The skills directory holds **two distinct kinds of artifact**:
+
+| Kind | Location pattern | Purpose |
+|---|---|---|
+| **Individual skill** | `skills/<group>/<slug>/SKILL.md` | Single-concern convention for one task type |
+| **Formal workflow** | `skills/orchestration/workflows/<name>.md` | Multi-step pipeline sequencing several skills |
+
+**When the user mentions "workflow" or names one, load it from
+`skills/orchestration/workflows/` — never a skill with a similar name.**
+Named workflows: Code-Test-Review
+(`skills/orchestration/workflows/code-test-review.md`) and Specification
+Development (`skills/orchestration/workflows/specification-development.md`).
+
+*Anti-pattern:* "use the code-test-review workflow" → loading
+`skills/coding/code-test-loop/SKILL.md`. `code-test-loop` is the coding
+cadence that forms Step 1 *inside* Code-Test-Review; loading it instead
+silently skips Step 2 (Code Review) and Step 3 (Completion Check).
+
+**"Dynamic workflows"** (or the common misspelling "dyanmic workflows") is an
+explicit request to run the named workflow **in the current session**: the
+orchestrator decomposes phases and dispatches them with `spawn_sub_agents`,
+blocking until the synthesis returns in the same turn. To **detach** it as a
+headless orchestrator process, the user must add an explicit qualifier —
+"headless", "detached", or "independent" applied to the request, or wording
+such as "in the background" / "without blocking". A detach-qualified request
+routes to exactly one `launch_workflow` call; a detached orchestrator never
+calls `launch_workflow`.
+
+**Scheduled supervision from the TUI.** Load
+`skills/tui/tui-scheduled-workflows/SKILL.md` when a dynamic workflow
+launched from a TUI session also needs recurring monitoring or progress
+posted back to that session (continuous schedules, session-inbox delivery,
+stalled-orchestrator recovery, cleanup on completion or abort). Load
+`skills/tui/tui-scheduled-operations/SKILL.md` for generic scheduled
+behaviour (reminders, periodic checks, "print the time every 5 seconds until
+I ask you to stop"): interval, cron and one-shot schedules, targeting the
+live TUI session, and stopping on request.
+
+**Orchestrator timeouts for slow test suites.** `spawn_sub_agents` is
+**blocking**: while a child runs, the orchestrator's own LangGraph stream
+emits nothing, so the parent guard `SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS`
+measures wall-clock silence for the child's entire runtime. A busy child
+keeps resetting its own `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS` and never
+trips it, so the parent guard is the real ceiling on one blocking phase. If a
+phase's gates run long (e.g. Go `go test -race ./...`), the orchestrator
+aborts a healthy run with `TimeoutError: main agent stream produced no events
+for <N>s; treated as hung` and kills the child mid-task. Before launching
+against such a project, export both guards (parent strictly greater than
+child) in the shell that starts the orchestrator, before it starts — a `bash`
+tool export inside a running session cannot change the running
+orchestrator's environment (the orchestrator prompt in `spawn_tool.py` says
+so explicitly); prefer splitting phases so no single blocking call outlives
+the parent guard. Defaults and the exact export lines are in
+KB `slo/operational-reference.md`; background is in KB `slo/headless-workflow-orchestration.md`
+→ "Long-running phases / slow test suites".
+
+**Workflow-turn counting.** Counting and stopping rules live in
+`skills/orchestration/workflows/SKILL.md#workflow-turns-and-limits`. One
+workflow turn is a complete pass through all required phases, not one agent
+dispatch. Track partial passes, phase retries and dispatch limits
+separately; disclose a harness budget conflict before launch; never claim
+repeated writing attempts were complete writing-and-review cycles. The
+default budgets (turns per task, dispatches per turn, failed-task retries)
+are prompt rules, not runtime counters — the numbers are in
+`skills/orchestration/workflows/SKILL.md` and KB `slo/operational-reference.md`.
+Explicit user instructions override those budgets (higher, lower or
+unlimited); record the effective limits and keep consumed counts. Resume and
+takeover preserve counts; aborted tasks are never retried. Runtime caps,
+retry/abort policy and required review are unchanged, and the runtime
+child-concurrency cap (`SLO_SUBAGENT_MAX_CONCURRENCY`) is a separate limit.
+Advance on verified phase verdicts and artifacts, not process exit alone.
+
 ### Explain a functionality with HTML
 
 Use the bundled [`explain-with-html`](skills/design-and-analysis/explain-with-html/SKILL.md)
@@ -1942,7 +2132,9 @@ to domain state, whole interfaces, lifecycle and failure behavior, using diagram
 with explicit return paths. Near the end, separate **Domains as code**,
 **Interfaces as code**, and **The journey through code** sections show concrete
 contracts and ordered caller examples; complete implementation is not required.
-Existing source is cited and distinguished from proposed interfaces.
+Existing source is cited and distinguished from proposed interfaces. Present one
+concept per section and trace ownership and control flow through observable
+results; the numbered code journeys must match the diagrams.
 
 The output is a self-contained scrolling page with inline diagrams, accessible
 navigation and syntax highlighting readable without JavaScript. It composes with
@@ -2022,7 +2214,11 @@ The resolver checks three sources in order:
 The resolver is **stateless**. Each call queries each source fresh —
 there is no cache. This is intentional: the auth modal writes a new
 credential and the next prompt resolves it without restarting the
-agent.
+agent. `LLMFactory.create` (`src/agents/base.py`, the **only** LLM
+construction point) calls `require` once per build. `SloTUI.on_mount`
+pushes `AuthenticationScreen` (`src/tui/authentication/`) when `resolve`
+returns `None` for the active model's provider; users re-open it with
+`/auth`.
 
 ### 6.2 The Credential Store
 
@@ -2123,6 +2319,27 @@ request, torn down when the `async with` exits. PKCE helpers
 (`generate_code_verifier`, `code_challenge_s256`, `generate_state`) live
 at `src/auth/pkce.py`.
 
+**Login methods and ownership.** Subscription OAuth declares its interaction
+capability through `OAuthLoginMethod` (`BROWSER_AUTHORIZATION` /
+`DEVICE_AUTHORIZATION`). `DeviceAuthorizationFlow` owns generic device
+polling; `OAuthFlow` owns the browser/manual hand-off. An
+`OAuthFlowFactory()` instance is the factory seam: its `__call__` takes the
+`provider`, the `login_method`, the browser/device presentation callbacks,
+and an optional authorization-response receiver — the modal injects faux
+flows through it in tests.
+
+**Browser opening** is guarded by `BrowserHost` (`src/auth/browser_host.py`).
+On any host other than macOS/Windows with `DISPLAY`, `WAYLAND_DISPLAY` and
+`BROWSER` all unset, neither `OAuthFlow` nor `SloTUI.open_url` calls
+`webbrowser` (it would run a console browser on the TUI terminal).
+Elsewhere they open the browser off the event loop, and `OAuthFlow` opens it
+concurrently with the callback/paste race. Tests inject `browser_host=`
+instead of patching the environment. The callback, browser/manual attempt,
+and device attempt deadlines each have their own environment variable:
+`SLO_OAUTH_TIMEOUT_SECONDS` (loopback callback, default `60`),
+`SLO_OAUTH_MANUAL_TIMEOUT_SECONDS` (whole browser/manual attempt including paste,
+default `900`) and `SLO_OAUTH_DEVICE_TIMEOUT_SECONDS` (device attempt, default `900`).
+
 Concrete provider configuration (endpoints, client_id, scopes) lives
 in `src/auth/providers/anthropic_provider.py` and
 `src/auth/providers/openai_codex_provider.py`. **The `client_id` values
@@ -2196,6 +2413,21 @@ Two special requirements are enforced automatically by the builder:
 - **`User-Agent: KimiCLI/1.5`** — required by the KFC endpoint. Sent
   as a default header on every request.
 
+`LLMFactory._build_kimi_for_coding_chat_openai` builds a `ChatOpenAI` with
+`base_url="https://api.kimi.com/coding/v1"`, `max_retries=3` by default, and
+`supports_explicit_caching=False` (KFC has no prompt caching). Supported
+model names come from the canonical model catalog
+(`src/agents/model_catalog/seed.py`); older `moonshot-*` aliases still resolve
+but are not advertised as preferred names. The credential env var is
+`SLO_KIMI_FOR_CODING_API_KEY`.
+
+ChatGPT/Codex OAuth, OpenRouter and Kimi clients all honor the factory's
+`max_retries` setting, including an explicit zero to disable SDK retries.
+The default permits four total SDK request attempts before Slo handles an
+escaped error. SDK retries also apply to eligible rate-limit and server-error
+responses, delaying their visibility to Slo; they do not resume a stream that
+has already started.
+
 #### K3 reasoning levels
 
 `kimi-k3` always reasons and supports Slo's canonical reasoning levels
@@ -2204,10 +2436,11 @@ provider `reasoning_effort` values `low`, `high`, and `max`, respectively.
 `max` is provider vocabulary, not an additional Slo reasoning level.
 
 Other canonical selections use nearest-notch clamping: `off` and `minimal`
-resolve to `low`, while `medium` resolves to `high`. The K2 coding pair
+resolve to `low`, while `medium` resolves to `high`. Only enabled K3 resolved
+reasoning adds the top-level `reasoning_effort` field. The K2 coding pair
 (`kimi-for-coding` and `kimi-for-coding-highspeed`) remains off-only and does
-not send a reasoning field. Kimi requests never use `thinking` or OpenAI
-Responses-API fields.
+not send a reasoning field. The Kimi builder never emits `thinking`, OpenAI
+`reasoning`, `use_responses_api`, or `output_version`.
 
 This command selects the canonical `low` level; Slo maps it to K3's native
 provider effort internally:
@@ -2231,17 +2464,20 @@ entry is a `ModelPoolEntryDAO` with:
 - `cooldown_seconds` (default 300 s) — how long to skip the entry
   after a credit-exhaustion error (HTTP 402).
 - `rate_limit_cooldown_seconds` (default 60 s) — how long to skip
-  after a rate-limit or server error (HTTP 429 / 500).
+  after a rate-limit or transient server failure.
 
-Error classification is handled by `CreditExhaustionPolicy`
-(`src/agents/providers/credit_exhaustion_policy.py`). For KFC:
+Error classification is handled by the shared `ProviderErrorClassifier`
+(`src/agents/providers/credit_exhaustion_policy.py`; `CreditExhaustionPolicy`
+remains as a backward-compatible alias). For KFC:
 
-- **HTTP 402** → `CREDIT_EXHAUSTED` → entry cooled down for 300 s.
-- **HTTP 429 or 500** → `RATE_LIMITED` → entry cooled down for 60 s.
+- **HTTP 402** → `CREDIT_EXHAUSTED` → entry cooled for `cooldown_seconds`.
+- **HTTP 429** → `RATE_LIMITED` → entry cooled for `rate_limit_cooldown_seconds`.
+- **HTTP 500/502/503/529** → `TRANSIENT_PROVIDER_FAILURE` → also cooled for
+  `rate_limit_cooldown_seconds`.
 
-When an entry is cooled down, `ModelPool.next_available()` skips it
-and tries the next priority entry. If all entries are exhausted,
-`ModelPool` raises `ModelPoolExhaustedError`.
+When an entry is cooled down, the pool's `_select_model()` skips it and
+tries the next priority entry. If all entries are cooling, `ModelPool`
+raises `AllModelsExhaustedError` (see [§6.7](#67-multi-model-pool-and-rate-limit-defense)).
 
 #### TUI model selector
 
@@ -2270,6 +2506,43 @@ a `ChatAnthropic` or `ChatOpenAI`. Internally it routes across a
 priority-ordered list of members with cooldown-based failover, and
 streaming is preserved through pooled members.
 
+**Key types** (`src/agents/providers/model_pool.py`):
+
+- `ModelPoolEntryDAO` — `model_name`, `provider`, `priority`,
+  `cooldown_seconds` (credit), `rate_limit_cooldown_seconds` (rate-limit and
+  transient failures).
+- `ModelPoolDAO` — `entries: List[ModelPoolEntryDAO]` with `min_length=2`.
+- `ModelPool` — overrides `_generate` / `_agenerate` / `_astream` and
+  `bind_tools`, and exposes the introspection surface `llm` (→ self),
+  `active_llm`, `active_provider`, `supports_explicit_caching`,
+  `active_model_name`, plus a route-switch audit log
+  (`drain_route_switch_log()`).
+- `RouteSwitchRecordDAO` — one audit record (`from_model_name`,
+  `to_model_name`, `kind`, `error_text`).
+
+**Fallback rules (spec 37).** `_select_model()` picks the lowest-priority
+entry that is not cooling. On a *switchable* error (`should_switch(kind)` →
+`CREDIT_EXHAUSTED` / `RATE_LIMITED` / `TRANSIENT_PROVIDER_FAILURE`) the failing
+entry is cooled (long cooldown for credit, short for rate-limit/transient),
+the switch is recorded, and the next available entry replays the **same**
+request. `_astream` switches only **before the first streamed chunk**. On
+`OTHER` (e.g. a 400) the error re-raises immediately. When every entry is
+cooling, `AllModelsExhaustedError` reaches the caller.
+
+**Creation.** `LLMFactory.create_pool(pool_dao=..., <all build knobs>)`
+forwards `temperature` / `streaming` / `max_retries` / `max_tokens` /
+`model_kwargs` / `session_id` / `reasoning_level` to every member and injects
+`adapt_chatgpt_backend_request` as the per-member request adapter. Both a
+single-model `LLMBuildResult` and a `ModelPool` satisfy the `LLMBuildProduct`
+protocol (`.llm` / `.supports_explicit_caching`); local imports avoid cycles.
+
+**Session integration.** `SloAgentSession._resolve_active_model_name()` uses
+`hasattr(llm, "active_model_name")` to detect a pool — no `isinstance` check
+and no import of `ModelPool` in the session module. Pool config is parsed by
+`config/model_pool_config.py::parse_model_pool_config` and threaded via
+`SessionConfigDAO.model_pool_dao`. `_refresh_oauth_credential_if_needed`
+warms **every** pool provider.
+
 #### The three layers (composed top-to-bottom)
 
 1. **History-aware preflight (session).** The local token estimate now
@@ -2277,6 +2550,20 @@ streaming is preserved through pooled members.
    payloads, and tool outputs — not just the new prompt. A resumed
    session therefore waits *before* it would 429, emitting a
    `Waiting Ns for <model> local rate window` status.
+   `PreflightDecisionDAO` owns one history-aware estimate per provider
+   attempt. RPM smoothing may wait, but a local TPM hint is advisory only:
+   an empty-window oversized request emits `preflight_bypassed` and still
+   reaches the provider. Degraded local preflight records no local attempt.
+   The decision's exact estimate is reused for any escaped-provider or pool
+   failed-lane observation — never re-estimated or read from a later deque
+   entry. Per-model limits come from `ModelRateLimitPolicyDAO`
+   (`src/agents/slo_agent/rate_limit/dao.py`: `requests_per_minute`,
+   `tokens_per_minute`, `automatic_retry_attempts`,
+   `local_retry_wait_cap_seconds`), sourced from the canonical model catalog
+   via `MODEL_DEFAULTS` in `config/ai_model_config.py`.
+   `retry_plan_from_error()` (`rate_limit/service.py`) turns a caught
+   rate-limit error into a `RateLimitRetryPlanDAO` (`wait_seconds`,
+   `retryable`).
 2. **In-call route switch (pool).** On a *switchable* provider error —
    a rate limit (429), credit exhaustion (402/quota), or a transient
    server failure (500/502/503/529) — the pool cools the active member
@@ -2288,6 +2575,34 @@ streaming is preserved through pooled members.
    has emitted no visible output yet, so no transcript line is
    duplicated — instead of giving up because an earlier iteration
    already streamed. It emits `Rate limited by <model>; retrying in Ns`.
+   `SloAgent.invoke(iteration_retry_policy=...)` replays the unchanged
+   `accumulated_messages`. Retryability is decided by
+   `SloAgentSession._is_iteration_retryable_error`, which resolves the active
+   provider (`_resolve_active_provider` → pool `active_provider`, else
+   `provider_for_model`) and consults the shared classifier: only
+   `RATE_LIMITED` and `TRANSIENT_PROVIDER_FAILURE` wait and retry — so the
+   status-less OpenAI overload message takes a bounded delayed retry
+   (`run_retrying`) rather than an immediate same-model LLM recovery
+   observation (`run_recovering`). `AllModelsExhaustedError` is retryable
+   within the attempt budget. The session injects the policy via
+   `_build_iteration_retry_policy` and relays/persists the agent's
+   `run_retrying` events; with no injected policy the legacy no-retry
+   behaviour is preserved.
+
+**Overflow backstop (spec 46.a.2).** When a provider explicitly rejects an
+initial request for confirmed context overflow before any committed visible
+output, `_derive_next_attempt_plan` (not `_finalize_failed_attempt`) runs a
+forced compaction pass, emits the four compaction lifecycle kinds
+(`compaction_started`, `compaction_completed`, `compaction_failed`,
+`compaction_retrying`), persists a `run_retrying` audit event anchored to the
+failed turn, and returns a one-shot `overflow_retry` attempt plan
+(`persist_user_message=False`, `excluded_turn_ids` filtering the failed turn
+from immediate replay context, `preflight_compaction_mode="skip"`). If
+compaction returns `False` or raises, it returns `None` and the original
+overflow error surfaces unchanged. Committed output, a second overflow on
+the retry attempt, and an HTTP 413 / `REQUEST_BODY_TOO_LARGE` rejection are
+terminal: no replay, pool switch, iteration retry, LLM recovery, or forced
+compaction.
 
 **Fail loudly.** When every pool member is cooling, the run surfaces a
 terminal `run_failed` that names every cooled member
@@ -2320,7 +2635,8 @@ clears the pool and drops to single-model mode with `X`.
 
 #### Observability
 
-Two new history event kinds are persisted to `events.jsonl`:
+Two new history event kinds are persisted to the session history
+(`tree.json` by default, `events.jsonl` in the legacy flat store):
 
 - `route_switched` — an audit record of each pool switch, carrying
   `from`, `to`, and the error `kind` that triggered it.
@@ -2336,6 +2652,17 @@ joins the existing rate-limit and credit-exhaustion kinds, and a single
 `should_switch(kind)` predicate decides switch-vs-propagate. A
 malformed or `OTHER` error — for example a 400 bad request — propagates
 without switching, because retrying it on another member would not help.
+
+`ProviderErrorClassifier.classify(error, provider)` → `ProviderErrorKind`
+(`src/agents/providers/credit_exhaustion_policy.py`) is the **one shared
+classifier** for all three failure paths: `ModelPool` route switching,
+`RecoveryPolicy`, and the session's iteration retry. Classification is
+per provider (Anthropic, OpenAI, Kimi For Coding each have their own
+status-code and error-code mapping — the full table is in KB `slo/operational-reference.md`).
+When no HTTP status settles the kind, a shared message-text fallback maps
+`"rate limit"` / `"429"` in the message to `RATE_LIMITED`, preserving the
+former provider-agnostic heuristic. Transport disconnects are classified by
+`StreamRecoveryService` ([§4.7](#47-provider-progress-watchdog-and-local-tools)).
 
 ---
 
@@ -2373,7 +2700,7 @@ wiki_search_tool: StructuredTool = StructuredTool.from_function(
 )
 ```
 
-**Step 2**: register it. `src/agents/tools/registry.py`:
+**Step 2**: register it. `src/agents/tools/bundles.py`:
 
 ```python
 from src.agents.tools.wiki_search import wiki_search_tool
@@ -2541,6 +2868,11 @@ visible transcript is now a tree of `AssistantStreamBlock` /
 
 ### 8.3 The Conftest Auto-Fixture
 
+Tests asserting exact theme colors opt into the `theme_colors` fixture before
+constructing the app. It temporarily removes inherited `NO_COLOR`, which Textual
+otherwise honors by rendering colors as grayscale. Other tests and the application
+continue to respect the caller's terminal preference.
+
 `tests/tui/conftest.py` is the most important fixture in the repo. It's
 an autouse fixture scoped to `tests/tui/` that patches
 `CredentialResolver.resolve` to return a fake `CredentialDAO`:
@@ -2574,6 +2906,42 @@ The repo follows a strict **one test per decision point** policy:
 
 `make test` runs the full suite (currently 1300+ tests). A new feature
 that doesn't ship with tests is not done.
+
+### 8.5 Suite Rules
+
+- **Never real keys in the default gate.** Tests use `FauxChatModel`
+  (`src/agents/providers/faux.py`) for every LLM call.
+- **Default gate:** `pytest -m "not e2e"` (set in `pyproject.toml`
+  `addopts`). Run `pytest -m e2e` only when real provider credentials are
+  intentionally in scope.
+- **Test env:** `make test-env` identifies a readable local
+  `environments/tests.env` or the tracked Makefile fallback. Inspect local
+  settings first; never source the development environment or assume a
+  gitignored test file ships. The fallback supplies synthetic credentials and
+  disables automatic windows/Herdr. Root fixtures strip inherited Herdr
+  settings and require independently registered temp-owned fake executables
+  before transport spawning. `slo-harness` Python 3.11.7 is the approved
+  existing interpreter for this feature checkout; do not install an absent alias.
+- **Never real terminal windows.** `VisualizerLauncher.launch()` opens a real
+  Terminal/iTerm window running `slo visualize --follow` that outlives the
+  suite. Any test path that reaches it (a `sub_agent_spawned` event or a
+  `launch_workflow` tool result through `SloTUI._render_event`) must patch
+  `VisualizerLauncher.launch` or inject `spawn=`. Two suite-wide guards back
+  this up: `environments/tests.env` sets `SLO_AUTO_VISUALIZE=0` (covers
+  `make test`), and the autouse `_never_spawn_real_terminals` fixture in
+  `tests/conftest.py` stubs `VisualizerLauncher._default_spawn` (covers bare
+  `pytest`). Regression tests:
+  `tests/tui/test_visualizer_launcher.py::TestSuiteNeverSpawnsRealTerminals`.
+  During **manual smoke** runs, close every visualizer terminal you open
+  (quit `slo visualize` and its window) — detached windows otherwise
+  accumulate on the operator's machine.
+- **Layout:** `tests/agents/slo_agent/` (agent loop, session, rate limits,
+  usage), `tests/tui/` (app, replay, slash commands, status bar, tool
+  blocks; `tests/tui/workflows/` for the detached-workflow receive path),
+  and `tests/integration/` (cross-component composed flows, e.g. the
+  feature 94 list → progress → child-abort flow).
+- `asyncio_mode = "auto"` is set in `pyproject.toml`, so async tests run
+  without an explicit `@pytest.mark.asyncio`.
 
 ---
 
@@ -2661,7 +3029,7 @@ SubAgentPool.dispatch(tasks)
         ├─ relays each AgentStreamEventDAO to the parent's event bus
         │   (tagged with sub_agent_id / task_id)
         ├─ enforces PER_TASK_OUTPUT_CAP (aborts excessively verbose children)
-        ├─ 3600-second inactivity timeout (no output for 60 min → terminate + fail, env SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS, alias SLO_SUBAGENT_INACTIVITY_TIMEOUT)
+        ├─ 7200-second inactivity timeout (no output for 2 h → terminate + fail, env SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS, alias SLO_SUBAGENT_INACTIVITY_TIMEOUT)
         └─ terminal result: SubAgentResultDAO{status, answer, exit_code}
 ```
 
@@ -2702,7 +3070,10 @@ cancels execution. `/workflows tui dismiss [<id>]` hides finished groups.
 **`TranscriptProjector` sub-agent routing** — the projector's
 `is_sub_agent_event` gate routes events with a `sub_agent_id` to the
 correct pane via `AgentPaneManager`, while orchestrator events go to
-pane `[0]`.
+pane `[0]`. *Current ownership (feature 94):* `SloTUI` owns child/sub-agent
+events, which never mount a foreground transcript block; child lifecycle
+events only request one coalesced session-list refresh, and child progress is
+read through the session list and progress modal (§9.7).
 
 ### 9.6 Session Resilience Fixes
 
@@ -2719,11 +3090,235 @@ The sub-agent work also delivered several resilience fixes:
   mid-tool), the history projector synthesises a placeholder
   `ToolMessage` so the next resume doesn't 400 the provider.
 - **Child inactivity timeout** — if a child process produces no output
-  for 3600 seconds (60 minutes, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`; alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`), `SubAgentProcess` terminates it and marks it failed.
+  for 7200 seconds (2 hours, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`; alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`), `SubAgentProcess` terminates it and marks it failed.
+
+### 9.7 Detached Workflows, the Session List, and Child Abort
+
+Beyond the five core modules in §9.2, the orchestrator domain now also holds:
+`fleet_store.py` (`FleetStore` — durable `ProcessRegistry` projection to
+`fleet.json`), `status_store.py` (`OrchestratorStatusStore` — owner of the
+self-reported `orchestrator.json`), `layout.py` (`OrchestrationLayout` —
+canonical workflow/fleet/capture paths), `process_probe.py` (`ProcessProbe` —
+the one conservative PID-liveness semantic), `spawn_env.py` (shared
+allowlisted headless-child environment and capture opener), `task_preview.py`
+(`TaskPreview` — the one task label), `child_abort.py` (`ChildAbortStore` and
+the runner's `ChildAbortController`), `launch_tool.py` (`launch_workflow` —
+detached orchestrator spawn), `relaunch.py` (`WorkflowRelauncher` — resume a
+dead detached workflow), and `workflow_registry.py` (`WorkflowHandleStore` and
+workflow commands). `SubAgentPool` dispatches explicit `dispatch_id` batches
+and exposes `abort_child`.
+
+**Headless heartbeat and failure envelope (specs 70/71).** `HeadlessRunner`
+emits a stderr-only `headless_status` heartbeat from a watchdog thread
+(interval `SLO_HEADLESS_HEARTBEAT_SECONDS`). A recognised same-session
+heartbeat is advisory liveness telemetry (`healthy`, `degraded`, `silent`);
+it never cancels a child or shortens the sole stdout-inactivity authority,
+`SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`. `SubAgentResultDAO` carries
+additive, redacted `failure_code`, `partial_output_committed`, `attempts`,
+and `safe_message` fields. Cancellation stays SIGTERM → grace → SIGKILL →
+reap, with one cached terminal result.
+
+**Workflow visualizer auto-launch (platform path; Herdr extension below).** When a TUI session is promoted to
+orchestrator mode and the first sub-agent spawns,
+`SloTUI._maybe_launch_visualizer` opens a separate terminal window running
+`slo visualize --session <parent_session_id> --follow` via
+`VisualizerLauncher` (`src/tui/visualizer_launcher.py`). It fires once per run
+(guarded by `_visualizer_launched_for_run`, reset in
+`_cleanup_sub_agent_state`). The launch is best effort: macOS drives
+Terminal.app/iTerm through `osascript`, Linux probes common terminal
+emulators, and any other platform (or a failed spawn) writes the manual
+`slo visualize` command into the transcript. Only a non-secret `SLO_*`
+allowlist is forwarded into the new window. Disable with
+`SLO_AUTO_VISUALIZE=0`; choose the emulator with
+`SLO_VISUALIZER_TERMINAL_APP`. The visualizer TUI
+(`src/tui/headless_workflow_visualizer.py`, fed by the bounded
+`WorkflowVisualizerLoader` and the one capture reader `JsonlTail`) has a
+workflow-summary bar, a status-coloured sub-agent list, Markdown transcript
+rendering through the shared `WorkflowTranscriptRenderer`, and
+keyboard-resizable panes (`ctrl+←/→` list width, `ctrl+↑/↓` diagnostics
+height).
+
+**Detached workflow supervision.** Workflow handles live at
+`<owner_session>/workflows/wf-*.json` (TUI-owned). Each orchestrator session
+also carries `orchestrator.json` (`HeadlessRunner` self-report), `fleet.json`
+(pool projection), `abort_request.json` (the TUI's durable whole-workflow
+abort channel) and `child-control.v1/` (child-only abort requests and
+receipts); each child has a `status.json` terminal result (full layout in
+[History and persistence](#history-and-persistence)).
+`/workflows resume <workflow-id>` relaunches a `stalled` or `failed` handle
+against its original orchestrator session with `--resume`; a dedicated
+flock-protected store transition returns it to `launching`, and fresh
+self-reported evidence advances it to `running`.
+
+**The receive path (`src/tui/workflows/`, spec 57.a.5)** is a strict
+delegation chain for headless-orchestrator lifecycle data:
+
+```
+SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed HandleAdvanceOutcomeDAO ──> SloTUI
+                                     │                                                    │
+                                     │ durable handle advance + live-state cache           ▼
+                                     │                                          DetachedWorkflowRenderer
+                                     │                                          (apply_effects only)
+                                     └──────── typed DetachedWorkflowUiEffectDAO ─────────┘
+```
+
+- `dao.py` owns the only parsing/validation seams
+  (`parse_workflow_lifecycle_message`, `parse_launch_workflow_result`) and the
+  typed effect vocabulary (`launch_visualizer`, `reset_launch_guard`). No
+  Textual, no filesystem.
+- `DetachedWorkflowAppService` (`service.py`) owns `WorkflowHandleStore`
+  reconcile/update, the legal durable transitions, and the
+  `workflow_id → state` cache behind the resume/exit hint. Terminal advances
+  emit **reset-only** effects — never a launch effect.
+- `DetachedWorkflowRenderer` (`renderer.py`) owns typed-effect
+  deduplication and shared attached/detached outcome notices via
+  `DetachedWorkflowNoticeSink`. `DetachedVisualizerSchedule` registers with
+  the app; it returns no launch result. The renderer no longer parses raw
+  launch results or calls a window launcher. Typed `reset_launch_guard`
+  resets request deduplication, not the session-owned Herdr one-shot attempt
+  ledger.
+- **Strict app boundary:** `SloTUI` passes the raw inbox kind/payload (or the
+  raw `launch_workflow` tool-result text) to the service exactly once, then
+  only executes the typed effects returned. The app never parses workflow
+  payloads or branches on terminal fields itself.
+
+**Session list, progress modal and child abort (feature 94).** Spec family:
+`specifications/94-slo-tui-redesign/tui/`; runtime notes: KB
+`slo/codebase-index.md` "Feature 94 — TUI session controls".
+
+```
+SloTUI ── one WorkflowProgressCoordinator (single flight) ──> DetachedWorkflowAppService
+   ▲                                                         │ load_session_snapshot (owner-scoped,
+   │ _WorkflowProgressSink (apply_sessions / apply_progress) │  attached batch first, then detached)
+   │                                                         │ load_session_progress (bounded loader)
+   ├── SubAgentFleetPanel ("Ongoing workflow tasks", below PromptInput, above UsageStatusBar)
+   ├── SessionProgressScreen (ProgressLog, Minimize, Abort child…)
+   └── AbortConfirmationScreen ──> service.begin_child_abort ──> attached: session.abort_child → pool
+                                                                detached: ChildAbortStore → runner ChildAbortController → pool
+```
+
+- `PromptInput` paints only top and bottom accent rules (`app.tcss`);
+  editing, queue anchor, history recall, Enter handling and its min/max
+  height are unchanged.
+- Rows (`SubAgentFleetRow` in `FleetSessionList`) read
+  `[status] session-id: task`, with an authored summary prepared by `TaskPreview`
+  and rendered literally. Full task details remain separate. Tab/Shift+Tab focus the list; Up/Down select
+  without wrapping; Enter or click opens the exact session. There is no
+  workflow Ctrl+W binding.
+- `SessionProgressScreen` (+ `ProgressLog`) loads immediately and refreshes
+  on the coordinator's timer. It preserves the reader's position (the tail
+  follows only from the bottom; End resumes). Escape/Minimize keeps the
+  viewport for reopen and never cancels execution. The modal and
+  `slo visualize` share `WorkflowTranscriptRenderer`.
+- "Abort child…" needs explicit confirmation in `AbortConfirmationScreen`
+  (safe default) and reports "Abort requested" until terminal evidence
+  arrives; `ChildAbortSubmission` tracks the request and posts a
+  not-confirmed notice after a timeout. It never resubmits, never signals a
+  PID from the TUI, and never touches siblings, the orchestrator or
+  `abort_request.json` (an older runner would abort the whole workflow).
+- `/workflows tui dismiss [<id>]` hides running or finished owned groups in
+  memory only; `/workflows tui show` restores retained rows immediately, even
+  offline. Observation refreshes membership without changing execution. `/clear`
+  preserves visibility, while `/new` and teardown reset it.
+
+**Polished workflow messages (feature 98).** `DetachedWorkflowAppService` owns
+visibility in one group map. Candidate-local reads and coordinator paint revisions
+prevent old observations from undoing local commands; teardown joins observation
+before adopting a replacement session. Retained obsolete attached batches carry
+no new progress or abort authority. Hidden detached adapters are released unless
+a visible current group shares their parent; show itself performs no reads.
+
+New dispatch tasks require an authored `task_summary` alongside the complete
+`prompt`. `TaskPreview` validates and encodes the label in the existing preview
+string, while matching loaders prepare a literal row summary independently of
+full detail. Registry and pool use the same carrier, including chain steps;
+legacy explicit Task/Goal/Objective labels have a bounded fallback. Closed saved
+fleet/status/context shapes are unchanged. This is a dispatch-input compatibility
+change, not a saved-file migration. Exact bounds and operational details live in
+KB `slo/feature-94-tui-session-controls.md`.
+
+`AssistantChunkNormalizer` preserves exact thinking fragments, including whitespace-
+only chunks; the renderer never guesses missing spaces. Contentless replay ends
+remain open for authoritative repair. The shared `WorkflowTranscriptRenderer`
+preserves Markdown formatting, and `ProgressLog` fits narrow modals while leaving
+literal tool output horizontally scrollable. Saved viewport restoration waits for
+deferred rendering and scrollbar readiness, then confirms the offsets actually
+landed; user navigation still cancels a delayed restore.
+
+`ChildAbortStore` owns bounded no-follow reads, immutable request IDs and a
+per-run request capacity under a run-scoped `admission.lock`.
+`HeadlessRunner` starts `ChildAbortController` only for an attached pool with
+an explicit `--notify-session` owner, and closes it before the final fleet
+drain. Requests and receipts are private audit state: never deleted,
+backfilled or migrated. Exact intervals, caps and timeouts are in
+KB `slo/operational-reference.md`.
+
+**Feature 94 — optional Herdr runtime (not live-certified).**
+
+`HerdrEnvironmentGate` captures inherited pane configuration; construction is inert.
+Session activation selects the null path outside/disabled, or assembles one reporter,
+shared transport and viewer. Enabled configuration/activation failure is unavailable,
+not permission to open a fallback OS window. `SLO_HERDR_DISABLED=1` takes effect at
+restart; metadata defaults to compact, with explicit detail opt-in.
+
+| Owner | Actual responsibility |
+|---|---|
+| `sessions/service.py` | Committed lifecycle/usage authority, private immutable capture and generation, publication, activation/close and retained drain; existing snapshot remains sole token accounting source |
+| `sessions/dao.py` | Operation/attention tokens and provenance carriers |
+| `sessions/identity.py`, `sessions/token_format.py` | Extracted identity validator closure and shared half-up formatter; CLI/footer compatibility delegates retained |
+| `orchestrator/bootstrap.py` | Before/after standard attachment provenance; matching names alone cannot establish reproducibility |
+| `herdr/dao.py` | Frozen typed public snapshot/private capture, restore, admission, close and viewer contracts |
+| `herdr/service.py` | Environment/null path, safe projection, shared CLI lock/process/deadline/reap mechanics and retained task join |
+| `herdr/reporter.py` | Sole private-save scheduler, capture/generation matching, report revisions, ordered commands, remote binding versus acknowledgements |
+| `herdr/sequence_store.py` | Shared file lease primitive; distinct durable pane sequence and restore lock scopes |
+| `herdr/restore.py` | Secure bounded immutable revision records using unchanged `AtomicFileWriter`; no latest pointer, overwrite, GC or history ownership |
+| `herdr/visualizer.py` | Session-owned per-parent one-shot attempt ledger, split result parsing and lock-held live admission |
+| `cli/app.py`, `cli/typer_dispatch.py` | Thin `--herdr-restore` parse surface; canonical literal UUID/conflict checks and private load before runtime construction, without ambient policy merge |
+| `cli/headless.py` | Adopted headless integration lifetime/final drain without changing original result/stdout; no native restore advertisement |
+| `tui/app.py` | Captured session/timer/inbox ownership, irreversible replacement and retained shutdown; `_register_prompt_task` is the final synchronous cutoff for local, queued and machine prompts |
+| `tui/app.py::_schedule_visualizer_launch` | One captured-parent task registry, identity-safe done callbacks, awaited cancellation and suppression of late notices |
+| `tui/visualizer_launcher.py::launch_async` | One destination decision; platform thread joined before cancellation escapes; Herdr delegates to session, never fallback after failure |
+| `tui/workflows/service.py`, `renderer.py` | One raw-result parser/service → typed effects → schedule callback; one shared typed outcome renderer; duplicate renderer parser/old launch callable removed |
+| `orchestrator/context_reader.py` | Single `OrchestratorContextReader.load` parser, shared by eligibility and `tui/workflow_visualizer_loader.py`; duplicate loader parser removed, no reverse TUI import |
+| `scheduling/runtime/subprocess_runner.py` | Copies inherited environment excluding exactly case-insensitive `HERDR_` prefix; child/detached/relaunch allowlist ownership unchanged |
+
+Public reports contain fixed vocabulary and numeric telemetry only, not arbitrary
+model/provider/session labels, conversation, credentials, errors or private paths.
+Private capture preserves configured ordered pool policy and effective reasoning,
+not transient routed fallback. Reporter publishes reference argv only after durable
+save. Same configuration can reuse a save with newer display; a different capture
+cannot adopt it merely because session IDs match. Under the acquired transport lock,
+each command's owner admits synchronously before tracked spawn.
+
+Native restore uses plain installed `slo --resume UUID --herdr-restore r1-<hex>`
+on PATH with unchanged SLO_HOME/default history. It restores exact saved supported
+configuration and current history, not a checkpoint or automatic prompt replay.
+Current capability/trust admission still applies. Ordinary name/slug resume is not
+tightened by Herdr's canonical UUID rule. Private records remain after release;
+quota refuses without eviction. See KB `slo/install-guide.md` → "Optional Herdr integration" for limits and rollback.
+
+Replacement prepares a candidate before irreversible old close/adoption; captured
+old-ID inbox leases cannot silently move to a successor. Uncertain release suppresses
+successor integration; undrained local resources retain one retired session and keep
+final teardown pending if drain cannot complete. Refused inbox delivery remains
+claimed without ack/replay: investigate before explicit resubmission. Pre-cutoff
+registered work retains its existing policy, but no queued successor starts.
+
+Attached and detached viewer requests converge on the same registry/typed outcomes.
+Herdr retains one split/run attempt per parent/adapter lifetime even if uncertain;
+manual recovery replaces automatic focus/query/retry/close. Platform work admitted
+before cutoff may still spawn while its owned thread is joined. `submitted` is not
+paint/liveness evidence. Herdr 0.9.2+ remains a target, **UNPROVEN live**; T6 acceptance,
+independent review and all-green static gates are separate from T1–T5 author readiness.
 
 ---
 
 ## Appendix A — File Map
+
+> This map is a narrative reading aid and predates the package split of
+> several modules. The maintained tree is in
+> [Maintainer Reference → Repository layout](#repository-layout); where the
+> two disagree, that tree wins.
 
 ### Source code (`slo/src/`)
 
@@ -2849,7 +3444,7 @@ into replay.
 
 ### Environments (`slo/environments/`)
 
-- `tests.env` — test env (sourced by `make test`).
+- `tests.env` — optional local test env (used by `make test` when readable; otherwise the tracked Makefile fallback applies).
 - `.env.template` — the canonical list of every variable.
 
 ---
@@ -2905,8 +3500,8 @@ into replay.
 | **`ModelPool`** | A drop-in `BaseChatModel` (overrides `_generate`/`_agenerate`/`_astream`) that routes across a priority-ordered list of models with cooldown-based failover; wired into the production build path in v0.9.0. |
 | **`ProviderErrorKind`** | The taxonomy that classifies a provider error — rate limit (429), credit exhaustion (402/quota), `TRANSIENT_PROVIDER_FAILURE` (500/502/503/529), or `OTHER`. `should_switch(kind)` decides switch-vs-propagate. |
 | **`SLO_MODEL_POOL`** | Environment variable (or the `default_model_pool` user preference) holding a comma-separated, priority-ordered list of model names. Two or more names enable the pool; fewer collapses to single-model. |
-| **`route_switched`** | Diagnostic-only history event recording each pool switch (`from`/`to`/`kind`). Persisted to `events.jsonl`; excluded from model context. |
-| **`run_retrying`** | Diagnostic-only history event recording each wait-and-retry decision. Persisted to `events.jsonl`; excluded from model context. |
+| **`route_switched`** | Diagnostic-only history event recording each pool switch (`from`/`to`/`kind`). Persisted to the session history; excluded from model context. |
+| **`run_retrying`** | Diagnostic-only history event recording each wait-and-retry decision. Persisted to the session history; excluded from model context. |
 
 ---
 
@@ -3027,7 +3622,7 @@ return result.model_dump_json()   # returned to the LLM as the tool result strin
 results = list(await asyncio.gather(*[self._run_one(task=t) for t in tasks]))
 ```
 
-A shared `asyncio.Semaphore(MAX_CONCURRENCY)` (default 4, env `SLO_SUBAGENT_MAX_CONCURRENCY`) is the ceiling. Tasks beyond the cap queue until a slot opens.
+A shared `asyncio.Semaphore(MAX_CONCURRENCY)` (default 6, env `SLO_SUBAGENT_MAX_CONCURRENCY`) is the ceiling. Tasks beyond the cap queue until a slot opens.
 
 **Chain** — `_run_chain` runs tasks one at a time. Each step's prompt may contain `{previous}`, substituted with the prior step's final `answer` before the child is spawned. A failed step stops the chain; remaining tasks are skipped entirely.
 
@@ -3067,6 +3662,7 @@ The pool itself writes no terminal state. The winner returned by `commit_termina
 ```python
 [
     sys.executable,        # same interpreter and venv as the parent
+    "-I",                  # isolated mode (spec 82.a)
     "-m", "src.cli",
     "run", "--json",
     "-p", self._task.prompt,
@@ -3082,20 +3678,20 @@ Using `sys.executable` rather than a bare `slo` ensures the child always runs un
 while True:
     raw = await asyncio.wait_for(
         stream.readline(),
-        timeout=CHILD_INACTIVITY_TIMEOUT_SECONDS,   # 3600 s default (env SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS; alias SLO_SUBAGENT_INACTIVITY_TIMEOUT)
+        timeout=CHILD_INACTIVITY_TIMEOUT_SECONDS,   # 7200 s default (env SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS; alias SLO_SUBAGENT_INACTIVITY_TIMEOUT)
     )
     if not raw:   # EOF = child exited
         return
     await self._handle_line(raw=raw)
 ```
 
-The `_STDOUT_STREAM_LIMIT = 16 * 1024 * 1024` constant is passed as `limit=` to `asyncio.create_subprocess_exec`. This raises asyncio's default 64 KB per-line buffer to 16 MB, preventing `ValueError: Separator is found, but chunk is longer than limit` on large `run_completed` JSON lines. The inactivity watchdog (default 3600 s, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`; alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) treats a hung `readline()` as a failure rather than blocking the parent forever.
+The `_STDOUT_STREAM_LIMIT = 16 * 1024 * 1024` constant is passed as `limit=` to `asyncio.create_subprocess_exec`. This raises asyncio's default 64 KB per-line buffer to 16 MB, preventing `ValueError: Separator is found, but chunk is longer than limit` on large `run_completed` JSON lines. The inactivity watchdog (default 7200 s, configurable via `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`; alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) treats a hung `readline()` as a failure rather than blocking the parent forever.
 
 **Per-line handler (`_handle_line`):**
 
 1. Parse bytes → `AgentStreamEventDAO`. Non-JSON child diagnostic lines are silently ignored.
 2. If terminal: capture `event.content` as the final answer.
-3. If `forwarded_bytes >= PER_TASK_OUTPUT_CAP` (50 KB) and not terminal: drop the event. The relay stays bounded; terminal events are always forwarded regardless of the cap.
+3. If `forwarded_bytes >= PER_TASK_OUTPUT_CAP` (512 KB) and not terminal: drop the event. The relay stays bounded; terminal events are always forwarded regardless of the cap.
 4. If `text_delta`: call `registry.update_last_text(session_id=..., execution_id=..., text=event.delta)` (live registry preview; the TUI session list shows the task label, not this text).
 5. Tag: `event.model_copy(update={"sub_agent_id": session_id, "task_id": task_id})`.
 6. `await self._relay(tagged)` → pool relay → `session._dispatch_event` → TUI subscribers and history.
@@ -3182,12 +3778,12 @@ User: "analyse in parallel"
     ▼    ▼    ▼
   _run_one _run_one _run_one
          │
-    async with semaphore (MAX_CONCURRENCY=4)
+    async with semaphore (MAX_CONCURRENCY=6)
          │
          ▼
   SubAgentProcess.run()
          │  asyncio.create_subprocess_exec
-         │  [python, -m, src.cli, run, --json, -p, <prompt>]
+         │  [python, -I, -m, src.cli, run, --json, -p, <prompt>]
          ▼
   Child OS process
          │  HeadlessRunner.invoke()
@@ -3216,7 +3812,403 @@ User: "analyse in parallel"
 | Headless children never get `_attach_pool_to_session` | Structural grandchildren prevention — the path is never taken; no explicit guard needed |
 | `ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM` is the only gate | The tool is always in the bundle; the LLM-layer constraint is what prevents autonomous use |
 | `PER_TASK_OUTPUT_CAP = 512 KB` | Prevents a verbose child from flooding the relay; terminal events always forwarded regardless |
-| `CHILD_INACTIVITY_TIMEOUT_SECONDS = 3600 s` (env `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`, alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) | A hung `readline()` surfaces as a clean `failed` result; 60-minute default accommodates large-context LLM calls with slow TTFT |
+| `CHILD_INACTIVITY_TIMEOUT_SECONDS = 7200 s` (env `SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS`, alias `SLO_SUBAGENT_INACTIVITY_TIMEOUT`) | A hung `readline()` surfaces as a clean `failed` result; the 2-hour default accommodates large-context LLM calls with slow TTFT and long test gates |
 | `_STDOUT_STREAM_LIMIT = 16 MB` | Prevents `ValueError` on large `run_completed` JSON lines; asyncio's default is 64 KB |
 | `args_schema=SpawnSubAgentsSchemaDAO` | Fixes LangChain bug where string-encoded args cause `TypeError` inside `StructuredTool._arun` |
 | `asyncio.gather(..., return_exceptions=True)` in `cancel_all` | One child's cancel failure never blocks the others |
+
+---
+
+## Maintainer Reference
+
+This part is the maintained reference for anyone — human or AI — changing
+the codebase. It absorbs the former `AGENTS.md`. Narrative explanations
+live in the chapters above; exact values (timeouts, env-var defaults, caps,
+status-code tables, budgets, on-disk file lists, how-tos) live in
+KB `slo/operational-reference.md`.
+
+### Everyday commands
+
+Run these from the application root (`slo/`) with the `slo` virtualenv
+active ([§1.3](#13-the-developer-path--pyenv--poetry)):
+
+| Command | What it does |
+|---|---|
+| `make test` | Reviewed local `tests.env` or tracked safe fallback; full `pytest -m "not e2e"` |
+| `make test-env` | Reports `tests.env` or `fallback`; does not create a file |
+| `make smoke` | Smoke-only `tests/test_smoke.py` |
+| `make lint` | `poetry run mypy src/ tests/` |
+| `make format` | `poetry run black src/ tests/` (line length 110) |
+| `make build-skill-index` | Regenerate `skills/INDEX.md` from the committed `SKILL.md` files |
+| `make refresh-skills` | Same builder as `make build-skill-index` |
+| `make install` | `install.sh` → pipx install of the code, then finalise the managed shell environment file under `~/.slo/shell/` |
+
+### Repository layout
+
+The maintained tree. (Appendix A is an older, narrative file map; where the
+two disagree, this tree wins.)
+
+```
+slo/
+├── src/
+│   ├── agents/
+│   │   ├── base.py                    # LLMFactory.create — the ONLY LLM construction point
+│   │   ├── hooks/                     # ShouldStopAfterTurnHook, Hook
+│   │   ├── providers/
+│   │   │   ├── stream_recovery/             # typed provider stream disconnect classification + config
+│   │   │   ├── anthropic_claude_code.py     # Claude OAuth / thinking payload builder
+│   │   │   ├── openai_codex.py              # ChatGPT / reasoning payload builder
+│   │   │   ├── credit_exhaustion_policy.py  # ProviderErrorClassifier (alias CreditExhaustionPolicy)
+│   │   │   ├── model_pool.py                # ModelPool — priority-ordered BaseChatModel router
+│   │   │   └── faux.py                      # FauxChatModel — queue-based deterministic mock
+│   │   ├── slo_agent/
+│   │   │   ├── agent.py               # SloAgent — multi-turn invoke loop
+│   │   │   ├── watchdog_timer.py      # WatchDogTimer — provider deadlines + local-tool suspension
+│   │   │   ├── runtime.py             # SloRuntimeContext — session-owned plugin/introspection seam
+│   │   │   ├── turn_stream_accumulator.py
+│   │   │   ├── assistant_chunk_normalizer.py
+│   │   │   ├── graph_stream_parser.py
+│   │   │   ├── message_text.py
+│   │   │   ├── dao.py                 # SloAgentConfigDAO and related
+│   │   │   ├── graph/
+│   │   │   │   ├── dao.py             # SloAgentBuildResult, SloAgentStateDAO
+│   │   │   │   └── service.py         # build_slo_agent, LangGraph nodes, adapt_chatgpt_backend_request
+│   │   │   ├── sessions/
+│   │   │   │   ├── dao.py             # SessionConfigDAO, AgentEventSubscriber
+│   │   │   │   ├── usage.py           # TokenUsageTotalsDAO, SessionUsageSnapshotDAO
+│   │   │   │   └── service.py         # SloAgentSession — process-level wrapper, subscribers, naming
+│   │   │   ├── events/
+│   │   │   │   ├── stream.py          # AgentStreamEventDAO, StreamEventKind
+│   │   │   │   └── runtime.py         # AgentRuntimeEventDAO, AgentRuntimeHandler, TraceEventKind
+│   │   │   ├── rate_limit/
+│   │   │   │   ├── dao.py             # ModelRateLimitPolicyDAO, RateLimitRetryPlanDAO
+│   │   │   │   └── service.py         # policy_for_model, retry_plan_from_error, IterationRetryPolicy, int_or_none
+│   │   │   ├── workspace/
+│   │   │   │   ├── dao.py             # WorkspaceFolderDAO, WorkspaceFileParseError
+│   │   │   │   └── service.py         # VscodeWorkspaceLoader
+│   │   │   ├── preferences/
+│   │   │   │   ├── dao.py             # UserPreferencesDAO, UserPreferencesStoreCorruptError
+│   │   │   │   └── service.py         # UserPreferencesStore
+│   │   │   ├── project_context/
+│   │   │   │   ├── dao.py             # ContextFileEntryDAO
+│   │   │   │   └── service.py         # ProjectContextDiscovery — SLO.md / AGENTS.md / CLAUDE.md / docs/RESEARCH.md
+│   │   │   ├── skills/
+│   │   │   │   ├── dao.py             # SkillEntryDAO
+│   │   │   │   └── service.py         # SkillsLoader
+│   │   │   ├── prompts/
+│   │   │   │   ├── __init__.py        # SystemPromptBuilder — assembles runtime system prompt
+│   │   │   │   └── system_prompt.py   # All static string constants (ROLE_LINE, KB_BLOCK_TEMPLATE, …)
+│   │   │   ├── history/
+│   │   │   │   ├── atomic_io.py       # AtomicFileWriter — shared temp+replace durable-state writer
+│   │   │   │   ├── dao.py             # HistoryEventKind, SessionHistoryEventDAO, metadata incl. session_name/session_name_key
+│   │   │   │   ├── filesystem_store.py # FilesystemSessionHistoryStore — flat JSONL store + resume-by-name resolution
+│   │   │   │   ├── tree_store.py      # TreeBasedFileSystemSessionHistoryStore — default store
+│   │   │   │   ├── store_protocol.py  # SessionHistoryStoreProtocol
+│   │   │   │   ├── token_estimator.py # TokenUsageEstimator
+│   │   │   │   ├── projector.py       # SessionHistoryProjector → list[BaseMessage]
+│   │   │   │   └── transcript.py      # TranscriptEntryDAO, ReplayEntryProjector
+│   │   │   ├── orchestrator/
+│   │   │   │   ├── dao.py              # Sub-agent DAOs and centralized terminal projections
+│   │   │   │   ├── fleet_store.py      # FleetStore — durable ProcessRegistry projection to fleet.json
+│   │   │   │   ├── status_store.py     # OrchestratorStatusStore — self-reported orchestrator.json owner
+│   │   │   │   ├── layout.py           # OrchestrationLayout — canonical workflow/fleet/capture paths
+│   │   │   │   ├── process_probe.py    # ProcessProbe — conservative shared PID liveness semantic
+│   │   │   │   ├── spawn_env.py        # Shared allowlisted headless-child env and capture opener
+│   │   │   │   ├── process.py          # SubAgentProcess — child spawn, stream relay, captures
+│   │   │   │   ├── pool.py             # SubAgentPool — bounded dispatch, explicit dispatch_id batches, abort_child
+│   │   │   │   ├── task_preview.py     # TaskPreview — the one task label (feature 94)
+│   │   │   │   ├── child_abort.py      # ChildAbortStore (versioned request/receipt files) + runner ChildAbortController
+│   │   │   │   ├── launch_tool.py      # launch_workflow — detached orchestrator spawn
+│   │   │   │   ├── relaunch.py         # WorkflowRelauncher — resume a dead detached workflow
+│   │   │   │   └── workflow_registry.py # WorkflowHandleStore and workflow commands
+│   │   │   ├── tool_execution/
+│   │   │   │   ├── service.py         # plan_tool_batch — parallel vs sequential planning
+│   │   │   │   ├── dao.py             # ToolExecutionPlanDAO
+│   │   │   │   └── executors.py       # SequentialToolExecutor, ConcurrentToolExecutor
+│   │   │   ├── plugins/               # Feature 75: typed plugin contract, trust/loader/registry/dispatcher, identity + managed installer
+│   │   │   └── compaction/            # Compacter, CompactionChecker, CompactionResult, ContextWindowSnapshotService (context_window.py)
+│   │   ├── model_catalog/             # canonical model catalog — identity, defaults, reasoning, aliases, discovery
+│   │   │   ├── dao.py                 # ModelCatalogEntryDAO, ModelRuntimeProfileDAO, ModelReasoningProfileDAO, …
+│   │   │   ├── seed.py                # committed first-class entries, family templates, aliases
+│   │   │   ├── discovery.py           # ProviderModelDiscoveryService, ModelCatalogOverrideService
+│   │   │   ├── service.py             # ModelCatalogService.load() — merged snapshot + projections
+│   │   │   ├── store.py               # cache and override file persistence
+│   │   │   └── prompt_clause.py       # append_kimi_for_coding_clause exact-match helper
+│   │   ├── skills/
+│   │   │   └── registry.py            # SkillRegistry — parses skills/<name>/SKILL.md (not wired into boot)
+│   │   ├── tools/
+│   │   │   ├── bundles.py             # create_extended_tools() and the three pi-parity bundles
+│   │   │   ├── read.py / write.py / edit.py / bash.py / tool_output.py
+│   │   │   ├── grep.py / find.py / ls.py
+│   │   │   ├── read_pdf.py / now.py / show_git_diff.py
+│   │   │   ├── echo.py                # demo/test tool
+│   │   │   ├── prompt_snippets.py     # TOOL_PROMPT_SNIPPETS dict → system prompt tool lines
+│   │   │   └── _blocking.py / _truncate.py / _gitignore.py / _image_content.py
+│   │   └── reasoning_capabilities.py  # compatibility projection over ModelCatalogService reasoning profiles
+│   ├── auth/
+│   │   ├── credential_resolver.py     # CredentialResolver — env → store → legacy Claude
+│   │   ├── credential_store.py        # CredentialStore — ~/.slo/global/authentication.json
+│   │   ├── credential_dao.py          # CredentialDAO, ProviderName, AuthType
+│   │   ├── browser_host.py            # BrowserHost — graphical-session guard for browser opening
+│   │   ├── oauth_flow.py / oauth_provider.py / pkce.py
+│   │   └── providers/
+│   │       ├── anthropic_provider.py
+│   │       └── openai_codex_provider.py
+│   ├── cli/
+│   │   ├── app.py                     # Typer app — bare `slo` opens TUI; `--resume` accepts session id or name
+│   │   ├── typer_dispatch.py          # TyperDispatch — routes CLI subcommands + resolves session references
+│   │   ├── plugin.py                  # `slo plugin install|list|uninstall|upgrade` parse surface
+│   │   ├── update.py                  # `slo update` self-updater + installer launcher finalization + ShellEnvironmentDefaults
+│   │   └── __main__.py
+│   ├── tui/
+│   │   ├── app.py                     # SloTUI (Textual App) + PromptInput + /new,/rename + prompt-history recall
+│   │   ├── theme.py                   # Theme.variables — the seven Pi-derived semantic tokens
+│   │   ├── prompt_history.py          # PromptHistoryNavigator — in-process Up/Down prompt recall
+│   │   ├── transcript_projector.py    # TranscriptProjector — events → widgets
+│   │   ├── event_renderer.py          # tool-call line formatting helpers
+│   │   ├── slash_router.py            # SlashRouter — dispatches /commands
+│   │   ├── slash_command_registry.py  # SlashCommandRegistry + SlashCommandSpecDAO
+│   │   ├── slash_suggestion_engine.py # SlashSuggestionEngine — prefix-match autocomplete
+│   │   ├── thinking_spinner.py        # ThinkingSpinner widget
+│   │   ├── headless_workflow_visualizer.py # `slo visualize` TUI — resizable panes, summary bar, markdown transcript
+│   │   ├── workflow_visualizer_loader.py   # WorkflowVisualizerLoader — bounded parent/child capture + progress reads
+│   │   ├── jsonl_tail.py              # JsonlTail — the one bounded capture JSONL reader
+│   │   ├── visualizer_launcher.py     # VisualizerLauncher — opens `slo visualize` in a new OS terminal window
+│   │   ├── slodiff/                   # Clean-room extractable diff model + Textual widget
+│   │   ├── git_diff_content_service.py # Safe HEAD-versus-worktree content loader
+│   │   ├── git_diff_screen.py         # Focused /diff screen and controls
+│   │   ├── workflows/                 # Detached-workflow receive path (spec 57.a.5) + session observation (feature 94)
+│   │   │   ├── dao.py                 # Parsed lifecycle/launch DTOs, effects, session key/row/snapshot/progress/viewport DAOs
+│   │   │   ├── service.py             # DetachedWorkflowAppService — handles, typed effects, owner-scoped list/progress gateway, child-abort begin
+│   │   │   ├── renderer.py            # DetachedWorkflowRenderer — launch guard, notices (no Textual)
+│   │   │   ├── progress_coordinator.py # WorkflowProgressCoordinator — the one single-flight observation timer
+│   │   │   ├── session_progress_screen.py (+ .tcss) # SessionProgressScreen + ProgressLog — position-preserving progress modal
+│   │   │   ├── abort_confirmation_screen.py (+ .tcss) # AbortConfirmationScreen — exact-child confirmation (safe default)
+│   │   │   ├── abort_submission.py    # ChildAbortSubmission — tracked request, not-confirmed notice
+│   │   │   └── transcript_renderer.py # WorkflowTranscriptRenderer — shared entry formatter (modal + `slo visualize`)
+│   │   ├── model_catalog.py           # supported_models_by_provider()
+│   │   ├── authentication/            # AuthenticationScreen + widgets (api_key, oauth, …)
+│   │   └── widgets/
+│   │       ├── user_message_block.py     # UserMessageBlock — one user turn with panel surface styling
+│   │       ├── assistant_stream_block.py # AssistantStreamBlock — one assistant answer turn (answer-only)
+│   │       ├── assistant_stream_thinking_block.py # AssistantStreamThinkingBlock — one thinking segment per normalized block_id
+│   │       ├── tool_execution_block.py   # ToolExecutionBlock — one tool call+result with panel surface styling
+│   │       ├── queued_prompt_block.py    # QueuedPromptBlock — one visible latest-wins held ordinary prompt
+│   │       ├── markdown_content_compiler.py # MarkdownContentCompiler — markdown-it AST → visible text + spans
+│   │       ├── usage_status_bar.py       # UsageStatusBar — token/rate display
+│   │       ├── sub_agent_fleet_panel.py  # SubAgentFleetPanel + FleetSessionList — "Ongoing workflow tasks" list below PromptInput
+│   │       ├── sub_agent_fleet_row.py    # SubAgentFleetRow — one literal `[status] session-id: task` ListItem
+│   │       └── slash_suggestion_menu.py  # SlashSuggestionMenu — autocomplete dropdown
+│   └── exceptions.py
+├── tests/
+│   ├── agents/
+│   │   └── slo_agent/                 # unit tests: agent loop, session, rate limits, usage
+│   ├── tui/                           # TUI tests: app, replay, slash, status bar, tool blocks
+│   │   └── workflows/                 # receive-path dao/service/renderer unit tests
+│   └── integration/                   # cross-component composed flows (e.g. feature 94 list → progress → child abort)
+├── plugins/
+│   └── bash_live_output/              # bundled Feature 75 consumer-only Bash live-output renderer
+├── skills/                            # vendored SKILL.md files + INDEX.md
+│   ├── INDEX.md                       # regenerated by `make build-skill-index`
+│   ├── orientation/  design-and-analysis/  orchestration/  engineering/  languages/
+│   ├── presentation/  user-content/  samples/  coding/  git-ops/  cli/  tui/
+│   └── integration-tests/  frontend-vue/
+├── specifications -> ../specifications  # symlink to the canonical spec root
+├── pyproject.toml
+├── README.md       ← this file: the maintained codebase reference
+└── SLO.md          # repository instruction file Slo auto-loads into every agent session
+```
+
+### History and persistence
+
+**Default store:** `TreeBasedFileSystemSessionHistoryStore`
+(`history/tree_store.py`), laid out under
+`~/.slo/sessions/history/<session_id>/`:
+
+```
+session.json       # SessionHistoryMetadataDAO — atomic temp+rename; includes session_name/session_name_key
+tree.json          # SessionTreeDAO — turn-grouped event tree (default)
+transcript.md      # derived; not authoritative
+orchestrator.json  # detached-orchestrator self-report when applicable
+fleet.json         # durable child fleet projection when applicable
+abort_request.json # TUI-to-orchestrator whole-workflow abort channel when applicable
+child-control.v1/capability.json                                   # runner child-abort capability
+child-control.v1/<run_id>/{requests,receipts}/<request_id>.json   # one child's abort request / settled receipt
+children/<child_session_id>/status.json          # child terminal result when applicable
+children/<child_session_id>/execution.v1.json    # child incarnation evidence (execution_id, dispatch_id, terminal binding)
+execution-index.v1.json                           # session_id → current execution_id, beside fleet.json
+```
+
+`status.json`, `fleet.json` and `spawn_context.json` keep their released,
+closed shapes; execution identity lives only in the `*.v1.json` siblings, so
+older readers keep decoding. `ProcessRegistry.commit_terminal` decides the
+first-wins terminal winner before any cache or file projection. It is
+reached through `SubAgentProcess._publish_terminal` (wrapper results,
+including `finish_without_spawn`) and through `ProcessRegistry.mark_terminal`
+(`HeadlessRunner`'s straggler sweep); both share the same arbitration. Child
+abort never uses `abort_request.json` (see [§9.7](#97-detached-workflows-the-session-list-and-child-abort)).
+
+The legacy flat store (`FilesystemSessionHistoryStore`) uses `events.jsonl`
+instead of `tree.json`. Both satisfy `SessionHistoryStoreProtocol`
+(`history/store_protocol.py`); pass a `FilesystemSessionHistoryStore`
+explicitly to `SloAgentSession` to opt back into the flat layout.
+
+**Tree layout (`tree.json`):**
+
+- `preamble_events` — envelope events with no `turn_id` (e.g.
+  `session_started`).
+- `turns` — an ordered `TurnNodeDAO` list; each node holds all events of one
+  turn. Tool-call events and their tool-result events always share a
+  `TurnNodeDAO` (same `turn_id`), which makes whole-turn compaction safe.
+- `token_usage` per `TurnNodeDAO` — running sum of event-level estimates,
+  stamped at append time by `TokenUsageEstimator`
+  (`history/token_estimator.py`, `ceil(chars / 4)` over the substantive text:
+  content, thinking, serialised tool args, tool output, delta; lifecycle
+  events count 0).
+
+**`HistoryEventKind`** values: `session_started`, `run_started`,
+`user_message`, `steering_message`, `assistant_message`, `assistant_delta`,
+`tool_call`, `tool_result`, `run_retrying`, `route_switched`,
+`run_completed`, `run_aborted`, `run_failed`, `slash_command` (plus
+orchestrator/sub-agent lifecycle kinds). `run_retrying` and `route_switched`
+are diagnostic/audit events (spec 37) excluded from
+`SessionHistoryProjector.build_message_history`, so audit volume never
+inflates model context.
+
+**Per accepted prompt**, `SloAgentSession` (1) ensures the session directory
+exists, (2) loads prior history via `SessionHistoryProjector` →
+`list[BaseMessage]`, (3) persists `run_started` and `user_message` before
+the agent runs, (4) forwards full-fidelity trace events to the store, and
+(5) appends the terminal event (`run_completed` / `run_aborted` /
+`run_failed`). `SessionHistoryProjector` (`history/projector.py`) excludes
+incomplete turns (no terminal event) from model context; they remain
+visible in replay.
+
+**Session naming / resume-by-name.** The session directory stays rooted by
+`session_id`. Human-readable naming is additive metadata in `session.json`
+(`session_name`, `session_name_key`).
+`FilesystemSessionHistoryStore.resolve_session_reference()` resolves
+`--resume` input by exact `session_id` first, then by normalized
+`session_name_key`.
+
+**Context-window snapshot and manual compaction (spec 62).**
+`ContextWindowSnapshotService`
+(`src/agents/slo_agent/compaction/context_window.py`) is a pure read model:
+it resolves routed-model capacity through the model catalog and sums only
+`SessionHistoryProjector.context_events()` (selected, message-producing
+durable replay events). It is intentionally distinct from cumulative
+provider `session_totals`, and may be lower than the automatic compaction
+check because `assistant_delta` and incomplete/audit events do not replay.
+`SloAgentSession` owns history I/O and caches the snapshot in
+`SessionUsageSnapshotDAO`; the TUI refreshes it only at mount,
+session/model transitions, `/context-window`, session-owned manual
+compaction, and prompt cleanup — never per streamed delta.
+
+`SessionHistoryStoreProtocol.compact_to_boundary()` is the single durable
+rewrite seam for automatic, overflow, and manual compaction. The flat store
+writes and fsyncs a candidate, moves active history to a collision-free
+deterministic archive, activates the candidate, then writes metadata.
+Ordinary post-archive failures restore byte-identical active history and
+metadata; `HistoryCompactionRecoveryError` names the active/archive paths if
+restoration itself fails, and readers restore the deterministic archive
+before loading. The tree store delegates to the same transaction.
+
+### Plugins and tool-output streaming
+
+**Plugin runtime (feature 75).** `SloAgentSession` loads managed plugins from
+`~/.slo/plugins/plugins/<plugin-id>/`, trusted project plugins from
+`.slo/plugins/`, and explicit `--plugin` paths, in that order.
+`PluginLoader` imports under isolated `slo_plugin_<namespace>` names;
+`PluginRegistry` validates collisions and managed-manifest suffix
+declarations; `PluginDispatcher` is one isolated event subscriber and owns
+the interception chains. `SLO_PLUGINS_DISABLED=1` disables all plugin tiers.
+`slo plugin` lifecycle commands use `PluginInstallerService` as the single
+managed-directory writer; the installer never executes installation-source
+Python. Dog-food the bundled renderer with
+`--plugin plugins/bash_live_output/plugin.py`.
+
+**Tool-output streaming.** `BashTool` may publish accumulated, throttled
+`ToolOutputUpdateDAO` snapshots. The executor places them on the
+graph-owned queue; `SloAgent` drains it into
+`AgentStreamEventDAO(kind="tool_output_update")`. The TUI updates the
+existing `ToolExecutionBlock` by `tool_call_id`; partials are emitted on
+headless stdout JSONL, persisted when history is enabled, and excluded from
+replay model context. The terminal `ToolMessage` remains the sole
+model-visible tool result.
+
+### Feature requests and specification artifacts
+
+- **Incoming feature requests:** the repo-local `feature-requests/`
+  directory.
+- **Canonical specification root:** the operator-side specifications
+  directory that `specifications/` points at (a symlink). Resolve it with
+  `readlink specifications`; never hard-code a machine path.
+- **New specs:** one numbered folder per feature under the canonical root —
+  never scattered inside `src/` or ad hoc repo folders.
+- **File naming:** the primary document is always `overview.md`; sub-specs
+  follow `<spec-number>.<letter>.<index>-<title>.md` (e.g.
+  `28.a.1-moonshot-credential-lane.md`). Never name a spec `request.md` (a
+  superseded convention).
+- **Format:** Markdown (`.md`).
+
+### Style rules
+
+- **Google-style docstrings** on every public function and method.
+- **Named arguments** at every call site with two or more arguments:
+  `foo(bar=baz, qux=quux)`.
+- **Explicit type hints** on every parameter and return value;
+  `Optional[T]` with `= None` for nullable parameters; specific containers
+  (`list[str]`).
+- **Black** formatting, line length 110 (`black src/ tests/`).
+- **No bare `Any`** — prefer `BaseChatModel`, `BaseTool`, `BaseMessage`, etc.
+- **Declarative method structure** — one decision per method; orchestrators
+  read like a table of contents; no nested conditionals past two levels.
+- **Class convention** — core logic lives in a class with `@classmethod`
+  methods; the public entry is `invoke` (or `build` / `load` / `create`).
+  Free functions are reserved for `@tool` bridges, LangGraph nodes, and test
+  helpers.
+
+### Testing rules
+
+The suite rules (FauxChatModel only, the `not e2e` default gate,
+`environments/tests.env`, the no-real-terminal-windows guards, test layout,
+`asyncio_mode = "auto"`) are in [§8.5](#85-suite-rules); the
+one-test-per-decision policy is in [§8.4](#84-coverage-discipline).
+
+### Commit and branch conventions
+
+- **One feature per branch** from `main`. Branch name:
+  `feature-<detail_in_snake_case>` or a JIRA ID in lowercase.
+- **Commit title:** `<JIRA-ID or topic> <one-line description>`, at most 72
+  characters.
+- **Commit body:** list the core changes and files modified.
+- **`Co-Authored-By:`** footer when pairing with an AI assistant.
+- For the operational sub-steps (sync main, branch, commit and push, PR,
+  review fix), use the matching skills in `skills/git-ops/`.
+
+### Keeping this README current
+
+**Update README.md whenever you:**
+
+- Add a new component, module, or package.
+- Rename or move a module.
+- Change the runtime chain (CLI → TUI → Session → Agent → Graph).
+- Alter the system prompt assembly order or add/remove a section.
+- Change the default tool bundle or add a new tool.
+- Regress or change the tools-block wiring behind known issue B1.
+- Add a new slash command, change prompt-history semantics, or change the
+  auth flow.
+- Change plugin discovery, managed installation, plugin
+  dispatch/interception, or tool-output streaming.
+- Change the history event schema or persistence layout.
+- Add a new provider or change credential resolution precedence.
+- Change the `--workspace` CLI surface or workspace-context discovery
+  semantics.
+- Change the canonical feature-request root (`feature-requests/`) or the
+  specification root that `specifications/` points at.
+
+Keep [§5.3](#53-the-system-prompt-builder) (system prompt assembly) and
+[§5.4](#54-tools) (tool bundle) accurate — they directly affect what every
+agent session sees and does. When a change alters an exact value (a
+timeout, default, cap, budget, status-code mapping, file name, or command),
+update KB `slo/operational-reference.md` as well.

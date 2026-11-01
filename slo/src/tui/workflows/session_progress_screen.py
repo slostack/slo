@@ -63,7 +63,9 @@ class ProgressLog(RichLog):
 
     def __init__(self) -> None:
         """Build the screen's non-wrapping, manually followed log."""
-        super().__init__(wrap=False, markup=False, auto_scroll=False, id="session-log")
+        # Markdown must fit narrow modals rather than RichLog's default 78-cell floor.
+        # Plain tool output remains unwrapped and horizontally scrollable.
+        super().__init__(min_width=1, wrap=False, markup=False, auto_scroll=False, id="session-log")
 
     def on_resize(self, event: events.Resize) -> None:
         """Render deferred lines natively, then report the new layout to the screen.
@@ -196,19 +198,26 @@ class SessionProgressScreen(ModalScreen[None]):
     ]
 
     class Minimized(Message):
-        """Tell the app to close observation without stopping execution."""
+        """Tell the app to close this screen's observation without stopping execution."""
+
+        def __init__(self, *, screen: SessionProgressScreen) -> None:
+            """Capture the emitting screen so a queued intent cannot affect its successor."""
+            super().__init__()
+            self.screen = screen
 
     class AbortRequested(Message):
         """Carry the immutable confirmation target to the app-owned sink."""
 
-        def __init__(self, *, target: ChildAbortTargetDAO) -> None:
+        def __init__(self, *, target: ChildAbortTargetDAO, screen: SessionProgressScreen) -> None:
             """Capture identity when the operator chooses Abort.
 
             Args:
                 target (ChildAbortTargetDAO): Exact current run/incarnation.
+                screen (SessionProgressScreen): Emitting instance; stale intents cannot affect a successor.
             """
             super().__init__()
             self.target: ChildAbortTargetDAO = target
+            self.screen = screen
 
     def __init__(self, *, key: WorkflowSessionKeyDAO, viewport: ProgressViewportDAO) -> None:
         """Bind observation identity and saved position; the sink owns lifetime.
@@ -260,6 +269,8 @@ class SessionProgressScreen(ModalScreen[None]):
         self._log.focus()
         self.watch(self._log, "navigation_revision", self._hide_reset_notice, init=False)
         self.watch(self._log, "virtual_size", self._retry_pending_restore, init=False)
+        self.watch(self._log, "show_horizontal_scrollbar", self._retry_pending_restore, init=False)
+        self.watch(self._log, "show_vertical_scrollbar", self._retry_pending_restore, init=False)
 
     def on_progress_log_layout_changed(self, _message: ProgressLog.LayoutChanged) -> None:
         """Retry a clamped restore once the log has been laid out again.
@@ -337,7 +348,7 @@ class SessionProgressScreen(ModalScreen[None]):
 
     def action_minimize(self) -> None:
         """Ask the app to minimize; never cancel a session or accepted request."""
-        self.post_message(self.Minimized())
+        self.post_message(self.Minimized(screen=self))
 
     @on(Button.Pressed, "#minimize")
     def _minimize_pressed(self) -> None:
@@ -349,7 +360,7 @@ class SessionProgressScreen(ModalScreen[None]):
         """Emit the currently displayed eligible identity for confirmation."""
         target: Optional[ChildAbortTargetDAO] = self._snapshot.abort_target if self._snapshot else None
         if target is not None:
-            self.post_message(self.AbortRequested(target=target))
+            self.post_message(self.AbortRequested(target=target, screen=self))
 
     def _apply_content(self, *, snapshot: SessionProgressSnapshotDAO) -> None:
         """Append or rebuild only when the loader revision changes at delivery.

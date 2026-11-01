@@ -21,6 +21,7 @@ from src.agents.providers.model_pool import ModelPoolDAO, ModelPoolEntryDAO
 from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
+from tests.agents.retry_options import SDKRetryOptions
 
 
 def _reload_cfg() -> None:
@@ -85,7 +86,7 @@ class TestLLMFactoryKimiReasoning:
 
         kwargs: dict[str, Any] = dict(mock_chat_openai.call_args.kwargs)
         assert kwargs["reasoning_effort"] == provider_effort
-        assert kwargs["max_retries"] == 0
+        assert kwargs["max_retries"] == 3
         assert kwargs["default_headers"] == {"User-Agent": "KimiCLI/1.5"}
         for forbidden_key in ("thinking", "reasoning", "use_responses_api", "output_version"):
             assert forbidden_key not in kwargs
@@ -252,17 +253,20 @@ class TestLLMFactoryKimiReasoning:
 class TestLLMFactoryKimiForCodingDispatch:
     """``LLMFactory.create`` Kimi For Coding dispatch (spec 32.a.1)."""
 
-    def test_kimi_prefix_dispatches_to_chat_openai_at_kimi_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("retry_options", [{}, {"max_retries": 0}, {"max_retries": 5}])
+    def test_kimi_prefix_dispatches_to_chat_openai_at_kimi_url(
+        self, monkeypatch: pytest.MonkeyPatch, retry_options: SDKRetryOptions
+    ) -> None:
         """``kimi-for-coding`` → ``ChatOpenAI`` pointing at api.kimi.com; caching=False."""
         monkeypatch.setenv("SLO_KIMI_FOR_CODING_API_KEY", "sk-kimi-test")
         _reload_cfg()
         with patch("src.agents.base.ChatOpenAI") as mock_chat_openai:
             mock_chat_openai.return_value = mock_chat_openai
-            result = LLMFactory.create(model_name="kimi-for-coding")
+            result = LLMFactory.create(model_name="kimi-for-coding", **retry_options)
         mock_chat_openai.assert_called_once()
         kwargs: dict[str, Any] = dict(mock_chat_openai.call_args.kwargs)
         assert "api.kimi.com" in kwargs.get("base_url", "")
-        assert kwargs.get("max_retries") == 0
+        assert kwargs.get("max_retries") == retry_options.get("max_retries", 3)
         assert result.supports_explicit_caching is False
 
     def test_moonshot_prefix_also_routes_to_kimi_for_coding_builder(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from uuid import uuid4
 
@@ -126,7 +127,9 @@ class TestToolExecutionBlock:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            block: ToolExecutionBlock = await app.mount_tool_execution_block(
+            block: ToolExecutionBlock = await app.query_one(
+                ChatTranscriptComponent
+            ).mount_tool_execution_block(
                 tool_call_id="call_1",
                 tool_name="read",
             )

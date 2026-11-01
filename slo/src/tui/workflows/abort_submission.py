@@ -126,7 +126,11 @@ class ChildAbortSubmission:
         Args:
             row (WorkflowSessionRowDAO): Current row for the target's key.
         """
-        if not self.concerns(row=row) or row.status not in TERMINAL_STATUSES:
+        if (
+            row.availability != "available"
+            or not self.concerns(row=row)
+            or row.status not in TERMINAL_STATUSES
+        ):
             return
         self._terminal = ChildAbortOutcomeDAO.for_request(
             request=self._request,

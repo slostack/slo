@@ -1,7 +1,7 @@
 ---
 name: feature-specifications
-description: Author feature specifications through Gather context, Draft, Self-check and Revise; preserve product framing and standalone engineering detail.
-when_to_use: Use whenever drafting or revising a feature specification. Independent verification and task breakdown remain separate skills sequenced by the specification-development workflow.
+description: Write the feature specification overview — what the capability does, who owns each piece of state, the interfaces between modules, and what is still undecided. Standalone engineering sub-specs come next from breakdown-feature-spec-to-tasks.
+when_to_use: Use when the operator asks to write or spec out a feature ("write a feature spec for X", "spec out X", "solution design", "identify the domains, entities and interfaces", "explain the flow and how the systems interact"). It produces overview.md of the feature's specification family. Delegate standalone engineering sub-specs and the task list to breakdown-feature-spec-to-tasks; do not write code.
 group: design-and-analysis
 kind: skill
 source_prompt: analyze/feature-specifications.md
@@ -12,902 +12,329 @@ source_prompt: analyze/feature-specifications.md
 ## Skill summary
 
 - **Name:** `feature-specifications`
-- **Description:** The authoritative authoring skill: Gather context → Draft → Self-check → Revise.
-- **When to use:** Write, generate, spec out, or revise a feature specification.
+- **Description:** The overview of a specification family. It settles the shape of a capability: the plain-language purpose, the domains and their tables, the journeys, the module interfaces and the open decisions, with diagrams wherever a picture explains faster than prose.
+- **When to use:** The operator asks for a feature spec, a solution design or approach, or wants domains, entities and interfaces identified. This skill writes `overview.md`; `breakdown-feature-spec-to-tasks` then writes the standalone engineering sub-specs.
 - **Group:** `design-and-analysis`
 - **Kind:** `skill`
+- **Output:** `<feature-specifications-root>/<NN>-<feature>/overview.md`
 
 ## Examples
 
-- Write a feature spec from a ticket or verbal brief.
-- Revise a technical child slice after review without losing its product context.
-- Self-check an overview and its engineering sub-specs before independent review.
+- "Write a feature spec for importing supplier invoices from the shared mailbox."
+- "Spec out reading support emails from a Google Group into the ticketing system."
+- "Identify the domain entities, their tables and the interfaces between the systems for this feature."
+- "I want to agree the design before we detail the sub-specs."
 
 ## Guidance
 
-Run all four stages in order. Context gathering is mandatory before the first
-heading; self-check is mandatory immediately after every draft or revision,
-before commit, wiki publication, developer handoff, task breakdown or implementation.
-Fetch any referenced JIRA / Confluence / GitLab issue first to scope the research.
-Do not skip checks because “we just wrote it”. A specification without the context
-bundle and clean self-check report is incomplete.
+Work in this order. Each step has its own section below.
 
-This is an authoring skill, not a formal workflow. When the operator requests the
-Specification Development workflow, load `skills/orchestration/workflows/specification-development.md`.
-That workflow sequences this skill, independent verification, then task breakdown.
-Skim `feature-specification-verification` and `breakdown-feature-spec-to-tasks`
-unless the user asks otherwise; `gather-feature-context` remains an on-request
-context companion. Do not recursively invoke this skill through the old hooks.
+1. Resolve the output path (**Artifact paths and skill discovery**).
+2. Collect the **Inputs**, and optionally a `gather-feature-context` briefing.
+3. Establish knowledge-base context.
+4. **Read before writing**: rules, convention skills and the code.
+5. Run the **Duplicate-code check**, keeping **cohesion**.
+6. Write **The document** for **the reader**, with the right **visual aids**.
+7. Pass **Before saving**, then hand off to `breakdown-feature-spec-to-tasks`.
 
-## Slo defaults for request and specification artifacts
+## What this skill is, and is not
 
-**Read the prerequisite design references before drafting.** Read [coding rules](../../coding/coding-rules/SKILL.md) and [code design principles](../../coding/code-design-principles/SKILL.md) before authoring a feature specification. When focused preimplementation design is useful, consult [solution design](../../coding/solution-design/SKILL.md) as an optional companion; it is not mandatory for every feature specification.
+> **Remember:** this is a concise specification. It agrees the shape; the sub-specs carry the build detail.
+
+**The overview describes:**
+
+- What the feature does and why it is needed, with light context on what exists today and how the feature affects it.
+- The domains and the meaning of each.
+- The schema of the backing domains.
+- The journeys and workflows, usually owned by application services.
+- The entities involved: what each encapsulates and is responsible for.
+- The journey those entities take through the workflows, once both have been introduced.
+- The scaffold, clearly enough that a developer can picture the control flow.
+- The behaviour that must be tested, not the individual test cases.
+- The order in which the feature should be built.
+
+**It does not need** granular implementation detail. It does need the interfaces of each application service, controller and worker.
+
+| | This skill | `breakdown-feature-spec-to-tasks` (next step) |
+|---|---|---|
+| Purpose | Agree the shape, expose the unknowns | Detail each slice so an agent can build and test it with limited context |
+| Output | One `overview.md` | One standalone sub-spec per cohesive slice (`NN.a.n-<slice>.md`) plus `task-list.md` in dependency order |
+| Detail | Entities, interfaces, interactions | Exact files, symbols, call sites, core logic, error rules and acceptance scenarios |
+| Unknowns | Allowed, listed as open decisions | A sub-spec with material ambiguity is not READY |
+| Review | Checklist below, then family review | Sub-spec checklist, then family review |
+| After it | The operator reviews and decides | `feature-specification-verification` reviews the whole family |
+
+The overview is one half of the specification family; the standalone engineering sub-specs are the other. Neither replaces the other, even for a small feature. Never claim approval, review or passing tests that did not happen.
 
 ## Artifact paths and skill discovery
 
-Resolve artifact roots in this order: explicit user instruction → repository
-project override → the environment/home defaults below. In the Slo repository,
-CLAUDE.md mandates repo-local `feature-requests/` and `specifications/` (the latter
-is a symlink to the canonical root). Do not silently replace this project override
-with a home-directory default. Never name a specification `request.md`; that name
-belongs only to incoming request artifacts.
-
-Every feature requires **overview.md** with product framing and one or more
-**standalone engineering sub-specs** in separate files. There is no document-mode
-selection, overview-only deliverable, or combined-document exception, even for a
-small feature. When revising an existing slice, retain and verify the complete
-family rather than treating that slice as a substitute for the other artifacts.
-Lightweight execution tickets may link to a complete sub-spec; they never replace it.
-
-**Skill discovery.** Use the active skill catalog's `file_path` for each named
-skill, including user overrides. Resolve vendored locations through `config.cfg`
-(`SKILLS_LOCATION` / `SKILLS_DIR`), not an assumed installation directory:
-
-1. `SLO_SKILLS_DIR` when set and non-empty; an invalid explicit override must
-   surface as a missing location, not silently fall back.
-2. The populated `skills` directory under the runtime-resolved `SLO_HOME`.
-3. The package-adjacent `skills` directory discovered from the installed Slo
-   package (or the equivalent directory in a development checkout).
-
-Use `config.cfg.USER_SKILLS_DIR` and `USER_WORKFLOWS_DIR` for personal content.
-They honor `SLO_USER_SKILLS_DIR` and `SLO_USER_WORKFLOWS_DIR`, respectively,
-otherwise using `user_skills` and `user_workflows` under the resolved Slo home.
-Slo resolves its home from `SLO_HOME` or the current user's home via `Path.home()`.
-Do not invent environment variables or hard-code a username, operating-system
-home prefix, Python version, package-manager layout, or absolute skill path.
-Paths written as `skills/<group>/...` in these instructions are logical library
-references; resolve them against the discovered library, not the caller's working
-directory. Relative Markdown links remain relative to the containing skill file.
-If required locations cannot be found, report the missing configuration and ask
-rather than guessing. Preserve personal-skill override precedence.
-
-**Write for humans first.** Use simple, direct language throughout, and lean on visual representation — ASCII diagrams, numbered user journeys, before/after trees, and tables — wherever a picture makes the change quicker to understand than prose.
-
-**Artifact paths.** After applying the precedence above, the generic defaults are:
+Resolve artifact roots in this order: explicit operator instruction → repository project override → the defaults below. In the Slo repository, `CLAUDE.md` mandates repo-local `feature-requests/` and `specifications/`; do not replace that override with a home-directory default.
 
 ```text
-<feature-requests-root> = <SLO_FEATURE_REQUESTS_DIR or resolved-Slo-home/projects/<project_name>/feature-requests>
+<feature-requests-root>       = <SLO_FEATURE_REQUESTS_DIR or resolved-Slo-home/projects/<project_name>/feature-requests>
 <feature-specifications-root> = <SLO_FEATURE_SPECIFICATIONS_DIR or resolved-Slo-home/projects/<project_name>/feature-specifications>
 ```
 
-**Expected structure.** One folder per feature. The `overview.md` carries the product framing and ends with the brief technical overview; each numbered sibling is one standalone technical sub-spec:
+One folder per feature. Never name a specification `request.md`; that name belongs to incoming requests.
 
 ```text
-<feature-requests-root>/
-└── 01-example-feature/
-    └── request.md
-
 <feature-specifications-root>/
 └── 01-example-feature/
-    ├── overview.md            # Overview → Brief Technical Overview (business + product framing)
-    ├── 01.a.1-first-slice.md  # Technical Sub-Spec (one of n)
-    ├── 01.a.2-second-slice.md
-    └── plan.md
+    ├── overview.md              # this skill
+    ├── task-list.md             # breakdown-feature-spec-to-tasks
+    ├── 01.a.1-first-slice.md    # standalone engineering sub-spec
+    └── 01.a.2-second-slice.md
 ```
 
-## Gather context
-
-### 1 — Load global guardrails
+**Skill discovery.** Use the active skill catalog's `file_path` for each named skill, including user overrides. Vendored locations resolve through `config.cfg` (`SKILLS_LOCATION` / `SKILLS_DIR`), in this order:
 
-Read these in order. They define how this codebase is allowed to be written, regardless of the feature being specified:
+1. `SLO_SKILLS_DIR` when set and non-empty. An invalid explicit value is reported as missing, not silently replaced.
+2. The populated `skills` directory under the resolved `SLO_HOME`.
+3. The package-adjacent `skills` directory of the installed Slo package, or the same directory in a development checkout.
 
-1. The global `CLAUDE.md` discovered for the current user — global ground rules (named arguments, type hints, declarative methods, env handling).
-2. `CLAUDE.md` — repo-scoped instructions.
-3. `AGENTS.md` — agent operating instructions for this repo.
-4. `RESEARCH.md` — index of services, workflows, queues, and test layout.
-5. `<project-memory>/MEMORY.md` — point-in-time project memory.
+Personal content lives in `config.cfg`'s `USER_SKILLS_DIR` and `USER_WORKFLOWS_DIR` (`SLO_USER_SKILLS_DIR`, `SLO_USER_WORKFLOWS_DIR`, otherwise `user_skills` and `user_workflows` under the Slo home). Paths written as `<group>/<skill>/SKILL.md` are relative to the library root. Do not hard-code a username, home prefix, Python version or package layout. If a required location cannot be found, report it and ask.
 
-Note any guardrail that constrains the spec.
-
----
-
-Also load home and repo copies of SLO.md, CLAUDE.md and AGENTS.md when present,
-using Slo project-context discovery and the resolved current-user home, plus maintained project
-RESEARCH.md / docs/RESEARCH.md and MEMORY.md. Repository instruction precedence
-wins over the generic reading order. Record every constraint.
-
-### Declare artifacts
-
-Use the single-family definition below. Record `Producing: overview + standalone
-engineering sub-specs` and list the overview and every planned sub-spec. Both parts
-are always required; record existing artifacts being retained or revised as well.
-The overview covers product behavior, user/admin journeys, multi-layer design,
-requirements traceability and rollout. Children cover one parent-linked technical
-slice, boundary, refactor, deletion, wiring or CLI/TUI/runtime change.
-
-### 3 — Load Knowledge Base context
-
-The KB at `$SLO_KB_DIR/` is the durable cross-session memory. Read it scoped to the feature.
-
-**Knowledge base discovery is non-blocking.** Locate the KB with `skills/design-and-analysis/locate-knowledge-base/SKILL.md`
-first. When no KB is found, tell the user, offer to create one, record
-"no knowledge base found" in the Context Bundle, and continue to the surface inventory.
-
-1. Read the KB entry point (`Welcome.md` or `index.md`; `Home.md` in older vaults) to refresh the index.
-2. For each KB folder whose scope overlaps the feature, read its `index.md` and any clearly relevant entry.
-3. Specifically scan each visited README's **"I saw this error, what now?"** table for failure modes the spec must pre-empt.
-
-Map feature surface → folder (illustrative for an order-management platform; use the vault's real folders):
-
-| Feature touches | KB folder |
-|---|---|
-| FastAPI backend, domain DAOs/services, middleware, env | `orders_service/` |
-| Payments, refunds, tokenization | `payments_service/` |
-| SMS/email notifications, provider integrations | `notifications_service/` |
-| Vue 3 SPA, Pinia, `useAgentStream` | `admin_ui/` |
-| Coding conventions / structure | `conventions/` |
-| Tests (pytest async, test doubles) | `testing/` |
-| Feature → plan → wiki workflow | `workflow/` |
-| Deploy, secrets, infra | `deployment/` |
-
----
-
-### 4 — Inventory the affected surface area
-
-Use Glob / Grep / Read to enumerate the code the spec will touch or sit next to. Do **not** rely on names alone — read enough of each file to confirm its responsibility.
-
-Cover, at minimum, whichever of these layers the feature touches:
-
-- **Domains**
-  - Python: `src/domains/<area>/{model,dao,service}.py`
-  - Go: `internal/domain/<area>/{model,dto,repository,service}.go`
-  - TypeScript: `src/domains/<area>/{entity,dto,service}.ts`
-- **Application services**
-  - Python: `src/services/<area>/*_app_service.py`
-  - Go: `internal/app/**` (`Execute()` services)
-  - TypeScript: `src/services/app/**`
-- **Routers / API surface**
-  - Python: `src/controllers/**` or equivalent FastAPI routers
-  - Go: Gin handlers and route groups (`internal/http/**` or equivalent)
-  - TypeScript: Express / Hono routes (`src/routes/**`)
-- **Workers / schedulers / events**
-  - Python: `src/tasks/**`, DBOS workflows, Celery registration, event handlers
-  - Go: asynq workers and schedulers, Temporal workflows, NATS JetStream handlers
-  - TypeScript: event buses and handlers
-- **Entry points and lifecycle** — Go `cmd/**`, runtime assembly, CLI configuration; Python Typer CLIs; Textual / Bubble Tea TUIs
-- **Agents / tools** — `src/agents/**`, LangGraph (Python or TypeScript)
-- **Frontend** — Vue components, composables, stores
-- **Database** — Alembic versions, goose migrations, ClickHouse DDL, indexes
-- **Integrations** — `src/integrations/**`
-- **Deployment** — `deployment/**`, stack files, Makefile targets, env vars
-- **Existing specifications** — parent specs, sibling specs, or earlier plan files if this feature is being added in phases
-
-For every affected file, capture:
-
-- file path,
-- one-line role summary,
-- the convention it already follows that the spec must mirror,
-- whether it is current truth, adjacent context, or stale prior design text.
-
-### Extra requirement when producing a technical sub-spec
-
-When this pass produces a technical sub-spec, build two additional inventories:
-
-1. **Current-state truths** — the exact symbols, method names, runtime behaviors, file paths, and constraints that are true in code today.
-2. **Stale or drifting prior design text** — older specs, parent-spec snippets, comments, or docs that are now inaccurate or incomplete and that the new sub-spec must correct explicitly.
-
-Identify the local purpose and integration context needed to implement the slice without the parent overview. Link shared contracts to their canonical owners rather than copying them.
-
----
-
-### 4.5 — Identify redundancy and consolidation candidates
-
-The surface inventory answers "what will this feature sit next to". This step answers the harder question: **what already does this work?**
-
-A spec drafted without that answer creates redundant artefacts, entities, and domains — the existing implementation may be doing the same work wholly, doing part of it, or already owning the responsibility the new design is about to duplicate. Two owners for one responsibility is confusion that outlives the feature, so the duplication has to be found here, before a line of the spec is written.
-
-For every capability the feature implies — each domain, model, DAO, service, application service, router, worker, event, agent, tool, client, CLI command, config key, or frontend store it will likely need — search the code for an existing owner. Search by behavior, not by the name the ask happens to use: the existing component is usually named differently, which is exactly why it gets missed.
-
-Record each hit:
-
-| Capability the feature needs | Existing owner (`file:line`) | Overlap | Consolidation candidate |
-|---|---|---|---|
-| ... | ... | wholly / partially / adjacent responsibility | delete-and-replace / encapsulate / re-design |
-
-State the expected consolidation form using the single definition in
-[DRY design](#dry-design-no-redundant-artefacts-entities-or-domains): delete and
-replace, encapsulate, or re-design. Do not invent a parallel owner.
-
-Also note, for each adjacent responsibility, where the boundary should fall and what interface the new work should use to reach across it. Those boundaries must be documented in the spec's prose and in the docstrings or comments of its code samples.
-
-If nothing overlaps, say so explicitly — "no existing owner found for X" is a finding, not an omission.
-
----
-### 5 — Read the matching code-convention prompts
-
-Once you know the surface area, read **every** matching rule under `skills/coding/`. Err toward reading more rather than fewer — a missed convention is the most common source of spec rework.
-
-Start with the language gateway, then add the layer recipes. Use `skills/engineering/engineering-routing/SKILL.md` to select a small sufficient set when the feature spans languages.
-
-| Language | Gateway (always read) |
-|---|---|
-| Python | `skills/languages/python/python-conventions/SKILL.md` |
-| Go | `skills/languages/go/go-conventions/SKILL.md` |
-| TypeScript | `skills/languages/typescript/typescript-conventions/SKILL.md` |
-| Any | `skills/coding/test-verification-policy/SKILL.md` (how to test) |
-
-**Python mappings** (read all that apply):
-
-- application services → `skills/languages/python/build-application-services/SKILL.md`
-- domain features → `skills/languages/python/build-domain-features/SKILL.md`
-- FastAPI routers → `skills/languages/python/build-routers/SKILL.md`
-- middleware → `skills/languages/python/build-middleware/SKILL.md`
-- event handlers → `skills/languages/python/build-event-handlers/SKILL.md`
-- partitioned events → `skills/languages/python/build-partitioned-events/SKILL.md`
-- Celery workers → `skills/languages/python/build-celery-workers/SKILL.md`
-- DBOS workflows → `skills/languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md`
-- DBOS schedulers / tasks → `skills/languages/python/build-schedulers-tasks-with-dbos/SKILL.md`
-- LangGraph agents → `skills/languages/python/build-react-agent-with-langgraph/SKILL.md`
-- agent tools → `skills/languages/python/build-agent-tools/SKILL.md`
-- graph / gateway invoke convention → `the graph-gateway-invoke-convention recipe`
-- API clients → `skills/languages/python/build-clients/SKILL.md`
-- API docs / Swagger → `skills/languages/python/build-api-documentation/SKILL.md`, `skills/languages/python/generate-swagger-documentation/SKILL.md`
-- ClickHouse features → `skills/languages/python/build-clickhouse-features/SKILL.md`
-- Alembic setup → `skills/languages/python/setup-alembic/SKILL.md`
-- dependencies / tests → `skills/languages/python/setup-dependencies-and-tests/SKILL.md`
-- always-on style → `skills/languages/python/named-arguments-and-type-hints/SKILL.md`, `skills/coding/declarative-method-structure/SKILL.md`, `skills/languages/python/method-docstrings/SKILL.md`, `skills/coding/test-verification-policy/SKILL.md`, `skills/languages/python/application-structure/SKILL.md`
-
-**Go mappings** (read all that apply; all paths under `skills/languages/go/`):
-
-- application services → `go-build-application-services/SKILL.md`
-- domain features → `go-build-domain-features/SKILL.md`
-- HTTP handlers → `go-build-http-handlers/SKILL.md`
-- middleware → `go-build-middleware/SKILL.md`
-- auth / security → `go-auth-security/SKILL.md`
-- event handlers → `go-build-event-handlers/SKILL.md`
-- partitioned events → `go-build-partitioned-events/SKILL.md`
-- workers → `go-build-workers/SKILL.md`
-- schedulers → `go-build-schedulers/SKILL.md`
-- durable workflows → `go-build-workflow-orchestration/SKILL.md`
-- runtime lifecycle → `go-build-lifecycle/SKILL.md`
-- API clients → `go-build-clients/SKILL.md`
-- TCP protocols → `go-build-tcp-codec/SKILL.md`
-- TUIs → `go-build-tuis/SKILL.md`
-- ClickHouse features → `go-build-clickhouse-features/SKILL.md`
-- API docs / response envelope → `go-recipe-api-documentation/SKILL.md`, `go-recipe-api-response-conventions/SKILL.md`
-- migrations → `go-recipe-database-migrations/SKILL.md`
-- CLI configuration → `go-recipe-cli-configuration/SKILL.md`
-- modules / imports → `go-recipe-modules-and-imports/SKILL.md`
-- dependencies / tests → `go-recipe-setup-dependencies-and-tests/SKILL.md`
-- tests by layer → `go-test-handlers/SKILL.md`, `go-test-application-services/SKILL.md`, `go-test-domain-services/SKILL.md`, `go-test-orchestration/SKILL.md`, `go-test-lifecycle/SKILL.md`
-- always-on style → `go-declarative-method-structure/SKILL.md`, `go-recipe-code-test-loop/SKILL.md`
-
-**TypeScript mappings** (read all that apply; all paths under `skills/languages/typescript/`):
-
-- application structure → `typescript-application-structure/SKILL.md`
-- domain features → `typescript-build-domain-features/SKILL.md`
-- routers → `typescript-build-routers/SKILL.md`
-- middleware → `typescript-build-middleware/SKILL.md`
-- auth / security → `typescript-auth-security-patterns/SKILL.md`
-- event handlers → `typescript-build-event-handlers/SKILL.md`
-- LangGraph → `typescript-build-langgraph/SKILL.md`
-- API clients → `typescript-build-clients/SKILL.md`
-- API docs / response envelope → `typescript-build-api-documentation/SKILL.md`, `typescript-api-response-conventions/SKILL.md`
-- dependencies / tests → `typescript-setup-dependencies-and-tests/SKILL.md`
-- tests by layer → `typescript-test-controllers/SKILL.md`, `typescript-test-app-services/SKILL.md`, `typescript-test-domain-services/SKILL.md`
-- always-on style → `typescript-named-arguments-and-type-hints/SKILL.md`, `typescript-declarative-method-structure/SKILL.md`, `typescript-method-docstrings/SKILL.md`
-
-For Vue work, also read the relevant `skills/frontend-vue/` convention files.
-
----
-
-### 6 — Capture second-order requirements
-
-Beyond what the feature *does*, the spec must respect the nuanced choices already baked into the system. Walk this checklist and record concrete numbers or patterns drawn from the code and KB, not assumptions.
-
-- **Scale & throughput**
-- **Latency budgets**
-- **Concurrency & idempotency**
-- **Logging & observability**
-- **Error model**
-- **Security & auth**
-- **Data lifecycle**
-- **Naming & conventions**
-- **Testing posture**
-- **Deployment posture**
-- **Cross-repo impact**
-
-Anything noted here becomes a requirement the spec must address, either inline or as an explicit defer / out-of-scope note.
-
----
-
-### 7 — Plan the reader's route
-
-Plan a short purpose/scope explanation, current → proposed behavior, a useful flow
-or dependency diagram, and file-by-file contracts. Introduce unfamiliar terms where
-needed, not in a mandatory glossary. Put rationale beside the decision it explains.
-For the overview, plan the product journey, boundaries, acceptance and delivery map.
-For each child, identify exact owned changes, shared contracts to link, implementation
-order, verification commands, and unchanged behavior. Do not plan repeated introductions.
-
-### 8 — Synthesize the context bundle
-
-Before drafting the spec, produce a short synthesis block in the conversation. This is the **context stage's deliverable**. Keep it tight; it is the brief the spec writer will work from.
-
-```markdown
-### PRE-Hook Context Bundle — <feature title or ticket id>
-
-**Source ask:** <1-2 sentences from the operator / JIRA / Confluence>
-
-**Producing:** overview + standalone engineering sub-specs
-**Family artifacts:** <overview.md and all numbered sub-spec paths>
-
-**Affected surface area:**
-- <file path>:<line range> — <role + convention to mirror>
-- …
-
-**Conventions in force:**
-- <rule file> — <one-line takeaway>
-- …
-
-**Second-order requirements:**
-- Scale: <...>
-- Latency: <...>
-- Logging: <...>
-- Idempotency / concurrency: <...>
-- Testing: <...>
-- Deployment: <...>
-
-**Redundancy and consolidation candidates:**
-- <capability> — already owned by <existing symbol at file:line> (<wholly | partially | adjacent>) → <delete-and-replace | encapsulate | re-design>
-- <capability> — no existing owner found; genuinely new
-- Boundaries to document: <where the responsibility line falls, and the interface across it>
-
-**KB lessons to apply:**
-- <KB entry path> — <one-line failure mode to pre-empt>
-- …
-
-**Open questions for the operator (if any):**
-- <question> — <why it blocks the spec>
-
-**Reader's route:**
-- Purpose and scope: <short explanation>
-- Current → proposed behavior: <key differences>
-- Flow or dependency diagram: <if useful>
-- File-by-file contracts: <owning paths and interfaces>
-- Shared contracts to link: <canonical definitions and consumer usage>
-- Non-obvious algorithms needing bodies: <where signatures are insufficient>
+## Inputs
+
+Collect these before writing:
+
+1. The operator's request, in their words. Keep every constraint they state, and note any later correction.
+2. The source request, issue or task, from whichever source-control or project-management tool holds it. Read its description, acceptance criteria, comments and linked items.
+3. The repository path and the area of the code the feature touches.
+4. Existing documents on the same area (specs, earlier designs, evidence). Treat historical proposals as inputs, not established facts.
+5. The destination folder, resolved as in **Artifact paths and skill discovery**. Do not overwrite an existing `overview.md` without explicit permission.
+
+When the operator wants a source-backed briefing to sign off before design starts, run [`gather-feature-context`](../gather-feature-context/SKILL.md) first and use its briefing as input. It is optional.
+
+## Mandatory first task: establish knowledge-base context
+
+Before design analysis, resolve `$SLO_KB_DIR` following [`locate-knowledge-base`](../locate-knowledge-base/SKILL.md) (`skills/design-and-analysis/locate-knowledge-base/SKILL.md`). Discovery is non-blocking. Do not substitute the skills directory or a hard-coded path.
+
+- If `$SLO_KB_DIR` names a file (for example `.../KB/Welcome.md` or `index.md`), that file is the entry point and its parent directory is the KB root.
+- If it names a directory, that directory is the KB root; its entry point is `Welcome.md`, `index.md` or `README.md`, in that order.
+
+1. Open the entry point and the navigation it links. Locate the project by name, repository and feature context; ask if the match is ambiguous.
+2. Read the project overview and the guidance relevant to the capability before making design decisions.
+3. Treat the KB as the **source of truth** for documented context, terminology, business rules, architecture and decisions. Return to it on any subject while writing.
+4. Cite the KB file and section beside the facts it supports. KB documentation is not proof of live schema, deployed behaviour or passing tests. Surface conflicts with code or operator instructions; explicit operator corrections win.
+5. If the KB is unset, inaccessible or the project cannot be found, do not stop. Report which paths were checked, ask once for the right location, and continue with verified sources. Record each KB-dependent fact as an open decision. Never imply the KB was consulted when it was not.
+
+## Read before writing
+
+1. The repository rules and project instructions (`AGENTS.md`, `SLO.md`, `CLAUDE.md`, `RESEARCH.md` when present).
+2. The design rules: [`solution-design`](../../coding/solution-design/SKILL.md), [`code-design-principles`](../../coding/code-design-principles/SKILL.md) and [`coding-rules`](../../coding/coding-rules/SKILL.md), plus the convention skills in **Convention skills to read**.
+3. The knowledge base, as above.
+4. **The code itself.**
+   - For every responsibility the feature needs, search by behaviour, not by the feature's name.
+   - Read the callers, the writers of the state and the existing seams.
+   - Record each finding as: exists (reuse it), partly exists (extend its owner), adjacent (draw a boundary) or does not exist (greenfield).
+5. Confirm every `path:symbol` you cite by opening it. If something could not be checked, say so in the document.
+6. Run the **Duplicate-code check** before proposing any new artefact.
+
+## Convention skills to read
+
+Paths are relative to the skills library root. Start with the language gateway; use `engineering/engineering-routing/SKILL.md` when the feature spans languages. Always read `coding/test-verification-policy/SKILL.md`. Read the layers the design touches:
+
+- **Python** (gateway `languages/python/python-conventions/SKILL.md`)
+  - domain features → `languages/python/build-domain-features/SKILL.md`
+  - application services → `languages/python/build-application-services/SKILL.md`
+  - routers → `languages/python/build-routers/SKILL.md`
+  - workers → `languages/python/build-celery-workers/SKILL.md`, `languages/python/build-dbos-workflow-orchestration-pattern/SKILL.md`
+  - migrations → `languages/python/setup-alembic/SKILL.md`
+- **Go** (gateway `languages/go/go-conventions/SKILL.md`)
+  - domain features → `languages/go/go-build-domain-features/SKILL.md`
+  - application services → `languages/go/go-build-application-services/SKILL.md`
+  - HTTP handlers → `languages/go/go-build-http-handlers/SKILL.md`
+  - workers → `languages/go/go-build-workers/SKILL.md`
+  - migrations → `languages/go/go-recipe-database-migrations/SKILL.md`
+- **TypeScript** (gateway `languages/typescript/typescript-conventions/SKILL.md`)
+  - domain features → `languages/typescript/typescript-build-domain-features/SKILL.md`
+  - routers → `languages/typescript/typescript-build-routers/SKILL.md`
+- **Vue:** `frontend-vue/vue-coding-conventions/SKILL.md`, `frontend-vue/build-vue-components/SKILL.md`
+
+The full per-layer list (middleware, events, clients, tests by layer, always-on style) is in [`breakdown-feature-spec-to-tasks`](../breakdown-feature-spec-to-tasks/SKILL.md#convention-skills-by-language-and-layer).
+
+## Duplicate-code check
+
+Before proposing a new artefact, prove nothing already does its work. Search by behaviour, not by name, for:
+
+- **Data structures:** models, DAOs, schemas, DTOs, enums, configuration.
+- **Code:** helpers, validators, queries, serializers.
+- **Functionality:** services, workers, routes, clients.
+
+Record each proposed artefact in this table under **Current state**:
+
+| Proposed artefact | Existing owner (path:symbol) | Overlap | Consolidation | Resulting single owner |
+|---|---|---|---|---|
+| `<proposed name>` | `<path:symbol>` or "No existing owner found" | duplicate / partial / adjacent / none | compose / encapsulate / extend owner / delete-and-replace | `<one owner>` |
+
+- Consolidate by composition or encapsulation so each responsibility has exactly one owner.
+- Name the call sites to repoint and the code to delete.
+- "No existing owner found" is an explicit finding, not an empty row.
+- An unresolved duplicate is blocking: list it first in the open decisions, and do not present the overview as agreed until it is resolved.
+
+## Cohesion over line-level DRY
+
+DRY must not destroy cohesion. Consolidate duplicate *responsibilities*, not lines that merely look alike.
+
+- Keep tightly coupled steps in one method so the logic reads as one unit: a query and its terminating flush or commit, open and close, acquire and release, validate then write.
+- Extract only a meaningful, named responsibility. Never extract a flush or commit into its own method merely to avoid repetition.
+- The caller that owns the transaction commits. A domain method flushes its own write so the result is visible, and returns.
+
+Illustrative only. A guarded projection update in a domain service:
+
+```python
+# Avoid: the flush is pulled away from the write it completes,
+# so the reader must jump to a helper to see the write land.
+@staticmethod
+async def apply_access_projection(
+    *,
+    document_id: UUID,
+    is_visible: bool,
+    access_version: int,
+    db_session: AsyncSession,
+) -> bool:
+    result = await db_session.execute(
+        DocumentService._build_projection_update(
+            document_id=document_id, is_visible=is_visible, access_version=access_version
+        )
+    )
+    await DocumentService._flush(db_session=db_session)
+    return result.scalar_one_or_none() is not None
+
+
+# Prefer: the guarded update, its flush and the outcome read as one unit.
+# The application service that called this owns the commit.
+@staticmethod
+async def apply_access_projection(
+    *,
+    document_id: UUID,
+    is_visible: bool,
+    access_version: int,
+    db_session: AsyncSession,
+) -> bool:
+    stmt = (
+        sa.update(Document)
+        .where(Document.id == document_id)
+        .where(Document.access_version < access_version)
+        .values(is_visible=is_visible, access_version=access_version)
+        .returning(Document.id)
+    )
+    result = await db_session.execute(stmt)
+    await db_session.flush()
+    return result.scalar_one_or_none() is not None
 ```
 
-### Additional required bundle content when producing a technical sub-spec
-
-When this pass produces a technical sub-spec, extend the bundle with:
-
-```markdown
-**Current-state truths to record:**
-- <real symbol / file / runtime truth>
-- …
-
-**Stale or drifting prior design text to correct:**
-- <old spec path or snippet> — <what is stale>
-- …
-
-**Local context and shared contract links:**
-- <local context to explain, or canonical shared definition to link>
-- …
-
-**Implementation-order / verification plan:**
-- Implementation order: <ordered list>
-- Verification commands: <scoped format/lint/test commands>
-- Manual smoke: <interactive or runtime checks, if applicable>
-- Intentionally unchanged: <what remains untouched>
-```
-
-If any open question would materially change the spec, pause and ask the operator before writing. Otherwise proceed to [Draft](#draft) with this bundle in mind.
-
----
-
-### Context handoff
-
-The synthesis block above is the only artefact the context stage produces. The spec writer must read it before the first heading of the specification, and every section of the spec must trace back to one or more bullets in the bundle. Anything not covered by the bundle must be flagged in the spec as an explicit assumption.
-
-## Draft
-
-### One Specification, Product Framing *and* Engineering Detail Together
-
-Every feature requires overview.md and separate standalone engineering sub-specs.
-Neither substitutes for the other, including for small features. Retain and check
-the complete family when revising one slice. Keep product framing in the overview
-and implementation contracts in the children.
-
-### Overview structure
-
-The overview is a feature map, not a combined engineering specification. Explain:
-
-1. What we are building and why.
-2. The user or system journey, using a sketch or diagram where useful.
-3. Scope, non-goals, ownership and safety boundaries.
-4. Delivery map: child specifications and their dependencies.
-5. Acceptance, rollout/rollback and current evidence status.
-
-For independent workstreams, link their overviews and separate release gates.
-Reconcile stale parent summaries with current child scope and status, without
-promoting specification approval to implementation or runtime acceptance.
-Keep DTOs, service signatures and detailed algorithms in their owning sub-specs.
-
-### Engineering sub-spec structure
-
-Use this default structure; require the information, not redundant headings:
-
-1. Purpose and scope
-2. Current → proposed behavior
-3. Design and flow
-4. File-by-file implementation contracts
-5. Implementation order and dependencies
-6. Tests and acceptance criteria
-
-Combine or rename sections when that improves readability. Add Open decisions or
-Operational constraints only when needed. Start with what changes, why it matters,
-and what the slice owns and excludes. Introduce unfamiliar concepts where needed;
-do not narrate every class or helper before showing its definition.
-
-Keep a compact metadata header with current status, owner, update date, parent and
-repository/branch when relevant. Preserve the repository's numbered title convention.
-Define requiredness, nullability, defaults, bounds and behavior explicitly. Name the
-behavior tests that prove each contract from the actual entry point, per
-`skills/coding/test-verification-policy/SKILL.md`; mock-only tests do not prove
-database or transactional behavior.
-
-### File-by-file implementation contracts
-
-Start with an annotated target file tree showing added, changed, moved and removed
-files. Use exact repository-relative paths as subsection headings. For each file:
-
-1. State its responsibility and change in one or two sentences.
-2. Show the relevant interfaces in syntax-highlighted code using the target language.
-3. Explain only behavior and constraints that the declarations do not express.
-
-Use one field per line, explicit types and defaults, complete public signatures,
-return types, exact enum/constant values, and imports needed to establish ownership.
-Do not replace fields, parameters, enum members, or defaults with ellipses.
-Method bodies may be omitted in explicitly labeled interface listings. Include
-implementation bodies for non-obvious algorithms, integration seams or ordering
-constraints; do not reproduce routine implementations merely to increase detail.
-Do not encode classes as semicolon-separated prose or dense table cells, or repeat
-a code declaration as a second field inventory. Record errors and resource/transaction
-ownership next to the interface. Unresolved material decisions block handoff;
-do not silently invent missing contracts during an editorial rewrite.
-
-### Existing behavior versus proposed contracts
-
-For existing behavior, cite actual repository paths and symbols (line references
-when useful). Include faithful source excerpts only when they help explain the change;
-one citation may support related statements. Do not require a sample per sentence.
-For proposed behavior, label code as a proposed interface or implementation and name
-its target file. Never imply that proposed code already exists or has been executed.
-
-### Single-source contracts
-
-Define each interface, invariant, algorithm and configuration rule once, with its
-owning component. Design explains why; declarations define shape; behavior rules
-supply semantics; tests verify the rules; acceptance states observable completion.
-Do not restate the complete contract in every section.
-
-A standalone child explains its purpose, owned changes and integration boundaries
-without requiring the parent overview. It may link to canonical shared definitions
-rather than copying them. Consumers show the relevant import, call signature and
-usage; the full shared schema stays with its sole owner. Keep links precise and
-check them after restructuring.
-
-### Revision and evidence hygiene
-
-The specification describes the current proposed contract, not its drafting history.
-Resolve findings by updating the owning section in place and removing superseded
-wording. Preserve findings and resolutions in review reports, not corrective appendices.
-Keep workflow IDs, turn/dispatch/retry counters, PRE/POST reports, historical approval
-narratives and tool logs outside the specification body. Preserve that evidence in
-conversation, PR descriptions or linked review artifacts; do not delete it to shorten
-the spec. Keep current status, unresolved decisions and actionable authorization or
-safety constraints in the spec. Do not infer runtime evidence from author readiness.
-
-### Presentation rules
-
-Optimize for comprehension, not character count. Use short paragraphs with one main
-idea, concrete verbs, descriptive headings and inline code for symbols/paths/literals.
-Avoid compressed notation, unexplained abbreviations and section-number shorthand
-such as `§`; use descriptive Markdown links. There is no arbitrary word limit.
-Remove repetition before removing detail; split responsibilities, not page counts.
-
-- Code: interfaces, schemas, constants and configuration.
-- Tables: comparisons, state transitions and compact test matrices.
-- Diagrams: dependencies, ownership and transaction boundaries.
-- Prose: intent, rationale and exceptions.
-
-Do not put entire schemas or multi-paragraph algorithms into table cells. Diagrams
-should replace repetitive explanation rather than add another version of it.
-
-### DRY Design: No Redundant Artefacts, Entities, or Domains
-
-A specification written without checking the code first will happily invent functionality that **already exists**. The existing implementation may be doing the same work wholly, doing part of it, or already owning the responsibility the new design is about to duplicate. Every such duplicate is a defect in the design, not a harmless extra: two components now claim the same responsibility, neither is authoritative, and every future reader has to guess which one to change.
-
-Our design must always keep the system **DRY**. Responsibilities are **single, isolated, and clean**. Boundaries between them are distinguishable and stated in the comments and docstrings, and adjacent responsibilities are reached through **explicit interfaces** rather than through duplicated logic.
-
-Concretely, before the spec proposes any new domain, model, DAO, service, application service, router, worker, event, agent, tool, client, CLI command, or frontend store:
-
-- search the code for something that already does that work, or owns the responsibility it belongs under — the duplicate is usually named differently, which is exactly why it gets missed;
-- if something exists, the spec must consolidate rather than add. Consolidation takes one of three forms:
-  1. **Delete and replace** — remove the existing functionality and replace it with the new construct, naming the files and symbols to delete and the call sites to repoint;
-  2. **Encapsulate** — fold the new behavior into the existing component, elegantly and within the rules of our conventions, so a single owner remains;
-  3. **Re-design** — reshape the existing component so it honors the conventions and absorbs the new functionality, eliminating the redundant behavior instead of growing a parallel implementation;
-- state the resulting responsibility boundary in prose, show it in the docstrings or comments of the code samples, and name the interface adjacent components use to reach it.
-
-The self-check stage runs a mandatory consolidation pass over the entities and data structures the spec introduces and treats any surviving redundancy as an automatic REVISE. Writing the consolidation into the spec up front is how that pass comes back clean.
-
----
-
-### Journey and Flow Sections
-
-The overview owns the full journey; a child briefly identifies its slice. For
-non-trivial orchestration show ordered calls, external operations, resource ownership,
-commit/rollback boundaries and failure exits. Use a diagram or numbered walkthrough,
-not both unless each adds information. Pure helpers need no artificial user journey.
-For bugs, explain the symptom, expected behavior and actual divergence with relevant
-source references; do not repeat the whole walkthrough under multiple headings.
-
-### `## Code Reference` Rules
-
-Apply the file-by-file contract rules above. Introduce each block with a short
-explanation of its purpose; avoid silent code dumps and prose that restates each line.
-Use repository conventions: Python keyword arguments, Go context-first calls/named-field
-structs, TypeScript options objects; explicit types and real identifiers. Use
-Python Google-style docstrings, Go godoc, and TypeScript JSDoc as appropriate.
-Document public and important helper contracts, including errors and caller ownership.
-Full bodies are conditional on ambiguity, not on a class being central to the feature.
-
-### Implementation Guidance
-
-Always include, when applicable:
-
-- full paths for files to create,
-- full paths for files to modify,
-- exact components being introduced or changed,
-- dependencies and prerequisites,
-- event triggers and workflow sequences,
-- error handling approach,
-- configuration values and environment expectations,
-- tests to add,
-- scoped formatting / lint / test commands,
-- manual smoke steps for interactive or runtime-heavy features.
-
-Technical sub-specs should also state:
-
-- what remains intentionally unchanged,
-- what prior design text is now stale,
-- what exact corrections the new spec is locking in.
-
----
-
-### Consistency Rules
-
-**Naming:**
-
-- Python: snake_case for fields, files, and variables; use the applicable Go or TypeScript naming conventions for those languages
-- PascalCase for class names and model names
-- kebab-case for URL path segments and wiki/page slugs where appropriate
-- keep terminology stable throughout
-
-**Formatting:**
-
-- field specifications: target-language declarations, one field per line; prose only for additional semantics
-- file paths: `src/path/to/file.py`
-- dates: `YYYY-MM-DD` unless the surrounding context requires another format
-- IDs: always specify concrete type
-
-**Cross-references:**
-
-- point to explicit headings, file paths, and sibling spec paths
-- avoid vague references like "as above" when a precise heading is available
-
----
-
-### Implementation contract completeness
-
-Read the packaged [granularity sample](../../samples/implementation-details-granularity.md)
-before drafting or reviewing non-trivial contracts. It illustrates depth, not a
-requirement to reproduce its technology or length.
-
-Every slice must identify exact files, symbols and call sites added, changed, moved,
-removed or rewired; current versus target behavior; dependencies and implementation
-order; input/output contracts, state, errors, configuration, edge cases and unchanged
-behavior. Preserve single ownership and explicitly schedule consolidation/deletions.
-
-Specify exact test files, named cases, fixtures/setup, assertions, required levels,
-existing tests to update/remove, scoped verification commands and manual smoke where
-needed. "Update the service", "handle errors" and "add tests" are insufficient.
-Do not leave material placement, API, behavior, failure or test decisions to inference.
-Completeness means complete contracts, not exhaustive routine implementation listings.
-
-## Self-check
-
-### Requirements architecture and failure audit
-
-Perform a complete author-owned audit before the checks below. This replaces the
-old POST hook's nested formal-review invocation, not its coverage. Use the full
-[verification procedure](../feature-specification-verification/SKILL.md) as an audit
-checklist, including Steps 1–7 and all layer/error/traceability checks; do not claim
-this author pass is independent or invoke a second review inside it.
-
-Re-read source requirements (including comments, implicit requirements and descopes),
-map each to Covered / Partially Covered / Not Covered / Intentionally Excluded with
-spec sections, and retain the complete Task/JIRA traceability matrix. Re-read relevant
-conventions and RESEARCH.md. Check domain, application, worker, router, event,
-integration, database/ClickHouse, admin UI and test layers. Trace every hop from real
-entry point to terminal state, valid/invalid state transitions and cross-repo data
-flow. Check DB failure, external errors, malformed input, missing entities, timeout
-and concurrency. Independently substantiate novelty against adjacent code, not names.
-Review actionability, artifact structure and implementation-details granularity against
-the packaged sample. Substantiate findings, remove false positives, distinguish
-CRITICAL/MINOR/AMBIGUOUS and respect intentional exclusions. Record the resulting
-verification findings, layer checklist and requirement matrix with the author report;
-every gap becomes a revision action. No outstanding critical gap may pass READY.
-
-### Caller-burden check
-
-Apply [Module-depth design guidance](../../coding/declarative-method-structure/SKILL.md#module-depth-design-guidance)
-to proposed interfaces in Python, Go and TypeScript using each language's conventions.
-Show what callers must know about constructors, ordering, flags and errors; what
-complexity the existing owner actually owns; and whether its internals can change
-without callers. One gateway alone proves nothing. Prefer meaningful outcomes and
-cohesive private helpers, not wrappers or unrelated responsibility mergers. Preserve
-thin adapters, security, compatibility, typing, naming, gateways and tests. Document
-retry limits, cancellation, durability and meaningful errors. Record evidence-based
-design observations separately: depth is advisory, not an automatic REVISE or an
-exemption from the hard ~8-line extraction rule.
-
-### Check 0 — Confirm which artefact(s) the draft covers
-
-Read the PRE-Hook Context Bundle and confirm the draft covers the declared artifacts
-under [the single-family contract](#one-specification-product-framing-and-engineering-detail-together).
-Require overview.md with product framing and one or more standalone engineering sub-specs
-in separate files. A missing part is a STRUCTURE GAP, including for small features.
-
-If the draft is missing a required part, or a document uses the wrong structure for what it is (an overview written as a narrow engineering slice, or a sub-spec written as a broad product doc), record:
-
-```markdown
-**STRUCTURE GAP:** <expected artefact> — <what the draft currently reads like>
-- Why this matters: <why the structure is misaligned>
-- Required correction: <how to restructure or add the missing half>
-```
-
-A structure mismatch, or a missing required part, is an automatic **REVISE**.
-
----
-### Check 1.5 — Readability and semantic preservation audit (mandatory)
-
-Use the Draft presentation rules for both overview and children. Accept combined or
-renamed sections when the required information is easy to locate. Do not demand prose
-merely to fill a template. Verify purpose, changed files, interfaces, flow, failure
-behavior, ownership, dependencies and acceptance can be found quickly.
-
-Check that contracts use production-language syntax and each rule has one authority.
-Resolve competing definitions and move historical commentary to evidence artifacts.
-Check links and reconcile stale family summaries without overstating approval.
-
-When shortening, compare against the source requirements and prior contract:
-- Types, requiredness, nullability, defaults and bounds.
-- Validation and cross-field invariants.
-- Ordering, atomicity, concurrency and idempotency.
-- Errors, cancellation, recovery and resource ownership.
-- Security, authorization, operational limits and compatibility/migrations.
-- Tests, acceptance coverage and intentionally unchanged behavior.
-
-Record missing context or obstructive organization as **NARRATIVE GAP**, misplaced
-artifact roles as **STRUCTURE GAP**, and missing material contracts as critical gaps.
-All require correction; absent decorative headings alone are not gaps.
-
-### Check 2 — Cross-check the spec against the code-convention prompts
-
-For every layer the spec touches, open the matching rule file under `skills/coding/` and audit the spec for compliance.
-
-Audit checklist:
-
-- application services — Python `invoke()` / Go `Execute()` / TypeScript `invoke()` orchestration, declarative structure, transaction and DB-session ownership
-- domain features — Python `model.py` / `dao.py` / `service.py` with Pydantic; Go `model.go` / `dto.go` / `repository.go` / `service.go` with sentinel errors; TypeScript `entity.ts` / `dto.ts` / `service.ts` with Zod; relationships, indexes
-- routers / handlers — FastAPI, Gin or Express / Hono request/response schemas, auth, registration, response envelope
-- workers / workflows — DBOS, Celery, asynq or Temporal registration, idempotency, retry, payload shape, schedule
-- Go lifecycle — context ownership, startup rollback, graceful shutdown (`go-build-lifecycle`)
-- events — type constant, payload schema, publisher + subscriber
-- agents / tools — tool-per-file, prompt separation, gateway conventions
-- clients / integrations — auth, retry, errors, config
-- migrations — Alembic revision scripts and model registration; goose up/down SQL
-- always-on style — language-appropriate named inputs and explicit types; Python Google-style docstrings, Go godoc, TypeScript JSDoc; declarative methods and tests per `skills/coding/test-verification-policy/SKILL.md`
-- logging / observability — helper usage, structured fields, correlation IDs
-
-For each violation, record:
-
-```markdown
-**CONVENTION GAP:** <rule file> — <one-line summary>
-- Where in the spec: <section / code block>
-- What to change: <concrete edit>
-```
-
----
-
-### Check 2.5 — DRY consolidation pass (mandatory)
-
-Apply [DRY design](#dry-design-no-redundant-artefacts-entities-or-domains) unconditionally, even for greenfield work. Re-search rather than trusting the initial inventory.
-
-#### 2.5.1 — Inventory what the spec introduces
-
-List every new artefact the draft proposes: domains, models, DAOs, services, application services, routers, workers, events, agents, tools, clients, config keys, CLI commands, and frontend stores or components.
-
-#### 2.5.2 — Search the code for the same or adjacent responsibility
-
-For each artefact, search the codebase for something that already does that work — wholly, partially, or under a different name. Use the PRE-Hook Context Bundle's affected-surface inventory as the starting point, then widen the search: the duplicate is usually named differently, which is exactly why the draft missed it.
-
-Classify each artefact:
-
-| Verdict | Meaning |
-|---|---|
-| **Genuinely new** | No existing component owns this responsibility or any part of it. |
-| **Duplicate** | An existing component already does this work wholly. |
-| **Partial overlap** | An existing component does part of this work, or owns the responsibility this work belongs under. |
-| **Adjacent** | A neighbouring component owns a related responsibility; the boundary between the two must be drawn and documented explicitly. |
-
-#### 2.5.3 — Consolidate
-
-Anything not classified **Genuinely new** must be consolidated in the spec before it can be READY. Use the three consolidation forms defined in Draft. For delete-and-replace, also name migration or data-backfill implications.
-
-Whichever form is chosen, the spec must state the resulting responsibility boundary in prose and show it in the docstrings or comments of the code samples, along with the interface adjacent components use to reach it.
-
-For every unconsolidated artefact, record:
-
-```markdown
-**REDUNDANCY GAP:** <new artefact> — duplicates / overlaps <existing symbol at file:line>
-- Overlap: <wholly | partially | adjacent responsibility>
-- Consolidation: <delete-and-replace | encapsulate | re-design>
-- Required edit: <what the spec must say — files to delete, owner to keep, boundary to document, interface to expose>
-```
-
-Any unresolved **REDUNDANCY GAP** is an automatic **REVISE**. A spec that adds a second owner for an existing responsibility is not READY, no matter how well it is written.
-
----
-### Check 3 — Granularity check
-
-A spec that tries to do too much produces inconsistent implementations and stale wiki pages. Decide whether the spec should be split before it leaves self-check.
-
-Split the spec if any of these are true:
-
-- it spans more than ~3 architectural layers,
-- it introduces more than one new domain,
-- it mixes backend feature work with frontend feature work with deployment changes,
-- it contains more than ~10 numbered workflow steps end-to-end,
-- the traceability matrix has more than ~15 distinct requirements,
-- different requirements have different stakeholders and can ship independently.
-
-### Structure-aware split guidance
-
-- The **overview** may stay broad — it is the parent that later breaks into child sub-specs.
-- A **technical sub-spec** should stay narrow. If it starts to read like a parent roadmap instead of one technical slice, split it.
-- When splitting, the child technical slices should become **standalone technical sub-specs**, not vague mini-business docs.
-
-If a split is warranted:
-
-1. Apply the local split analysis from [`breakdown-feature-spec-to-tasks`](../breakdown-feature-spec-to-tasks/SKILL.md), without publishing tasks or recursively authoring through that skill. Final task breakdown follows independent verification.
-2. Produce a dependency-ordered task list.
-3. Replace the monolithic body with one parent overview plus one child spec per task.
-
-If no split is needed, record **Granularity: OK — fits in a single spec**.
-
----
-
-### Check 4 — Contract examples audit
-
-Verify every proposed interface is complete and belongs to an exact target file.
-Check faithful source citations for existing behavior and explicit labels for target
-code. Signatures may omit bodies; fields/defaults/parameters may not be hidden.
-Require algorithm bodies only when needed to remove behavioral or ordering ambiguity.
-
-### Shared example expectations
-
-Use realistic identifiers, explicit types, relevant imports and language-appropriate
-calls. Follow Python Google-style docstrings, Go godoc, and TypeScript JSDoc. Explain
-each block briefly without duplicating its declaration. Check canonical shared links
-and consumer usage. Overviews need journeys and delivery maps, not DTO listings.
-Record missing or ambiguous examples as **EXAMPLE GAP**, with the exact contract or
-algorithm to supply. Do not request full listings solely to make a spec longer.
-
-
-
-### Check 5 — Test coverage validation
-
-Open the spec's test section and every section that introduces logic. Verify the test plan against `skills/coding/test-verification-policy/SKILL.md` and the relevant test rule files.
-
-For every new or modified method introduced by the spec, the spec must enumerate:
-
-- each decision point and the behavior test that proves its outcome,
-- the test level (journey, application service, domain service) per `skills/coding/test-verification-policy/SKILL.md`,
-- test doubles: real persistence; mocks only for third-party APIs; injected stubs otherwise,
-- negative paths where relevant.
-
-Additionally verify:
-
-- controller tests use the expected test stack if routers are introduced,
-- application-service tests live in the correct test namespace,
-- domain-service tests live in the correct namespace,
-- integration / BDD scenarios are described if the feature has a visible flow,
-- test names describe the branch, not just the method.
-
-For every coverage gap, record:
-
-```markdown
-**TEST GAP:** <method or scenario> — <which branch is uncovered>
-- Suggested addition: <test name + fixture/mock note>
-```
-
----
-
-## Revise and hand off
-
-Aggregate the findings from all self-checks into a single revision plan:
-
-```markdown
-### POST-Hook Report — <feature title or ticket id>
-
-| Metric | Value |
-|---|---|
-| Artefact | <overview | technical sub-spec NN.a.n> |
-| JIRA requirements covered | X / Y (Z%) |
-| Architectural layers verified | X / Y |
-| Narrative gaps | N |
-| Convention gaps | N |
-| Redundancy gaps | N |
-| Example gaps | N |
-| Test gaps | N |
-| Granularity | OK / SPLIT |
-| Spec verdict | READY / REVISE |
-```
-
-Rules:
-
-- Any non-zero **Narrative gap** count is automatic **REVISE**.
-- Any non-zero **Redundancy gap** count is automatic **REVISE**.
-- Any **structure mismatch**, or a missing required part, is automatic **REVISE**.
-- Missing material contract information is automatic **REVISE**; combined or renamed sections are valid.
-- Any missing prose before code blocks is automatic **REVISE**.
-
-Then:
-
-- If verdict is **REVISE**: edit the spec directly to close every critical gap, re-run the complete self-check, and repeat until READY.
-- If verdict is **READY**: post the report in the conversation and stop authoring.
-  Author READY is not independent approval. Hand the spec, context bundle, complete
-  traceability matrix and self-check findings to independent verification exactly once:
-  workflow Step 2, or the separate verification skill when used standalone. Return its
-  findings to this authoring skill; revise and rerun self-check before re-review.
-  Preserve the historical `PRE-Hook Context Bundle` and `POST-Hook Report` labels as
-  compatibility aliases for Context Bundle and Author Self-check Report.
-
----
-
-### Handoff
-
-After author READY and independent verification with no outstanding CRITICAL gaps,
-the next step depends on the operator's ask. Seek explicit confirmation before commit,
-publication or external task creation; a local split analysis does not authorize it:
-
-- commit and publish,
-- break down into tasks,
-- implement the feature,
-- hand the spec to a developer.
-
-Keep the self-check report in the conversation or PR description so the next reviewer can see what was already checked.
+## The reader and the language
+
+Write for a reader who is technical and business-savvy but has **no context on this application**. They know what a queue, a transaction or a foreign key is. They do not know this product's internal terms, how its pieces fit, or why a past decision was made.
+
+- Write clearly and present well: short sections, one idea each, no large blocks of prose.
+- Define each internal term once, in one plain sentence, where it first appears. Spell out acronyms on first use.
+- Lead with the point, then the detail. Short sentences, concrete verbs, no jargon where an everyday word works.
+- Do not explain what any engineer already knows, and do not talk down.
+- Use one word per concept everywhere: tables, diagrams, interfaces and prose.
+
+## Visual aids
+
+Pick the diagram by what it has to show. A diagram **adds to** the attribute tables and prose; it never replaces them. Use Mermaid fenced blocks so they render in Markdown viewers, and fall back to ASCII where the target cannot render Mermaid.
+
+| What you need to show | Use | Notes |
+|---|---|---|
+| How tables relate: keys, cardinality, ownership | **Entity-relationship diagram** (`erDiagram`) | In addition to the per-table attribute tables |
+| Objects, what each encapsulates, and any hierarchy | **UML class diagram** (`classDiagram`) | Only the public interface and the collaborators that matter |
+| Folder or file layout, nested JSON, light hierarchies | **ASCII tree** | Mark each entry new, changed or removed |
+| Who calls whom, in what order, across systems | **Sequence diagram** (`sequenceDiagram`) | One per journey that crosses two or more systems or processes |
+| The states of one record and what moves it | **State diagram** (`stateDiagram-v2`) | Label every edge with its trigger and guard |
+| The whole journey and its branches | **Flowchart** or a short ASCII overview | One per document, near the top |
+
+Name things following [`naming-and-clarity`](../../coding/naming-and-clarity/SKILL.md) and [`ubiquitous-language`](../ubiquitous-language/SKILL.md). For every diagram:
+
+1. One idea per diagram. Past about 12 nodes (Mermaid) or 20 lines (ASCII), split it.
+2. Introduce it with one sentence. Label arrows with the verb and the data that moves ("stores email", "enqueues message id").
+3. Use exactly the names used in the tables and interfaces.
+4. Do not draw the same flow twice or add a diagram that only decorates.
+5. Show failure and recovery paths, not only the happy path.
+
+## The document
+
+**Title:** `# <Product or system> <Feature name>`. No status line, source list or revision history unless the operator asks for one.
+
+The order follows the reader's questions: what is it, what do I need, how does it fit today, what does it manage, how do things move, what are the interfaces, what changes, and what is undecided. **Journeys come after the domains**, because a reader cannot follow a flow through things they have not met.
+
+1. **What this feature does.** Three to six sentences on the problem, then a short numbered list of what the feature does end to end. Note any step not yet designed and where it is tracked in the open decisions.
+2. **Prerequisites.** What the developer must obtain before starting: access, accounts, credentials, environments. For each, who grants it and where it comes from. Name secrets by their config key; never include a value.
+3. **Approach.**
+   - **Problem** and **Recommendation**, each a short paragraph.
+   - **Current state:** verified facts with `path:symbol`, what will be reused and what is missing, and the duplicate-code table. Say plainly when the area is greenfield.
+   - **One overview diagram** of the whole journey, showing which module owns each step and the states a record passes through.
+4. **Domains and data.** A domain is a cohesive responsibility that owns state, defined by its concept and rules, not by a table or a screen.
+   - For each domain: what it owns, what it does not own, and its tables.
+   - **Entity-relationship diagram**, then an **attribute table** per table: name, type, required, meaning and constraint. Say which record is the authority and which are derived copies.
+   - **State diagram** for every record with a lifecycle, with the guard on each transition.
+   - **Class diagram** where encapsulation or hierarchy is worth seeing.
+   - **ASCII tree** for nested data inside a column or any hierarchy where UML would be heavy.
+5. **Journeys and workflows.** The two or three journeys that matter: the normal path, the empty or no-match path, and the failure and recovery path. For each: trigger, ordered steps, state changes, observable outcome and recovery. Add a **sequence diagram** for journeys that cross systems or processes, and a flowchart where the path branches.
+6. **Modules, interfaces and caller use.**
+   - **Modules table:** module, interface and callers, what it hides, leverage and locality.
+   - **The governing question,** stated once: how much useful behaviour can callers and tests exercise through the interface, and how much change can stay inside it?
+   - **The deletion test, verbatim:** "If this module disappeared, would complexity disappear too, or would its work have to be repeated across callers?" Answer it for each module, and name the weakest one honestly.
+   - **Rules the design decides** (matching precedence, retention, ordering), each inside the module that owns it.
+   - **Caller use:** how each entry point is called, and the signatures of the key interfaces (keyword arguments, type hints, no bodies). Put the target file before every snippet as ``**File:** `path` (new|changed)``, one file per snippet.
+   - **Promises:** ordering, transaction boundaries, idempotency, ownership, failure and recovery.
+7. **Existing code changes.** What is reused, extended and new, and the configuration keys. Show the files as an **ASCII tree** marked new, changed or removed. Describe database changes as operations (create, add column, constraint, index) with deployment order, backfill and rollback limit. End with **the strongest alternative** and why it was or was not chosen.
+8. **Tests, limits and next steps.**
+   - **Behaviour to prove**, following `coding/test-verification-policy/SKILL.md`. Lead with behaviour tests that drive each journey end to end through the real entry point, application service and persistence, and assert the observable and stored outcome. Add focused unit tests only for critical methods with complex computation (parsing, matching, scoring, state rules). This does not require an elaborate Playwright or integration harness. Say which real components stand in where the policy forbids mocks.
+   - Limits that shape operation (batch sizes, one worker at a time, quotas).
+   - **Open decisions:** a numbered list. Each says what is unknown, what it blocks and who can answer. Blocking ones first.
+   - **Delivery order** in which each step is runnable. Each step is one vertical piece of functionality end to end, so it becomes one sub-spec.
+   - End with a one-paragraph takeaway.
+
+## Rules that decide quality
+
+- **One owner per state change.** Every transition, record and rule has exactly one owning module. Where the code already has an owner, reuse or extend it.
+- **Facts, proposals, assumptions and open decisions stay separate.** Mark each so a reader can tell what was verified. Mark any departure from the operator's request and say why.
+- **Unknowns are information.** If a decision blocks a step, say so and leave it open. Do not invent an answer.
+- **Interfaces, not implementations.** Name inputs, outputs, errors and guarantees. Method bodies and line-level wiring belong in the sub-specs.
+- **Be honest about side effects and atomicity.** A database write plus a message to a queue is never atomic unless a mechanism makes it so. Say what happens if the process stops between them.
+- **Sensitive data.** Say where personal or secret data may live, and where it must not (tables, logs, durable workflow outputs).
+- **One name per concept** across tables, interfaces, diagrams and prose.
+- **Show, then tell.** Draw relationships, sequences and lifecycles; use prose for why.
+- **Length.** As short as the content allows; about 1,000 to 1,500 words is typical. Cut repetition before cutting a contract.
+
+## Before saving
+
+- [ ] The knowledge base was consulted (file value used as entry point, directory value searched for `Welcome.md` / `index.md` / `README.md`), or its absence and the affected open decisions are recorded.
+- [ ] KB facts have file and section citations; conflicts and unverified live-state claims are explicit.
+- [ ] Every source requirement (request, issue, acceptance criteria, comments) is reflected in the overview or listed as excluded or open.
+- [ ] The current state is explained, with verified paths, before the proposal.
+- [ ] Every state change has one owning domain; no second owner of an existing responsibility.
+- [ ] The duplicate-code table covers every proposed artefact, "No existing owner found" is explicit, call sites to repoint and code to delete are named, and no duplicate is unresolved.
+- [ ] Tightly coupled steps (query and flush, open and close, validate then write) stay together; nothing trivial was extracted only to avoid repetition.
+- [ ] The matching convention skills were read.
+- [ ] Every table has its attributes, and an entity-relationship diagram shows how the tables relate.
+- [ ] Every record with a lifecycle has a state diagram with guards.
+- [ ] Journeys come after the domains, each with trigger, steps, outcome and recovery, and a sequence diagram where systems interact.
+- [ ] Every diagram has one idea, a one-sentence introduction and the same names as the tables.
+- [ ] Every interface lists inputs, outputs, errors and promises, and a file path precedes each snippet.
+- [ ] The governing question and the verbatim deletion test are answered.
+- [ ] Database changes are operations, with order and rollback limits.
+- [ ] Behaviour to prove leads with end-to-end behaviour tests; unit tests are limited to complex computation.
+- [ ] Failure and recovery are covered, including the crash between a commit and a queue message.
+- [ ] Open decisions are numbered, blocking ones first.
+- [ ] The delivery order has one vertical slice per step.
+- [ ] No claim of approval, implementation, independent review or test execution.
+- [ ] Clear and well presented for a reader with no context on the application.
+- [ ] Saved at the resolved path; nothing else was overwritten.
+
+Report the saved path, a short summary, the checks you ran and the open decisions. Then ask whether to continue to `breakdown-feature-spec-to-tasks`.
+
+## Relationship to other skills
+
+- [`solution-design`](../../coding/solution-design/SKILL.md) is the rule source this skill specializes. It prescribes the core sections and the verbatim deletion test; this skill adds context, prerequisites, domain and attribute tables, file-labelled snippets and open decisions.
+- [`code-design-principles`](../../coding/code-design-principles/SKILL.md) and [`coding-rules`](../../coding/coding-rules/SKILL.md) supply the ownership, depth and naming rules.
+- [`gather-feature-context`](../gather-feature-context/SKILL.md) is an optional, on-request briefing that feeds this skill.
+- [`breakdown-feature-spec-to-tasks`](../breakdown-feature-spec-to-tasks/SKILL.md) is the next step. It expands `overview.md` into standalone engineering sub-specs and `task-list.md`.
+- [`feature-specification-verification`](../feature-specification-verification/SKILL.md) reviews the whole family once both parts exist. Its REVISE findings on `overview.md` come back to this skill.
+- [`feature-specification-with-html`](../feature-specification-with-html/SKILL.md) produces the same family as HTML.
+- The [Specification Development workflow](../../orchestration/workflows/specification-development.md) sequences these steps.

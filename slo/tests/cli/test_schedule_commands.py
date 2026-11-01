@@ -118,6 +118,9 @@ class TestScheduleCommands:
     ) -> None:
         """Fresh schedules fail fast on session-targeting/coalescing flags."""
         _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        # Rich detects console width from the terminal, which is a pipe under
+        # parallel test workers; pin the width so the error panel renders fully.
+        monkeypatch.setenv("COLUMNS", "120")
 
         result = runner.invoke(
             app,

@@ -6,6 +6,7 @@ Covers ``SloTUI.on_text_selected`` (sub-spec 68.b.3) and
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -14,11 +15,13 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage
 from textual import events
+from textual.binding import Binding
+from textual.widget import Widget
 from textual.app import App
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from src.tui.app import PromptInput
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 
 from src.agents.providers.faux import FauxChatModel
@@ -28,6 +31,15 @@ from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
+
+
+class _RawCopyAncestor(Vertical):
+    """Own a recording raw-copy provider for nearest-owner resolution tests."""
+
+    def __init__(self, child: Widget) -> None:
+        """Initialize a real container and its instance-owned call recorder."""
+        super().__init__(child)
+        self.get_raw_markdown_for_copy = MagicMock(return_value="ancestor raw")
 
 
 def _build_session() -> SloAgentSession:
@@ -100,7 +112,7 @@ class TestRawMarkdownCopy:
 
     def test_registers_the_required_raw_markdown_key_chords(self) -> None:
         """The paired raw-copy chords remain discoverable in the app binding registry."""
-        bindings_by_key = {binding.key: binding.action for binding in SloTUI.BINDINGS}
+        bindings_by_key = {binding.key: binding.action for binding in Binding.make_bindings(SloTUI.BINDINGS)}
         assert bindings_by_key["ctrl+shift+m"] == "copy_raw_markdown"
         assert bindings_by_key["meta+shift+m"] == "copy_raw_markdown"
 
@@ -111,19 +123,22 @@ class TestRawMarkdownCopy:
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
             if kind == "answer":
-                block = await app.mount_assistant_block()
-                block.finalize(final_text="# answer")
-                body = block._answer_body
+                answer = await app.query_one(ChatTranscriptComponent).mount_assistant_block()
+                answer.finalize(final_text="# answer")
+                body: Widget = answer._answer_body
+                expected_raw = answer.get_raw_markdown_for_copy()
             elif kind == "thinking":
-                block = await app.mount_thinking_block()
-                block.set_thinking(content="# thinking")
-                body = block._body
+                thinking = await app.query_one(ChatTranscriptComponent).mount_thinking_block()
+                thinking.set_thinking(content="# thinking")
+                body = thinking._body
+                expected_raw = thinking.get_raw_markdown_for_copy()
             else:
-                block = await app.mount_user_message_block(text="# user")
-                body = block._body
+                user = await app.query_one(ChatTranscriptComponent).mount_user_message_block(text="# user")
+                body = user._body
+                expected_raw = user.get_raw_markdown_for_copy()
             app.screen.focused = body  # type: ignore[attr-defined]
             await app.action_copy_raw_markdown()
-            assert app._clipboard == block.get_raw_markdown_for_copy()
+            assert app._clipboard == expected_raw
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["prompt", "tool", "notice", "generic"])
@@ -131,10 +146,13 @@ class TestRawMarkdownCopy:
         """Non-transcript-provider focus targets never invoke the clipboard funnel."""
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
+            target: Widget | None
             if kind == "prompt":
                 target = app._input
             elif kind == "tool":
-                target = await app.mount_tool_execution_block(tool_call_id="call", tool_name="read")
+                target = await app.query_one(ChatTranscriptComponent).mount_tool_execution_block(
+                    tool_call_id="call", tool_name="read"
+                )
             elif kind == "notice":
                 target = Static("notice")
                 await app.mount(target)
@@ -167,7 +185,7 @@ class TestRawMarkdownCopy:
         """A present nearest provider terminates resolution when it declines raw text."""
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
-            ancestor = Vertical(Static("target"))
+            ancestor = _RawCopyAncestor(Static("target"))
             await app.mount(ancestor)
             target = ancestor.children[0]
             ancestor.get_raw_markdown_for_copy = MagicMock(return_value="ancestor raw")  # type: ignore[attr-defined]
@@ -185,7 +203,7 @@ class TestRawMarkdownCopy:
         """An empty callable provider runs once and prevents farther ancestor fallback."""
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
-            ancestor = Vertical(Static("target"))
+            ancestor = _RawCopyAncestor(Static("target"))
             await app.mount(ancestor)
             target = ancestor.children[0]
             nearest_provider = MagicMock(return_value="")
@@ -206,7 +224,7 @@ class TestRawMarkdownCopy:
         """A provider success invokes only the established clipboard writer exactly once."""
         app = SloTUI(session=_build_session())
         async with app.run_test() as pilot:
-            block = await app.mount_user_message_block(text="# raw")
+            block = await app.query_one(ChatTranscriptComponent).mount_user_message_block(text="# raw")
             app.screen.focused = block  # type: ignore[attr-defined]
             app.copy_to_clipboard = MagicMock()  # type: ignore[method-assign]
 

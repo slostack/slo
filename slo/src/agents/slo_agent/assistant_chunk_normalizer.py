@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from src.agents.slo_agent.message_text import (
-    _join_visible_text_fragments,
     assistant_message_reasoning_text,
     assistant_message_text,
 )
@@ -324,7 +324,7 @@ class AssistantChunkNormalizer:
         Returns:
             list[AgentStreamEventDAO]: Zero or more tool-call events.
         """
-        raw_tool_calls: list[dict[str, Any]] = []
+        raw_tool_calls: list[Mapping[str, object]] = []
         tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
         if isinstance(tool_call_chunks, list):
             raw_tool_calls.extend(item for item in tool_call_chunks if isinstance(item, dict))
@@ -534,21 +534,22 @@ class AssistantChunkNormalizer:
             Optional[str]: Visible summary text when present.
         """
         summary = block.get("summary")
-        if isinstance(summary, str) and summary.strip():
+        if isinstance(summary, str) and summary:
             return summary
         if isinstance(summary, list):
             pieces: list[str] = []
             for item in summary:
                 if isinstance(item, dict) and isinstance(item.get("text"), str):
                     text: str = item["text"]
-                    if text.strip():
-                        pieces.append(text)
-            joined: str = _join_visible_text_fragments(pieces=pieces)
+                    pieces.append(text)
+            # Streaming fragments are substrings, not completed summary paragraphs.
+            # Trimming or adding separators here destroys token and code boundaries.
+            joined: str = "".join(pieces)
             if joined:
                 return joined
         for key in ("text", "content", "thinking"):
             value = block.get(key)
-            if isinstance(value, str) and value.strip():
+            if isinstance(value, str) and value:
                 return value
         return None
 

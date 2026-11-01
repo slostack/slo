@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 from typing import Optional
+from unittest.mock import patch
 
 import pytest
 
@@ -313,3 +314,29 @@ class TestSuiteNeverSpawnsRealTerminals:
         result = VisualizerLauncher.launch(parent_session_id="sess-guard", platform="darwin")
 
         assert result is True  # stubbed spawn "succeeds" — but no process exists
+
+
+@pytest.mark.parametrize("failure", ["discovery", "spawn"])
+async def test_real_platform_launch_error_outcome(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    """Real synchronous launch errors become typed failure without an OS spawn."""
+    monkeypatch.setenv("SLO_AUTO_VISUALIZE", "1")
+    guarded_spawn = VisualizerLauncher._default_spawn
+    assert getattr(guarded_spawn, "__test_stub__", False)
+
+    def discover(*, parent_session_id: str, platform: str) -> list[str]:
+        """Fail discovery or supply harmless argv for the injected spawn boundary."""
+        if failure == "discovery":
+            raise RuntimeError("test discovery error")
+        return ["test-terminal", parent_session_id]
+
+    def spawn(argv: list[str]) -> object:
+        """Represent a failed spawn submission without executing any process."""
+        raise RuntimeError("test spawn error")
+
+    with (
+        patch.object(VisualizerLauncher, "_build_argv", side_effect=discover),
+        patch.object(VisualizerLauncher, "_default_spawn", side_effect=spawn) as submitted,
+    ):
+        outcome = await VisualizerLauncher._launch_platform_joined(parent_session_id="captured-parent")
+    assert outcome.status == "failed"
+    assert submitted.call_count == (failure == "spawn")

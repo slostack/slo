@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -91,8 +92,14 @@ def _run(*, argv: list[str], environment: dict[str, str], cwd: Path) -> subproce
     os.environ.get("SLO_DIRECT_PIPX_RECOVERY_E2E") != "1",
     reason="opt-in only: set SLO_DIRECT_PIPX_RECOVERY_E2E=1 for a disposable local-wheel recovery proof",
 )
-def test_direct_pipx_regeneration_recovers_through_packaged_finalizer(tmp_path: Path) -> None:
-    """Install a local wheel, regenerate plain pipx scripts, then restore the isolated wrapper."""
+@pytest.mark.parametrize("backend", ["pip", "uv"])
+def test_direct_pipx_regeneration_recovers_through_packaged_finalizer(tmp_path: Path, backend: str) -> None:
+    """Recover real wheel scripts for each backend without modifying the owned entry.
+
+    Args:
+        tmp_path: Sole writable installation root.
+        backend: Explicit modern pipx backend; legacy pipx only supports pip.
+    """
     wheel_path: str = os.environ.get("SLO_LOCAL_WHEEL", "")
     wheel: Path = Path(wheel_path).resolve()
     if not wheel.is_file() or wheel.suffix != ".whl":
@@ -104,6 +111,7 @@ def test_direct_pipx_regeneration_recovers_through_packaged_finalizer(tmp_path: 
     root: Path = tmp_path / "direct-pipx-recovery"
     root.mkdir()
     environment: dict[str, str] = _hosted_smoke_environment(root=root)
+    environment["PIPX_DEFAULT_BACKEND"] = backend
     install: subprocess.CompletedProcess[str] = _run(
         argv=[pipx, "install", "--force", str(wheel)], environment=environment, cwd=root
     )
@@ -117,6 +125,12 @@ def test_direct_pipx_regeneration_recovers_through_packaged_finalizer(tmp_path: 
     )
     assert regenerate.returncode == 0, regenerate.stderr
     assert b"slo isolated launcher" not in wrapper.read_bytes()
+    entry: Path = venv_bin / "slo-entry"
+    entry_before: bytes = entry.read_bytes()
+    metadata: Path = venv_bin.parent / "pipx_metadata.json"
+    # New pipx records its actual backend. An env value alone does not prove it.
+    installed_backend: str = json.loads(metadata.read_text()).get("backend", "pip")
+    assert installed_backend == backend
 
     installed_script: subprocess.CompletedProcess[str] = _run(
         argv=[pipx, "runpip", "slo", "show", "slo"], environment=environment, cwd=root
@@ -133,6 +147,7 @@ def test_direct_pipx_regeneration_recovers_through_packaged_finalizer(tmp_path: 
     )
     assert finalize.returncode == 0, finalize.stderr
     assert b"slo isolated launcher" in wrapper.read_bytes()
+    assert entry.read_bytes() == entry_before
 
     hostile_root: Path = root / "hostile"
     (hostile_root / "src").mkdir(parents=True)

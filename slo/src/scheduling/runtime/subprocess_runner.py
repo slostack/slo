@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -110,6 +111,7 @@ class ScheduleSubprocessRunner:
         """
         process = await asyncio.create_subprocess_exec(
             *argv,
+            env=self._build_child_environment(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(Path(cwd).expanduser().resolve()) if cwd is not None else str(Path.cwd()),
@@ -126,6 +128,15 @@ class ScheduleSubprocessRunner:
             stdout_summary=self._clip_text(text=stdout_text),
             stderr_summary=self._clip_text(text=stderr_text),
         )
+
+    @staticmethod
+    def _build_child_environment() -> dict[str, str]:
+        """Copy inherited settings without pane ownership for scheduled children.
+
+        Returns:
+            dict[str, str]: All inherited values except HERDR-prefixed names.
+        """
+        return {key: value for key, value in os.environ.items() if not key.upper().startswith("HERDR_")}
 
     @staticmethod
     def _status_from_exit_code(*, exit_code: int) -> FireStatus:

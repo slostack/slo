@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
-from src.tui.workflows.dao import WorkflowListDismissRequestDAO
+from src.agents.providers.faux import FauxChatModel
+from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+from src.tui.workflows.dao import WorkflowListVisibilityRequestDAO
 
 
 def _build_session_stub(*, workdir: Path = Path("/tmp/slo-fake")) -> MagicMock:
@@ -36,6 +40,52 @@ def _build_session_stub(*, workdir: Path = Path("/tmp/slo-fake")) -> MagicMock:
     session.refresh_model_catalog = AsyncMock()
     session.switch_reasoning_level = MagicMock(return_value="high")
     return session
+
+
+@pytest.mark.parametrize("history", [False, True])
+@pytest.mark.parametrize("busy", [False, True])
+async def test_visibility_grammar_in_busy_and_history_states(
+    tmp_path: Path, history: bool, busy: bool
+) -> None:
+    """Visibility grammar needs neither inference idleness nor a history root."""
+
+    class VisibilitySession(SloAgentSession):
+        """Expose a controlled busy state on the real router-facing session contract."""
+
+        @property
+        def is_running(self) -> bool:
+            """Report the scenario's admission state without starting inference."""
+            return busy
+
+    session = VisibilitySession(
+        session_id="visibility-grammar",
+        agent=SloAgent(llm=FauxChatModel(responses=[]), cwd=str(tmp_path), tools=[]),
+        workdir=tmp_path,
+        history_store=FilesystemSessionHistoryStore(root=tmp_path / "history") if history else None,
+        enable_history=history,
+    )
+    cases: tuple[tuple[str, Literal["dismiss", "show"], str | None], ...] = (
+        ("/workflows tui dismiss", "dismiss", None),
+        ("/wf\ttui\tdismiss\tparent", "dismiss", "parent"),
+        ("/workflows  tui  show  ", "show", None),
+        ("/wf\ttui\tshow", "show", None),
+    )
+    for line, action, target in cases:
+        result = await SlashRouter.dispatch(line=line, session=session)
+        assert result.tui_visibility == WorkflowListVisibilityRequestDAO(action=action, target_id=target)
+        assert result.rendered == ""
+    for line in (
+        "/workflows tui",
+        "/workflows tui clear",
+        "/wf tui show wf-a",
+        "/wf tui dismiss a b",
+        "/wf tui dismiss ../escape",
+        "/wf tui dismiss [bold]",
+    ):
+        result = await SlashRouter.dispatch(line=line, session=session)
+        assert result.tui_visibility is None
+        assert result.rendered == _WORKFLOWS_USAGE
+    assert not (tmp_path / "history").exists()
 
 
 class TestSlashRouterModelPreparation:
@@ -880,7 +930,7 @@ class TestSlashModelPreferencePersistence:
 
 _WORKFLOWS_USAGE: str = (
     "usage: /workflows [abort <workflow-id> | dismiss <workflow-id> | resume <workflow-id>"
-    " | tui dismiss [<workflow-id>]]"
+    " | tui dismiss [<workflow-id>] | tui show]"
 )
 """Exact ``/workflows`` usage line, shared by the router, the registry and ``/help``."""
 
@@ -1144,8 +1194,9 @@ class TestSlashWorkflowsHandler:
             ("/workflows   tui   dismiss  ", None),
             ("/workflows tui dismiss wf-1", "wf-1"),
             ("/wf tui dismiss orch-1", "orch-1"),
+            ("/wf tui\tdismiss\torch-1", "orch-1"),
         ],
-        ids=["all", "extra-spaces", "workflow-id", "alias-session-id"],
+        ids=["all", "extra-spaces", "workflow-id", "alias-session-id", "tabs"],
     )
     async def test_tui_dismiss_returns_typed_request(
         self, tmp_path: Path, line: str, target_id: Optional[str]
@@ -1155,7 +1206,9 @@ class TestSlashWorkflowsHandler:
 
         result: SlashCommandResultDAO = await SlashRouter.dispatch(line=line, session=session)
 
-        assert result.tui_dismiss == WorkflowListDismissRequestDAO(target_id=target_id)
+        assert result.tui_visibility == WorkflowListVisibilityRequestDAO(
+            action="dismiss", target_id=target_id
+        )
         assert (result.rendered, result.dismissed_workflow_id, result.resumed_workflow_id) == ("", None, None)
         assert not session.history_root.exists()
 
@@ -1169,7 +1222,7 @@ class TestSlashWorkflowsHandler:
             line="/workflows tui dismiss", session=session
         )
 
-        assert result.tui_dismiss == WorkflowListDismissRequestDAO()
+        assert result.tui_visibility == WorkflowListVisibilityRequestDAO(action="dismiss")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("history", [True, False], ids=["history", "no-history"])
@@ -1191,7 +1244,7 @@ class TestSlashWorkflowsHandler:
 
         result: SlashCommandResultDAO = await SlashRouter.dispatch(line=line, session=session)
 
-        assert (result.rendered, result.tui_dismiss) == (_WORKFLOWS_USAGE, None)
+        assert (result.rendered, result.tui_visibility) == (_WORKFLOWS_USAGE, None)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1204,7 +1257,7 @@ class TestSlashWorkflowsHandler:
 
         result: SlashCommandResultDAO = await SlashRouter.dispatch(line=line, session=session)
 
-        assert result.tui_dismiss is None
+        assert result.tui_visibility is None
 
     @pytest.mark.asyncio
     async def test_non_tui_without_history_still_unavailable(self) -> None:
@@ -1216,7 +1269,7 @@ class TestSlashWorkflowsHandler:
             line="/workflows dismiss wf-1", session=session
         )
 
-        assert (result.rendered, result.tui_dismiss) == (
+        assert (result.rendered, result.tui_visibility) == (
             "workflows unavailable — history is disabled for this session",
             None,
         )

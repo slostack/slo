@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.tools import tool
 
 from src.agents.providers import (
@@ -30,6 +30,7 @@ async def test_faux_supports_tool_calls() -> None:
         ]
     )
     first = await model.ainvoke([HumanMessage(content="run echo")])
+    assert isinstance(first, AIMessage)
     assert first.tool_calls[0]["name"] == "echo"
     assert first.tool_calls[0]["args"] == {"text": "x"}
 
@@ -66,6 +67,7 @@ async def test_astream_yields_default_single_chunk() -> None:
     )
     chunks: list[str] = []
     async for chunk in model.astream([HumanMessage(content="x")]):
+        assert isinstance(chunk.content, str)
         chunks.append(chunk.content)
     assert "".join(chunks) == "streamed"
 
@@ -85,6 +87,7 @@ async def test_astream_yields_scripted_multiple_chunks_in_order() -> None:
 
     chunks: list[str] = []
     async for chunk in model.astream([HumanMessage(content="x")]):
+        assert isinstance(chunk.content, str)
         chunks.append(chunk.content)
 
     assert chunks == ["part 1 ", "part 2"]
@@ -107,6 +110,7 @@ async def test_bind_tools_preserves_chunk_scripts_on_clone() -> None:
     bound = base.bind_tools(tools=[example_tool])
     chunks: list[str] = []
     async for chunk in bound.astream([HumanMessage(content="x")]):
+        assert isinstance(chunk.content, str)
         chunks.append(chunk.content)
 
     assert bound.bound_tools == [example_tool]
@@ -124,3 +128,39 @@ def test_fake_tool_call_shape() -> None:
 def test_fake_tool_call_explicit_id() -> None:
     call = FauxChatModel.tool_call_dict(name="x", args={}, call_id="custom-id")
     assert call["id"] == "custom-id"
+
+
+@pytest.mark.parametrize("tool_choice", [None, "auto", "required"])
+def test_binding_accepts_upstream_forms_without_consuming_scripts(tool_choice: str | None) -> None:
+    """Schema, class, callable and BaseTool inputs retain independent clone queues."""
+    from pydantic import BaseModel
+
+    class InputSchema(BaseModel):
+        """Offline callable input."""
+
+        text: str
+
+    def echo(text: str) -> str:
+        """Return the supplied text."""
+        return text
+
+    decorated = tool(echo)
+    schema: dict[str, object] = {"name": "echo", "parameters": {"type": "object"}}
+    original = FauxChatModel(
+        responses=[AIMessage(content="done")],
+        chunk_scripts=[[AIMessageChunk(content="do"), AIMessageChunk(content="ne")]],
+    )
+    clone = original.bind_tools(tools=[schema, InputSchema, echo, decorated], tool_choice=tool_choice)
+    assert clone.bound_tools == [schema, InputSchema, echo, decorated]
+    assert original.bound_tools == []
+    assert clone.queue is not original.queue
+    assert clone.chunk_queue is not original.chunk_queue
+    assert clone.chunk_queue[0] is not original.chunk_queue[0]
+    assert [chunk.content for chunk in clone.stream("go")] == ["do", "ne"]
+    with pytest.raises(FauxScriptUnderrun):
+        list(clone.stream("again"))
+    assert original.invoke("go").content == "done"
+    other = FauxChatModel(responses=[])
+    assert other.queue is not original.queue
+    assert other.chunk_queue is not original.chunk_queue
+    assert other.bound_tools is not original.bound_tools

@@ -182,15 +182,16 @@ class TestWriteEntryRich:
 
         assert any(isinstance(w, Markdown) for w in log.writes)
 
-    def test_thinking_entry_not_markdown(self) -> None:
-        """Thinking text stays plain (no markdown renderable)."""
+    def test_thinking_entry_uses_shared_markdown(self) -> None:
+        """Thinking uses the same source-preserving Markdown renderer as the modal."""
         log = _FakeLog()
         entry = TranscriptEntryDAO(kind="thinking", content="pondering")
 
         WorkflowTranscriptRenderer.write_entry(log=log, entry=entry)  # type: ignore[arg-type]
 
-        assert not any(isinstance(w, Markdown) for w in log.writes)
-        assert log.writes  # something was written
+        bodies = [w for w in log.writes if isinstance(w, Markdown)]
+        assert len(bodies) == 1
+        assert bodies[0].markup == "pondering"
 
 
 # ---------------------------------------------------------------------------

@@ -41,12 +41,19 @@ def _snapshot(
     )
 
 
-def _session() -> SloAgentSession:
+def _session(monkeypatch: pytest.MonkeyPatch) -> SloAgentSession:
     """Build a prebuilt-agent session with a faux model.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Environment mutator; pins the global
+            default model so advisory model identity is deterministic.
 
     Returns:
         SloAgentSession: Session ready for snapshot-boundary evaluation.
     """
+    # cfg resolves the short key dynamically; the ambient SLO_DEFAULT_MODEL_NAME
+    # is captured at config.cfg import, before this helper's patch.
+    monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
     return SloAgentSession(
         agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
         workdir=Path(".").resolve(),
@@ -89,9 +96,11 @@ class TestCompactionAdvisoryEvaluation:
     """Threshold, one-shot, re-arm, and no-compaction behavior."""
 
     @pytest.mark.asyncio
-    async def test_exact_threshold_emits_one_notice_without_compacting(self) -> None:
+    async def test_exact_threshold_emits_one_notice_without_compacting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """At exactly 256,000 tokens one advisory names /compact and help latency."""
-        session: SloAgentSession = _session()
+        session: SloAgentSession = _session(monkeypatch=monkeypatch)
         captured: list[AgentStreamEventDAO] = _subscribe(session=session)
         with (
             patch.object(
@@ -111,9 +120,11 @@ class TestCompactionAdvisoryEvaluation:
         mock_compact.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_one_below_threshold_emits_nothing_and_stays_armed(self) -> None:
+    async def test_one_below_threshold_emits_nothing_and_stays_armed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A 255,999 estimate emits no advisory and leaves the flag armed."""
-        session: SloAgentSession = _session()
+        session: SloAgentSession = _session(monkeypatch=monkeypatch)
         captured: list[AgentStreamEventDAO] = _subscribe(session=session)
         with patch.object(
             session,
@@ -126,9 +137,9 @@ class TestCompactionAdvisoryEvaluation:
         assert session._compaction_advisory_armed is True
 
     @pytest.mark.asyncio
-    async def test_above_threshold_is_one_shot_until_rearmed(self) -> None:
+    async def test_above_threshold_is_one_shot_until_rearmed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Two refreshes at/above threshold dispatch exactly one advisory."""
-        session: SloAgentSession = _session()
+        session: SloAgentSession = _session(monkeypatch=monkeypatch)
         captured: list[AgentStreamEventDAO] = _subscribe(session=session)
         with patch.object(
             session,
@@ -141,9 +152,11 @@ class TestCompactionAdvisoryEvaluation:
         assert len(_advised(captured=captured)) == 1
 
     @pytest.mark.asyncio
-    async def test_below_threshold_rearms_for_the_next_advisory(self) -> None:
+    async def test_below_threshold_rearms_for_the_next_advisory(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Above, below, above yields exactly two advisories and none at the dip."""
-        session: SloAgentSession = _session()
+        session: SloAgentSession = _session(monkeypatch=monkeypatch)
         captured: list[AgentStreamEventDAO] = _subscribe(session=session)
         sequences: list[ContextWindowSnapshotDAO] = [
             _snapshot(estimated_used_tokens=300_000),
@@ -162,9 +175,11 @@ class TestCompactionAdvisoryEvaluation:
         assert len(_advised(captured=captured)) == 2
 
     @pytest.mark.asyncio
-    async def test_unavailable_estimate_emits_nothing_and_keeps_disarmed(self) -> None:
+    async def test_unavailable_estimate_emits_nothing_and_keeps_disarmed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An unreadable estimate neither emits nor re-arms a disarmed session."""
-        session: SloAgentSession = _session()
+        session: SloAgentSession = _session(monkeypatch=monkeypatch)
         session._compaction_advisory_armed = False
         captured: list[AgentStreamEventDAO] = _subscribe(session=session)
         with patch.object(
@@ -178,9 +193,9 @@ class TestCompactionAdvisoryEvaluation:
         assert session._compaction_advisory_armed is False
 
     @pytest.mark.asyncio
-    async def test_reuses_existing_snapshot_publication_field(self) -> None:
+    async def test_reuses_existing_snapshot_publication_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The refreshed snapshot is republished through the existing usage field."""
-        session: SloAgentSession = _session()
+        session: SloAgentSession = _session(monkeypatch=monkeypatch)
         expected: ContextWindowSnapshotDAO = _snapshot(estimated_used_tokens=256_000)
         with patch.object(
             session,

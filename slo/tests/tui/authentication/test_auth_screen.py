@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import NoReturn, Optional, Protocol
 
 import pytest
 from textual.app import App
@@ -44,6 +44,23 @@ class _FauxFlow:
         return await self._invoke()
 
 
+class _BuildFlow(Protocol):
+    """Keyword-only script contract consumed by the recording OAuth factory."""
+
+    def __call__(
+        self,
+        *,
+        provider: ProviderName,
+        login_method: OAuthLoginMethod,
+        browser_present: Callable[[AuthorizationPresentationDAO], None],
+        device_present: Callable[[DeviceAuthorizationPresentationDAO], None],
+        receiver: Callable[[], Awaitable[str]] | None,
+        callback_unavailable: Callable[[], None],
+    ) -> OAuthAuthenticationFlow:
+        """Build a scripted interaction from the modal's captured callbacks."""
+        ...
+
+
 class _FauxOAuthFactory:
     """Record factory calls and provide declared capabilities to the modal."""
 
@@ -51,17 +68,7 @@ class _FauxOAuthFactory:
         self,
         *,
         login_methods: frozenset[OAuthLoginMethod],
-        build_flow: Callable[
-            [
-                ProviderName,
-                OAuthLoginMethod,
-                Callable[[AuthorizationPresentationDAO], None],
-                Callable[[DeviceAuthorizationPresentationDAO], None],
-                Callable[[], Awaitable[str]] | None,
-                Callable[[], None],
-            ],
-            OAuthAuthenticationFlow,
-        ],
+        build_flow: _BuildFlow,
     ) -> None:
         """Store capability and flow scripts for the test journey."""
         self._login_methods: frozenset[OAuthLoginMethod] = login_methods
@@ -314,7 +321,8 @@ class TestAuthenticationScreen:
             await pilot.pause()
             await pilot.click("#method-continue")
             await pilot.pause()
-            screen: AuthenticationScreen = pilot.app.screen
+            screen = pilot.app.screen
+            assert isinstance(screen, AuthenticationScreen)
             assert screen._authorization_response_queue is not None
             await screen.on_oauth_status_widget_back_requested(OAuthStatusWidget.BackRequested())
             await pilot.pause()
@@ -411,7 +419,8 @@ class TestBeginOAuthFailure:
             await pilot.pause()
             await pilot.click("#method-continue")
             await wait_until_painted(pilot=pilot, text=_GENERIC_SIGN_IN_ERROR)
-            screen: AuthenticationScreen = pilot.app.screen
+            screen = pilot.app.screen
+            assert isinstance(screen, AuthenticationScreen)
 
             assert screen._authorization_response_queue is None
 
@@ -425,7 +434,8 @@ class TestBeginOAuthFailure:
         harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
         async with harness.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            screen: AuthenticationScreen = pilot.app.screen
+            screen = pilot.app.screen
+            assert isinstance(screen, AuthenticationScreen)
             failed: asyncio.Task[None] = asyncio.create_task(_fail_before_flow())
             await asyncio.wait({failed})
 
@@ -445,7 +455,8 @@ class TestBeginOAuthFailure:
         harness: _Harness = _Harness(store=_build_store(tmp_path), oauth_factory=factory)
         async with harness.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            screen: AuthenticationScreen = pilot.app.screen
+            screen = pilot.app.screen
+            assert isinstance(screen, AuthenticationScreen)
             cancelled: asyncio.Task[None] = asyncio.create_task(_never_start())
             await pilot.pause()
             cancelled.cancel()
@@ -460,11 +471,16 @@ class TestBeginOAuthFailure:
 _GENERIC_SIGN_IN_ERROR: str = "Sign-in failed. Use Back to retry."
 
 
-def _raise_type_error(**_: object) -> NoReturn:
+def _raise_type_error(
+    *,
+    provider: ProviderName,
+    login_method: OAuthLoginMethod,
+    browser_present: Callable[[AuthorizationPresentationDAO], None],
+    device_present: Callable[[DeviceAuthorizationPresentationDAO], None],
+    receiver: Callable[[], Awaitable[str]] | None,
+    callback_unavailable: Callable[[], None],
+) -> NoReturn:
     """Fail flow construction the way the uncallable default factory did.
-
-    Args:
-        _ (object): The factory keywords, ignored.
 
     Raises:
         TypeError: Always.

@@ -20,7 +20,12 @@ from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.auth.credential_dao import ProviderName
 from src.auth.credential_resolver import CredentialResolver
 
-__all__ = ["build_headless_child_env", "open_capture_file_append", "redact_openrouter_credential"]
+__all__ = [
+    "AgentLaunchPolicy",
+    "build_headless_child_env",
+    "open_capture_file_append",
+    "redact_openrouter_credential",
+]
 
 # Includes the explicit Feature 75 kill switch ``SLO_PLUGINS_DISABLED`` so
 # headless children deterministically inherit the parent's plugin policy.
@@ -52,6 +57,58 @@ def build_headless_child_env(
     _add_workflow_id(child_env=child_env, workflow_id=workflow_id)
     _add_nonempty_extra(child_env=child_env, extra=extra)
     return child_env
+
+
+class AgentLaunchPolicy:
+    """Pair managed-agent argv and environment from one process-environment snapshot.
+
+    Explicit development launches import this running code, never the task cwd.
+    Capture writers/reporters retain their separate isolated launch contracts.
+    """
+
+    def __init__(self) -> None:
+        """Capture sanitized parent settings once, before a launch can await I/O."""
+        self._environment: dict[str, str] = build_headless_child_env()
+        self._development: bool = self._environment.get("SLO_DEV_MODE") == "1"
+
+    def build_argv(self, *, arguments: list[str]) -> list[str]:
+        """Build the same-interpreter CLI command for a managed launch owner.
+
+        Args:
+            arguments (list[str]): Caller-owned CLI arguments after the module name.
+
+        Returns:
+            list[str]: Isolated default command or cwd/user-site-safe development command.
+        """
+        flags = ["-P", "-s"] if self._development else ["-I"]
+        return [sys.executable, *flags, "-m", "src.cli", *arguments]
+
+    def build_environment(
+        self, *, workflow_id: Optional[str] = None, extra: Optional[dict[str, str]] = None
+    ) -> dict[str, str]:
+        """Build identity-specific environment paired with this launch's argv.
+
+        Args:
+            workflow_id (Optional[str]): Workflow identity, when present.
+            extra (Optional[dict[str, str]]): Caller-owned nonempty identity settings.
+                Mode and Python import-policy keys are ignored; only this snapshot
+                can determine those values.
+
+        Returns:
+            dict[str, str]: Fresh sanitized environment with code-derived development imports.
+        """
+        environment = self._environment.copy()
+        _add_workflow_id(child_env=environment, workflow_id=workflow_id)
+        identity = {
+            key: value
+            for key, value in (extra or {}).items()
+            if key not in {"SLO_DEV_MODE", "PYTHONHOME", "PYTHONPATH"}
+        }
+        _add_nonempty_extra(child_env=environment, extra=identity)
+        if self._development:
+            environment["SLO_DEV_MODE"] = "1"
+            environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[4])
+        return environment
 
 
 _CAPTURE_WRITER_STARTUP_TIMEOUT_SECONDS: float = 1.0

@@ -105,15 +105,13 @@ def test_merged_runtime_discovery_exposes_both_design_skills(tmp_path: Path) -> 
 
 
 def test_feature_specification_references_canonical_design_prerequisites() -> None:
-    """Feature specifications name the shared rules and the optional design companion explicitly."""
+    """The overview author links the shared design rules it specializes."""
     text = FEATURE_SPECIFICATION_PATH.read_text(encoding="utf-8")
 
-    assert "[coding rules](../../coding/coding-rules/SKILL.md)" in text
-    assert "[code design principles](../../coding/code-design-principles/SKILL.md)" in text
-    assert "[solution design](../../coding/solution-design/SKILL.md)" in text
-    assert "optional companion" in text
-    assert "not mandatory for every feature specification" in text
-
+    assert "(../../coding/coding-rules/SKILL.md)" in text
+    assert "(../../coding/code-design-principles/SKILL.md)" in text
+    assert "(../../coding/solution-design/SKILL.md)" in text
+    assert "is the rule source this skill specializes" in text
 
 def test_solution_design_requires_consent_and_forbids_implicit_implementation() -> None:
     """Solution design remains a design-only skill unless the user separately authorizes implementation."""

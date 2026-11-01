@@ -184,6 +184,7 @@ class TestSessionTreeBuilderBuild:
 
         turn = result.children[0]
         assert turn.children[0].kind == "tool_result"
+        assert turn.children[0].parent is not None
         assert turn.children[0].parent.kind == "turn"
 
     def test_tool_result_with_non_tool_call_parent_stays_flat(self) -> None:

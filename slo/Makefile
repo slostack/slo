@@ -1,4 +1,4 @@
-.PHONY: help tui test smoke install-smoke lint format build-skill-index refresh-skills kb-snapshot install publish-installer release release-installer-smoke
+.PHONY: help tui test test-serial smoke install-smoke lint format hooks build-skill-index refresh-skills kb-snapshot install publish-installer release release-installer-smoke
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -15,13 +15,19 @@ tui:  ## Open the Textual TUI
 # exists locally. CI and clean checkouts reconstruct the same non-secret test
 # contract through environment variables, so the default gate remains usable
 # without creating a gitignored environment file.
-test:  ## Run the full non-E2E test suite
+PYTEST_WORKERS ?= auto
+
+test-serial: PYTEST_WORKERS = 0
+test-serial: test  ## Run the full non-E2E test suite without workers
+
+test:  ## Run the full non-E2E test suite in parallel (PYTEST_WORKERS=0 for serial)
 	@if [ -r ./environments/tests.env ]; then \
 		set -a && . ./environments/tests.env && set +a; \
 	else \
-		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
+		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_HERDR_DISABLED=1 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
 	fi; \
-	PYTHONPATH="$(PWD)" poetry run pytest -m "not e2e"
+	export SLO_HERDR_DISABLED=1; \
+	PYTHONPATH="$(PWD)" poetry run pytest -n $(PYTEST_WORKERS) -m "not e2e"
 
 test-env:  ## Print whether make test will load tests.env or its clean-checkout fallback
 	@if [ -r ./environments/tests.env ]; then echo "tests.env"; else echo "fallback"; fi
@@ -30,8 +36,9 @@ smoke:  ## Run smoke tests only
 	@if [ -r ./environments/tests.env ]; then \
 		set -a && . ./environments/tests.env && set +a; \
 	else \
-		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
+		export SLO_ENV=test SLO_ROOT_DIR="$(PWD)" SLO_APP_DIR="$(PWD)" SLO_APP_NAME=slo SLO_LOG_FORMAT=text SLO_DEFAULT_MODEL_NAME=gpt-5.4 SLO_AUTO_VISUALIZE=0 SLO_HERDR_DISABLED=1 SLO_ANTHROPIC_API_KEY=ci-placeholder-tests-are-fully-mocked COLUMNS=120 LINES=40; \
 	fi; \
+	export SLO_HERDR_DISABLED=1; \
 	PYTHONPATH="$(PWD)" poetry run pytest -m "not e2e" tests/test_smoke.py -v
 
 install-smoke:  ## Real public-installer Ubuntu/Debian smoke (needs Docker)
@@ -39,6 +46,11 @@ install-smoke:  ## Real public-installer Ubuntu/Debian smoke (needs Docker)
 
 lint:  ## Type-check src/ and tests/ with mypy
 	poetry run mypy src/ tests/
+
+# pre-commit reads ../.pre-commit-config.yaml (the git root) and builds gitleaks
+# with Go into its own cache; nothing is installed on PATH.
+hooks:  ## Install the gitleaks pre-commit hook for this clone (needs Go)
+	poetry run pre-commit install
 
 format:  ## Auto-format src/ and tests/ with black
 	poetry run black src/ tests/

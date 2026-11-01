@@ -12,6 +12,7 @@ from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.providers.faux import FauxChatModel
+from src.auth.credential_dao import AuthType, CredentialDAO
 
 
 def _prebuilt_session(*, response: AIMessage) -> SloAgentSession:
@@ -84,8 +85,18 @@ class TestSessionUsageSnapshot:
         assert snapshot.latest_turn.total_tokens is None
         assert snapshot.session_totals.total_tokens is None
 
-    def test_switch_model_rebuilds_usage_snapshot_static_fields(self, tmp_path: Path) -> None:
+    def test_switch_model_rebuilds_usage_snapshot_static_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Model switching updates the snapshot's static model fields."""
+        # switch_model validates the selection credential; the ambient environment
+        # may not carry Anthropic credentials, so stub the selection boundary.
+        monkeypatch.setattr(
+            "src.agents.slo_agent.sessions.service.CredentialResolver.require",
+            lambda *, provider: CredentialDAO(
+                provider=provider, auth_type=AuthType.API_KEY, access_token="fixture"
+            ),
+        )
         config: SessionConfigDAO = SessionConfigDAO(
             workdir=tmp_path,
             model_name="gpt-5.4",

@@ -1,6 +1,8 @@
 """Local transport proof that catalog browsing never authorizes rejected credentials."""
 
 import asyncio
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -27,6 +29,9 @@ from src.integrations.openrouter.dao import (
     credential_fingerprint,
 )
 from src.integrations.openrouter.exceptions import OpenRouterAPIError
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 @pytest.mark.parametrize("status", [401, 403, None])
@@ -273,7 +278,9 @@ async def test_prepare_models_rechecks_unchanged_initial_cache_after_newer_remov
     reads = 0
     original_thread = asyncio.to_thread
 
-    async def delayed_first_read(function: object, *args: object, **kwargs: object) -> object:
+    async def delayed_first_read(
+        function: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R | ModelCatalogCacheDAO:
         """Delay only the already-completed initial durable cache read."""
         nonlocal reads
         if function != ModelCatalogStore.load_provider_cache:
@@ -365,7 +372,9 @@ async def test_prepare_models_rechecks_unchanged_initial_cache_after_credential_
         assert provider is ProviderName.OPENROUTER
         return effective
 
-    async def delayed_first_read(function: object, *args: object, **kwargs: object) -> object:
+    async def delayed_first_read(
+        function: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R | ModelCatalogCacheDAO:
         """Delay only the completed first durable read until the effective key rotates."""
         nonlocal reads
         if function != ModelCatalogStore.load_provider_cache:

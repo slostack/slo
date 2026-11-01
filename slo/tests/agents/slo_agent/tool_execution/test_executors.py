@@ -198,6 +198,8 @@ async def test_read_image_through_executor_sets_image_reference(tmp_path: Path) 
     _, message = await executor._invoke_one(envelope=_read_envelope(path=str(target)))
 
     assert isinstance(message.content, list)
+    assert isinstance(message.content, list)
+    assert isinstance(message.content[0], dict)
     assert message.content[0]["type"] == "image"
     base64.b64decode(message.content[0]["source"]["data"])
     assert message.additional_kwargs["image_reference"].startswith("[image attached: large.png,")
@@ -238,5 +240,7 @@ async def test_executor_splits_direct_tool_result_dao() -> None:
 
     _, message = await executor._invoke_one(envelope=envelope)
 
+    assert isinstance(message.content, list)
+    assert isinstance(message.content[0], dict)
     assert message.content[0]["type"] == "image"
     assert message.additional_kwargs["image_reference"] == "[image attached: x.png, 10x10, ref /x.png]"

@@ -1,7 +1,7 @@
 """Mounted paint tests for the two horizontal prompt rules (spec 94.a.1).
 
 The prompt frame is styling only: ``src/tui/app.tcss`` paints a top and bottom
-rule around the native ``PromptInput`` editor, with no side edges or corners.
+rule around the native ``PromptInputComponent`` editor, with no side edges or corners.
 Widget model state cannot prove a painted frame, so every assertion reads the
 compositor cells inside the editor's own region through the shared
 authentication capture helpers.
@@ -9,6 +9,7 @@ authentication capture helpers.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,8 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from tests.tui._scroll_settle import pump_until
@@ -43,7 +45,7 @@ FRAME_SIDE_AND_CORNER_GLYPHS: frozenset[str] = frozenset("│┃║╭╮╰╯�
 
 @dataclass(frozen=True)
 class PaintedPromptFrame:
-    """Compositor rows painted inside the mounted ``PromptInput`` region.
+    """Compositor rows painted inside the mounted ``PromptInputComponent`` region.
 
     Attributes:
         rows (list[Strip]): Painted rows, top rule first and bottom rule last.
@@ -171,14 +173,14 @@ async def _submit_prompt(*, app: SloTUI, pilot: Pilot, text: str) -> None:
     await pilot.pause()
 
 
-def _require_prompt_input(*, app: SloTUI) -> PromptInput:
+def _require_prompt_input(*, app: SloTUI) -> PromptInputComponent:
     """Return the mounted prompt editor.
 
     Args:
         app (SloTUI): Mounted application.
 
     Returns:
-        PromptInput: The mounted prompt editor.
+        PromptInputComponent: The mounted prompt editor.
     """
     assert app._input is not None
     return app._input
@@ -188,13 +190,14 @@ class TestPromptInputRulesPaint:
     """The prompt editor paints exactly two horizontal rules in every state."""
 
     @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.usefixtures("theme_colors")
     async def test_rules_when_focused_and_unfocused(self, tmp_path: Path, theme: Theme) -> None:
         """Focused and unfocused editors both paint accent-coloured top/bottom rules only."""
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
             app.theme = theme.name
-            prompt_input: PromptInput = _require_prompt_input(app=app)
+            prompt_input: PromptInputComponent = _require_prompt_input(app=app)
             assert theme.accent is not None
             accent_hex: str = theme.accent
 
@@ -205,8 +208,8 @@ class TestPromptInputRulesPaint:
             focused.assert_horizontal_rules(width=prompt_input.region.width)
             focused.assert_rules_coloured(accent_hex=accent_hex)
 
-            assert app._transcript_scroll is not None
-            app._transcript_scroll.focus()
+            assert app.query_one(ChatTranscriptComponent)._transcript_scroll is not None
+            app.query_one(ChatTranscriptComponent)._transcript_scroll.focus()
             await pilot.pause()
             assert not prompt_input.has_focus
             unfocused: PaintedPromptFrame = PaintedPromptFrame.capture(app=app)
@@ -219,7 +222,7 @@ class TestPromptInputRulesPaint:
 
         async with app.run_test(size=(60, 24)) as pilot:
             await pilot.pause()
-            prompt_input: PromptInput = _require_prompt_input(app=app)
+            prompt_input: PromptInputComponent = _require_prompt_input(app=app)
             narrow_width: int = prompt_input.region.width
             PaintedPromptFrame.capture(app=app).assert_horizontal_rules(width=narrow_width)
 
@@ -247,7 +250,7 @@ class TestPromptInputRulesGeometry:
 
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            prompt_input: PromptInput = _require_prompt_input(app=app)
+            prompt_input: PromptInputComponent = _require_prompt_input(app=app)
             empty: PaintedPromptFrame = PaintedPromptFrame.capture(app=app)
             assert prompt_input.outer_size.height == 3
             assert len(empty.content_rows) == 1
@@ -295,7 +298,7 @@ class TestPromptInputRulesNeighbours:
         ):
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                prompt_input: PromptInput = _require_prompt_input(app=app)
+                prompt_input: PromptInputComponent = _require_prompt_input(app=app)
                 await _submit_prompt(app=app, pilot=pilot, text="first")
                 await _submit_prompt(app=app, pilot=pilot, text="queued second")
                 # A narrowed query keeps the menu short. A bare "/" sizes the menu from the screen
@@ -308,7 +311,7 @@ class TestPromptInputRulesNeighbours:
                 assert app._in_flight_task is not None
                 assert invoke_log == ["first"]
                 assert len(queued_blocks) == 1
-                assert app._slash_suggestion_state.visible is True
+                assert prompt_input._slash_suggestion_state.visible is True
                 assert app._suggestion_menu is not None and app._usage_status_bar is not None
                 queue_region = queued_blocks[0].region
                 menu_region = app._suggestion_menu.region
@@ -350,7 +353,7 @@ class TestPromptInputRulesNeighbours:
         ):
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                prompt_input: PromptInput = _require_prompt_input(app=app)
+                prompt_input: PromptInputComponent = _require_prompt_input(app=app)
                 prompt_input.focus()
                 await pilot.press("h", "i", "shift+enter", "y", "o")
                 await pilot.pause()

@@ -1,0 +1,64 @@
+/* Workflow session list (feature 94 a.2, extracted as WorkflowProgressComponent in 96.f.1):
+ * one heading plus at most five one-line rows, never more than a quarter of
+ * the screen. Short screens keep one row so the editor and usage bar stay
+ * reachable; below the minimum interactive size (60x20) a compact notice
+ * replaces the rows. The size classes come from SloTUI's breakpoints. */
+
+WorkflowProgressComponent {
+    height: auto;
+    padding: 0;
+    margin: 0;
+}
+
+WorkflowProgressComponent SubAgentFleetPanel {
+    height: auto;
+    max-height: 25vh;
+}
+
+WorkflowProgressComponent SubAgentFleetPanel > .workflow-sessions-heading {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+WorkflowProgressComponent SubAgentFleetPanel > .workflow-sessions-resize-notice {
+    display: none;
+    height: 1;
+    padding: 0 1;
+    color: $warning;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+WorkflowProgressComponent SubAgentFleetPanel > FleetSessionList {
+    height: auto;
+    min-height: 1;
+    max-height: 5;
+    background: $surface;
+}
+
+WorkflowProgressComponent SubAgentFleetRow {
+    height: 1;
+}
+
+WorkflowProgressComponent SubAgentFleetRow > Static {
+    width: 1fr;
+    height: 1;
+    padding: 0 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+Screen.-workflow-short-height WorkflowProgressComponent SubAgentFleetPanel > FleetSessionList {
+    max-height: 1;
+}
+
+Screen.-workflow-below-minimum-width WorkflowProgressComponent SubAgentFleetPanel > FleetSessionList,
+Screen.-workflow-below-minimum-height WorkflowProgressComponent SubAgentFleetPanel > FleetSessionList {
+    display: none;
+}
+
+Screen.-workflow-below-minimum-width WorkflowProgressComponent SubAgentFleetPanel > .workflow-sessions-resize-notice,
+Screen.-workflow-below-minimum-height WorkflowProgressComponent SubAgentFleetPanel > .workflow-sessions-resize-notice {
+    display: block;
+}

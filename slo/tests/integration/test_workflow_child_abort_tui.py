@@ -12,6 +12,7 @@ liveness probe. ``os.kill`` is patched to fail the test if anything signals.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -43,6 +44,7 @@ from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDA
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.app import SloTUI
+from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
@@ -223,7 +225,12 @@ class _DetachedWorld:
         """
         await _bounded(self.controller.start())
         tasks = [
-            SubAgentTaskDAO(task_id=f"t-{sid}", prompt=f"task for {sid}", session_id=sid)
+            SubAgentTaskDAO(
+                task_summary="Observe the child cancellation boundary",
+                task_id=f"t-{sid}",
+                prompt=f"task for {sid}",
+                session_id=sid,
+            )
             for sid in (_TARGET, _SIBLING)
         ]
         dispatch: asyncio.Task[OrchestratorResultDAO] = asyncio.create_task(
@@ -316,8 +323,10 @@ def _rows(*, app: SloTUI) -> dict[str, str]:
     Returns:
         dict[str, str]: Row statuses.
     """
-    assert app._fleet_panel is not None
-    return {item.row.key.session_id: item.row.status for item in app._fleet_panel.query(SubAgentFleetRow)}
+    return {
+        item.row.key.session_id: item.row.status
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+    }
 
 
 async def _open(*, app: SloTUI, pilot: Pilot[None], session_id: str) -> SessionProgressScreen:
@@ -331,9 +340,10 @@ async def _open(*, app: SloTUI, pilot: Pilot[None], session_id: str) -> SessionP
     Returns:
         SessionProgressScreen: Opened screen.
     """
-    assert app._fleet_panel is not None
     row = next(
-        item for item in app._fleet_panel.query(SubAgentFleetRow) if item.row.key.session_id == session_id
+        item
+        for item in app.query_one(SubAgentFleetPanel).query(SubAgentFleetRow)
+        if item.row.key.session_id == session_id
     )
     await pilot.click(row)
     await _tick(app=app, pilot=pilot)
@@ -396,8 +406,10 @@ class TestDetachedChildAbortFromModal:
                 )
                 target_pid: int = world.pid(session_id=_TARGET)
                 await _tick(app=app, pilot=pilot)
-                assert app._adapter is not None
-                foreground: list[tuple[str, str]] = list(app._adapter.lines)
+                assert app.query_one(ChatTranscriptComponent)._adapter is not None
+                foreground: list[tuple[str, str]] = list(
+                    app.query_one(ChatTranscriptComponent)._adapter.lines
+                )
                 assert _rows(app=app) == {_PARENT: "running", _TARGET: "running", _SIBLING: "running"}
 
                 with patch.object(world.session, "abort") as whole_abort:
@@ -415,6 +427,7 @@ class TestDetachedChildAbortFromModal:
                     terminal_state: str = _state(screen=screen)
                     rows: dict[str, str] = _rows(app=app)
 
+                foreground_after = list(app.query_one(ChatTranscriptComponent)._adapter.lines)
                 assert not dispatch.done()  # the sibling still runs
                 whole_abort.assert_not_called()
 
@@ -431,7 +444,7 @@ class TestDetachedChildAbortFromModal:
                 _TARGET,
             )
             assert request.run_id == world.pool.run_id
-            assert list(app._adapter.lines) == foreground
+            assert foreground_after == foreground
             assert not (world.root / _PARENT / "abort_request.json").exists()
             assert signals == []
 

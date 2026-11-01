@@ -14,9 +14,14 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 @pytest.mark.parametrize("startup_fails", [False, True])
 async def test_direct_selection_invalidates_pending_startup(tmp_path: Path, startup_fails: bool) -> None:
     """A late old startup result cannot replace a prepared direct selection."""
-    session = SloAgentSession.build(config=SessionConfigDAO(
-        workdir=tmp_path, model_name="openrouter:vendor/pending", enable_history=False,
-    ), allow_pending_preparation=True)
+    session = SloAgentSession.build(
+        config=SessionConfigDAO(
+            workdir=tmp_path,
+            model_name="openrouter:vendor/pending",
+            enable_history=False,
+        ),
+        allow_pending_preparation=True,
+    )
     started = asyncio.Event()
     release = asyncio.Event()
     snapshot = SeedModelCatalog.load()
@@ -31,7 +36,9 @@ async def test_direct_selection_invalidates_pending_startup(tmp_path: Path, star
         return snapshot
 
     with (
-        patch("src.agents.slo_agent.sessions.service.ModelCatalogService.prepare_models", side_effect=prepare),
+        patch(
+            "src.agents.slo_agent.sessions.service.ModelCatalogService.prepare_models", side_effect=prepare
+        ),
         patch("src.agents.slo_agent.sessions.service.CredentialResolver.require"),
         patch("src.agents.slo_agent.sessions.service.UserPreferencesStore.upsert") as save,
     ):
@@ -46,11 +53,14 @@ async def test_direct_selection_invalidates_pending_startup(tmp_path: Path, star
         assert session.active_model_name == "gpt-5.4"
         assert session.preparation_status == "ready"
         assert session.catalog_snapshot is snapshot
+        assert session._config is not None
         assert session._config.model_pool_dao is None
         save.assert_called_once_with(model_name="gpt-5.4")
 
 
-async def test_direct_selection_preserves_runtime_route_when_pending_startup_is_cancelled(tmp_path: Path) -> None:
+async def test_direct_selection_preserves_runtime_route_when_pending_startup_is_cancelled(
+    tmp_path: Path,
+) -> None:
     """A cancelled old startup cannot restore its route after a direct selection commits."""
     session = SloAgentSession.build(
         config=SessionConfigDAO(
@@ -72,7 +82,9 @@ async def test_direct_selection_preserves_runtime_route_when_pending_startup_is_
         return snapshot
 
     with (
-        patch("src.agents.slo_agent.sessions.service.ModelCatalogService.prepare_models", side_effect=prepare),
+        patch(
+            "src.agents.slo_agent.sessions.service.ModelCatalogService.prepare_models", side_effect=prepare
+        ),
         patch("src.agents.slo_agent.sessions.service.CredentialResolver.require"),
         patch("src.agents.slo_agent.sessions.service.UserPreferencesStore.upsert") as save,
     ):

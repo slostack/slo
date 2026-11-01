@@ -25,7 +25,7 @@ def _generated_launcher(*, python_bin: Path) -> str:
         "# -*- coding: utf-8 -*-\n"
         "import re\n"
         "import sys\n"
-        "from src.cli import main\n\n"
+        "from src.cli import main\n"
         "if __name__ == '__main__':\n"
         "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
         "    sys.exit(main())\n"

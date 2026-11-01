@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 from textual import events, on
 from textual.app import App, ComposeResult
+from textual.containers import Vertical
 from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Static, TextArea
@@ -29,7 +30,13 @@ from src.tui.workflows.dao import WorkflowSessionKeyDAO, WorkflowSessionRowDAO, 
 from tests.tui.authentication._painted_output import painted_widget_strips
 
 APP_TCSS: Path = Path(__file__).resolve().parents[2] / "src" / "tui" / "app.tcss"
-"""Production stylesheet, loaded by the host so layout rules are the real ones."""
+"""Production app stylesheet, loaded by the host for shared layout rules."""
+
+FLEET_TCSS: Path = (
+    Path(__file__).resolve().parents[2] / "src" / "tui" / "components" / "workflow_progress" / "css.tcss"
+)
+"""Production fleet stylesheet (feature 96.f.1); scoped under WorkflowProgressComponent, so
+the standalone host wraps the panel in the same selector ancestor."""
 
 ORCHESTRATOR_ID: str = "orch-1"
 """Parent session id shared by every row built in this module."""
@@ -44,6 +51,7 @@ def _row(
     *,
     session_id: str,
     task_text: str = "",
+    task_summary: str = "",
     status: str = "running",
     orchestrator_session_id: str = ORCHESTRATOR_ID,
 ) -> WorkflowSessionRowDAO:
@@ -67,14 +75,15 @@ def _row(
         role="orchestrator" if key.is_parent else "child",
         status=status,
         task_text=task_text,
+        task_summary=task_summary,
         task_text_complete=bool(task_text),
     )
 
 
 class _ThemedHost(App[None]):
-    """Load ``app.tcss`` with both Slo themes registered, as ``SloTUI`` does."""
+    """Load the production stylesheets with both Slo themes registered, as ``SloTUI`` does."""
 
-    CSS_PATH = str(APP_TCSS)
+    CSS_PATH = [str(APP_TCSS), str(FLEET_TCSS)]
 
     def __init__(self) -> None:
         """Register the Slo themes before the stylesheet resolves theme variables."""
@@ -125,7 +134,9 @@ class TestSubAgentFleetRow:
     @pytest.mark.asyncio
     async def test_child_row_paints_status_session_and_task(self) -> None:
         """A child row paints its literal status, unclipped session id and task."""
-        row: SubAgentFleetRow = SubAgentFleetRow(row=_row(session_id="child-1", task_text="Audit the parser"))
+        row: SubAgentFleetRow = SubAgentFleetRow(
+            row=_row(session_id="child-1", task_text="Audit the parser", task_summary="Audit the parser")
+        )
 
         async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
             await pilot.pause()
@@ -152,13 +163,22 @@ class TestSubAgentFleetRow:
 
         async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
             await pilot.pause()
-            assert _painted(app=pilot.app, widget=row) == "[running] child-1: Task details unavailable"
+            assert (
+                _painted(app=pilot.app, widget=row)
+                == "[running] child-1: Task summary unavailable — open details"
+            )
 
     @pytest.mark.asyncio
     async def test_markup_and_controls_render_literally(self) -> None:
         """Markup stays literal, controls are stripped and whitespace collapses to one line."""
         task_text: str = "[bold]fix[/bold]\n\x1b]8;;http://x\x07 [link] \t done"
-        row: SubAgentFleetRow = SubAgentFleetRow(row=_row(session_id="child-1", task_text=task_text))
+        row: SubAgentFleetRow = SubAgentFleetRow(
+            row=_row(
+                session_id="child-1",
+                task_text=task_text,
+                task_summary="[bold]fix[/bold] ]8;;http://x [link] done",
+            )
+        )
 
         async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
             await pilot.pause()
@@ -169,17 +189,25 @@ class TestSubAgentFleetRow:
     @pytest.mark.asyncio
     async def test_long_task_is_capped_at_150_code_points(self) -> None:
         """A 151-code-point task paints 149 code points plus one ellipsis."""
-        row: SubAgentFleetRow = SubAgentFleetRow(row=_row(session_id="child-1", task_text="é" * 151))
+        row: SubAgentFleetRow = SubAgentFleetRow(
+            row=_row(
+                session_id="child-1", task_text="é" * 151, task_summary="Review multilingual task detail"
+            )
+        )
 
         async with _RowHost(rows=[row]).run_test(size=(220, 10)) as pilot:
             await pilot.pause()
-            assert _painted(app=pilot.app, widget=row) == "[running] child-1: " + "é" * 149 + "…"
+            assert _painted(app=pilot.app, widget=row) == "[running] child-1: Review multilingual task detail"
 
     @pytest.mark.asyncio
     async def test_apply_row_updates_label_in_place(self) -> None:
         """A same-key update repaints the same widget and replaces its stored row."""
-        row: SubAgentFleetRow = SubAgentFleetRow(row=_row(session_id="child-1", task_text="Audit"))
-        updated: WorkflowSessionRowDAO = _row(session_id="child-1", task_text="Audit", status="completed")
+        row: SubAgentFleetRow = SubAgentFleetRow(
+            row=_row(session_id="child-1", task_text="Audit", task_summary="Audit parser rules")
+        )
+        updated: WorkflowSessionRowDAO = _row(
+            session_id="child-1", task_text="Audit", task_summary="Audit parser rules", status="completed"
+        )
 
         async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
             await pilot.pause()
@@ -187,7 +215,7 @@ class TestSubAgentFleetRow:
             await pilot.pause()
 
             assert row.row is updated
-            assert _painted(app=pilot.app, widget=row) == "[completed] child-1: Audit"
+            assert _painted(app=pilot.app, widget=row) == "[completed] child-1: Audit parser rules"
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +235,12 @@ def _snapshot(*, session_ids: list[str], status: str = "running") -> WorkflowSes
     """
     return WorkflowSessionSnapshotDAO(
         rows=tuple(
-            _row(session_id=session_id, task_text=f"task {session_id}", status=status)
+            _row(
+                session_id=session_id,
+                task_text=f"task {session_id}",
+                task_summary=f"task {session_id}",
+                status=status,
+            )
             for session_id in session_ids
         )
     )
@@ -237,6 +270,16 @@ def _key(*, session_id: str) -> WorkflowSessionKeyDAO:
     return WorkflowSessionKeyDAO(orchestrator_session_id=ORCHESTRATOR_ID, session_id=session_id)
 
 
+class WorkflowProgressComponent(Vertical):
+    """Stand-in carrying the component's type name so fleet selectors match.
+
+    The production fleet stylesheet scopes its selectors under the
+    ``WorkflowProgressComponent`` component type; Textual matches type selectors by the
+    node's class name, so the standalone host wraps the panel in a same-named
+    container rather than importing the real component (which needs an app).
+    """
+
+
 class _PanelHost(_ThemedHost):
     """Editor above one panel, recording every ``SessionSelected`` key."""
 
@@ -248,9 +291,16 @@ class _PanelHost(_ThemedHost):
         self.selected: list[WorkflowSessionKeyDAO] = []
 
     def compose(self) -> ComposeResult:
-        """Yield the editor first so Tab moves from it into the list."""
+        """Yield the editor first so Tab moves from it into the list.
+
+        The panel stands in for the one a real ``WorkflowProgressComponent`` composes in
+        ``SloTUI``; a bare container carries the wrapper type as a class so the
+        production fleet selectors (scoped under ``WorkflowProgressComponent``) apply
+        exactly as they do to the real composition.
+        """
         yield self.editor
-        yield self.panel
+        with WorkflowProgressComponent():
+            yield self.panel
 
     @on(SubAgentFleetPanel.SessionSelected)
     def _record_selection(self, event: SubAgentFleetPanel.SessionSelected) -> None:

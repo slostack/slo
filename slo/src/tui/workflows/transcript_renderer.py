@@ -158,14 +158,14 @@ class WorkflowTranscriptRenderer:
         log.write(Text("◀ Assistant", style="bold green"), scroll_end=False)
         if entry.reasoning:
             log.write(Text("~ reasoning", style="bold dim"), scroll_end=False)
-            log.write(Text(entry.reasoning[:_REASONING_LIMIT], style="dim italic"), scroll_end=False)
+            log.write(Markdown(entry.reasoning[:_REASONING_LIMIT], style="dim italic"), scroll_end=False)
         body: str = entry.answer or entry.content or ""
         if body:
             log.write(Markdown(body), scroll_end=False)
 
     @staticmethod
     def _write_thinking(*, log: RichLog, entry: TranscriptEntryDAO) -> None:
-        """Write the thinking header and clipped dim body.
+        """Write the thinking header and clipped dim Markdown body.
 
         Args:
             log (RichLog): Target log.
@@ -173,7 +173,7 @@ class WorkflowTranscriptRenderer:
         """
         log.write(Text("~ Thinking", style="bold dim"), scroll_end=False)
         if entry.content:
-            log.write(Text(entry.content[:_REASONING_LIMIT], style="dim italic"), scroll_end=False)
+            log.write(Markdown(entry.content[:_REASONING_LIMIT], style="dim italic"), scroll_end=False)
 
     @staticmethod
     def _write_tool(*, log: RichLog, entry: TranscriptEntryDAO) -> None:

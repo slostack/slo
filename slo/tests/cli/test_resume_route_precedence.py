@@ -116,8 +116,11 @@ def test_build_session_config_when_resumed_model_is_unknown_falls_back_with_noti
     warning.assert_called_once_with(msg="session_resume_model_unavailable", resumed_model=persisted_model)
 
 
-def test_build_session_config_when_default_is_invalid_keeps_both_notices(tmp_path: Path) -> None:
+def test_build_session_config_when_default_is_invalid_keeps_both_notices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Resume fallback retains the existing invalid-default explanation on the same line."""
+    monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
     with (
         patch(
             target="src.cli.typer_dispatch.UserPreferencesStore.load",

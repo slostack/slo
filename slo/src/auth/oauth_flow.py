@@ -120,8 +120,8 @@ class OAuthFlow:
         present_authorization: Callable[[AuthorizationPresentationDAO], None],
         present_callback_unavailable: Callable[[], None] = lambda: None,
         authorization_response_receiver: Callable[[], Awaitable[str]] | None = None,
-        timeout_seconds: int | None = None,
-        manual_timeout_seconds: int | None = None,
+        timeout_seconds: float | None = None,
+        manual_timeout_seconds: float | None = None,
         webbrowser_open: Callable[[str], bool] = webbrowser.open,
         browser_host: BrowserHost | None = None,
     ) -> None:
@@ -138,8 +138,8 @@ class OAuthFlow:
                 Defaults to a no-op.
             authorization_response_receiver (Callable[[], Awaitable[str]] | None, optional):
                 Optional manual browser response receiver. Defaults to None.
-            timeout_seconds (int | None, optional): Local callback deadline. Defaults to None.
-            manual_timeout_seconds (int | None, optional): Whole-attempt manual deadline. Defaults to None.
+            timeout_seconds (float | None, optional): Local callback deadline. Defaults to None.
+            manual_timeout_seconds (float | None, optional): Whole-attempt manual deadline. Defaults to None.
             webbrowser_open (Callable[[str], bool], optional): Best-effort browser opener. Defaults to webbrowser.open.
             browser_host (BrowserHost | None, optional): Decides whether the opener may run.
                 Defaults to None, meaning ``BrowserHost.current()``.
@@ -148,10 +148,10 @@ class OAuthFlow:
         self._present_authorization: Callable[[AuthorizationPresentationDAO], None] = present_authorization
         self._present_callback_unavailable: Callable[[], None] = present_callback_unavailable
         self._response_receiver: Callable[[], Awaitable[str]] | None = authorization_response_receiver
-        self._timeout: int = timeout_seconds or int(
+        self._timeout: float = timeout_seconds or int(
             cfg(key="SLO_OAUTH_TIMEOUT_SECONDS") or _DEFAULT_TIMEOUT_SECONDS
         )
-        self._manual_timeout: int = manual_timeout_seconds or int(
+        self._manual_timeout: float = manual_timeout_seconds or int(
             cfg(key="SLO_OAUTH_MANUAL_TIMEOUT_SECONDS") or _DEFAULT_MANUAL_TIMEOUT_SECONDS
         )
         self._open: Callable[[str], bool] = webbrowser_open
@@ -242,7 +242,7 @@ class OAuthFlow:
         *,
         expected_state: str,
         callback_server: "_CallbackServer",
-        attempt_deadline_seconds: int,
+        attempt_deadline_seconds: float,
     ) -> AuthorizationCodeDAO:
         """Race callback and optional pasted response until one validated code arrives."""
         callback_task: asyncio.Task[str] = asyncio.create_task(
@@ -299,10 +299,10 @@ class _CallbackServer:
     """One-shot localhost HTTP server for the OAuth redirect."""
 
     def __init__(
-        self, *, timeout: int, bind: CallbackBind | None = None, provider_name: str = "oauth"
+        self, *, timeout: float, bind: CallbackBind | None = None, provider_name: str = "oauth"
     ) -> None:
         """Cache listener configuration until asynchronous binding starts."""
-        self._timeout: int = timeout
+        self._timeout: float = timeout
         self._bind: CallbackBind | None = bind
         self._provider_name: str = provider_name
         self._runner: web.AppRunner | None = None

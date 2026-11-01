@@ -6,6 +6,7 @@ from textual.widgets import Static
 
 from src.agents.slo_agent.compaction.context_window import ContextWindowSnapshotDAO
 
+from src.agents.slo_agent.sessions.token_format import CompactTokenFormatter
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO, TokenUsageTotalsDAO
 
 __all__ = ["UsageStatusBar"]
@@ -82,23 +83,7 @@ class UsageStatusBar(Static):
         Returns:
             str: Compact token quantity with Pi-compatible half-up rounding.
         """
-        if count < 1_000:
-            return str(count)
-        if count < 10_000:
-            return UsageStatusBar._format_one_decimal_token_count(
-                count=count,
-                unit=1_000,
-                suffix="k",
-            )
-        if count < 1_000_000:
-            return f"{(count + 500) // 1_000}k"
-        if count < 10_000_000:
-            return UsageStatusBar._format_one_decimal_token_count(
-                count=count,
-                unit=1_000_000,
-                suffix="M",
-            )
-        return f"{(count + 500_000) // 1_000_000}M"
+        return CompactTokenFormatter.format(count=count)
 
     @staticmethod
     def _format_one_decimal_token_count(*, count: int, unit: int, suffix: str) -> str:
@@ -116,8 +101,7 @@ class UsageStatusBar(Static):
         Returns:
             str: Half-up rounded compact token quantity.
         """
-        scaled_tenths: int = (count + unit // 20) // (unit // 10)
-        return f"{scaled_tenths // 10}.{scaled_tenths % 10}{suffix}"
+        return CompactTokenFormatter._format_one_decimal(count=count, unit=unit, suffix=suffix)
 
     @classmethod
     def _usage_text(cls, *, snapshot: SessionUsageSnapshotDAO) -> str:

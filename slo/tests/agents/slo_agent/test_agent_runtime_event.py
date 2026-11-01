@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.tools import tool
@@ -17,7 +19,7 @@ def stub_now() -> str:
     return "ALPHA-BETA-GAMMA-" + "x" * 1_000  # large enough to detect truncation
 
 
-async def _capture(events: list[AgentRuntimeEventDAO]) -> "callable":
+async def _capture(events: list[AgentRuntimeEventDAO]) -> Callable[[AgentRuntimeEventDAO], Awaitable[None]]:
     """Return an async trace handler that appends to ``events``."""
 
     async def _handler(event: AgentRuntimeEventDAO) -> None:

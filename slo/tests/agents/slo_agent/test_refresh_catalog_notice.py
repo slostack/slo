@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -18,7 +19,9 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 
 
 @pytest.mark.parametrize("status", ["refreshed", "fresh", "failed", "credential_changed"])
-async def test_refresh_notice_has_count_and_last_check(tmp_path: Path, status: str) -> None:
+async def test_refresh_notice_has_count_and_last_check(
+    tmp_path: Path, status: Literal["refreshed", "fresh", "failed", "credential_changed"]
+) -> None:
     """An empty published catalog reports zero, never an invented current check."""
     message = await _refresh_notice(
         tmp_path=tmp_path,
@@ -34,7 +37,9 @@ async def test_refresh_notice_has_count_and_last_check(tmp_path: Path, status: s
 
 
 @pytest.mark.parametrize("status", ["refreshed", "fresh"])
-async def test_refresh_notice_counts_only_eligible_visible_openrouter_rows(tmp_path: Path, status: str) -> None:
+async def test_refresh_notice_counts_only_eligible_visible_openrouter_rows(
+    tmp_path: Path, status: Literal["refreshed", "fresh", "failed", "credential_changed"]
+) -> None:
     """Manual refresh reports only rows eligible for the exact picker selection set."""
     seed: ModelCatalogSnapshotDAO = SeedModelCatalog.load()
     eligible = seed.entries["gpt-5.4"].model_copy(
@@ -45,9 +50,22 @@ async def test_refresh_notice_counts_only_eligible_visible_openrouter_rows(tmp_p
             "availability": "available",
         }
     )
-    hidden = eligible.model_copy(update={"model_name": "openrouter:vendor/hidden", "visible_in_picker": False})
-    removed = eligible.model_copy(update={"model_name": "openrouter:vendor/removed", "availability": "removed"})
-    snapshot = seed.model_copy(update={"entries": {**seed.entries, eligible.model_name: eligible, hidden.model_name: hidden, removed.model_name: removed}})
+    hidden = eligible.model_copy(
+        update={"model_name": "openrouter:vendor/hidden", "visible_in_picker": False}
+    )
+    removed = eligible.model_copy(
+        update={"model_name": "openrouter:vendor/removed", "availability": "removed"}
+    )
+    snapshot = seed.model_copy(
+        update={
+            "entries": {
+                **seed.entries,
+                eligible.model_name: eligible,
+                hidden.model_name: hidden,
+                removed.model_name: removed,
+            }
+        }
+    )
 
     message = await _refresh_notice(
         tmp_path=tmp_path,
@@ -62,7 +80,9 @@ async def test_refresh_notice_counts_only_eligible_visible_openrouter_rows(tmp_p
 
 
 @pytest.mark.parametrize("status", ["fresh", "failed", "credential_changed"])
-async def test_refresh_notice_uses_unknown_check_time_when_lifecycle_has_none(tmp_path: Path, status: str) -> None:
+async def test_refresh_notice_uses_unknown_check_time_when_lifecycle_has_none(
+    tmp_path: Path, status: Literal["refreshed", "fresh", "failed", "credential_changed"]
+) -> None:
     """Coalesced and non-success outcomes do not manufacture a complete-check timestamp."""
     message = await _refresh_notice(
         tmp_path=tmp_path,
@@ -79,7 +99,7 @@ async def test_refresh_notice_uses_unknown_check_time_when_lifecycle_has_none(tm
 async def _refresh_notice(
     *,
     tmp_path: Path,
-    status: str,
+    status: Literal["refreshed", "fresh", "failed", "credential_changed"],
     snapshot: ModelCatalogSnapshotDAO,
     checked_at: datetime | None,
 ) -> str:
@@ -90,8 +110,14 @@ async def _refresh_notice(
     result = CatalogRefreshResultDAO(status=status, catalog_generation=1, safe_message="OpenRouter result.")
     lifecycle = CatalogLifecycleStatusDAO(catalog_checked_at=checked_at)
     with (
-        patch("src.agents.slo_agent.sessions.service.ModelCatalogService.refresh", new=AsyncMock(return_value=result)),
+        patch(
+            "src.agents.slo_agent.sessions.service.ModelCatalogService.refresh",
+            new=AsyncMock(return_value=result),
+        ),
         patch("src.agents.slo_agent.sessions.service.ModelCatalogService.load", return_value=snapshot),
-        patch("src.agents.slo_agent.sessions.service.ModelCatalogService.lifecycle_status", return_value=lifecycle),
+        patch(
+            "src.agents.slo_agent.sessions.service.ModelCatalogService.lifecycle_status",
+            return_value=lifecycle,
+        ),
     ):
         return await session.refresh_model_catalog()

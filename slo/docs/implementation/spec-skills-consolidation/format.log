@@ -1,6 +1,0 @@
-Skipping virtualenv creation, as specified in config file.
-reformatted tests/agents/skills/test_specification_authoring.py
-reformatted scripts/refresh_skills.py
-
-All done! ✨ 🍰 ✨
-2 files reformatted.

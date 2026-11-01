@@ -49,6 +49,7 @@ from src.tui.workflows.abort_submission import (
     ChildAbortSubmission,
 )
 from src.tui.workflows.dao import (
+    WorkflowListVisibilityRequestDAO,
     ChildAbortTargetDAO,
     SessionProgressSnapshotDAO,
     WorkflowSessionKeyDAO,
@@ -362,6 +363,17 @@ class TestChildAbortSubmission:
         assert tracked.submission.notice(now=200.0) == "Child aborted."
         assert tracked.submission.awaits_receipt is False
 
+    @pytest.mark.parametrize("availability", ["stale", "unavailable"])
+    async def test_retained_terminal_text_does_not_settle(self, availability: str) -> None:
+        """Display retention is not fresh terminal evidence for an accepted request."""
+        tracked = _Submission()
+        await tracked.settle(outcome="requested")
+        row = _row(target=tracked.target, status="aborted").model_copy(update={"availability": availability})
+        tracked.submission.observe_row(row=row)
+        assert tracked.submission.awaits_receipt is True
+        tracked.submission.observe_receipt(receipt=_outcome(request=tracked.request, outcome="aborted"))
+        assert tracked.submission.notice(now=200.0) == "Child aborted."
+
     async def test_natural_completion_reports_nothing_aborted(self) -> None:
         """A completed row settles as already terminal, never as aborted."""
         tracked = _Submission()
@@ -559,7 +571,7 @@ class _Attached:
             monotonic=self.clock,
         )
         self.key: WorkflowSessionKeyDAO = WorkflowSessionKeyDAO(
-            orchestrator_session_id=_OWNER, session_id="child-1"
+            orchestrator_session_id=_OWNER, session_id="child-1", attached_dispatch_id=_DISPATCH
         )
 
     def _snapshot(self) -> AttachedDispatchSnapshotDAO:
@@ -1086,7 +1098,9 @@ class TestRequestAuthority:
         target: ChildAbortTargetDAO = world.target()
         if change == "not_member":
             target = ChildAbortTargetDAO(
-                key=WorkflowSessionKeyDAO(orchestrator_session_id=_OWNER, session_id="ghost"),
+                key=WorkflowSessionKeyDAO(
+                    orchestrator_session_id=_OWNER, session_id="ghost", attached_dispatch_id=_DISPATCH
+                ),
                 run_id=_RUN,
                 execution_id=_EXEC_A,
             )
@@ -1461,6 +1475,38 @@ class TestSubmissionLifetime:
         assert submission.awaits_receipt is False
         assert "Child aborted." in str((await world.progress()).notice)
 
+    async def test_receipt_settles_replaced_child(self, tmp_path: Path) -> None:
+        """A receipt for an accepted old incarnation settles despite replacement."""
+        world = _Detached(root=tmp_path / "history")
+        await world.seed()
+        await world.service.load_session_snapshot()
+        world.service.begin_child_abort(target=world.target())
+
+        async def admitted_request() -> ChildAbortRequestDAO:
+            """Wait for public durable admission, without inspecting service state."""
+            while True:
+                requests = await world.control.read_pending(run_id=_RUN)
+                if requests:
+                    return requests[0]
+                await asyncio.sleep(0)
+
+        request = await asyncio.wait_for(admitted_request(), timeout=5)
+        world.child(status="running", execution_id=_EXEC_B)
+        await world.control.write_receipt(
+            request=request,
+            outcome=ChildAbortOutcomeDAO.for_request(request=request, outcome="aborted"),
+        )
+        await world.service.load_session_snapshot()
+        assert (await world.progress()).execution_id == _EXEC_B
+        # Remove only the fixture receipt to distinguish remembered settlement
+        # from a later read after the original row becomes visible again.
+        receipt_paths = list(world.root.rglob(f"receipts/{request.request_id}.json"))
+        assert len(receipt_paths) == 1
+        receipt_paths[0].unlink()
+        world.child(status="running", execution_id=_EXEC_A)
+        assert "Child aborted." in str((await world.progress()).notice)
+        await world.service.close()
+
     async def test_receipt_mismatch_never_settles_as_aborted(self, tmp_path: Path) -> None:
         """A receipt naming another child loads as unavailable, never Child aborted."""
         world = _Detached(root=tmp_path / "history")
@@ -1530,3 +1576,38 @@ class TestSubmissionLifetime:
 
         assert world.service._abort_submissions == {}
         assert world.abort.calls == []
+
+
+@pytest.mark.parametrize("visibility", ["hidden", "removed"])
+async def test_receipt_settles_without_visible_membership(tmp_path: Path, visibility: str) -> None:
+    """Accepted receipts settle independently of a hidden or authoritatively absent child."""
+    world = _Detached(root=tmp_path / "history")
+    await world.seed()
+    await world.service.load_session_snapshot()
+    world.service.begin_child_abort(target=world.target())
+
+    async def admitted_request() -> ChildAbortRequestDAO:
+        """Read durable admission through the public control store."""
+        while True:
+            requests = await world.control.read_pending(run_id=_RUN)
+            if requests:
+                return requests[0]
+            await asyncio.sleep(0)
+
+    request = await asyncio.wait_for(admitted_request(), timeout=5)
+    if visibility == "hidden":
+        world.service.apply_list_visibility(request=WorkflowListVisibilityRequestDAO(action="dismiss"))
+    else:
+        FleetStore(history_root=world.root, orchestrator_session_id=_ORCH_A, run_id=_RUN).persist(entries=[])
+    await world.control.write_receipt(
+        request=request, outcome=ChildAbortOutcomeDAO.for_request(request=request, outcome="aborted")
+    )
+    await world.service.load_session_snapshot()
+    receipts = list(world.root.rglob(f"receipts/{request.request_id}.json"))
+    assert len(receipts) == 1
+    receipts[0].unlink()
+    world.child(status="running")
+    world.service.apply_list_visibility(request=WorkflowListVisibilityRequestDAO(action="show"))
+    assert "Child aborted." in str((await world.progress()).notice)
+    assert len(world.request_files()) == 1
+    await world.service.close()

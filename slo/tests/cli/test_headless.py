@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator, Mapping
+from pathlib import Path
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.agents.slo_agent.orchestrator.dao import exit_code_for_terminal_kind
-from src.agents.slo_agent.sessions.dao import SessionConfigDAO
-from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO, StreamEventKind
 from src.cli.headless import HeadlessRunner
 
 _EXECUTION_ID: str = "0f9a4c1e-6a1b-4f5e-9d3c-2b7a8e6f1c40"
@@ -45,12 +47,19 @@ def _make_session_mock(events: list[AgentStreamEventDAO]) -> AsyncMock:
     """
     session_mock: AsyncMock = AsyncMock()
     session_mock.session_id = "test-session-id-mock"
-    session_mock._subscribers: list = []
-    session_mock.subscribe = lambda handler: session_mock._subscribers.append(handler)
+    subscribers: list[AgentEventSubscriber] = []
+    session_mock._subscribers = subscribers
 
-    async def _fake_invoke(*, text: str):
+    def subscribe(*, handler: AgentEventSubscriber) -> None:
+        """Register the runner's event callback for this fake invocation."""
+        subscribers.append(handler)
+
+    session_mock.subscribe = subscribe
+
+    async def _fake_invoke(*, text: str) -> AsyncIterator[AgentStreamEventDAO]:
+        """Dispatch scripted events to subscribers before yielding each event."""
         for ev in events:
-            for subscriber in session_mock._subscribers:
+            for subscriber in subscribers:
                 await subscriber(ev)
             yield ev
 
@@ -157,6 +166,93 @@ class TestHeadlessRunnerExitCodes:
         assert exit_code == 1
 
 
+@pytest.mark.parametrize("terminal_kind", ["run_completed", "run_failed", "run_aborted"])
+async def test_reporting_lifetime_surrounds_headless_run(
+    tmp_path: Path, terminal_kind: StreamEventKind
+) -> None:
+    """Adopted sessions activate without restore and close before final local drain."""
+    session = _make_session_mock(events=[AgentStreamEventDAO(kind=terminal_kind)])
+    order: list[str] = []
+
+    async def start() -> None:
+        order.append("start")
+
+    async def close() -> None:
+        order.append("close")
+
+    async def finish() -> None:
+        order.append("finish")
+
+    session.start_external_reporting = AsyncMock(side_effect=start)
+    session.close_external_reporting = AsyncMock(side_effect=close)
+    session.finish_retired_reporting_cleanup = AsyncMock(side_effect=finish)
+    runner = HeadlessRunner(config=_make_config(tmp_path))
+    with patch("src.cli.headless.SloAgentSession.build", return_value=session):
+        result = await runner.invoke(prompt="synthetic")
+    assert result == exit_code_for_terminal_kind(kind=terminal_kind)
+    assert order == ["start", "close", "finish"]
+    session.start_external_reporting.assert_awaited_once_with()
+    assert runner._operation_credential is None
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_activation_exit_restores_signal_owner(tmp_path: Path, cancel: bool) -> None:
+    """Adopted-session activation exits must unwind the process signal owner."""
+    session = _make_session_mock(events=[])
+    failure = RuntimeError("activation sentinel")
+    session.start_external_reporting.side_effect = asyncio.CancelledError() if cancel else failure
+    runner = HeadlessRunner(config=_make_config(tmp_path))
+    with (
+        patch("src.cli.headless.SloAgentSession.build", return_value=session),
+        patch.object(runner, "_install_sigterm_handler", return_value=42),
+        patch.object(runner, "_restore_sigterm_handler") as restore,
+        patch.object(runner, "_shutdown_model_catalog", new_callable=AsyncMock) as shutdown,
+    ):
+        if cancel:
+            assert await runner.invoke(prompt="synthetic") == 2
+        else:
+            with pytest.raises(RuntimeError) as caught:
+                await runner.invoke(prompt="synthetic")
+            assert caught.value is failure
+        restore.assert_called_once_with(previous=42)
+        shutdown.assert_awaited_once_with()
+    session.close_external_reporting.assert_awaited_once_with()
+    session.finish_retired_reporting_cleanup.assert_awaited_once_with()
+    assert runner._operation_credential is None
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "_resolve_notifier",
+        "_build_status_store",
+        "_notify_started",
+        "_write_terminal_status",
+        "_notify_terminal",
+    ],
+)
+async def test_adopted_setup_and_terminal_fault_restore_signal(tmp_path: Path, boundary: str) -> None:
+    """Setup and terminal persistence failures retain their original exception."""
+    session = _make_session_mock(events=[AgentStreamEventDAO(kind="run_completed")])
+    runner = HeadlessRunner(config=_make_config(tmp_path))
+    failure = RuntimeError("boundary sentinel")
+    with (
+        patch("src.cli.headless.SloAgentSession.build", return_value=session),
+        patch.object(runner, "_install_sigterm_handler", return_value=42),
+        patch.object(runner, "_restore_sigterm_handler") as restore,
+        patch.object(runner, "_shutdown_model_catalog", new_callable=AsyncMock) as shutdown,
+        patch.object(runner, boundary, side_effect=failure),
+    ):
+        with pytest.raises(RuntimeError) as caught:
+            await runner.invoke(prompt="synthetic")
+        assert caught.value is failure
+        restore.assert_called_once_with(previous=42)
+        shutdown.assert_awaited_once_with()
+    session.close_external_reporting.assert_awaited_once_with()
+    session.finish_retired_reporting_cleanup.assert_awaited_once_with()
+    assert runner._operation_credential is None
+
+
 class TestHeadlessRunnerExitCodeHelper:
     """Shared terminal exit-code vocabulary unit tests."""
 
@@ -184,7 +280,7 @@ class TestSloRunCommand:
         """The ``run`` command is listed in the Typer app's command registry."""
         from src.cli.app import app
 
-        command_names: set[str] = {cmd.name for cmd in app.registered_commands}
+        command_names: set[str] = {cmd.name for cmd in app.registered_commands if cmd.name is not None}
 
         assert "run" in command_names
 
@@ -203,7 +299,8 @@ class TestSloRunCommand:
             result = runner.invoke(app, ["run", "-p", "hello world", "--json"])
 
         mock_run_headless.assert_called_once()
-        call_kwargs: dict = mock_run_headless.call_args.kwargs
+        assert mock_run_headless.call_args is not None
+        call_kwargs: Mapping[str, object] = mock_run_headless.call_args.kwargs
         assert call_kwargs["prompt"] == "hello world"
         assert call_kwargs["as_json"] is True
         assert result.exit_code == 0
@@ -641,6 +738,9 @@ class TestHeadlessRunnerWatchdogControls:
                 self.session_id: str = "child-session"
                 self._subscribers: list = []
                 self.abort: MagicMock = MagicMock()
+                self.start_external_reporting = AsyncMock()
+                self.close_external_reporting = AsyncMock()
+                self.finish_retired_reporting_cleanup = AsyncMock()
 
             def subscribe(self, *, handler) -> None:
                 """Register the runner stdout emitter."""
@@ -705,24 +805,26 @@ class TestHeadlessRunnerDrainGate:
         """Fleet drain completes before the terminal status store is written."""
         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
         runner._status_store = MagicMock()
-        runner._drain_fleet = AsyncMock()
+        drain_fleet: AsyncMock = AsyncMock(spec=runner._drain_fleet, return_value=True)
+        with patch.object(target=runner, attribute="_drain_fleet", new=drain_fleet):
+            await runner._write_terminal_status()
 
-        await runner._write_terminal_status()
-
-        runner._drain_fleet.assert_awaited_once()
+        drain_fleet.assert_awaited_once()
         runner._status_store.write_terminal.assert_called_once()
 
     async def test_write_terminal_status_withholds_unresolved_fleet(self, tmp_path) -> None:
         """Terminal evidence is withheld while a live fleet entry is unresolved."""
         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
         runner._status_store = MagicMock()
-        runner._drain_fleet = AsyncMock(return_value=False)
-
-        await runner._write_terminal_status()
+        drain_fleet: AsyncMock = AsyncMock(spec=runner._drain_fleet, return_value=False)
+        with patch.object(target=runner, attribute="_drain_fleet", new=drain_fleet):
+            await runner._write_terminal_status()
 
         runner._status_store.write_terminal.assert_not_called()
 
-    async def test_drain_records_reaped_orphan_for_straggler(self, tmp_path, monkeypatch) -> None:
+    async def test_drain_records_reaped_orphan_for_straggler(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A verified running child becomes a sweep-owned reaped orphan."""
         from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
 
@@ -734,7 +836,7 @@ class TestHeadlessRunnerDrainGate:
         registry.snapshot.return_value = [entry]
         pool: MagicMock = MagicMock()
         pool.registry = registry
-        runner._attached_pool = lambda: pool
+        monkeypatch.setattr(target=runner, name="_attached_pool", value=MagicMock(return_value=pool))
         monkeypatch.setattr(
             "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "matching"
         )
@@ -752,7 +854,9 @@ class TestHeadlessRunnerDrainGate:
             terminated_by="sweep",
         )
 
-    async def test_drain_never_signals_recycled_pid(self, tmp_path, monkeypatch) -> None:
+    async def test_drain_never_signals_recycled_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A running entry with foreign argv is never passed to the reaper."""
         from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
 
@@ -765,7 +869,7 @@ class TestHeadlessRunnerDrainGate:
         ]
         pool: MagicMock = MagicMock()
         pool.registry = registry
-        runner._attached_pool = lambda: pool
+        monkeypatch.setattr(target=runner, name="_attached_pool", value=MagicMock(return_value=pool))
         monkeypatch.setattr(
             "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "recycled_pid"
         )
@@ -786,7 +890,9 @@ class TestHeadlessRunnerDrainGate:
             terminated_by="sweep",
         )
 
-    async def test_drain_leaves_unreadable_live_pid_unresolved(self, tmp_path, monkeypatch) -> None:
+    async def test_drain_leaves_unreadable_live_pid_unresolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Unreadable live argv withholds terminal status instead of signaling blindly."""
         from src.agents.slo_agent.orchestrator.dao import SubAgentStatusDAO
 
@@ -799,7 +905,7 @@ class TestHeadlessRunnerDrainGate:
         ]
         pool: MagicMock = MagicMock()
         pool.registry = registry
-        runner._attached_pool = lambda: pool
+        monkeypatch.setattr(target=runner, name="_attached_pool", value=MagicMock(return_value=pool))
         monkeypatch.setattr(
             "src.cli.headless.FleetReaper.child_identity_outcome", lambda *, pid, session_id: "unreadable"
         )
@@ -815,11 +921,11 @@ class TestHeadlessRunnerDrainGate:
     async def test_write_terminal_status_noops_without_store(self, tmp_path) -> None:
         """A plain headless run skips drain work without workflow status storage."""
         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
-        runner._drain_fleet = AsyncMock()
+        drain_fleet: AsyncMock = AsyncMock(spec=runner._drain_fleet, return_value=True)
+        with patch.object(target=runner, attribute="_drain_fleet", new=drain_fleet):
+            await runner._write_terminal_status()
 
-        await runner._write_terminal_status()
-
-        runner._drain_fleet.assert_not_awaited()
+        drain_fleet.assert_not_awaited()
 
 
 class TestHeadlessNotifyEndToEnd:

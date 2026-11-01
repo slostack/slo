@@ -84,9 +84,9 @@ they are present. Otherwise, derive the roots above under the active
 2. **Produce or validate the implementation spec, then break it into tasks.**
    - Run the **Specification Development** workflow — load and follow
      `skills/orchestration/workflows/specification-development.md`. It
-     sequences `feature-specifications` (gather/draft/self-check/revise) →
-     `feature-specification-verification`
-     → `breakdown-feature-spec-to-tasks` (and lists those sub-skills at its top).
+     sequences `feature-specifications` (overview) →
+     `breakdown-feature-spec-to-tasks` (standalone engineering sub-specs)
+     → `feature-specification-verification` (family review) and lists those sub-skills at its top.
    - If a draft spec already exists, that workflow runs
      `feature-specification-verification` rather than rewriting blindly.
 Before choosing implementation skills, read `skills/coding/coding-rules/SKILL.md`

@@ -154,8 +154,11 @@ class TestResolveModelNameWithFallback:
         assert notice is not None
         assert "compatibility-only" in notice
 
-    def test_unrecognized_model_falls_back_to_default(self) -> None:
+    def test_unrecognized_model_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An unrecognizable model falls back to the global default."""
+        # cfg resolves the short key dynamically; the ambient SLO_DEFAULT_MODEL_NAME
+        # is captured at config.cfg import, before this test's patch.
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
         resolved, notice = resolve_model_name_with_fallback(model_name="mistral-large")
         assert resolved == "gpt-5.4"
         assert notice is not None

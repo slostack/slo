@@ -22,6 +22,7 @@ def test_concurrency_default_and_override(monkeypatch: pytest.MonkeyPatch) -> No
         and isinstance(node.target, ast.Name)
         and node.target.id == "SUBAGENT_MAX_CONCURRENCY"
     )
+    assert assignment.value is not None
     expression = compile(ast.Expression(body=assignment.value), "config/cfg.py", "eval")
     monkeypatch.delenv("SLO_SUBAGENT_MAX_CONCURRENCY", raising=False)
     assert eval(expression, {"os": os}) == 6
@@ -60,12 +61,11 @@ def test_headless_skill_defaults_and_abort_policy() -> None:
     assert "Resume if partial work exists, or relaunch" not in text
 
 
-def test_claude_timeout_defaults() -> None:
-    text = (ROOT / "CLAUDE.md").read_text()
-    assert "(default `10800`)" in text
-    assert "(default `7200`)" in text
-    assert "(default `4800`)" not in text
-    assert "(default `3600`)" not in text
+def test_inactivity_timeout_defaults() -> None:
+    """``config/cfg.py`` owns the orchestrator (10800 s) and child (7200 s) inactivity defaults."""
+    text = " ".join((ROOT / "config/cfg.py").read_text().split())
+    assert 'primary_name="SLO_STREAM_INACTIVITY_TIMEOUT_SECONDS", default=10800.0,' in text
+    assert 'alias_name="SLO_SUBAGENT_INACTIVITY_TIMEOUT", default=7200.0,' in text
 
 
 def test_verdict_gates_and_chain_restriction() -> None:
@@ -129,13 +129,9 @@ def test_workflow_budget_defaults_and_user_override_contract(source: str) -> Non
         assert stale not in text
 
 
-@pytest.mark.parametrize("source", ("AGENTS.md", "CLAUDE.md"))
-def test_project_guidance_budget_defaults_and_overrides(source: str) -> None:
-    """Automatically loaded project context must not restore superseded limits."""
-    text = " ".join((ROOT / source).read_text().split())
-    assert "60 workflow turns" in text
-    assert "20 dispatch calls" in text
+def test_readme_budget_guidance_defers_numbers_without_stale_limits() -> None:
+    """README states the override rule, defers the numbers to the workflows skill and keeps no stale limits."""
+    text = " ".join((ROOT / "README.md").read_text().split())
     assert "Explicit user instructions override" in text
-    assert "unlimited" in text
     assert "eight workflow turns" not in text
     assert "six dispatch calls per workflow turn" not in text

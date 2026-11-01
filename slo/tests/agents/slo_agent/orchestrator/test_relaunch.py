@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import IO
+
 import asyncio
 import fcntl
 import json
@@ -256,6 +258,9 @@ async def test_cancelled_late_capture_open_closes_endpoint_without_workload_spaw
 
     root = tmp_path.resolve()
     release = asyncio.Event()
+    capture_path = root / name
+    assert capture_path.resolve().is_relative_to(root)
+    endpoint = capture_path.open("wb")
     endpoint_closed = threading.Event()
     spawn = AsyncMock()
 
@@ -268,18 +273,18 @@ async def test_cancelled_late_capture_open_closes_endpoint_without_workload_spaw
             endpoint_closed.set()
 
     async def late_opener(**kwargs: object) -> IO[bytes]:
-        """Return an endpoint only after the test has cancelled its waiter."""
+        """Return the owned capture only after the cancelled waiter is released."""
         assert kwargs["name"] == name
         await release.wait()
-        return Endpoint()
+        return endpoint
 
     opener = asyncio.create_task(late_opener(name=name))
     cleanup = asyncio.create_task(WorkflowRelauncher._close_late_capture_result(opener=opener))
     await asyncio.sleep(0)
-    assert not endpoint_closed.is_set()
+    assert not endpoint.closed
     release.set()
     await cleanup
-    assert endpoint_closed.is_set()
+    assert endpoint.closed
     spawn.assert_not_awaited()
 
 

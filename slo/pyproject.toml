@@ -1,6 +1,6 @@
 [project]
 name = "slo"
-version = "0.22.0"
+version = "0.30.1"
 description = "Python ReAct agent harness, modelled on pi.dev"
 authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
 license = "GPL-2.0-only"
@@ -98,6 +98,9 @@ build-backend = "poetry.core.masonry.api"
   # ``--finalize-environment`` step. The installer is the only wrapper and
   # managed-shell-environment writer.
   include = [
+      { path = "src/tui/components/chat_transcript/css.tcss", format = ["sdist", "wheel"] },
+      { path = "src/tui/components/workflow_progress/css.tcss", format = ["sdist", "wheel"] },
+      { path = "src/tui/components/prompt_input/css.tcss", format = ["sdist", "wheel"] },
       { path = "skills/**/*", format = ["sdist", "wheel"] },
       { path = "plugins/**/*", format = ["sdist", "wheel"] },
       { path = "install.sh", format = ["sdist", "wheel"] },
@@ -106,12 +109,15 @@ build-backend = "poetry.core.masonry.api"
 [dependency-groups]
 dev = [
     "pytest (>=9.0.2,<10.0.0)",
+    "pytest-xdist (>=3.8.0,<4.0.0)",
     "pytest-asyncio (>=1.3.0,<2.0.0)",
     "pytest-httpserver (>=1.1.0,<2.0.0)",
     "black (>=26.1.0,<27.0.0)",
     "autoflake (>=2.3.1,<3.0.0)",
     "mypy (>=1.13.0,<2.0.0)",
+    "types-PyYAML (==6.0.12.20260906)",
     "debugpy (>=1.8.0,<2.0.0)",
+    "pre-commit (>=4.0.0,<5.0.0)",
 ]
 
 [tool.pytest.ini_options]

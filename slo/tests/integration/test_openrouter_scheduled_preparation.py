@@ -6,6 +6,7 @@ HTTP-400 bodies test adapter normalization, not arbitrary old-key text sanitatio
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import json
 import os
 import sys
@@ -70,11 +71,17 @@ def contained_writes(tmp_path: Path) -> Iterator[list[Path]]:
             writes.append(resolved)
         assert event not in {"subprocess.Popen", "os.system", "socket.connect"}, event
 
+    # A module first imported inside the guarded window would otherwise have the
+    # import system cache its bytecode under src/, which the guard rightly rejects.
+    # That write belongs to Python, not to the code under test, so disable it here.
+    writes_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     sys.addaudithook(audit)
     try:
         yield writes
     finally:
         active = False
+        sys.dont_write_bytecode = writes_bytecode
 
 
 @tool
@@ -259,6 +266,12 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
                 async with app.run_test(size=(80, 24)) as pilot:
                     await pilot.pause()
                     assert await leases.is_active(session_id="scheduled-target")
+                    # This test drives inbox delivery itself (`_poll_session_inbox` below).
+                    # The app's own 1 s poll timer would otherwise claim the queued
+                    # message before the pending-state assertions, whenever a slow
+                    # machine stretches the gap between enqueue and assertion past a tick.
+                    assert app._inbox_timer is not None
+                    app._inbox_timer.pause()
                     definition = ScheduleDefinitionDAO(
                         schedule_id="scheduled-mounted",
                         name="Scheduled mounted acceptance",
@@ -298,7 +311,7 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
                     assert await inbox.list_pending(session_id="scheduled-target") == []
                     done = await inbox.list_done(session_id="scheduled-target")
                     assert len(done) == 1 and done[0].message_id == pending[0].message_id
-                    transcript = app._copyable_transcript_text()
+                    transcript = app.query_one(ChatTranscriptComponent).logical_copy_text()
                     if gateway_failure:
                         assert "scheduled mounted answer" not in transcript
                     else:

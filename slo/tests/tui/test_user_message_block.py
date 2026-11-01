@@ -66,6 +66,7 @@ class TestUserMessageBlock:
             await pilot.pause()
             block = app.query_one(UserMessageBlock)
             assert str(block._body.content) == "hello world"
+            assert isinstance(block._body.content, Content)
             assert all(isinstance(span.style, Style) for span in block._body.content.spans)
 
     def test_preserves_exact_raw_user_source_while_rendering_visible_markdown(self) -> None:

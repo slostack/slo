@@ -15,6 +15,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.agents.reasoning_capabilities import ReasoningLevel
+from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
 
 __all__ = [
     "ReasoningLevel",
@@ -362,6 +363,28 @@ class SubAgentTaskDAO(BaseModel):
 
     task_id: str
     prompt: str
+    task_summary: str = Field(
+        min_length=1,
+        max_length=512,
+        description="Required concise description of the assigned operation and concrete subject; not role, instructions or status.",
+    )
+
+    @field_validator("task_summary", mode="before")
+    @classmethod
+    def _validate_task_summary(cls, value: object) -> str:
+        """Validate an authored description before any dispatch publication.
+
+        Args:
+            value: Untrusted authored summary.
+        Returns:
+            str: Complete normalized description.
+        Raises:
+            ValueError: Invalid type or mechanical summary policy.
+        """
+        if not isinstance(value, str):
+            raise ValueError("task_summary must be a string describing the assigned work")
+        return TaskPreview.validate_summary(task_summary=value)
+
     cwd: Optional[str] = None
     model: Optional[str] = None
     reasoning_level: Optional[ReasoningLevel] = None

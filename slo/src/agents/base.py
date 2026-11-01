@@ -20,6 +20,8 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
+from src.agents.providers.openai_responses_sequencing import SequencedChatOpenAI
+
 if TYPE_CHECKING:
     from src.agents.providers.model_pool import ModelPool, ModelPoolDAO
 
@@ -249,7 +251,7 @@ class LLMFactory:
             model_name (str): Exact canonical OpenRouter route.
             temperature (Optional[float]): Caller sampling override.
             streaming (Optional[bool]): Caller streaming override.
-            max_retries (int): SDK retry input; OpenRouter overrides it to zero.
+            max_retries (int): SDK retry count forwarded to OpenRouter.
             max_tokens (Optional[int]): Caller output-cap override.
             model_kwargs (Optional[dict[str, Any]]): Caller extras.
             session_id (Optional[str]): Session identity, unused by this adapter.
@@ -297,7 +299,7 @@ class LLMFactory:
             entry (ModelCatalogEntryDAO): Exact prepared route profile.
             temperature (Optional[float]): Caller sampling override.
             streaming (Optional[bool]): Caller streaming override.
-            max_retries (int): Caller retry setting retained for diagnostic parity.
+            max_retries (int): Caller retry setting forwarded to the SDK.
             max_tokens (Optional[int]): Caller output-cap override.
             model_kwargs (Optional[dict[str, Any]]): Caller extras.
             session_id (Optional[str): Active session identifier.
@@ -595,6 +597,7 @@ class LLMFactory:
                 reasoning=resolved_reasoning,
                 model_kwargs=sanitized_model_kwargs,
                 streaming=resolved["streaming"],
+                max_retries=resolved["max_retries"],
                 http_async_client=resolved["http_async_client"],
             )
         openai_kwargs = cls._openai_api_key_kwargs(
@@ -704,10 +707,10 @@ class LLMFactory:
             reasoning: Effective configuration copied for the client lifetime.
 
         Returns:
-            Stock legacy model or configured protected Platform adapter.
+            Sequenced legacy model or configured protected Platform adapter.
         """
         if not entry.requires_responses_api:
-            return ChatOpenAI(**kwargs)
+            return SequencedChatOpenAI(**kwargs)
         return cls._build_protected_openai_model(
             kwargs=kwargs, entry=entry, api_model_name=api_model_name, reasoning=reasoning
         )
@@ -834,7 +837,7 @@ class LLMFactory:
             resolved (dict[str, Any]): Factory defaults and injected local test transport.
 
         Returns:
-            OpenRouterChatOpenAI: No-SDK-retry gateway Chat Completions adapter.
+            OpenRouterChatOpenAI: Gateway adapter with the configured SDK retry count.
         """
         OpenRouterRequestPolicy.validate_output_cap(
             max_tokens=resolved["max_tokens"],
@@ -874,7 +877,7 @@ class LLMFactory:
             base_url="https://openrouter.ai/api/v1",
             api_key=credential.access_token,
             streaming=resolved["streaming"],
-            max_retries=0,
+            max_retries=resolved["max_retries"],
             use_responses_api=False,
             stream_usage=True,
             **sampling,
@@ -973,7 +976,7 @@ class LLMFactory:
             "temperature": resolved["temperature"],
             "max_tokens": resolved["max_tokens"],
             "streaming": resolved["streaming"],
-            "max_retries": 0,
+            "max_retries": resolved["max_retries"],
             "model_kwargs": resolved["model_kwargs"],
             "default_headers": {"User-Agent": KIMI_FOR_CODING_USER_AGENT},
         }

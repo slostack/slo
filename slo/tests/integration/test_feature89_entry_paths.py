@@ -29,7 +29,12 @@ async def test_feature89_child_model_selection(
     monkeypatch.setenv(name="SLO_OPENAI_API_KEY", value="fixture-filtered-openai")
     monkeypatch.setenv(name="SLO_OPENROUTER_API_KEY", value="fixture-forwarded-router")
     task = SubAgentTaskDAO(
-        task_id="child89", prompt="offline", model=model_name, reasoning_level="off", cwd=str(root)
+        task_summary="Check model request compatibility",
+        task_id="child89",
+        prompt="offline",
+        model=model_name,
+        reasoning_level="off",
+        cwd=str(root),
     )
     fake = MagicMock(pid=424242, returncode=0)
     fake.stdout = asyncio.StreamReader()

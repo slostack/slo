@@ -57,10 +57,10 @@ def _make_process(
         dispatch_id="44444444-4444-4444-8444-444444444444",
         task_id=task_id,
         session_id=session_id,
-        task=SubAgentTaskDAO(task_id=task_id, prompt=prompt),
+        task=SubAgentTaskDAO(task_summary="Exercise child output transport", task_id=task_id, prompt=prompt),
     )
     process: SubAgentProcess = SubAgentProcess(
-        task=SubAgentTaskDAO(task_id=task_id, prompt=prompt),
+        task=SubAgentTaskDAO(task_summary="Exercise child output transport", task_id=task_id, prompt=prompt),
         session_id=session_id,
         model=None,
         relay=_relay,
@@ -107,7 +107,9 @@ def test_phase_reasoning_is_independent_of_orchestrator(
         )
     )
     process, _ = _make_process(parent_session_id=parent.session_id)
-    process._task = SubAgentTaskDAO(task_id="t1", prompt="phase", reasoning_level=level)
+    process._task = SubAgentTaskDAO(
+        task_summary="Exercise child output transport", task_id="t1", prompt="phase", reasoning_level=level
+    )
     argv = process._build_argv()
     assert parent.active_reasoning_level == "high"
     if level is None:
@@ -147,7 +149,9 @@ class TestSubAgentProcessArgvBuilding:
     def test_argv_includes_cwd_when_task_has_cwd(self) -> None:
         """``--cwd`` is appended when the task carries a working directory."""
         process, _ = _make_process()
-        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", cwd="/tmp/work")
+        process._task = SubAgentTaskDAO(
+            task_summary="Exercise child output transport", task_id="t1", prompt="x", cwd="/tmp/work"
+        )
 
         argv: list[str] = process._build_argv()
 
@@ -157,7 +161,9 @@ class TestSubAgentProcessArgvBuilding:
     def test_argv_includes_reasoning_when_set(self) -> None:
         """``--reasoning`` is appended when the task carries a reasoning level."""
         process, _ = _make_process()
-        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", reasoning_level="high")
+        process._task = SubAgentTaskDAO(
+            task_summary="Exercise child output transport", task_id="t1", prompt="x", reasoning_level="high"
+        )
 
         argv: list[str] = process._build_argv()
 
@@ -174,7 +180,12 @@ class TestSubAgentProcessArgvBuilding:
     def test_argv_includes_resume_when_set(self) -> None:
         """``--resume`` is appended when the task carries a session reference."""
         process, _ = _make_process()
-        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", resume_session_reference="ref-abc")
+        process._task = SubAgentTaskDAO(
+            task_summary="Exercise child output transport",
+            task_id="t1",
+            prompt="x",
+            resume_session_reference="ref-abc",
+        )
 
         argv: list[str] = process._build_argv()
 
@@ -200,14 +211,21 @@ class TestSubAgentProcessArgvBuilding:
     def test_build_argv_always_enables_history(self) -> None:
         """Tasks that opt out of history still receive the history flag."""
         process, _ = _make_process()
-        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", enable_history=False)
+        process._task = SubAgentTaskDAO(
+            task_summary="Exercise child output transport", task_id="t1", prompt="x", enable_history=False
+        )
 
         assert "--enable-history" in process._build_argv()
 
     def test_build_argv_with_explicit_session_id_is_byte_identical(self) -> None:
         """An explicit task id agrees with the pool id and preserves argv output."""
         process, _ = _make_process(session_id="child-sess-01")
-        process._task = SubAgentTaskDAO(task_id="t1", prompt="x", session_id="child-sess-01")
+        process._task = SubAgentTaskDAO(
+            task_summary="Exercise child output transport",
+            task_id="t1",
+            prompt="x",
+            session_id="child-sess-01",
+        )
 
         assert process._build_argv() == [
             sys.executable,
@@ -230,6 +248,7 @@ class TestSubAgentProcessArgvBuilding:
         prompt_text: str = "You are a focused test-writing agent."
         process, _ = _make_process()
         process._task = SubAgentTaskDAO(
+            task_summary="Exercise child output transport",
             task_id="t1",
             prompt="x",
             system_prompt=prompt_text,

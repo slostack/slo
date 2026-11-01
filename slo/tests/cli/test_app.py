@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+import pytest
+
 from src.cli.app import app
 from src.cli.version import resolve_version
 
@@ -23,8 +25,11 @@ class TestAppSurface:
         assert result.exit_code == 0
         assert resolve_version() in result.stdout
 
-    def test_help_lists_subcommands(self) -> None:
+    def test_help_lists_subcommands(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``slo --help`` lists ``update`` / ``[<dir>]``."""
+        # Rich detects console width from the terminal, which is a pipe under
+        # parallel test workers; pin the width so the options panel renders fully.
+        monkeypatch.setenv("COLUMNS", "120")
         result = runner.invoke(app, ["--help"])
 
         assert result.exit_code == 0

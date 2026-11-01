@@ -24,10 +24,10 @@ Sub-spec 01-sub-agents 01.e.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, Protocol
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from config.logger import log_warning
 from src.agents.model_catalog.service import ModelCatalogService
@@ -43,8 +43,22 @@ from src.agents.slo_agent.orchestrator.task_payload import (
     parse_tasks_json,
 )
 
-if TYPE_CHECKING:
-    from src.agents.slo_agent.orchestrator.pool import SubAgentPool
+
+class SubAgentDispatcher(Protocol):
+    """Consumer-owned gateway for a completely validated batch."""
+
+    async def dispatch(self, *, mode: SubAgentMode, tasks: list[SubAgentTaskDAO]) -> OrchestratorResultDAO:
+        """Execute an admitted batch and return its existing result envelope.
+
+        Args:
+            mode: Validated batch execution mode.
+            tasks: Completely validated batch in caller order.
+
+        Returns:
+            OrchestratorResultDAO: Existing dispatch result envelope.
+        """
+        ...
+
 
 __all__ = [
     "SpawnSubAgentsTool",
@@ -82,7 +96,7 @@ class SpawnSubAgentsSchemaDAO(BaseModel):
         description=(
             "Preferred input: a native JSON array of task objects — pass the "
             "array directly, do NOT wrap it in a string. Each object must have "
-            '"task_id" (str) and "prompt" (str). Optional fields: "cwd" (str), '
+            '"task_id" (str), "task_summary" (str, required assigned operation and concrete subject, 1–96 characters), and "prompt" (str). Optional fields: "cwd" (str), '
             '"model" (str), "reasoning_level" (str — one of "off", "minimal", '
             '"low", "medium", "high", "xhigh", "max"; the key is "reasoning_level", NOT '
             '"reasoning"), "system_prompt" (str). An unknown model name is '
@@ -93,7 +107,7 @@ class SpawnSubAgentsSchemaDAO(BaseModel):
     tasks_json: Optional[str] = Field(
         default=None,
         description=(
-            "Legacy fallback: the same task array encoded as a JSON string. "
+            "Legacy fallback: the same task array, each requiring task_summary, encoded as a JSON string. "
             "Prefer 'tasks'. Provide 'tasks' OR 'tasks_json' — when both are "
             "present, 'tasks' wins."
         ),
@@ -101,6 +115,8 @@ class SpawnSubAgentsSchemaDAO(BaseModel):
 
 
 DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT: str = """\
+For every task, author task_summary from its actual assigned work: operation plus concrete subject or deliverable, 1–96 characters after normalization. Do not copy boilerplate, role, phase number or status. Keep prompt complete. This is part of this dispatch, not a separate model call.
+
 You are the Slo orchestrator — a software engineering task coordinator operating inside the Slo coding agent harness. Your job is to decompose complex engineering tasks into discrete sub-tasks, delegate them to child coding agents via the spawn_sub_agents tool, monitor their results, recover from failures, and synthesize a coherent final answer.
 
 You are not a solo coding agent. You do not write code or edit files directly unless the task is trivially small (a single, quick lookup or a one-line answer) or you are explicitly authorized to take over a failing workflow. Takeover must preserve required independent review and does not reset budgets. For any task that involves multiple files, multiple concerns, or multiple sequential steps, your first action is to plan the decomposition. Keep a concise todo list of steps, findings and counters.
@@ -362,10 +378,10 @@ Pass the batch as a native `tasks` array (preferred) — the array of task objec
 
 ```json
 // Phase 1
-{ "mode": "single", "tasks": [{ "task_id": "phase-1", "prompt": "<self-contained phase 1 prompt>", "cwd": "/repo", "model": "claude-sonnet-4-6" }] }
+{ "mode": "single", "tasks": [{ "task_id": "phase-1", "task_summary": "Implement the requested feature", "prompt": "<self-contained phase 1 prompt>", "cwd": "/repo", "model": "claude-sonnet-4-6" }] }
 
 // Phase 2 — only after phase 1 returns READY
-{ "mode": "single", "tasks": [{ "task_id": "phase-2", "prompt": "<self-contained phase 2 prompt>", "cwd": "/repo", "model": "claude-sonnet-4-6" }] }
+{ "mode": "single", "tasks": [{ "task_id": "phase-2", "task_summary": "Review the feature implementation", "prompt": "<self-contained phase 2 prompt>", "cwd": "/repo", "model": "claude-sonnet-4-6" }] }
 ```
 
 Use `mode="chain"` only for ungated sequences, such as successive summaries, where no intermediate approval or revision decision is required. `{previous}` passes text; it does not check a verdict. Do not chain Code+Test, Review and Completion Check:
@@ -374,8 +390,8 @@ Use `mode="chain"` only for ungated sequences, such as successive summaries, whe
 {
   "mode": "chain",
   "tasks": [
-    { "task_id": "summarize", "prompt": "Summarize the supplied text; no approval gate is involved." },
-    { "task_id": "shorten", "prompt": "Shorten this summary without changing its meaning: {previous}" }
+    { "task_id": "summarize", "task_summary": "Summarize the supplied text", "prompt": "Summarize the supplied text; no approval gate is involved." },
+    { "task_id": "shorten", "task_summary": "Shorten the supplied summary without changing meaning", "prompt": "Shorten this summary without changing its meaning: {previous}" }
   ]
 }
 ```
@@ -389,14 +405,14 @@ For Parallel workflows, dispatch all independent phases in a **single `mode="par
 {
   "mode": "parallel",
   "tasks": [
-    { "task_id": "phase-auth", "prompt": "<auth analysis>", "model": "claude-sonnet-4-6" },
-    { "task_id": "phase-db",   "prompt": "<db analysis>",   "model": "claude-sonnet-4-6" },
-    { "task_id": "phase-api",  "prompt": "<api analysis>",  "model": "claude-sonnet-4-6" }
+    { "task_id": "phase-auth", "task_summary": "Analyze authentication boundaries", "prompt": "<auth analysis>", "model": "claude-sonnet-4-6" },
+    { "task_id": "phase-db", "task_summary": "Analyze database persistence",   "prompt": "<db analysis>",   "model": "claude-sonnet-4-6" },
+    { "task_id": "phase-api", "task_summary": "Analyze API contracts",  "prompt": "<api analysis>",  "model": "claude-sonnet-4-6" }
   ]
 }
 
 // Synthesis — after all parallel phases complete
-{ "mode": "single", "tasks": [{ "task_id": "synthesis", "prompt": "Synthesize: <insert phase results>" }] }
+{ "mode": "single", "tasks": [{ "task_id": "synthesis", "task_summary": "Synthesize the phase findings", "prompt": "Synthesize: <insert phase results>" }] }
 ```
 
 ### Per-phase model assignment
@@ -412,7 +428,7 @@ If only one model is available, omit the `model` field from all tasks — the po
 To set a phase's reasoning budget, pass the `reasoning_level` field (the key is `reasoning_level`, NOT `reasoning`) alongside `model`. Valid values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`:
 
 ```json
-{ "mode": "single", "tasks": [{ "task_id": "review", "prompt": "<review prompt>", "model": "claude-opus-4-8", "reasoning_level": "medium" }] }
+{ "mode": "single", "tasks": [{ "task_id": "review", "task_summary": "Review the requested implementation", "prompt": "<review prompt>", "model": "claude-opus-4-8", "reasoning_level": "medium" }] }
 ```
 
 An unknown `model` name is rejected before any child is spawned; the returned error names the supported models — read it and reissue the call with a supported name rather than guessing another.
@@ -467,6 +483,9 @@ precedence over this default.
 
 
 ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM: str = (
+    "For every task, author task_summary from its actual assigned work: operation plus concrete subject "
+    "or deliverable, 1–96 characters after normalization. Do not copy boilerplate, role, phase number "
+    "or status. Keep prompt complete. This is part of this dispatch, not a separate model call.\n"
     "\n\n## Sub-agent dispatch policy\n\n"
     "You have access to a `spawn_sub_agents` tool that runs tasks as parallel "
     "child processes. Call it **only** when the user explicitly requests "
@@ -548,7 +567,17 @@ def _resolution_from_task_dicts(
     """
     try:
         resolved_tasks: list[SubAgentTaskDAO] = [SubAgentTaskDAO(**entry) for entry in task_dicts]
-    except Exception as exc:  # noqa: BLE001 — validation errors must not raise
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        if any(error["loc"] == ("task_summary",) for error in errors):
+            return SubAgentTaskResolutionDAO(
+                error=(
+                    "Invalid task definition: every task requires task_summary "
+                    "describing its assigned work in 1–96 characters."
+                )
+            )
+        return SubAgentTaskResolutionDAO(error=f"Invalid task definition: {exc}")
+    except Exception as exc:  # noqa: BLE001 — retain unrelated error handling
         return SubAgentTaskResolutionDAO(error=f"Invalid task definition: {exc}")
     return SubAgentTaskResolutionDAO(tasks=resolved_tasks, recovery_notes=recovery_notes)
 
@@ -632,7 +661,7 @@ class SpawnSubAgentsTool:
     """
 
     @classmethod
-    def build(cls, *, pool: "SubAgentPool") -> BaseTool:
+    def build(cls, *, pool: SubAgentDispatcher) -> BaseTool:
         """Build a ``spawn_sub_agents`` tool closed over ``pool``.
 
         Called once per orchestrator session during session construction.
@@ -660,7 +689,7 @@ class SpawnSubAgentsTool:
 
             Provide the batch as ``tasks`` (a native JSON array of task objects,
             preferred) or as the legacy ``tasks_json`` string. Each task object must
-            have ``"task_id"`` (str) and ``"prompt"`` (str), and may include ``"cwd"``,
+            have ``"task_id"`` (str), ``"task_summary"`` (assigned work, 1–96 characters), and ``"prompt"`` (str), and may include ``"cwd"``,
             ``"model"``, ``"reasoning_level"`` (NOT ``"reasoning"``), and
             ``"system_prompt"``. Dispatch runs under ``mode`` and blocks until every
             child reaches a terminal state, then returns a JSON-serialised

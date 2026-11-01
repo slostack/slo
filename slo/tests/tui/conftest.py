@@ -21,6 +21,16 @@ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.tui.event_renderer import EventRenderer
 
 
+@pytest.fixture
+def theme_colors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enable theme colors for exact paint assertions before constructing the app.
+
+    Args:
+        monkeypatch: Restores the caller's terminal preference after the test.
+    """
+    monkeypatch.delenv(name="NO_COLOR", raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _observe_mr116_selection(request: pytest.FixtureRequest) -> Iterator[None]:
     """TEMP: capture the exact case only when opted in; preserve all natural scheduling.

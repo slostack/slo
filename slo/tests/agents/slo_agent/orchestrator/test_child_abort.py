@@ -104,7 +104,15 @@ class _PoolHarness:
     def dispatch(
         self, *, session_ids: list[str], mode: str = "parallel"
     ) -> asyncio.Task[OrchestratorResultDAO]:
-        tasks = [SubAgentTaskDAO(task_id=f"t-{sid}", prompt="work", session_id=sid) for sid in session_ids]
+        tasks = [
+            SubAgentTaskDAO(
+                task_summary="Observe the child cancellation boundary",
+                task_id=f"t-{sid}",
+                prompt="work",
+                session_id=sid,
+            )
+            for sid in session_ids
+        ]
         return asyncio.create_task(self.pool.dispatch(mode=mode, tasks=tasks))  # type: ignore[arg-type]
 
 

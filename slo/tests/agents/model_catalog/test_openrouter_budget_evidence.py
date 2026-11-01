@@ -118,8 +118,9 @@ async def test_prepared_budget_evidence_never_adds_budget_request(
             await ModelCatalogService.shutdown()
             ModelCatalogService.reset()
     assert prepared.entries[entry.model_name] == entry
-    assert prepared.entries[entry.model_name].capabilities is not None
-    assert prepared.entries[entry.model_name].capabilities.supports_max_tokens is expected
+    capabilities = prepared.entries[entry.model_name].capabilities
+    assert capabilities is not None
+    assert capabilities.supports_max_tokens is expected
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         with patch("src.agents.base.CredentialResolver.require", return_value=credential):

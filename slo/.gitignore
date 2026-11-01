@@ -11,3 +11,6 @@ venv/
 *.log
 data/
 scripts/local_tests/setup_test_db.sql
+
+# Local project memory (agent-maintained; not shipped). Exact values live in KB slo/operational-reference.md.
+/RESEARCH.md

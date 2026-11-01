@@ -232,7 +232,8 @@ class TestSessionRateLimitResilience:
     @pytest.mark.asyncio
     async def test_preflight_local_rate_wait_yields_retrying_status(self) -> None:
         """A saturated local request window yields a waiting status before the attempt."""
-        session: SloAgentSession = _session()
+        # This scenario saturates the catalog's 30-RPM policy, not the host default.
+        session: SloAgentSession = _single_model_session(model_name="gpt-5.4")
         session._recent_request_times.extend([0.0] * 30)
         session._recent_request_token_estimates.extend((0.0, 10) for _ in range(30))
 

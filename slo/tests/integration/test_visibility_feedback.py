@@ -1,7 +1,16 @@
 """Mounted visibility feedback through constructor-injected presentation boundaries."""
 
+from src.tui.components.workflow_progress.events import (
+    WorkflowProgressUpdate,
+    MembershipRemovedDAO,
+    MinimizeProgressDAO,
+    ObservationFailedDAO,
+    ProgressUpdatedDAO,
+    SessionsUpdatedDAO,
+)
 import asyncio
 from collections.abc import Callable
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from typing import Optional
 
@@ -18,7 +27,8 @@ from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, C
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.workflows.dao import (
     SessionProgressSnapshotDAO,
     WorkflowListGroupKeyDAO,
@@ -53,34 +63,25 @@ class GatedPresentation:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def apply_sessions(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
-        """Fail only the armed paint, leaving subsequent refresh functional."""
-        if self.fail:
+    async def handle(self, *, event: WorkflowProgressUpdate) -> None:
+        """Fail only armed list delivery, otherwise await the real target."""
+        if self.fail and isinstance(event, SessionsUpdatedDAO):
             self.fail = False
             self.entered.set()
             await self.release.wait()
             raise RuntimeError("synthetic presentation failure")
-        await self.delegate.apply_sessions(snapshot=snapshot)
+        await self.delegate.handle(event=event)
 
     def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
-        """Delegate selection to the real mounted adapter."""
+        """Preserve explicit refusal."""
         return self.delegate.open_progress(key=key)
 
-    def minimize_progress(self) -> None:
-        """Delegate retirement."""
-        self.delegate.minimize_progress()
+    async def reset(self) -> None:
+        """Reset the borrowed presentation for this test wrapper."""
+        await self.delegate.reset()
 
-    def apply_progress(self, *, snapshot: SessionProgressSnapshotDAO) -> None:
-        """Delegate selected progress."""
-        self.delegate.apply_progress(snapshot=snapshot)
-
-    def membership_removed(self, *, key: WorkflowSessionKeyDAO) -> None:
-        """Delegate membership loss."""
-        self.delegate.membership_removed(key=key)
-
-    def observation_failed(self) -> None:
-        """Delegate ordinary observation feedback."""
-        self.delegate.observation_failed()
+    async def close(self) -> None:
+        """The component owns the borrowed sink."""
 
 
 class PresentationFactory:
@@ -119,8 +120,8 @@ def session_for_feedback(*, root: Path) -> SloAgentSession:
 
 def feedback_lines(*, app: SloTUI) -> list[str]:
     """Read mounted transcript notices, not an intercepted output method."""
-    assert app._adapter is not None
-    return [text for text, _classes in app._adapter.lines]
+    assert app.query_one(ChatTranscriptComponent)._adapter is not None
+    return [text for text, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines]
 
 
 async def wait_for_feedback_groups(
@@ -264,7 +265,9 @@ async def test_feedback_readiness_waits_for_both_committed_groups(tmp_path: Path
         before = services.service.current_list_snapshot()
         sink.fail = True
         command = asyncio.create_task(
-            app.on_prompt_input_submitted(PromptInput.Submitted(text="/workflows tui dismiss shared-parent"))
+            app.on_prompt_input_component_submitted(
+                PromptInputComponent.Submitted(text="/workflows tui dismiss shared-parent")
+            )
         )
         try:
             await asyncio.wait_for(sink.entered.wait(), timeout=5)
@@ -326,8 +329,8 @@ async def test_visibility_feedback_is_exact_and_owner_scoped(
         else:
             sink.fail = True
         command = asyncio.create_task(
-            app.on_prompt_input_submitted(
-                PromptInput.Submitted(
+            app.on_prompt_input_component_submitted(
+                PromptInputComponent.Submitted(
                     text="/workflows tui dismiss"
                     + {"": "", "unknown": " unknown-id", "ambiguous": " shared-parent", "unavailable": ""}[
                         refusal
@@ -339,7 +342,7 @@ async def test_visibility_feedback_is_exact_and_owner_scoped(
             await asyncio.wait_for(sink.entered.wait(), timeout=5)
             if failure == "replacement":
                 replacement = asyncio.create_task(
-                    app.on_prompt_input_submitted(PromptInput.Submitted(text="/new"))
+                    app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text="/new"))
                 )
                 # Disposal nulls owner references before joining the blocked paint.
                 from tests.tui.workflows.test_visibility_paint_barriers import checkpoint

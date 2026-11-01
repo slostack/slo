@@ -3,6 +3,8 @@
 import asyncio
 from collections.abc import Callable
 from textual.pilot import Pilot
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -240,7 +242,7 @@ async def test_shutdown_attempts_each_owner(tmp_path: Path, failure: str) -> Non
         fault = fail_first_close if failure == "close" else RuntimeError("private cleanup defect")
         with (
             patch.object(target, name, side_effect=fault),
-            patch.object(app, "_write_adapter_line", side_effect=RuntimeError("notice defect")),
+            patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice defect")),
             patch.object(
                 session, "finish_retired_reporting_cleanup", wraps=session.finish_retired_reporting_cleanup
             ) as current_drain,
@@ -266,7 +268,7 @@ async def test_late_runtime_continuation_is_silent(tmp_path: Path, phase: str) -
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def barrier() -> None:
+    async def barrier(**kwargs: object) -> None:
         """Pause one actual app await seam until shutdown completes."""
         entered.set()
         await release.wait()
@@ -274,7 +276,7 @@ async def test_late_runtime_continuation_is_silent(tmp_path: Path, phase: str) -
     async with app.run_test() as pilot:
         await pilot.pause()
         target, name = {
-            "mount_hydration": (app, "_hydrate_transcript_from_history"),
+            "mount_hydration": (app._chat_transcript, "hydrate"),
             "replacement_usage": (session, "refresh_context_window_snapshot"),
             "preparation": (session, "prepare_startup"),
         }[phase]
@@ -289,7 +291,7 @@ async def test_late_runtime_continuation_is_silent(tmp_path: Path, phase: str) -
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 await app.on_unmount()
                 with (
-                    patch.object(app, "_write_adapter_line") as notice,
+                    patch.object(app._chat_transcript, "handle") as notice,
                     patch.object(app, "_refresh_usage_status_bar") as usage,
                     patch.object(app, "_initialize_session_delivery") as initialize,
                 ):
@@ -323,7 +325,7 @@ async def test_viewer_helper_fault_retains_shutdown_until_worker_terminal(tmp_pa
         app._visualizer_launch_tasks["retained"] = viewer
         with (
             patch.object(app, "_cancel_visualizer_launches", side_effect=RuntimeError("private")),
-            patch.object(app, "_write_adapter_line", side_effect=RuntimeError("notice")),
+            patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice")),
         ):
             shutdown = asyncio.create_task(coro=app.on_unmount())
             try:

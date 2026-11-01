@@ -1,7 +1,10 @@
 """Shutdown admission regressions for the app-owned prompt registration boundary."""
 
 import asyncio
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
 from unittest.mock import patch
 
 import pytest
@@ -92,7 +95,7 @@ async def test_claim_retained_on_shutdown(tmp_path: Path, cutoff: str) -> None:
             release = asyncio.Event()
             original_claim = store.claim_next
             original_advance = app._advance_workflow_handle_state
-            original_write = app._write_adapter_line
+            original_write = app._chat_transcript.handle
 
             async def claim(*, session_id: str) -> SessionInboxMessageDAO | None:
                 """Pause the real claim before its original storage call."""
@@ -108,16 +111,20 @@ async def test_claim_retained_on_shutdown(tmp_path: Path, cutoff: str) -> None:
                     entered.set()
                     await release.wait()
 
-            def write(*, content: str, classes: str) -> None:
+            async def write(*, command: TranscriptCommand) -> None:
                 """Set the synchronous closing prefix at the final notice seam."""
-                original_write(content=content, classes=classes)
+                if not isinstance(command, TranscriptNoticeDAO):
+                    await original_write(command=command)
+                    return
+                content, classes = command.content, command.classes
+                await original_write(command=command)
                 if cutoff == "registration" and content.startswith("[scheduled update]"):
                     app._app_closing = True
 
             with (
                 patch.object(store, "claim_next", side_effect=claim),
                 patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
-                patch.object(app, "_write_adapter_line", side_effect=write),
+                patch.object(app._chat_transcript, "handle", side_effect=write),
                 patch.object(session, "invoke", wraps=session.invoke) as invoke,
             ):
                 poll = asyncio.create_task(coro=app._poll_session_inbox())
@@ -161,7 +168,7 @@ async def test_prompt_registration_shutdown_local_echo_pending(tmp_path: Path) -
         app = SloTUI(session=session)
         entered = asyncio.Event()
         release = asyncio.Event()
-        original_echo = app._echo_user_line
+        original_echo = app._chat_transcript.echo_user
 
         async def echo(*, text: str) -> None:
             """Pause the actual echo while retaining the real submission lock."""
@@ -171,7 +178,7 @@ async def test_prompt_registration_shutdown_local_echo_pending(tmp_path: Path) -
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(app, "_echo_user_line", side_effect=echo):
+            with patch.object(app._chat_transcript, "echo_user", side_effect=echo):
                 submission = asyncio.create_task(coro=app._submit_or_queue_prompt(text="late prompt"))
                 shutdown = None
                 registered = None

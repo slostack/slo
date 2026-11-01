@@ -2,7 +2,7 @@
 
 The projector patches the already-mounted ``ToolExecutionBlock`` in place:
 an update for a known id calls ``update_partial``; an update for an unknown id
-mounts a block via ``_ensure_tool_block`` first; only the terminal
+mounts a block via ``_get_or_create_tool_block`` first; only the terminal
 ``tool_result`` pops the block from the mounted map.
 """
 
@@ -13,7 +13,7 @@ from textual.content import Content
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.tools.tool_output import ToolOutputUpdateDAO
-from src.tui.transcript_projector import TranscriptProjector
+from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
 from tests.tui.test_transcript_projector import FakeHost, FakeToolBlock
 
 
@@ -71,8 +71,8 @@ class _PartialHost(FakeHost):
 async def test_nameless_early_partial_retains_unknown_name_until_result() -> None:
     """An early unnamed snapshot remains display-only and accepts later identity."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
-    await projector.project(
+    projector = TranscriptProjectionAdapter(host=host)
+    await projector.handle(
         event=AgentStreamEventDAO(kind="tool_output_update", tool_call_id="unnamed", content="early output")
     )
     block = host.tool_blocks["unnamed"]
@@ -85,7 +85,7 @@ async def test_nameless_early_partial_retains_unknown_name_until_result() -> Non
     headline = block._headline.render()
     assert isinstance(headline, Content)
     assert headline.plain == ""
-    await projector.project(
+    await projector.handle(
         event=AgentStreamEventDAO(
             kind="tool_result", tool_call_id="unnamed", tool_name="bash", content="final output"
         )
@@ -100,14 +100,14 @@ async def test_nameless_early_partial_retains_unknown_name_until_result() -> Non
 async def test_partial_update_patches_mounted_block_in_place() -> None:
     """A known block receives ``update_partial`` and stays mounted."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
-    await projector.project(
+    projector = TranscriptProjectionAdapter(host=host)
+    await projector.handle(
         event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-1", tool_name="bash")
     )
     block = host.tool_blocks["call-1"]
     assert isinstance(block, _PartialRecordingToolBlock)
 
-    await projector.project(
+    await projector.handle(
         event=AgentStreamEventDAO(
             kind="tool_output_update",
             tool_call_id="call-1",
@@ -128,13 +128,13 @@ async def test_partial_update_patches_mounted_block_in_place() -> None:
 async def test_partial_name_uses_event_then_existing_block(event_name: str | None) -> None:
     """Missing names retain known identity; explicit names update the same widget."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
-    await projector.project(
+    projector = TranscriptProjectionAdapter(host=host)
+    await projector.handle(
         event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="known", tool_name="bash")
     )
     block = host.tool_blocks["known"]
     assert isinstance(block, _PartialRecordingToolBlock)
-    await projector.project(
+    await projector.handle(
         event=AgentStreamEventDAO(
             kind="tool_output_update", tool_call_id="known", tool_name=event_name, content="partial"
         )
@@ -151,9 +151,9 @@ async def test_partial_name_uses_event_then_existing_block(event_name: str | Non
 async def test_early_partial_update_mounts_block_first() -> None:
     """An update arriving before normal mounting ensures the block exists."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
+    projector = TranscriptProjectionAdapter(host=host)
 
-    await projector.project(
+    await projector.handle(
         event=AgentStreamEventDAO(
             kind="tool_output_update",
             tool_call_id="call-early",
@@ -172,11 +172,11 @@ async def test_early_partial_update_mounts_block_first() -> None:
 async def test_terminal_tool_result_supersedes_partial_and_pops_block() -> None:
     """Only the terminal branch pops; partial content never becomes the result."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
-    await projector.project(
+    projector = TranscriptProjectionAdapter(host=host)
+    await projector.handle(
         event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-1", tool_name="bash")
     )
-    await projector.project(
+    await projector.handle(
         event=AgentStreamEventDAO(
             kind="tool_output_update",
             tool_call_id="call-1",
@@ -186,7 +186,7 @@ async def test_terminal_tool_result_supersedes_partial_and_pops_block() -> None:
     )
     block = host.tool_blocks["call-1"]
 
-    await projector.project(
+    await projector.handle(
         event=AgentStreamEventDAO(
             kind="tool_result",
             tool_call_id="call-1",
@@ -203,10 +203,10 @@ async def test_terminal_tool_result_supersedes_partial_and_pops_block() -> None:
 async def test_partial_update_never_pops_block() -> None:
     """A stream of partials keeps the same single block mounted throughout."""
     host = _PartialHost()
-    projector = TranscriptProjector(host=host)
+    projector = TranscriptProjectionAdapter(host=host)
 
     for index in range(3):
-        await projector.project(
+        await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_output_update",
                 tool_call_id="call-1",

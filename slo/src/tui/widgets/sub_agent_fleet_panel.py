@@ -1,7 +1,7 @@
 """Navigable workflow session list below the Slo prompt (feature 94 a.2).
 
 ``SubAgentFleetPanel`` keeps its historical location and class identity: SloTUI
-mounts exactly one below ``PromptInput`` and above ``UsageStatusBar``. It is a
+mounts exactly one below ``PromptInputComponent`` and above ``UsageStatusBar``. It is a
 presentation-only consumer of ``WorkflowSessionSnapshotDAO``: a heading and one
 stable native ``ListView`` of ``SubAgentFleetRow`` items keyed by the composite
 ``(orchestrator_session_id, session_id)``. It never reads files, owns execution
@@ -246,7 +246,10 @@ class SubAgentFleetPanel(Vertical):
         try:
             await self._list.clear()
             self._rows = [SubAgentFleetRow(row=row) for row in rows]
-            await self._list.extend(self._rows)
+            # An empty extend still calls Textual's mount, which refuses once
+            # the app is exiting (``is_attached`` is False); zero rows need no mount.
+            if self._rows:
+                await self._list.extend(self._rows)
         finally:
             self._adopt_mounted_rows()
         self._list.index = self._restored_index(revision=revision, key=old_key, index=old_index)

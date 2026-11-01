@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Optional
 
 from textual.app import ComposeResult
@@ -12,7 +13,7 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from src.agents.slo_agent.message_text import merge_reasoning_delta
-from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
+from src.tui.widgets.assistant_stream_block import AssistantStreamBlock, FollowSnapshotDAO
 from src.tui.widgets.markdown_content_compiler import (
     MarkdownContentCompiler,
     MarkdownContentDAO,
@@ -101,7 +102,7 @@ class AssistantStreamThinkingBlock(Vertical):
 
     WHAT: Own one reasoning buffer, its punctuation-aware merge and markdown
     stabilization, expansion state, and a coalesced rendering timer.
-    WHO: ``TranscriptProjector`` mounts and updates this widget for one segment;
+    WHO: ``TranscriptProjectionAdapter`` mounts and updates this widget for one segment;
     ``SloTUI`` consumes its shared rendered notification for scroll follow.
     WHEN: Mounted on the first non-empty ``thinking_delta`` for a segment and
     sealed by its matching normalized ``thinking_end`` or terminal run
@@ -127,7 +128,12 @@ class AssistantStreamThinkingBlock(Vertical):
     }
     """
 
-    def __init__(self, *, force_expanded: Optional[bool] = None) -> None:
+    def __init__(
+        self,
+        *,
+        force_expanded: Optional[bool] = None,
+        follow_snapshot: Optional[Callable[[], FollowSnapshotDAO]] = None,
+    ) -> None:
         """Build an empty segment with a valid body before parent mount.
 
         WHAT: Constructs the single ``Static`` body and all segment-local state.
@@ -141,6 +147,7 @@ class AssistantStreamThinkingBlock(Vertical):
                 hides it. Defaults to None.
         """
         super().__init__()
+        self._follow_snapshot = follow_snapshot
         self._expanded: bool = True if force_expanded is None else force_expanded
         self._body: AssistantThinkingBody = AssistantThinkingBody(classes="assistant-thinking-body")
         self._body.display = False
@@ -204,7 +211,7 @@ class AssistantStreamThinkingBlock(Vertical):
 
         WHAT: Applies the extracted punctuation-aware delta merge, then marks the
         segment dirty.
-        WHO: ``TranscriptProjector`` calls it from a non-empty ``thinking_delta``.
+        WHO: ``TranscriptProjectionAdapter`` calls it from a non-empty ``thinking_delta``.
         WHEN: Only while this widget remains unsealed; the projector identifies
         it by normalized ``block_id`` rather than iteration.
 
@@ -221,7 +228,7 @@ class AssistantStreamThinkingBlock(Vertical):
         """Replace partial text with completed reasoning truth.
 
         WHAT: Renders completed reasoning for an open segment.
-        WHO: ``TranscriptProjector`` calls it for a matching repair
+        WHO: ``TranscriptProjectionAdapter`` calls it for a matching repair
             ``thinking_end`` and for replay, in both cases before the segment
             is sealed.
         WHEN: Only while the segment is open; a contentless implicit close
@@ -242,7 +249,7 @@ class AssistantStreamThinkingBlock(Vertical):
 
         WHAT: Stops future deltas and completed-text replacements, and
             flushes the final pending frame.
-        WHO: ``TranscriptProjector`` calls it after a completed repair, at a
+        WHO: ``TranscriptProjectionAdapter`` calls it after a completed repair, at a
             parent terminal sweep, or immediately after replay initialization.
         WHEN: Never merely because another iteration or an answer/tool event
             arrives; a contentless end leaves this segment open for its
@@ -265,8 +272,11 @@ class AssistantStreamThinkingBlock(Vertical):
         """
         if expanded == self._expanded:
             return
+        snapshot = self._capture_follow_snapshot()
         self._expanded = expanded
         self._render_thinking()
+        if self.is_mounted:
+            self.post_message(AssistantStreamBlock.Rendered(snapshot=snapshot, source=self))
 
     def get_copyable_text(self) -> str:
         """Return reasoning-only text for the existing focused-copy path.
@@ -345,24 +355,17 @@ class AssistantStreamThinkingBlock(Vertical):
         self._dirty = False
         if self._thinking_text == self._last_rendered:
             return
-        was_following: bool = self._check_app_at_bottom()
+        snapshot = self._capture_follow_snapshot()
         self._last_rendered = self._thinking_text
         self._render_thinking()
         if self.is_mounted:
-            self.post_message(AssistantStreamBlock.Rendered(was_following=was_following))
+            self.post_message(AssistantStreamBlock.Rendered(snapshot=snapshot, source=self))
 
-    def _check_app_at_bottom(self) -> bool:
-        """Read the optional app follow snapshot without importing ``SloTUI``.
-
-        Returns:
-            bool: True when the mounted app reports transcript follow mode.
-        """
-        if not self.is_mounted:
-            return False
-        check = getattr(self.app, "_transcript_is_at_bottom", None)
-        if check is None:
-            return False
-        return bool(check())
+    def _capture_follow_snapshot(self) -> FollowSnapshotDAO:
+        """Call the borrowed owner once, only while mounted and attached."""
+        if self._follow_snapshot is None or not self.is_mounted or not self.is_attached:
+            return FollowSnapshotDAO()
+        return self._follow_snapshot()
 
     def _render_thinking(self) -> None:
         """Render stabilized reasoning and apply current expansion visibility.

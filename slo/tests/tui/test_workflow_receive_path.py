@@ -9,6 +9,7 @@ delivery modes keep their existing rendering behaviour.
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,7 +21,7 @@ from src.agents.slo_agent.history.inbox.dao import (
     InboxMessageKind,
     SessionInboxMessageDAO,
 )
-from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
+from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, SubAgentStatusDAO
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -32,6 +33,8 @@ from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.tui.app import SloTUI
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
+from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
+from src.tui.workflows.service import DetachedWorkflowAppService
 
 
 @pytest.fixture(autouse=True)
@@ -184,10 +187,10 @@ class TestContextNoteDelivery:
                 admitted = await app._handle_inbox_message(message=message)
             assert admitted is True
 
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
                 content == "⊛ wf-1 update: [workflow wf-1] lifecycle note" and classes == "sub-agent-notice"
-                for content, classes in app._adapter.lines
+                for content, classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
             session.record_workflow_update.assert_awaited_once_with(
                 text="[workflow wf-1] lifecycle note",
@@ -248,10 +251,10 @@ class TestVisualizerRetarget:
                 await _join_viewers(app)
 
             mock_launch.assert_called_once_with(parent_session_id="orch-1")
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
                 "Opened workflow visualizer in a new window." in content
-                for content, _classes in app._adapter.lines
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
     @pytest.mark.asyncio
@@ -340,10 +343,10 @@ class TestVisualizerRetarget:
                 )
                 await _join_viewers(app)
 
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
                 "slo visualize --session orch-1 --follow" in content
-                for content, _classes in app._adapter.lines
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
     @pytest.mark.asyncio
@@ -716,10 +719,10 @@ class TestWorkflowHandleStateAdvance:
             handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
             assert handle is not None
             assert handle.state == "launching"
-            assert app._adapter is not None
+            assert app.query_one(ChatTranscriptComponent)._adapter is not None
             assert any(
                 content == "[scheduled notice] monitor: monitor tick"
-                for content, _classes in app._adapter.lines
+                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
 
@@ -751,7 +754,7 @@ class TestAbortSeparationAndExit:
 
     @pytest.mark.asyncio
     async def test_detached_lifecycle_never_touches_fleet_panel(self, tmp_path: Path) -> None:
-        """A full detached lifecycle keeps the fleet panel idle (v1 decision)."""
+        """A full detached lifecycle keeps the real mounted fleet panel idle (v1 decision)."""
         history_root: Path = tmp_path / "history"
         store: WorkflowHandleStore = _build_store(history_root=history_root)
         await _write_handle(store=store, state="launching")
@@ -760,8 +763,6 @@ class TestAbortSeparationAndExit:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            fleet_panel_spy: MagicMock = MagicMock(spec=SubAgentFleetPanel)
-            app._fleet_panel = fleet_panel_spy
             with (
                 patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
                 patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
@@ -789,8 +790,61 @@ class TestAbortSeparationAndExit:
                 assert admitted is True
                 await _join_viewers(app)
 
-            fleet_panel_spy.apply_snapshot.assert_not_called()
-            fleet_panel_spy.reset.assert_not_called()
+            # Observable state through the real mounted component: a detached
+            # lifecycle never paints or resets the fleet panel; it stays hidden
+            # and empty. A MagicMock oracle on query_one cannot prove this, so we
+            # assert the real mounted widget's public state instead. Seeding an
+            # unrelated visible row proves the detached lifecycle cannot reset
+            # a populated panel: an empty-to-empty oracle cannot detect a
+            # forbidden reset.
+            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
+            assert panel.display is False
+            assert len(panel.query(SubAgentFleetRow)) == 0
+
+            # Seed an unrelated visible row through the real coordinator path,
+            # then run another detached lifecycle. The row must survive: a
+            # forbidden legacy reset would clear it. The mock session's attached
+            # snapshot supplier is configured directly (not via _build_session).
+            assert isinstance(app._workflow_app_service, DetachedWorkflowAppService)
+            app._workflow_app_service._attached_snapshot = lambda: AttachedDispatchSnapshotDAO(
+                dispatch_id="0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+                dispatch_sequence=1,
+                entries=(
+                    SubAgentStatusDAO(
+                        task_id="seeded-task",
+                        session_id="seeded-child",
+                        status="running",
+                        prompt_preview="seeded row",
+                        execution_id="11111111-1111-4111-8111-111111111111",
+                    ),
+                ),
+            )
+            assert app._workflow_progress_coordinator is not None
+            app._workflow_progress_coordinator.request_refresh()
+            await pilot.pause()
+            await pilot.pause()
+            assert panel.display is True
+            assert len(panel.query(SubAgentFleetRow)) == 2
+            panel.focus_sessions()
+            await pilot.pause()
+            assert panel.has_focus or panel.has_focus_within
+
+            with (
+                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
+                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
+            ):
+                async with app._prompt_submission_lock:
+                    admitted = await app._handle_inbox_message(
+                        message=_workflow_message(kind="workflow_started", message_id="message-4"),
+                    )
+                assert admitted is True
+                await _join_viewers(app)
+
+            # The unrelated visible row and its selection survive the detached
+            # lifecycle; no forbidden legacy reset touched the panel.
+            assert panel.display is True
+            assert len(panel.query(SubAgentFleetRow)) == 2
+            assert panel.has_focus or panel.has_focus_within
 
     @pytest.mark.asyncio
     async def test_exit_hint_lists_live_workflows(self, tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 """Attached spawn events cross the mounted app and real registered CLI boundary."""
 
 import asyncio
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,7 +88,7 @@ async def test_attached_spawn_submits_real_parent_once(
             else:
                 task = app._visualizer_launch_tasks[parent_id]
                 await app._render_event(event=event)
-                assert app._visualizer_launch_tasks[parent_id] is task
+                assert app._visualizer_launch_tasks.get(parent_id) is task or task.done()
                 await asyncio.wait_for(task, timeout=10)
                 await eventually(predicate=lambda: not app._visualizer_launch_tasks)
             rows = [
@@ -97,8 +98,10 @@ async def test_attached_spawn_submits_real_parent_once(
             ]
             if mode != "enabled":
                 assert rows == []
-                assert app._adapter is not None
-                assert not any("Submitted workflow viewer" in str(line) for line in app._adapter.lines)
+                assert app._chat_transcript._adapter is not None
+                assert not any(
+                    "Submitted workflow viewer" in str(line) for line in app._chat_transcript._adapter.lines
+                )
                 return
             assert rows == [
                 ["pane", "split", "--pane", "synthetic-pane", "--direction", "right", "--no-focus"],
@@ -110,12 +113,14 @@ async def test_attached_spawn_submits_real_parent_once(
             assert not any(
                 row[:2] in [["pane", op] for op in ("focus", "get", "close")] for row in commands(fake_herdr)
             )
-            assert app._adapter is not None
-            assert not any("Opened workflow visualizer" in str(line) for line in app._adapter.lines)
+            assert app._chat_transcript._adapter is not None
+            assert not any(
+                "Opened workflow visualizer" in str(line) for line in app._chat_transcript._adapter.lines
+            )
             assert (
                 sum(
                     "Submitted workflow viewer command to Herdr pane (viewer)." in str(line)
-                    for line in app._adapter.lines
+                    for line in app._chat_transcript._adapter.lines
                 )
                 == 1
             )

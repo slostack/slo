@@ -8,7 +8,8 @@ from src.agents.base import LLMBuildResult
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.editor_launcher import EditorLauncher
 from tests.tui.test_code_command import EditorLookup, RecordingEditorTerminal, transcript_lines
 from tests.tui.test_code_lifetime import local_file
@@ -35,7 +36,7 @@ async def test_new_session_drains_captured_editor_and_suppresses_late_notice(tmp
             ),
         )
         async with app.run_test() as pilot:
-            prompt = app.query_one(PromptInput)
+            prompt = app.query_one(PromptInputComponent)
             prompt.load_text("/code one.py")
             await pilot.press("enter")
             await asyncio.wait_for(fut=terminal.entered.wait(), timeout=2)

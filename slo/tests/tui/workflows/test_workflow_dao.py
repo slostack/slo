@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import ValidationError
 
@@ -660,7 +662,7 @@ class TestWorkflowListVisibilityRequestDAO:
         with pytest.raises(ValidationError):
             request.target_id = "wf-a"
         with pytest.raises(ValidationError):
-            WorkflowListVisibilityRequestDAO(action="dismiss", extra="x")
+            WorkflowListVisibilityRequestDAO.model_validate({"action": "dismiss", "extra": "x"})
 
 
 class TestWorkflowListVisibilityOutcomeDAO:
@@ -699,7 +701,12 @@ class TestWorkflowListVisibilityOutcomeDAO:
         ],
     )
     def test_rendered_line(
-        self, action: str, outcome: str, count: int, target: str | None, rendered: str
+        self,
+        action: Literal["dismiss", "show"],
+        outcome: Literal["changed", "unchanged", "unknown", "ambiguous", "unavailable"],
+        count: int,
+        target: str | None,
+        rendered: str,
     ) -> None:
         """Each accepted shape emits the exact fixed contract line."""
         value = WorkflowListVisibilityOutcomeDAO(
@@ -731,6 +738,6 @@ class TestWorkflowListVisibilityOutcomeDAO:
     def test_rejects_inconsistent_outcome(self, fields: dict[str, object]) -> None:
         """Changed means positive; every other outcome changes zero; refusals name safe targets."""
         with pytest.raises(ValidationError):
-            WorkflowListVisibilityOutcomeDAO(
-                action="dismiss", snapshot=WorkflowSessionSnapshotDAO(), **fields
+            WorkflowListVisibilityOutcomeDAO.model_validate(
+                {"action": "dismiss", "snapshot": WorkflowSessionSnapshotDAO(), **fields}
             )

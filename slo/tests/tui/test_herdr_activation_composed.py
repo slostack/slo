@@ -7,6 +7,7 @@ import os
 import weakref
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -132,8 +133,8 @@ async def test_mount_inactive_has_zero_integration_io_and_faux_parity(
             await pilot.press("enter")
             await eventually(predicate=lambda: native_factory.called and not session.is_running)
             await pilot.pause()
-            assert app._adapter is not None
-            assert "offline answer" in str(app._adapter.lines)
+            assert app._chat_transcript._adapter is not None
+            assert "offline answer" in str(app._chat_transcript._adapter.lines)
             assert session._history_store is not None
             events = await session._history_store.load_events(session_id=session.session_id)
             assert any(event.kind == "user_message" for event in events)

@@ -1,1 +1,0 @@
-dpkg -V coreutils

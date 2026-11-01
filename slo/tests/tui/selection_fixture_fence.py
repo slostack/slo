@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 import asyncio
 from functools import partial, wraps
 from typing import Callable
@@ -29,8 +31,12 @@ class SelectionFixtureFence:
         self.pending = 0
         self.completed = asyncio.Event()
         self.completed.set()
-        assert app._transcript_scroll is not None
-        for owner in (app, app._transcript_scroll):
+        assert app.query_one(ChatTranscriptComponent)._transcript_scroll is not None
+        for owner in (
+            app,
+            app.query_one(ChatTranscriptComponent),
+            app.query_one(ChatTranscriptComponent)._transcript_scroll,
+        ):
             self._observe(owner=owner, monkeypatch=monkeypatch)
 
     def _observe(self, *, owner: MessagePump, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,12 +88,16 @@ class SelectionFixtureFence:
 
     async def fixture_completed(self) -> None:
         """Await mounted fixture widgets, bubbled Rendered messages, then final paint."""
-        assert self.app._transcript_content is not None
-        widgets: list[Widget] = list(self.app._transcript_content.walk_children(Widget, with_self=True))
+        assert self.app.query_one(ChatTranscriptComponent)._transcript_content is not None
+        widgets: list[Widget] = list(
+            self.app.query_one(ChatTranscriptComponent)._transcript_content.walk_children(
+                Widget, with_self=True
+            )
+        )
         for widget in reversed(widgets):
             await widget._mounted_event.wait()
             await self._messages_processed(owner=widget)
         # Rendered bubbles through each ancestor queue before reaching the app.
-        for ancestor in self.app._transcript_content.ancestors:
+        for ancestor in self.app.query_one(ChatTranscriptComponent)._transcript_content.ancestors:
             await self._messages_processed(owner=ancestor)
         await self.paint_committed()

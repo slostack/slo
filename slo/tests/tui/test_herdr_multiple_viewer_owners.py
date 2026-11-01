@@ -1,7 +1,10 @@
 """Actual app workers share one admitted CLI and one queued viewer reservation."""
 
 import asyncio
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
 
 import pytest
 
@@ -25,16 +28,20 @@ async def test_multiple_registered_viewers_survive_first_join_fault(
 ) -> None:
     """First registry join failure cannot skip the real queued worker or retained drain."""
     notices: list[str] = []
-    original_write = SloTUI._write_adapter_line
+    original_write = ChatTranscriptComponent.handle
 
-    def write(app: SloTUI, *, content: str, classes: str) -> None:
+    async def write(transcript: ChatTranscriptComponent, *, command: TranscriptCommand) -> None:
         """Fail the real diagnostic sink after the original registry join fault."""
+        if not isinstance(command, TranscriptNoticeDAO):
+            await original_write(transcript, command=command)
+            return
+        content, classes = command.content, command.classes
         if registry_fault and content == "Viewer cleanup incomplete.":
             notices.append(content)
             raise RuntimeError("synthetic diagnostic sink fault")
-        original_write(app, content=content, classes=classes)
+        await original_write(transcript, command=command)
 
-    monkeypatch.setattr(target=SloTUI, name="_write_adapter_line", value=write)
+    monkeypatch.setattr(target=ChatTranscriptComponent, name="handle", value=write)
     operation = exercise_retained_viewer(
         root=tmp_path,
         fake=fake_herdr,

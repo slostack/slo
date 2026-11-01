@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from unittest.mock import patch
 
 import pytest
@@ -180,7 +182,7 @@ async def test_tui_when_auth_has_no_landing_model_primes_cached_model_search() -
 
     async with app.run_test(size=(60, 15)) as pilot:
         await pilot.pause()
-        app._on_auth_dismissed(
+        await app._on_auth_dismissed(
             CredentialDAO(
                 provider=ProviderName.OPENROUTER,
                 auth_type=AuthType.API_KEY,
@@ -280,7 +282,9 @@ async def test_mounted_reasoning_router_paints_converted_controls(
             await app.screen.action_cancel()
             await pilot.pause()
         assert result.rendered is not None
-        app._write_adapter_line(content=result.rendered, classes="tool-result")
+        await app.query_one(ChatTranscriptComponent).handle(
+            command=TranscriptNoticeDAO(content=result.rendered, classes="tool-result")
+        )
         await pilot.pause()
         app.query_one("#transcript-scroll").scroll_end(animate=False)
         await pilot.pause()
@@ -307,4 +311,4 @@ async def test_tui_when_display_search_matches_inserts_exact_canonical_argument(
             await pilot.pause()
 
             assert app._input.text == "/model openrouter:vendor/opaque-id"
-            assert app._slash_suggestion_state.rows[0].label == "openrouter:vendor/opaque-id"
+            assert app._input._slash_suggestion_state.rows[0].label == "openrouter:vendor/opaque-id"

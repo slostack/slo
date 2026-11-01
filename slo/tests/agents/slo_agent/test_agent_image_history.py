@@ -88,8 +88,11 @@ async def test_large_image_executor_trace_persists_reference_not_base64(tmp_path
 
     assert events[0].payload.tool_output == reference
     assert "base64" not in (events[0].payload.tool_output or "")
-    assert len(events[0].payload.tool_output or "") < 200
-    assert TokenEstimator.estimate(event=_persisted_tool_result(tool_output=reference)) < 50
+    # The durable reference includes the absolute path; only its framing is bounded.
+    assert reference == f"[image attached: large.png, 1568x1045, ref {target}]"
+    assert len(reference) - len(str(target)) < 200
+    assert data not in reference
+    assert TokenEstimator.estimate(event=_persisted_tool_result(tool_output=reference)) < len(data) // 4
 
 
 def test_trace_image_tool_message_uses_image_reference() -> None:

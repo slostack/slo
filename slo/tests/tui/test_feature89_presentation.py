@@ -556,7 +556,7 @@ async def test_direct_picker_keyboard_paints_and_selects_exact_route(
         assert "context1050000" in painted
         await pilot.press("down")
         await pilot.pause()
-        selected = app._slash_suggestion_state.highlighted_index
+        selected = app._input._slash_suggestion_state.highlighted_index
         assert selected == 1
         await pilot.press("tab")
         await pilot.pause()

@@ -1,6 +1,9 @@
 """Actual dispatch to mounted literal row and original detail, without inference."""
 
 import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import AsyncIterator, Any
 import hashlib
 import json
 import importlib.util
@@ -12,7 +15,10 @@ from typing import Optional
 from uuid import uuid4
 
 import pytest
+from langchain_core.tools import BaseTool
 from textual.widgets import Static
+from textual.pilot import Pilot
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
@@ -24,7 +30,8 @@ from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.agents.slo_agent.orchestrator.spawn_tool import SpawnSubAgentsTool
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import SloTUI, PromptInput
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.session_progress_screen import SessionProgressScreen
@@ -34,7 +41,6 @@ from tests.tui.authentication._painted_output import (
     painted_text,
     painted_widget_strips,
     wait_for_condition,
-    wait_until_painted,
 )
 
 SUMMARY_PAIRS = [
@@ -213,31 +219,71 @@ def assert_released_files(
         assert model.model_config["extra"] == "forbid"
 
 
-@pytest.mark.parametrize("theme", ["slo-dark", "slo-default"])
-@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
-@pytest.mark.parametrize("detached", [False, True])
-@pytest.mark.parametrize(
-    "prompt,label,child_id",
-    [(p, l, "summary-child") for p, l in SUMMARY_PAIRS]
-    + [(SUMMARY_PAIRS[-1][0], SUMMARY_PAIRS[-1][1], "summary-child-" + "long-identity-" * 5)],
-)
-async def test_task_summary_survives_registration_to_detail(
-    tmp_path: Path,
-    theme: str,
-    size: tuple[int, int],
-    detached: bool,
-    prompt: str,
-    label: str,
-    released_readers: tuple[ModuleType, ModuleType],
-    child_id: str,
-) -> None:
-    """Pending and terminal rows retain literal label; hide/show and Enter retain detail."""
+SUMMARY_CASES = [(p, label, "summary-child") for p, label in SUMMARY_PAIRS] + [
+    (SUMMARY_PAIRS[-1][0], SUMMARY_PAIRS[-1][1], "summary-child-" + "long-identity-" * 5)
+]
+summary_cases = pytest.mark.parametrize("prompt,label,child_id", SUMMARY_CASES)
+execution_modes = pytest.mark.parametrize("detached", [False, True])
+
+
+@dataclass
+class SummaryDispatch:
+    """One independently owned dispatch; no UI assertions are hidden in setup."""
+
+    root: Path
+    factory: FiniteFactory
+    pool: SubAgentPool
+    tool: BaseTool
+    events: list[AgentStreamEventDAO]
+    task: asyncio.Task[Any]
+    prompt: str
+    label: str
+    child_id: str
+
+    @property
+    def process(self) -> FiniteProcess:
+        """Return the process whose entry barrier has already completed."""
+        process = self.factory.process
+        if process is None:
+            raise RuntimeError("Dispatch entered without constructing its process")
+        return process
+
+    async def complete(self) -> None:
+        """Supply the finite transport's context and settle through real arbitration."""
+        process = self.process
+        directory = self.root / "summary-owner" / "children" / self.child_id
+        data = dump_json_bytes(
+            SpawnContextDAO.build(
+                task_id="compare",
+                prompt=self.prompt,
+                system_prompt="",
+                inactivity_timeout_seconds=1.0,
+                model=None,
+                reasoning_level=None,
+                cwd=None,
+                execution_id=process.execution_id,
+            )
+        )
+        (directory / "spawn_context.json").write_bytes(data)
+        process.bound_registry.mark_running(
+            session_id=process.session_id,
+            execution_id=process.execution_id,
+            spawn_context_sha256=hashlib.sha256(data).hexdigest(),
+        )
+        self.factory.release.set()
+        await self.task
+
+
+@asynccontextmanager
+async def summary_dispatch(
+    *, tmp_path: Path, prompt: str, label: str, child_id: str
+) -> AsyncIterator[SummaryDispatch]:
+    """Start a real dispatch with finite transport and always join its owned task."""
     root = tmp_path / "history"
     factory = FiniteFactory()
     events: list[AgentStreamEventDAO] = []
 
     async def relay(event: AgentStreamEventDAO) -> None:
-        """Capture lifecycle output without invoking a provider or terminal."""
         events.append(event)
 
     pool = SubAgentPool(
@@ -250,136 +296,342 @@ async def test_task_summary_survives_registration_to_detail(
         process_factory=factory,
     )
     tool = SpawnSubAgentsTool.build(pool=pool)
-    session = SloAgentSession(
-        workdir=tmp_path,
-        session_id="summary-owner",
-        config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-sonnet-4-6", history_root=root, enable_history=True
-        ),
-        history_store=FilesystemSessionHistoryStore(root=root),
+    task = asyncio.create_task(
+        tool.ainvoke(
+            {
+                "mode": "single",
+                "tasks": [
+                    {"task_id": "compare", "session_id": child_id, "prompt": prompt, "task_summary": label}
+                ],
+            }
+        )
     )
-    if detached:
-        await WorkflowHandleStore(history_root=root).write(
-            handle=_handle(
-                workflow_id="wf-summary",
-                owner_session_id="summary-owner",
-                orchestrator_session_id="summary-owner",
-                state="stalled",
-            )
+    try:
+        await asyncio.wait_for(factory.entered.wait(), timeout=5)
+        yield SummaryDispatch(root, factory, pool, tool, events, task, prompt, label, child_id)
+    finally:
+        factory.release.set()
+        await task
+
+
+@pytest.fixture
+def authenticated_summary_ui(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply the credential prerequisite, not a mock of workflow behavior.
+
+    Integration tests do not inherit tests/tui/conftest.py. Without explicit
+    credentials, the authentication modal can cover the fleet and consume Enter.
+    """
+
+    def resolve(*, provider: ProviderName) -> CredentialDAO:
+        return CredentialDAO(
+            provider=provider, auth_type=AuthType.API_KEY, access_token="summary-test-placeholder"
         )
-    else:
-        session.attach_sub_agent_pool(pool=pool, spawn_tools=[tool])
-    app = SloTUI(session=session)
-    async with app.run_test(size=size) as pilot:
-        app.theme = theme
-        task = asyncio.create_task(
-            tool.ainvoke(
-                {
-                    "mode": "single",
-                    "tasks": [
-                        {
-                            "task_id": "compare",
-                            "session_id": child_id,
-                            "prompt": prompt,
-                            "task_summary": label,
-                        }
-                    ],
-                }
-            )
+
+    monkeypatch.setattr("src.tui.app.CredentialResolver.resolve", resolve)
+
+
+@dataclass
+class SummaryUI:
+    """Mounted app access with observable command and row readiness barriers."""
+
+    app: SloTUI
+    pilot: Pilot
+    dispatch: SummaryDispatch
+
+    @property
+    def panel(self) -> SubAgentFleetPanel:
+        return self.app.query_one(SubAgentFleetPanel)
+
+    @property
+    def child(self) -> SubAgentFleetRow:
+        return next(row for row in self.panel.query(SubAgentFleetRow) if row.row.role == "child")
+
+    async def command(self, text: str) -> None:
+        editor = self.app.query_one(PromptInputComponent)
+        editor.focus()
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: self.app.focused is editor,
+            description="workflow command editor owns focus",
         )
-        try:
-            await asyncio.wait_for(factory.entered.wait(), timeout=5)
-            # A real command requests coalesced observation without private timer access.
-            editor = app.query_one(PromptInput)
-            editor.text = "/workflows tui show"
-            await pilot.press("enter")
-            panel = app.query_one(SubAgentFleetPanel)
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: any(row.row.role == "child" for row in panel.query(SubAgentFleetRow)),
-                description="pending child fleet row is mounted",
-            )
-            child = next(row for row in panel.query(SubAgentFleetRow) if row.row.role == "child")
-            assert str(child.query_one(Static).render()) == f"[pending] {child_id}: {label}"
-            assert child.row.task_summary == label
-            panel.focus_sessions()
-            await pilot.press("down")
-            # The focused row's content paint trails mounting under parallel worker
-            # load; poll the compositor until the label's literal cells appear.
-            expected = f"[pending] {child_id}: {label}"
-            painted = await wait_until_painted(pilot=pilot, widget=child, text=expected)
-            # Rows intentionally clip horizontally; compare actual visible literal cells.
-            assert painted and "".join(expected.split()).startswith(painted.removesuffix("…"))
-            assert "[pending]summary-child" in painted
-            editor.focus()
-            process = factory.process
-            assert process is not None
-            assert process.bound_task.prompt == prompt
-            assert process.bound_task.task_summary == label
-            fleet = json.loads((root / "summary-owner" / "fleet.json").read_text())
-            assert fleet["entries"][0]["prompt_preview"] == "Task summary v1: " + label
-            directory = root / "summary-owner" / "children" / child_id
-            assert directory.resolve().is_relative_to(tmp_path.resolve())
-            data = dump_json_bytes(
-                SpawnContextDAO.build(
-                    task_id="compare",
-                    prompt=prompt,
-                    system_prompt="",
-                    inactivity_timeout_seconds=1.0,
-                    model=None,
-                    reasoning_level=None,
-                    cwd=None,
-                    execution_id=process.execution_id,
+        editor.text = text
+        await self.pilot.press("enter")
+
+    async def wait_for_row(self, status: str) -> None:
+        expected = f"[{status}] {self.dispatch.child_id}: {self.dispatch.label}"
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: any(
+                row.row.role == "child" and str(row.query_one(Static).render()) == expected
+                for row in self.panel.query(SubAgentFleetRow)
+            ),
+            description=f"{status} child row is presented",
+        )
+
+    async def dismiss(self) -> None:
+        await self.command("/workflows tui dismiss")
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: not list(self.panel.query(SubAgentFleetRow)),
+            description="fleet is locally hidden",
+        )
+
+
+@asynccontextmanager
+async def summary_ui(
+    *,
+    tmp_path: Path,
+    prompt: str,
+    label: str,
+    child_id: str,
+    detached: bool,
+    completed: bool = False,
+    theme: str = "slo-dark",
+    size: tuple[int, int] = (120, 40),
+) -> AsyncIterator[SummaryUI]:
+    """Each caller gets a fresh dispatch and app, never another test's state."""
+    async with summary_dispatch(tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id) as dispatch:
+        if completed:
+            await dispatch.complete()
+        session = SloAgentSession(
+            workdir=tmp_path,
+            session_id="summary-owner",
+            config=SessionConfigDAO(
+                workdir=tmp_path,
+                model_name="claude-sonnet-4-6",
+                history_root=dispatch.root,
+                enable_history=True,
+            ),
+            history_store=FilesystemSessionHistoryStore(root=dispatch.root),
+        )
+        if detached:
+            await WorkflowHandleStore(history_root=dispatch.root).write(
+                handle=_handle(
+                    workflow_id="wf-summary",
+                    owner_session_id="summary-owner",
+                    orchestrator_session_id="summary-owner",
+                    state="stalled",
                 )
             )
-            (directory / "spawn_context.json").write_bytes(data)
-            process.bound_registry.mark_running(
-                session_id=process.session_id,
-                execution_id=process.execution_id,
-                spawn_context_sha256=hashlib.sha256(data).hexdigest(),
-            )
-            factory.release.set()
-            await task
-            assert_released_files(root=root, prompt=prompt, child_id=child_id, readers=released_readers)
-            editor.text = "/workflows tui show"
-            await pilot.press("enter")
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: any(row.row.role == "child" for row in panel.query(SubAgentFleetRow)),
-                description="completed child fleet row is mounted",
-            )
-            child = next(row for row in panel.query(SubAgentFleetRow) if row.row.role == "child")
-            original_key = child.row.key
-            assert child.row.task_summary == label
-            assert child.row.task_text == prompt
-            editor.text = "/workflows tui dismiss"
-            await pilot.press("enter")
-            assert list(panel.query(SubAgentFleetRow)) == []
-            editor.text = "/workflows tui show"
-            await pilot.press("enter")
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: any(row.row.role == "child" for row in panel.query(SubAgentFleetRow)),
-                description="re-shown child fleet row is mounted",
-            )
-            child = next(row for row in panel.query(SubAgentFleetRow) if row.row.role == "child")
-            assert child.row.task_summary == label
-            assert child.row.task_text == prompt
-            assert child.row.task_text_complete
-            assert child.row.key == original_key
-            assert str(child.query_one(Static).render()) == f"[completed] {child_id}: {label}"
-            panel.focus_sessions()
-            await pilot.press("down", "enter")
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: isinstance(app.screen, SessionProgressScreen),
-                description="session progress screen is mounted",
-            )
-            assert isinstance(app.screen, SessionProgressScreen)
-            assert str(app.screen.query_one("#task-description", Static).render()) == prompt
-            assert [event.content for event in events if event.kind == "sub_agent_spawned"] == [
-                "Task summary v1: " + label
-            ]
-        finally:
-            factory.release.set()
-            await task
+        else:
+            session.attach_sub_agent_pool(pool=dispatch.pool, spawn_tools=[dispatch.tool])
+        app = SloTUI(session=session)
+        async with app.run_test(size=size) as pilot:
+            app.theme = theme
+            ui = SummaryUI(app, pilot, dispatch)
+            await ui.command("/workflows tui show")
+            await ui.wait_for_row("completed" if completed else "pending")
+            yield ui
+
+
+@summary_cases
+async def test_summary_dispatch_starts_child(tmp_path: Path, prompt: str, label: str, child_id: str) -> None:
+    """Dispatch reaches the finite child's public execution entry point."""
+    async with summary_dispatch(tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id) as dispatch:
+        assert dispatch.factory.entered.is_set()
+        assert dispatch.process.session_id == child_id
+
+
+@summary_cases
+async def test_summary_dispatch_preserves_inputs(
+    tmp_path: Path, prompt: str, label: str, child_id: str
+) -> None:
+    """The child receives the original prompt separately from its summary."""
+    async with summary_dispatch(tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id) as dispatch:
+        assert dispatch.process.bound_task.prompt == prompt
+        assert dispatch.process.bound_task.task_summary == label
+
+
+@summary_cases
+async def test_summary_is_persisted_in_fleet(tmp_path: Path, prompt: str, label: str, child_id: str) -> None:
+    """The wire preview carries the summary encoding, not the full prompt."""
+    async with summary_dispatch(tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id) as dispatch:
+        fleet = json.loads((dispatch.root / "summary-owner" / "fleet.json").read_text())
+        assert fleet["entries"][0]["prompt_preview"] == "Task summary v1: " + label
+
+
+@summary_cases
+async def test_summary_spawn_event(tmp_path: Path, prompt: str, label: str, child_id: str) -> None:
+    """Exactly one spawn event publishes the encoded summary."""
+    async with summary_dispatch(tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id) as dispatch:
+        await dispatch.complete()
+        assert [event.content for event in dispatch.events if event.kind == "sub_agent_spawned"] == [
+            "Task summary v1: " + label
+        ]
+
+
+@summary_cases
+async def test_summary_files_remain_readable_by_released_models(
+    tmp_path: Path,
+    prompt: str,
+    label: str,
+    child_id: str,
+    released_readers: tuple[ModuleType, ModuleType],
+) -> None:
+    """Published files preserve the historical schema independently of UI layout."""
+    async with summary_dispatch(tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id) as dispatch:
+        await dispatch.complete()
+        assert_released_files(root=dispatch.root, prompt=prompt, child_id=child_id, readers=released_readers)
+
+
+@pytest.mark.usefixtures("authenticated_summary_ui")
+@execution_modes
+@summary_cases
+async def test_pending_summary_row(
+    tmp_path: Path, prompt: str, label: str, child_id: str, detached: bool
+) -> None:
+    """Pending presentation retains the literal summary in model and renderable."""
+    async with summary_ui(
+        tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id, detached=detached
+    ) as ui:
+        assert ui.child.row.task_summary == label
+        assert str(ui.child.query_one(Static).render()) == f"[pending] {child_id}: {label}"
+
+
+@pytest.mark.usefixtures("authenticated_summary_ui")
+@pytest.mark.parametrize("theme", ["slo-dark", "slo-default"])
+@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
+@execution_modes
+@summary_cases
+async def test_pending_summary_is_painted(
+    tmp_path: Path,
+    prompt: str,
+    label: str,
+    child_id: str,
+    detached: bool,
+    theme: str,
+    size: tuple[int, int],
+) -> None:
+    """Actual visible cells are a literal prefix, allowing intentional clipping."""
+    async with summary_ui(
+        tmp_path=tmp_path,
+        prompt=prompt,
+        label=label,
+        child_id=child_id,
+        detached=detached,
+        theme=theme,
+        size=size,
+    ) as ui:
+        ui.panel.focus_sessions()
+        await ui.pilot.press("down")
+        expected = "".join(f"[pending] {child_id}: {label}".split())
+
+        def painted() -> str:
+            return painted_text(strips=painted_widget_strips(app=ui.app, widget=ui.child))
+
+        def literal_prefix_visible() -> bool:
+            value = painted()
+            return "[pending]summary-child" in value and expected.startswith(value.removesuffix("…"))
+
+        await wait_for_condition(
+            pilot=ui.pilot,
+            predicate=literal_prefix_visible,
+            description="literal pending row prefix is painted",
+        )
+        assert literal_prefix_visible()
+
+
+@pytest.mark.usefixtures("authenticated_summary_ui")
+@execution_modes
+@summary_cases
+async def test_completion_preserves_summary_and_prompt(
+    tmp_path: Path,
+    prompt: str,
+    label: str,
+    child_id: str,
+    detached: bool,
+) -> None:
+    """A live pending-to-completed transition retains both task fields."""
+    async with summary_ui(
+        tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id, detached=detached
+    ) as ui:
+        await ui.dispatch.complete()
+        await ui.command("/workflows tui show")
+        await ui.wait_for_row("completed")
+        assert ui.child.row.task_summary == label
+        assert ui.child.row.task_text == prompt
+
+
+@pytest.mark.usefixtures("authenticated_summary_ui")
+@execution_modes
+async def test_summary_dismiss_hides_rows(tmp_path: Path, detached: bool) -> None:
+    """Dismiss removes a known mounted fleet without requiring a later show."""
+    prompt, label = SUMMARY_PAIRS[0]
+    async with summary_ui(
+        tmp_path=tmp_path,
+        prompt=prompt,
+        label=label,
+        child_id="summary-child",
+        detached=detached,
+        completed=True,
+    ) as ui:
+        await ui.dismiss()
+        assert list(ui.panel.query(SubAgentFleetRow)) == []
+
+
+@pytest.mark.usefixtures("authenticated_summary_ui")
+@execution_modes
+@summary_cases
+async def test_summary_show_restores_identity_and_content(
+    tmp_path: Path,
+    prompt: str,
+    label: str,
+    child_id: str,
+    detached: bool,
+) -> None:
+    """Showing a hidden fleet restores the same identity and complete task content."""
+    async with summary_ui(
+        tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id, detached=detached, completed=True
+    ) as ui:
+        original_key = ui.child.row.key
+        await ui.dismiss()
+        await ui.command("/workflows tui show")
+        await ui.wait_for_row("completed")
+        assert ui.child.row.key == original_key
+        assert (ui.child.row.task_summary, ui.child.row.task_text, ui.child.row.task_text_complete) == (
+            label,
+            prompt,
+            True,
+        )
+
+
+@pytest.mark.usefixtures("authenticated_summary_ui")
+@execution_modes
+@summary_cases
+async def test_completed_summary_row_rendering(
+    tmp_path: Path,
+    prompt: str,
+    label: str,
+    child_id: str,
+    detached: bool,
+) -> None:
+    """A completed row renders its terminal status and literal summary."""
+    async with summary_ui(
+        tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id, detached=detached, completed=True
+    ) as ui:
+        assert str(ui.child.query_one(Static).render()) == f"[completed] {child_id}: {label}"
+
+
+@pytest.mark.usefixtures("authenticated_summary_ui")
+@execution_modes
+@summary_cases
+async def test_summary_keyboard_selection_opens_original_prompt(
+    tmp_path: Path,
+    prompt: str,
+    label: str,
+    child_id: str,
+    detached: bool,
+) -> None:
+    """Selecting a completed child opens its detail with the original prompt."""
+    async with summary_ui(
+        tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id, detached=detached, completed=True
+    ) as ui:
+        ui.panel.focus_sessions()
+        await ui.pilot.press("down", "enter")
+        await wait_for_condition(
+            pilot=ui.pilot,
+            predicate=lambda: isinstance(ui.app.screen, SessionProgressScreen),
+            description="selected child's detail screen opens",
+        )
+        assert isinstance(ui.app.screen, SessionProgressScreen)
+        assert str(ui.app.screen.query_one("#task-description", Static).render()) == prompt

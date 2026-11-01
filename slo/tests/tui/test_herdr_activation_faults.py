@@ -1,6 +1,7 @@
 """Mounted fault composition; errno mechanics remain in the T2 adapter matrix."""
 
 import asyncio
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -35,7 +36,9 @@ async def test_mounted_probe_fault_preserves_original_prompt_and_suppresses_new(
             await eventually(predicate=lambda: native_factory.called and not session.is_running)
             await pilot.pause()
             assert app._session is session
-            assert app._adapter is not None and "offline answer" in str(app._adapter.lines)
+            assert app._chat_transcript._adapter is not None and "offline answer" in str(
+                app._chat_transcript._adapter.lines
+            )
             assert session._history_store is not None
             events = await session._history_store.load_events(session_id=session.session_id)
             assert any(event.kind == "run_completed" for event in events)
@@ -95,7 +98,9 @@ async def test_mounted_wire_fault_close_authority(
         await eventually(predicate=lambda: native_factory.called and not session.is_running)
         await pilot.pause()
         assert app._session is session
-        assert app._adapter is not None and "offline answer" in str(app._adapter.lines)
+        assert app._chat_transcript._adapter is not None and "offline answer" in str(
+            app._chat_transcript._adapter.lines
+        )
         assert session._history_store is not None
         events = await session._history_store.load_events(session_id=session.session_id)
         assert any(event.kind == "run_completed" for event in events)

@@ -211,7 +211,7 @@ def test_task_summary_validation_locations(fields: dict[str, object], kind: str)
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as error:
-        SubAgentTaskDAO(task_id="check", prompt="Compare rules", **fields)
+        SubAgentTaskDAO.model_validate({"task_id": "check", "prompt": "Compare rules", **fields})
     errors = error.value.errors(include_url=False, include_context=False, include_input=False)
     assert [(item["loc"], item["type"]) for item in errors] == [(("task_summary",), kind)]
 
@@ -225,6 +225,8 @@ def test_schema_and_prompt_require_authored_summary() -> None:
     )
 
     for field in ("tasks", "tasks_json"):
-        assert "task_summary" in SpawnSubAgentsSchemaDAO.model_fields[field].description
+        description = SpawnSubAgentsSchemaDAO.model_fields[field].description
+        assert description is not None
+        assert "task_summary" in description
     for prompt in (DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT, ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM):
         assert "For every task, author task_summary from its actual assigned work" in prompt

@@ -118,6 +118,16 @@ class TestWorkflowLifecycleTargetForKind:
 class TestParseWorkflowLifecycleMessage:
     """Inbox message → typed lifecycle payload validation."""
 
+    def test_aborted_message_parses_with_aborted_terminal_target(self) -> None:
+        """Abort mapping is terminal and never interpreted as failure or start."""
+        parsed = parse_workflow_lifecycle_message(
+            kind="workflow_aborted", payload={"workflow_id": "wf-1", "orchestrator_session_id": "orch-1"}
+        )
+        assert parsed is not None
+        assert parsed.target_state == "aborted"
+        assert parsed.target == "terminal"
+        assert workflow_lifecycle_target_for_kind(kind="workflow_aborted") == "terminal"
+
     def test_started_message_parses_with_running_target_state(self) -> None:
         """A well-formed ``workflow_started`` payload parses fully."""
         parsed: ParsedWorkflowLifecycleMessageDAO | None = parse_workflow_lifecycle_message(

@@ -1363,3 +1363,153 @@ class TestIsLive:
 
         assert store.is_live(handle=_build_handle(state=state, pid=pid)) is expected
         assert probed == ([pid] if state == "running" and pid > 0 else [])
+
+
+@pytest.mark.parametrize("change", ["complete", "remove"])
+async def test_reconcile_keeps_snapshot_when_handle_changes_during_pid_probe(
+    tmp_path: Path, change: str
+) -> None:
+    """A racing writer or removal is never undone by the retained snapshot."""
+    handle = _build_handle(state="running")
+    path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / f"{handle.workflow_id}.json"
+    _assert_within_tmp_path(tmp_path=tmp_path, path=path)
+
+    def probe(pid: int) -> bool:
+        """Change the real temporary file between the read and correction."""
+        if pid == handle.pid:
+            if change == "remove":
+                path.unlink()
+            else:
+                path.write_text(handle.model_copy(update={"state": "completed"}).model_dump_json())
+            return False
+        return True
+
+    store = WorkflowHandleStore(history_root=tmp_path / "history", pid_alive=probe)
+    await store.write(handle=handle)
+    sibling = _build_handle(
+        workflow_id="wf-sibling",
+        state="running",
+        pid=999,
+        started_at=datetime(2026, 7, 22, tzinfo=timezone.utc),
+    )
+    await store.write(handle=sibling)
+    assert await store.reconcile(owner_session_id=_OWNER_SESSION_ID) == [handle, sibling]
+    if change == "remove":
+        assert not path.exists()
+    else:
+        assert WorkflowHandleDAO.model_validate_json(path.read_text()).state == "completed"
+
+
+async def test_reconcile_propagates_unexpected_probe_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Programming errors are not relabelled as recoverable conflicts."""
+
+    def probe(pid: int) -> bool:
+        """Raise an unexpected injected error without touching the machine."""
+        raise RuntimeError("probe bug")
+
+    store = WorkflowHandleStore(history_root=tmp_path / "history", pid_alive=probe)
+    await store.write(handle=_build_handle(state="running"))
+    with pytest.raises(RuntimeError, match="probe bug"):
+        await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+    assert not any(record.msg == "workflow_reconcile_conflict" for record in caplog.records)
+
+
+@pytest.mark.parametrize("state", ["stalled", "failed"])
+@pytest.mark.parametrize("terminal", ["aborted", "completed"])
+async def test_reconcile_repairs_inferred_state_from_terminal_evidence(
+    tmp_path: Path,
+    state: WorkflowState,
+    terminal: str,
+) -> None:
+    """Matching terminal authority wins without modifying any other fields."""
+    store = _build_store(tmp_path=tmp_path, pid_alive=False)
+    handle = _build_handle(state=state)
+    await store.write(handle=handle)
+    status = _build_status(state=terminal)
+    _write_status(tmp_path=tmp_path, status=status)
+    result = await store.reconcile(owner_session_id=_OWNER_SESSION_ID)
+    assert result == [handle.model_copy(update={"state": terminal})]
+    assert await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id=handle.workflow_id) == result[0]
+
+
+@pytest.mark.parametrize("foreign_field", ["workflow_id", "orchestrator_session_id"])
+async def test_reconcile_rejects_foreign_terminal_evidence_for_inferred_handle(
+    tmp_path: Path,
+    foreign_field: str,
+) -> None:
+    """Foreign identity at the expected status path cannot authorize repair."""
+    store = _build_store(tmp_path=tmp_path)
+    handle = _build_handle(state="failed")
+    await store.write(handle=handle)
+    status = _build_status(state="aborted").model_copy(update={foreign_field: "foreign"})
+    path = OrchestrationLayout.orchestrator_status_path(
+        history_root=tmp_path / "history", orchestrator_session_id=handle.orchestrator_session_id
+    )
+    _assert_within_tmp_path(tmp_path=tmp_path, path=path)
+    AtomicFileWriter.write_json(path=path, model=status)
+    assert await store.reconcile(owner_session_id=_OWNER_SESSION_ID) == [handle]
+
+
+async def test_correct_from_evidence_rejects_wrong_terminal_target(tmp_path: Path) -> None:
+    """Direct correction still rejects evidence naming a different target."""
+    store = _build_store(tmp_path=tmp_path)
+    handle = _build_handle(state="failed")
+    await store.write(handle=handle)
+    with pytest.raises(WorkflowStateTransitionError):
+        await store.correct_from_evidence(
+            owner_session_id=_OWNER_SESSION_ID,
+            workflow_id=handle.workflow_id,
+            state="aborted",
+            evidence=_build_status(state="completed"),
+        )
+    assert await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id=handle.workflow_id) == handle
+
+
+@pytest.mark.parametrize("evidence", ["absent", "corrupt", "failed", "stale-running"])
+async def test_reconcile_keeps_failed_without_authorizing_terminal_evidence(
+    tmp_path: Path, evidence: str
+) -> None:
+    """Failed remains resumable absent matching terminal authority."""
+    store = _build_store(tmp_path=tmp_path, pid_alive=False)
+    handle = _build_handle(state="failed")
+    await store.write(handle=handle)
+    path = OrchestrationLayout.orchestrator_status_path(
+        history_root=tmp_path / "history", orchestrator_session_id=handle.orchestrator_session_id
+    )
+    _assert_within_tmp_path(tmp_path=tmp_path, path=path)
+    if evidence == "corrupt":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json")
+    if evidence in {"failed", "stale-running"}:
+        _write_status(
+            tmp_path=tmp_path,
+            status=_build_status(
+                state="failed" if evidence == "failed" else "running",
+                updated_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            ),
+        )
+    assert await store.reconcile(owner_session_id=_OWNER_SESSION_ID) == [handle]
+
+
+@pytest.mark.parametrize("state", ["completed", "aborted"])
+async def test_reconcile_preserves_terminal_finality_without_rewrite(
+    tmp_path: Path, state: WorkflowState
+) -> None:
+    """Repeated reconciliation never rewrites a final handle or probes its pid."""
+
+    def probe(pid: int) -> bool:
+        """Fail if finality permits a process probe."""
+        raise AssertionError("final handle probed")
+
+    store = WorkflowHandleStore(history_root=tmp_path / "history", pid_alive=probe)
+    handle = _build_handle(state=state)
+    await store.write(handle=handle)
+    _write_status(tmp_path=tmp_path, status=_build_status(state="running"))
+    path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / f"{handle.workflow_id}.json"
+    before, metadata = path.read_bytes(), path.stat()
+    for _ in range(2):
+        assert await store.reconcile(owner_session_id=_OWNER_SESSION_ID) == [handle]
+    assert path.read_bytes() == before
+    assert (path.stat().st_ino, path.stat().st_mtime_ns) == (metadata.st_ino, metadata.st_mtime_ns)

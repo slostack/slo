@@ -29,6 +29,7 @@ InboxMessageKind: TypeAlias = Literal[
     "workflow_phase_update",
     "workflow_completed",
     "workflow_failed",
+    "workflow_aborted",
     # Fleet progress snapshots (spec 71.a.5 writer / receive path):
     "workflow_fleet_update",
 ]

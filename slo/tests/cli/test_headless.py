@@ -362,6 +362,10 @@ class _RecordingNotifier:
             )
         )
 
+    async def aborted(self, *, reason: str, cleanup_summary: str = "") -> None:
+        """Record the abort reason and final cleanup accounting."""
+        self.calls.append(("aborted", {"reason": reason, "cleanup_summary": cleanup_summary}))
+
     async def failed(self, *, error: str, cleanup_summary: str = "") -> None:
         """Record a failed call.
 
@@ -585,8 +589,8 @@ class TestHeadlessRunnerWorkflowNotifications:
         assert "run_failed" in notifier.calls[-1][1]["error"]
         assert "model exhausted" in notifier.calls[-1][1]["error"]
 
-    async def test_runner_run_aborted_maps_to_failed(self, tmp_path, capsys) -> None:
-        """A run_aborted terminal event also maps to ``notifier.failed``."""
+    async def test_runner_run_aborted_maps_to_aborted(self, tmp_path: Path) -> None:
+        """A run_aborted terminal event maps to ``notifier.aborted``."""
         notifier: _RecordingNotifier = _RecordingNotifier()
         events: list[AgentStreamEventDAO] = [
             AgentStreamEventDAO(kind="run_aborted"),
@@ -600,8 +604,9 @@ class TestHeadlessRunnerWorkflowNotifications:
         )
 
         assert exit_code == 2
-        assert notifier.calls[-1][0] == "failed"
-        assert "run_aborted" in notifier.calls[-1][1]["error"]
+        assert notifier.calls[-1][0] == "aborted"
+        assert "run_aborted" in notifier.calls[-1][1]["reason"]
+        assert not any(kind == "failed" for kind, _ in notifier.calls)
 
     async def test_runner_without_flag_constructs_no_notifier(self, tmp_path, capsys) -> None:
         """Without ``--notify-session`` no notifier exists and nothing is recorded."""

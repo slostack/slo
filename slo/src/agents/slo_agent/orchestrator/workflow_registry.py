@@ -29,7 +29,7 @@ from typing import (
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from config.logger import log_info
+from config.logger import log_info, log_warning
 from config.timeout_resolver import positive_float_env
 from src.agents.slo_agent.history.atomic_io import AtomicFileWriter
 from src.agents.slo_agent.orchestrator.dao import (
@@ -111,8 +111,8 @@ _RELAUNCH_TRANSITIONS: dict[str, frozenset[str]] = {
 _EVIDENCE_TRANSITIONS: dict[str, frozenset[str]] = {
     "launching": frozenset({"completed", "failed"}),
     "running": frozenset({"completed", "failed", "aborted"}),
-    "stalled": frozenset({"completed", "failed", "running"}),
-    "failed": frozenset({"running"}),
+    "stalled": frozenset({"completed", "failed", "running", "aborted"}),
+    "failed": frozenset({"running", "completed", "aborted"}),
 }
 """Correction edges reachable only through verified self-reported evidence."""
 
@@ -1049,9 +1049,34 @@ class WorkflowHandleStore:
             list[WorkflowHandleDAO]: Reconciled handles sorted by ``started_at``.
         """
         handles: list[WorkflowHandleDAO] = self._list_sync(owner_session_id=owner_session_id)
-        reconciled: list[WorkflowHandleDAO] = [self._reconcile_one(handle=handle) for handle in handles]
+        reconciled: list[WorkflowHandleDAO] = [
+            self._reconcile_one_or_keep_unchanged(handle=handle) for handle in handles
+        ]
         reconciled.sort(key=lambda item: item.started_at)
         return reconciled
+
+    def _reconcile_one_or_keep_unchanged(self, *, handle: WorkflowHandleDAO) -> WorkflowHandleDAO:
+        """Isolate per-handle conflicts during the collection reconciliation pass.
+
+        Args:
+            handle (WorkflowHandleDAO): Original parsed snapshot, retained on conflict.
+
+        Returns:
+            WorkflowHandleDAO: Reconciled handle or the supplied snapshot without rereading or writing.
+
+        Raises:
+            Exception: Unexpected errors from reconciliation propagate to the caller.
+        """
+        try:
+            return self._reconcile_one(handle=handle)
+        except (WorkflowStateTransitionError, OSError) as exc:
+            log_warning(
+                msg="workflow_reconcile_conflict",
+                workflow_id=handle.workflow_id,
+                handle_state=handle.state,
+                error=type(exc).__name__,
+            )
+            return handle
 
     def _reconcile_one(self, *, handle: WorkflowHandleDAO) -> WorkflowHandleDAO:
         """Apply the terminal, fresh, then PID evidence ladder to one handle."""

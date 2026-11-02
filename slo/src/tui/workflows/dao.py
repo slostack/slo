@@ -53,7 +53,7 @@ WorkflowLifecycleTarget: TypeAlias = Literal["started", "terminal"]
 """Claimed workflow lifecycle note kind mapped to its durable-side effect.
 
 ``workflow_started`` advances the handle to ``running`` and fires the
-resume-case visualizer fallback; ``workflow_completed`` / ``workflow_failed``
+resume-case visualizer fallback; ``workflow_completed`` / ``workflow_failed`` / ``workflow_aborted``
 advance to their terminal states and free the visualizer launch guard.
 """
 
@@ -61,6 +61,7 @@ _WORKFLOW_KIND_TO_STATE: dict[str, WorkflowState] = {
     "workflow_started": "running",
     "workflow_completed": "completed",
     "workflow_failed": "failed",
+    "workflow_aborted": "aborted",
 }
 """Claimed workflow lifecycle note kind → durable handle state (spec 57.a.5)."""
 
@@ -68,6 +69,7 @@ _WORKFLOW_KIND_TO_TARGET: dict[str, WorkflowLifecycleTarget] = {
     "workflow_started": "started",
     "workflow_completed": "terminal",
     "workflow_failed": "terminal",
+    "workflow_aborted": "terminal",
 }
 """Claimed workflow lifecycle note kind → lifecycle side-effect target."""
 

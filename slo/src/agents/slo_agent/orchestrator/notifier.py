@@ -3,7 +3,7 @@
 Constructed by ``HeadlessRunner`` when ``--notify-session`` is present. The
 notifier is the single writer of workflow inbox traffic: ``workflow_started``
 and per-phase ``workflow_phase_update`` notes ship as ``context_note`` items,
-and the terminal ``workflow_completed`` / ``workflow_failed`` messages ship as
+and the terminal ``workflow_completed`` / ``workflow_failed`` / ``workflow_aborted`` messages ship as
 ``chat_turn`` items. Every enqueue failure is swallowed and logged — a
 workflow must never die because the TUI's inbox is unavailable.
 """
@@ -144,7 +144,7 @@ class WorkflowNotifier:
         )
 
     async def failed(self, *, error: str, cleanup_summary: str = "") -> None:
-        """Enqueue the terminal chat_turn failure report. Invoked at run_failed/aborted.
+        """Enqueue the terminal chat_turn failure report. Invoked for run_failed or any kind neither completed nor aborted.
 
         Args:
             error (str): Terminal error or state description.
@@ -156,6 +156,28 @@ class WorkflowNotifier:
             text=(
                 f"Workflow {self._workflow_id} did not complete. Error/state: {error}. "
                 f"Summarise for the user; suggest /workflows and the visualizer for detail."
+                f"{self._cleanup_summary_suffix(cleanup_summary=cleanup_summary)}"
+            ),
+        )
+
+    async def aborted(self, *, reason: str, cleanup_summary: str = "") -> None:
+        """Enqueue the final abort chat turn after the runner reports run_aborted.
+
+        Uses the shared redacted inbox writer; enqueue failures are logged and
+        swallowed, while cancellation still propagates.
+
+        Args:
+            reason (str): Terminal abort reason from HeadlessRunner.
+            cleanup_summary (str, optional): Final fleet accounting. Defaults to "".
+        """
+        await self._safe_enqueue(
+            kind="workflow_aborted",
+            delivery_mode="chat_turn",
+            title=f"{self._workflow_id} aborted",
+            text=(
+                f"Workflow {self._workflow_id} was aborted. Reason: {reason}. "
+                "An aborted workflow is final: do not retry, resume or relaunch it. "
+                "Tell the user it was aborted and suggest /workflows for its final state."
                 f"{self._cleanup_summary_suffix(cleanup_summary=cleanup_summary)}"
             ),
         )

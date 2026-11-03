@@ -224,6 +224,11 @@ async def observe_restore(app: SloTUI) -> None:
         await pilot.pause()
         assert session._config is not None
         assert session._history_store is not None
+        assert app._messaging_enabled
+        if app._messaging_failed_session is session:
+            assert session._messaging_start_task is not None
+            session._messaging_start_task.result()
+        assert session.is_messaging_ready
         from src.agents.slo_agent.herdr.dao import HerdrRestoreConfigDAO
 
         config = session._config
@@ -275,6 +280,16 @@ async def observe_restore(app: SloTUI) -> None:
                 raise AssertionError("missing credential admitted")
             assert session._agent is None
             assert config.model_pool_dao is None or len(config.model_pool_dao.entries) == 2
+        retained_inputs: list[str] = []
+        if capability in {"model_changed", "refused"}:
+            from src.agents.slo_agent.messaging.dao import MessageErrorDAO
+
+            retained = await session.list_retained_messages(principal=session.messaging_owner_principal)
+            assert not isinstance(retained, MessageErrorDAO)
+            retained_inputs = [item.submission.text for item in retained.items]
+            assert retained.next_after_sequence is None
+            assert not session._messaging_storage_failed
+            assert session._messaging_paused
         events = await session._history_store.load_events(session_id=session.session_id)
         write_json(
             name="restored.json",
@@ -291,6 +306,7 @@ async def observe_restore(app: SloTUI) -> None:
                 "project_plugin_refused": not (HOME / "untrusted-executed").exists(),
                 "capability": capability,
                 "public_admission": public_admission,
+                "retained_inputs": retained_inputs,
                 "painted_error": painted_error,
                 "reporting_state": session._reporting_state().model_dump(mode="json"),
             },

@@ -36,6 +36,8 @@ from src.tui.components.chat_transcript.commands import (
     EchoUserDAO,
     ProjectUserTurnDAO,
     ProjectReplayEntryDAO,
+    PresentMessageApplicationDAO,
+    RetireHistoryBindingDAO,
     TranscriptCommand,
     PresentAgentEventDAO,
     HydrateTranscriptDAO,
@@ -507,6 +509,8 @@ class ChatTranscriptComponent(Vertical):
                     self._ensure_current_transcript_version(expected_version=transcript_version)
                     async with self._mutation_lock:
                         await self._adapter.handle(event=command)
+            case PresentMessageApplicationDAO():
+                await self.present_message_application(entry=command.entry)
             case EchoUserDAO():
                 await self.echo_user(text=command.text)
             case PresentAgentEventDAO():
@@ -1298,6 +1302,17 @@ class ChatTranscriptComponent(Vertical):
             )
         return "▲ earlier messages collapsed — resume this session to recover them"
 
+    async def present_message_application(self, *, entry: TranscriptEntryDAO) -> None:
+        """Route canonical live applications through binding-lifetime replay identity."""
+        transcript_version = self._get_transcript_version()
+        async with self._lifecycle_lock:
+            self._ensure_current_transcript_version(expected_version=transcript_version)
+            async with self._mutation_lock:
+                snapshot = self._update_reading_anchor_and_build_follow_snapshot()
+                await self._projector.handle(event=ProjectReplayEntryDAO(entry=entry))
+                self._finish_viewport_mutation(snapshot=snapshot)
+                self._enforce_window_soon()
+
     async def echo_user(self, *, text: str) -> None:
         """Display an accepted prompt without submitting it or saving it to history."""
         transcript_version = self._get_transcript_version()
@@ -1525,6 +1540,8 @@ class ChatTranscriptComponent(Vertical):
                 else:
                     await self._adapter.reset()
                     await self._projector.reset()
+                    if history_reader is not None:
+                        await self._projector.handle(event=RetireHistoryBindingDAO())
                     if self.is_attached:
                         await self._transcript_scroll.reset()
         if close:

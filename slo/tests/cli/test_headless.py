@@ -47,6 +47,7 @@ def _make_session_mock(events: list[AgentStreamEventDAO]) -> AsyncMock:
     """
     session_mock: AsyncMock = AsyncMock()
     session_mock.session_id = "test-session-id-mock"
+    session_mock.has_messaging_store = lambda: False
     subscribers: list[AgentEventSubscriber] = []
     session_mock._subscribers = subscribers
 
@@ -732,6 +733,10 @@ class TestHeadlessRunnerWatchdogControls:
 
         class _BlockedSession:
             """Session double whose provider stream never reaches the next graph update."""
+
+            def has_messaging_store(self) -> bool:
+                """This ephemeral watchdog fixture has no durable messaging history."""
+                return False
 
             def __init__(self) -> None:
                 """Create a known identity and subscriber collection."""

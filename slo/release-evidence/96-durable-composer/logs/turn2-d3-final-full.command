@@ -1,0 +1,1 @@
+make test PYTEST_WORKERS=6

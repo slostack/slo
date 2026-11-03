@@ -40,7 +40,7 @@ class TestTyperDispatchTui:
         config = mock_build.call_args.kwargs["config"]
         assert config.workdir == tmp_path.resolve()
 
-        MockSloTUI.assert_called_once_with(session=fake_session)
+        MockSloTUI.assert_called_once_with(session=fake_session, messaging_enabled=True)
         MockSloTUI.return_value.run.assert_called_once_with(mouse=True)
 
     def test_tui_defaults_workdir_to_cwd(self) -> None:
@@ -375,7 +375,7 @@ class TestRunHeadlessReasoningOverride:
         """Run ``run_headless`` with all heavy dependencies patched out."""
         from contextlib import nullcontext
 
-        captured_config: list = []
+        captured_config: list[SessionConfigDAO] = []
 
         async def _fake_invoke(*, prompt: str) -> int:
             return 0
@@ -383,7 +383,15 @@ class TestRunHeadlessReasoningOverride:
         fake_runner = MagicMock()
         fake_runner.invoke = _fake_invoke
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured_config.append(config)
             return fake_runner
 
@@ -402,9 +410,17 @@ class TestRunHeadlessReasoningOverride:
         """``--reasoning high`` sets ``SessionConfigDAO.reasoning_level`` to ``high``."""
         from contextlib import nullcontext
 
-        captured_configs: list = []
+        captured_configs: list[SessionConfigDAO] = []
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured_configs.append(config)
             return MagicMock()
 
@@ -427,9 +443,17 @@ class TestRunHeadlessReasoningOverride:
 
         # Isolate from any saved preferences on the machine
         monkeypatch.setenv("SLO_PREFERENCES_FILE", str(tmp_path / "absent.json"))
-        captured_configs: list = []
+        captured_configs: list[SessionConfigDAO] = []
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured_configs.append(config)
             return MagicMock()
 
@@ -455,9 +479,17 @@ class TestRunHeadlessResumeImpliesHistory:
         from uuid import uuid4
 
         session_id: str = str(uuid4())
-        captured_configs: list = []
+        captured_configs: list[SessionConfigDAO] = []
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured_configs.append(config)
             return MagicMock()
 
@@ -484,9 +516,17 @@ class TestRunHeadlessResumeImpliesHistory:
         """Without ``resume``, the flag value is respected."""
         from contextlib import nullcontext
 
-        captured_configs: list = []
+        captured_configs: list[SessionConfigDAO] = []
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured_configs.append(config)
             return MagicMock()
 
@@ -512,9 +552,17 @@ class TestRunHeadlessSessionIdResolution:
     def _run_headless_capture_config(self, **kwargs) -> "SessionConfigDAO":
         from contextlib import nullcontext
 
-        captured: list = []
+        captured: list[SessionConfigDAO] = []
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured.append(config)
             runner = MagicMock()
             runner.invoke = AsyncMock(return_value=0)
@@ -557,9 +605,17 @@ class TestRunHeadlessSystemPromptOverrides:
     def _capture_config(self, **kwargs) -> "SessionConfigDAO":
         from contextlib import nullcontext
 
-        captured: list = []
+        captured: list[SessionConfigDAO] = []
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured.append(config)
             runner = MagicMock()
             runner.invoke = AsyncMock(return_value=0)
@@ -614,9 +670,17 @@ class TestApplySystemPromptB64Override:
         """Run ``run_headless`` and return the config that would be passed to HeadlessRunner."""
         from src.agents.slo_agent.sessions.dao import SessionConfigDAO  # noqa: F401
 
-        captured: list = []
+        captured: list[SessionConfigDAO] = []
 
-        def _capture_runner(*, config, orchestrator_mode=False, notify_session_id=None):
+        def _capture_runner(
+            *,
+            config: SessionConfigDAO,
+            orchestrator_mode: bool = False,
+            notify_session_id: str | None = None,
+            messaging_enabled: bool = False,
+        ) -> MagicMock:
+            """Capture the actual selected config and return the existing runner double."""
+            assert messaging_enabled is True
             captured.append(config)
             runner = MagicMock()
             runner.invoke = AsyncMock(return_value=0)

@@ -44,6 +44,7 @@ from src.agents.slo_agent.messaging.dao import (
     MessagePrincipalDAO,
     MessageReceiptDAO,
     MessageSubmissionDAO,
+    Priority,
 )
 
 if TYPE_CHECKING:
@@ -107,6 +108,7 @@ class LocalSessionMessagingClient:
         session: "SloAgentSession",
         target: MessageAddressDAO,
         principal: MessagePrincipalDAO,
+        supported_priorities: frozenset[Priority] = frozenset({"normal", "urgent"}),
     ) -> None:
         """Bind trusted composition inputs only; no I/O, tasks, grants or implicit startup.
 
@@ -117,10 +119,15 @@ class LocalSessionMessagingClient:
                 from trusted composition (startup registers only the
                 embedded owner-human for its own route; B.1's launch/grant
                 composition installs others).
+            supported_priorities (frozenset[Priority]): Admission capability for
+                this client only. Defaults to both existing low-level priorities;
+                the durable composer host binds normal-only until urgent host
+                delivery is supported. Does not grant session authority.
         """
         self._session: SloAgentSession = session
         self._target: MessageAddressDAO = target
         self._principal: MessagePrincipalDAO = principal
+        self._supported_priorities: frozenset[Priority] = supported_priorities
         self._admission_seconds: float = session.messaging_limits.admission_seconds
         self._calls: set[asyncio.Task[MessageReceiptDAO | MessageErrorDAO]] = set()
         self._closing: bool = False
@@ -143,6 +150,8 @@ class LocalSessionMessagingClient:
             return MessageErrorDAO(code="completing", message_id=submission.message_id)
         if submission.target != self._target:
             return MessageErrorDAO(code="invalid_message", message_id=submission.message_id)
+        if submission.priority not in self._supported_priorities:
+            return MessageErrorDAO(code="unsupported", message_id=submission.message_id)
         return await self._wait_for_call(
             operation=self._session.admit_message(submission=submission, principal=self._principal),
             message_id=submission.message_id,

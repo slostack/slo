@@ -96,6 +96,7 @@ class HeadlessRunner:
         orchestrator_mode: bool = False,
         notify_session_id: Optional[str] = None,
         notifier: Optional[WorkflowNotifier] = None,
+        messaging_enabled: bool = False,
     ) -> None:
         """Bind the runner to its session config.
 
@@ -110,7 +111,10 @@ class HeadlessRunner:
                 is constructed and nothing is enqueued.
             notifier (Optional[WorkflowNotifier]): Injectable notifier for
                 tests. Ignored when ``notify_session_id`` is ``None``.
+            messaging_enabled (bool): Opt into durable finite settlement. Defaults to False.
         """
+        self._messaging_enabled: bool = messaging_enabled
+        self._messaging_started: bool = False
         self._session_id: str = config.session_id or str(uuid4())
         self._config: SessionConfigDAO = config.model_copy(update={"session_id": self._session_id})
         self._orchestrator_mode: bool = orchestrator_mode
@@ -147,9 +151,21 @@ class HeadlessRunner:
             return await self._invoke(prompt=prompt)
         finally:
             try:
-                await self._close_external_reporting()
+                await self._close_messaging()
             finally:
-                self._operation_credential = None
+                try:
+                    await self._close_external_reporting()
+                finally:
+                    self._operation_credential = None
+
+    async def _close_messaging(self) -> None:
+        """Join opt-in messaging before external reporting on every runner exit."""
+        if not self._messaging_started or self._session is None:
+            return
+        try:
+            await self._session.close_messaging()
+        except Exception:
+            self._report_cleanup_failure()
 
     async def _close_external_reporting(self) -> None:
         """Join adopted reporting owners before releasing the runner's session."""
@@ -265,6 +281,11 @@ class HeadlessRunner:
         )
         watchdog.start()
         try:
+            if not self._messaging_enabled and session.has_messaging_store() is True:
+                raise RuntimeError("This session has durable messages; use a messaging-enabled Slo.")
+            if self._messaging_enabled:
+                self._messaging_started = True  # Includes partial startup cleanup.
+                await session.start_messaging()
             await self._start_child_control()
             await self._drain_session_stream_until_abort(session=session, prompt=prompt)
         except Exception as exc:
@@ -571,6 +592,10 @@ class HeadlessRunner:
         finally:
             abort_task.cancel()
             await asyncio.gather(abort_task, return_exceptions=True)
+            if self._messaging_enabled and not stream_task.done():
+                await session.stop_messaging_execution()
+                stream_task.cancel()
+                await asyncio.gather(stream_task, return_exceptions=True)
 
     async def _drain_session_stream(self, *, session: SloAgentSession, prompt: str) -> None:
         """Drain session events inside the task controlled by the abort controller.
@@ -585,6 +610,11 @@ class HeadlessRunner:
         """
         async for _event in session.invoke(text=prompt):
             pass
+        if self._messaging_enabled:
+            terminal = await session.finish_finite_messaging()
+            self._terminal_kind = terminal.kind
+            self._terminal_content = terminal.content or self._terminal_content
+            self._terminal_received = True
 
     async def _allow_cooperative_abort(self, *, stream_task: asyncio.Task[None]) -> None:
         """Give session.abort a bounded chance before forcing terminal abort.
@@ -599,6 +629,8 @@ class HeadlessRunner:
         try:
             await asyncio.wait_for(asyncio.shield(stream_task), timeout=COOPERATIVE_ABORT_GRACE_SECONDS)
         except asyncio.TimeoutError:
+            if self._messaging_enabled and self._session is not None:
+                await self._session.stop_messaging_execution()
             stream_task.cancel()
             await asyncio.gather(stream_task, return_exceptions=True)
         if self._terminal_kind != "run_aborted":

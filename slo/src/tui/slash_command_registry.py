@@ -199,6 +199,14 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         display_order=50,
     ),
     SlashCommandSpecDAO(
+        name="messages",
+        description="manage unsent drafts and retained messages",
+        argument_mode="free_text",
+        usage="/messages list [after] | continue <id> | cancel <id>… | confirm | decline | drafts | retry <id> | discard <id>",
+        argument_hint="action",
+        display_order=55,
+    ),
+    SlashCommandSpecDAO(
         name="steer",
         description="queue a steering message",
         argument_mode="free_text",

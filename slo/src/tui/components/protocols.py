@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, Self, TypeVar
 
+from src.agents.slo_agent.messaging.client import SessionMessagingClient
+
 from src.tui.components.chat_transcript.commands import ProjectionInput, TranscriptNoticeDAO
+from src.tui.components.prompt_input.submission import SubmissionInput, SubmissionOutcomeReceiver
 from src.tui.components.workflow_progress.events import WorkflowProgressUpdate
 
 if TYPE_CHECKING:
@@ -92,6 +95,15 @@ class TranscriptProjectionProtocol(AdapterProtocol[ProjectionInput], Protocol):
     @classmethod
     def register(cls, *, host: TranscriptMountHost) -> Self:
         """Return a fresh projector without reading history or mounting widgets."""
+        ...
+
+
+class MessageSubmissionProtocol(AdapterProtocol[SubmissionInput], Protocol):
+    """Register bounded draft admission with a borrowed client and outcome receiver."""
+
+    @classmethod
+    def register(cls, *, client: SessionMessagingClient, receiver: SubmissionOutcomeReceiver) -> Self:
+        """Return a fresh adapter without tasks, loop capture or submission."""
         ...
 
 

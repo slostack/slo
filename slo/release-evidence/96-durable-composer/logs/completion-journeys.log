@@ -1,0 +1,46 @@
+bringing up nodes...
+bringing up nodes...
+
+................................................................................................................ [ 57%]
+..................................................................................                               [100%]
+=================================================== warnings summary ===================================================
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+tests/cli/test_headless_messaging.py: 6 warnings
+tests/cli/test_app.py: 2 warnings
+tests/tui/test_durable_composer.py: 6 warnings
+tests/tui/test_composer_retirement.py: 3 warnings
+tests/tui/test_composer_transcript_identity.py: 10 warnings
+tests/tui/test_messaging_failure_matrix.py: 1 warning
+tests/tui/test_composer_visual_matrix.py: 12 warnings
+tests/tui/test_messaging_session_controls.py: 13 warnings
+tests/tui/test_legacy_inbox_bridge.py: 3 warnings
+tests/tui/test_messages_command.py: 2 warnings
+tests/tui/test_messaging_steer.py: 2 warnings
+tests/agents/slo_agent/messaging/test_injected_activation.py: 2 warnings
+tests/agents/slo_agent/messaging/test_retained_recovery.py: 2 warnings
+tests/agents/slo_agent/messaging/test_observation.py: 1 warning
+tests/agents/slo_agent/messaging/test_finite_completion.py: 10 warnings
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/utils/fields.py:162: PydanticDeprecatedSince211: Accessing the 'model_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    defaults = {k: v.default for k, v in input.model_fields.items()}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+194 passed, 89 warnings in 64.10s (0:01:04)

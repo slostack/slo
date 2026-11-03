@@ -1,0 +1,33 @@
+tests/agents/slo_agent/orchestrator/test_dev_agent_launch.py::test_development_descendant_imports_running_source
+tests/cli/test_hosted_installer_smoke.py::test_direct_pipx_regeneration_recovers_through_packaged_finalizer[pip]
+tests/cli/test_hosted_installer_smoke.py::test_direct_pipx_regeneration_recovers_through_packaged_finalizer[uv]
+tests/cli/test_hosted_installer_smoke.py::test_hosted_installer_installs_and_runs_the_tagged_product
+tests/cli/test_install_mirror_e2e.py::test_real_pipx_install_and_update_during_gitlab_outage
+tests/cli/test_install_smoke.py::test_requested_e2e_fails_when_docker_is_unavailable
+tests/cli/test_install_smoke.py::test_installer_bootstraps_and_finalises_shell_environment[ubuntu:22.04]
+tests/cli/test_install_smoke.py::test_installer_bootstraps_and_finalises_shell_environment[ubuntu:24.04]
+tests/cli/test_install_smoke.py::test_installer_bootstraps_and_finalises_shell_environment[debian:12]
+tests/cli/test_install_smoke.py::test_installer_bootstraps_and_finalises_shell_environment[debian:13]
+tests/cli/test_install_smoke.py::test_macos_runner_contract_requires_a_real_macos_host
+tests/cli/test_wheel_contents.py::TestWheelShipsSkills::test_wheel_contains_every_authored_skill_file_in_current_snapshot
+tests/cli/test_wheel_contents.py::TestWheelShipsSkills::test_wheel_contains_the_workflow_entry_points
+tests/cli/test_wheel_contents.py::TestWheelShipsBundledPlugins::test_wheel_contains_the_bundled_bash_live_output_payload
+tests/cli/test_wheel_contents.py::TestWheelConsoleScripts::test_wheel_declares_slo_and_slo_entry
+tests/cli/test_wheel_contents.py::TestWheelConsoleScripts::test_local_pipx_install_generates_two_unwrapped_console_scripts
+tests/cli/test_wheel_contents.py::TestWheelShipsInstaller::test_wheel_contains_install_sh_at_its_root
+tests/integrations/openrouter/test_live_openrouter.py::test_live_harness_when_disabled_rejects_before_credential_resolution_or_network
+tests/integrations/openrouter/test_live_openrouter.py::test_live_harness_when_fixture_discovery_is_enabled_uses_synthetic_resolver_and_safe_output
+tests/integrations/openrouter/test_live_openrouter.py::test_live_harness_when_paid_fixture_mode_is_enabled_sets_documented_bounds
+tests/tui/authentication/test_authentication_device_e2e.py::test_live_openai_device_authorization_paints_instructions_then_cancels
+
+=================================================== warnings summary ===================================================
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+21/12295 tests collected (12274 deselected) in 4.03s

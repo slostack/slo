@@ -450,3 +450,47 @@ class TestThinkingSegmentReplay:
             ("tool", 0, None),
             ("assistant", 1, "**Second**"),
         ]
+
+
+def test_invalid_messaging_provenance_replays_fixed_note() -> None:
+    """Tampered event identity hides payload but does not prevent later history hydration."""
+    from uuid import uuid4
+    from tests.tui.test_composer_transcript_identity import application_event
+
+    event = application_event()
+    invalid = event.model_copy(update={"event_id": str(uuid4())})
+    entries = ReplayEntryProjector.build_entries(events=[invalid, event])
+    assert entries[0] == TranscriptEntryDAO(
+        kind="note", content="⊛ Message history entry could not be verified."
+    )
+    assert entries[1].kind == "user"
+    assert entries[1].content == "exact input"
+    assert entries[1].application_sha256 == event.application_sha256()
+
+
+def test_application_identity_and_hash_are_required_together() -> None:
+    """Projection boundary refuses partial or malformed application evidence."""
+    import pytest
+    from pydantic import ValidationError
+    from tests.tui.test_composer_transcript_identity import application_event
+    from src.agents.slo_agent.messaging.dao import MessageApplicationMetadataDAO
+
+    event = application_event()
+    metadata = MessageApplicationMetadataDAO.model_validate(event.payload.metadata["messaging_v1"])
+    for fields in (
+        {"application": metadata},
+        {"application_sha256": "a" * 64},
+        {"application": metadata, "application_sha256": "bad"},
+    ):
+        with pytest.raises(ValidationError):
+            TranscriptEntryDAO(kind="user", **fields)
+
+
+def test_active_compaction_summary_is_visible_without_fabricated_application() -> None:
+    """Discarded application bodies cannot be reconstructed from committed coverage flags."""
+    summary = _event(
+        kind="compaction_summary", payload=SessionHistoryEventPayloadDAO(content="verified summary")
+    )
+    entries = ReplayEntryProjector.build_entries(events=[summary])
+    assert entries == [TranscriptEntryDAO(kind="note", content="⊛ verified summary")]
+    assert all(entry.application is None for entry in entries)

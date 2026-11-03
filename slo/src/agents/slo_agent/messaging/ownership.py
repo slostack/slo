@@ -162,10 +162,17 @@ class SessionExecutionOwnership:
                     raise MessageStoreError()
                 parent: int = descriptors[-1]
                 try:
-                    os.mkdir(path=component, mode=0o700, dir_fd=parent)
-                except FileExistsError:
-                    pass
-                descriptor: int = os.open(path=component, flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                    descriptor: int = os.open(
+                        path=component, flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+                    )
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(path=component, mode=0o700, dir_fd=parent)
+                    except FileExistsError:
+                        pass
+                    descriptor = os.open(
+                        path=component, flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+                    )
                 descriptors.append(descriptor)
             final: int = descriptors[-1]
             if os.fstat(fd=final).st_uid != os.geteuid():

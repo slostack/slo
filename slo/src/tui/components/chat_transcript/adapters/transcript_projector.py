@@ -9,6 +9,7 @@ from typing import Optional, Protocol, Self
 from config.logger import log_warning
 from src.tui.components.chat_transcript.commands import (
     ProjectionInput,
+    RetireHistoryBindingDAO,
     ProjectUserTurnDAO,
     ProjectReplayEntryDAO,
 )
@@ -115,6 +116,8 @@ class TranscriptProjectionAdapter:
     def __init__(self, *, host: TranscriptMountHost) -> None:
         """Save the interface used to add message widgets and record transcript text."""
         self._host: TranscriptMountHost = host
+        self._message_application_hashes: dict[str, str] = {}
+        self._message_application_conflicts: set[str] = set()
         self._delivery_closed = False
         self._delivery_lock = asyncio.Lock()
         self._projection_version = 0
@@ -166,6 +169,9 @@ class TranscriptProjectionAdapter:
                     await self._project(event=event)
                 case ProjectUserTurnDAO():
                     await self._project_user_turn(text=event.text, before=event.before)
+                case RetireHistoryBindingDAO():
+                    self._message_application_hashes.clear()
+                    self._message_application_conflicts.clear()
                 case ProjectReplayEntryDAO():
                     await self._project_replay_entry(entry=event.entry, before=event.before)
                 case _:
@@ -222,6 +228,9 @@ class TranscriptProjectionAdapter:
         async with self._delivery_lock:
             self._projection_version += 1
             self._reset_for_new_run()
+            if self._delivery_closed:
+                self._message_application_hashes.clear()
+                self._message_application_conflicts.clear()
 
     def _reset_for_new_run(self) -> None:
         """Clear per-run tracking before the next prompt starts."""
@@ -452,6 +461,22 @@ class TranscriptProjectionAdapter:
         before: Optional[int] = None,
     ) -> None:
         """Display one saved history entry using the same message widgets as live output."""
+        if entry.application is not None:
+            message_id: str = entry.application.message_id
+            if message_id in self._message_application_conflicts:
+                return
+            previous: Optional[str] = self._message_application_hashes.get(message_id)
+            if previous is not None:
+                if previous != entry.application_sha256:
+                    self._message_application_conflicts.add(message_id)
+                    await self._host.mount_transcript_line(
+                        content="Conflicting history for one message; resume the session to recover.",
+                        classes="tool-result",
+                        before=before,
+                    )
+                return
+            assert entry.application_sha256 is not None
+            self._message_application_hashes[message_id] = entry.application_sha256
         await self._replay_projectors[entry.kind](entry=entry, before=before)
 
     async def _project_replay_user(

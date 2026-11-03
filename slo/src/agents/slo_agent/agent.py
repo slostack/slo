@@ -280,6 +280,26 @@ class SloAgent:
         """
         return self._llm
 
+    def bind_message_source(self, *, message_source: AgentMessageSource) -> None:
+        """Attach the owning session's delivery source to this idle agent.
+
+        WHO: ``SloAgentSession._start_messaging_owned``, under the session execution lock.
+        WHEN: Once, before messaging readiness is published.
+
+        Args:
+            message_source (AgentMessageSource): The session's delivery port.
+
+        Raises:
+            RuntimeError: The agent is running, or is bound to another source.
+        """
+        if self._running:
+            raise RuntimeError("SloAgent is processing; bind before a messaging run")
+        if self._message_source is message_source:
+            return
+        if self._message_source is not None:
+            raise RuntimeError("SloAgent is bound to another message source")
+        self._message_source = message_source
+
     @property
     def workspace_folders(self) -> list[WorkspaceFolderDAO]:
         """Return the resolved workspace folders for this agent.

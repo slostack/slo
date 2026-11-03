@@ -587,6 +587,10 @@ class _ChildFleet:
 class _DispatchingSession:
     """Session double whose stream blocks inside a real pool dispatch, like a provider tool call."""
 
+    def has_messaging_store(self) -> bool:
+        """Report this synthetic nonpersistent session has no durable store to roll back."""
+        return False
+
     def __init__(self, *, root: Path, session_ids: list[str]) -> None:
         self.session_id: str = _PARENT
         self.history_root: Optional[Path] = None

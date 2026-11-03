@@ -56,3 +56,52 @@ class TestRetainedEvidence:
             await store.maintain(now=utcnow() + timedelta(days=8))
         finally:
             await store.close()
+
+
+async def test_cancel_replay_and_point_identity_read(tmp_path: Path) -> None:
+    """Cancellation retries preserve terminal receipts; applied selection rolls back all IDs."""
+    from src.agents.slo_agent.messaging.dao import MessageAdmissionError
+
+    store, original, sender, current = await retained_original(root=tmp_path)
+    try:
+        identity = await store.find_identity(message_id=original.message_id)
+        assert identity is not None and identity.sender == sender
+        assert await store.find_identity(message_id=str(uuid4())) is None
+        with pytest.raises(MessageAdmissionError) as invalid:
+            await store.find_identity(message_id="not-a-uuid")
+        assert invalid.value.error.code == "invalid_message"
+        await store.cancel_retained(message_ids=(original.message_id,))
+        cancelled = await store.find_identity(message_id=original.message_id)
+        await store.cancel_retained(message_ids=(original.message_id,))
+        assert await store.find_identity(message_id=original.message_id) == cancelled
+
+        await store.set_lifecycle(accepting=True)
+        applied = MessageSubmissionDAO(
+            message_id=str(uuid4()), target=current, kind="agent_input", text="applied"
+        )
+        pending = MessageSubmissionDAO(
+            message_id=str(uuid4()), target=current, kind="agent_input", text="pending"
+        )
+        await store.admit(submission=applied, principal=sender)
+        delivery = await store.claim_one(boundary=BoundaryDAO(run_id=str(uuid4()), boundary_index=0))
+        assert delivery is not None
+        await store.prepare_application(
+            delivery=delivery, event=application_event(delivery=delivery, generation=current.generation)
+        )
+        await store.mark_history_committed(message_id=applied.message_id)
+        await store.mark_applied(message_id=applied.message_id)
+        await store.admit(submission=pending, principal=sender)
+        await store.retain_pending()
+        with pytest.raises(MessageAdmissionError) as changed:
+            await store.cancel_retained(message_ids=(pending.message_id, applied.message_id))
+        assert changed.value.error.code == "recovery_required"
+        retained = await store.find_identity(message_id=pending.message_id)
+        assert retained is not None and retained.receipt.retained_for_recovery
+        await store.maintain(now=utcnow() + timedelta(days=9))
+        terminal = await store.find_identity(message_id=applied.message_id)
+        assert terminal is not None and terminal.receipt.state == "applied"
+        assert terminal.history_event_id == delivery.history_event_id
+        # A repeat cannot rewrite the original terminal timestamp even after body pruning.
+        assert await store.find_identity(message_id=original.message_id) == cancelled
+    finally:
+        await store.close()

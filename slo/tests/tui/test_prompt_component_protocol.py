@@ -1,6 +1,7 @@
 """Real application journeys for the prompt command and lifecycle boundary."""
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -654,3 +655,46 @@ async def test_pending_path_read_cannot_publish_after_prompt_retirement(tmp_path
         finally:
             reader.release.set()
     assert app._path_suggestions._task is None
+
+
+async def test_draft_revision_advances_at_every_edit_boundary(tmp_path: Path) -> None:
+    """A8 (01.2): typing, undo, redo, paste, recall, replace and clear each advance the revision."""
+    app = SloTUI(session=build_session(tmp_path=tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        prompt = app.query_one(PromptInputComponent)
+        component: ComponentProtocol[PromptCommand] = prompt
+        revision: int = prompt._draft_revision
+
+        async def advanced(*, action: Callable[[], object]) -> int:
+            """Apply one edit boundary and require the revision to advance exactly once."""
+            before: int = revision_holder[0]
+            result = action()
+            if asyncio.iscoroutine(result):
+                await result
+            await pilot.pause()
+            assert prompt._draft_revision == before + 1
+            revision_holder[0] = prompt._draft_revision
+            return prompt._draft_revision
+
+        revision_holder: list[int] = [revision]
+        await advanced(action=lambda: pilot.press("a"))
+        assert prompt.text == "a"
+        await advanced(action=lambda: prompt.undo())
+        assert prompt.text == ""
+        await advanced(action=lambda: prompt.redo())
+        assert prompt.text == "a"
+        await advanced(action=lambda: prompt.replace(insert="bc", start=(0, 1), end=(0, 1)))
+        assert prompt.text == "abc"
+        await component.handle(command=RecordAcceptedPromptDAO(text="remembered revision"))
+        await pilot.pause()
+        await advanced(action=lambda: component.handle(command=ClearSubmissionDAO()))
+        assert prompt.text == ""
+        await advanced(action=lambda: pilot.press("up"))
+        assert prompt.text == "remembered revision"
+        await advanced(action=lambda: component.handle(command=ReplacePromptDAO(text="replaced")))
+        assert prompt.text == "replaced"
+        await advanced(action=lambda: component.handle(command=ClearSubmissionDAO()))
+        assert prompt.text == ""
+        # Editing back to the same text still advances; restoration stays refused.
+        await advanced(action=lambda: pilot.press("a"))
+        assert prompt.text == "a"

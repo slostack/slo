@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Literal, Optional, Protocol
 from unittest.mock import Mock
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPreferencesStoreCorruptError
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
@@ -51,7 +51,20 @@ from src.tui.slash_command_registry import (
 )
 from src.tui.workflows.dao import WorkflowListVisibilityRequestDAO
 
-__all__ = ["SlashCommandResultDAO", "SlashRouter"]
+__all__ = ["MessagesCommandDAO", "SlashCommandResultDAO", "SlashRouter"]
+
+
+class MessagesCommandDAO(BaseModel):
+    """Typed ``/messages`` intent; the router parses and the host executes."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    action: Literal["drafts", "retry", "discard", "list", "continue", "cancel", "confirm", "decline"] = Field(
+        description="Requested messages operation; execution belongs to the host."
+    )
+    after_sequence: int = Field(default=0, description="Exclusive retained-message page cursor.")
+    message_ids: tuple[str, ...] = Field(
+        default=(), description="Original message IDs or displayed unique prefixes selected by the user."
+    )
 
 
 SlashHandler = Callable[..., Awaitable["SlashCommandResultDAO"]]
@@ -112,6 +125,9 @@ class SlashCommandResultDAO(BaseModel):
     toggle_theme: bool = False
     abort_run: bool = False
     steer_pending_message: Optional[str] = None
+    submit_text: Optional[str] = Field(
+        default=None, description="Normal messaging instruction for composer admission."
+    )
     render_tree: Optional[object] = None
     tree_format: Optional[str] = None
     refresh_context_window: bool = False
@@ -122,6 +138,10 @@ class SlashCommandResultDAO(BaseModel):
     resumed_workflow_id: Optional[str] = None
     tui_visibility: Optional[WorkflowListVisibilityRequestDAO] = Field(
         default=None, description="Local workflow display intent."
+    )
+    messages_command: Optional[MessagesCommandDAO] = Field(
+        default=None,
+        description="Parsed /messages intent for host execution; None when no intent is requested.",
     )
 
     @model_validator(mode="after")
@@ -314,10 +334,53 @@ class SlashRouter:
             "preferences": cls._handle_preferences,
             "plugins": cls._handle_plugins,
             "workflows": cls._handle_workflows,
+            "messages": cls._handle_messages,
         }
         return handlers[command_name]
 
     # ---- Per-command handlers --------------------------------------------
+
+    @classmethod
+    async def _handle_messages(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Parse one ``/messages`` action into a typed intent; never executes it.
+
+        Args:
+            rest (str): Trailing argument text after the command name.
+            session (SloAgentSession): Active session (unused; the host executes).
+
+        Returns:
+            SlashCommandResultDAO: The parsed intent, or rendered usage text.
+        """
+        usage: str = (
+            "/messages list [after] | continue <id> | cancel <id>… | confirm | decline | drafts | retry <id> | discard <id>"
+        )
+        parts: list[str] = rest.split()
+        if not parts:
+            return SlashCommandResultDAO(rendered=usage)
+        action: str = parts[0]
+        if action in ("drafts", "confirm", "decline") and len(parts) == 1:
+            return SlashCommandResultDAO(messages_command=MessagesCommandDAO(action=action))  # type: ignore[arg-type]
+        if action == "list" and len(parts) <= 2:
+            if len(parts) == 2 and (not parts[1].isascii() or not parts[1].isdecimal()):
+                return SlashCommandResultDAO(rendered=usage)
+            return SlashCommandResultDAO(
+                messages_command=MessagesCommandDAO(
+                    action="list", after_sequence=int(parts[1]) if len(parts) == 2 else 0
+                )
+            )
+        if (action == "continue" and len(parts) == 2) or (action == "cancel" and 2 <= len(parts) <= 17):
+            return SlashCommandResultDAO(
+                messages_command=MessagesCommandDAO(
+                    action="continue" if action == "continue" else "cancel", message_ids=tuple(parts[1:])
+                )
+            )  # type: ignore[arg-type]
+        if action in ("retry", "discard") and len(parts) >= 2:
+            return SlashCommandResultDAO(
+                messages_command=MessagesCommandDAO(
+                    action=action, message_ids=tuple(parts[1:])  # type: ignore[arg-type]
+                )
+            )
+        return SlashCommandResultDAO(rendered=usage)
 
     @classmethod
     async def _handle_help(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
@@ -402,6 +465,8 @@ class SlashRouter:
         """
         if not rest:
             return SlashCommandResultDAO(rendered="usage: /steer <message>")
+        if session.is_messaging_ready is True:
+            return SlashCommandResultDAO(submit_text=rest)
         session.steer(message=rest)
         return SlashCommandResultDAO(steer_pending_message=rest)
 

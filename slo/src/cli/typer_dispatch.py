@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol
 
 import typer
 
@@ -63,6 +63,22 @@ from src.tui.app import SloTUI
 __all__ = ["TyperDispatch"]
 
 
+class InteractiveSessionFactory(Protocol):
+    """Acquire a session at the interactive composition boundary."""
+
+    def __call__(self, *, config: SessionConfigDAO, allow_pending_preparation: bool) -> SloAgentSession:
+        """Build a session with the selected startup preparation policy."""
+        ...
+
+
+class InteractiveTUIFactory(Protocol):
+    """Construct the host without starting terminal I/O."""
+
+    def __call__(self, *, session: SloAgentSession, messaging_enabled: bool) -> SloTUI:
+        """Compose the host around its borrowed session."""
+        ...
+
+
 class TyperDispatch:
     """Namespace for Typer subcommand bodies.
 
@@ -79,6 +95,8 @@ class TyperDispatch:
         resume_session_reference: Optional[str] = None,
         plugin_paths: Optional[list[Path]] = None,
         herdr_restore_reference: Optional[str] = None,
+        session_factory: Optional[InteractiveSessionFactory] = None,
+        tui_factory: Optional[InteractiveTUIFactory] = None,
     ) -> None:
         """Open the Textual TUI scoped to ``workdir`` (or the cwd).
 
@@ -94,9 +112,13 @@ class TyperDispatch:
             resume_session_reference (Optional[str]): Session reference to
                 reopen (session id or unique session name). ``None`` allocates
                 a new UUID4.
+            session_factory: Optional typed acquisition seam; defaults to the real session builder.
+            tui_factory: Optional host construction seam; defaults to the real Textual host.
             herdr_restore_reference (Optional[str]): Exact private integration revision.
                 Requires literal UUID resume and forbids explicit path overrides.
         """
+        build_session = session_factory or SloAgentSession.build
+        build_tui = tui_factory or SloTUI
         if herdr_restore_reference is not None:
             cls._require_herdr_restore_arguments(
                 resume=resume_session_reference,
@@ -109,10 +131,8 @@ class TyperDispatch:
                 session_id=resume_session_reference,
             )
             with interactive_logging(slo_home=_CFG_SLO_HOME):
-                restored_session = SloAgentSession.build(
-                    config=restored_config, allow_pending_preparation=True
-                )
-                SloTUI(session=restored_session).run(mouse=True)
+                restored_session = build_session(config=restored_config, allow_pending_preparation=True)
+                build_tui(session=restored_session, messaging_enabled=True).run(mouse=True)
             return
         resolved_workdir: Path = (workdir or Path.cwd()).resolve()
         resolved_workspace_file: Optional[Path] = cls._resolve_workspace_file(
@@ -130,8 +150,8 @@ class TyperDispatch:
                 resumed_model_name=cls._resolve_resumed_model_name(session_id=resolved_session_id),
                 plugin_paths=plugin_paths,
             )
-            session: SloAgentSession = SloAgentSession.build(config=config, allow_pending_preparation=True)
-            SloTUI(session=session).run(mouse=True)
+            session: SloAgentSession = build_session(config=config, allow_pending_preparation=True)
+            build_tui(session=session, messaging_enabled=True).run(mouse=True)
 
     @classmethod
     def _load_herdr_session_config(cls, *, reference: str, session_id: Optional[str]) -> SessionConfigDAO:
@@ -316,6 +336,7 @@ class TyperDispatch:
         )
         runner: HeadlessRunner = HeadlessRunner(
             config=config,
+            messaging_enabled=True,
             orchestrator_mode=orchestrator_mode,
             notify_session_id=notify_session_id,
         )

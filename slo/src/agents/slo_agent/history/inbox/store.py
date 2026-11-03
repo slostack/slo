@@ -8,17 +8,27 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import ValidationError
+from src.agents.slo_agent.messaging.dao import _require_uuid
 
 from src.agents.slo_agent.history.inbox.dao import (
     InboxEnqueueResultDAO,
     SessionInboxMessageDAO,
 )
 
-__all__ = ["SessionInboxStore"]
+__all__ = ["SessionInboxStore", "SessionInboxClaimReadError"]
 
 
 _DIR_MODE: int = 0o700
 _FILE_MODE: int = 0o600
+
+
+class SessionInboxClaimReadError(Exception):
+    """Unreadable claimed item with a filename-derived safe paging cursor."""
+
+    def __init__(self, *, message_id: str) -> None:
+        """Keep content and filesystem errors private; expose only the canonical UUID."""
+        self.message_id: str = message_id
+        super().__init__("Inbox claim unreadable")
 
 
 class SessionInboxStore:
@@ -92,6 +102,62 @@ class SessionInboxStore:
                 self._claim_next_sync,
                 session_id=session_id,
             )
+
+    async def read_claimed(
+        self, *, session_id: str, after_message_id: Optional[str] = None, limit: int = 16
+    ) -> tuple[SessionInboxMessageDAO, ...]:
+        """Read at most sixteen claims in UUID order without moving or admitting them.
+
+        Args:
+            session_id: Owning Inbox session.
+            after_message_id: Exclusive canonical UUID cursor, or None to start.
+            limit: Integer page size from one through sixteen.
+
+        Returns:
+            Valid prefix before the first corrupt selected item.
+
+        Raises:
+            ValueError: Invalid cursor or limit, before filesystem I/O.
+            SessionInboxClaimReadError: First selected file cannot be validated.
+        """
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError("Invalid Inbox claim page limit")
+        if after_message_id is not None:
+            if not isinstance(after_message_id, str):
+                raise ValueError("Invalid Inbox claim cursor")
+            _require_uuid(value=after_message_id, field="after_message_id")
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._read_claimed_sync,
+                session_id=session_id,
+                after_message_id=after_message_id,
+                limit=limit,
+            )
+
+    def _read_claimed_sync(
+        self, *, session_id: str, after_message_id: Optional[str], limit: int
+    ) -> tuple[SessionInboxMessageDAO, ...]:
+        """Select filename UUIDs before reading bounded content; surface corrupt cursors."""
+        candidates: list[tuple[str, Path]] = []
+        for path in self._claimed_dir(session_id=session_id).glob("*.json"):
+            message_id = path.stem[-36:]
+            try:
+                _require_uuid(value=message_id, field="filename")
+            except ValueError:
+                continue
+            if len(path.stem) < 38 or path.stem[-37] != "-":
+                continue
+            if after_message_id is None or message_id > after_message_id:
+                candidates.append((message_id, path))
+        messages: list[SessionInboxMessageDAO] = []
+        for message_id, path in sorted(candidates)[:limit]:
+            message = self._read_message_file(path=path)
+            if message is None or message.message_id != message_id or message.session_id != session_id:
+                if messages:
+                    break
+                raise SessionInboxClaimReadError(message_id=message_id)
+            messages.append(message)
+        return tuple(messages)
 
     async def ack(self, *, session_id: str, message_id: str) -> bool:
         """Move a claimed item into ``done/``.
@@ -261,7 +327,7 @@ class SessionInboxStore:
         """
         try:
             payload: str = path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeError):
             return None
         try:
             return SessionInboxMessageDAO.model_validate_json(payload)

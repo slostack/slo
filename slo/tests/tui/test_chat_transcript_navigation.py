@@ -420,9 +420,14 @@ async def test_removed_reading_candidate_uses_clamped_numeric_fallback() -> None
         await pilot.pause()
         scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
+        async with asyncio.timeout(5):
+            await pilot.wait_for_scheduled_animations()
+            while transcript._active_pin is not None:
+                await pilot.pause()
         scroll.scroll_to(y=40, animate=False, immediate=True)
         await pilot.pause()
         saved_y = scroll.scroll_y
+        assert saved_y == 40, (saved_y, scroll.max_scroll_y)
         first = scroll.children[1]
         transcript.hold = {"_settle_native_navigation"}
         scroll.focus()

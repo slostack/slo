@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from time import monotonic
-from typing import Optional, Protocol, cast
+from typing import Literal, Optional, Protocol, cast
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -28,7 +28,20 @@ from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleSt
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.inbox.dao import SessionOwnershipLeaseDAO
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.history.inbox.store import SessionInboxStore, SessionInboxClaimReadError
+from src.agents.slo_agent.messaging.client import LocalSessionMessagingClient
+from src.agents.slo_agent.messaging.dao import (
+    MessageAdmissionError,
+    LegacyInboxAdmissionDAO,
+    MessageIdentityDAO,
+    MessageReceiptDAO,
+    MessageSubmissionDAO,
+    _require_uuid,
+    MessagingObservationDAO,
+    MessageStoreError,
+    SessionAlreadyOwnedError,
+)
+from src.agents.slo_agent.history.transcript import ReplayEntryProjector
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -45,6 +58,7 @@ from src.tui.components.chat_transcript.commands import (
     TranscriptNoticeDAO,
     EchoUserDAO,
     PresentAgentEventDAO,
+    PresentMessageApplicationDAO,
     HydrateTranscriptDAO,
     BindHistoryDAO,
     ClearTranscriptDAO,
@@ -55,11 +69,24 @@ from src.tui.components.chat_transcript.commands import (
 from src.tui.components.workflow_progress.component import WorkflowProgressComponent
 from src.tui.components.workflow_progress.events import ConfirmAbortDAO
 from src.tui.components.prompt_input.component import PromptInputComponent
+from src.tui.components.prompt_input.submission import (
+    DraftCapacityError,
+    DraftHandoffDAO,
+    DraftHandoffAckDAO,
+    DraftHandoffError,
+    RetainedDraftUsageDAO,
+    draft_submission_bytes,
+    RecoverableDraftDAO,
+    RetrySubmissionDAO,
+    SubmissionUnavailableError,
+)
 from src.tui.components.prompt_input.commands import (
     ClearSubmissionDAO,
+    DiscardDraftDAO,
     ReplacePromptDAO,
     HideSuggestionsDAO,
     RecordAcceptedPromptDAO,
+    SubmitDraftDAO,
     SetModelContextDAO,
     RecordModelSelectionDAO,
     RefreshPublishedSuggestionsDAO,
@@ -69,7 +96,14 @@ from src.tui.components.prompt_input.commands import (
 from src.tui.authentication import AuthenticationScreen
 from src.tui.path_suggestion_engine import PathSuggestionReader
 from src.tui.path_suggestion_controller import PathPromptSnapshotDAO, PathSuggestionController
-from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
+from src.tui.slash_router import MessagesCommandDAO, SlashCommandResultDAO, SlashRouter
+from src.agents.slo_agent.messaging.dao import (
+    RecoveryConfirmationDAO,
+    RecoveryOutcomeDAO,
+    CancelRecoveryOutcomeDAO,
+    CancelRecoveryConfirmationDAO,
+    MessageErrorDAO,
+)
 from src.tui.model_catalog import ModelSuggestionProjection
 from src.tui.slash_suggestion_engine import SlashSuggestionEngine, SlashSuggestionStateDAO
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
@@ -219,6 +253,30 @@ class SessionFactory(Protocol):
         ...
 
 
+_UNCERTAIN_SUBMISSION_CODES: frozenset[str] = frozenset(
+    {"unknown_outcome", "storage_unavailable", "not_found", "replay_gap"}
+)
+"""Refusal codes whose answer is uncertain; the draft is kept, never restored."""
+
+_SUBMISSION_ERROR_PHRASES: dict[str, str] = {
+    "invalid_message": "the message was invalid",
+    "conflict": "the message conflicts with stored content",
+    "queue_full": "too many messages are waiting",
+    "sender_limit": "too many of your messages are waiting",
+    "unauthorized": "this client may not send here",
+    "stale_generation": "the session was replaced",
+    "offline": "messaging is not ready",
+    "completing": "the session is closing",
+    "unsupported": "this session does not support messaging",
+    "recovery_required": "the session needs recovery",
+    "unknown_outcome": "delivery is uncertain",
+    "not_found": "the message was not found",
+    "storage_unavailable": "message storage failed",
+    "replay_gap": "message history could not be replayed",
+}
+"""Fixed refusal-code phrases; payload or exception text is never rendered."""
+
+
 class SloTUI(App):
     """Textual application wrapping a single ``SloAgentSession``."""
 
@@ -285,6 +343,9 @@ class SloTUI(App):
         workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
         path_reader: Optional[PathSuggestionReader] = None,
         editor_launcher: Optional[EditorLauncher] = None,
+        messaging_enabled: bool = False,
+        prompt_factory: Callable[[], PromptInputComponent] = PromptInputComponent,
+        messaging_client_factory: Optional[Callable[[SloAgentSession], LocalSessionMessagingClient]] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -312,9 +373,16 @@ class SloTUI(App):
             workflow_service_factory: Optional real-service composition boundary.
             workflow_coordinator_factory: Optional coordinator composition boundary;
                 defaults to the production coordinator with the app-owned sink.
+            messaging_enabled (bool): Opt-in durable composition. ``False`` keeps
+                the legacy memory-queue prompt path byte-identical.
+            prompt_factory: Editor construction seam; defaults to the production component.
+            messaging_client_factory: Optional owner-client construction seam;
+                the app owns and closes the returned client, never the adapter.
         """
         super().__init__()
         self._session_factory = session_factory
+        self._messaging_client_factory = messaging_client_factory
+        self._prompt_factory = prompt_factory
         self._visualizer_launcher = visualizer_launcher
         self._workflow_resume_launcher = workflow_resume_launcher
         self._escape_deadline: float = 0.0
@@ -392,7 +460,27 @@ class SloTUI(App):
         # and unclosed for that exact identity.
         self._workflow_observation_session_id: Optional[str] = None
         self._workflow_renderer: Optional[DetachedWorkflowRenderer] = None
+        self._messaging_observation_task: Optional[asyncio.Task[None]] = None
+        self._messaging_pending_count: int = 0
+        self._retained_draft_handoffs: dict[str, DraftHandoffDAO] = {}
+        self._exit_unsent_confirmed: bool = False
+        self._memory_draft_notice_written: bool = False
+        self._messaging_run_presented: bool = False
+        self._messaging_presentation_lock = asyncio.Lock()
+        self._messaging_enabled: bool = messaging_enabled
+        self._messaging_session: Optional[SloAgentSession] = None
+        """Session whose messaging this app started and still owns, if any."""
+        self._pending_recovery_confirmation: Optional[
+            RecoveryConfirmationDAO | CancelRecoveryConfirmationDAO
+        ] = None
+        self._last_retained_page_ids: tuple[str, ...] = ()
+        self._messaging_client: Optional[LocalSessionMessagingClient] = None
+        """Owner client borrowed by the prompt submission adapter, if active."""
+        self._messaging_failed_session: Optional[SloAgentSession] = None
+        """Session whose messaging startup failed; ordinary prompts are refused."""
         self._inbox_store: Optional[SessionInboxStore] = inbox_store
+        self._legacy_inbox_clients: Optional[dict[str, LocalSessionMessagingClient]] = None
+        self._unacked_inbox_claims: dict[str, SessionInboxMessageDAO] = {}
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
         self._lease_timer: Optional[Timer] = None
@@ -413,7 +501,7 @@ class SloTUI(App):
             self._suggestion_menu = SlashSuggestionMenu()
             with self._status_region:
                 yield self._suggestion_menu
-            self._input = PromptInputComponent()
+            self._input = self._prompt_factory()
             yield self._input
             # Workflow progress: below PromptInputComponent, hidden while it has no rows.
             # The orchestrator transcript always stays in the foreground.
@@ -579,6 +667,7 @@ class SloTUI(App):
                     await self._input.handle(
                         command=SetModelContextDAO(active_model_name=session.active_model_name)
                     )
+                await self._activate_session_messaging(session=session)
         if self._runtime_may_start(session=session):
             self._refresh_title_bar()
             self._refresh_usage_status_bar()
@@ -874,7 +963,30 @@ class SloTUI(App):
             await HerdrTaskJoin.wait(task=self._mount_runtime_task)
         if self._session_replacement_task is not None:
             await HerdrTaskJoin.wait(task=self._session_replacement_task)
+        await self._close_messaging_observation()
+        if self._input is not None and self._input.is_mounted:
+            await self._shutdown_step(cleanup=self._input.close)
+        await self._report_memory_only_drafts()
         await self._close_workflow_observation()
+
+    async def _close_messaging_observation(self) -> None:
+        """Detach and join observation before prompt retirement or owner-client close."""
+        task = self._messaging_observation_task
+        self._messaging_observation_task = None
+        if task is not None:
+            task.cancel()
+            await HerdrTaskJoin.wait(task=task)
+
+    async def _report_memory_only_drafts(self) -> None:
+        """Warn once during forced pre-pruning teardown while transcript is attached."""
+        if self._memory_draft_notice_written or not self.count_retained_drafts().draft_count:
+            return
+        self._memory_draft_notice_written = True
+        if self._chat_transcript is not None and self._chat_transcript.is_attached:
+            await self._write_lifecycle_notice(
+                content="Unsent drafts are kept only while Slo is open; they are not saved.",
+                classes="tool-result",
+            )
 
     async def on_unmount(self) -> None:
         """Seal admission before awaiting the single retained shutdown task."""
@@ -903,6 +1015,7 @@ class SloTUI(App):
             session.begin_external_reporting_close()
             await self._shutdown_step(cleanup=self._cancel_session_preparation)
             await self._shutdown_step(cleanup=self._close_workflow_observation)
+            await self._shutdown_step(cleanup=lambda: self._close_session_messaging(session=session))
             await self._shutdown_step(cleanup=session.close_external_reporting)
             await self._shutdown_step(cleanup=self._close_selected_delivery)
         await self._drain_shutdown_owners(session=session)
@@ -984,6 +1097,208 @@ class SloTUI(App):
         """Retain mount-owned filesystem work under the submission gate."""
         async with self._prompt_submission_lock:
             await self._finish_replacement_runtime()
+
+    async def _activate_session_messaging(self, *, session: SloAgentSession) -> bool:
+        """Start messaging once for the selected session and build the owner client.
+
+        WHO: The mount runtime chain and mounted-session preparation call it.
+        WHEN: Only behind ``messaging_enabled`` and only while ``session`` is
+            still selected and prepared; startup failure refuses durable input
+            for that session without any legacy fallback.
+
+        Args:
+            session (SloAgentSession): Captured selected session.
+
+        Returns:
+            bool: Whether messaging is active and bound for ``session``.
+        """
+        if not self._messaging_enabled:
+            return False
+        if self._messaging_session is session:
+            return True
+        if not self._runtime_may_start(session=session):
+            return False
+        try:
+            await session.start_messaging()
+        except asyncio.CancelledError:
+            await session.close_messaging()
+            raise
+        except (MessageAdmissionError, MessageStoreError, SessionAlreadyOwnedError):
+            self._messaging_failed_session = session
+            if self._runtime_may_start(session=session):
+                await self._write_lifecycle_notice(
+                    content="Durable messaging unavailable; prompts are disabled for this session.",
+                    classes="tool-result",
+                )
+            return False
+        if not self._runtime_may_start(session=session):
+            await session.close_messaging()
+            return False
+        self._messaging_client = (
+            self._messaging_client_factory(session)
+            if self._messaging_client_factory is not None
+            else LocalSessionMessagingClient(
+                session=session,
+                target=session.messaging_target,
+                principal=session.messaging_owner_principal,
+                supported_priorities=frozenset({"normal"}),
+            )
+        )
+        self._messaging_session = session
+        sources: tuple[Literal["scheduler", "workflow"], ...] = ("scheduler", "workflow")
+        self._legacy_inbox_clients = {
+            source: session.register_legacy_inbox_client(
+                owner=session.messaging_owner_principal, source=source
+            )
+            for source in sources
+        }
+        if self._input is not None:
+            await self._input.replace_submission_binding(
+                client=self._messaging_client, address=session.messaging_target
+            )
+        self._messaging_observation_task = asyncio.create_task(
+            coro=self._observe_session_messaging(session=session)
+        )
+        await self._scan_recovered_inbox_claims(session=session)
+        return True
+
+    async def _observe_session_messaging(self, *, session: SloAgentSession) -> None:
+        """Subscribe before barrier replay and recover every bounded observation gap."""
+        initial = True
+        while self._runtime_may_start(session=session):
+            stream = session.observe_messaging(principal=session.messaging_owner_principal)
+            try:
+                first = await anext(stream)
+                if not self._runtime_may_start(session=session):
+                    return
+                await self._present_messaging_observation(session=session, observation=first)
+                await self._chat_transcript.handle(
+                    command=BindHistoryDAO(history_reader=session.hydrate_transcript_entries)
+                )
+                await self._chat_transcript.handle(
+                    command=HydrateTranscriptDAO(is_current=lambda: self._runtime_may_start(session=session))
+                )
+                if initial and session.history_enabled is not True:
+                    await self._write_lifecycle_notice(
+                        content="Messages in this session are not durable.", classes="tool-result"
+                    )
+                initial = False
+                async for observation in stream:
+                    if not self._runtime_may_start(session=session):
+                        return
+                    await self._present_messaging_observation(session=session, observation=observation)
+            except MessageAdmissionError as error:
+                if not self._runtime_may_start(session=session):
+                    return
+                if error.error.code == "replay_gap":
+                    await self._write_lifecycle_notice(
+                        content="Catching up message history…", classes="tool-result"
+                    )
+                    continue
+                if error.error.code != "completing":
+                    await self._write_lifecycle_notice(
+                        content="Message updates unavailable.", classes="tool-result"
+                    )
+                return
+            finally:
+                await stream.aclose()
+            return
+
+    async def _present_messaging_observation(
+        self, *, session: SloAgentSession, observation: MessagingObservationDAO
+    ) -> None:
+        """Route owner-local summary and verified application without reading storage."""
+        if observation.target != session.messaging_target or not self._runtime_may_start(session=session):
+            return
+        self._messaging_pending_count = observation.summary.pending_count
+        text = observation.summary.next_local_text
+        if text is None:
+            await self._remove_queued_prompt_block()
+        else:
+            preview = text[:256] + ("…" if len(text) > 256 else "")
+            if self._queued_prompt_block is None:
+                await self._mount_queued_prompt_block(text=preview)
+            else:
+                self._queued_prompt_block.replace_text(text=preview)
+        if observation.application is None:
+            return
+        for entry in ReplayEntryProjector.build_entries(events=[observation.application]):
+            metadata = entry.application
+            if metadata is not None and metadata.kind == "agent_input":
+                await self._begin_messaging_run_presentation()
+            await self._chat_transcript.handle(command=PresentMessageApplicationDAO(entry=entry))
+            if (
+                metadata is not None
+                and metadata.kind == "agent_input"
+                and metadata.sender.kind == "human"
+                and metadata.sender == session.messaging_owner_principal
+                and self._input is not None
+            ):
+                await self._input.handle(
+                    command=RecordAcceptedPromptDAO(
+                        text=entry.content or "",
+                        message_id=metadata.message_id,
+                    )
+                )
+
+    async def _begin_messaging_run_presentation(self) -> None:
+        """Begin exactly one presentation per session-owned run, never per editor task."""
+        async with self._messaging_presentation_lock:
+            if self._messaging_run_presented:
+                return
+            self._messaging_run_presented = True
+            await self._chat_transcript.handle(command=BeginTranscriptRunDAO())
+            self._reset_escape_sequence()
+            await self._mount_spinner()
+
+    async def _finish_messaging_run_presentation(self) -> None:
+        """Reuse terminal presentation cleanup without scheduling a legacy editor run."""
+        async with self._messaging_presentation_lock:
+            await self._refresh_context_window_after_prompt()
+            self._session.refresh_usage_snapshot()
+            self._refresh_usage_status_bar()
+            await self._unmount_spinner()
+            await self._cleanup_sub_agent_state()
+            self._messaging_run_presented = False
+
+    async def _close_session_messaging(self, *, session: SloAgentSession) -> None:
+        """Close the owner client first, then the session's messaging; idempotent.
+
+        WHO: App shutdown calls it inside the existing submission-gate block,
+            before external reporting closes; ``/new`` reuses it for the
+            predecessor (01.6).
+        WHEN: After pre-pruning observation/prompt retirement has joined. A client
+            close failure can never skip the session-owned close: it is
+            idempotent and joins any in-flight start, so this method invokes it
+            unconditionally instead of inspecting session-private state.
+            Exceptions follow ``_shutdown_step`` and never skip later steps.
+
+        Args:
+            session (SloAgentSession): Session whose messaging this app owns.
+        """
+        await self._close_messaging_observation()
+        self._pending_recovery_confirmation = None
+        self._last_retained_page_ids = ()
+        client: Optional[LocalSessionMessagingClient] = self._messaging_client
+        self._messaging_client = None
+        client_failure: Optional[BaseException] = None
+        clients = tuple((self._legacy_inbox_clients or {}).values())
+        self._legacy_inbox_clients = None
+        self._unacked_inbox_claims.clear()
+        for owned_client in (*clients, *((client,) if client is not None else ())):
+            try:
+                await owned_client.close()
+            except BaseException as failure:
+                client_failure = failure
+        try:
+            await session.close_messaging()
+        finally:
+            if self._messaging_session is session:
+                self._messaging_session = None
+            if self._messaging_failed_session is session:
+                self._messaging_failed_session = None
+            if client_failure is not None:
+                raise client_failure
 
     async def _initialize_session_delivery(self) -> None:
         """Contain partial startup before mount or replacement continues."""
@@ -1451,6 +1766,10 @@ class SloTUI(App):
             return
         session: SloAgentSession = self._session
         store: SessionInboxStore = self._inbox_store
+        if self._messaging_enabled:
+            await self._retry_unacked_inbox_claims(session=session, store=store)
+            if self._session is not session or not self._inbox_delivery_may_start():
+                return
         message: Optional[SessionInboxMessageDAO] = await store.claim_next(session_id=session.session_id)
         if message is None:
             return
@@ -1458,9 +1777,193 @@ class SloTUI(App):
             await self._notice_retained_inbox_claim()
             return
         if not await self._handle_inbox_message(message=message):
-            await self._notice_retained_inbox_claim()
+            if self._messaging_enabled:
+                self._keep_unacked_inbox_claim(message=message)
+            else:
+                await self._notice_retained_inbox_claim()
             return
-        await store.ack(session_id=session.session_id, message_id=message.message_id)
+        if self._messaging_enabled:
+            await self._ack_verified_inbox_claim(message=message, session=session, store=store)
+        else:
+            await store.ack(session_id=session.session_id, message_id=message.message_id)
+
+    def _keep_unacked_inbox_claim(self, *, message: SessionInboxMessageDAO) -> None:
+        """Keep bounded retry evidence; excess files remain available to restart scan."""
+        if len(self._unacked_inbox_claims) < 16:
+            self._unacked_inbox_claims[message.message_id] = message
+
+    async def _ack_verified_inbox_claim(
+        self, *, message: SessionInboxMessageDAO, session: SloAgentSession, store: SessionInboxStore
+    ) -> None:
+        """Ack only under the captured delivery binding; retain failed acknowledgements."""
+        if (
+            self._session is not session
+            or self._inbox_store is not store
+            or not self._inbox_delivery_may_start()
+        ):
+            return
+        try:
+            acknowledged = await store.ack(session_id=session.session_id, message_id=message.message_id)
+        except OSError:
+            acknowledged = False
+        if acknowledged:
+            self._unacked_inbox_claims.pop(message.message_id, None)
+        else:
+            self._keep_unacked_inbox_claim(message=message)
+
+    async def _retry_unacked_inbox_claims(
+        self, *, session: SloAgentSession, store: SessionInboxStore
+    ) -> None:
+        """Reverify receipt evidence before retrying ack; never resubmit a claimed item."""
+        for message in tuple(self._unacked_inbox_claims.values()):
+            if self._session is not session or not self._inbox_delivery_may_start():
+                return
+            if await self._admit_legacy_inbox_message(message=message, session=session, origin="recovered"):
+                await self._ack_verified_inbox_claim(message=message, session=session, store=store)
+
+    async def _scan_recovered_inbox_claims(self, *, session: SloAgentSession) -> None:
+        """Scan this activation's claimed files without republishing unknown work.
+
+        The activation hook owns this await, not another polling consumer. Every
+        I/O boundary rechecks the selected session, lease owner and collaborators.
+        """
+        store = self._inbox_store
+        lease_store = self._lease_store
+        owner_id = self._session_owner_id
+        after: Optional[str] = None
+        while store is not None and self._is_inbox_scan_current(
+            session=session, store=store, lease_store=lease_store, owner_id=owner_id
+        ):
+            try:
+                page = await store.read_claimed(
+                    session_id=session.session_id, after_message_id=after, limit=16
+                )
+            except SessionInboxClaimReadError as error:
+                if not self._is_inbox_scan_current(
+                    session=session, store=store, lease_store=lease_store, owner_id=owner_id
+                ):
+                    return
+                await self._write_lifecycle_notice(
+                    content="An inbox claim could not be read; it was left for investigation.",
+                    classes="tool-result",
+                )
+                after = error.message_id
+                continue
+            if not page:
+                return
+            for message in page:
+                if not self._is_inbox_scan_current(
+                    session=session, store=store, lease_store=lease_store, owner_id=owner_id
+                ):
+                    return
+                if await self._admit_legacy_inbox_message(
+                    message=message, session=session, origin="recovered"
+                ):
+                    if not self._is_inbox_scan_current(
+                        session=session, store=store, lease_store=lease_store, owner_id=owner_id
+                    ):
+                        return
+                    await self._ack_verified_inbox_claim(message=message, session=session, store=store)
+            after = page[-1].message_id
+
+    def _is_inbox_scan_current(
+        self,
+        *,
+        session: SloAgentSession,
+        store: SessionInboxStore,
+        lease_store: Optional[SessionOwnershipLeaseStore],
+        owner_id: str,
+    ) -> bool:
+        """Require unchanged delivery authority for startup recovery without retargeting."""
+        return (
+            self._session is session
+            and self._inbox_store is store
+            and self._lease_store is lease_store
+            and self._session_owner_id == owner_id
+            and self._inbox_delivery_may_start()
+        )
+
+    async def _admit_legacy_inbox_message(
+        self,
+        *,
+        message: SessionInboxMessageDAO,
+        session: SloAgentSession,
+        origin: Literal["pending", "recovered"],
+    ) -> bool:
+        """Verify original admission first; only newly pending absence may submit once.
+
+        Args:
+            message: Claimed transport content, never a source of capability authority.
+            session: Captured destination owner; replacement never redirects it.
+            origin: Recovered claims require existing lifetime proof, never admission.
+
+        Returns:
+            True only for verified or freshly returned receipt evidence.
+        """
+        if self._session is not session or not self._inbox_delivery_may_start():
+            return False
+        clients = self._legacy_inbox_clients
+        if clients is None or message.session_id != session.session_id:
+            return False
+        client = clients["workflow" if message.kind.startswith("workflow_") else "scheduler"]
+        try:
+            _require_uuid(value=message.message_id, field="message_id")
+        except ValueError:
+            await self._write_lifecycle_notice(
+                content="Inbox item has an invalid ID; claim kept.", classes="tool-result"
+            )
+            return False
+        kinds: dict[str, Literal["agent_input", "context_note", "transcript_note"]] = {
+            "chat_turn": "agent_input",
+            "context_note": "context_note",
+            "transcript_note": "transcript_note",
+        }
+        try:
+            admission = LegacyInboxAdmissionDAO(
+                message_id=message.message_id, kind=kinds[message.delivery_mode], text=message.text
+            )
+        except (ValueError, KeyError):
+            await self._write_lifecycle_notice(
+                content="Inbox item could not be accepted; claim kept.", classes="tool-result"
+            )
+            return False
+        verified = await session.get_legacy_inbox_admission(
+            owner=session.messaging_owner_principal, client=client, admission=admission
+        )
+        if self._session is not session or not self._inbox_delivery_may_start():
+            return False
+        if isinstance(verified, MessageIdentityDAO):
+            return True
+        if verified.code != "not_found":
+            await self._write_lifecycle_notice(
+                content=f"Inbox item could not be verified ({verified.code}); claim kept.",
+                classes="tool-result",
+            )
+            return False
+        if origin == "recovered":
+            await self._write_lifecycle_notice(
+                content="A recovered inbox claim needs investigation; it was not resent.",
+                classes="tool-result",
+            )
+            return False
+        outcome = await client.submit(
+            submission=MessageSubmissionDAO(
+                message_id=admission.message_id,
+                target=session.messaging_target,
+                kind=admission.kind,
+                text=admission.text,
+                priority="normal",
+                source_event_id="legacy-inbox:" + admission.message_id,
+            )
+        )
+        if isinstance(outcome, MessageErrorDAO) and outcome.code == "unknown_outcome":
+            outcome = await client.get_receipt(message_id=admission.message_id)
+        if isinstance(outcome, MessageReceiptDAO):
+            return True
+        await self._write_lifecycle_notice(
+            content=f"Inbox item could not be accepted ({outcome.code}); claim kept.", classes="tool-result"
+        )
+        return False
 
     async def _notice_retained_inbox_claim(self) -> None:
         """Report deferred admission without private content or disposition changes."""
@@ -1476,7 +1979,11 @@ class SloTUI(App):
             and not self._session_transitioning
             and not self._delivery_quiescing
             and self._replacement_delivery_safe
-            and self._in_flight_task is None
+            and (
+                self._legacy_inbox_clients is not None and self._messaging_session is self._session
+                if self._messaging_enabled
+                else self._in_flight_task is None
+            )
         )
 
     async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> bool:
@@ -1503,6 +2010,8 @@ class SloTUI(App):
                 )
             )
             return True
+        if self._messaging_enabled:
+            return await self._admit_legacy_inbox_message(message=message, session=session, origin="pending")
         if message.delivery_mode == "transcript_note":
             await self._chat_transcript.handle(
                 command=TranscriptNoticeDAO(
@@ -1760,6 +2269,41 @@ class SloTUI(App):
         if self._input is not None and self._input.is_prompt_intent_current(event=event):
             self._reset_escape_sequence()
 
+    async def on_prompt_input_component_submission_feedback(
+        self, event: PromptInputComponent.SubmissionFeedback
+    ) -> None:
+        """Render the fixed user-facing line for one settled draft outcome.
+
+        WHO: ``PromptInputComponent`` posts it after adopting a recipient answer.
+        WHEN: On the UI loop after registration and the clear commit; payload
+            and exception text never reach the transcript.
+
+        Args:
+            event (PromptInputComponent.SubmissionFeedback): The settled outcome.
+        """
+        event.stop()
+        if event.dropped:
+            await self._write_lifecycle_notice(
+                content="Unsent drafts could not be kept and were discarded.", classes="tool-result"
+            )
+            return
+        if event.error_code is None:
+            return
+        reason: str = _SUBMISSION_ERROR_PHRASES.get(event.error_code, "the session refused it")
+        if event.restored:
+            content: str = f"Prompt not accepted ({reason}); text restored."
+        elif event.error_code in _UNCERTAIN_SUBMISSION_CODES:
+            content = (
+                f"Prompt delivery uncertain; kept as draft {event.message_id[:8]}. "
+                f"/messages retry {event.message_id[:8]} resends the same message."
+            )
+        else:
+            content = (
+                f"Prompt not accepted ({reason}); kept as draft {event.message_id[:8]}. "
+                f"Use /messages drafts or /messages retry {event.message_id[:8]}."
+            )
+        await self._write_lifecycle_notice(content=content, classes="tool-result")
+
     # ---- Input handling ---------------------------------------------------
 
     async def on_key(self, event: events.Key) -> None:
@@ -1838,6 +2382,27 @@ class SloTUI(App):
         if self._input is not None and not self._input.is_prompt_intent_current(event=event):
             return
         text: str = (event.text or "").strip()
+        if self._messaging_enabled and self._messaging_session is not self._session:
+            await self._hold_prompt_while_messaging_inactive(text=text)
+            return
+        if self._messaging_enabled and self._messaging_session is self._session:
+            if not text:
+                if self._input is not None:
+                    await self._input.handle(command=ClearSubmissionDAO())
+                return
+            if text.startswith("/"):
+                if self._input is not None:
+                    await self._input.handle(command=ClearSubmissionDAO())
+                await self._dispatch_slash_command(line=text)
+                return
+            await self._submit_durable_draft(text=text, intent_revision=event.draft_revision)
+            return
+        if text and not text.startswith("/") and self._session.has_messaging_store() is True:
+            await self._write_lifecycle_notice(
+                content="This session has durable messages; use a messaging-enabled Slo.",
+                classes="tool-result",
+            )
+            return
         if self._input is not None:
             await self._input.handle(command=ClearSubmissionDAO())
             if not self._input.is_prompt_intent_current(event=event):
@@ -1852,6 +2417,383 @@ class SloTUI(App):
             await self._dispatch_slash_command(line=text)
             return
         await self._submit_or_queue_prompt(text=text)
+
+    async def _hold_prompt_while_messaging_inactive(self, *, text: str) -> None:
+        """Keep ordinary text when messaging is enabled but not yet active.
+
+        Slash commands still dispatch; ordinary text is never cleared and never
+        falls back to the legacy memory queue for this session.
+
+        Args:
+            text (str): Normalized submitted text.
+        """
+        if not text:
+            return
+        if text.startswith("/"):
+            await self._dispatch_slash_command(line=text)
+            return
+        if self._messaging_failed_session is self._session:
+            await self._write_lifecycle_notice(
+                content="Durable messaging unavailable; prompts are disabled for this session.",
+                classes="tool-result",
+            )
+            return
+        await self._write_lifecycle_notice(
+            content="Messaging is starting; your prompt was kept.", classes="tool-result"
+        )
+
+    async def retain_unresolved_drafts(self, *, handoff: DraftHandoffDAO) -> DraftHandoffAckDAO:
+        """Acknowledge an exact all-or-nothing memory transfer before component release.
+
+        Args:
+            handoff (DraftHandoffDAO): Immutable retiring-binding snapshots.
+
+        Returns:
+            DraftHandoffAckDAO: Matching positive key only when the host owns all drafts.
+        """
+        existing = self._retained_draft_handoffs.get(handoff.handoff_id)
+        if existing is not None:
+            return DraftHandoffAckDAO(handoff_id=handoff.handoff_id, accepted=existing == handoff)
+        usage = self.count_retained_drafts()
+        new_bytes: int = sum(draft_submission_bytes(draft_submission=draft) for draft in handoff.drafts)
+        accepted: bool = (
+            usage.draft_count + len(handoff.drafts) <= 16 and usage.canonical_bytes + new_bytes <= 1_048_576
+        )
+        if accepted:
+            self._retained_draft_handoffs[handoff.handoff_id] = handoff
+        return DraftHandoffAckDAO(handoff_id=handoff.handoff_id, accepted=accepted)
+
+    def count_retained_drafts(self) -> RetainedDraftUsageDAO:
+        """Report host-held canonical reservations shared with component capture."""
+        drafts = self.list_retained_drafts()
+        return RetainedDraftUsageDAO(
+            draft_count=len(drafts),
+            canonical_bytes=sum(
+                draft_submission_bytes(draft_submission=draft.draft_submission) for draft in drafts
+            ),
+        )
+
+    def list_retained_drafts(self) -> tuple[RecoverableDraftDAO, ...]:
+        """List acknowledged old-binding snapshots without changing target or identity."""
+        return tuple(
+            RecoverableDraftDAO(draft_submission=draft, state="host_held")
+            for handoff in self._retained_draft_handoffs.values()
+            for draft in handoff.drafts
+        )
+
+    def _discard_retained_draft(self, *, message_id: str) -> None:
+        """Release one explicitly discarded host snapshot and its capacity reservation."""
+        for key, handoff in tuple(self._retained_draft_handoffs.items()):
+            drafts = tuple(
+                draft for draft in handoff.drafts if draft.message_submission.message_id != message_id
+            )
+            if len(drafts) == len(handoff.drafts):
+                continue
+            if drafts:
+                self._retained_draft_handoffs[key] = handoff.model_copy(update={"drafts": drafts})
+            else:
+                del self._retained_draft_handoffs[key]
+
+    def _list_unsent_drafts(self, *, prompt: PromptInputComponent) -> tuple[RecoverableDraftDAO, ...]:
+        """Combine current and previous binding views for operator-only draft actions."""
+        return prompt.list_recoverable_drafts() + self.list_retained_drafts()
+
+    async def _execute_messages_command(self, *, command: MessagesCommandDAO) -> None:
+        """Execute one parsed ``/messages`` intent against the prompt-owned drafts.
+
+        The router only parses; the host owns rendering, prefix resolution and
+        the component commands. Retained recovery delegates consent and mutation
+        to the session; unsent drafts remain component/host-owned.
+
+        Args:
+            command (MessagesCommandDAO): The typed router intent.
+        """
+        if command.action in ("list", "continue", "cancel", "confirm", "decline"):
+            await self._execute_recovery_command(command=command)
+            return
+        prompt: Optional[PromptInputComponent] = self._input
+        if prompt is None:
+            return
+        if command.action == "drafts":
+            await self._render_recoverable_drafts(prompt=prompt)
+            return
+        if not command.message_ids:
+            await self._write_lifecycle_notice(
+                content="/messages drafts | retry <id> | discard <id>", classes="tool-result"
+            )
+            return
+        for token in command.message_ids:
+            await self._execute_messages_id_action(prompt=prompt, action=command.action, token=token)
+
+    async def _execute_recovery_command(self, *, command: MessagesCommandDAO) -> None:
+        """Execute typed recovery intent; session alone owns consent and persistence."""
+        if command.action == "confirm" and self._pending_recovery_confirmation is not None:
+            await self._confirm_retained_selection()
+            return
+        if not self._session.is_messaging_ready:
+            await self._write_lifecycle_notice(content="Messaging is not active.", classes="tool-result")
+            return
+        if command.action == "decline":
+            self._pending_recovery_confirmation = None
+            await self._write_lifecycle_notice(content="Declined; nothing changed.", classes="tool-result")
+            return
+        if command.action == "confirm":
+            await self._confirm_retained_selection()
+            return
+        if command.action == "list":
+            await self._list_retained_selection(after_sequence=command.after_sequence)
+            return
+        await self._preview_retained_selection(command=command)
+
+    async def _list_retained_selection(self, *, after_sequence: int) -> None:
+        """Render a bounded page and replace only the local selection IDs."""
+        selection = await self._session.list_retained_messages(
+            principal=self._session.messaging_owner_principal, after_sequence=after_sequence
+        )
+        self._last_retained_page_ids = ()
+        if isinstance(selection, MessageErrorDAO):
+            await self._write_lifecycle_notice(
+                content="Could not list retained messages.", classes="tool-result"
+            )
+            return
+        self._last_retained_page_ids = tuple(item.submission.message_id for item in selection.items)
+        if not selection.items:
+            await self._write_lifecycle_notice(content="No retained messages.", classes="tool-result")
+        for envelope in selection.items:
+            await self._write_lifecycle_notice(
+                content=(
+                    f"{envelope.submission.message_id[:8]}  {envelope.sender.kind}  {envelope.submission.text[:80]}"
+                ),
+                classes="tool-result",
+            )
+        if selection.next_after_sequence is not None:
+            await self._write_lifecycle_notice(
+                content=f"More: /messages list {selection.next_after_sequence}", classes="tool-result"
+            )
+
+    def _resolve_retained_id(self, *, token: str) -> Optional[str]:
+        """Select a full UUID or unique eight-character-or-longer prefix from the last page."""
+        if len(token) < 8:
+            return None
+        matches = tuple(
+            message_id for message_id in self._last_retained_page_ids if message_id.startswith(token)
+        )
+        return matches[0] if len(matches) == 1 else None
+
+    async def _preview_retained_selection(self, *, command: MessagesCommandDAO) -> None:
+        """Hold exactly one session-issued consent, never caller-created source data."""
+        selected = tuple(self._resolve_retained_id(token=token) for token in command.message_ids)
+        if not selected or any(message_id is None for message_id in selected):
+            await self._write_lifecycle_notice(
+                content="/messages list [after] | continue <id> | cancel <id>… | confirm | decline",
+                classes="tool-result",
+            )
+            return
+        message_ids = tuple(message_id for message_id in selected if message_id is not None)
+        principal = self._session.messaging_owner_principal
+        confirmation: RecoveryConfirmationDAO | CancelRecoveryConfirmationDAO | MessageErrorDAO
+        if command.action == "continue":
+            confirmation = await self._session.preview_retained_message(
+                message_id=message_ids[0], principal=principal
+            )
+        else:
+            confirmation = await self._session.preview_cancel_retained(
+                message_ids=message_ids, principal=principal
+            )
+        if isinstance(confirmation, MessageErrorDAO):
+            await self._write_lifecycle_notice(
+                content="Selection changed or expired; list again.", classes="tool-result"
+            )
+            return
+        self._pending_recovery_confirmation = confirmation
+        if isinstance(confirmation, RecoveryConfirmationDAO):
+            transfer = confirmation.transfer
+            description = f"{transfer.original.message_id}  {transfer.original_sender.kind} → this session\n{transfer.original.text[:256]}"
+        else:
+            description = "Cancel: " + ", ".join(confirmation.message_ids)
+        await self._write_lifecycle_notice(
+            content=description + "\nType /messages confirm or /messages decline (expires in 5 minutes).",
+            classes="tool-result",
+        )
+
+    async def _confirm_retained_selection(self) -> None:
+        """Keep uncertain consent for exact retry; clear only success or stale authority."""
+        confirmation = self._pending_recovery_confirmation
+        if confirmation is None:
+            await self._write_lifecycle_notice(content="Nothing to confirm.", classes="tool-result")
+            return
+        try:
+            principal = self._session.messaging_owner_principal
+            outcome: RecoveryOutcomeDAO | CancelRecoveryOutcomeDAO | MessageErrorDAO
+            if isinstance(confirmation, RecoveryConfirmationDAO):
+                outcome = await self._session.recover_message(confirmation=confirmation, principal=principal)
+            else:
+                outcome = await self._session.cancel_retained_messages(
+                    confirmation=confirmation, principal=principal
+                )
+        except Exception:
+            await self._write_lifecycle_notice(
+                content="Could not confirm; /messages confirm retries the same confirmation.",
+                classes="tool-result",
+            )
+            return
+        if isinstance(outcome, MessageErrorDAO):
+            if outcome.code in ("conflict", "unauthorized"):
+                self._pending_recovery_confirmation = None
+                notice = "Selection changed or expired; list again."
+            else:
+                notice = "Could not confirm; /messages confirm retries the same confirmation."
+            await self._write_lifecycle_notice(content=notice, classes="tool-result")
+            return
+        self._pending_recovery_confirmation = None
+        await self._write_lifecycle_notice(
+            content=(
+                "Continued retained message."
+                if isinstance(confirmation, RecoveryConfirmationDAO)
+                else "Cancelled retained messages."
+            ),
+            classes="tool-result",
+        )
+
+    async def _render_recoverable_drafts(self, *, prompt: PromptInputComponent) -> None:
+        """Render every recoverable draft with its full user-requested text.
+
+        Args:
+            prompt (PromptInputComponent): The component owning the drafts.
+        """
+        drafts: tuple[RecoverableDraftDAO, ...] = self._list_unsent_drafts(prompt=prompt)
+        if not drafts:
+            await self._write_lifecycle_notice(content="No unsent drafts.", classes="tool-result")
+            return
+        for draft in drafts:
+            message_id: str = draft.draft_submission.message_submission.message_id
+            await self._write_lifecycle_notice(
+                content=(
+                    f"{message_id[:8]}  {draft.state}  " f"{draft.draft_submission.message_submission.text}"
+                ),
+                classes="tool-result",
+            )
+
+    async def _execute_messages_id_action(
+        self, *, prompt: PromptInputComponent, action: str, token: str
+    ) -> None:
+        """Resolve one full or unique-prefix ID and apply the requested action.
+
+        Args:
+            prompt (PromptInputComponent): The component owning the drafts.
+            action (str): ``retry`` or ``discard``.
+            token (str): Full canonical UUID or a unique 8+ character prefix.
+        """
+        message_id: Optional[str] = self._resolve_draft_id(prompt=prompt, token=token)
+        if message_id is None:
+            await self._write_lifecycle_notice(
+                content=f"No unique draft matches '{token}'.", classes="tool-result"
+            )
+            return
+        host_held: bool = any(
+            draft.draft_submission.message_submission.message_id == message_id
+            for draft in self.list_retained_drafts()
+        )
+        if host_held:
+            if action == "discard":
+                self._discard_retained_draft(message_id=message_id)
+            else:
+                await self._write_lifecycle_notice(
+                    content="Draft belongs to a previous session; copy its text to send it again.",
+                    classes="tool-result",
+                )
+            return
+        try:
+            if action == "retry":
+                await prompt.handle(command=RetrySubmissionDAO(message_id=message_id))
+            else:
+                await prompt.handle(command=DiscardDraftDAO(message_id=message_id))
+        except LookupError:
+            await self._write_lifecycle_notice(
+                content="This draft can no longer be retried here; copy its text and send it again.",
+                classes="tool-result",
+            )
+        except ValueError as error:
+            await self._write_lifecycle_notice(content=str(error), classes="tool-result")
+        except DraftCapacityError:
+            await self._write_lifecycle_notice(
+                content="Too many prompts are waiting; your text was kept.", classes="tool-result"
+            )
+        except SubmissionUnavailableError:
+            await self._write_lifecycle_notice(
+                content="Session is changing; your text was kept.", classes="tool-result"
+            )
+
+    def _resolve_draft_id(self, *, prompt: PromptInputComponent, token: str) -> Optional[str]:
+        """Resolve a full UUID or a unique 8+ character prefix against the draft list.
+
+        Args:
+            prompt (PromptInputComponent): The component owning the drafts.
+            token (str): The operator's identifier text.
+
+        Returns:
+            Optional[str]: The canonical ID, or None when there is no unique match.
+        """
+        drafts: tuple[RecoverableDraftDAO, ...] = self._list_unsent_drafts(prompt=prompt)
+        for draft in drafts:
+            if draft.draft_submission.message_submission.message_id == token:
+                return token
+        if len(token) < 8:
+            return None
+        matches: list[str] = [
+            draft.draft_submission.message_submission.message_id
+            for draft in drafts
+            if draft.draft_submission.message_submission.message_id.startswith(token)
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    async def _submit_durable_draft(self, *, text: str, intent_revision: Optional[int]) -> None:
+        """Capture the exact draft and register it through the component-owned adapter.
+
+        Capture and registration run with no await between them, so the ordered
+        section stays atomic on the UI loop. A failure before registration never
+        clears the editor.
+
+        Args:
+            text (str): Normalized ordinary prompt text.
+            intent_revision (Optional[int]): Captured Enter revision, or None for
+                non-restorable slash-originated text.
+        """
+        assert self._input is not None
+        prompt: PromptInputComponent = self._input
+        try:
+            draft = prompt.build_draft_submission(text=text, intent_revision=intent_revision)
+            if draft is None:
+                return  # Stale intent: the user edited after Enter; nothing cleared or sent.
+            await prompt.handle(command=SubmitDraftDAO(draft_submission=draft))
+        except SubmissionUnavailableError:
+            await self._write_lifecycle_notice(
+                content="Session is changing; your text was kept.", classes="tool-result"
+            )
+        except ValueError:
+            await self._write_lifecycle_notice(
+                content="Prompt is too large to send (64 KiB limit); your text was kept.",
+                classes="tool-result",
+            )
+        except DraftCapacityError:
+            await self._write_lifecycle_notice(
+                content="Too many prompts are waiting; your text was kept.", classes="tool-result"
+            )
+
+    async def _submit_messaging_steer(self, *, text: str) -> None:
+        """Route slash-origin input through the component's normal admission adapter.
+
+        The slash editor has already cleared. Capture and registration do not
+        suspend between operations; failures stay recoverable rather than restoring.
+        """
+        if self._messaging_session is not self._session or self._input is None:
+            await self._write_lifecycle_notice(
+                content="Messaging is starting; steering was not sent.", classes="tool-result"
+            )
+            return
+        await self._submit_durable_draft(text=text, intent_revision=None)
 
     async def _submit_or_queue_prompt(self, *, text: str) -> None:
         """Accept an idle ordinary prompt or replace the one held behind a run.
@@ -1913,6 +2855,8 @@ class SloTUI(App):
         Returns:
             bool: Whether the app registered the task before shutdown.
         """
+        if self._messaging_enabled:
+            raise RuntimeError("legacy scheduling in messaging session")
         if self._app_closing or self._session_transitioning:
             return False
         self._in_flight_task = asyncio.create_task(coro=self._run_prompt(text=text))
@@ -1928,6 +2872,8 @@ class SloTUI(App):
         Args:
             text (str): Newest ordinary prompt text.
         """
+        if self._messaging_enabled:
+            raise RuntimeError("legacy scheduling in messaging session")
         if self._app_closing or self._session_transitioning:
             return
         self._queued_prompt_text = text
@@ -1975,23 +2921,39 @@ class SloTUI(App):
     async def action_interrupt(self) -> None:
         """``^C``: abort the in-flight run, or quit if idle.
 
-        WHAT: Requests the session's cooperative abort, arms hard-cancel
-        escalation, announces queued-prompt survival, and writes the aborting
-        marker; an idle ``^C`` exits the app instead.
+        WHAT: Messaging uses session running state and reusable cooperative
+        pause, never app-task escalation. Legacy runs retain their hard-cancel
+        timer. Both announce pending-input survival; idle ``^C`` requests exit
+        through the existing unsent-draft warning.
         WHO: Textual invokes it for the ``ctrl+c`` key binding.
         WHEN: Whenever the operator presses ``^C`` while the TUI is mounted.
         """
-        if self._in_flight_task is None:
-            self.exit()
-            return
-        self._session.abort()
-        self._escalate_abort()
+        if self._messaging_session is self._session:
+            if not self._session.is_running:
+                self.exit()
+                return
+            self._session.abort()
+            await self._announce_retained_pending_input()
+        else:
+            if self._in_flight_task is None:
+                self.exit()
+                return
+            self._session.abort()
+            self._escalate_abort()
+            await self._announce_queued_prompt_survival()
         if self._app_closing:
             return
-        await self._announce_queued_prompt_survival()
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(
                 command=TranscriptNoticeDAO(content="(aborting…)", classes="tool-result")
+            )
+
+    async def _announce_retained_pending_input(self) -> None:
+        """Explain the last observed pending input without changing session eligibility."""
+        if self._messaging_pending_count > 0:
+            await self._write_lifecycle_notice(
+                content="Pending messages are kept; send a new prompt or use /messages continue to resume.",
+                classes="tool-result",
             )
 
     async def _announce_queued_prompt_survival(self) -> None:
@@ -2071,6 +3033,17 @@ class SloTUI(App):
             return_code (int): Process return code.
             message (Optional[object]): Optional explicit exit message.
         """
+        unsent: int = self.count_retained_drafts().draft_count
+        if self._input is not None:
+            unsent += len(self._input.list_recoverable_drafts())
+        if not self._app_closing and not self._exit_unsent_confirmed and unsent:
+            self._exit_unsent_confirmed = True
+            self.call_later(
+                self._write_lifecycle_notice,
+                content=f"{unsent} unsent drafts will be lost on exit. Exit again to confirm, or use /messages drafts.",
+                classes="tool-result",
+            )
+            return
         resolved_message: object = message if message is not None else self._resume_command_hint()
         super().exit(
             result=result,
@@ -2148,12 +3121,12 @@ class SloTUI(App):
         return service.live_workflow_labels()
 
     async def action_clear(self) -> None:
-        """Clear transcript state and discard any held ordinary prompt.
+        """Clear display; only legacy sessions discard their app-held prompt.
 
         WHAT: Removes visible transcript children and clears their app-owned state.
         WHO: The Ctrl+L binding and slash-command result dispatch call it.
-        WHEN: It may run while an agent task remains active; that task continues, but
-        the held next prompt is intentionally discarded.
+        WHEN: Active execution continues. Messaging input, its observed band,
+        application identity, recall and unsent drafts remain unchanged.
         """
         async with self._prompt_submission_lock:
             await self._clear_transcript_and_prompt_queue()
@@ -2161,13 +3134,14 @@ class SloTUI(App):
     async def _clear_transcript_and_prompt_queue(self) -> None:
         """Perform clear mutations while the prompt-submission gate is held.
 
-        WHAT: Drops queued prompt state before removing all transcript children, then
-        executes the existing projector/window/reset behavior.
+        WHAT: Messaging clears presentation only, preserving the history binding's
+        identity and session-owned band. Legacy clears its app-local queue first.
         WHO: ``action_clear`` and an allowed ``_start_new_session`` call it.
         WHEN: Runs only under ``_prompt_submission_lock`` to avoid a drain/clear race.
         """
-        self._queued_prompt_text = None
-        await self._remove_queued_prompt_block()
+        if self._messaging_session is not self._session:
+            self._queued_prompt_text = None
+            await self._remove_queued_prompt_block()
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(command=ClearTranscriptDAO())
 
@@ -2344,8 +3318,13 @@ class SloTUI(App):
             await self._rename_current_session(session_name=result.rename_current_session_to)
             return
         if result.abort_run:
-            self._escalate_abort()
-            await self._announce_queued_prompt_survival()
+            if self._messaging_session is self._session:
+                await self._announce_retained_pending_input()
+            else:
+                self._escalate_abort()
+                await self._announce_queued_prompt_survival()
+        if result.submit_text is not None:
+            await self._submit_messaging_steer(text=result.submit_text)
         if result.steer_pending_message is not None:
             assert self._chat_transcript is not None
             await self._chat_transcript.handle(
@@ -2364,6 +3343,9 @@ class SloTUI(App):
         )
         if tui_visibility is not None:
             await self._apply_workflow_list_visibility(request=tui_visibility)
+            return
+        if result.messages_command is not None:
+            await self._execute_messages_command(command=result.messages_command)
             return
         if result.rendered is not None:
             if self._chat_transcript is not None:
@@ -2542,6 +3524,17 @@ class SloTUI(App):
             await self._discard_replacement_session(candidate=candidate)
             return None
         old_session = self._session
+        if self._messaging_session is old_session:
+            try:
+                if self._input is not None and self._input.is_mounted:
+                    await self._input.retire_submission_binding()
+            except DraftHandoffError:
+                await self._discard_replacement_session(candidate=candidate)
+                await self._write_lifecycle_notice(
+                    content="Cannot start a new session: unsent drafts could not be kept.",
+                    classes="tool-result",
+                )
+                return None
         self._session_transitioning = True
         self._delivery_quiescing = True
         old_session.begin_external_reporting_close()
@@ -2578,6 +3571,7 @@ class SloTUI(App):
         except Exception:
             self._replacement_delivery_safe = False
         await self._transfer_replacement_delivery(old_session=old_session)
+        messaging_closed = await self._close_replaced_session_messaging(old_session=old_session)
         try:
             outcome = await old_session.close_external_reporting()
         except Exception:
@@ -2591,6 +3585,32 @@ class SloTUI(App):
                 content="Previous subscription cleanup incomplete.", classes="tool-result"
             )
         await self._finish_replacement_ui()
+        if not messaging_closed:
+            await self._write_lifecycle_notice(
+                content="Previous session messaging cleanup incomplete.", classes="tool-result"
+            )
+
+    async def _close_replaced_session_messaging(self, *, old_session: SloAgentSession) -> bool:
+        """Join the retired predecessor's observation/client/session before adoption.
+
+        Args:
+            old_session: Captured predecessor, never resolved from the successor.
+
+        Returns:
+            bool: Whether cleanup completed without a reported failure. The commit
+                renders a failure notice after the successor's display clear.
+        """
+        if self._messaging_session is not old_session:
+            return True
+        closed = True
+        try:
+            await self._close_session_messaging(session=old_session)
+        except Exception:
+            self._replacement_delivery_safe = False
+            closed = False
+        self._messaging_run_presented = False
+        self._messaging_pending_count = 0
+        return closed
 
     async def _transfer_replacement_delivery(self, *, old_session: SloAgentSession) -> None:
         """Release the captured old binding before establishing any successor lease.
@@ -2710,6 +3730,8 @@ class SloTUI(App):
             subscription_retired = False
         self._reset_escape_sequence()
         self._path_suggestions.invalidate()
+        self._pending_recovery_confirmation = None
+        self._last_retained_page_ids = ()
         self._session = candidate
         candidate.subscribe(handler=self._render_event)
         return subscription_retired
@@ -2748,6 +3770,10 @@ class SloTUI(App):
             await self._write_lifecycle_notice(
                 content="External reporting unavailable.", classes="tool-result"
             )
+        if session.preparation_status == "ready":
+            await self._activate_session_messaging(session=session)
+            if not self._runtime_may_start(session=session):
+                return
         if not self._runtime_may_start(session=session):
             return
         try:
@@ -3471,6 +4497,10 @@ class SloTUI(App):
         Args:
             event (AgentStreamEventDAO): Normalized stream event.
         """
+        messaging_parent = self._messaging_session is self._session and event.sub_agent_id is None
+        messaging_terminal = event.kind in {"run_completed", "run_failed", "run_aborted"}
+        if messaging_parent and not messaging_terminal:
+            await self._begin_messaging_run_presentation()
         if event.kind == "run_retrying":
             if self._spinner is not None:
                 self._spinner.set_override_status(text=event.content or "Retrying…")
@@ -3519,6 +4549,8 @@ class SloTUI(App):
             return
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(command=PresentAgentEventDAO(event=event))
+        if messaging_parent and messaging_terminal:
+            await self._finish_messaging_run_presentation()
         if event.kind == "steering_applied":
             return
         self._session.refresh_usage_snapshot()

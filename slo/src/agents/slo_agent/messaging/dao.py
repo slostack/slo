@@ -44,6 +44,7 @@ __all__: list[str] = [
     "WorkflowMessagePayloadDAO",
     "MessagePayload",
     "MessageSubmissionDAO",
+    "LegacyInboxAdmissionDAO",
     "MessagePrincipalDAO",
     "MessageEnvelopeDAO",
     "MessageReceiptDAO",
@@ -52,6 +53,7 @@ __all__: list[str] = [
     "MessageDeliveryDAO",
     "BoundaryDeliveryDAO",
     "QueueSummaryDAO",
+    "MessagingObservationDAO",
     "MessagingLimitsDAO",
     "MessageApplicationMetadataDAO",
     "RecoveryTransferDAO",
@@ -87,7 +89,9 @@ ErrorCode: TypeAlias = Literal[
     "replay_gap",
 ]
 
-_UUID_RE: re.Pattern[str] = re.compile(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_UUID_RE: re.Pattern[str] = re.compile(
+    pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 _SHA256_RE: re.Pattern[str] = re.compile(pattern=r"^[0-9a-f]{64}$")
 _SOURCE_ID_RE: re.Pattern[str] = re.compile(pattern=r"^[\x20-\x7e]{1,128}$")
 
@@ -317,6 +321,33 @@ class MessageSubmissionDAO(MessageDAO):
         return self
 
 
+class LegacyInboxAdmissionDAO(MessageDAO):
+    """Exact legacy Inbox content to verify; carries no destination or authority."""
+
+    message_id: str = Field(description="Original canonical Inbox UUID used to verify durable admission.")
+    kind: Literal["agent_input", "context_note", "transcript_note"] = Field(
+        description="Original Inbox delivery kind: agent_input, context_note or transcript_note."
+    )
+    text: str = Field(description="Exact original Inbox text compared with the durable admission.")
+
+    @model_validator(mode="after")
+    def _require_submission_content(self) -> "LegacyInboxAdmissionDAO":
+        """Reuse complete submission validation with fixed-width placeholder routing.
+
+        The real target and source ID have the same encoded width. No identity
+        is allocated here: verification always supplies the stored original target.
+        """
+        placeholder = "00000000-0000-0000-0000-000000000000"
+        MessageSubmissionDAO(
+            message_id=self.message_id,
+            target=MessageAddressDAO(kind="agent_session", session_id=placeholder, generation=placeholder),
+            kind=self.kind,
+            text=self.text,
+            source_event_id="legacy-inbox:" + self.message_id,
+        )
+        return self
+
+
 class MessagePrincipalDAO(MessageDAO):
     """Recipient-authenticated principal, not a field accepted from tool arguments."""
 
@@ -501,6 +532,26 @@ class MessageApplicationMetadataDAO(MessageDAO):
         return _require_uuid(value=value, field="application identity")
 
 
+class MessagingObservationDAO(MessageDAO):
+    """Owner-scoped queue state and canonical settled application, never model success."""
+
+    target: MessageAddressDAO = Field(description="Observed execution incarnation.")
+    revision: int = Field(ge=1, description="Generation-local observation revision.")
+    summary: QueueSummaryDAO = Field(description="Authorized owner-local queue summary.")
+    application: Optional[SessionHistoryEventDAO] = Field(
+        default=None, description="Exact canonical event after application settlement."
+    )
+
+    @model_validator(mode="after")
+    def _validate_application(self) -> "MessagingObservationDAO":
+        """Reject events without typed messaging provenance."""
+        if self.application is not None:
+            MessageApplicationMetadataDAO.model_validate(
+                self.application.payload.metadata.get("messaging_v1")
+            )
+        return self
+
+
 class RecoveryTransferDAO(MessageDAO):
     """Authorize continuation without rewriting the original submission."""
 
@@ -558,6 +609,83 @@ class RecoveryConfirmationDAO(MessageDAO):
         return _require_aware(value=value, field="expires_at")
 
 
+class RetainedSelectionDAO(MessageDAO):
+    """One bounded ascending page of original retained envelopes for owner consent."""
+
+    target: MessageAddressDAO = Field(
+        description="Current recipient binding that issued this selection or consent."
+    )
+    items: tuple[MessageEnvelopeDAO, ...] = Field(
+        max_length=16, description="Ascending page of original retained envelopes."
+    )
+    next_after_sequence: Optional[int] = Field(
+        default=None, ge=1, description="Exclusive cursor for the next page; None when exhausted."
+    )
+
+
+class CancelRecoveryConfirmationDAO(MessageDAO):
+    """Bind cancellation consent to one exact ordered retained selection."""
+
+    confirmation_id: str = Field(description="Canonical UUID identifying this exact cancellation consent.")
+    target: MessageAddressDAO = Field(
+        description="Current recipient binding that issued this selection or consent."
+    )
+    message_ids: tuple[str, ...] = Field(
+        min_length=1, max_length=16, description="Unique original message UUIDs in confirmed order."
+    )
+    evidence_sha256: str = Field(
+        description="Digest binding consent to original identities, authors and states."
+    )
+    expires_at: datetime = Field(description="Aware UTC deadline for an uncommitted cancellation.")
+
+    @field_validator("confirmation_id")
+    @classmethod
+    def _uuid_fields(cls, value: str) -> str:
+        return _require_uuid(value=value, field="confirmation_id")
+
+    @field_validator("message_ids")
+    @classmethod
+    def _selected_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Reject duplicates and noncanonical selected UUIDs."""
+        if len(set(value)) != len(value):
+            raise ValueError("Duplicate message IDs")
+        for message_id in value:
+            _require_uuid(value=message_id, field="message_id")
+        return value
+
+    @field_validator("evidence_sha256")
+    @classmethod
+    def _digest_format(cls, value: str) -> str:
+        return _require_sha256(value=value, field="evidence_sha256")
+
+    @field_validator("expires_at")
+    @classmethod
+    def _aware_timestamps(cls, value: datetime) -> datetime:
+        return _require_aware(value=value, field="expires_at")
+
+
+class CancelRecoveryOutcomeDAO(MessageDAO):
+    """Report the exact confirmed order of committed cancellation receipts."""
+
+    confirmation_id: str = Field(description="Canonical UUID identifying this exact cancellation consent.")
+    receipts: tuple[MessageReceiptDAO, ...] = Field(
+        min_length=1, max_length=16, description="Committed cancellation receipts in confirmed order."
+    )
+
+    @field_validator("confirmation_id")
+    @classmethod
+    def _uuid_fields(cls, value: str) -> str:
+        return _require_uuid(value=value, field="confirmation_id")
+
+    @field_validator("receipts")
+    @classmethod
+    def _cancelled_receipts(cls, value: tuple[MessageReceiptDAO, ...]) -> tuple[MessageReceiptDAO, ...]:
+        """Never label partial or unapplied cancellation as success."""
+        if any(receipt.state != "cancelled" for receipt in value):
+            raise ValueError("Cancellation requires cancelled receipts")
+        return value
+
+
 class VerifiedRecoverySourceDAO(MessageDAO):
     """Carry runtime-verified source identity; never accepted from wire/tool input."""
 
@@ -578,6 +706,9 @@ class QueueStateDAO(MessageDAO):
     eligible_inputs: int = Field(ge=0)
     eligible_notes: int = Field(ge=0)
     urgent_high_water: int = Field(ge=0)
+    applying_records: int = Field(
+        default=0, ge=0, description="Current-generation applying records of any kind."
+    )
 
 
 class MessageIdentityDAO(MessageDAO):

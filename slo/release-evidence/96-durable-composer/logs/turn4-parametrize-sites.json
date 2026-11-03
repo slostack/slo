@@ -1,0 +1,39 @@
+{
+  "tests/agents/slo_agent/messaging/test_finite_completion.py": [
+    30,
+    168,
+    436
+  ],
+  "tests/cli/test_app.py": [
+    54
+  ],
+  "tests/cli/test_headless_messaging.py": [
+    22
+  ],
+  "tests/tui/test_composer_prerequisites.py": [
+    48,
+    49
+  ],
+  "tests/tui/test_composer_visual_matrix.py": [
+    24,
+    25,
+    84,
+    85,
+    86
+  ],
+  "tests/tui/test_inbox_displacement.py": [
+    56
+  ],
+  "tests/tui/test_legacy_inbox_bridge.py": [
+    504
+  ],
+  "tests/tui/test_messaging_failure_matrix.py": [
+    57
+  ],
+  "tests/tui/test_messaging_session_controls.py": [
+    82,
+    155,
+    367,
+    439
+  ]
+}

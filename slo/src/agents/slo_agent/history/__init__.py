@@ -25,11 +25,24 @@ from src.agents.slo_agent.history.tree_store import (
     TreeBasedFilesystemSessionHistoryStore,
 )
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
-from src.agents.slo_agent.history.transcript import (
-    ReplayEntryProjector,
-    TranscriptEntryDAO,
-    TranscriptEntryKind,
-)
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.agents.slo_agent.history.transcript import (
+        ReplayEntryProjector,
+        TranscriptEntryDAO,
+        TranscriptEntryKind,
+    )
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve transcript exports lazily to keep history DAO imports messaging-independent."""
+    if name in {"ReplayEntryProjector", "TranscriptEntryDAO", "TranscriptEntryKind"}:
+        from src.agents.slo_agent.history import transcript
+
+        return getattr(transcript, name)
+    raise AttributeError(name)
+
 
 __all__ = [
     "HistoryEventKind",

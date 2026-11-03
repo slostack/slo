@@ -1,0 +1,40 @@
+FF                                                                                                               [100%]
+======================================================= FAILURES =======================================================
+____________________________ test_legacy_admission_schema_describes_required_frozen_content ____________________________
+
+    def test_legacy_admission_schema_describes_required_frozen_content() -> None:
+        """Schema documents exact Inbox content without relaxing requiredness or validation."""
+        schema = LegacyInboxAdmissionDAO.model_json_schema()
+        assert set(schema["required"]) == {"message_id", "kind", "text"}
+        assert schema["additionalProperties"] is False
+        for name in ("message_id", "kind", "text"):
+>           assert schema["properties"][name]["description"].strip()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           KeyError: 'description'
+
+tests/agents/slo_agent/messaging/test_legacy_admission.py:51: KeyError
+_____________________________ test_slash_result_schema_describes_optional_messages_intent ______________________________
+
+    def test_slash_result_schema_describes_optional_messages_intent() -> None:
+        """Messages intent remains nullable and optional with a documented None default."""
+        schema = SlashCommandResultDAO.model_json_schema()
+        field = schema["properties"]["messages_command"]
+>       assert field["description"].strip()
+               ^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'description'
+
+tests/tui/test_messages_command.py:22: KeyError
+=================================================== warnings summary ===================================================
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=============================================== short test summary info ================================================
+FAILED tests/agents/slo_agent/messaging/test_legacy_admission.py::test_legacy_admission_schema_describes_required_frozen_content
+FAILED tests/tui/test_messages_command.py::test_slash_result_schema_describes_optional_messages_intent - KeyError: 'd...
+2 failed, 12 deselected, 2 warnings in 0.37s

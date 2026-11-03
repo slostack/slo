@@ -59,6 +59,48 @@ def _build_message(
     )
 
 
+async def test_read_claimed_pages_by_uuid_and_surfaces_malformed(tmp_path: Path) -> None:
+    """UUID pages stop before corrupt content and expose a resumable safe cursor."""
+    from uuid import UUID
+    from src.agents.slo_agent.history.inbox.store import SessionInboxClaimReadError
+
+    store = _build_store(tmp_path=tmp_path)
+    ids = [str(UUID(int=index)) for index in range(1, 21)]
+    for message_id in reversed(ids):
+        await store.enqueue(message=_build_message(session_id="session-1", message_id=message_id))
+        await store.claim_next(session_id="session-1")
+    for limit in [0, 17, True, 1.5]:
+        with pytest.raises(ValueError):
+            await store.read_claimed(session_id="session-1", limit=limit)  # type: ignore[arg-type]
+    for cursor in ["bad", 123, True]:
+        with pytest.raises(ValueError):
+            await store.read_claimed(session_id="session-1", after_message_id=cursor)  # type: ignore[arg-type]
+    first = await store.read_claimed(session_id="session-1")
+    assert [item.message_id for item in first] == ids[:16]
+    last = await store.read_claimed(session_id="session-1", after_message_id=ids[15])
+    assert [item.message_id for item in last] == ids[16:]
+    claimed = tmp_path / "history" / "session-1" / "inbox" / "claimed"
+    corrupt = next(claimed.glob(f"*-{ids[3]}.json"))
+    assert corrupt.resolve().is_relative_to(tmp_path.resolve())
+    corrupt.write_bytes(b"\xff")
+    prefix = await store.read_claimed(session_id="session-1")
+    assert [item.message_id for item in prefix] == ids[:3]
+    with pytest.raises(SessionInboxClaimReadError, match="^Inbox claim unreadable$") as error:
+        await store.read_claimed(session_id="session-1", after_message_id=ids[2])
+    assert error.value.message_id == ids[3]
+    page = await store.read_claimed(session_id="session-1", after_message_id=error.value.message_id)
+    assert [item.message_id for item in page] == ids[4:]
+    assert await store.list_done(session_id="session-1") == []
+    mismatch = next(claimed.glob(f"*-{ids[7]}.json"))
+    assert mismatch.resolve().is_relative_to(tmp_path.resolve())
+    mismatch.write_text(
+        _build_message(session_id="session-1", message_id=ids[8]).model_dump_json(), encoding="utf-8"
+    )
+    with pytest.raises(SessionInboxClaimReadError) as mismatched:
+        await store.read_claimed(session_id="session-1", after_message_id=ids[6])
+    assert mismatched.value.message_id == ids[7]
+
+
 class TestSessionInboxStore:
     """SessionInbox queue semantics."""
 

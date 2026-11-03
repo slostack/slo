@@ -1,0 +1,49 @@
+bringing up nodes...
+bringing up nodes...
+
+................................................................................................................ [ 70%]
+................................../root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/_pytest/unraisableexception.py:33: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+  gc.collect()
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+.............                                                                  [100%]
+=================================================== warnings summary ===================================================
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+tests/agents/slo_agent/messaging/test_finite_completion.py: 10 warnings
+tests/cli/test_app.py: 2 warnings
+tests/cli/test_headless_messaging.py: 6 warnings
+tests/tui/test_composer_prerequisites.py: 9 warnings
+tests/tui/test_composer_visual_matrix.py: 12 warnings
+tests/tui/test_legacy_inbox_bridge.py: 3 warnings
+tests/tui/test_messaging_failure_matrix.py: 1 warning
+tests/tui/test_messaging_session_controls.py: 13 warnings
+tests/tui/test_messages_command.py: 2 warnings
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/utils/fields.py:162: PydanticDeprecatedSince211: Accessing the 'model_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    defaults = {k: v.default for k, v in input.model_fields.items()}
+
+tests/cli/test_typer_dispatch.py::TestRunHeadlessSystemPromptOverrides::test_append_system_prompt_file_content_loaded_into_config
+  /root/.pyenv/versions/3.11.7/lib/python3.11/inspect.py:3089: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    arg_val = next(arg_vals)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+159 passed, 73 warnings in 19.98s

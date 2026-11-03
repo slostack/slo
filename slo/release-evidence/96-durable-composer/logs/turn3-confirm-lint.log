@@ -1,0 +1,2 @@
+poetry run mypy src/ tests/
+Success: no issues found in 981 source files

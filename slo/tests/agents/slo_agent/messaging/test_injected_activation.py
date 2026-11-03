@@ -1,0 +1,198 @@
+"""Injected-agent messaging activation journeys (96 revised 01.1 acceptance rows A1-A3)."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
+from langchain_core.messages import HumanMessage
+
+from src.agents.providers.faux import FauxChatModel
+from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
+from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+from src.agents.slo_agent.messaging.client import LocalSessionMessagingClient
+from src.agents.slo_agent.messaging.dao import (
+    MessageAdmissionError,
+    MessageErrorDAO,
+    MessageReceiptDAO,
+    MessageSubmissionDAO,
+)
+from src.agents.slo_agent.messaging.store import MessageStore
+from src.agents.slo_agent.sessions.service import SloAgentSession
+from tests.agents.slo_agent.messaging.test_delivery import RecordingModel
+from tests.integration.test_session_messaging import read_closed_message_rows
+
+
+def _build_injected_session(
+    *, tmp_path: Path, model: FauxChatModel, session_id: str | None = None, agent: SloAgent | None = None
+) -> SloAgentSession:
+    """Build a real session around a pre-built agent, with contained real history.
+
+    Args:
+        tmp_path: Test-owned filesystem root.
+        model: Scripted third-party model boundary for the injected agent.
+
+    Returns:
+        SloAgentSession: Session whose only replaced collaborator is the provider.
+    """
+    history_root: Path = tmp_path / "history"
+    assert history_root.resolve().is_relative_to(tmp_path.resolve())
+    return SloAgentSession(
+        agent=agent if agent is not None else SloAgent(llm=model, cwd=str(tmp_path), tools=[]),
+        workdir=tmp_path,
+        session_id=session_id or str(uuid4()),
+        history_store=FilesystemSessionHistoryStore(root=history_root),
+        enable_history=True,
+    )
+
+
+async def test_injected_agent_binds_session_source_and_delivers_once(tmp_path: Path) -> None:
+    """A1: explicit start binds the injected agent and one admitted input executes once."""
+    model: RecordingModel = RecordingModel(
+        responses=[FauxChatModel.assistant_message(content="scripted answer")]
+    )
+    model.release.set()
+    session: SloAgentSession = _build_injected_session(tmp_path=tmp_path, model=model)
+    injected: SloAgent | None = session.agent
+    assert injected is not None
+    await session.start_messaging()
+    assert session.agent is injected
+    client: LocalSessionMessagingClient = LocalSessionMessagingClient(
+        session=session, target=session.messaging_target, principal=session.messaging_owner_principal
+    )
+    submission: MessageSubmissionDAO = MessageSubmissionDAO(
+        message_id=str(uuid4()),
+        target=session.messaging_target,
+        kind="agent_input",
+        text="hello durable",
+    )
+    try:
+        admission: MessageReceiptDAO | MessageErrorDAO = await client.submit(submission=submission)
+        assert isinstance(admission, MessageReceiptDAO)
+        assert admission.message_id == submission.message_id
+        assert admission.state == "accepted"
+        assert session.is_messaging_ready is True
+        async with asyncio.timeout(delay=5):
+            while not model.requests:
+                await asyncio.sleep(delay=0.01)
+            while session.is_running:
+                await asyncio.sleep(delay=0.01)
+    finally:
+        await client.close()
+        await session.close_messaging()
+    # The scripted response was consumed exactly once and the application is durable.
+    assert len(model.requests) == 1
+    human_texts: list[str] = [
+        str(message.content) for message in model.requests[0] if isinstance(message, HumanMessage)
+    ]
+    assert human_texts == [submission.text]
+    assert session.history_store is not None
+    events: list[SessionHistoryEventDAO] = await session.history_store.load_events(
+        session_id=session.session_id
+    )
+    messaging_updates: list[SessionHistoryEventDAO] = [
+        event for event in events if "messaging_v1" in event.payload.metadata
+    ]
+    assert len(messaging_updates) == 1
+    assert messaging_updates[0].payload.content == "hello durable"
+    assert session.is_messaging_ready is False
+    # The session, not the client, owns close; the client only detaches.
+    assert await client.get_receipt(message_id=submission.message_id) == MessageErrorDAO(
+        code="completing", message_id=submission.message_id
+    )
+    database_path: Path = tmp_path / "history" / session.session_id / "messaging.v1.sqlite3"
+    assert database_path.resolve().is_relative_to(tmp_path.resolve())
+    rows: tuple[tuple[str, int, str], ...] = await asyncio.to_thread(
+        read_closed_message_rows, database_path=database_path, temporary_root=tmp_path
+    )
+    assert rows == ((submission.message_id, 0, "applied"),)
+    # A fresh adapter over the closed database confirms the durable applied record.
+    store: MessageStore = await MessageStore.open(
+        path=database_path,
+        limits=session.messaging_limits,
+        target=session._messaging_target,
+    )
+    try:
+        receipt: MessageReceiptDAO | None = await store.get_receipt(
+            message_id=submission.message_id, principal=session._messaging_owner_principal
+        )
+        assert receipt is not None
+        assert receipt.state == "applied"
+        assert receipt.retained_for_recovery is False
+    finally:
+        await store.close()
+
+
+async def test_injected_agent_refusal_releases_store_and_lease(tmp_path: Path) -> None:
+    """A2: a busy or foreign-bound agent refuses startup and leaves the session acquirable."""
+    model: RecordingModel = RecordingModel(responses=[])
+    foreign_source: SloAgentSession = _build_injected_session(tmp_path=tmp_path, model=model)
+    injected: SloAgent = SloAgent(llm=model, cwd=str(tmp_path), tools=[], message_source=foreign_source)
+    session: SloAgentSession = _build_injected_session(tmp_path=tmp_path, model=model, agent=injected)
+    database_path: Path = tmp_path / "history" / session.session_id / "messaging.v1.sqlite3"
+    assert database_path.resolve().is_relative_to(tmp_path.resolve())
+    with pytest.raises(MessageAdmissionError) as captured:
+        await session.start_messaging()
+    assert captured.value.error == MessageErrorDAO(code="unsupported")
+    assert session.is_messaging_ready is False
+    # Unapplied content is never durable after a failed start, file or not.
+    if database_path.exists():
+        rows: tuple[tuple[str, int, str], ...] = await asyncio.to_thread(
+            read_closed_message_rows, database_path=database_path, temporary_root=tmp_path
+        )
+        assert rows == ()
+    # The released lease lets a second session own the same session_id immediately.
+    other: SloAgentSession = _build_injected_session(
+        tmp_path=tmp_path,
+        model=model,
+        session_id=session.session_id,
+    )
+    try:
+        await other.start_messaging()
+        assert other.is_messaging_ready
+        assert model.requests == []
+    finally:
+        await other.close_messaging()
+
+
+async def test_bind_message_source_is_idle_and_idempotent(tmp_path: Path) -> None:
+    """A3: binding accepts one idle source, repeats harmlessly, and rejects anything else."""
+    model: FauxChatModel = FauxChatModel(responses=[FauxChatModel.assistant_message(content="binder")])
+    session: SloAgentSession = _build_injected_session(tmp_path=tmp_path, model=model)
+    agent: SloAgent | None = session.agent
+    assert agent is not None
+    other_session: SloAgentSession = _build_injected_session(tmp_path=tmp_path, model=model)
+
+    agent.bind_message_source(message_source=session)
+    agent.bind_message_source(message_source=session)
+
+    with pytest.raises(RuntimeError, match="bound to another message source"):
+        agent.bind_message_source(message_source=other_session)
+
+    # A real provider request holds the running lifecycle; no private flag fabrication.
+    running_model: RecordingModel = RecordingModel(
+        responses=[FauxChatModel.assistant_message(content="running answer")]
+    )
+    running_agent: SloAgent = SloAgent(llm=running_model, cwd=str(tmp_path), tools=[])
+
+    async def consume_run() -> None:
+        """Drain the real agent gateway until the held provider completes."""
+        async for _event in running_agent.invoke(query="held invocation"):
+            pass
+
+    run: asyncio.Task[None] = asyncio.create_task(coro=consume_run())
+    try:
+        async with asyncio.timeout(delay=5):
+            await running_model.entered.wait()
+        with pytest.raises(RuntimeError, match="bind before a messaging run"):
+            running_agent.bind_message_source(message_source=session)
+        assert len(running_model.requests) == 1
+    finally:
+        running_model.release.set()
+        await run
+    # Once the real run exits, the same previously refused binding is legal.
+    running_agent.bind_message_source(message_source=session)

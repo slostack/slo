@@ -105,6 +105,10 @@ async def test_all_owner_claim_pending(
             await asyncio.wait_for(fut=worker_entered.wait(), timeout=5)
         current, retired = app._session, app._retired_herdr_session
         assert retired is not None
+        # /new starts catalog preparation asynchronously. Registered-run cutoffs
+        # require an executable session before shutdown cancels that worker.
+        await current.prepare_startup()
+        assert current.preparation_status == "ready"
         for name, owner, method in (
             ("viewers", app, "_cancel_visualizer_launches"),
             ("preparation", app, "_cancel_session_preparation"),

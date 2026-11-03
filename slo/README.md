@@ -1675,7 +1675,42 @@ fixed above the footer, updated via `session.usage_snapshot` whenever
 quantities (`6.0k`, `12k`, `1.0M`) for token values only — rpm, cooldown
 seconds and context percent keep their raw units.
 
-**Queued prompt (spec 72.a.4, input-adjacent anchoring).** An ordinary
+**Durable composer (feature 96 revised step 01; default hosts enabled).**
+`TyperDispatch` enables messaging for interactive startup, resume/private restore
+and headless runs. The interactive path is Enter → `PromptInputComponent` →
+`MessageSubmissionAdapter` → `LocalSessionMessagingClient` → session-owned
+`SessionMessageQueue` → SQLite admission → session scheduler → agent boundary.
+The scheduler is the only execution consumer; the app never registers legacy
+run tasks or a latest-wins slot for messaging sessions. Observation rebuilds
+verified echo/recall and the same input-adjacent queue band. `/steer` uses normal
+admission; Ctrl+Enter still inserts a newline, not urgent input.
+
+`/messages drafts|retry <id8>|discard <id8>` manages memory-only recoverable
+drafts; `/messages list|continue <id8>|cancel <id8>|confirm|decline` manages
+retained durable inputs through explicit consent. Closing retains unapplied
+input; restarting does not automatically execute it. History-disabled sessions
+announce that receipts are not durable. Storage/startup failures refuse prompts,
+never fall back to legacy memory execution. Finite messaging headless runs publish
+once and await `finish_finite_messaging`; Inbox machine claims are acknowledged
+only after admission or exact original receipt verification.
+
+The host-issued composer client admits normal priority only; urgent submission
+returns `unsupported` without storage or execution. Generic low-level local clients
+retain existing urgent ordering, which is not expedited interruption. Machine
+clients remain normal-only under session authorization. No new environment switch
+is introduced. Constructor defaults remain false for nonmessaging callers.
+Full feature acceptance still requires the full non-E2E gate and independent
+review/completion; enabled composition is not a release acceptance claim.
+
+**Upgrade/rollback:** exit every process owning a session before switching
+binaries. Keep messaging data. Once `messaging.v1.sqlite3` exists, resume that
+session only with a messaging-enabled Slo. This binary's legacy hosts refuse
+ordinary execution with “This session has durable messages; use a
+messaging-enabled Slo.” Presence alone triggers refusal, even for an empty or
+corrupt store. Older binaries cannot enforce this rule or infer safety from an
+empty store; do not use them to resume these sessions.
+
+**Queued prompt (legacy nonmessaging callers; spec 72.a.4, input-adjacent anchoring).** An ordinary
 (non-slash) prompt submitted while a run is active is held in a one-deep,
 latest-wins app-owned slot (`_queued_prompt_text` plus its mounted
 `QueuedPromptBlock`, rendered as `⏳ Queued: <text>`); a newer busy

@@ -1,0 +1,17 @@
+..............                                                                                                   [100%]
+=================================================== warnings summary ===================================================
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/pythonjsonlogger/jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+../../../.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+tests/tui/test_messages_command.py::test_slash_recovery_flow_with_confirm_and_decline
+tests/tui/test_messages_command.py::test_confirm_retries_identical_consent_after_lost_reply
+  /root/.pyenv/versions/3.11.7/envs/slo-harness/lib/python3.11/site-packages/langgraph/utils/fields.py:162: PydanticDeprecatedSince211: Accessing the 'model_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    defaults = {k: v.default for k, v in input.model_fields.items()}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+14 passed, 4 warnings in 4.08s

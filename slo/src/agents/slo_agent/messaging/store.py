@@ -58,6 +58,7 @@ from src.agents.slo_agent.messaging.dao import (
     MessageIdentityDAO,
     MessageApplicationMetadataDAO,
     canonical_submission_bytes,
+    _require_uuid,
     CompactionLedgerDAO,
     InternalObservationDAO,
     MessageErrorDAO,
@@ -266,10 +267,14 @@ class _SQLiteFiles:
 
     def _acquire_directories(self) -> None:
         """Walk from root with directory-relative no-follow opens, never chmod paths."""
-        parent: int = self._hold(descriptor=os.open(path="/", flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+        parent: int = self._hold(
+            descriptor=os.open(path="/", flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        )
         for name in self.path.parent.parts[1:]:
             try:
-                child: int = os.open(path=name, flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                child: int = os.open(
+                    path=name, flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+                )
             except FileNotFoundError:
                 os.mkdir(path=name, mode=0o700, dir_fd=parent)
                 child = os.open(path=name, flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
@@ -540,7 +545,9 @@ class MessageStore:
             if files is not None:
                 files.acquire()
             database: str = files.connect_path() if files is not None else ":memory:"
-            factory: SQLiteConnectionFactory = connection_factory if connection_factory is not None else sqlite3.connect
+            factory: SQLiteConnectionFactory = (
+                connection_factory if connection_factory is not None else sqlite3.connect
+            )
             connection = factory(database=database, uri=True)
             cls._configure_connection(connection=connection, durable=path is not None)
             if files is not None:
@@ -736,9 +743,13 @@ class MessageStore:
         cls, *, connection: sqlite3.Connection, row: sqlite3.Row, target: MessageAddressDAO
     ) -> None:
         """Verify persisted transfer and original outcome against lifetime recipient proof."""
-        transfer: RecoveryTransferDAO = RecoveryTransferDAO.model_validate_json(json_data=row["transfer_json"])
+        transfer: RecoveryTransferDAO = RecoveryTransferDAO.model_validate_json(
+            json_data=row["transfer_json"]
+        )
         outcome: RecoveryOutcomeDAO = RecoveryOutcomeDAO.model_validate_json(json_data=row["outcome_json"])
-        confirmer: MessagePrincipalDAO = MessagePrincipalDAO.model_validate_json(json_data=row["confirmed_by"])
+        confirmer: MessagePrincipalDAO = MessagePrincipalDAO.model_validate_json(
+            json_data=row["confirmed_by"]
+        )
         cursor: sqlite3.Cursor = connection.cursor()
         cursor.row_factory = sqlite3.Row
         identity: Optional[sqlite3.Row] = cursor.execute(
@@ -758,7 +769,8 @@ class MessageStore:
             or transfer.original_digest != identity["digest"]
             or _submission_digest(submission=transfer.original, principal=transfer.original_sender)
             != identity["digest"]
-            or transfer.original_sender != MessagePrincipalDAO.model_validate_json(json_data=identity["principal_json"])
+            or transfer.original_sender
+            != MessagePrincipalDAO.model_validate_json(json_data=identity["principal_json"])
             or transfer.original.target
             != MessageAddressDAO.model_validate_json(json_data=identity["original_target_json"])
             or transfer.destination.generation != row["to_generation"]
@@ -804,8 +816,12 @@ class MessageStore:
         target: MessageAddressDAO,
     ) -> None:
         """Validate one receipt/principal/evidence tombstone before trusting its body."""
-        original_target: MessageAddressDAO = MessageAddressDAO.model_validate_json(json_data=identity["original_target_json"])
-        principal: MessagePrincipalDAO = MessagePrincipalDAO.model_validate_json(json_data=identity["principal_json"])
+        original_target: MessageAddressDAO = MessageAddressDAO.model_validate_json(
+            json_data=identity["original_target_json"]
+        )
+        principal: MessagePrincipalDAO = MessagePrincipalDAO.model_validate_json(
+            json_data=identity["principal_json"]
+        )
         receipt: MessageReceiptDAO = MessageReceiptDAO(
             message_id=identity["message_id"],
             target=original_target,
@@ -871,7 +887,9 @@ class MessageStore:
             return
         if body["state"] not in {"applying", "applied"}:
             raise MessageStoreError()
-        event: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate_json(json_data=journal["event_json"])
+        event: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate_json(
+            json_data=journal["event_json"]
+        )
         delivery: MessageDeliveryDAO = MessageDeliveryDAO(
             envelope=MessageEnvelopeDAO(
                 submission=MessageSubmissionDAO.model_validate_json(json_data=body["submission_json"]),
@@ -923,12 +941,21 @@ class MessageStore:
         original_target: MessageAddressDAO,
     ) -> None:
         """Compare decoded intent and every mirrored identity/claim column exactly."""
-        submission: MessageSubmissionDAO = MessageSubmissionDAO.model_validate_json(json_data=body["submission_json"])
+        submission: MessageSubmissionDAO = MessageSubmissionDAO.model_validate_json(
+            json_data=body["submission_json"]
+        )
         try:
             MessageStore._require_source_author(submission=submission, principal=principal)
         except MessageAdmissionError:
             raise MessageStoreError() from None
-        mirrored: tuple[str, ...] = ("message_id", "sequence", "state", "kind", "execution_generation", "run_id")
+        mirrored: tuple[str, ...] = (
+            "message_id",
+            "sequence",
+            "state",
+            "kind",
+            "execution_generation",
+            "run_id",
+        )
         if any(identity[name] != body[name] for name in mirrored):
             raise MessageStoreError()
         if (
@@ -1137,7 +1164,9 @@ class MessageStore:
         connection: sqlite3.Connection = self._connection
         connection.execute("SAVEPOINT operation")
         try:
-            receipt: MessageReceiptDAO = self._admit_in_transaction(submission=submission, principal=principal)
+            receipt: MessageReceiptDAO = self._admit_in_transaction(
+                submission=submission, principal=principal
+            )
             connection.execute("RELEASE operation")
             return receipt
         except BaseException:
@@ -1198,6 +1227,14 @@ class MessageStore:
             return
         if submission.source_event_id is None:
             return
+        if submission.source_event_id.startswith("legacy-inbox:"):
+            if principal.kind in ("scheduler", "workflow") and submission.source_event_id == (
+                "legacy-inbox:" + submission.message_id
+            ):
+                return
+            raise MessageAdmissionError(
+                error=MessageErrorDAO(code="invalid_message", message_id=submission.message_id)
+            )
         parts: list[str] = submission.source_event_id.split(sep=":")
         valid: bool = principal.kind == "scheduler" and len(parts) == 3 and parts[0] == "schedule"
         if valid:
@@ -1256,7 +1293,9 @@ class MessageStore:
         Raises:
             MessageAdmissionError: ``completing`` when admission is sealed.
         """
-        row: Optional[tuple[str]] = self._connection.execute("SELECT value FROM meta WHERE key = ?", (_LIFECYCLE_KEY,)).fetchone()
+        row: Optional[tuple[str]] = self._connection.execute(
+            "SELECT value FROM meta WHERE key = ?", (_LIFECYCLE_KEY,)
+        ).fetchone()
         if row is None or row[0] != _LIFECYCLE_ACCEPTING:
             raise MessageAdmissionError(error=MessageErrorDAO(code="completing"))
 
@@ -1422,7 +1461,9 @@ class MessageStore:
 
     def _meta_value(self, *, key: str) -> str:
         """Return one required meta value, or fail closed as corruption."""
-        row: Optional[tuple[str]] = self._connection.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        row: Optional[tuple[str]] = self._connection.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
         if row is None:
             raise MessageStoreError()
         return str(row[0])
@@ -1435,11 +1476,13 @@ class MessageStore:
         reconstructs a minimal terminal receipt.
         """
         self._require_stored_identity(message_id=message_id)
-        row: Optional[tuple[str, ReceiptState, int, int, str, Optional[str], Optional[str]]] = self._connection.execute(
-            "SELECT original_target_json, state, sequence, durable, admitted_at,"
-            " applied_at, run_id FROM identity WHERE message_id = ?",
-            (message_id,),
-        ).fetchone()
+        row: Optional[tuple[str, ReceiptState, int, int, str, Optional[str], Optional[str]]] = (
+            self._connection.execute(
+                "SELECT original_target_json, state, sequence, durable, admitted_at,"
+                " applied_at, run_id FROM identity WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+        )
         if row is None:
             raise MessageStoreError()
         (
@@ -1470,7 +1513,9 @@ class MessageStore:
         """Validate one addressed identity and its body/journal in the operation snapshot."""
         cursor: sqlite3.Cursor = self._connection.cursor()
         cursor.row_factory = sqlite3.Row
-        row: Optional[sqlite3.Row] = cursor.execute("SELECT * FROM identity WHERE message_id=?", (message_id,)).fetchone()
+        row: Optional[sqlite3.Row] = cursor.execute(
+            "SELECT * FROM identity WHERE message_id=?", (message_id,)
+        ).fetchone()
         if row is None:
             raise MessageStoreError()
         self._validate_identity(
@@ -1550,7 +1595,9 @@ class MessageStore:
         if candidate is None:
             return None
         message_id = candidate[0]
-        history_event_id = str(uuid5(namespace=UUID(hex=self._target.session_id), name="message:" + message_id))
+        history_event_id = str(
+            uuid5(namespace=UUID(hex=self._target.session_id), name="message:" + message_id)
+        )
         self._connection.execute(
             "UPDATE messages SET state = 'applying', run_id = ?, boundary_index = ?,"
             " history_event_id = ? WHERE message_id = ?",
@@ -1571,13 +1618,15 @@ class MessageStore:
     ) -> MessageDeliveryDAO:
         """Reconstruct one recoverable delivery from identity/body rows."""
         self._require_stored_identity(message_id=message_id)
-        row: Optional[tuple[str, int, Optional[str], Optional[int], Optional[str], str, str]] = self._connection.execute(
-            "SELECT m.submission_json, m.sequence, m.run_id, m.boundary_index,"
-            " m.history_event_id, i.principal_json, i.admitted_at"
-            " FROM messages m JOIN identity i USING(message_id)"
-            " WHERE m.message_id = ?",
-            (message_id,),
-        ).fetchone()
+        row: Optional[tuple[str, int, Optional[str], Optional[int], Optional[str], str, str]] = (
+            self._connection.execute(
+                "SELECT m.submission_json, m.sequence, m.run_id, m.boundary_index,"
+                " m.history_event_id, i.principal_json, i.admitted_at"
+                " FROM messages m JOIN identity i USING(message_id)"
+                " WHERE m.message_id = ?",
+                (message_id,),
+            ).fetchone()
+        )
         if row is None:
             raise MessageStoreError()
         (
@@ -1647,7 +1696,8 @@ class MessageStore:
                 digest: str = self._event_digest(event=event)
                 if (
                     row is not None
-                    and self._event_digest(event=SessionHistoryEventDAO.model_validate_json(json_data=row[0])) != digest
+                    and self._event_digest(event=SessionHistoryEventDAO.model_validate_json(json_data=row[0]))
+                    != digest
                 ):
                     raise MessageStoreError()
                 if row is None:
@@ -1867,7 +1917,9 @@ class MessageStore:
         data: _EventJSON = event.model_dump(mode="json")
         data.pop("sequence")
         data["payload"].pop("token_usage")
-        encoded: str = json.dumps(obj=data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        encoded: str = json.dumps(
+            obj=data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
         return hashlib.sha256(string=encoded.encode(encoding="utf-8")).hexdigest()
 
     @classmethod
@@ -1930,6 +1982,86 @@ class MessageStore:
 
         return await self._run(operation=_read)
 
+    async def verify_admission(
+        self, *, submission: MessageSubmissionDAO, principal: MessagePrincipalDAO
+    ) -> MessageIdentityDAO:
+        """Verify original sender and digest without admitting or requiring a live target.
+
+        Args:
+            submission: Exact original submission, including its saved target.
+            principal: Session-bound machine sender.
+
+        Returns:
+            Validated lifetime identity even after terminal body pruning.
+
+        Raises:
+            MessageAdmissionError: Unknown ID, foreign sender, or changed digest.
+            MessageStoreError: Uncertain or inconsistent storage.
+        """
+
+        def _verify() -> MessageIdentityDAO:
+            """Compare authority before digest on the single persistence worker."""
+            row = self._connection.execute(
+                "SELECT digest, principal_json FROM identity WHERE message_id=?",
+                (submission.message_id,),
+            ).fetchone()
+            if row is None:
+                raise MessageAdmissionError(
+                    error=MessageErrorDAO(code="not_found", message_id=submission.message_id)
+                )
+            self._duplicate_outcome(submission=submission, principal=principal, identity_row=row)
+            self._require_stored_identity(message_id=submission.message_id)
+            return self._decode_identity(message_id=submission.message_id)
+
+        return await self._run(operation=_verify)
+
+    def _decode_identity(self, *, message_id: str) -> MessageIdentityDAO:
+        """Decode a worker-validated lifetime identity through the shared point reader."""
+        cursor = self._connection.cursor()
+        cursor.row_factory = sqlite3.Row
+        identity = cursor.execute("SELECT * FROM identity WHERE message_id=?", (message_id,)).fetchone()
+        return MessageIdentityDAO(
+            receipt=self._receipt_for(message_id=message_id),
+            sender=MessagePrincipalDAO.model_validate_json(json_data=identity["principal_json"]),
+            digest=identity["digest"],
+            kind=identity["kind"],
+            history_event_id=identity["history_event_id"],
+            event_sha256=identity["event_sha256"],
+            execution_generation=identity["execution_generation"],
+        )
+
+    async def find_identity(self, *, message_id: str) -> Optional[MessageIdentityDAO]:
+        """Return validated lifetime proof, including a pruned terminal body's receipt.
+
+        Args:
+            message_id: Canonical message UUID selected by the session.
+
+        Returns:
+            Stored identity, or None for an unknown UUID.
+
+        Raises:
+            MessageAdmissionError: Invalid UUID.
+            MessageStoreError: Closed or inconsistent storage.
+        """
+        try:
+            _require_uuid(value=message_id, field="message_id")
+        except (TypeError, ValueError):
+            raise MessageAdmissionError(error=MessageErrorDAO(code="invalid_message")) from None
+        if self._closed:
+            raise MessageStoreError()
+
+        def _read() -> Optional[MessageIdentityDAO]:
+            """Read and validate on the single store worker."""
+            cursor = self._connection.cursor()
+            cursor.row_factory = sqlite3.Row
+            identity = cursor.execute("SELECT * FROM identity WHERE message_id=?", (message_id,)).fetchone()
+            if identity is None:
+                return None
+            self._require_stored_identity(message_id=message_id)
+            return self._decode_identity(message_id=message_id)
+
+        return await self._run(operation=_read)
+
     @staticmethod
     def _require_page(*, after_id: Optional[str], limit: int) -> None:
         """Validate lexical UUID cursors and strict bounded page sizes."""
@@ -1944,9 +2076,11 @@ class MessageStore:
 
     def _compaction_for(self, *, compaction_id: str) -> CompactionLedgerDAO:
         """Decode exact ledger membership from the same SQLite snapshot."""
-        row: Optional[tuple[Literal["prepared", "committed", "rolled_back"], Optional[str]]] = self._connection.execute(
-            "SELECT state, summary_event_id FROM compactions WHERE compaction_id=?", (compaction_id,)
-        ).fetchone()
+        row: Optional[tuple[Literal["prepared", "committed", "rolled_back"], Optional[str]]] = (
+            self._connection.execute(
+                "SELECT state, summary_event_id FROM compactions WHERE compaction_id=?", (compaction_id,)
+            ).fetchone()
+        )
         if row is None:
             raise MessageStoreError()
         messages: Iterable[tuple[str]] = self._connection.execute(
@@ -2028,18 +2162,24 @@ class MessageStore:
             raise MessageStoreError()
 
         def _read() -> tuple[InternalObservationDAO, ...]:
-            rows: list[tuple[str, str, str, Literal["prepared", "applied"], Optional[str]]] = self._connection.execute(
-                "SELECT observation_id, history_event_id, event_sha256, state, event_json"
-                " FROM internal_observations WHERE observation_id>? ORDER BY observation_id LIMIT ?",
-                (after_id or "", limit),
-            ).fetchall()
+            rows: list[tuple[str, str, str, Literal["prepared", "applied"], Optional[str]]] = (
+                self._connection.execute(
+                    "SELECT observation_id, history_event_id, event_sha256, state, event_json"
+                    " FROM internal_observations WHERE observation_id>? ORDER BY observation_id LIMIT ?",
+                    (after_id or "", limit),
+                ).fetchall()
+            )
             records: tuple[InternalObservationDAO, ...] = tuple(
                 InternalObservationDAO(
                     observation_id=row[0],
                     history_event_id=row[1],
                     event_sha256=row[2],
                     state=row[3],
-                    event=SessionHistoryEventDAO.model_validate_json(json_data=row[4]) if row[4] is not None else None,
+                    event=(
+                        SessionHistoryEventDAO.model_validate_json(json_data=row[4])
+                        if row[4] is not None
+                        else None
+                    ),
                 )
                 for row in rows
             )
@@ -2108,7 +2248,7 @@ class MessageStore:
     async def cancel_retained(self, *, message_ids: tuple[str, ...]) -> None:
         """Cancel only the exact confirmed retained selection.
 
-        Every selected ID must still be a retained accepted record; any
+        Every selected ID must be retained accepted or already cancelled; any
         changed selection refuses the whole operation atomically.
 
         Raises:
@@ -2122,12 +2262,16 @@ class MessageStore:
             connection: sqlite3.Connection = self._connection
             connection.execute("SAVEPOINT operation")
             try:
+                pending_ids: list[str] = []
                 for message_id in message_ids:
                     exists: Optional[tuple[int]] = connection.execute(
                         "SELECT 1 FROM identity WHERE message_id=?", (message_id,)
                     ).fetchone()
                     if exists is not None:
                         self._require_stored_identity(message_id=message_id)
+                    if exists is not None and self._receipt_for(message_id=message_id).state == "cancelled":
+                        continue
+                    pending_ids.append(message_id)
                     row: Optional[tuple[int]] = connection.execute(
                         "SELECT retained FROM messages WHERE message_id = ? AND state = 'accepted'",
                         (message_id,),
@@ -2137,7 +2281,7 @@ class MessageStore:
                             error=MessageErrorDAO(code="recovery_required", message_id=message_id)
                         )
                 terminal_at: str = utcnow().isoformat()
-                for message_id in message_ids:
+                for message_id in pending_ids:
                     connection.execute(
                         "UPDATE messages SET state = 'cancelled', retained = 0" " WHERE message_id = ?",
                         (message_id,),
@@ -2166,9 +2310,18 @@ class MessageStore:
             raise MessageStoreError()
 
         def _read() -> QueueStateDAO:
-            if self._meta_value(key=_LIFECYCLE_KEY) != _LIFECYCLE_ACCEPTING:
-                return QueueStateDAO(eligible_inputs=0, eligible_notes=0, urgent_high_water=0)
             generation: str = self._meta_value(key=_GENERATION_KEY)
+            applying: tuple[int] = self._connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE state = 'applying' AND execution_generation = ?",
+                (generation,),
+            ).fetchone()
+            if self._meta_value(key=_LIFECYCLE_KEY) != _LIFECYCLE_ACCEPTING:
+                return QueueStateDAO(
+                    eligible_inputs=0,
+                    eligible_notes=0,
+                    urgent_high_water=0,
+                    applying_records=int(applying[0]),
+                )
             inputs: tuple[int, int] = self._connection.execute(
                 "SELECT COUNT(*), COALESCE(MAX(CASE priority WHEN 'urgent' THEN sequence END), 0)"
                 " FROM messages WHERE state = 'accepted' AND retained = 0"
@@ -2184,6 +2337,7 @@ class MessageStore:
                 eligible_inputs=int(inputs[0]),
                 eligible_notes=int(notes[0]),
                 urgent_high_water=int(inputs[1]),
+                applying_records=int(applying[0]),
             )
 
         return await self._run(operation=_read)
@@ -2382,7 +2536,9 @@ class MessageStore:
                 if row is not None:
                     if (
                         row[0] is None
-                        or self._event_digest(event=SessionHistoryEventDAO.model_validate_json(json_data=row[0]))
+                        or self._event_digest(
+                            event=SessionHistoryEventDAO.model_validate_json(json_data=row[0])
+                        )
                         != digest
                         or row[1] != event.event_id
                     ):

@@ -27,7 +27,12 @@ def test_prompt_registration_shutdown_atomic_commit() -> None:
     module = ast.parse(textwrap.dedent(inspect.getsource(SloTUI._register_prompt_task)))
     method = module.body[0]
     assert isinstance(method, ast.FunctionDef)
-    _, guard, assignment, result = method.body
+    _, invariant, guard, assignment, result = method.body
+    assert isinstance(invariant, ast.If)
+    assert ast.unparse(invariant.test) == "self._messaging_enabled"
+    assert len(invariant.body) == 1
+    assert ast.unparse(invariant.body[0]) == "raise RuntimeError('legacy scheduling in messaging session')"
+    assert not invariant.orelse
     assert isinstance(guard, ast.If)
     assert ast.unparse(guard.test) == "self._app_closing or self._session_transitioning"
     assert ast.unparse(guard.body[0]) == "return False"

@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from textual.widget import Widget
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -124,7 +124,22 @@ class ProjectReplayEntryDAO(BaseModel):
     before: Optional[int] = None
 
 
-ProjectionInput = AgentStreamEventDAO | ProjectUserTurnDAO | ProjectReplayEntryDAO
+class RetireHistoryBindingDAO(BaseModel):
+    """Retire application identity only when the canonical history binding changes."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class PresentMessageApplicationDAO(BaseModel):
+    """Present one verified canonical application through the replay identity owner."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    entry: TranscriptEntryDAO = Field(
+        description="Verified canonical application projected through binding identity deduplication."
+    )
+
+
+ProjectionInput = AgentStreamEventDAO | ProjectUserTurnDAO | ProjectReplayEntryDAO | RetireHistoryBindingDAO
 
 
 ScrollCommand = SetScrollPositionDAO
@@ -132,6 +147,7 @@ ScrollCommand = SetScrollPositionDAO
 
 TranscriptCommand = (
     EchoUserDAO
+    | PresentMessageApplicationDAO
     | PresentAgentEventDAO
     | HydrateTranscriptDAO
     | BindHistoryDAO

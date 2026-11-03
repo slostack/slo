@@ -164,8 +164,12 @@ def test_native_restore_in_independent_processes(tmp_path: Path, policy: str, ca
         assert str(home) not in restored["painted_error"]
     assert restored["events"] == published["events"]
     assert restored["model_calls"] == 0
-    assert restored["visible_prompts"] == ["first offline prompt", "current history after advertisement"] + (
-        ["explicit capability refusal probe"] if capability == "model_changed" else []
+    # Durable composition echoes only verified application, not pre-provider refusal.
+    assert restored["visible_prompts"] == ["first offline prompt", "current history after advertisement"]
+    assert restored["retained_inputs"] == (
+        ["explicit capability refusal probe"]
+        if capability == "model_changed"
+        else ["explicit credential refusal probe"] if capability == "refused" else []
     )
     assert published["tool_results"] == 1
     assert published["factory_credentials_checked"] >= 1

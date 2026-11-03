@@ -27,13 +27,14 @@ Construction allocates loop-local mutex/Condition/Events only.
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable, Optional, TypeVar
+from typing import Awaitable, Callable, Literal, Optional, TypeVar
 
 from pydantic import Field
 
 from src.agents.slo_agent.messaging.dao import (
     BoundaryDAO,
     MessageAddressDAO,
+    MessageIdentityDAO,
     MessageAdmissionError,
     MessageErrorDAO,
     MessageDeliveryDAO,
@@ -49,7 +50,7 @@ from src.agents.slo_agent.messaging.dao import (
 )
 from src.agents.slo_agent.messaging.store import MessageStore
 
-__all__: list[str] = ["SessionMessageQueue", "BoundaryClaimsDAO"]
+__all__: list[str] = ["SessionMessageQueue", "BoundaryClaimsDAO", "FiniteCutoffDAO"]
 
 # Mypy's TypeVar special form requires a positional name literal.
 _T = TypeVar("_T")
@@ -63,6 +64,14 @@ class BoundaryClaimsDAO(MessageDAO):
     note: Optional[MessageDeliveryDAO] = Field(default=None, description="At most one raw note claim.")
     instruction: Optional[MessageDeliveryDAO] = Field(
         default=None, description="At most one raw instruction claim."
+    )
+
+
+class FiniteCutoffDAO(MessageDAO):
+    """Report one serialized finite admission decision, without claiming execution."""
+
+    outcome: Literal["sealed", "pending", "applying", "stopping"] = Field(
+        description="Quiescence decision at the queue admission serialization point."
     )
 
 
@@ -347,6 +356,53 @@ class SessionMessageQueue:
             return None
         return await self._store.claim_note(boundary=boundary)
 
+    async def verify_admission(
+        self,
+        *,
+        message_id: str,
+        principal: MessagePrincipalDAO,
+        build_submission: Callable[[MessageAddressDAO], MessageSubmissionDAO],
+    ) -> Optional[MessageIdentityDAO]:
+        """Verify against the saved original target under admission serialization.
+
+        Args:
+            message_id: Original Inbox UUID.
+            principal: Registered machine sender.
+            build_submission: Builds exact content against the saved admission target.
+
+        Returns:
+            Lifetime proof, or None only after a successful absence read.
+
+        Raises:
+            MessageAdmissionError: Revoked reader, foreign sender, or changed content.
+            MessageStoreError: Storage failure, latched by the queue.
+        """
+        async with self._mutex:
+            self._authorize_read(principal)
+            self._require_storage_healthy()
+            return await self._settle_operation_locked(
+                operation=self._verify_admission_locked(
+                    message_id=message_id, principal=principal, build_submission=build_submission
+                )
+            )
+
+    async def _verify_admission_locked(
+        self,
+        *,
+        message_id: str,
+        principal: MessagePrincipalDAO,
+        build_submission: Callable[[MessageAddressDAO], MessageSubmissionDAO],
+    ) -> Optional[MessageIdentityDAO]:
+        """Read the original routing before rebuilding the candidate digest; never publish."""
+        identity = await self._store.find_identity(message_id=message_id)
+        if identity is None:
+            return None
+        if identity.sender != principal:
+            raise MessageAdmissionError(error=MessageErrorDAO(code="unauthorized", message_id=message_id))
+        return await self._store.verify_admission(
+            submission=build_submission(identity.receipt.target), principal=principal
+        )
+
     async def get_receipt(
         self, *, message_id: str, principal: MessagePrincipalDAO
     ) -> Optional[MessageReceiptDAO]:
@@ -393,6 +449,8 @@ class SessionMessageQueue:
         """
         async with self._mutex:
             self._require_storage_healthy()
+            if self._sealed:
+                raise MessageAdmissionError(error=MessageErrorDAO(code="completing"))
             await self._settle_mutation_locked(operation=self._store.cancel_retained(message_ids=message_ids))
 
     async def recover(
@@ -448,9 +506,40 @@ class SessionMessageQueue:
             if self._sealed:
                 return
             await self._settle_operation_locked(operation=self._refresh_signals_locked())
-            await self._changed.wait_for(predicate=lambda: self._sealed or self._storage_failed or self._notes.is_set())
+            await self._changed.wait_for(
+                predicate=lambda: self._sealed or self._storage_failed or self._notes.is_set()
+            )
             if self._storage_failed:
                 raise MessageStoreError()
+
+    async def seal_if_quiescent(self, *, may_seal: Callable[[], bool]) -> FiniteCutoffDAO:
+        """Atomically seal admission only after committed input and applications settle.
+
+        Args:
+            may_seal: Synchronous session lifecycle recheck after the storage read.
+
+        Returns:
+            FiniteCutoffDAO: Sealed, pending input, orphan application, or stopping.
+
+        Raises:
+            MessageStoreError: Storage cannot establish safe quiescence.
+        """
+        async with self._mutex:
+            self._require_storage_healthy()
+            if self._sealed:
+                return FiniteCutoffDAO(outcome="stopping")
+            state: QueueStateDAO = await self._settle_operation_locked(
+                operation=self._store.read_queue_state()
+            )
+            if state.applying_records > 0:
+                return FiniteCutoffDAO(outcome="applying")
+            if state.eligible_inputs > 0:
+                return FiniteCutoffDAO(outcome="pending")
+            if not may_seal():
+                return FiniteCutoffDAO(outcome="stopping")
+            self._sealed = True
+            self._changed.notify_all()
+            return FiniteCutoffDAO(outcome="sealed")
 
     async def seal(self) -> None:
         """Seal admission through the queue's serialization point.
@@ -492,7 +581,9 @@ class SessionMessageQueue:
             if self._sealed:
                 return
             await self._settle_operation_locked(operation=self._refresh_signals_locked())
-            await self._changed.wait_for(predicate=lambda: self._sealed or self._storage_failed or self._work.is_set())
+            await self._changed.wait_for(
+                predicate=lambda: self._sealed or self._storage_failed or self._work.is_set()
+            )
             if self._storage_failed:
                 raise MessageStoreError()
 
@@ -516,7 +607,9 @@ class SessionMessageQueue:
                 return
             await self._settle_operation_locked(operation=self._refresh_signals_locked())
             await self._changed.wait_for(
-                predicate=lambda: self._sealed or self._storage_failed or self._urgent_high_water > after_sequence
+                predicate=lambda: self._sealed
+                or self._storage_failed
+                or self._urgent_high_water > after_sequence
             )
             if self._storage_failed:
                 raise MessageStoreError()

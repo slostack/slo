@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 _IMPORTS = """from typing import Self, assert_type
-from src.tui.components.protocols import (TranscriptNoticeDisplayProtocol, WorkflowNoticeProtocol, TranscriptProjectionProtocol, WorkflowProgressUpdatesProtocol)
+from src.tui.components.protocols import (TranscriptNoticeDisplayProtocol, WorkflowNoticeProtocol, TranscriptProjectionProtocol, WorkflowProgressUpdatesProtocol, MessageSubmissionProtocol)
 from src.tui.components.chat_transcript.adapters.transcript import TranscriptNoticeDisplayAdapter, TranscriptNoticeMountTarget
 from src.tui.components.chat_transcript.adapters.workflow_notice import WorkflowNoticeAdapter, TranscriptNoticeTarget
 from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter, TranscriptMountHost
@@ -15,6 +15,9 @@ from src.tui.components.workflow_progress.adapters.workflow_progress import Work
 from src.tui.components.workflow_progress.host import WorkflowProgressHost
 from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO, ProjectionInput
 from src.tui.components.workflow_progress.events import WorkflowProgressUpdate
+from src.tui.components.prompt_input.adapters.message_submission import MessageSubmissionAdapter
+from src.tui.components.prompt_input.submission import SubmissionOutcomeReceiver
+from src.agents.slo_agent.messaging.client import SessionMessagingClient
 from src.tui.workflows.progress_coordinator import WorkflowProgressSink
 """
 
@@ -23,17 +26,22 @@ display_class: type[TranscriptNoticeDisplayProtocol] = TranscriptNoticeDisplayAd
 notice_class: type[WorkflowNoticeProtocol] = WorkflowNoticeAdapter
 projection_class: type[TranscriptProjectionProtocol] = TranscriptProjectionAdapter
 progress_class: type[WorkflowProgressUpdatesProtocol] = WorkflowProgressUpdatesAdapter
+submission_class: type[MessageSubmissionProtocol] = MessageSubmissionAdapter
 
-async def consume(mount: TranscriptNoticeMountTarget, notice: TranscriptNoticeTarget, host: TranscriptMountHost, progress_host: WorkflowProgressHost, presenter: SessionListPresenter, projection_event: ProjectionInput, progress_event: WorkflowProgressUpdate) -> None:
+async def consume(mount: TranscriptNoticeMountTarget, notice: TranscriptNoticeTarget, host: TranscriptMountHost, progress_host: WorkflowProgressHost, presenter: SessionListPresenter, projection_event: ProjectionInput, progress_event: WorkflowProgressUpdate, client: SessionMessagingClient, receiver: SubmissionOutcomeReceiver) -> None:
     display = display_class.register(tui=mount)
     workflow = notice_class.register(tui=notice)
     projection = projection_class.register(host=host)
     progress = progress_class.register(host=progress_host, presenter=presenter)
+    submission = submission_class.register(client=client, receiver=receiver)
     sink: WorkflowProgressSink = progress
     assert_type(TranscriptNoticeDisplayAdapter.register(tui=mount), TranscriptNoticeDisplayAdapter)
     assert_type(WorkflowNoticeAdapter.register(tui=notice), WorkflowNoticeAdapter)
     assert_type(TranscriptProjectionAdapter.register(host=host), TranscriptProjectionAdapter)
     assert_type(WorkflowProgressUpdatesAdapter.register(host=progress_host, presenter=presenter), WorkflowProgressUpdatesAdapter)
+    assert_type(MessageSubmissionAdapter.register(client=client, receiver=receiver), MessageSubmissionAdapter)
+    await submission.reset()
+    await submission.close()
     await display.handle(event=TranscriptNoticeDAO(content="notice"))
     await workflow.handle(event=TranscriptNoticeDAO(content="workflow"))
     await projection.handle(event=projection_event)
@@ -99,12 +107,15 @@ sync_handle: type[TranscriptNoticeDisplayProtocol] = SyncHandle  # error: assign
 sync_reset: type[TranscriptNoticeDisplayProtocol] = SyncReset  # error: assignment
 sync_close: type[TranscriptNoticeDisplayProtocol] = SyncClose  # error: assignment
 
-async def invalid(mount: TranscriptNoticeMountTarget, notice: TranscriptNoticeTarget, host: WorkflowProgressHost, display: TranscriptNoticeDisplayProtocol) -> None:
+async def invalid(mount: TranscriptNoticeMountTarget, notice: TranscriptNoticeTarget, host: WorkflowProgressHost, display: TranscriptNoticeDisplayProtocol, receiver: SubmissionOutcomeReceiver, client_obj: SessionMessagingClient) -> None:
     TranscriptNoticeDisplayAdapter.register(tui=notice)  # error: arg-type
     WorkflowNoticeAdapter.register(tui=mount)  # error: arg-type
     TranscriptNoticeDisplayAdapter.register(host=mount)  # error: call-arg
     TranscriptNoticeDisplayAdapter.register(mount)  # error: misc
     WorkflowProgressUpdatesAdapter.register(host=host)  # error: call-arg
+    MessageSubmissionAdapter.register(client=notice, receiver=receiver)  # error: arg-type
+    MessageSubmissionAdapter.register(client=client_obj, receiver=host)  # error: arg-type
+    MessageSubmissionAdapter.register(receiver=receiver)  # error: call-arg
     await display.handle(event=object())  # error: arg-type
 """
 

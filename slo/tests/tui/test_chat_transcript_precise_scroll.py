@@ -1,6 +1,10 @@
 """Two bounded native-animation proofs using Textual's existing test hooks."""
 
 import asyncio
+from functools import partial
+
+from textual._animator import SimpleAnimation
+from textual.message_pump import Callback
 
 import pytest
 from textual.widgets import Static
@@ -66,11 +70,38 @@ async def test_unequal_axes_retire_with_cover_before_or_after_native(cover_first
         await pilot.pause()
         transcript.hold = {"_start_native_navigation", "_native_navigation_completed"}
         await pilot.press("pageup", "right")
+
         # Release both starts; the old revision must reject itself. The current
         # Right request merges pending y and uses native speed=50, not duration=.1.
+        # Wall-clock polling can miss this entire short-lived frame when the
+        # worker is descheduled. Pause only native ticks, not layout/callbacks,
+        # then evaluate Textual's real animations at the unequal-axis boundary.
+        def start_with_paused_ticks(
+            *, callback: Callback, args: tuple[object, ...], kwargs: dict[str, object]
+        ) -> None:
+            """Run the captured native start and pause its timer before yielding."""
+            callback(*args, **kwargs)
+            app.animator._timer.pause()
+
         transcript.hold.remove("_start_native_navigation")
-        transcript.release_at()
-        transcript.release_at()
+        for _ in range(2):
+            callback, args, kwargs = transcript.calls.pop(0)
+            transcript.call_after_refresh(
+                partial(start_with_paused_ticks, callback=callback, args=args, kwargs=kwargs)
+            )
+        async with asyncio.timeout(3):
+            while not all((id(scroll), f"scroll_{axis}") in app.animator._animations for axis in ("x", "y")):
+                await asyncio.sleep(0.001)
+        x_animation = app.animator._animations[(id(scroll), "scroll_x")]
+        y_animation = app.animator._animations[(id(scroll), "scroll_y")]
+        assert isinstance(x_animation, SimpleAnimation)
+        assert isinstance(y_animation, SimpleAnimation)
+        assert x_animation.duration < y_animation.duration
+        animation_time = max(x_animation.start_time, y_animation.start_time) + x_animation.duration
+        assert x_animation(time=animation_time, app_animation_level=app.animation_level)
+        assert not y_animation(time=animation_time, app_animation_level=app.animation_level)
+        assert x_animation.on_complete is not None
+        x_animation.on_complete()
         async with asyncio.timeout(3):
             while not (
                 scroll.scroll_x == 1
@@ -89,6 +120,7 @@ async def test_unequal_axes_retire_with_cover_before_or_after_native(cover_first
             # remaining real animation and invalidate the intermediate oracle.
             assert transcript._native_navigation is operation
             assert target < scroll.scroll_y < 100
+        app.animator._timer.resume()
         await pilot.wait_for_scheduled_animations()
         await pilot.pause()
         if not cover_first:

@@ -253,7 +253,10 @@ async def _seed_completed_history(
         store (FilesystemSessionHistoryStore | TreeBasedFilesystemSessionHistoryStore): Owned test store.
         workdir (Path): Test-owned session workspace; the caller checks store-root containment.
     """
-    await store.ensure_session(session_id="resumed", workdir=workdir, model_name="retired-model-x")
+    await store.ensure_session(
+        session_id="f0000000-0000-4000-8000-000000000001", workdir=workdir, model_name="retired-model-x"
+    )
+    await store.rename_session(session_id="f0000000-0000-4000-8000-000000000001", session_name="resumed")
     for turn in range(2):
         entries: list[tuple[HistoryEventKind, str | None]] = [
             ("run_started", None),
@@ -264,7 +267,7 @@ async def _seed_completed_history(
         for kind, content in entries:
             await store.append_event(
                 event=SessionHistoryEventDAO(
-                    session_id="resumed",
+                    session_id="f0000000-0000-4000-8000-000000000001",
                     turn_id=f"old-{turn}",
                     kind=kind,
                     payload=SessionHistoryEventPayloadDAO(content=content),
@@ -283,7 +286,7 @@ def test_cli_run_when_saved_model_unknown_continues_all_history(
     store_type = TreeBasedFilesystemSessionHistoryStore if tree else FilesystemSessionHistoryStore
     store = store_type(root=history)
     asyncio.run(_seed_completed_history(store=store, workdir=tmp_path))
-    before = asyncio.run(store.load_events(session_id="resumed"))
+    before = asyncio.run(store.load_events(session_id="f0000000-0000-4000-8000-000000000001"))
     credentials = CredentialStore()
     assert credentials.path.resolve().is_relative_to(isolated_slo_home.resolve())
     credentials.persist(
@@ -321,7 +324,7 @@ def test_cli_run_when_saved_model_unknown_continues_all_history(
         )
     else:
         warning.assert_not_called()
-    after = asyncio.run(store.load_events(session_id="resumed"))
+    after = asyncio.run(store.load_events(session_id="f0000000-0000-4000-8000-000000000001"))
     assert after[: len(before)] == before
     messages = asyncio.run(SessionHistoryProjector.build_message_history(events=after))
     assert [message.content for message in messages] == [
@@ -332,5 +335,5 @@ def test_cli_run_when_saved_model_unknown_continues_all_history(
         "new question",
         "new answer",
     ]
-    metadata = asyncio.run(store.read_metadata(session_id="resumed"))
+    metadata = asyncio.run(store.read_metadata(session_id="f0000000-0000-4000-8000-000000000001"))
     assert metadata.model_name == "gpt-5.4"

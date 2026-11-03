@@ -16,7 +16,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from src.agents.slo_agent.messaging.dao import MessageApplicationMetadataDAO, MessageStoreError
+from src.agents.slo_agent.history.projector import SessionHistoryProjector
 
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 from src.agents.slo_agent.message_text import merge_reasoning_delta
@@ -73,6 +76,19 @@ class TranscriptEntryDAO(BaseModel):
     tool_name: Optional[str] = None
     tool_input: dict[str, Any] = Field(default_factory=dict)
     output: Optional[str] = None
+    application: Optional[MessageApplicationMetadataDAO] = Field(
+        default=None, description="Verified canonical message application identity."
+    )
+    application_sha256: Optional[str] = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", description="Canonical application event hash."
+    )
+
+    @model_validator(mode="after")
+    def _require_application_hash(self) -> "TranscriptEntryDAO":
+        """Require identity and its canonical hash together."""
+        if (self.application is None) != (self.application_sha256 is None):
+            raise ValueError("Application identity and hash must be supplied together")
+        return self
 
 
 class _ThinkingSegment(BaseModel):
@@ -249,6 +265,7 @@ class _ReplayEntryBuilder:
             "run_aborted": self._absorb_run_aborted,
             "run_failed": self._absorb_run_failed,
             "workflow_update": self._absorb_workflow_update,
+            "compaction_summary": self._absorb_workflow_update,
         }
 
     def absorb(self, *, event: SessionHistoryEventDAO) -> None:
@@ -360,7 +377,28 @@ class _ReplayEntryBuilder:
             event (SessionHistoryEventDAO): One ``workflow_update`` event.
         """
         self._flush_assistant()
-        self._entries.append(TranscriptEntryDAO(kind="note", content=f"⊛ {event.payload.content or ''}"))
+        if "messaging_v1" not in event.payload.metadata:
+            self._entries.append(TranscriptEntryDAO(kind="note", content=f"⊛ {event.payload.content or ''}"))
+            return
+        try:
+            SessionHistoryProjector.project_message_application(event=event)
+        except MessageStoreError:
+            self._entries.append(
+                TranscriptEntryDAO(kind="note", content="⊛ Message history entry could not be verified.")
+            )
+            return
+        application: MessageApplicationMetadataDAO = MessageApplicationMetadataDAO.model_validate(
+            event.payload.metadata["messaging_v1"]
+        )
+        human_input: bool = application.kind == "agent_input" and application.sender.kind == "human"
+        self._entries.append(
+            TranscriptEntryDAO(
+                kind="user" if human_input else "note",
+                content=("" if human_input else "⊛ ") + (event.payload.content or ""),
+                application=application,
+                application_sha256=event.application_sha256(),
+            )
+        )
 
     def _absorb_run_aborted(self, *, event: SessionHistoryEventDAO) -> None:
         """Mark the active turn aborted and close it."""

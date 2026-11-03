@@ -1,7 +1,15 @@
 """Typed presentation deliveries to the prompt editor; binding is a separate operation."""
 
-from pydantic import BaseModel, ConfigDict
+from typing import Optional
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from src.agents.slo_agent.messaging.dao import _require_uuid
+from src.tui.components.prompt_input.submission import (
+    DraftSubmissionDAO,
+    RetrySubmissionDAO,
+    SubmissionOutcomeDAO,
+)
 from src.tui.path_suggestion_controller import PathPromptSnapshotDAO, PathSuggestionController
 from src.tui.slash_suggestion_engine import SlashSuggestionStateDAO
 
@@ -26,10 +34,13 @@ class HideSuggestionsDAO(BaseModel):
 
 
 class RecordAcceptedPromptDAO(BaseModel):
-    """Record an admitted ordinary prompt for local recall."""
+    """Record admitted human text once per ID within the submission binding."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     text: str
+    message_id: Optional[str] = Field(
+        default=None, description="Admission or application identity used to deduplicate human recall."
+    )
 
 
 class SetModelContextDAO(BaseModel):
@@ -73,6 +84,27 @@ class ReplacePathSpanDAO(BaseModel):
     snapshot: PathPromptSnapshotDAO
 
 
+class SubmitDraftDAO(BaseModel):
+    """Register one captured draft with the component's submission binding."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    draft_submission: DraftSubmissionDAO = Field(
+        description="Exact captured draft to register before clearing its revision."
+    )
+
+
+class DiscardDraftDAO(BaseModel):
+    """Drop one recoverable local snapshot, releasing its reservation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    message_id: str = Field(description="Canonical UUID of the recoverable snapshot to discard.")
+
+    @field_validator("message_id")
+    @classmethod
+    def _uuid_fields(cls, value: str) -> str:
+        return _require_uuid(value=value, field="message_id")
+
+
 PromptCommand = (
     ClearSubmissionDAO
     | ReplacePromptDAO
@@ -83,4 +115,8 @@ PromptCommand = (
     | RefreshPublishedSuggestionsDAO
     | PublishSuggestionsDAO
     | ReplacePathSpanDAO
+    | SubmitDraftDAO
+    | SubmissionOutcomeDAO
+    | RetrySubmissionDAO
+    | DiscardDraftDAO
 )

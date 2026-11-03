@@ -325,14 +325,17 @@ async def run_recorded_child(
         orchestrator_mode: bool = False,
         notify_session_id: str | None = None,
         notifier: WorkflowNotifier | None = None,
+        messaging_enabled: bool = False,
     ) -> None:
-        """Retain the real runner, without substituting session preparation or readiness."""
+        """Retain the real runner and assert the production messaging composition."""
+        assert messaging_enabled is True
         original_init(
             runner,
             config=config,
             orchestrator_mode=orchestrator_mode,
             notify_session_id=notify_session_id,
             notifier=notifier,
+            messaging_enabled=messaging_enabled,
         )
         runners.append(runner)
 
@@ -352,7 +355,7 @@ async def run_recorded_child(
             patch.object(HeadlessRunner, "_shutdown_model_catalog", shutdown),
         ):
             result = CliRunner().invoke(app=app, args=journey.argv[3:])
-            assert len(runners) == 1
+            assert len(runners) == 1, (result.exit_code, result.output, result.exception)
             if expected_active_reasoning is not None:
                 assert runners[0]._session is not None
                 assert runners[0]._session.active_reasoning_level == expected_active_reasoning

@@ -1,0 +1,63 @@
+ M README.md
+ M SLO.md
+ M src/agents/slo_agent/agent.py
+ M src/agents/slo_agent/history/__init__.py
+ M src/agents/slo_agent/history/inbox/store.py
+ M src/agents/slo_agent/history/transcript.py
+ M src/agents/slo_agent/messaging/client.py
+ M src/agents/slo_agent/messaging/dao.py
+ M src/agents/slo_agent/messaging/ownership.py
+ M src/agents/slo_agent/messaging/queue.py
+ M src/agents/slo_agent/messaging/store.py
+ M src/agents/slo_agent/sessions/service.py
+ M src/cli/headless.py
+ M src/cli/typer_dispatch.py
+ M src/tui/app.py
+ M src/tui/components/chat_transcript/adapters/transcript_projector.py
+ M src/tui/components/chat_transcript/commands.py
+ M src/tui/components/chat_transcript/component.py
+ M src/tui/components/prompt_input/commands.py
+ M src/tui/components/prompt_input/component.py
+ M src/tui/components/protocols.py
+ M src/tui/slash_command_registry.py
+ M src/tui/slash_router.py
+ M tests/agents/slo_agent/history/test_inbox_store.py
+ M tests/agents/slo_agent/history/test_transcript.py
+ M tests/agents/slo_agent/messaging/test_store_retained.py
+ M tests/agents/slo_agent/orchestrator/test_managed_launch_reasoning.py
+ M tests/cli/test_app.py
+ M tests/cli/test_headless.py
+ M tests/cli/test_headless_child_abort.py
+ M tests/cli/test_resume_route_precedence.py
+ M tests/cli/test_typer_dispatch.py
+ M tests/integration/herdr_restore_process_entry.py
+ M tests/integration/test_herdr_two_process_restore.py
+ M tests/tui/test_adapter_registration.py
+ M tests/tui/test_chat_transcript_navigation.py
+ M tests/tui/test_chat_transcript_precise_scroll.py
+ M tests/tui/test_herdr_all_owner_cutoffs.py
+ M tests/tui/test_herdr_prompt_registration.py
+ M tests/tui/test_prompt_component_protocol.py
+ M tests/tui/test_slash_command_registry.py
+?? docs/
+?? release-evidence/96-durable-composer/
+?? src/tui/components/prompt_input/adapters/
+?? src/tui/components/prompt_input/submission.py
+?? tests/agents/slo_agent/messaging/test_finite_completion.py
+?? tests/agents/slo_agent/messaging/test_injected_activation.py
+?? tests/agents/slo_agent/messaging/test_legacy_admission.py
+?? tests/agents/slo_agent/messaging/test_observation.py
+?? tests/agents/slo_agent/messaging/test_retained_recovery.py
+?? tests/cli/test_headless_messaging.py
+?? tests/tui/recording_prompt.py
+?? tests/tui/test_composer_prerequisites.py
+?? tests/tui/test_composer_retirement.py
+?? tests/tui/test_composer_transcript_identity.py
+?? tests/tui/test_composer_visual_matrix.py
+?? tests/tui/test_durable_composer.py
+?? tests/tui/test_inbox_displacement.py
+?? tests/tui/test_legacy_inbox_bridge.py
+?? tests/tui/test_messages_command.py
+?? tests/tui/test_messaging_failure_matrix.py
+?? tests/tui/test_messaging_session_controls.py
+?? tests/tui/test_messaging_steer.py

@@ -43,7 +43,17 @@ Sub-skills the workflow sequences (loaded on demand per step):
     final feature check.
 - Step 2 — `skills/design-and-analysis/review-feature-code/SKILL.md`
 - Step 3 — `skills/design-and-analysis/is-the-feature-completed/SKILL.md`
-- Always-on — `named-arguments-and-type-hints`, `declarative-method-structure`,
-  `method-docstrings`, `test-verification-policy` (all under `skills/coding/`)
-- Prerequisite baseline — read `skills/coding/coding-rules/SKILL.md`, and `/root/Code/slo-runnable-core-specifications/slo/skills/coding/solution-design/SKILL.md` then route to the applicable language root and feature/framework guidance before implementation;
-  applicable specifics override generic defaults on the affected point.
+- Always-on — honor conventions from the active `SLO_SKILL_DIR` (or
+  `SLO_SKILLS_DIR` compatibility alias); resolve applicable language and layer skills
+  there rather than using hard-coded installation paths.
+- Overarching guidelines — `coding/solution-design/SKILL.md`,
+  `coding/coding-rules/SKILL.md`, `coding/naming-and-clarity/SKILL.md` and
+  `coding/test-verification-policy/SKILL.md`, with language-specific skills guiding
+  language-specific work.
+
+The authoritative workflow defines the non-negotiables: tell-don’t-ask,
+declarative code, test-first development, no regressions, runnable-core scope
+without side quests, standard unit/behavioral pytest tests for Python without
+elaborate harnesses, the full pytest suite at feature completion, and evidence of
+a working system before declaring completion. Use native equivalents for other
+languages; read the workflow for the exact gates and blocker handling.

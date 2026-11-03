@@ -25,18 +25,52 @@ Before Step 1 read `skills/engineering/engineering-routing/SKILL.md` and
 frameworks, test categories, project contracts, selected skill paths/source tiers,
 and actual project verification commands. Pass this record to every phase.
 Load language/component recipes on demand; do not impose Python syntax or tooling
-on Go, TypeScript or an unsupported language. For Go use the test-first cadence.
+on Go, TypeScript or an unsupported language. Apply test-first development in every
+affected language, using its native tools.
 
 ## Additive prerequisite handoff
 
-The coding phase also consumes `skills/coding/coding-rules/SKILL.md` before
-implementation. The routing record preserves this order: project context →
-generic coding rules → applicable language root → applicable feature/framework
-recipes → bounded implementation and verification. Applicable specific guidance
-overrides the generic default on the affected point; unresolved
-specific-to-specific conflicts remain explicit blockers. This is a read and
-handoff requirement only; it does not change phase order, review meaning,
-completion meaning, or engineering authority.
+Resolve the active skills root from `SLO_SKILL_DIR`, or `SLO_SKILLS_DIR` when
+only that alias is set. If both differ and the active root is unclear, surface the
+conflict. Read its index and honor the applicable conventions; do not hard-code a
+home directory or installed package path. Paths below identify skills relative to
+that root (omitting the repository's `skills/` prefix).
+
+Use these overarching guidelines in every phase:
+
+- `coding/solution-design/SKILL.md`
+- `coding/coding-rules/SKILL.md`
+- `coding/naming-and-clarity/SKILL.md`
+- `coding/test-verification-policy/SKILL.md`
+
+The routing record preserves this order: project context → overarching guidelines
+→ applicable language root → feature/framework recipes → bounded implementation
+and verification. Language-specific tasks use the relevant language skills,
+including named-argument/type-hint and declarative-structure conventions where
+applicable. Specific guidance refines generic defaults; it cannot silently waive
+the non-negotiables below. Surface unresolved conflicts as blockers. Pass the
+selected paths and their concrete constraints to implementation, review and
+completion; this does not change phase order or engineering authority.
+
+### Non-negotiables and scope
+
+- **Tell-don’t-ask:** the domain owner enforces its invariants; callers request
+  behavior rather than extracting state to duplicate business rules.
+- **Declarative code:** orchestration expresses named intentions; keep core
+  decisions cohesive and follow the language's declarative-structure conventions.
+- **Test-first development:** write or extend a failing behavior/unit test before
+  its production change, then make it pass and refactor with tests green.
+- **No regressions:** preserve existing required behavior. Do not delete, disable
+  or weaken tests to manufacture a passing result.
+- **No side quests:** focus on the runnable core and the specified acceptance
+  requirements. Required safety, correctness and integration work remains in scope;
+  unrelated refactors, frameworks and speculative enhancements do not. Report
+  optional improvements separately rather than implementing them.
+- **Simple tests:** use existing fixtures and native test tools. Do not build an
+  elaborate test framework, custom runner or multi-service harness for this work.
+- **Working system at completion:** passing isolated tests is insufficient. Verify
+  the real runnable journey and required regression/build gates on the final code;
+  missing evidence or a broken system means blocked/incomplete, not success.
 
 Each phase returns a terminal verdict (READY/COMPLETE, REVISE, or FAILED), concrete
 artifact paths, requirement-to-evidence mapping, exact commands/results, deviations
@@ -116,12 +150,18 @@ copying language-specific rules into this workflow.
 Consume the acceptance contract, current routing record and
 `skills/coding/coding-rules/SKILL.md`. Work in bounded behavioral increments,
 respecting dependency order within a vertical slice rather than completing every
-lower layer before wiring its consumers. Follow language/user test ordering.
+lower layer before wiring its consumers. Use the test-first cadence and the
+selected language conventions; keep every increment runnable.
 
 ### Testing strategy
 
 How to test is owned by `skills/coding/test-verification-policy/SKILL.md`. Apply it in every sub-spec cycle:
 
+- **Standard pytest for Python.** Write ordinary unit and behavioral pytest tests
+  during the loop, using existing fixtures and test clients. No BDD framework,
+  custom test DSL, runner or elaborate harness. Behavior tests cover the journey;
+  focused unit tests cover critical computation and branches. For other languages,
+  use the selected native test tools rather than introducing pytest.
 - **Behavior first.** Each acceptance criterion is proven by a journey test: real entry point (controller, CLI, TUI, worker, task, scheduler or event) → application service → domain service → persisted state read back.
 - **More behavior tests, fewer method tests.** Add workflow, domain or unit tests only for branches the journey test cannot reach cheaply.
 - **Real persistence.** Never mock databases, file stores or internal engines.
@@ -161,7 +201,15 @@ Extend the slice to all required journeys and critical failure paths. Apply the
 requirement-and-risk map in `skills/engineering/engineering-testing/SKILL.md` and
 adequacy gate in `skills/coding/test-verification-policy/SKILL.md`.
 Run focused tests per increment, affected suites at milestones, and all agreed
-full-suite/static/build/race gates before Step 2. Run end-to-end tests only at
+full-suite/static/build/race gates before Step 2. **At feature completion, run the
+full pytest suite for every affected Python project**, using its verified project
+command and environment (for example, `python -m pytest` from the project root
+when that is the repository convention). A focused subset is not the full-suite
+gate. Record the command, working directory, environment and result; rerun on the
+final code after revisions that invalidate the evidence. Use native full-suite
+commands for non-Python projects. Missing dependencies, unavailable environments
+or baseline failures must be reported with evidence and disposition, never as a
+passing suite. Run end-to-end tests only at
 the end of the feature, after the last sub-spec cycle, and only where the policy
 calls for them. Baseline exceptions need explicit
 approval; unavailable checks are unverified. No disabled tests to manufacture green.
@@ -204,6 +252,13 @@ Report the phase result and verify its required artifacts before advancing.
 Independently verify the agreed checklist against the original specification and
 current executable evidence. Do not assume author/reviewer verdicts establish truth.
 Check all required deliverables, wired journeys, review closure and required gates.
+For Python feature completion, verify full pytest-suite evidence for the final
+code, not only focused tests. Confirm a representative real entry-point journey
+still runs through the core to an observable result, plus applicable startup,
+build and integration checks from the acceptance contract. For documentation-only
+work, verify the documented discovery/loading and reference-valid consumer path;
+do not claim runtime tests were executed. An unavailable or failing required
+check leaves completion blocked/incomplete, with the exact gap reported.
 An omitted requirement must cite its source; recommendations cannot invent scope.
 
 **Output:** acceptance status/evidence table, review and gate status, explicit
@@ -222,6 +277,10 @@ external blockers honestly. Only the operator may approve explicit deferral.
 - Step 2: final independent review accepted, with no blocking findings.
 - Step 3: original-spec reconciliation confirms no unapproved omissions or unverified
   required items; approved exceptions and deferrals are visible in the final result.
+- The final system is working: the real runnable journey and applicable full-suite
+  gates (including full pytest for Python feature completion) have current passing
+  evidence. Do not declare completion with a broken system or unverified required
+  gate; report the blocker instead.
 
 
 
@@ -229,7 +288,7 @@ external blockers honestly. Only the operator may approve explicit deferral.
 
 The following rules remain in effect throughout this workflow:
 
-- The code+test cadence is non-negotiable. Follow the selected language test ordering, verify each unit green, then proceed. No bulk writes.
+- The test-first code+test cadence and the non-negotiables above apply throughout. Verify each increment green, then proceed. No bulk writes.
 - All always-on coding conventions from `CLAUDE.md` apply to every line of code written.
 - Secret scanning before commit — eye-scan all staged content for API keys, tokens, bcrypt hashes, and private keys before any `git commit`.
 - Confirmation before commit, push, or PR — `ALWAYS SEEK CONFIRMATION BEFORE COMMITTING CODE, PUSHING CODE TO REMOTE REPOSITORIES OR MERGING CODE`.

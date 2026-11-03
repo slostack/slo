@@ -381,6 +381,8 @@ class TestSubAgentEventRouting:
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app=app, pilot=pilot)
             await app._render_event(_spawned(task_id="task-A", session_id="s1"))
+            # Finish spawn-triggered rendering before measuring the delta event.
+            await _settle(app=app, pilot=pilot)
             lines_before = (
                 len(app.query_one(ChatTranscriptComponent)._adapter.lines)
                 if app.query_one(ChatTranscriptComponent)._adapter

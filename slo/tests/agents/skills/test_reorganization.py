@@ -381,14 +381,16 @@ def test_code_test_workflows_handoff_generic_prerequisite_before_implementation(
             if "### Step 1 — Code + Test Loop" in text
             else "## Step 1 — Code + Test Loop"
         )
-        assert text.index("skills/coding/coding-rules/SKILL.md") < text.index(step_one_marker)
+        prerequisites = text[: text.index(step_one_marker)]
+        assert "coding/coding-rules/SKILL.md" in prerequisites
         assert "project context →" in text
         assert "applicable language root" in text
-        assert "specific-to-specific conflicts" in text
+        assert "conflicts" in prerequisites
+        assert "blockers" in prerequisites
 
     wrapper = (SKILLS / "design-and-analysis/code-test-review/SKILL.md").read_text()
-    assert "skills/coding/coding-rules/SKILL.md" in wrapper
-    assert "applicable language root" in wrapper
+    assert "coding/coding-rules/SKILL.md" in wrapper
+    assert "language-specific skills" in wrapper
 
     for path in (
         SKILLS / "design-and-analysis/implement-feature-request/SKILL.md",

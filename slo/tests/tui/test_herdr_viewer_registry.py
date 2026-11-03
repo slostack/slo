@@ -118,8 +118,11 @@ async def test_shutdown_joins_viewer_before_reporter_close(
                     await asyncio.gather(task, shutdown, return_exceptions=True)
 
 
-async def test_registry_auto_off_refuses_before_task_registration(tmp_path: Path) -> None:
+async def test_registry_auto_off_refuses_before_task_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The shared scheduler rejects auto-off before creating either destination task."""
+    monkeypatch.setenv("SLO_AUTO_VISUALIZE", "0")
     with patch(
         "src.agents.slo_agent.graph.LLMFactory.create",
         return_value=LLMBuildResult(

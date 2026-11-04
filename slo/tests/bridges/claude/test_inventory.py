@@ -268,18 +268,31 @@ class InventoryTransport(ToolRoundTransport):
             initialized["mcp_servers"].append({"name": "foreign", "status": "disabled"})
         elif self.fault == "source":
             initialized["mcp_servers"][0]["source"] = "project"
-        elif self.fault == "skills-absent":
+        elif self.fault == "valid-skills-absent":
             initialized.pop("skills")
+        elif self.fault == "valid-extensions-absent":
+            initialized.pop("skills")
+            initialized.pop("plugins")
         elif self.fault == "plugins-null":
             initialized["plugins"] = None
         elif self.fault == "status-absent":
             initialized["mcp_servers"][0].pop("status")
         elif self.fault == "session-type":
             initialized["session_id"] = 17
-        elif self.fault == "skills":
-            initialized["skills"] = ["external"]
+        elif self.fault == "valid-bundled-extensions":
+            initialized["skills"] = ["deep-research", "verify", "plugin-authoring"]
+            initialized["plugins"] = [
+                {"name": "cc-plugin-agents-md", "path": "builtin", "source": "cc-plugin-agents-md@builtin"},
+                {
+                    "name": "cc-plugin-plugin-authoring",
+                    "path": "builtin",
+                    "source": "cc-plugin-plugin-authoring@builtin",
+                },
+            ]
         elif self.fault == "plugins":
-            initialized["plugins"] = [{"name": "external", "path": "private-not-for-diagnostics"}]
+            initialized["plugins"] = [
+                {"name": "external", "path": "private-not-for-diagnostics", "source": "external@marketplace"}
+            ]
         elif self.fault == "valid-optional-absent":
             initialized["mcp_servers"][0].pop("source")
             initialized["capabilities"] = ["future_capability"]
@@ -307,9 +320,10 @@ class InventoryTransport(ToolRoundTransport):
         "server-duplicate",
         "external-server",
         "source",
-        "skills",
         "plugins",
-        "skills-absent",
+        "valid-bundled-extensions",
+        "valid-skills-absent",
+        "valid-extensions-absent",
         "plugins-null",
         "status-absent",
         "session-type",
@@ -394,3 +408,55 @@ async def test_unrepresentable_schema_is_rejected_before_native_submission(
         assert not transport.connected and transport.prompts == []
     finally:
         await adapter.close()
+
+
+@pytest.mark.parametrize(
+    ("metadata", "reason"),
+    [
+        ({}, "invalid session_id"),
+        ([], "invalid metadata"),
+        (
+            {"session_id": "n", "tools": [], "mcp_servers": [], "plugins": [{"name": "unexpected"}]},
+            "invalid plugins",
+        ),
+        (
+            {
+                "session_id": "n",
+                "tools": [],
+                "mcp_servers": [],
+                "plugins": [{"name": "x", "source": "x@builtin", "path": "/unexpected/path"}],
+            },
+            "external plugin inventory",
+        ),
+        (
+            {
+                "session_id": "n",
+                "tools": [],
+                "mcp_servers": [],
+                "plugins": [{"name": "x", "source": "@builtin", "path": "builtin"}],
+            },
+            "external plugin inventory",
+        ),
+        ({"session_id": "native", "tools": ["unexpected"], "mcp_servers": []}, "tool inventory mismatch"),
+        (
+            {
+                "session_id": "native",
+                "tools": [],
+                "mcp_servers": [],
+                "plugins": [{"name": "unexpected", "path": "unexpected", "source": "unexpected@market"}],
+            },
+            "external plugin inventory",
+        ),
+    ],
+)
+def test_initialization_failure_identifies_safe_rejection_reason(
+    metadata: dict[str, object], reason: str
+) -> None:
+    """Identify the rejected contract without disclosing native payload values."""
+    from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
+    from src.bridges.claude.sdk.inventory import ClaudeToolInventory
+
+    with pytest.raises(ClaudeBridgeError, match=reason) as failure:
+        ClaudeToolInventory.validate_initialization(metadata=metadata, tools=())
+    assert failure.value.code == "stream_protocol_failed"
+    assert "unexpected" not in str(failure.value)

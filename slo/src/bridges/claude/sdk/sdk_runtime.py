@@ -381,7 +381,7 @@ class ClaudeSDKRuntime:
                     await asyncio.gather(next_message, return_exceptions=True)
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     if inventory_admitted:
-                        raise ClaudeToolInventory.initialization_error()
+                        raise ClaudeToolInventory.initialization_error(reason="duplicate initialization")
                     assert self._tool_bridge is not None
                     native_session_id = ClaudeToolInventory.validate_initialization(
                         metadata=message.data,

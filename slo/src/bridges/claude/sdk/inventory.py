@@ -21,6 +21,44 @@ class _InitializedMcpServerDAO(BaseModel):
     source: Literal["sdk"] = "sdk"
 
 
+InitializationRejection = Literal[
+    "missing initialization",
+    "duplicate initialization",
+    "invalid metadata",
+    "invalid session_id",
+    "invalid tools",
+    "invalid mcp_servers",
+    "invalid plugins",
+    "tool inventory mismatch",
+    "server inventory mismatch",
+    "external plugin inventory",
+]
+
+_INVALID_FIELD_REASONS: dict[str, InitializationRejection] = {
+    "session_id": "invalid session_id",
+    "tools": "invalid tools",
+    "mcp_servers": "invalid mcp_servers",
+    "plugins": "invalid plugins",
+}
+
+
+class _InitializedPluginDAO(BaseModel):
+    """Relevant pinned init plugin fields; names are never retained or reported."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", strict=True)
+    source: str
+    path: str
+
+    @property
+    def is_builtin(self) -> bool:
+        """Report whether the native CLI itself bundles this plugin.
+
+        Builtin means the native path marker plus a named `<name>@builtin` source.
+        """
+        name, separator, origin = self.source.rpartition("@")
+        return self.path == "builtin" and bool(name) and separator == "@" and origin == "builtin"
+
+
 class _InitializedInventoryDAO(BaseModel):
     """Validate relevant metadata only, not unrelated native capability fields."""
 
@@ -28,8 +66,10 @@ class _InitializedInventoryDAO(BaseModel):
     session_id: str = Field(min_length=1, max_length=256)
     tools: list[str]
     mcp_servers: list[_InitializedMcpServerDAO]
-    skills: list[str]
-    plugins: list[JsonValue]
+    # Skills are not validated: they cannot add executable capability because the
+    # exact tool inventory is enforced. Native versions may omit plugins; explicit
+    # malformed entries fail validation and external ones fail admission.
+    plugins: list[_InitializedPluginDAO] = Field(default_factory=list)
 
 
 class ClaudeToolInventory:
@@ -86,7 +126,10 @@ class ClaudeToolInventory:
 
         The pinned SDK's system/init parser retains but does not validate these
         fields. Optional server source may be absent; capabilities are an open
-        set and irrelevant here. A valid frame is not proof of source suppression.
+        set and irrelevant here. Bundled skills and builtin plugins are always
+        reported by the native CLI and are admitted; they cannot add executable
+        capability because the tool inventory is exact. External plugins are
+        rejected. A valid frame is not proof of source suppression.
 
         Returns:
             str: Native session association for the response scope validator.
@@ -96,26 +139,35 @@ class ClaudeToolInventory:
         """
         try:
             initialized = _InitializedInventoryDAO.model_validate(metadata)
-        except ValidationError:
-            raise cls.initialization_error() from None
+        except ValidationError as error:
+            location = error.errors(include_input=False, include_url=False)[0]["loc"]
+            reason = _INVALID_FIELD_REASONS.get(str(location[0]) if location else "", "invalid metadata")
+            raise cls.initialization_error(reason=reason) from None
         expected_tools = {f"mcp__slo__{tool.name}" for tool in tools}
         expected_servers = ["slo"] if tools else []
-        if (
-            len(initialized.tools) != len(expected_tools)
-            or set(initialized.tools) != expected_tools
-            or [server.name for server in initialized.mcp_servers] != expected_servers
-            or initialized.skills
-            or initialized.plugins
-        ):
-            raise cls.initialization_error()
+        if len(initialized.tools) != len(expected_tools) or set(initialized.tools) != expected_tools:
+            raise cls.initialization_error(reason="tool inventory mismatch")
+        if [server.name for server in initialized.mcp_servers] != expected_servers:
+            raise cls.initialization_error(reason="server inventory mismatch")
+        if not all(plugin.is_builtin for plugin in initialized.plugins):
+            raise cls.initialization_error(reason="external plugin inventory")
         return initialized.session_id
 
     @staticmethod
-    def initialization_error() -> ClaudeBridgeError:
-        """Build bounded diagnostics without raw native names or private paths."""
+    def initialization_error(
+        *, reason: InitializationRejection = "missing initialization"
+    ) -> ClaudeBridgeError:
+        """Build bounded diagnostics without raw native names or private paths.
+
+        Args:
+            reason: Fixed rejection category; never native payload text.
+
+        Returns:
+            ClaudeBridgeError: Protocol failure carrying only the fixed reason.
+        """
         return ClaudeBridgeError(
             code="stream_protocol_failed",
-            safe_message="Claude initialized inventory is missing or unexpected.",
+            safe_message=f"Claude initialization rejected: {reason}.",
         )
 
     @classmethod

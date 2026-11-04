@@ -80,7 +80,14 @@ async def test_cancel_joins_sdk_when_content_delivery_is_saturated(tmp_path: Pat
     await adapter.invoke_agent(invocation_options=ClaudeInvocationOptionsDAO(invocation_id="one", text="hi"))
 
     async def publish_fragments() -> None:
-        """Saturate delivery independently of the caller requesting closure."""
+        """Saturate with valid ordered text, not malformed orphan deltas."""
+        for event in (
+            {"type": "message_start", "message": {"id": "saturated"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        ):
+            await transport.messages.put(
+                {"type": "stream_event", "uuid": "start", "session_id": "native-test", "event": event}
+            )
         for index in range(300):
             await transport.messages.put(
                 {
@@ -99,7 +106,11 @@ async def test_cancel_joins_sdk_when_content_delivery_is_saturated(tmp_path: Pat
     try:
         async with asyncio.timeout(3):
             await transport.submitted.wait()
-            await asyncio.sleep(0.05)
+            runtime = adapter._runtime
+            await runtime._cleanup_finished.wait()
+            assert runtime._events.qsize() == 256
+            assert runtime._failure is not None
+            assert "queue exceeded" in str(runtime._failure)
             await adapter.close()
         assert transport.closed
         assert transport.prompts == ["hi"]

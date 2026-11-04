@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict
 
 from claude_agent_sdk import AssistantMessage, TextBlock, ThinkingBlock, ToolUseBlock
+
 # Native JSON payloads and SDK dataclass serialization are heterogeneous at this boundary.
 from typing import Any
 
@@ -245,9 +246,7 @@ class NativeResponseAssembly:
             ClaudeBridgeError: Unknown identity, conflicting replay or content.
         """
         self._admit(value=asdict(message))
-        self.validate_scope(
-            session_id=message.session_id, parent_tool_use_id=message.parent_tool_use_id
-        )
+        self.validate_scope(session_id=message.session_id, parent_tool_use_id=message.parent_tool_use_id)
         identity = message.message_id
         if identity is not None and not isinstance(identity, str):
             raise protocol_error()
@@ -264,8 +263,7 @@ class NativeResponseAssembly:
             self._fragment_ids[message.uuid] = (identity, fragment_key)
         if identity == self.response_id and self._open:
             if not any(
-                json_identity(value=[b.model_dump() for b in echo]) == fragment_key
-                for echo in self._echoes
+                json_identity(value=[b.model_dump() for b in echo]) == fragment_key for echo in self._echoes
             ):
                 self._echoes.append(fragment)
             return
@@ -276,7 +274,7 @@ class NativeResponseAssembly:
         """Normalize supported SDK blocks while preserving kind and tool identity."""
         kinds = {TextBlock: "text", ThinkingBlock: "thinking", ToolUseBlock: "tool_use"}
         kind = kinds.get(type(block))
-        if kind is None:
+        if kind is None or not isinstance(block, (TextBlock, ThinkingBlock, ToolUseBlock)):
             raise protocol_error()
         try:
             return NativeBlock.model_validate({"type": kind, **asdict(block)})
@@ -284,9 +282,7 @@ class NativeResponseAssembly:
             raise protocol_error() from None
 
     @staticmethod
-    def _validate_fragment(
-        *, fragment: tuple[NativeBlock, ...], snapshot: tuple[NativeBlock, ...]
-    ) -> None:
+    def _validate_fragment(*, fragment: tuple[NativeBlock, ...], snapshot: tuple[NativeBlock, ...]) -> None:
         """Require an ordered subset of complete blocks, not flattened response text.
 
         Echoes are corroboration only: repeated identical blocks never append
@@ -295,8 +291,7 @@ class NativeResponseAssembly:
         remaining = iter(snapshot)
         for echoed in fragment:
             if not any(
-                NativeResponseAssembly._same_block(echoed=echoed, streamed=block)
-                for block in remaining
+                NativeResponseAssembly._same_block(echoed=echoed, streamed=block) for block in remaining
             ):
                 raise protocol_error()
 

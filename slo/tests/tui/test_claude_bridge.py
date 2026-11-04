@@ -1,7 +1,10 @@
 """Actual Textual Enter journey over the real native bridge composition."""
 
 import asyncio
+import base64
+from collections import Counter
 import html
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -127,16 +130,24 @@ async def test_fresh_prompt_streams_and_persists_answer(
 
 
 @pytest.mark.parametrize("tree_history", [False, True])
+@pytest.mark.parametrize("read_image", [False, True])
 async def test_project_question_three_rounds_uses_real_tools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tree_history: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tree_history: bool, read_image: bool
 ) -> None:
-    """A1/A5: Pilot Enter crosses three rounds and reads correlated flat/tree history."""
+    """A1/A5/A9: live read bytes cross MCP; flat/tree history retains only image refs."""
     from tests.cli.test_claude_bridge import ToolRoundTransport
 
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     target = tmp_path / "model.txt"
     assert target.resolve().is_relative_to(tmp_path.resolve())
-    target.write_text("default-model = synthetic-model\n")
+    target.write_text(data="default-model = synthetic-model\n")
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1cAAAAASUVORK5CYII="
+    )
+    if read_image:
+        target = tmp_path / "model.png"
+        assert target.resolve().is_relative_to(tmp_path.resolve())
+        target.write_bytes(data=image_bytes)
     transport = ToolRoundTransport(path=target, multiple_rounds=True)
     store = (
         TreeBasedFilesystemSessionHistoryStore(root=tmp_path / "history")
@@ -181,3 +192,47 @@ async def test_project_question_three_rounds_uses_real_tools(
     assert transport.prompts == ["Locate and read default model"]
     assert transport.round == 3 and len(transport.tool_results) == 4
     assert transport.close_calls == 1
+    expected_ids = {"exact-native-id-1", "exact-native-id-2", "exact-native-id-3", "exact-read"}
+    assert Counter(c.tool_call_id for c in calls) == Counter({call_id: 1 for call_id in expected_ids})
+    assert Counter(r.tool_call_id for r in results) == Counter({call_id: 1 for call_id in expected_ids})
+    assert Counter(r["request_id"] for r in transport.tool_results) == Counter(
+        {"tool-rpc-1": 1, "tool-rpc-2": 1, "tool-rpc-3": 1, "tool-rpc-read": 1}
+    )
+    ordered_ids = ["exact-native-id-1", "exact-native-id-2", "exact-native-id-3", "exact-read"]
+    assert [c.tool_call_id for c in calls] == ordered_ids
+    assert [r.tool_call_id for r in results] == ordered_ids
+    assert [r["request_id"] for r in transport.tool_results] == [
+        "tool-rpc-1",
+        "tool-rpc-2",
+        "tool-rpc-3",
+        "tool-rpc-read",
+    ]
+    for result, receipt in zip(results[:3], transport.tool_results[:3], strict=True):
+        assert receipt["response"]["mcp_response"]["result"] == {
+            "content": [{"type": "text", "text": result.tool_output}],
+            "isError": False,
+        }
+    assert [c.content for c in calls] == [
+        "Inspect round 1.",
+        "Inspect round 2.",
+        "Inspect round 3.",
+        "Inspect round 3.",
+    ]
+    assert [e.payload.content for e in events if e.kind == "assistant_message"] == ["Hello bridge"]
+    assert [e.payload.content for e in events if e.kind == "run_completed"] == ["Hello bridge"]
+    read_receipt = transport.tool_results[-1]["response"]["mcp_response"]["result"]
+    assert read_receipt["isError"] is False
+    durable_read = next(r.tool_output for r in results if r.tool_call_id == "exact-read")
+    if not read_image:
+        assert read_receipt["content"] == [{"type": "text", "text": "default-model = synthetic-model\n"}]
+        assert durable_read == "default-model = synthetic-model\n"
+        return
+    assert read_receipt["content"] == [
+        {"type": "image", "mimeType": "image/png", "data": base64.b64encode(image_bytes).decode("ascii")}
+    ]
+    assert durable_read == f"[image attached: model.png, 1x1, ref {target.resolve()}]"
+    encoded_image = base64.b64encode(image_bytes).decode("ascii")
+    assert encoded_image not in json.dumps([event.model_dump(mode="json") for event in events])
+    for history_file in (tmp_path / "history").rglob("*"):
+        if history_file.is_file():
+            assert encoded_image.encode("ascii") not in history_file.read_bytes()

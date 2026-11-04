@@ -32,6 +32,7 @@ dependencies = [
     "claude-agent-sdk (==0.2.176)",
     "anyio (>=4.13.0,<5.0.0)",
     "mcp (>=1.30.0,<2.0.0)",
+    "jsonschema (==4.26.0)",
 
     # Pydantic / settings
     "pydantic (>=2.12.5,<3.0.0)",

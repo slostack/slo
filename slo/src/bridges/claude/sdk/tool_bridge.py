@@ -18,6 +18,8 @@ from .dao import (
     ClaudeTextDAO,
 )
 from .exceptions import ClaudeBridgeError
+from .inventory import ClaudeToolInventory
+from .response import json_identity
 
 
 class ClaudeToolBridge:
@@ -28,7 +30,7 @@ class ClaudeToolBridge:
     ) -> None:
         """Store fixed definitions inertly; capture the loop only when used."""
         self.binding = binding
-        self.tools = tools
+        self.tools = ClaudeToolInventory.freeze(tools=tools)
         self.pending_calls: dict[str, asyncio.Future[ClaudeToolResultDAO]] = {}
         self.pending_results: dict[str, ClaudeToolResultDAO] = {}
         self.expected_calls: dict[str, ClaudeToolCallDAO] = {}
@@ -73,7 +75,10 @@ class ClaudeToolBridge:
 
     async def _list_tools(self) -> list[Tool]:
         """Advertise only the fixed raw host inventory."""
-        return [Tool(name=t.name, description=t.description, inputSchema=t.input_schema) for t in self.tools]
+        return [
+            Tool(name=t.name, description=t.description, inputSchema=t.model_copy(deep=True).input_schema)
+            for t in self.tools
+        ]
 
     async def _handle_tool_call(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         """Read Claude metadata at the vendor boundary and park, never execute."""
@@ -106,13 +111,17 @@ class ClaudeToolBridge:
         if self._closed or name not in {t.name for t in self.tools} or tool_call_id in self._callback_calls:
             self._fail()
         try:
-            call = ClaudeToolCallDAO(tool_call_id=tool_call_id, name=name, arguments=arguments)
+            call = self._freeze_call(
+                call=ClaudeToolCallDAO(tool_call_id=tool_call_id, name=name, arguments=arguments)
+            )
         except ValidationError:
             self._fail()
         if len(json.dumps(arguments).encode()) > 1024 * 1024 or len(self._callback_calls) >= 10000:
             self._fail(code="buffer_limit_exceeded")
         expected = self.expected_calls.get(tool_call_id)
-        if expected is not None and expected != call:
+        if expected is not None and json_identity(value=expected.model_dump()) != json_identity(
+            value=call.model_dump()
+        ):
             self._fail()
         if len(set(self.expected_calls) | set(self._callback_calls) | {tool_call_id}) > 10000:
             self._fail(code="buffer_limit_exceeded")
@@ -132,6 +141,7 @@ class ClaudeToolBridge:
 
     def publish_tool_batch(self, *, response_id: str, tool_calls: tuple[ClaudeToolCallDAO, ...]) -> None:
         """Validate the whole stream batch before committing executable identities."""
+        tool_calls = tuple(self._freeze_call(call=call) for call in tool_calls)
         ids = tuple(c.tool_call_id for c in tool_calls)
         if self._closed or not 1 <= len(ids) <= 128 or len(set(ids)) != len(ids):
             self._fail()
@@ -152,10 +162,33 @@ class ClaudeToolBridge:
             if len(json.dumps(call.arguments).encode()) > 1024 * 1024:
                 self._fail(code="buffer_limit_exceeded")
             callback = self._callback_calls.get(call.tool_call_id)
-            if callback is not None and callback != call:
+            if callback is not None and json_identity(value=callback.model_dump()) != json_identity(
+                value=call.model_dump()
+            ):
                 self._fail()
         self._batches[response_id] = ids
         self.expected_calls.update({c.tool_call_id: c for c in tool_calls})
+
+    def _freeze_call(self, *, call: ClaudeToolCallDAO) -> ClaudeToolCallDAO:
+        """Validate finite JSON and detach correlation from borrowed nested arguments.
+
+        Both stream publication and callback admission use the parser's exact JSON
+        identity rule before retaining anything; invalid input seals this owner.
+
+        Args:
+            call: Candidate emitted or callback call, including nested JSON arguments.
+
+        Returns:
+            ClaudeToolCallDAO: Validated detached call for retained correlation.
+
+        Raises:
+            ClaudeBridgeError: Invalid call or nonfinite JSON corrupts correlation.
+        """
+        try:
+            encoded = json_identity(value=call.model_dump())
+            return ClaudeToolCallDAO.model_validate_json(encoded)
+        except (ValidationError, ClaudeBridgeError):
+            self._fail()
 
     async def submit_tool_results(
         self, *, invocation_id: str, tool_result_batch: ClaudeToolResultBatchDAO
@@ -167,9 +200,11 @@ class ClaudeToolBridge:
         results = {r.tool_call_id: r for r in tool_result_batch.results}
         if (
             expected is None
-            or set(expected) != set(results)
+            or not set(results).issubset(expected)
             or len(results) != len(tool_result_batch.results)
         ):
+            self._fail()
+        if set(expected) != set(results):
             raise ClaudeBridgeError(
                 code="tool_result_mismatch", safe_message="Expected the complete Claude tool result set."
             )

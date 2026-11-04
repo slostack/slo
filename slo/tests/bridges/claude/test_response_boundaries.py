@@ -30,7 +30,7 @@ class InvalidBoundaryTransport(ScriptedClaudeTransport):
             return
         self.prompts.append(message["message"]["content"])
         start = {"type": "message_start", "message": {"id": "response", "role": "assistant"}}
-        block = {
+        block: dict[str, Any] = {
             "type": "content_block_start",
             "index": 0,
             "content_block": {
@@ -43,32 +43,54 @@ class InvalidBoundaryTransport(ScriptedClaudeTransport):
         events: list[dict[str, Any]] = [start, block]
         if self.fault.startswith("nonfinite-"):
             number = self.fault.removeprefix("nonfinite-")
-            events.extend([
-                {"type": "content_block_delta", "index": 0,
-                 "delta": {"type": "input_json_delta",
-                           "partial_json": '{"path": "missing", "nested": [' + number + ']}'}},
-                {"type": "content_block_stop", "index": 0},
-                {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
-                {"type": "message_stop"},
-            ])
+            events.extend(
+                [
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": '{"path": "missing", "nested": [' + number + "]}",
+                        },
+                    },
+                    {"type": "content_block_stop", "index": 0},
+                    {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+                    {"type": "message_stop"},
+                ]
+            )
         elif self.fault == "retention-limit":
-            events.append({
-                "type": "content_block_stop", "index": 0,
-            })
-            events.append({
-                "type": "content_block_start", "index": 1,
-                "content_block": {"type": "thinking", "thinking": "", "signature": "x" * (8 * 1024 * 1024)},
-            })
+            events.append(
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                }
+            )
+            events.append(
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "thinking",
+                        "thinking": "",
+                        "signature": "x" * (8 * 1024 * 1024),
+                    },
+                }
+            )
         elif self.fault == "malformed-delta":
             events.append({"type": "content_block_delta", "index": 0, "delta": None})
         elif self.fault in {
-            "unknown-raw-block", "mixed-raw-block", "malformed-raw-content", "malformed-raw-block",
+            "unknown-raw-block",
+            "mixed-raw-block",
+            "malformed-raw-content",
+            "malformed-raw-block",
         }:
-            events.extend([
-                {"type": "content_block_stop", "index": 0},
-                {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
-                {"type": "message_stop"},
-            ])
+            events.extend(
+                [
+                    {"type": "content_block_stop", "index": 0},
+                    {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+                    {"type": "message_stop"},
+                ]
+            )
         elif self.fault == "overlap":
             events.append(start)
         elif self.fault == "duplicate-index":
@@ -126,51 +148,84 @@ class InvalidBoundaryTransport(ScriptedClaudeTransport):
         elif self.fault == "unfinished-block":
             events.append({"type": "message_stop"})
         elif self.fault in {
-            "identity-false", "identity-zero", "identity-list", "identity-dict",
-            "boolean-true", "boolean-false", "wire-stopped", "wire-partial",
-            "stream-session", "stream-parent", "echo-session", "echo-parent",
+            "identity-false",
+            "identity-zero",
+            "identity-list",
+            "identity-dict",
+            "boolean-true",
+            "boolean-false",
+            "wire-stopped",
+            "wire-partial",
+            "stream-session",
+            "stream-parent",
+            "echo-session",
+            "echo-parent",
         }:
             if self.fault.startswith("wire-"):
                 field = "stopped" if self.fault == "wire-stopped" else "partial_json"
                 block["content_block"][field] = True if self.fault == "wire-stopped" else "{}"
             if self.fault.startswith("boolean-"):
                 block["content_block"]["input"] = {"nested": [self.fault == "boolean-true"]}
-            events.extend([
-                {"type": "content_block_stop", "index": 0},
-                {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
-                {"type": "message_stop"},
-            ])
+            events.extend(
+                [
+                    {"type": "content_block_stop", "index": 0},
+                    {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+                    {"type": "message_stop"},
+                ]
+            )
         elif self.fault != "terminal-before-stop":
             raise AssertionError(self.fault)
         for event in events:
             envelope = {
-                "type": "stream_event", "uuid": "synthetic", "session_id": "native-test", "event": event,
+                "type": "stream_event",
+                "uuid": "synthetic",
+                "session_id": "native-test",
+                "event": event,
             }
             if event["type"] == "message_stop":
                 if self.fault in {
-                    "unknown-raw-block", "mixed-raw-block", "malformed-raw-content", "malformed-raw-block",
+                    "unknown-raw-block",
+                    "mixed-raw-block",
+                    "malformed-raw-content",
+                    "malformed-raw-block",
                 }:
-                    content = [{"type": "future_block", "payload": "not corroborated"}]
+                    content: list[dict[str, Any] | None] | None = [
+                        {"type": "future_block", "payload": "not corroborated"}
+                    ]
                     if self.fault == "mixed-raw-block":
-                        content.insert(0, block["content_block"])
+                        content = [
+                            block["content_block"],
+                            {"type": "future_block", "payload": "not corroborated"},
+                        ]
                     if self.fault == "malformed-raw-content":
                         content = None
                     if self.fault == "malformed-raw-block":
                         content = [None]
-                    await self.messages.put({
-                        "type": "assistant", "uuid": "raw-echo",
-                        "message": {"id": "response", "model": "claude", "content": content},
-                    })
+                    await self.messages.put(
+                        {
+                            "type": "assistant",
+                            "uuid": "raw-echo",
+                            "message": {"id": "response", "model": "claude", "content": content},
+                        }
+                    )
                 if self.fault.startswith("identity-"):
                     identities: dict[str, Any] = {
-                        "identity-false": False, "identity-zero": 0,
-                        "identity-list": [], "identity-dict": {},
+                        "identity-false": False,
+                        "identity-zero": 0,
+                        "identity-list": [],
+                        "identity-dict": {},
                     }
-                    await self.messages.put({
-                        "type": "assistant", "uuid": "invalid-identity",
-                        "message": {"id": identities[self.fault], "model": "claude",
-                                    "content": [block["content_block"]]},
-                    })
+                    await self.messages.put(
+                        {
+                            "type": "assistant",
+                            "uuid": "invalid-identity",
+                            "message": {
+                                "id": identities[self.fault],
+                                "model": "claude",
+                                "content": [block["content_block"]],
+                            },
+                        }
+                    )
                 if self.fault == "stream-session":
                     envelope["session_id"] = "wrong-native"
                 if self.fault == "stream-parent":
@@ -179,12 +234,15 @@ class InvalidBoundaryTransport(ScriptedClaudeTransport):
                     echoed = dict(block["content_block"])
                     if self.fault.startswith("boolean-"):
                         echoed["input"] = {"nested": [1 if self.fault == "boolean-true" else 0]}
-                    await self.messages.put({
-                        "type": "assistant", "uuid": "echo",
-                        "session_id": "wrong-native" if self.fault == "echo-session" else "native-test",
-                        "parent_tool_use_id": "child" if self.fault == "echo-parent" else None,
-                        "message": {"id": "response", "model": "claude", "content": [echoed]},
-                    })
+                    await self.messages.put(
+                        {
+                            "type": "assistant",
+                            "uuid": "echo",
+                            "session_id": "wrong-native" if self.fault == "echo-session" else "native-test",
+                            "parent_tool_use_id": "child" if self.fault == "echo-parent" else None,
+                            "message": {"id": "response", "model": "claude", "content": [echoed]},
+                        }
+                    )
             await self.messages.put(envelope)
         await self.messages.put(
             {
@@ -203,13 +261,29 @@ class InvalidBoundaryTransport(ScriptedClaudeTransport):
 @pytest.mark.parametrize(
     "fault",
     [
-        "identity-false", "identity-zero", "identity-list", "identity-dict",
-        "nonfinite-NaN", "nonfinite-Infinity", "nonfinite--Infinity",
-        "nonfinite-1e400", "nonfinite--1e400",
-        "retention-limit", "malformed-delta", "unknown-raw-block", "mixed-raw-block",
-        "malformed-raw-content", "malformed-raw-block",
-        "boolean-true", "boolean-false", "wire-stopped", "wire-partial",
-        "stream-session", "stream-parent", "echo-session", "echo-parent",
+        "identity-false",
+        "identity-zero",
+        "identity-list",
+        "identity-dict",
+        "nonfinite-NaN",
+        "nonfinite-Infinity",
+        "nonfinite--Infinity",
+        "nonfinite-1e400",
+        "nonfinite--1e400",
+        "retention-limit",
+        "malformed-delta",
+        "unknown-raw-block",
+        "mixed-raw-block",
+        "malformed-raw-content",
+        "malformed-raw-block",
+        "boolean-true",
+        "boolean-false",
+        "wire-stopped",
+        "wire-partial",
+        "stream-session",
+        "stream-parent",
+        "echo-session",
+        "echo-parent",
         "overlap",
         "duplicate-index",
         "delta-after-stop",
@@ -253,11 +327,13 @@ async def test_incomplete_tool_response_never_executes_or_completes(
     assert not any(e["kind"] in {"tool_call", "tool_result", "run_completed"} for e in output), output
     if fault.startswith(("identity-", "nonfinite-")):
         failure = next(e.payload.error_message for e in events if e.kind == "run_failed")
+        assert failure is not None
         assert "Malformed or unfinished Claude response." in failure
         assert len(failure) < 256
     assert code != 0
     assert sum(e.kind == "run_failed" for e in events) == 1
     if fault == "retention-limit":
-        assert "reconciliation limit" in next(e.payload.error_message for e in events if e.kind == "run_failed")
+        failure = next(e.payload.error_message for e in events if e.kind == "run_failed")
+        assert failure is not None and "reconciliation limit" in failure
     assert transport.prompts == ["Read project"]
     assert transport.close_calls == 1

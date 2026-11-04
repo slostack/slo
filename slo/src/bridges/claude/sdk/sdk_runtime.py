@@ -13,9 +13,10 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ResultMessage,
     StreamEvent,
+    SystemMessage,
 )
 from claude_agent_sdk._internal.transport import Transport
-from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from .native_transport import ClaudeNativeTransport
 
 from .authentication import ClaudeNativeAuthentication
 from .dao import (
@@ -26,9 +27,10 @@ from .dao import (
     ClaudeToolResultBatchDAO,
 )
 from .tool_bridge import ClaudeToolBridge
+from .inventory import ClaudeToolInventory
 from .response import NativeResponseAssembly
 from .transport import ValidatedClaudeTransport
-from .events import ClaudeBridgeEvent, ClaudeResponseCompletedDAO, ClaudeTextEventDAO
+from .events import ClaudeBridgeEvent, ClaudeResponseEventDAO, ClaudeResponseCompletedDAO, ClaudeTextEventDAO
 from .exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
 
 
@@ -41,11 +43,17 @@ class ClaudeSDKRuntime:
         transport: Optional[Transport] = None,
         configuration: Optional[ClaudeBridgeConfigurationDAO] = None,
         resume_session_id: Optional[str] = None,
+        cleanup_grace_seconds: float = 5,
+        cleanup_force_seconds: float = 5,
     ) -> None:
         """Store an optional SDK transport without opening it or capturing a loop."""
         self._transport = transport
+        self._cleanup_grace_seconds = cleanup_grace_seconds
+        self._cleanup_force_seconds = cleanup_force_seconds
         self._resume_session_id = resume_session_id
         self._native_session_id: Optional[str] = None
+        if not 0 < cleanup_grace_seconds <= 5 or not 0 < cleanup_force_seconds <= 5:
+            raise ValueError("Claude cleanup deadlines must be positive and at most five seconds.")
         self._configuration = configuration or ClaudeBridgeConfigurationDAO()
         self._connected = False
         self._query_attempted = False
@@ -54,6 +62,7 @@ class ClaudeSDKRuntime:
         self._cancel_requested = asyncio.Event()
         self._terminal = False
         self._cleanup_error: Optional[ClaudeBridgeError] = None
+        self._cleanup_deadline: Optional[float] = None
         self._cleanup_finished = asyncio.Event()
         self._retry_cleanup = asyncio.Event()
         self._delivery_finished = asyncio.Event()
@@ -126,6 +135,7 @@ class ClaudeSDKRuntime:
 
     async def cancel(self) -> None:
         """Wake the control path independently of the response queue and join closure."""
+        self._begin_cleanup_deadline()
         self._cancel_requested.set()
         await self.close()
 
@@ -135,6 +145,7 @@ class ClaudeSDKRuntime:
             return
         if self._cleanup_error is not None:
             self._cleanup_finished.clear()
+            self._cleanup_deadline = None
             self._retry_cleanup.set()
         cancelled = False
         waiter = asyncio.create_task(coro=self._cleanup_finished.wait())
@@ -176,13 +187,15 @@ class ClaudeSDKRuntime:
             )
             # Retain partial startup ownership even before SDK query construction.
             if self._transport is None:
-                self._transport = SubprocessCLITransport(prompt="", options=options)
-            client = ClaudeSDKClient(
-                options=options,
-                transport=ValidatedClaudeTransport(transport=self._transport),
-            )
+                self._transport = ClaudeNativeTransport(
+                    options=options,
+                    grace_seconds=self._cleanup_grace_seconds,
+                    force_seconds=self._cleanup_force_seconds,
+                )
+            validated_transport = ValidatedClaudeTransport(transport=self._transport)
+            client = ClaudeSDKClient(options=options, transport=validated_transport)
             await self._connect_and_query(client=client, text=invocation_options.text)
-            completion = await self._read_native_response(client=client)
+            completion = await self._read_native_response(client=client, transport=validated_transport)
         except asyncio.CancelledError:
             failure = ClaudeBridgeError(code="cancelled", safe_message="Claude bridge invocation cancelled.")
         except ClaudeBridgeError as error:
@@ -200,8 +213,10 @@ class ClaudeSDKRuntime:
 
     async def _connect_and_query(self, *, client: ClaudeSDKClient, text: str) -> None:
         """Cancel blocked SDK startup in its owning anyio context, without another send."""
+        owner = asyncio.current_task()
+        assert owner is not None
         with anyio.CancelScope() as startup_scope:
-            monitor = asyncio.create_task(coro=self._cancel_startup(scope=startup_scope))
+            monitor = asyncio.create_task(coro=self._cancel_startup(scope=startup_scope, owner=owner))
             try:
                 await client.connect()
                 self._connected = True
@@ -214,13 +229,32 @@ class ClaudeSDKRuntime:
                 await asyncio.gather(monitor, return_exceptions=True)
         if self._cancel_requested.is_set():
             if self._connected:
-                await client.interrupt()
+                await self._interrupt_bounded(client=client)
             raise asyncio.CancelledError
 
-    async def _cancel_startup(self, *, scope: anyio.CancelScope) -> None:
-        """Wake startup cancellation without moving SDK connect to another task."""
+    def _begin_cleanup_deadline(self) -> float:
+        """Share one grace ceiling across interrupt, startup rollback and disconnect."""
+        if self._cleanup_deadline is None:
+            self._cleanup_deadline = asyncio.get_running_loop().time() + self._cleanup_grace_seconds
+        return self._cleanup_deadline
+
+    async def _interrupt_bounded(self, *, client: ClaudeSDKClient) -> None:
+        """Treat missing control acknowledgement as a reason to disconnect, never to wait forever."""
+        try:
+            async with asyncio.timeout_at(self._begin_cleanup_deadline()):
+                await client.interrupt()
+        except TimeoutError:
+            return
+
+    async def _cancel_startup(self, *, scope: anyio.CancelScope, owner: asyncio.Task[None]) -> None:
+        """Cancel startup in its owner, bounding the SDK's shielded partial-connect rollback."""
         await self._cancel_requested.wait()
         scope.cancel()
+        await asyncio.sleep(self._cleanup_grace_seconds)
+        # SDK connect catches cancellation and calls shielded disconnect itself.
+        # Raw asyncio cancellation interrupts that shield in the SAME owner task;
+        # the runtime's retained finally then owns bounded cleanup/retry.
+        owner.cancel()
 
     async def _disconnect_until_settled(
         self,
@@ -232,10 +266,7 @@ class ClaudeSDKRuntime:
         """Retain the SDK context after raised cleanup; only explicit close retries it."""
         while True:
             try:
-                if client is not None:
-                    await client.disconnect()
-                if not self._connected and self._transport is not None:
-                    await self._transport.close()
+                await self._disconnect_bounded(client=client)
             except Exception:
                 self._cleanup_error = ClaudeBridgeError(
                     code="cleanup_failed",
@@ -264,6 +295,28 @@ class ClaudeSDKRuntime:
             self._cleanup_finished.set()
             return
 
+    async def _disconnect_bounded(self, *, client: Optional[ClaudeSDKClient]) -> None:
+        """Bound shielded SDK cleanup in its owner task, then force the owned transport.
+
+        An inner asyncio deadline can interrupt the SDK's anyio shield without
+        moving its task-affine context to another task. Unknown custom transports
+        have no force contract: timeout retains failed ownership for explicit retry.
+        """
+        try:
+            async with asyncio.timeout_at(self._begin_cleanup_deadline()):
+                if client is not None:
+                    await client.disconnect()
+                if not self._connected and self._transport is not None:
+                    await self._transport.close()
+            return
+        except TimeoutError:
+            if not isinstance(self._transport, ClaudeNativeTransport):
+                raise
+        async with asyncio.timeout(self._cleanup_force_seconds):
+            await self._transport.force_close()
+            if client is not None:
+                await client.disconnect()
+
     @staticmethod
     def _build_options(*, session_options: ClaudeSessionOptionsDAO) -> ClaudeAgentOptions:
         """Use only pinned supported controls; preserve native account state without copying secrets."""
@@ -286,11 +339,14 @@ class ClaudeSDKRuntime:
             stderr=lambda _: None,
         )
 
-    async def _read_native_response(self, *, client: ClaudeSDKClient) -> ClaudeResponseCompletedDAO:
+    async def _read_native_response(
+        self, *, client: ClaudeSDKClient, transport: ValidatedClaudeTransport
+    ) -> ClaudeResponseCompletedDAO:
         """Race response waiting with cancellation; owner sends interrupt, not the reader task."""
         stream = client.receive_response()
         cancelled: asyncio.Task[object] = asyncio.create_task(coro=self._cancel_requested.wait())
         assembly = NativeResponseAssembly()
+        inventory_admitted = False
         assembly.validate_scope(session_id=self._resume_session_id, parent_tool_use_id=None)
         try:
             while True:
@@ -301,14 +357,17 @@ class ClaudeSDKRuntime:
                     pending_reads: set[asyncio.Future[object] | asyncio.Future[ClaudeBridgeError]] = {
                         next_message,
                         cancelled,
+                        transport.failure,
                     }
                     if self._tool_bridge is not None:
                         pending_reads.add(self._tool_bridge.failure)
                     done, _ = await asyncio.wait(pending_reads, return_when=asyncio.FIRST_COMPLETED)
+                    if transport.failure in done:
+                        raise transport.failure.result()
                     if self._tool_bridge is not None and self._tool_bridge.failure in done:
                         raise self._tool_bridge.failure.result()
                     if next_message not in done:
-                        await client.interrupt()
+                        await self._interrupt_bounded(client=client)
                         raise asyncio.CancelledError
                     message = next_message.result()
                 except StopAsyncIteration:
@@ -320,6 +379,21 @@ class ClaudeSDKRuntime:
                     if not next_message.done():
                         next_message.cancel()
                     await asyncio.gather(next_message, return_exceptions=True)
+                if isinstance(message, SystemMessage) and message.subtype == "init":
+                    if inventory_admitted:
+                        raise ClaudeToolInventory.initialization_error()
+                    assert self._tool_bridge is not None
+                    native_session_id = ClaudeToolInventory.validate_initialization(
+                        metadata=message.data,
+                        tools=self._tool_bridge.tools,
+                    )
+                    assembly.validate_scope(session_id=native_session_id, parent_tool_use_id=None)
+                    inventory_admitted = True
+                    continue
+                if not inventory_admitted and isinstance(
+                    message, (ResultMessage, StreamEvent, AssistantMessage)
+                ):
+                    raise ClaudeToolInventory.initialization_error()
                 if isinstance(message, ResultMessage):
                     assembly.validate_scope(session_id=message.session_id, parent_tool_use_id=None)
                     assembly.validate_terminal()
@@ -337,7 +411,8 @@ class ClaudeSDKRuntime:
                     if fragment:
                         self._queue_event(
                             event=ClaudeTextEventDAO(
-                                text=fragment, **self._event_binding(response_id=assembly.response_id)
+                                text=fragment,
+                                **self._event_binding(response_id=assembly.response_id).model_dump(),
                             )
                         )
                     if boundary and assembly.calls:
@@ -348,7 +423,7 @@ class ClaudeSDKRuntime:
                         self._queue_event(
                             event=ClaudeResponseCompletedDAO(
                                 stop_reason="tool_calls",
-                                **self._event_binding(response_id=assembly.response_id),
+                                **self._event_binding(response_id=assembly.response_id).model_dump(),
                                 tool_calls=assembly.calls,
                             )
                         )
@@ -394,16 +469,16 @@ class ClaudeSDKRuntime:
         if isinstance(event, (ClaudeTextEventDAO, ClaudeResponseCompletedDAO)):
             self._queued_bytes -= len(event.model_dump_json().encode())
 
-    def _event_binding(self, *, response_id: str) -> dict:
+    def _event_binding(self, *, response_id: str) -> ClaudeResponseEventDAO:
         """Allocate monotonically ordered correlation from the retained owner."""
         assert self._binding is not None
         self._sequence += 1
-        return {
-            "session_id": self._binding.session_id,
-            "invocation_id": self._binding.invocation_id,
-            "response_id": response_id,
-            "sequence": self._sequence,
-        }
+        return ClaudeResponseEventDAO(
+            session_id=self._binding.session_id,
+            invocation_id=self._binding.invocation_id,
+            response_id=response_id,
+            sequence=self._sequence,
+        )
 
     def _validate_result(
         self, *, message: ResultMessage, text: str, response_id: str
@@ -437,5 +512,5 @@ class ClaudeSDKRuntime:
             )
         return ClaudeResponseCompletedDAO(
             stop_reason="length" if message.stop_reason == "max_tokens" else "stop",
-            **self._event_binding(response_id=response_id),
+            **self._event_binding(response_id=response_id).model_dump(),
         )

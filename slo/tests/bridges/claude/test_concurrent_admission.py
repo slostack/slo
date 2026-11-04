@@ -17,7 +17,8 @@ from tests.cli.test_claude_bridge import ScriptedClaudeTransport
 
 @pytest.mark.parametrize("close_session", [False, True])
 async def test_close_during_session_auth_prevents_late_configuration(
-    tmp_path: Path, close_session: bool,
+    tmp_path: Path,
+    close_session: bool,
 ) -> None:
     """Closing either lifetime while authentication waits forbids later native start."""
     entered = asyncio.Event()
@@ -31,12 +32,20 @@ async def test_close_during_session_auth_prevents_late_configuration(
 
     transport = ScriptedClaudeTransport()
     adapter = SloClaudeBridgeAdapter(
-        configuration=ClaudeBridgeConfigurationDAO(), transport=transport, authentication_check=status,
+        configuration=ClaudeBridgeConfigurationDAO(),
+        transport=transport,
+        authentication_check=status,
     )
-    task = asyncio.create_task(coro=adapter.start_session(session_options=ClaudeSessionOptionsDAO(
-        session_id="host", model_id="claude-bridge:claude-haiku-5-5",
-        working_directory=tmp_path, instructions="host",
-    )))
+    task = asyncio.create_task(
+        coro=adapter.start_session(
+            session_options=ClaudeSessionOptionsDAO(
+                session_id="host",
+                model_id="claude-bridge:claude-haiku-5-5",
+                working_directory=tmp_path,
+                instructions="host",
+            )
+        )
+    )
     try:
         async with asyncio.timeout(3):
             await entered.wait()
@@ -57,7 +66,8 @@ async def test_close_during_session_auth_prevents_late_configuration(
 
 @pytest.mark.parametrize("closure", ["none", "session", "adapter"])
 async def test_invocation_reserves_admission_across_authentication(
-    tmp_path: Path, closure: str,
+    tmp_path: Path,
+    closure: str,
 ) -> None:
     """A competing invoke fails immediately; session close prevents the reserved start."""
     entered = asyncio.Event()
@@ -75,26 +85,41 @@ async def test_invocation_reserves_admission_across_authentication(
 
     transport = ScriptedClaudeTransport()
     adapter = SloClaudeBridgeAdapter(
-        configuration=ClaudeBridgeConfigurationDAO(), transport=transport, authentication_check=status,
+        configuration=ClaudeBridgeConfigurationDAO(),
+        transport=transport,
+        authentication_check=status,
     )
-    await adapter.start_session(session_options=ClaudeSessionOptionsDAO(
-        session_id="host", model_id="claude-bridge:claude-haiku-5-5",
-        working_directory=tmp_path, instructions="host",
-    ))
-    task = asyncio.create_task(coro=adapter.invoke_agent(invocation_options=ClaudeInvocationOptionsDAO(
-        invocation_id="one", text="first",
-    )))
+    await adapter.start_session(
+        session_options=ClaudeSessionOptionsDAO(
+            session_id="host",
+            model_id="claude-bridge:claude-haiku-5-5",
+            working_directory=tmp_path,
+            instructions="host",
+        )
+    )
+    task = asyncio.create_task(
+        coro=adapter.invoke_agent(
+            invocation_options=ClaudeInvocationOptionsDAO(
+                invocation_id="one",
+                text="first",
+            )
+        )
+    )
     try:
         async with asyncio.timeout(3):
             await entered.wait()
             with pytest.raises(RuntimeError, match="admission|progress|conflict"):
-                await adapter.invoke_agent(invocation_options=ClaudeInvocationOptionsDAO(
-                    invocation_id="two", text="must not send",
-                ))
+                await adapter.invoke_agent(
+                    invocation_options=ClaudeInvocationOptionsDAO(
+                        invocation_id="two",
+                        text="must not send",
+                    )
+                )
             if closure == "session":
                 await adapter.close_session()
             if closure == "adapter":
                 await adapter.close()
+                assert adapter._authentication_task is not None
                 assert adapter._authentication_task.done()
             release.set()
             if closure != "none":

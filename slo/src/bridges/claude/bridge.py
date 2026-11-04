@@ -3,7 +3,7 @@
 import asyncio
 import json
 from copy import deepcopy
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
@@ -26,15 +26,22 @@ from pydantic import ConfigDict, PrivateAttr
 from src.bridges.dao import SloBridgeCancellationReason, SloBridgeSessionOptionsDAO
 from .sdk.dao import (
     ClaudeInvocationOptionsDAO,
+    ClaudeInteractionBindingDAO,
+    ClaudeImageDAO,
     ClaudeSessionOptionsDAO,
     ClaudeToolDefinitionDAO,
     ClaudeToolResultBatchDAO,
     ClaudeToolResultDAO,
+    ClaudeToolResultSubmissionDAO,
     ClaudeTextDAO,
 )
 from .sdk.events import ClaudeResponseCompletedDAO, ClaudeTextEventDAO
 from .sdk.protocol import SloBridgeAdapterProtocol
-from .sdk.exceptions import ClaudeSubmissionNotStartedError
+from .sdk.exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
+from .sdk.inventory import ClaudeToolInventory
+from .tool_result import ToolCallResponseAdapter
+from .response import AIAgentResponseAdapter, ClaudeResponseTranslationDAO
+from .tool_call import ToolCallAdapter, ClaudeCompletedCallBatchDAO
 
 
 class SloClaudeBridge(BaseChatModel):
@@ -53,6 +60,11 @@ class SloClaudeBridge(BaseChatModel):
     _pending: Optional[ClaudeResponseCompletedDAO] = PrivateAttr(default=None)
     _consumed: list[dict[str, object]] = PrivateAttr(default_factory=list)
     _completed_history: list[BaseMessage] = PrivateAttr(default_factory=list)
+    _tool_result_adapter: Optional[ToolCallResponseAdapter] = PrivateAttr(default=None)
+    _response_adapter: Optional[AIAgentResponseAdapter] = PrivateAttr(default=None)
+    _call_adapter: Optional[ToolCallAdapter] = PrivateAttr(default=None)
+    _response_messages: list[BaseMessage] = PrivateAttr(default_factory=list)
+    _translated_chunks: list[ChatGenerationChunk] = PrivateAttr(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -72,8 +84,12 @@ class SloClaudeBridge(BaseChatModel):
         canonical = {t.name: t for t in create_read_only_tools()}
         if kwargs or len({getattr(t, "name", None) for t in tools}) != len(tools):
             raise ValueError("Unsupported Claude tool binding.")
-        definitions = []
-        for tool in tools:
+        if tools and {getattr(tool, "name", None) for tool in tools} != set(canonical):
+            raise ValueError(
+                "Claude bridge requires the full canonical tool bundle or explicit empty inventory."
+            )
+        definitions: list[ClaudeToolDefinitionDAO] = []
+        for tool in sorted(tools, key=lambda tool: getattr(tool, "name", "")):
             if not isinstance(tool, BaseTool) or not any(
                 tool is candidate for candidate in canonical.values()
             ):
@@ -86,7 +102,7 @@ class SloClaudeBridge(BaseChatModel):
                     name=tool.name, description=tool.description, input_schema=schema.model_json_schema()
                 )
             )
-        frozen = tuple(definitions)
+        frozen = ClaudeToolInventory.freeze(tools=tuple(definitions))
         if self._session_options is not None and self._tools != frozen:
             raise ValueError("Claude bridge tool binding cannot change.")
         self._tools = frozen
@@ -98,12 +114,18 @@ class SloClaudeBridge(BaseChatModel):
         stop: Optional[list[str]] = None,
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[ChatGenerationChunk]:
+    ) -> AsyncGenerator[ChatGenerationChunk, None]:
         """Stream one new text answer; the final chunk follows SDK closure."""
         if self._closed or self._session_options is None:
             raise RuntimeError("Claude bridge is closed or unconfigured; start a new session.")
-        text = "" if self._pending is not None else self._validate_messages(
-            messages=messages, stop=stop, kwargs=kwargs,
+        text = (
+            ""
+            if self._pending is not None
+            else self._validate_messages(
+                messages=messages,
+                stop=stop,
+                kwargs=kwargs,
+            )
         )
         boundary = False
         proven_unsent = False
@@ -112,27 +134,34 @@ class SloClaudeBridge(BaseChatModel):
             await self._admit_response(messages=messages, text=text, stop=stop, kwargs=kwargs)
             self._startup_active = False
             assert self._invocation_id is not None
-            response_text = ""
+            assert self._response_adapter is not None
+            self._response_messages = messages
             async for event in self.bridge_adapter.read_response(invocation_id=self._invocation_id):
-                if isinstance(event, ClaudeTextEventDAO):
-                    response_text += event.text
-                    yield ChatGenerationChunk(message=AIMessageChunk(content=event.text))
-                elif isinstance(event, ClaudeResponseCompletedDAO):
-                    self._record_response_boundary(
-                        messages=messages, response_text=response_text, event=event,
-                    )
-                    boundary = True
-                    yield self._build_boundary_chunk(event=event)
+                await self._response_adapter.handle(event=event)
+                boundary = isinstance(event, ClaudeResponseCompletedDAO)
+                chunks, self._translated_chunks = self._translated_chunks, []
+                for chunk in chunks:
+                    yield chunk
         except ClaudeSubmissionNotStartedError:
             proven_unsent = True
             self._retain_unsent_audit_prefix(messages=messages)
+            raise
+        except ClaudeBridgeError as error:
+            # Only a validated missing subset is correctable. No result has been
+            # reserved or sent, so leave this response's waiters parked for its caller.
+            if error.code == "tool_result_mismatch":
+                boundary = True
             raise
         finally:
             await self._finish_response_stream(boundary=boundary, proven_unsent=proven_unsent)
 
     async def _admit_response(
-        self, *, messages: list[BaseMessage], text: str,
-        stop: Optional[list[str]], kwargs: dict[str, Any],
+        self,
+        *,
+        messages: list[BaseMessage],
+        text: str,
+        stop: Optional[list[str]],
+        kwargs: dict[str, Any],
     ) -> None:
         """Submit a validated continuation or one new prompt, never replay history.
 
@@ -142,26 +171,22 @@ class SloClaudeBridge(BaseChatModel):
         if self._pending is not None:
             if stop or kwargs:
                 raise ValueError("Unsupported continuation options.")
-            assert self._invocation_id is not None
-            await self.bridge_adapter.submit_tool_results(
-                invocation_id=self._invocation_id,
-                tool_result_batch=self._build_tool_result_submission(messages=messages),
+            assert self._tool_result_adapter is not None
+            await self._tool_result_adapter.handle(
+                event=self._build_tool_result_submission(messages=messages),
             )
+            await self._tool_result_adapter.close()
+            self._tool_result_adapter = None
             return
         assert self._session_options is not None
         await self._start_invocation(text=text, options=self._session_options)
 
-    def _record_response_boundary(
-        self, *, messages: list[BaseMessage], response_text: str, event: ClaudeResponseCompletedDAO,
-    ) -> None:
-        """Select the history transition after a native response boundary is validated."""
-        if event.stop_reason == "tool_calls":
-            self._record_tool_boundary(messages=messages, response_text=response_text, event=event)
-            return
-        self._record_terminal_context(messages=messages, response_text=response_text)
-
     def _record_tool_boundary(
-        self, *, messages: list[BaseMessage], response_text: str, event: ClaudeResponseCompletedDAO,
+        self,
+        *,
+        messages: list[BaseMessage],
+        response_text: str,
+        event: ClaudeResponseCompletedDAO,
     ) -> None:
         """Retain exact assistant calls and semantic prefix for the next result batch.
 
@@ -177,6 +202,16 @@ class SloClaudeBridge(BaseChatModel):
         )
         self._pending = event
         self._consumed = self._semantic_messages(messages=[*messages, assistant])
+        assert self._session_options is not None and self._invocation_id is not None
+        self._tool_result_adapter = ToolCallResponseAdapter.register(
+            binding=ClaudeInteractionBindingDAO(
+                session_id=self._session_options.session_id,
+                invocation_id=self._invocation_id,
+                binding_version=0,
+            ),
+            expected=event,
+            receiver=self._submit_tool_results,
+        )
 
     def _record_terminal_context(self, *, messages: list[BaseMessage], response_text: str) -> None:
         """Save completed live context only after native terminal cleanup has settled."""
@@ -199,18 +234,61 @@ class SloClaudeBridge(BaseChatModel):
             [message for message in messages if not isinstance(message, SystemMessage)]
         )
 
-    @staticmethod
-    def _build_boundary_chunk(*, event: ClaudeResponseCompletedDAO) -> ChatGenerationChunk:
-        """Convert a native boundary to host calls without changing lifecycle state."""
-        return ChatGenerationChunk(
-            message=AIMessageChunk(
-                content="",
-                tool_call_chunks=[
-                    {"name": call.name, "args": json.dumps(call.arguments),
-                     "id": call.tool_call_id, "index": index}
-                    for index, call in enumerate(event.tool_calls)
-                ],
-                response_metadata={"stop_reason": event.stop_reason},
+    async def _accept_response(self, translation: ClaudeResponseTranslationDAO) -> None:
+        """Build host text/terminal chunks from the sole portable response assembly."""
+        event = translation.event
+        if isinstance(event, ClaudeTextEventDAO):
+            self._translated_chunks.append(ChatGenerationChunk(message=AIMessageChunk(content=event.text)))
+            return
+        self._record_terminal_context(messages=self._response_messages, response_text=translation.text)
+        self._translated_chunks.append(
+            ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    response_metadata={"stop_reason": event.stop_reason},
+                )
+            )
+        )
+
+    async def _accept_tool_response(self, translation: ClaudeResponseTranslationDAO) -> None:
+        """Register a response-scoped completed-call owner, never partial host calls."""
+        event = translation.event
+        assert isinstance(event, ClaudeResponseCompletedDAO)
+        assert self._session_options is not None and self._invocation_id is not None
+        if self._call_adapter is not None:
+            await self._call_adapter.close()
+        self._call_adapter = ToolCallAdapter.register(
+            binding=ClaudeInteractionBindingDAO(
+                session_id=self._session_options.session_id,
+                invocation_id=self._invocation_id,
+                binding_version=0,
+            ),
+            response_id=event.response_id,
+            tools=self._tools,
+            receiver=self._accept_call_batch,
+        )
+        await self._call_adapter.handle(event=event)
+        self._record_tool_boundary(
+            messages=self._response_messages, response_text=translation.text, event=event
+        )
+
+    async def _accept_call_batch(self, batch: ClaudeCompletedCallBatchDAO) -> None:
+        """Build the single LangChain call representation from detached ordered calls."""
+        self._translated_chunks.append(
+            ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": call.name,
+                            "args": call.arguments_json,
+                            "id": call.tool_call_id,
+                            "index": index,
+                        }
+                        for index, call in enumerate(batch.calls)
+                    ],
+                    response_metadata={"stop_reason": batch.completion.stop_reason},
+                )
             )
         )
 
@@ -223,8 +301,7 @@ class SloClaudeBridge(BaseChatModel):
         self._startup_active = False
         if boundary or proven_unsent:
             return
-        self._closed = True
-        await self.bridge_adapter.close()
+        await self.close()
 
     @staticmethod
     def _semantic_messages(*, messages: list[BaseMessage]) -> list[dict[str, object]]:
@@ -242,32 +319,91 @@ class SloClaudeBridge(BaseChatModel):
             ]
         )
 
-    def _build_tool_result_submission(self, *, messages: list[BaseMessage]) -> ClaudeToolResultBatchDAO:
-        """Validate consumed prefix and the complete exact-ID result suffix before send."""
-        assert self._pending is not None
+    def _build_tool_result_submission(self, *, messages: list[BaseMessage]) -> ClaudeToolResultSubmissionDAO:
+        """Translate the unchanged host prefix and all terminal blocks before delivery.
+
+        Args:
+            messages: Accumulated graph messages with the pending result suffix.
+
+        Returns:
+            ClaudeToolResultSubmissionDAO: Portable live content, never durable image refs.
+
+        Raises:
+            ValueError: Earlier content changed or the suffix contains unsupported content.
+        """
+        assert self._pending is not None and self._invocation_id is not None
         prefix = self._semantic_messages(messages=messages[: len(self._consumed)])
-        suffix = messages[len(self._consumed) :]
         if prefix != self._consumed:
             raise ValueError("Claude tool result prefix changed.")
-        expected = self._pending.tool_calls
-        results: list[ToolMessage] = []
-        for message in suffix:
-            if not isinstance(message, ToolMessage) or not isinstance(message.content, str):
-                raise ValueError("Unsupported Claude tool result continuation.")
-            results.append(message)
-        ids = [m.tool_call_id for m in results]
-        if len(ids) != len(set(ids)) or set(ids) != {c.tool_call_id for c in expected}:
-            raise ValueError("Claude requires the complete tool result set.")
-        return ClaudeToolResultBatchDAO(
-            response_id=self._pending.response_id,
-            results=tuple(
-                ClaudeToolResultDAO(
-                    tool_call_id=m.tool_call_id,
-                    content=(ClaudeTextDAO(text=str(m.content)),),
-                    is_error=m.status == "error",
-                )
-                for m in results
+        return ClaudeToolResultSubmissionDAO(
+            invocation_id=self._invocation_id,
+            tool_result_batch=ClaudeToolResultBatchDAO(
+                response_id=self._pending.response_id,
+                results=tuple(
+                    self._build_tool_result(message=message) for message in messages[len(self._consumed) :]
+                ),
             ),
+        )
+
+    @classmethod
+    def _build_tool_result(cls, *, message: BaseMessage) -> ClaudeToolResultDAO:
+        """Convert one terminal host message without guessing error status from text.
+
+        Args:
+            message: Exact executor output; strings and ordered text/image lists are supported.
+
+        Returns:
+            ClaudeToolResultDAO: Live blocks and the executor's semantic error status.
+
+        Raises:
+            ValueError: A non-tool message or unsupported block is present.
+        """
+        if not isinstance(message, ToolMessage):
+            raise ValueError("Unsupported Claude tool result continuation.")
+        blocks = [message.content] if isinstance(message.content, str) else message.content
+        return ClaudeToolResultDAO(
+            tool_call_id=message.tool_call_id,
+            content=tuple(cls._build_result_content(block=block) for block in blocks),
+            is_error=message.status == "error",
+        )
+
+    @staticmethod
+    def _build_result_content(*, block: str | dict[Any, Any]) -> ClaudeTextDAO | ClaudeImageDAO:
+        """Translate only lossless text/base64-image host blocks at the bridge entry.
+
+        Args:
+            block: One LangChain content block, including an empty string.
+
+        Returns:
+            ClaudeTextDAO | ClaudeImageDAO: Validated portable live content.
+
+        Raises:
+            ValueError: Unknown fields, content kinds or malformed image sources occur.
+        """
+        if isinstance(block, str):
+            return ClaudeTextDAO(text=block)
+        if block.get("type") == "text" and set(block) == {"type", "text"}:
+            return ClaudeTextDAO(text=block["text"])
+        if block.get("type") != "image" or set(block) != {"type", "source"}:
+            raise ValueError("Unsupported Claude tool result block.")
+        source = block["source"]
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"type", "media_type", "data"}
+            or source["type"] != "base64"
+        ):
+            raise ValueError("Unsupported Claude tool result image source.")
+        return ClaudeImageDAO(media_type=source["media_type"], data=source["data"])
+
+    async def _submit_tool_results(self, submission: ClaudeToolResultSubmissionDAO) -> None:
+        """Adapt the portable receiver to the existing SDK result operation, not a query.
+
+        Args:
+            submission: Complete response-bound results accepted by the result adapter.
+        """
+        await self.bridge_adapter.submit_tool_results(
+            invocation_id=submission.invocation_id,
+            tool_result_batch=submission.tool_result_batch,
         )
 
     async def _start_invocation(self, *, text: str, options: SloBridgeSessionOptionsDAO) -> None:
@@ -284,6 +420,15 @@ class SloClaudeBridge(BaseChatModel):
         )
         self._invocation_id = str(uuid4())
         invocation_id = self._invocation_id
+        if self._response_adapter is not None:
+            await self._response_adapter.close()
+        self._response_adapter = AIAgentResponseAdapter.register(
+            binding=ClaudeInteractionBindingDAO(
+                session_id=options.session_id, invocation_id=invocation_id, binding_version=0
+            ),
+            response_receiver=self._accept_response,
+            tool_call_receiver=self._accept_tool_response,
+        )
         await self.bridge_adapter.invoke_agent(
             invocation_options=ClaudeInvocationOptionsDAO(invocation_id=invocation_id, text=text)
         )
@@ -352,7 +497,11 @@ class SloClaudeBridge(BaseChatModel):
         The graph calls this before publishing its terminal event. Successful
         native completion keeps the conversation reusable; a pending tool boundary
         requires cancellation and permanent closure rather than implied success.
+        Already sealed work stays retained for explicit close; failure reporting
+        must not retry failed cleanup or mask the original admission refusal.
         """
+        if self._closed:
+            return
         if self._pending is not None:
             await self.close()
 
@@ -366,6 +515,14 @@ class SloClaudeBridge(BaseChatModel):
             except Exception as error:
                 cancellation_failure = error
         await self.bridge_adapter.close()
+        if self._response_adapter is not None:
+            await self._response_adapter.close()
+        if self._call_adapter is not None:
+            await self._call_adapter.close()
+        if self._tool_result_adapter is not None:
+            await self._tool_result_adapter.close()
+        self._translated_chunks.clear()
+        self._response_messages.clear()
         if cancellation_failure is not None:
             # Successful explicit adapter close settles a previously failed cancel.
             self._cancellation_task = None

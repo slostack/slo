@@ -204,7 +204,9 @@ async def test_native_startup_failure_does_not_consume_prompt_allowance(
 
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     checks: list[str] = []
-    transport = ScriptedClaudeTransport()
+    transport = ScriptedClaudeTransport(
+        initialized_tools=tuple(f"mcp__slo__{name}" for name in ("read", "grep", "find", "ls"))
+    )
 
     async def rejected_once() -> ClaudeAuthenticationStatusDAO:
         """Reject startup once, then admit the same configured session."""

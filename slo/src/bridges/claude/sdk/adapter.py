@@ -15,9 +15,10 @@ from .dao import (
     ClaudeToolResultBatchDAO,
     ClaudeToolResultSubmissionDAO,
 )
-from .events import ClaudeBridgeEvent
+from .events import ClaudeBridgeEvent, ClaudeResponseCompletedDAO
 from .exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
 from .sdk_runtime import ClaudeSDKRuntime
+from .inventory import ClaudeToolInventory
 
 
 class SloClaudeBridgeAdapter:
@@ -79,6 +80,12 @@ class SloClaudeBridgeAdapter:
     async def start_session(self, *, session_options: ClaudeSessionOptionsDAO) -> None:
         """Validate fixed options before any native submission; no prompt is sent."""
         self._ensure_adapter_open()
+        session_options = session_options.model_copy(
+            update={
+                "tools": ClaudeToolInventory.freeze(tools=session_options.tools),
+            },
+            deep=True,
+        )
         if self._session_closed:
             raise RuntimeError("Claude session is closed.")
         if self._session_options is not None and self._session_options != session_options:
@@ -90,7 +97,9 @@ class SloClaudeBridgeAdapter:
             raise ValueError("Claude working directory must exist and be absolute.")
         status = await self.check_authentication()
         if status.state != "ready":
-            raise ClaudeSubmissionNotStartedError(code="authentication_required", safe_message=status.safe_message)
+            raise ClaudeSubmissionNotStartedError(
+                code="authentication_required", safe_message=status.safe_message
+            )
         self._ensure_adapter_open()
         if self._session_closed:
             raise RuntimeError("Claude session is closed.")
@@ -135,7 +144,9 @@ class SloClaudeBridgeAdapter:
         if self._reader_active:
             raise RuntimeError("Claude response already has a reader.")
         if status.state != "ready":
-            raise ClaudeSubmissionNotStartedError(code="authentication_required", safe_message=status.safe_message)
+            raise ClaudeSubmissionNotStartedError(
+                code="authentication_required", safe_message=status.safe_message
+            )
         if self._invocation_options is not None:
             resume_session_id = self._runtime.completed_session_id()
             self._resume_session_id = resume_session_id
@@ -155,19 +166,24 @@ class SloClaudeBridgeAdapter:
                 code="invocation_conflict", safe_message="Claude response already has a reader."
             )
         self._reader_active = True
+        boundary = False
         try:
             async for event in self._runtime.read_response():
+                boundary = isinstance(event, ClaudeResponseCompletedDAO)
                 yield event
         except ClaudeSubmissionNotStartedError:
             await self._runtime.close()
             self._runtime = ClaudeSDKRuntime(
-                transport=self._transport, configuration=self._configuration,
+                transport=self._transport,
+                configuration=self._configuration,
                 resume_session_id=self._resume_session_id,
             )
             self._invocation_options = None
             raise
         finally:
             self._reader_active = False
+            if not boundary and self._invocation_options is not None:
+                await self._runtime.cancel()
 
     async def close_session(self) -> None:
         """Seal session admission before an invocation has been admitted.

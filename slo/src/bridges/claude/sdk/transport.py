@@ -1,12 +1,15 @@
 """Reject unsupported assistant blocks before the SDK can silently discard them."""
 
+import asyncio
 from collections.abc import AsyncIterator
+
 # Match the SDK Transport's heterogeneous raw JSON interface before typed parsing.
 from typing import Any
 
 from claude_agent_sdk._internal.transport import Transport
 
 from .response import protocol_error
+from .exceptions import ClaudeBridgeError
 
 
 class ValidatedClaudeTransport(Transport):
@@ -20,14 +23,37 @@ class ValidatedClaudeTransport(Transport):
     def __init__(self, *, transport: Transport) -> None:
         """Retain the runtime-owned transport without starting native I/O."""
         self._transport = transport
+        self._failure: asyncio.Future[ClaudeBridgeError] | None = None
+
+    @property
+    def failure(self) -> asyncio.Future[ClaudeBridgeError]:
+        """Wake the runtime when the SDK swallows a failed control-response write."""
+        if self._failure is None:
+            self._failure = asyncio.get_running_loop().create_future()
+        return self._failure
 
     async def connect(self) -> None:
         """Let the SDK open its underlying transport."""
         await self._transport.connect()
 
     async def write(self, data: str) -> None:
-        """Forward SDK control and query frames unchanged."""
-        await self._transport.write(data=data)
+        """Forward unchanged frames and signal uncertain writes without replay.
+
+        SDK MCP control handlers may catch write exceptions. The runtime also
+        observes this control future so such a failure cannot leave it parked.
+        """
+        if self.failure.done():
+            raise self.failure.result()
+        try:
+            await self._transport.write(data=data)
+        except Exception:
+            error = ClaudeBridgeError(
+                code="provider_unavailable",
+                safe_message="Claude native delivery failed; start a new session.",
+            )
+            if not self.failure.done():
+                self.failure.set_result(error)
+            raise error from None
 
     async def read_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Validate each raw assistant before SDK parsing, until SDK cancellation.

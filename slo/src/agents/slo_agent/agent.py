@@ -748,12 +748,14 @@ class SloAgent:
                     if self._bridge_owner is None or not self._abort_event.is_set():
                         raise
                     yield await self._prepare_aborted_terminal(
-                        runtime_handler=runtime_handler, iteration=iteration,
+                        runtime_handler=runtime_handler,
+                        iteration=iteration,
                     )
                     return
                 if self._abort_event.is_set():
                     yield await self._prepare_aborted_terminal(
-                        runtime_handler=runtime_handler, iteration=iteration,
+                        runtime_handler=runtime_handler,
+                        iteration=iteration,
                     )
                     return
                 if raw_item is None:
@@ -947,6 +949,11 @@ class SloAgent:
                 self._active_turn = turn
                 break
             except Exception as exc:
+                # Native bridge submission is already owned and may be uncertain.
+                # Provider-neutral reconnect/continuation must never replay it,
+                # including a watchdog expiry before this graph turn emits text.
+                if self._bridge_owner is not None:
+                    raise
                 # SDK role/usage chunks commit the gateway stream even when the
                 # transcript normalizer emits no visible event for them.
                 if isinstance(exc, OpenRouterAPIError) and exc.partial_output_committed:
@@ -1211,6 +1218,8 @@ class SloAgent:
             AgentStreamEventDAO: ``recovery_exhausted`` (conditional) then
                 ``run_failed``.
         """
+        if self._bridge_owner is not None:
+            await self._bridge_owner.finish_host_turn()
         if recoveries_attempted:
             yield AgentStreamEventDAO(
                 kind="recovery_exhausted",
@@ -1379,7 +1388,10 @@ class SloAgent:
         self._steering_queue.put_nowait(msg)
 
     async def _prepare_aborted_terminal(
-        self, *, runtime_handler: Optional[AgentRuntimeHandler], iteration: int,
+        self,
+        *,
+        runtime_handler: Optional[AgentRuntimeHandler],
+        iteration: int,
     ) -> AgentStreamEventDAO:
         """Join native work before recording or returning an aborted terminal.
 

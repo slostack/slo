@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from src.bridges.claude.bridge import SloClaudeBridge
+from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
 from claude_agent_sdk import ClaudeSDKClient
 from src.agents.hooks.hook import ShouldStopAfterTurnHookContextDAO
 from src.bridges.claude.sdk import sdk_runtime
@@ -22,8 +25,11 @@ from src.bridges.claude.sdk.dao import ClaudeAuthenticationStatusDAO, ClaudeBrid
 @pytest.mark.parametrize("later,enable_history", [(False, True), (True, True), (True, False)])
 @pytest.mark.parametrize("failure", ["session_auth", "invoke_auth", "connect"])
 async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
-    later: bool, enable_history: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    later: bool,
+    enable_history: bool,
 ) -> None:
     """E1: failed host history stays auditable but only the explicit retry reaches native."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -47,7 +53,8 @@ async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
         checks += int(failure_enabled)
         reject = checks == {"session_auth": 2, "invoke_auth": 3, "connect": -1}[failure]
         return ClaudeAuthenticationStatusDAO(
-            state="login_required" if reject else "ready", safe_message="Fix native login and retry.",
+            state="login_required" if reject else "ready",
+            safe_message="Fix native login and retry.",
         )
 
     class FailOnceTransport(ScriptedClaudeTransport):
@@ -55,7 +62,9 @@ async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
 
         def __init__(self) -> None:
             """Track failure independently of completed connection closure."""
-            super().__init__()
+            super().__init__(
+                initialized_tools=tuple(f"mcp__slo__{name}" for name in ("read", "grep", "find", "ls"))
+            )
             self.failed: bool = False
 
         async def connect(self) -> None:
@@ -78,10 +87,14 @@ async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
 
     session = await SloAgentSession.prepare(
         config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-            reasoning_level="off", session_id="retry", enable_history=enable_history,
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="retry",
+            enable_history=enable_history,
             history_root=tmp_path / "history",
-        ), bridge_adapter_class=Adapter,
+        ),
+        bridge_adapter_class=Adapter,
     )
     try:
         async with asyncio.timeout(10):
@@ -103,9 +116,9 @@ async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
             result = [event async for event in session.invoke(text="explicit retry")]
             assert result[-1].kind == "run_completed"
             assert transport.prompts == (["first"] if later else []) + ["explicit retry"]
-            assert resumes == ([None] if later else []) + [
-                "native-test" if later else None
-            ] * (2 if failure == "connect" else 1)
+            assert resumes == ([None] if later else []) + ["native-test" if later else None] * (
+                2 if failure == "connect" else 1
+            )
             events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
                 session_id="retry",
             )
@@ -148,23 +161,30 @@ class FollowupTransport(ToolRoundTransport):
         answer = "The previous tool found orchid-73."
         for event in [
             {"type": "message_start", "message": {"id": "response-test", "role": "assistant"}},
-            {"type": "content_block_start", "index": 0,
-             "content_block": {"type": "text", "text": answer}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": answer}},
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]:
             await self.messages.put(
                 {"type": "stream_event", "uuid": "followup", "session_id": "native-test", "event": event}
             )
-        await self.messages.put({
-            "type": "result", "subtype": "success", "is_error": False,
-            "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
-            "session_id": "native-test", "result": answer,
-        })
+        await self.messages.put(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "num_turns": 1,
+                "session_id": "native-test",
+                "result": answer,
+            }
+        )
 
 
 async def test_host_stop_joins_native_tools_before_terminal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """E3: a host hook must not leave the SDK waiting for an unsent tool result."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -179,9 +199,13 @@ async def test_host_stop_joins_native_tools_before_terminal(
 
     session = await SloAgentSession.prepare(
         config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-            reasoning_level="off", session_id="early-stop", enable_history=True,
-            history_root=tmp_path / "history", should_stop_after_turn_hook=stop_after_tools,
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="early-stop",
+            enable_history=True,
+            history_root=tmp_path / "history",
+            should_stop_after_turn_hook=stop_after_tools,
         ),
         bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
@@ -191,7 +215,11 @@ async def test_host_stop_joins_native_tools_before_terminal(
                 if event.kind == "run_completed":
                     assert transport.closed
                     assert transport.close_calls == 1
-                    runtime = session.agent.llm.bridge_adapter._runtime
+                    model = session.agent.llm
+                    assert isinstance(model, SloClaudeBridge)
+                    assert isinstance(model.bridge_adapter, SloClaudeBridgeAdapter)
+                    runtime = model.bridge_adapter._runtime
+                    assert runtime._owner is not None and runtime._tool_bridge is not None
                     assert runtime._owner.done()
                     assert runtime._tool_bridge.pending_calls == {}
             assert transport.tool_results == []
@@ -205,7 +233,10 @@ async def test_host_stop_joins_native_tools_before_terminal(
 
 @pytest.mark.parametrize("enable_history,cross_threshold", [(True, False), (True, True), (False, False)])
 async def test_followup_retains_native_tool_context_without_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_history: bool, cross_threshold: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enable_history: bool,
+    cross_threshold: bool,
 ) -> None:
     """FU01–03/06: real session entry, SDK/MCP/tools and durable two-turn history."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -223,15 +254,21 @@ async def test_followup_retains_native_tool_context_without_replay(
             super().__init__(**kwargs)
 
     monkeypatch.setattr(
-        target=sdk_runtime, name="ClaudeSDKClient", value=RecordingSDKClient,
+        target=sdk_runtime,
+        name="ClaudeSDKClient",
+        value=RecordingSDKClient,
     )
     config = SessionConfigDAO(
-        workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-        reasoning_level="off", session_id="followups", enable_history=enable_history,
+        workdir=tmp_path,
+        model_name="claude-bridge:claude-haiku-5-5",
+        reasoning_level="off",
+        session_id="followups",
+        enable_history=enable_history,
         history_root=tmp_path / "history",
     )
     session = await SloAgentSession.prepare(
-        config=config, bridge_adapter_class=scripted_adapter_class(transport=transport),
+        config=config,
+        bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
     try:
         async with asyncio.timeout(10):
@@ -239,18 +276,23 @@ async def test_followup_retains_native_tool_context_without_replay(
             assert any(event.kind == "run_completed" for event in first)
             if cross_threshold:
                 from src.agents.slo_agent.history.dao import (
-                    SessionHistoryEventDAO, SessionHistoryEventPayloadDAO,
+                    SessionHistoryEventDAO,
+                    SessionHistoryEventPayloadDAO,
                 )
                 from src.agents.slo_agent.compaction.compaction_checker import CompactionChecker
 
                 store = FilesystemSessionHistoryStore(root=tmp_path / "history")
-                await store.append_event(event=SessionHistoryEventDAO(
-                    session_id="followups", kind="slash_command",
-                    payload=SessionHistoryEventPayloadDAO(token_usage=10_000_000),
-                ))
+                await store.append_event(
+                    event=SessionHistoryEventDAO(
+                        session_id="followups",
+                        kind="slash_command",
+                        payload=SessionHistoryEventPayloadDAO(token_usage=10_000_000),
+                    )
+                )
                 stored = await store.load_events(session_id="followups")
                 assert await CompactionChecker.should_compact(
-                    events=stored, model_name=session.active_model_name,
+                    events=stored,
+                    model_name=session.active_model_name,
                     snapshot=session.catalog_snapshot,
                 )
                 assert not await session._run_compaction_if_needed(turn_id="threshold")

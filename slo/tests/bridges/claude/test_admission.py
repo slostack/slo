@@ -292,7 +292,9 @@ async def test_auth_failure_leaves_fresh_prompt_available(
 
             return cls(
                 configuration=configuration,
-                transport=ScriptedClaudeTransport(),
+                transport=ScriptedClaudeTransport(
+                    initialized_tools=tuple(f"mcp__slo__{name}" for name in ("read", "grep", "find", "ls"))
+                ),
                 authentication_check=status,
             )
 

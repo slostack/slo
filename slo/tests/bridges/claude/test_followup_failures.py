@@ -14,7 +14,9 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from tests.cli.test_claude_bridge import ScriptedClaudeTransport, ToolRoundTransport, scripted_adapter_class
 
 
-async def test_later_tool_turns_allow_repeated_call_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_later_tool_turns_allow_repeated_call_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Each resumed turn executes its new call exactly once, even with repeated native IDs."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     target = tmp_path / "value.txt"
@@ -32,10 +34,14 @@ async def test_later_tool_turns_allow_repeated_call_ids(tmp_path: Path, monkeypa
     transport = RepeatedToolTransport(path=target)
     session = await SloAgentSession.prepare(
         config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-            reasoning_level="off", session_id="tools", enable_history=True,
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="tools",
+            enable_history=True,
             history_root=tmp_path / "history",
-        ), bridge_adapter_class=scripted_adapter_class(transport=transport),
+        ),
+        bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
     try:
         async with asyncio.timeout(10):
@@ -47,7 +53,9 @@ async def test_later_tool_turns_allow_repeated_call_ids(tmp_path: Path, monkeypa
                 assert f"receipt-{index}" in json.dumps(transport.tool_results[index])
         assert transport.prompts == [f"Read version {index}" for index in range(3)]
         assert transport.close_calls == 3
-        events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(session_id="tools")
+        events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
+            session_id="tools"
+        )
         assert sum(event.kind == "tool_call" for event in events) == 3
         assert sum(event.kind == "tool_result" for event in events) == 3
         assert sum(event.kind == "run_completed" for event in events) == 3
@@ -56,7 +64,8 @@ async def test_later_tool_turns_allow_repeated_call_ids(tmp_path: Path, monkeypa
 
 
 async def test_foreign_result_on_resumed_turn_is_not_completion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A foreign session result cannot complete the new invocation."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -79,17 +88,23 @@ async def test_foreign_result_on_resumed_turn_is_not_completion(
     transport = ForeignResultTransport()
     session = await SloAgentSession.prepare(
         config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-            reasoning_level="off", session_id="foreign", enable_history=True,
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="foreign",
+            enable_history=True,
             history_root=tmp_path / "history",
-        ), bridge_adapter_class=scripted_adapter_class(transport=transport),
+        ),
+        bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
     try:
         async with asyncio.timeout(10):
             _ = [event async for event in session.invoke(text="first")]
             with pytest.raises(RuntimeError, match="new session"):
                 _ = [event async for event in session.invoke(text="second")]
-        events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(session_id="foreign")
+        events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
+            session_id="foreign"
+        )
         assert sum(event.kind == "run_completed" for event in events) == 1
         assert sum(event.kind == "run_failed" for event in events) == 1
         assert transport.prompts == ["first", "second"]
@@ -99,7 +114,8 @@ async def test_foreign_result_on_resumed_turn_is_not_completion(
 
 
 async def test_cancel_resumed_turn_joins_before_host_terminal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancel after a successful turn without replaying either native query."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -117,10 +133,14 @@ async def test_cancel_resumed_turn_joins_before_host_terminal(
     transport = ResumedTransport()
     session = await SloAgentSession.prepare(
         config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-            reasoning_level="off", session_id="cancel", enable_history=True,
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="cancel",
+            enable_history=True,
             history_root=tmp_path / "history",
-        ), bridge_adapter_class=scripted_adapter_class(transport=transport),
+        ),
+        bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
     try:
         async with asyncio.timeout(10):
@@ -147,7 +167,9 @@ async def test_cancel_resumed_turn_joins_before_host_terminal(
 
 @pytest.mark.parametrize("later", [False, True])
 async def test_query_write_failure_never_replays_and_requires_new_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, later: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    later: bool,
 ) -> None:
     """A write may reach native before raising; neither automatic nor explicit replay is safe."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -171,10 +193,14 @@ async def test_query_write_failure_never_replays_and_requires_new_session(
     transport = UncertainTransport()
     session = await SloAgentSession.prepare(
         config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-            reasoning_level="off", session_id="uncertain", enable_history=True,
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="uncertain",
+            enable_history=True,
             history_root=tmp_path / "history",
-        ), bridge_adapter_class=scripted_adapter_class(transport=transport),
+        ),
+        bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
     try:
         async with asyncio.timeout(10):

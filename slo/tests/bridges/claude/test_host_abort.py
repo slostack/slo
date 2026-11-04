@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from src.bridges.claude.bridge import SloClaudeBridge
+from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
+
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
@@ -14,7 +17,9 @@ from tests.cli.test_claude_bridge import ToolRoundTransport, scripted_adapter_cl
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 async def test_available_tool_boundary_abort_joins_before_terminal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_fails: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_fails: bool,
 ) -> None:
     """Abort on a yielded tool call while the graph's completed update is available.
 
@@ -46,10 +51,14 @@ async def test_available_tool_boundary_abort_joins_before_terminal(
     transport = GatedCleanupTransport(path=target)
     session = await SloAgentSession.prepare(
         config=SessionConfigDAO(
-            workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5",
-            reasoning_level="off", session_id="available-abort", enable_history=True,
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="available-abort",
+            enable_history=True,
             history_root=tmp_path / "history",
-        ), bridge_adapter_class=scripted_adapter_class(transport=transport),
+        ),
+        bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
 
     async def consume() -> None:
@@ -58,14 +67,22 @@ async def test_available_tool_boundary_abort_joins_before_terminal(
             async for event in stream:
                 observed_kinds.append(event.kind)
                 if event.kind == "tool_call_start":
-                    runtime = session.agent.llm.bridge_adapter._runtime
+                    model = session.agent.llm
+                    assert isinstance(model, SloClaudeBridge)
+                    assert isinstance(model.bridge_adapter, SloClaudeBridgeAdapter)
+                    runtime = model.bridge_adapter._runtime
+                    assert runtime._owner is not None and runtime._tool_bridge is not None
                     while not runtime._tool_bridge.pending_calls:
                         await asyncio.sleep(0)
                     session.abort()
                 if event.kind == "run_aborted":
                     terminal_observed.set()
                     assert transport.closed
-                    runtime = session.agent.llm.bridge_adapter._runtime
+                    model = session.agent.llm
+                    assert isinstance(model, SloClaudeBridge)
+                    assert isinstance(model.bridge_adapter, SloClaudeBridgeAdapter)
+                    runtime = model.bridge_adapter._runtime
+                    assert runtime._owner is not None and runtime._tool_bridge is not None
                     assert runtime._owner.done()
                     assert not runtime._tool_bridge.pending_calls
 
@@ -81,14 +98,19 @@ async def test_available_tool_boundary_abort_joins_before_terminal(
             store = FilesystemSessionHistoryStore(root=tmp_path / "history")
             history = await store.load_events(session_id="available-abort")
             assert not any(event.kind == "run_aborted" for event in history)
-            runtime = session.agent.llm.bridge_adapter._runtime
+            model = session.agent.llm
+            assert isinstance(model, SloClaudeBridge)
+            assert isinstance(model.bridge_adapter, SloClaudeBridgeAdapter)
+            runtime = model.bridge_adapter._runtime
+            assert runtime._owner is not None and runtime._tool_bridge is not None
             assert not runtime._owner.done()
             release_cleanup.set()
             if cleanup_fails:
                 with pytest.raises(RuntimeError, match="closure is unconfirmed"):
                     await consumer
                 assert not terminal_observed.is_set()
-                assert session.agent.llm.bridge_adapter._runtime is runtime
+                assert session.agent.llm is model
+                assert model.bridge_adapter._runtime is runtime
                 assert not runtime._owner.done()
                 with pytest.raises(RuntimeError, match="new session"):
                     _ = [event async for event in session.invoke(text="must not send")]

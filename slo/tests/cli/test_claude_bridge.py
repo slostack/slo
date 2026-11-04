@@ -30,6 +30,7 @@ class ScriptedClaudeTransport(Transport):
         self,
         *,
         block_response: bool = False,
+        initialized_tools: tuple[str, ...] = (),
         pause_terminal: bool = False,
         model_unavailable: bool = False,
     ) -> None:
@@ -46,6 +47,8 @@ class ScriptedClaudeTransport(Transport):
         self.pause_terminal = pause_terminal
         self.interrupt_calls = 0
         self.close_calls = 0
+        self.initialized_tools: list[str] = list(initialized_tools)
+        self._emit_initialization = False
 
     async def connect(self) -> None:
         """Acknowledge SDK startup without launching a native executable."""
@@ -57,6 +60,8 @@ class ScriptedClaudeTransport(Transport):
         if message["type"] == "control_request":
             if message["request"].get("subtype") == "interrupt":
                 self.interrupt_calls += 1
+            if message["request"].get("subtype") == "initialize":
+                self._emit_initialization = True
             await self.messages.put(
                 {
                     "type": "control_response",
@@ -164,9 +169,38 @@ class ScriptedClaudeTransport(Transport):
         """Keep the SDK reader live until SDK-owned disconnect cancels it."""
         while True:
             message = await self.messages.get()
+            if self._emit_initialization and message["type"] in {
+                "stream_event",
+                "assistant",
+                "result",
+                "system",
+            }:
+                self._emit_initialization = False
+                initialized = self.initialization_message()
+                if initialized is not None:
+                    yield initialized
             if self.pause_terminal and message["type"] == "result":
                 await self.release_terminal.wait()
             yield message
+
+    def initialization_message(self) -> dict[str, Any] | None:
+        """Supply pinned SDK system/init metadata, not connect-reply capabilities.
+
+        This fixture reports requested test inventory only; it is not evidence
+        that a real native process honored any isolation option.
+        """
+        return {
+            "type": "system",
+            "subtype": "init",
+            "uuid": "synthetic-init",
+            "session_id": "native-test",
+            "tools": list(self.initialized_tools),
+            "mcp_servers": (
+                [{"name": "slo", "status": "connected", "source": "sdk"}] if self.initialized_tools else []
+            ),
+            "skills": [],
+            "plugins": [],
+        }
 
     async def close(self) -> None:
         """Record supported transport closure, not native process reap proof."""
@@ -201,6 +235,7 @@ def scripted_adapter_class(
             """Record final host context while retaining production native admission."""
             if recorded_options is not None:
                 recorded_options.append(session_options)
+            transport.initialized_tools = [f"mcp__slo__{tool.name}" for tool in session_options.tools]
             await super().start_session(session_options=session_options)
 
         @classmethod
@@ -354,6 +389,23 @@ class ToolRoundTransport(ScriptedClaudeTransport):
                 },
                 {"type": "content_block_stop", "index": 1},
             ]
+        response_text = f"Inspect round {self.round}." if self.multiple_rounds else ""
+        if response_text:
+            # Text follows the tool blocks so existing native block indices stay fixed.
+            text_index = 2 if extra_read else 1
+            events[-2:-2] = [
+                {
+                    "type": "content_block_start",
+                    "index": text_index,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": text_index,
+                    "delta": {"type": "text_delta", "text": response_text},
+                },
+                {"type": "content_block_stop", "index": text_index},
+            ]
         for event in events:
             await self.messages.put(
                 {"type": "stream_event", "uuid": "scripted", "session_id": "native-test", "event": event}
@@ -378,11 +430,12 @@ class ToolRoundTransport(ScriptedClaudeTransport):
                             if extra_read
                             else []
                         ),
+                        *([{"type": "text", "text": response_text}] if response_text else []),
                     ],
                 },
             }
         )
-        self._tool_request = {
+        self._tool_request: dict[str, Any] = {
             "type": "control_request",
             "request_id": f"tool-rpc-{self.round}",
             "request": {
@@ -648,8 +701,32 @@ async def test_three_rounds_all_four_tools_preserve_history_ids(
         == {r["tool_call_id"] for r in results}
         == {"exact-native-id-1", "exact-native-id-2", "exact-native-id-3", "exact-read"}
     )
-    assert [e.payload.content for e in events if e.kind == "assistant_message"][-1] == "Hello bridge"
+    ordered_ids = ["exact-native-id-1", "exact-native-id-2", "exact-native-id-3", "exact-read"]
+    assert [c["tool_call_id"] for c in calls] == ordered_ids
+    assert [r["tool_call_id"] for r in results] == ordered_ids
+    assert [r["request_id"] for r in transport.tool_results] == [
+        "tool-rpc-1",
+        "tool-rpc-2",
+        "tool-rpc-3",
+        "tool-rpc-read",
+    ]
+    for result, receipt in zip(results, transport.tool_results, strict=True):
+        native = receipt["response"]["mcp_response"]["result"]
+        assert native == {"content": [{"type": "text", "text": result["tool_output"]}], "isError": False}
+    assert "model.txt" in results[0]["tool_output"]
+    assert "model.txt" in results[1]["tool_output"]
+    assert "default-model = synthetic-model" in results[2]["tool_output"]
+    assert results[3]["tool_output"] == "default-model = synthetic-model\n"
+    assert [c["content"] for c in calls] == [
+        "Inspect round 1.",
+        "Inspect round 2.",
+        "Inspect round 3.",
+        "Inspect round 3.",
+    ]
+    assert [e.payload.content for e in events if e.kind == "assistant_message"] == ["Hello bridge"]
     assert [e["content"] for e in output if e["kind"] == "run_completed"] == ["Hello bridge"]
+    assert [e.payload.content for e in events if e.kind == "run_completed"] == ["Hello bridge"]
+    assert transport.closed
     assert (
         sum(e.kind == "user_message" for e in events) == sum(e.kind == "run_completed" for e in events) == 1
     )

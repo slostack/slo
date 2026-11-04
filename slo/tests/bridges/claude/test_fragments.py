@@ -39,7 +39,7 @@ def test_early_fragments_validate_once_at_complete_boundary() -> None:
     """CF01/02/03: individual blocks, duplicate echoes and late echoes add no output."""
     assembly = NativeResponseAssembly()
     assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
-    blocks = [
+    blocks: list[dict[str, Any]] = [
         {"type": "thinking", "thinking": "plan", "signature": "signed"},
         {"type": "text", "text": "hello"},
         {"type": "tool_use", "id": "a", "name": "mcp__slo__read", "input": {"path": "a"}},
@@ -113,7 +113,7 @@ def test_legacy_echo_identity_falls_back_to_current_response(response_id: Any) -
 @pytest.mark.parametrize("number", ["NaN", "Infinity", "-Infinity", "1e400", "-1e400"])
 def test_nonfinite_delta_arguments_reject_without_echo(number: str) -> None:
     """R5: nested nonfinite JSON must never become executable, even without an echo."""
-    assembly = streamed_tool_arguments(partial_json='{"nested": [{"value": ' + number + '}]}')
+    assembly = streamed_tool_arguments(partial_json='{"nested": [{"value": ' + number + "}]}")
     with pytest.raises(ClaudeBridgeError) as caught:
         assembly.consume(event={"type": "message_stop"})
     assert caught.value.code == "stream_protocol_failed"
@@ -134,14 +134,20 @@ def streamed_tool_arguments(*, partial_json: str) -> NativeResponseAssembly:
     """Build a stopped tool block with no assistant echo, awaiting publication."""
     assembly = NativeResponseAssembly()
     assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
-    assembly.consume(event={
-        "type": "content_block_start", "index": 0,
-        "content_block": {"type": "tool_use", "id": "a", "name": "mcp__slo__read", "input": {}},
-    })
-    assembly.consume(event={
-        "type": "content_block_delta", "index": 0,
-        "delta": {"type": "input_json_delta", "partial_json": partial_json},
-    })
+    assembly.consume(
+        event={
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "a", "name": "mcp__slo__read", "input": {}},
+        }
+    )
+    assembly.consume(
+        event={
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": partial_json},
+        }
+    )
     assembly.consume(event={"type": "content_block_stop", "index": 0})
     assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
     assert assembly.calls == ()
@@ -235,9 +241,7 @@ def test_json_boolean_conflict(value: bool, changed: int, replay: bool) -> None:
     changed_block = {**block, "input": {"nested": [changed]}}
     with pytest.raises(ClaudeBridgeError):
         assembly.reconcile_echo(
-            message=echo(
-                response_id="one", content=[changed_block], uuid="fragment" if replay else "other"
-            )
+            message=echo(response_id="one", content=[changed_block], uuid="fragment" if replay else "other")
         )
         assembly.consume(event={"type": "content_block_stop", "index": 0})
         assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
@@ -253,9 +257,14 @@ def test_wire_cannot_set_bookkeeping(field: str, value: object) -> None:
     with pytest.raises(ClaudeBridgeError):
         assembly.consume(
             event={
-                "type": "content_block_start", "index": 0,
+                "type": "content_block_start",
+                "index": 0,
                 "content_block": {
-                    "type": "tool_use", "id": "a", "name": "mcp__slo__read", "input": {}, field: value,
+                    "type": "tool_use",
+                    "id": "a",
+                    "name": "mcp__slo__read",
+                    "input": {},
+                    field: value,
                 },
             }
         )
@@ -272,27 +281,37 @@ def test_retention_budget_rejects_before_publication(source: str) -> None:
             for index in range(30):
                 assembly.reconcile_echo(
                     message=echo(
-                        response_id="one", content=[{"type": "text", "text": "x" * 100}],
+                        response_id="one",
+                        content=[{"type": "text", "text": "x" * 100}],
                         uuid=str(index) if source == "uuid" else "",
                     )
                 )
         elif source == "snapshot":
             for index in range(30):
                 assembly.consume(
-                    event={"type": "content_block_start", "index": 0,
-                           "content_block": {"type": "text", "text": "x" * 100}}
+                    event={
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": "x" * 100},
+                    }
                 )
                 assembly.consume(event={"type": "content_block_stop", "index": 0})
                 assembly.consume(event={"type": "message_stop"})
                 assembly.consume(event={"type": "message_start", "message": {"id": str(index)}})
         else:
             assembly.consume(
-                event={"type": "content_block_start", "index": 0,
-                       "content_block": {"type": "thinking", "thinking": "", "signature": ""}}
+                event={
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                }
             )
             assembly.consume(
-                event={"type": "content_block_delta", "index": 0,
-                       "delta": {"type": source + "_delta", source: "x" * 2048}}
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": source + "_delta", source: "x" * 2048},
+                }
             )
     assert assembly.calls == ()
 
@@ -317,7 +336,7 @@ def test_fragment_conflict_matrix(fault: str) -> None:
     """CF03/04: exact ordered block corroboration rejects changed or misbound echoes."""
     assembly = NativeResponseAssembly()
     assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
-    blocks = [
+    blocks: list[dict[str, Any]] = [
         {"type": "thinking", "thinking": "plan", "signature": "signed"},
         {"type": "text", "text": "same"},
         {"type": "text", "text": "same"},
@@ -363,8 +382,13 @@ def test_completed_snapshots_share_budget_across_responses() -> None:
     assembly = NativeResponseAssembly(max_retained_bytes=6000)
     for identity in ("one", "two"):
         assembly.consume(event={"type": "message_start", "message": {"id": identity}})
-        assembly.consume(event={"type": "content_block_start", "index": 0,
-                                "content_block": {"type": "text", "text": "x" * 100}})
+        assembly.consume(
+            event={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "x" * 100},
+            }
+        )
         assembly.consume(event={"type": "content_block_stop", "index": 0})
         assert assembly.consume(event={"type": "message_stop"}) == ("", True)
     # Old snapshots still corroborate after the second response, without eviction.
@@ -393,14 +417,19 @@ def test_distinct_pending_fragments_share_budget_without_uuid() -> None:
         )
 
 
-@pytest.mark.parametrize("kind,delta", [
-    ("text", None), ("text", []), ("text", {}),
-    ("text", {"type": "text_delta", "text": 1}),
-    ("tool_use", {"type": "input_json_delta", "partial_json": {}}),
-    ("thinking", {"type": "thinking_delta", "thinking": None}),
-    ("thinking", {"type": "signature_delta", "signature": []}),
-    ("text", {"type": "input_json_delta", "partial_json": "{}"}),
-])
+@pytest.mark.parametrize(
+    "kind,delta",
+    [
+        ("text", None),
+        ("text", []),
+        ("text", {}),
+        ("text", {"type": "text_delta", "text": 1}),
+        ("tool_use", {"type": "input_json_delta", "partial_json": {}}),
+        ("thinking", {"type": "thinking_delta", "thinking": None}),
+        ("thinking", {"type": "signature_delta", "signature": []}),
+        ("text", {"type": "input_json_delta", "partial_json": "{}"}),
+    ],
+)
 def test_malformed_block_deltas_are_protocol_failures(kind: str, delta: Any) -> None:
     """CF04: malformed containers, payloads and cross-kind deltas fail boundedly."""
     assembly = NativeResponseAssembly()

@@ -153,13 +153,16 @@ from src.agents.reasoning_capabilities import (
     default_reasoning_level_for_model,
     resolve_reasoning_config,
 )
-from src.agents.tools.bundles import create_extended_tools
+from src.agents.tools.bundles import create_extended_tools, create_read_only_tools
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.integrations.openrouter.dao import credential_fingerprint
 from src.auth.credential_refresher import refresh_if_stale
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.credential_store import CredentialStore
 from src.auth.provider_for_model import provider_for_model
+
+if TYPE_CHECKING:
+    from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
 
 from src.agents.slo_agent.history.transcript import ReplayEntryProjector
 
@@ -578,6 +581,7 @@ class SloAgentSession:
         plugin_loader_kwargs: Optional[dict[str, Path]] = None,
         catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = None,
         pending_preparation: bool = False,
+        bridge_adapter_class: Optional[type[SloBridgeAdapterProtocol]] = None,
     ) -> None:
         """Compose a session around a config (lazy) or a pre-built agent.
 
@@ -617,6 +621,13 @@ class SloAgentSession:
         self._workdir: Path = workdir.resolve()
         self._session_id: str = session_id
         self._config: Optional[SessionConfigDAO] = config
+        self._bridge_adapter_class = bridge_adapter_class
+        self._bridge_prompt_admitted = False
+        self._bridge_submission_pending = False
+        self._prepared_bridge_adapter: Optional[SloBridgeAdapterProtocol] = None
+        self._bridge_candidates: list[SloBridgeAdapterProtocol] = []
+        self._model_selection_active = False
+        self._agent_resources_closed = False
         self._preparation_status: Literal["pending", "ready", "failed"] = (
             "pending" if pending_preparation else "ready"
         )
@@ -739,6 +750,7 @@ class SloAgentSession:
         config: SessionConfigDAO,
         catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = None,
         allow_pending_preparation: bool = False,
+        bridge_adapter_class: Optional[type[SloBridgeAdapterProtocol]] = None,
     ) -> "SloAgentSession":
         """Build a lazily initialized session from an already prepared config.
 
@@ -776,7 +788,13 @@ class SloAgentSession:
             enable_history=config.enable_history,
             catalog_snapshot=catalog_snapshot,
             pending_preparation=pending_preparation,
+            bridge_adapter_class=bridge_adapter_class,
         )
+
+    @property
+    def bridge_adapter_class(self) -> Optional[type[SloBridgeAdapterProtocol]]:
+        """Return the retained construction seam, never a native lifecycle owner."""
+        return self._bridge_adapter_class
 
     @property
     def preparation_status(self) -> Literal["pending", "ready", "failed"]:
@@ -795,10 +813,35 @@ class SloAgentSession:
             asyncio.CancelledError: The owning TUI was closed.
         """
         async with self._preparation_lock:
+            if self.active_model_name.startswith("claude-bridge:"):
+                await self._prepare_bridge_startup()
+                return
             if self._preparation_status == "ready":
                 return
             async with self._startup_reporting_scope():
                 await self._prepare_startup_locked()
+
+    async def _prepare_bridge_startup(self) -> None:
+        """Retain one authenticated native candidate without submitting a prompt."""
+        if self._agent_resources_closed:
+            raise RuntimeError("Session resources are closed.")
+        if self._prepared_bridge_adapter is not None:
+            return
+        startup_config = self._config
+        self._preparation_status = "pending"
+        try:
+            self._validate_model_selection_credential(model_name=self.active_model_name)
+            self._validate_bridge_extensions()
+            candidate = await self._prepare_bridge_candidate(model_name=self.active_model_name)
+            if self._agent_resources_closed or self._config is not startup_config:
+                await candidate.close()
+                raise RuntimeError("Session changed during native startup.")
+            self._prepared_bridge_adapter = candidate
+            self._bridge_candidates.remove(candidate)
+        except BaseException:
+            self._preparation_status = "failed"
+            raise
+        self._preparation_status = "ready"
 
     async def _prepare_startup_locked(self) -> None:
         """Derive and atomically adopt startup capabilities under the preparation lock."""
@@ -859,7 +902,12 @@ class SloAgentSession:
             self._end_reporting_operation(token=token)
 
     @classmethod
-    async def prepare(cls, *, config: SessionConfigDAO) -> "SloAgentSession":
+    async def prepare(
+        cls,
+        *,
+        config: SessionConfigDAO,
+        bridge_adapter_class: Optional[type[SloBridgeAdapterProtocol]] = None,
+    ) -> "SloAgentSession":
         """Prepare configured routes before constructing a strict runtime session.
 
         WHAT: Captures one catalog generation through the existing preparation
@@ -878,7 +926,12 @@ class SloAgentSession:
         """
         model_names: tuple[str, ...] = cls._configured_model_names(config=config)
         snapshot: ModelCatalogSnapshotDAO = await ModelCatalogService.prepare_models(model_names=model_names)
-        return cls.build(config=config, catalog_snapshot=snapshot)
+        session = cls.build(
+            config=config, catalog_snapshot=snapshot, bridge_adapter_class=bridge_adapter_class
+        )
+        if any(name.startswith("claude-bridge:") for name in model_names):
+            await session.prepare_startup()
+        return session
 
     @staticmethod
     def _configured_model_names(*, config: SessionConfigDAO) -> tuple[str, ...]:
@@ -967,9 +1020,13 @@ class SloAgentSession:
         resolved_workspace_file: Optional[Path] = self._resolve_workspace_file_for_agent()
         extra_tools: list[BaseTool] = list(self._config.extra_tools or [])
         plugin_tools: list[BaseTool] = self._plugin_registry.all_tools() if self._plugin_registry else []
+        if self.active_model_name.startswith("claude-bridge:") and (extra_tools or plugin_tools):
+            raise ValueError("Claude bridge does not support orchestration, plugin, or extension tools.")
         extension_tools: list[BaseTool] = extra_tools + plugin_tools
         all_tools: list[BaseTool] | None = (
-            create_extended_tools() + extension_tools if extension_tools else None
+            create_read_only_tools()
+            if self.active_model_name.startswith("claude-bridge:")
+            else create_extended_tools() + extension_tools if extension_tools else None
         )
         return SloAgent(
             model_name=self.active_model_name,
@@ -984,6 +1041,15 @@ class SloAgentSession:
             append_system_prompt=self._config.append_system_prompt,
             plugin_dispatcher=self._plugin_dispatcher,
             snapshot=self.catalog_snapshot,
+            **(
+                {"bridge_adapter": self._prepared_bridge_adapter}
+                if self._prepared_bridge_adapter is not None
+                else (
+                    {"bridge_adapter_class": self._bridge_adapter_class}
+                    if self._bridge_adapter_class is not None
+                    else {}
+                )
+            ),
         )
 
     def _load_plugins(self) -> None:
@@ -1820,6 +1886,11 @@ class SloAgentSession:
         Returns:
             ManualCompactionResultDAO: Result before its post-operation snapshot.
         """
+        if self.active_model_name.startswith("claude-bridge:"):
+            return ManualCompactionResultDAO(
+                status="unavailable",
+                detail="Claude bridge conversations do not support Slo compaction.",
+            )
         events, history_result = await self._read_manual_compaction_history()
         if history_result is not None:
             return history_result
@@ -2713,22 +2784,71 @@ class SloAgentSession:
             resources="retained" if retained else "drained",
         )
 
-    async def dispose_unmounted_session(self) -> None:
-        """Dispose an inactive failed candidate, never a mounted or running session.
+    async def close_agent_resources(self) -> None:
+        """Join the retained agent bridge independently of reporting and history."""
+        self._agent_resources_closed = True
+        await self._close_current_agent_resources()
+        for candidate in tuple(self._bridge_candidates):
+            await candidate.close()
+            if candidate in self._bridge_candidates:
+                self._bridge_candidates.remove(candidate)
 
-        The caller owns the unmounted-candidate precondition. History and detached
-        workflows are preserved; only this session's attached pool is drained.
+    async def _close_current_agent_resources(self) -> None:
+        """Retire the current model without sealing an admitted replacement transition."""
+        if self._agent is not None:
+            await self._agent.close()
+        if self._prepared_bridge_adapter is not None:
+            await self._prepared_bridge_adapter.close()
 
-        Raises:
-            asyncio.CancelledError: After reporting and candidate pool cleanup join.
-        """
+    async def _prepare_bridge_candidate(self, *, model_name: str) -> SloBridgeAdapterProtocol:
+        """Inspect an inert candidate before selection, retaining failed cleanup ownership."""
+        from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
+        from src.bridges.claude.sdk.dao import ClaudeBridgeConfigurationDAO
+
+        adapter_class = self._bridge_adapter_class or SloClaudeBridgeAdapter
+        executable = os.environ.get("SLO_CLAUDE_BRIDGE_EXECUTABLE")
+        candidate = adapter_class.register(
+            configuration=ClaudeBridgeConfigurationDAO(executable=Path(executable) if executable else None)
+        )
+        self._bridge_candidates.append(candidate)
         try:
-            await self.close_external_reporting()
+            status = await candidate.check_authentication()
+            if self._agent_resources_closed:
+                raise RuntimeError("Session resources are closed.")
+            if status.state != "ready":
+                raise ValueError(status.safe_message)
+            return candidate
+        except BaseException:
+            await candidate.close()
+            if candidate in self._bridge_candidates:
+                self._bridge_candidates.remove(candidate)
+            raise
+
+    async def _validate_fresh_bridge_prompt(self, *, text: str, history: Optional[list[dict]]) -> None:
+        """Admit live-session follow-ups without importing an unrelated transcript."""
+        if self._bridge_submission_pending or history:
+            raise ValueError("Claude bridge does not accept externally supplied history.")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Claude bridge requires nonempty text.")
+        if self._history_store is not None and not self._bridge_prompt_admitted:
+            events = await self._history_store.load_events(session_id=self.session_id)
+            if any(event.kind in {"user_message", "assistant_message", "tool_call"} for event in events):
+                raise ValueError("Claude bridge requires a fresh session without replay history.")
+        await self._ensure_agent_ready()
+        self._bridge_submission_pending = True
+
+    async def dispose_unmounted_session(self) -> None:
+        """Dispose an inactive candidate's model, reporting and capability owners."""
+        try:
+            await self.close_agent_resources()
         finally:
             try:
-                await self._drain_unmounted_pool()
+                await self.close_external_reporting()
             finally:
-                await self.finish_retired_reporting_cleanup()
+                try:
+                    await self._drain_unmounted_pool()
+                finally:
+                    await self.finish_retired_reporting_cleanup()
 
     async def _drain_unmounted_pool(self) -> None:
         """Retain and join the candidate's existing pool drain exactly once."""
@@ -3252,8 +3372,16 @@ class SloAgentSession:
             return []
         return list(self._config.extra_tools or [])
 
+    def _commit_bridge_prompt_submission(self) -> None:
+        """Remember live-session admission so its own history can support follow-ups."""
+        if self._bridge_submission_pending:
+            self._bridge_prompt_admitted = True
+            self._bridge_submission_pending = False
+
     def steer(self, *, message: str | BaseMessage) -> None:
-        """Queue a steering message for the next agent turn."""
+        """Reject steering before this tool-free slice can admit another turn."""
+        if self.active_model_name.startswith("claude-bridge:"):
+            raise ValueError("Claude bridge does not support steering or follow-up messages.")
         self.agent.steer(message=message)
 
     def abort(self) -> None:
@@ -3294,16 +3422,22 @@ class SloAgentSession:
         return f"{result.safe_message[:140]} {count} models; last complete check: {checked}."
 
     async def prepare_model_selection(self, *, model_name: str) -> str:
+        """Reserve session admission before any awaited selection or retirement work."""
+        if self._model_selection_active or self._agent_resources_closed:
+            return "model selection unavailable while session transition or closure is pending"
+        if self.is_running:
+            return "cannot switch models while a prompt is in flight"
+        self._model_selection_active = True
+        try:
+            return await self._prepare_reserved_model_selection(model_name=model_name)
+        finally:
+            self._model_selection_active = False
+
+    async def _prepare_reserved_model_selection(self, *, model_name: str) -> str:
         """Prepare and atomically commit one operator-selected route.
 
-        WHAT: Validates the effective provider credential and requested route,
-            then commits the complete selection only while the prompt lock is idle.
-        WHO: ``SlashRouter`` invokes it for ``/model <canonical-route>``.
-        WHEN: Runs outside a prompt; preparation may await catalog work before the
-            method reacquires the lock for its final commit.
-
         Args:
-            model_name (str): Exact canonical route selected by the operator.
+            model_name: Exact canonical route selected by the operator.
 
         Returns:
             str: Safe success or actionable preparation outcome.
@@ -3312,30 +3446,91 @@ class SloAgentSession:
             return "model preparation is pending; wait before selecting a model"
         if self.is_running:
             return "cannot switch models while a prompt is in flight"
+        candidate: Optional[SloBridgeAdapterProtocol] = None
+        selection_config = self._config
         try:
             self._validate_model_selection_credential(model_name=model_name)
             snapshot: ModelCatalogSnapshotDAO = await ModelCatalogService.prepare_models(
                 model_names=(model_name,)
             )
+            if model_name.startswith("claude-bridge:"):
+                if self._history_store is not None:
+                    events = await self._history_store.load_events(session_id=self.session_id)
+                    if any(
+                        event.kind in {"user_message", "assistant_message", "tool_call"} for event in events
+                    ):
+                        raise ValueError("Claude bridge requires a fresh session without replay history.")
+                self._validate_bridge_extensions()
+                candidate = await self._prepare_bridge_candidate(model_name=model_name)
         except ModelPreparationRequiredError:
             return f"model '{model_name}' is unavailable; run /model refresh or /auth"
         except ValueError as error:
             return str(error)
-        async with self._lock:
-            if self._preparation_status == "pending" and model_name.startswith("openrouter:"):
-                return "model preparation is pending; wait before selecting a model"
+        adopted = False
+        try:
             if self.is_running:
                 return "cannot switch models while a prompt is in flight"
+            if self._preparation_status == "pending" and model_name.startswith("openrouter:"):
+                return "model preparation is pending; wait before selecting a model"
+            if self._config is not selection_config:
+                return "model selection changed during preparation; retry while idle"
+            # Revalidate before retiring the active model: a rejected selection
+            # must leave its existing resources and preferences intact.
             try:
                 self._validate_model_selection_credential(model_name=model_name, snapshot=snapshot)
             except ValueError as error:
                 return str(error)
-            self._commit_model_selection(model_name=model_name, snapshot=snapshot)
+            await self._close_current_agent_resources()
+            if candidate is not None:
+                await self._retire_automatic_orchestrator()
+            async with self._lock:
+                if self.is_running or self._config is not selection_config:
+                    return "model selection changed during preparation; retry while idle"
+                if self._preparation_status == "pending" and model_name.startswith("openrouter:"):
+                    return "model preparation is pending; wait before selecting a model"
+                try:
+                    self._validate_model_selection_credential(model_name=model_name, snapshot=snapshot)
+                except ValueError as error:
+                    return str(error)
+                self._commit_model_selection(model_name=model_name, snapshot=snapshot)
+                self._prepared_bridge_adapter = candidate
+                if candidate is not None:
+                    self._bridge_candidates.remove(candidate)
+                adopted = True
+        finally:
+            if candidate is not None and not adopted:
+                await candidate.close()
+                if candidate in self._bridge_candidates:
+                    self._bridge_candidates.remove(candidate)
         try:
             UserPreferencesStore.upsert(model_name=model_name)
         except OSError:
             return f"active model switched to {model_name}. Preference was not saved."
-        return f"active model switched to {model_name}. Preference saved."
+        notice = " Native transcripts may persist even with Slo history off." if candidate is not None else ""
+        return f"active model switched to {model_name}. Preference saved.{notice}"
+
+    def _validate_bridge_extensions(self) -> None:
+        """Reject explicit tools while allowing retirement of the TUI's standard bundle."""
+        if self._plugin_registry is not None and self._plugin_registry.all_tools():
+            raise ValueError("Claude bridge does not support plugin tools.")
+        if self._config is None or not self._config.extra_tools:
+            return
+        if self._standard_orchestrator_attachment is None or not self._herdr_policy_is_reproducible():
+            raise ValueError("Claude bridge does not support explicit orchestration or extension tools.")
+
+    async def _retire_automatic_orchestrator(self) -> None:
+        """Drain automatic TUI capabilities before publishing a tool-free bridge route."""
+        if self._standard_orchestrator_attachment is None:
+            return
+        await self._drain_unmounted_pool()
+        if self._candidate_pool_cleanup_task is not None:
+            try:
+                self._candidate_pool_cleanup_task.result()
+            except Exception:
+                self._agent_resources_closed = True
+                raise RuntimeError(
+                    "Automatic orchestration cleanup failed; session retirement is pending."
+                ) from None
 
     def _validate_model_selection_credential(
         self, *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
@@ -3353,7 +3548,21 @@ class SloAgentSession:
 
         Raises:
             ValueError: Missing credentials or an incompatible OpenAI backend.
+
+        A qualified ``claude-bridge:`` route authenticates exclusively through
+        the operator's external Claude Code native login
+        (``ClaudeNativeAuthentication``), so the Slo Anthropic resolver gate
+        does not apply to it. Recognition is not validation: the bridge-owned
+        ``ClaudeBridgeRoute`` predicate recognizes the route here, and the
+        bridge-owned validator then denies a malformed or disabled route
+        before the early return, so no native work or state mutation ever
+        runs for a route whose opt-in or family/version support lapsed.
         """
+        from src.bridges.claude.routes import ClaudeBridgeRoute
+
+        if ClaudeBridgeRoute.is_bridge_route(model_name=model_name):
+            ClaudeBridgeRoute.validate(model_name=model_name)
+            return
         provider: ProviderName = provider_for_model(model_name=model_name)
         credential = CredentialResolver.require(provider=provider)
         if provider is not ProviderName.OPENAI:
@@ -3391,9 +3600,16 @@ class SloAgentSession:
         )
         assert self._config is not None
         self._withdraw_stale_herdr_capture()
-        self._config = self._config.model_copy(
-            update={"model_name": model_name, "model_pool_dao": None, "fallback_notice": None}
-        )
+        selection_update: dict[str, Any] = {
+            "model_name": model_name,
+            "model_pool_dao": None,
+            "fallback_notice": None,
+        }
+        if model_name.startswith("claude-bridge:") and self._standard_orchestrator_attachment is not None:
+            selection_update.update(extra_tools=[], system_prompt=None, append_system_prompt=None)
+            self._sub_agent_pool = None
+            self._standard_orchestrator_attachment = None
+        self._config = self._config.model_copy(update=selection_update)
         self._active_model_name = model_name
         self._catalog_snapshot = snapshot
         self._preparation_status = "ready"
@@ -3541,11 +3757,18 @@ class SloAgentSession:
             BaseException: The terminal provider or runtime failure when the
                 attempt failed and no retry plan is available.
         """
+        if self._model_selection_active or self._agent_resources_closed:
+            raise RuntimeError("Session transition or closure blocks prompt admission.")
+        if self.active_model_name.startswith("claude-bridge:") and self._preparation_status != "ready":
+            await self.prepare_startup()
         if self._preparation_status != "ready":
             if not self._is_running:
                 self.set_operator_attention(reason="Model preparation required")
             raise ModelPreparationRequiredError("Model preparation required; use /auth or /model refresh.")
         self._assert_no_prompt_in_flight()
+        if self.active_model_name.startswith("claude-bridge:"):
+            await self._validate_fresh_bridge_prompt(text=text, history=history)
+            self._commit_bridge_prompt_submission()
         async with self._session_run_scope():
             plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
                 text=text,
@@ -4864,8 +5087,13 @@ class SloAgentSession:
         ):
             yield retry_event
 
-        iteration_retry_policy: IterationRetryPolicy = self._build_iteration_retry_policy(policy=policy)
-        iteration_recovery_policy: IterationRecoveryPolicy = self._build_iteration_recovery_policy()
+        is_bridge = self.active_model_name.startswith("claude-bridge:")
+        iteration_retry_policy: Optional[IterationRetryPolicy] = (
+            None if is_bridge else self._build_iteration_retry_policy(policy=policy)
+        )
+        iteration_recovery_policy: Optional[IterationRecoveryPolicy] = (
+            None if is_bridge else self._build_iteration_recovery_policy()
+        )
         stream_timeout_seconds: float = _stream_inactivity_timeout_seconds()
         self.agent._plugin_dispatcher = self._plugin_dispatcher
         stream = self.agent.invoke(
@@ -5350,6 +5578,12 @@ class SloAgentSession:
             for entry in self._config.model_pool_dao.entries:
                 seen.setdefault(entry.provider, None)
             return list(seen.keys())
+        from src.bridges.claude.routes import ClaudeBridgeRoute
+
+        if ClaudeBridgeRoute.is_bridge_route(model_name=self.active_model_name):
+            # Native login is the only bridge credential authority; there is
+            # no Slo provider credential for the refresh loop to require.
+            return []
         return [provider_for_model(model_name=self.active_model_name)]
 
     async def _refresh_oauth_credential_if_needed(self) -> None:
@@ -5730,6 +5964,8 @@ class SloAgentSession:
                 session has no completed turns yet.
         """
         if not self._enable_history or self._history_store is None:
+            if self.active_model_name.startswith("claude-bridge:") and self._agent is not None:
+                return self._agent.live_bridge_message_history()
             return []
         events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
             session_id=self._session_id,
@@ -5811,6 +6047,10 @@ class SloAgentSession:
         if not self._enable_history or self._history_store is None:
             return False
         if self._agent is None or self._agent.llm is None:
+            return False
+
+        # Native resume owns its transcript; host summaries invalidate its exact prefix.
+        if self.active_model_name.startswith("claude-bridge:"):
             return False
 
         compaction_events: list[SessionHistoryEventDAO]

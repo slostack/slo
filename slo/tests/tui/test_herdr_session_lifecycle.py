@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from langchain_core.messages import AIMessage
 
+from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
 from src.agents.base import LLMBuildResult
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
@@ -35,11 +36,20 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
         entered = asyncio.Event()
         release = asyncio.Event()
 
-        def build(*, config: SessionConfigDAO, allow_pending_preparation: bool) -> SloAgentSession:
+        def build(
+            *,
+            config: SessionConfigDAO,
+            allow_pending_preparation: bool,
+            bridge_adapter_class: type[SloBridgeAdapterProtocol] | None,
+        ) -> SloAgentSession:
             """Record actual construction, or refuse before publishing a candidate."""
             if failure == "build":
                 raise ValueError("private failure sentinel")
-            candidate = original_build(config=config, allow_pending_preparation=allow_pending_preparation)
+            candidate = original_build(
+                config=config,
+                allow_pending_preparation=allow_pending_preparation,
+                bridge_adapter_class=bridge_adapter_class,
+            )
             built.append(candidate)
             return candidate
 
@@ -284,3 +294,30 @@ async def test_new_rejects_candidate_history_root_change(tmp_path: Path) -> None
         assert app._session is old
         assert app._render_event in old._subscribers
         assert candidate._herdr_closing
+
+
+async def test_shutdown_keeps_resources_open_until_registered_prompt_finishes(tmp_path: Path) -> None:
+    """An admitted task may start after unmount seals new prompt admission."""
+    session = SloAgentSession.build(config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4"))
+    app = SloTUI(session=session)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def admitted() -> None:
+        """Represent the already registered task before its first session invocation."""
+        entered.set()
+        await release.wait()
+        assert not session._agent_resources_closed
+
+    task = asyncio.create_task(admitted())
+    app._in_flight_task = task
+    await entered.wait()
+    shutdown = asyncio.create_task(app.on_unmount())
+    try:
+        # Cross the independent observation shutdown boundary deterministically.
+        await asyncio.wait_for(app._path_suggestions.join(), timeout=5)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not session._agent_resources_closed
+    finally:
+        release.set()
+        await asyncio.gather(task, shutdown, return_exceptions=True)

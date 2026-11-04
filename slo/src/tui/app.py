@@ -871,10 +871,15 @@ class SloTUI(App):
             await session.prepare_startup()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             if self._runtime_may_start(session=session):
+                guidance = (
+                    str(error)
+                    if session.active_model_name.startswith("claude-bridge:")
+                    else "Model preparation failed; use /auth or /model refresh to retry."
+                )
                 self._write_lifecycle_notice(
-                    content="Model preparation failed; use /auth or /model refresh to retry.",
+                    content=guidance,
                     classes="tool-result",
                 )
         else:
@@ -1041,6 +1046,8 @@ class SloTUI(App):
             bool: ``False`` when ``CredentialResolver.resolve`` returns
                 ``None`` for the active provider, ``True`` otherwise.
         """
+        if self._session.active_model_name.startswith("claude-bridge:"):
+            return True  # Native login is checked by the bridge, never the Slo token modal.
         try:
             provider: ProviderName = provider_for_model(
                 model_name=self._session.active_model_name,
@@ -1205,9 +1212,18 @@ class SloTUI(App):
             session.begin_external_reporting_close()
             await self._shutdown_step(cleanup=self._cancel_session_preparation)
             await self._shutdown_step(cleanup=self._close_workflow_observation)
+            admitted_prompt = self._in_flight_task
             await self._shutdown_step(cleanup=session.close_external_reporting)
             await self._shutdown_step(cleanup=self._close_selected_delivery)
         await self._drain_shutdown_owners(session=session)
+        # Ordinary registered tasks may not have entered the session yet.
+        # They own no bridge resource and must remain admissible after unmount.
+        if admitted_prompt is None or admitted_prompt.done():
+            await self._shutdown_step(cleanup=session.close_agent_resources)
+        elif session.active_model_name.startswith("claude-bridge:"):
+            # Bridge shutdown must settle native waiters. Ordinary admitted
+            # prompts retain their established finish/abort policy at unmount.
+            await self._shutdown_step(cleanup=session.close_agent_resources)
         await self._shutdown_step(cleanup=self._path_suggestions.join)
         # A failed viewer helper is not evidence that its retained workers ended.
         for task in tuple(self._visualizer_launch_tasks.values()):
@@ -3082,6 +3098,16 @@ class SloTUI(App):
             await self._cancel_session_preparation()
         except Exception:
             self._replacement_delivery_safe = False
+        try:
+            await old_session.close_agent_resources()
+        except Exception:
+            await self._discard_replacement_session(candidate=candidate)
+            self._delivery_quiescing = False
+            self._write_lifecycle_notice(
+                content="Current session resources could not close; retry resource cleanup.",
+                classes="tool-result",
+            )
+            return
         await self._transfer_replacement_delivery(old_session=old_session)
         try:
             outcome = await old_session.close_external_reporting()
@@ -3289,6 +3315,7 @@ class SloTUI(App):
             candidate = SloAgentSession.build(
                 config=self._build_replacement_session_config(old_session=self._session),
                 allow_pending_preparation=True,
+                bridge_adapter_class=self._session.bridge_adapter_class,
             )
             if candidate.history_root != self._session.history_root:
                 raise ValueError("Replacement history root must remain unchanged")
@@ -3714,6 +3741,8 @@ class SloTUI(App):
             OrchestratorSessionBootstrap,
         )
 
+        if session.active_model_name.startswith("claude-bridge:"):
+            return
         OrchestratorSessionBootstrap.attach(session=session)
 
     @staticmethod

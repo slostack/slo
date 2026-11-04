@@ -252,6 +252,11 @@ class ModelPool(BaseChatModel):
         return self._entry_by_name[self.active_model_name].provider
 
     @property
+    def bridge_owner(self) -> None:
+        """Pools do not own stateful bridge runtimes."""
+        return None
+
+    @property
     def supports_explicit_caching(self) -> bool:
         """Return whether the active route requires explicit cache_control markers.
 

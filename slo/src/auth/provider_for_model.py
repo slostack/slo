@@ -38,6 +38,11 @@ def provider_for_model(*, model_name: str) -> ProviderName:
     Raises:
         ValueError: When ``model_name`` matches no known catalog entry or prefix.
     """
+    if model_name.startswith("claude-bridge:"):
+        from src.bridges.claude.routes import ClaudeBridgeRoute
+
+        ClaudeBridgeRoute.validate(model_name=model_name)
+        return ProviderName.ANTHROPIC
     if model_name.startswith(OPENROUTER_PREFIX):
         _validate_openrouter_route(model_name=model_name)
         return ProviderName.OPENROUTER

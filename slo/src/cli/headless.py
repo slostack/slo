@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 from types import FrameType
-from typing import TYPE_CHECKING, Callable, Optional, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 
 from src.auth.credential_dao import CredentialDAO
 from src.auth.credential_resolver import CredentialResolver
@@ -60,6 +60,7 @@ from src.cli.headless_events import emit_lifecycle_event
 from src.cli.headless_watchdog import HeadlessWatchdog
 
 if TYPE_CHECKING:
+    from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
     from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 
 __all__ = ["HeadlessRunner"]
@@ -96,6 +97,8 @@ class HeadlessRunner:
         orchestrator_mode: bool = False,
         notify_session_id: Optional[str] = None,
         notifier: Optional[WorkflowNotifier] = None,
+        session_preparer: Optional[Callable[[SessionConfigDAO], Awaitable[SloAgentSession]]] = None,
+        bridge_adapter_class: Optional[type["SloBridgeAdapterProtocol"]] = None,
     ) -> None:
         """Bind the runner to its session config.
 
@@ -111,6 +114,8 @@ class HeadlessRunner:
             notifier (Optional[WorkflowNotifier]): Injectable notifier for
                 tests. Ignored when ``notify_session_id`` is ``None``.
         """
+        self._session_preparer = session_preparer
+        self._bridge_adapter_class = bridge_adapter_class
         self._session_id: str = config.session_id or str(uuid4())
         self._config: SessionConfigDAO = config.model_copy(update={"session_id": self._session_id})
         self._orchestrator_mode: bool = orchestrator_mode
@@ -143,13 +148,38 @@ class HeadlessRunner:
         Returns:
             int: Existing terminal-kind exit code.
         """
+        result: Optional[int] = None
         try:
-            return await self._invoke(prompt=prompt)
+            result = await self._invoke(prompt=prompt)
+        except BaseException:
+            await self._finalize_agent_resources()
+            try:
+                await self._close_external_reporting()
+            finally:
+                self._operation_credential = None
+            raise
+        try:
+            await self._finalize_agent_resources()
+        except Exception:
+            self._report_cleanup_failure()
+            if result == 0:
+                result = 1
         finally:
             try:
                 await self._close_external_reporting()
             finally:
                 self._operation_credential = None
+        return result
+
+    async def _finalize_agent_resources(self) -> None:
+        """Close model resources independently of reporting cleanup."""
+        if self._session is None:
+            return
+        try:
+            await self._session.close_agent_resources()
+        except Exception:
+            self._report_cleanup_failure()
+            raise
 
     async def _close_external_reporting(self) -> None:
         """Join adopted reporting owners before releasing the runner's session."""
@@ -238,6 +268,16 @@ class HeadlessRunner:
         finally:
             await self._cancel_preparation_task_if_needed(preparation_task=preparation_task)
         if self._orchestrator_mode:
+            if self._config.model_name and self._config.model_name.startswith("claude-bridge:"):
+                await self._emit(
+                    AgentStreamEventDAO(
+                        kind="run_failed",
+                        content="Claude bridge does not support child agents or orchestrator mode.",
+                        metadata={"failure_scope": "unsupported_option"},
+                    )
+                )
+                self._terminal_kind = "run_failed"
+                return exit_code_for_terminal_kind(kind="run_failed")
             self._attach_orchestrator(session=session)
             self._fleet_entries_supplier = self._resolve_fleet_entries_supplier(session=session)
             self._fleet_snapshot_supplier = self._build_fleet_snapshot_supplier()
@@ -361,11 +401,15 @@ class HeadlessRunner:
         Returns:
             Optional[SloAgentSession]: Prepared session, or None after safe failure.
         """
+        if self._session_preparer is not None:
+            return await self._session_preparer(self._config)
         routes: tuple[str, ...] = SloAgentSession._configured_model_names(config=self._config)
-        if not any(route.startswith("openrouter:") for route in routes):
+        if not any(route.startswith(("openrouter:", "claude-bridge:")) for route in routes):
             return SloAgentSession.build(config=self._config)
         try:
-            return await SloAgentSession.prepare(config=self._config)
+            return await SloAgentSession.prepare(
+                config=self._config, bridge_adapter_class=self._bridge_adapter_class
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -415,7 +459,7 @@ class HeadlessRunner:
             AgentStreamEventDAO(
                 kind=kind,  # type: ignore[arg-type]
                 content=(
-                    "Model preparation failed; refresh OpenRouter models or select a direct model."
+                    self._preparation_failure_guidance()
                     if kind == "run_failed"
                     else "Model preparation aborted."
                 ),
@@ -430,6 +474,15 @@ class HeadlessRunner:
             message=f"run ended with {kind}",
             payload={"terminal_kind": kind},
         )
+
+    def _preparation_failure_guidance(self) -> str:
+        """Select fixed runtime-specific guidance without exposing raw preparation errors."""
+        if (self._config.model_name or "").startswith("claude-bridge:"):
+            return (
+                "Claude bridge preparation failed. Check Claude Code /login outside Slo and native overrides; "
+                "then retry a fresh bridge session. Native transcripts may persist with Slo history off."
+            )
+        return "Model preparation failed; refresh OpenRouter models or select a direct model."
 
     async def _shutdown_model_catalog(self) -> None:
         """Drain process-owned catalog refresh work when the headless application exits.

@@ -79,7 +79,8 @@ class ModelCatalogView(Sequence[ModelPickerRowDAO]):
                 provider=entry.provider.value, display_name=entry.display_name, model_name=entry.model_name
             )
             for entry in sorted(
-                snapshot.entries.values(), key=lambda item: (item.provider.value, item.model_name)
+                ModelCatalogService.picker_entries(snapshot=snapshot),
+                key=lambda item: (item.provider.value, item.model_name),
             )
             if entry.visible_in_picker
         ]
@@ -169,7 +170,7 @@ class ModelSuggestionProjection:
     _revision: int = 0
     _statuses: dict[ProviderName, str] = {}
     _auth_types: dict[ProviderName, AuthType] = {}
-    _key: tuple[int, int, int, str] | None = None
+    _key: tuple[int, int, int, str, bool] | None = None
     _snapshot: Optional[ModelCatalogSnapshotDAO] = None
     _rows: list[ModelSuggestionEntryDAO] = []
 
@@ -247,7 +248,7 @@ class ModelSuggestionProjection:
             Visible entries ordered by provider then canonical name.
         """
         return sorted(
-            (entry for entry in snapshot.entries.values() if entry.visible_in_picker),
+            ModelCatalogService.picker_entries(snapshot=snapshot),
             key=lambda entry: (entry.provider.value, entry.model_name),
         )
 
@@ -278,7 +279,10 @@ class ModelSuggestionProjection:
             display_name=entry.display_name,
             provider=entry.provider,
             is_active=entry.model_name == active_model_name,
-            requires_auth=statuses.get(entry.provider) == "requires /auth",
+            requires_auth=(
+                not entry.model_name.startswith("claude-bridge:")
+                and statuses.get(entry.provider) == "requires /auth"
+            ),
             status_summary=cls._row_status(entry=entry, statuses=statuses, auth_types=auth_types),
             context_window=entry.runtime_profile.context_window,
             catalog_generation=generation,
@@ -377,6 +381,8 @@ class ModelSuggestionProjection:
         Returns:
             Local incompatibility guidance or the existing authentication status.
         """
+        if entry.model_name.startswith("claude-bridge:"):
+            return "native login/access unchecked; host planning limits; no /auth required"
         if entry.backend_eligibility_message(auth_type=auth_types.get(entry.provider)) is not None:
             return "unavailable for ChatGPT/Codex; Platform API key required"
         return statuses.get(entry.provider, "authentication not checked")
@@ -438,7 +444,15 @@ class ModelSuggestionProjection:
     ) -> list[ModelSuggestionEntryDAO]:
         """Return cached rows keyed by generation, status revision and active route."""
         lifecycle = ModelCatalogService.lifecycle_status()
-        key = (snapshot.generation, cls._revision, lifecycle.revision, active_model_name)
+        from src.bridges.claude.routes import ClaudeBridgeRoute
+
+        key = (
+            snapshot.generation,
+            cls._revision,
+            lifecycle.revision,
+            active_model_name,
+            ClaudeBridgeRoute.is_enabled(),
+        )
         if key != cls._key or snapshot is not cls._snapshot:
             statuses = dict(cls._statuses)
             summary = cls._catalog_status_summary()

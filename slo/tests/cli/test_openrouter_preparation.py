@@ -173,7 +173,9 @@ async def test_sigterm_during_preparation_cancels_work_and_emits_one_abort(
     preparation_cancelled = asyncio.Event()
     installed_handler: list[object] = []
 
-    async def wait_for_preparation(*, config: SessionConfigDAO) -> SloAgentSession:
+    async def wait_for_preparation(
+        *, config: SessionConfigDAO, bridge_adapter_class: object
+    ) -> SloAgentSession:
         """Block preparation until the runner cancellation controller cancels this task."""
         preparation_started.set()
         try:

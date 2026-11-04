@@ -1,0 +1,64 @@
+"""Reject unsupported assistant blocks before the SDK can silently discard them."""
+
+from collections.abc import AsyncIterator
+# Match the SDK Transport's heterogeneous raw JSON interface before typed parsing.
+from typing import Any
+
+from claude_agent_sdk._internal.transport import Transport
+
+from .response import protocol_error
+
+
+class ValidatedClaudeTransport(Transport):
+    """Guard raw assistant content; leave control routing and lifetime to the SDK.
+
+    Only text, thinking and tool_use belong to this bridge's response contract.
+    Unknown fields on supported blocks remain vendor metadata, not corroborated
+    payload. Unknown block kinds must not become vacuously valid empty echoes.
+    """
+
+    def __init__(self, *, transport: Transport) -> None:
+        """Retain the runtime-owned transport without starting native I/O."""
+        self._transport = transport
+
+    async def connect(self) -> None:
+        """Let the SDK open its underlying transport."""
+        await self._transport.connect()
+
+    async def write(self, data: str) -> None:
+        """Forward SDK control and query frames unchanged."""
+        await self._transport.write(data=data)
+
+    async def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        """Validate each raw assistant before SDK parsing, until SDK cancellation.
+
+        Raises:
+            ClaudeBridgeError: Unsupported or malformed assistant content.
+        """
+        async for message in self._transport.read_messages():
+            self._validate_assistant(message=message)
+            yield message
+
+    @staticmethod
+    def _validate_assistant(*, message: dict[str, Any]) -> None:
+        """Reject lossy block parsing without interpreting unrelated control frames."""
+        if message.get("type") != "assistant":
+            return
+        payload = message.get("message")
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            raise protocol_error()
+        for block in payload["content"]:
+            if not isinstance(block, dict) or block.get("type") not in ("text", "thinking", "tool_use"):
+                raise protocol_error()
+
+    async def close(self) -> None:
+        """Preserve SDK-owned underlying cleanup, without a second lifetime."""
+        await self._transport.close()
+
+    def is_ready(self) -> bool:
+        """Report underlying readiness without maintaining parallel state."""
+        return self._transport.is_ready()
+
+    async def end_input(self) -> None:
+        """Preserve the SDK's input closure protocol."""
+        await self._transport.end_input()

@@ -97,14 +97,14 @@ async def test_identical_rebinding_and_explicit_empty_graph_preserve_inventory(t
         authentication_check=ready_status,
     )
     empty_model = SloClaudeBridge(model_name="claude-bridge:claude-haiku-5-5", bridge_adapter=empty_adapter)
+    agent = SloAgent(llm=empty_model, tools=[], cwd=str(tmp_path))
     empty_model.configure_session(
         session_options=SloBridgeSessionOptionsDAO(
             session_id="empty",
             working_directory=tmp_path,
-            instructions="host",
+            instructions=agent._system_prompt,
         )
     )
-    agent = SloAgent(llm=empty_model, tools=[], cwd=str(tmp_path))
     try:
         events = [event async for event in agent.invoke(query="hello")]
         assert events[-1].kind == "run_completed"

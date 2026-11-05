@@ -53,7 +53,7 @@ def test_early_fragments_validate_once_at_complete_boundary() -> None:
         assert assembly.calls == ()
         assembly.consume(event={"type": "content_block_stop", "index": index})
     assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
-    assert assembly.consume(event={"type": "message_stop"}) == ("", True)
+    assert assembly.consume(event={"type": "message_stop"}) == ("", True, "", 0)
     assert [call.tool_call_id for call in assembly.calls] == ["a", "b"]
     assert assembly.text == "hello"
     assembly.consume(event={"type": "message_start", "message": {"id": "two"}})
@@ -106,7 +106,7 @@ def test_legacy_echo_identity_falls_back_to_current_response(response_id: Any) -
     assembly.consume(event={"type": "content_block_start", "index": 0, "content_block": block})
     assembly.reconcile_echo(message=echo(response_id=response_id, content=[block]))
     assembly.consume(event={"type": "content_block_stop", "index": 0})
-    assert assembly.consume(event={"type": "message_stop"}) == ("", True)
+    assert assembly.consume(event={"type": "message_stop"}) == ("", True, "", 0)
     assert assembly.text == "hello"
 
 
@@ -125,7 +125,7 @@ def test_finite_delta_arguments_publish_without_echo() -> None:
     """R5: strict validation preserves nested finite JSON values and types."""
     arguments = {"nested": [None, True, False, 0, 1.25, 1e300, "NaN", {"value": -2}]}
     assembly = streamed_tool_arguments(partial_json=json.dumps(arguments))
-    assert assembly.consume(event={"type": "message_stop"}) == ("", True)
+    assert assembly.consume(event={"type": "message_stop"}) == ("", True, "", 0)
     assert len(assembly.calls) == 1
     assert assembly.calls[0].arguments == arguments
 
@@ -390,7 +390,7 @@ def test_completed_snapshots_share_budget_across_responses() -> None:
             }
         )
         assembly.consume(event={"type": "content_block_stop", "index": 0})
-        assert assembly.consume(event={"type": "message_stop"}) == ("", True)
+        assert assembly.consume(event={"type": "message_stop"}) == ("", True, "", 0)
     # Old snapshots still corroborate after the second response, without eviction.
     assembly.reconcile_echo(
         message=echo(response_id="one", content=[{"type": "text", "text": "x" * 100}], uuid="")

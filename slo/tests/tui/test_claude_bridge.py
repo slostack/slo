@@ -108,16 +108,16 @@ async def test_fresh_prompt_streams_and_persists_answer(
         app.query_one(PromptInput).text = "/model claude-bridge:claude-haiku-5-5"
         await pilot.press("enter")
         await pilot.pause()
-        errors = [content for content, _ in app._adapter.lines[before:] if "fresh session" in content]
-        assert errors == ["Claude bridge requires a fresh session without replay history."]
-        assert session.active_model_name == "claude-bridge:claude-opus-4-8"
+        rejections = [content for content, _ in app._adapter.lines[before:] if "fresh session" in content]
+        assert rejections == []
+        assert session.active_model_name == "claude-bridge:claude-haiku-5-5"
         assert transport.prompts == ["hello"]
         finished_session = session
         app.query_one(PromptInput).text = "/new"
         await pilot.press("enter")
         await pilot.pause()
         assert app._session is not finished_session
-        assert app._session.active_model_name == "claude-bridge:claude-opus-4-8"
+        assert app._session.active_model_name == "claude-bridge:claude-haiku-5-5"
         assert transport.closed
     terminal_guard.cancel()
     await asyncio.gather(terminal_guard, return_exceptions=True)

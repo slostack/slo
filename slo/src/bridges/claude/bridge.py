@@ -4,7 +4,8 @@ import asyncio
 import json
 from copy import deepcopy
 from collections.abc import AsyncGenerator, Sequence
-from typing import Any, Literal, Optional
+from pathlib import Path
+from typing import Any, Literal, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
@@ -29,19 +30,25 @@ from .sdk.dao import (
     ClaudeInteractionBindingDAO,
     ClaudeImageDAO,
     ClaudeSessionOptionsDAO,
+    ClaudeSubmissionPlanDAO,
     ClaudeToolDefinitionDAO,
     ClaudeToolResultBatchDAO,
     ClaudeToolResultDAO,
     ClaudeToolResultSubmissionDAO,
     ClaudeTextDAO,
 )
-from .sdk.events import ClaudeResponseCompletedDAO, ClaudeTextEventDAO
+from .sdk.events import ClaudeResponseCompletedDAO, ClaudeTextEventDAO, ClaudeThinkingEventDAO
 from .sdk.protocol import SloBridgeAdapterProtocol
 from .sdk.exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
 from .sdk.inventory import ClaudeToolInventory
+from .history_transcript import ClaudeHistoryTranscript
+from .host_content import ClaudeHostContent
 from .tool_result import ToolCallResponseAdapter
 from .response import AIAgentResponseAdapter, ClaudeResponseTranslationDAO
 from .tool_call import ToolCallAdapter, ClaudeCompletedCallBatchDAO
+
+if TYPE_CHECKING:
+    from .summary_bridge import ClaudeSummaryBridge
 
 
 class SloClaudeBridge(BaseChatModel):
@@ -55,6 +62,7 @@ class SloClaudeBridge(BaseChatModel):
     _invocation_id: Optional[str] = PrivateAttr(default=None)
     _cancellation_task: Optional[asyncio.Task[None]] = PrivateAttr(default=None)
     _closed: bool = PrivateAttr(default=False)
+    _retired: bool = PrivateAttr(default=False)
     _startup_active: bool = PrivateAttr(default=False)
     _tools: tuple[ClaudeToolDefinitionDAO, ...] = PrivateAttr(default=())
     _pending: Optional[ClaudeResponseCompletedDAO] = PrivateAttr(default=None)
@@ -70,6 +78,20 @@ class SloClaudeBridge(BaseChatModel):
     def _llm_type(self) -> str:
         """Identify the native runtime without pretending it is direct Anthropic HTTP."""
         return "slo-claude-bridge"
+
+    def summary_bridge(
+        self, *, bridge_adapter: SloBridgeAdapterProtocol, session_id: str, working_directory: Path
+    ) -> "ClaudeSummaryBridge":
+        """Build a one-shot, tool-free bridge for the same route and effort as this conversation."""
+        from .summary_bridge import ClaudeSummaryBridge
+
+        return ClaudeSummaryBridge(
+            model_name=self.model_name,
+            effort=self.effort,
+            bridge_adapter=bridge_adapter,
+            session_id=session_id,
+            working_directory=working_directory,
+        )
 
     def configure_session(self, *, session_options: SloBridgeSessionOptionsDAO) -> None:
         """Store final host context inertly and reject implicit rebinding."""
@@ -118,20 +140,16 @@ class SloClaudeBridge(BaseChatModel):
         """Stream one new text answer; the final chunk follows SDK closure."""
         if self._closed or self._session_options is None:
             raise RuntimeError("Claude bridge is closed or unconfigured; start a new session.")
-        text = (
-            ""
+        plan = (
+            None
             if self._pending is not None
-            else self._validate_messages(
-                messages=messages,
-                stop=stop,
-                kwargs=kwargs,
-            )
+            else self._validated_plan(messages=messages, stop=stop, kwargs=kwargs)
         )
         boundary = False
         proven_unsent = False
         self._startup_active = True
         try:
-            await self._admit_response(messages=messages, text=text, stop=stop, kwargs=kwargs)
+            await self._admit_response(messages=messages, plan=plan, stop=stop, kwargs=kwargs)
             self._startup_active = False
             assert self._invocation_id is not None
             assert self._response_adapter is not None
@@ -144,7 +162,9 @@ class SloClaudeBridge(BaseChatModel):
                     yield chunk
         except ClaudeSubmissionNotStartedError:
             proven_unsent = True
-            self._retain_unsent_audit_prefix(messages=messages)
+            self._retain_unsent_audit_prefix(
+                messages=messages, native_session_dropped=bool(plan and plan.fresh_native_session)
+            )
             raise
         except ClaudeBridgeError as error:
             # Only a validated missing subset is correctable. No result has been
@@ -159,11 +179,11 @@ class SloClaudeBridge(BaseChatModel):
         self,
         *,
         messages: list[BaseMessage],
-        text: str,
+        plan: Optional[ClaudeSubmissionPlanDAO],
         stop: Optional[list[str]],
         kwargs: dict[str, Any],
     ) -> None:
-        """Submit a validated continuation or one new prompt, never replay history.
+        """Submit a validated continuation or one planned prompt with its unseen transcript.
 
         Called by the stream while startup cancellation is active. Validation or
         submission errors propagate to its existing unsent/uncertain failure policy.
@@ -178,8 +198,10 @@ class SloClaudeBridge(BaseChatModel):
             await self._tool_result_adapter.close()
             self._tool_result_adapter = None
             return
-        assert self._session_options is not None
-        await self._start_invocation(text=text, options=self._session_options)
+        assert self._session_options is not None and plan is not None
+        if plan.fresh_native_session:
+            self.bridge_adapter.start_fresh_conversation()
+        await self._start_invocation(content=plan.content, options=self._session_options)
 
     def _record_tool_boundary(
         self,
@@ -218,13 +240,18 @@ class SloClaudeBridge(BaseChatModel):
         self._pending = None
         self._record_live_context(messages=[*messages, AIMessage(content=response_text)])
 
-    def _retain_unsent_audit_prefix(self, *, messages: list[BaseMessage]) -> None:
-        """Keep a proven-unsent input as audit context, never as a future native query.
+    def _retain_unsent_audit_prefix(
+        self, *, messages: list[BaseMessage], native_session_dropped: bool
+    ) -> None:
+        """Keep unsent input as host audit context; Claude has seen none of it.
 
-        Only the typed pre-submission failure reaches this transition. Clearing
-        invocation identity allows an explicit retry with the retained native session.
+        ``_consumed`` only ever means what Claude saw, so it never advances here.
+        A fresh plan already dropped the native session, so nothing remains seen.
+        Clearing invocation identity allows an explicit retry with the retained session.
         """
-        self._record_live_context(messages=messages)
+        self._completed_history = deepcopy([m for m in messages if not isinstance(m, SystemMessage)])
+        if native_session_dropped:
+            self._consumed = []
         self._invocation_id = None
 
     def _record_live_context(self, *, messages: list[BaseMessage]) -> None:
@@ -235,10 +262,17 @@ class SloClaudeBridge(BaseChatModel):
         )
 
     async def _accept_response(self, translation: ClaudeResponseTranslationDAO) -> None:
-        """Build host text/terminal chunks from the sole portable response assembly."""
+        """Build host thinking/text/terminal chunks from the sole portable response assembly."""
         event = translation.event
         if isinstance(event, ClaudeTextEventDAO):
             self._translated_chunks.append(ChatGenerationChunk(message=AIMessageChunk(content=event.text)))
+            return
+        if isinstance(event, ClaudeThinkingEventDAO):
+            # Same block shape the shared normalizer reads for every model's reasoning.
+            thinking_block = {"type": "thinking", "thinking": event.text, "index": event.block_index}
+            self._translated_chunks.append(
+                ChatGenerationChunk(message=AIMessageChunk(content=[thinking_block]))
+            )
             return
         self._record_terminal_context(messages=self._response_messages, response_text=translation.text)
         self._translated_chunks.append(
@@ -310,7 +344,7 @@ class SloClaudeBridge(BaseChatModel):
             [
                 {
                     "type": m.type,
-                    "content": m.content,
+                    "content": ClaudeHostContent.model_context(content=m.content),
                     "tool_calls": m.tool_calls if isinstance(m, AIMessage) else None,
                     "tool_call_id": m.tool_call_id if isinstance(m, ToolMessage) else None,
                     "status": m.status if isinstance(m, ToolMessage) else None,
@@ -363,37 +397,9 @@ class SloClaudeBridge(BaseChatModel):
         blocks = [message.content] if isinstance(message.content, str) else message.content
         return ClaudeToolResultDAO(
             tool_call_id=message.tool_call_id,
-            content=tuple(cls._build_result_content(block=block) for block in blocks),
+            content=tuple(ClaudeHostContent.translate(block=block) for block in blocks),
             is_error=message.status == "error",
         )
-
-    @staticmethod
-    def _build_result_content(*, block: str | dict[Any, Any]) -> ClaudeTextDAO | ClaudeImageDAO:
-        """Translate only lossless text/base64-image host blocks at the bridge entry.
-
-        Args:
-            block: One LangChain content block, including an empty string.
-
-        Returns:
-            ClaudeTextDAO | ClaudeImageDAO: Validated portable live content.
-
-        Raises:
-            ValueError: Unknown fields, content kinds or malformed image sources occur.
-        """
-        if isinstance(block, str):
-            return ClaudeTextDAO(text=block)
-        if block.get("type") == "text" and set(block) == {"type", "text"}:
-            return ClaudeTextDAO(text=block["text"])
-        if block.get("type") != "image" or set(block) != {"type", "source"}:
-            raise ValueError("Unsupported Claude tool result block.")
-        source = block["source"]
-        if (
-            not isinstance(source, dict)
-            or set(source) != {"type", "media_type", "data"}
-            or source["type"] != "base64"
-        ):
-            raise ValueError("Unsupported Claude tool result image source.")
-        return ClaudeImageDAO(media_type=source["media_type"], data=source["data"])
 
     async def _submit_tool_results(self, submission: ClaudeToolResultSubmissionDAO) -> None:
         """Adapt the portable receiver to the existing SDK result operation, not a query.
@@ -406,7 +412,12 @@ class SloClaudeBridge(BaseChatModel):
             tool_result_batch=submission.tool_result_batch,
         )
 
-    async def _start_invocation(self, *, text: str, options: SloBridgeSessionOptionsDAO) -> None:
+    async def _start_invocation(
+        self,
+        *,
+        content: tuple[ClaudeTextDAO | ClaudeImageDAO, ...],
+        options: SloBridgeSessionOptionsDAO,
+    ) -> None:
         """Configure and submit exactly once; result continuations never enter here."""
         await self.bridge_adapter.start_session(
             session_options=ClaudeSessionOptionsDAO(
@@ -430,29 +441,59 @@ class SloClaudeBridge(BaseChatModel):
             tool_call_receiver=self._accept_tool_response,
         )
         await self.bridge_adapter.invoke_agent(
-            invocation_options=ClaudeInvocationOptionsDAO(invocation_id=invocation_id, text=text)
+            invocation_options=(
+                ClaudeInvocationOptionsDAO(invocation_id=invocation_id, text=content[0].text)
+                if len(content) == 1 and isinstance(content[0], ClaudeTextDAO)
+                else ClaudeInvocationOptionsDAO(invocation_id=invocation_id, content=content)
+            )
         )
 
-    def _validate_messages(
+    def _validated_plan(
         self, *, messages: list[BaseMessage], stop: Optional[list[str]], kwargs: dict[str, Any]
-    ) -> str:
-        """Reject unsupported history and media before starting the native runtime."""
+    ) -> ClaudeSubmissionPlanDAO:
+        """Reject generation options and closed bridges, then plan the submission."""
         if self._closed or self._session_options is None:
             raise RuntimeError("Claude bridge is closed or unconfigured.")
-        if self._consumed:
-            prefix = self._semantic_messages(messages=messages[: len(self._consumed)])
-            if prefix != self._consumed:
-                raise ValueError("Claude conversation prefix changed; start a new session.")
-            messages = messages[len(self._consumed) :]
-        conversation = [message for message in messages if not isinstance(message, SystemMessage)]
-        if stop or kwargs or len(conversation) != 1 or not isinstance(conversation[0], HumanMessage):
-            raise ValueError(
-                "Claude bridge supports one fresh text prompt without history or generation options."
-            )
-        text = conversation[0].content
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("Claude bridge requires nonempty text; images are unavailable.")
-        return text
+        if stop or kwargs:
+            raise ValueError("Claude bridge does not support generation options.")
+        return self.plan_submission(messages=messages)
+
+    def plan_submission(self, *, messages: list[BaseMessage]) -> ClaudeSubmissionPlanDAO:
+        """Choose the native session and order the content Claude has not seen.
+
+        When the messages Claude already saw still prefix the incoming history,
+        the live native session continues and only the unseen messages are sent
+        as a transcript. Otherwise a fresh native session receives all prior
+        messages. The new prompt always follows the transcript.
+
+        Args:
+            messages: Replayed Slo messages ending with the new prompt.
+
+        Returns:
+            ClaudeSubmissionPlanDAO: Native session choice and ordered content.
+
+        Raises:
+            ValueError: The last message is not a nonempty HumanMessage.
+        """
+        prompt = self._build_prompt(message=messages[-1] if messages else None)
+        prior = messages[:-1]
+        continues = (
+            bool(self._consumed)
+            and self._semantic_messages(messages=messages[: len(self._consumed)]) == self._consumed
+        )
+        unseen = prior[len(self._consumed) :] if continues else prior
+        transcript = ClaudeHistoryTranscript.render(messages=unseen)
+        return ClaudeSubmissionPlanDAO(fresh_native_session=not continues, content=(*transcript, *prompt))
+
+    @staticmethod
+    def _build_prompt(*, message: Optional[BaseMessage]) -> tuple[ClaudeTextDAO | ClaudeImageDAO, ...]:
+        """Translate the final nonempty human prompt into ordered live content."""
+        if not isinstance(message, HumanMessage):
+            raise ValueError("Claude bridge requires the final message to be a human prompt.")
+        content = ClaudeHostContent.translate_all(content=message.content)
+        if not any(isinstance(block, ClaudeImageDAO) or block.text.strip() for block in content):
+            raise ValueError("Claude bridge requires nonempty text or an image.")
+        return content
 
     async def _agenerate(
         self,
@@ -526,3 +567,8 @@ class SloClaudeBridge(BaseChatModel):
         if cancellation_failure is not None:
             # Successful explicit adapter close settles a previously failed cancel.
             self._cancellation_task = None
+        self._retired = True
+
+    def is_retired(self) -> bool:
+        """Report that closure finished without a retained cleanup failure."""
+        return self._retired

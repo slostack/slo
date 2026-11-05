@@ -50,6 +50,7 @@ class SloClaudeBridgeAdapter:
         self._reader_active = False
         self._admission_active = False
         self._resume_session_id: Optional[str] = None
+        self._fresh_conversation_requested = False
         self._authentication_task: Optional[asyncio.Task[ClaudeAuthenticationStatusDAO]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -135,7 +136,7 @@ class SloClaudeBridgeAdapter:
             raise RuntimeError("Claude response already has a reader.")
         if self._session_options is None:
             raise RuntimeError("Claude session is not configured.")
-        if not invocation_options.text.strip():
+        if not invocation_options.carries_prompt():
             raise ValueError("Claude bridge requires nonempty text.")
         status = await self.check_authentication()
         self._ensure_adapter_open()
@@ -148,15 +149,26 @@ class SloClaudeBridgeAdapter:
                 code="authentication_required", safe_message=status.safe_message
             )
         if self._invocation_options is not None:
-            resume_session_id = self._runtime.completed_session_id()
+            resume_session_id = (
+                None if self._fresh_conversation_requested else self._runtime.completed_session_id()
+            )
             self._resume_session_id = resume_session_id
             self._runtime = ClaudeSDKRuntime(
                 transport=self._transport,
                 configuration=self._configuration,
                 resume_session_id=resume_session_id,
             )
+        self._fresh_conversation_requested = False
         self._invocation_options = invocation_options
         self._runtime.start(session_options=self._session_options, invocation_options=invocation_options)
+
+    def start_fresh_conversation(self) -> None:
+        """Forget the in-memory native resume id so the next invocation starts unseeded.
+
+        Nothing is persisted; the native transcript is only a disposable cache.
+        """
+        self._resume_session_id = None
+        self._fresh_conversation_requested = True
 
     async def read_response(self, *, invocation_id: str) -> AsyncIterator[ClaudeBridgeEvent]:
         """Stream one admitted invocation; an invocation never has competing readers."""

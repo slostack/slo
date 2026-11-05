@@ -39,6 +39,10 @@ class SloBridgeAdapterProtocol(Protocol):
         """Seal session admission before invocation; close() joins admitted resources."""
         ...
 
+    def start_fresh_conversation(self) -> None:
+        """Drop the in-memory native resume id so the next invocation starts unseeded."""
+        ...
+
     def read_response(self, *, invocation_id: str) -> AsyncIterator[ClaudeBridgeEvent]:
         """Read to a parked tool boundary or terminal completion after SDK cleanup."""
         ...

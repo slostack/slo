@@ -23,6 +23,14 @@ class ClaudeTextEventDAO(ClaudeResponseEventDAO):
     text: str
 
 
+class ClaudeThinkingEventDAO(ClaudeResponseEventDAO):
+    """Ordered Claude thinking fragment; never part of the answer text."""
+
+    kind: Literal["thinking_delta"] = "thinking_delta"
+    text: str
+    block_index: int = Field(ge=0, description="Native block position, so interleaved blocks stay apart.")
+
+
 class ClaudeResponseCompletedDAO(ClaudeResponseEventDAO):
     """Validated response boundary; terminal success additionally requires cleanup."""
 
@@ -38,4 +46,4 @@ class ClaudeResponseCompletedDAO(ClaudeResponseEventDAO):
         return self
 
 
-ClaudeBridgeEvent = ClaudeTextEventDAO | ClaudeResponseCompletedDAO
+ClaudeBridgeEvent = ClaudeTextEventDAO | ClaudeThinkingEventDAO | ClaudeResponseCompletedDAO

@@ -3,11 +3,11 @@
 import base64
 import binascii
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import field_validator
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class ClaudeInteractionBindingDAO(BaseModel):
@@ -141,9 +141,51 @@ class ClaudeSessionOptionsDAO(BaseModel):
     )
 
 
+class ClaudeSubmissionPlanDAO(BaseModel):
+    """The native session choice and ordered user content for one new prompt."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    fresh_native_session: bool = Field(description="True when Claude has seen none of the history.")
+    content: tuple[ClaudeTextDAO | ClaudeImageDAO, ...] = Field(
+        min_length=1, description="Ordered transcript blocks followed by the new prompt blocks."
+    )
+
+
 class ClaudeInvocationOptionsDAO(BaseModel):
-    """One new text submission, never a replay transcript."""
+    """One new user submission: plain text, or ordered text and image content."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     invocation_id: str = Field(min_length=1, description="Unique submission correlation ID.")
-    text: str = Field(min_length=1, max_length=32 * 1024 * 1024, description="New user text only.")
+    text: str = Field(default="", max_length=32 * 1024 * 1024, description="Plain-text prompt.")
+    content: tuple[ClaudeTextDAO | ClaudeImageDAO, ...] = Field(
+        default=(), description="Ordered text and image prompt; used instead of text."
+    )
+
+    @model_validator(mode="after")
+    def validate_single_prompt_form(self) -> "ClaudeInvocationOptionsDAO":
+        """Require exactly one of plain text or ordered content."""
+        if bool(self.text) == bool(self.content):
+            raise ValueError("Provide exactly one of text or content.")
+        return self
+
+    def carries_prompt(self) -> bool:
+        """Report whether the submission holds any non-blank text or an image."""
+        if not self.content:
+            return bool(self.text.strip())
+        return any(isinstance(block, ClaudeImageDAO) or bool(block.text.strip()) for block in self.content)
+
+    def native_prompt(self) -> str | list[dict[str, Any]]:
+        """Return the SDK user-message content: a string, or ordered wire blocks."""
+        if not self.content:
+            return self.text
+        return [
+            (
+                {"type": "text", "text": block.text}
+                if isinstance(block, ClaudeTextDAO)
+                else {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": block.media_type, "data": block.data},
+                }
+            )
+            for block in self.content
+        ]

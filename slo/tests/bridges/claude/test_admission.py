@@ -196,10 +196,10 @@ async def test_default_startup_checks_native_status_without_prompt(
 
 
 @pytest.mark.parametrize("prior_kind", ["slash_command", "user_message", "assistant_message", "tool_call"])
-async def test_only_actual_conversation_blocks_fresh_bridge_selection(
+async def test_prior_history_does_not_block_bridge_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior_kind: str
 ) -> None:
-    """Slash audit records are not replay, but even incomplete conversation is rejected."""
+    """Any prior history, whichever model wrote it, is welcome on a bridge switch."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     store = FilesystemSessionHistoryStore(root=tmp_path / "history")
     await store.ensure_session(session_id="freshness", workdir=tmp_path, model_name="gpt-5.4")
@@ -221,16 +221,16 @@ async def test_only_actual_conversation_blocks_fresh_bridge_selection(
         bridge_adapter_class=scripted_adapter_class(transport=transport),
     )
     result = await session.prepare_model_selection(model_name="claude-bridge:claude-haiku-5-5")
-    if prior_kind != "slash_command":
-        assert "fresh session" in result
-        assert session.active_model_name == "gpt-5.4"
-        assert not transport.connected
-        return
     assert result.startswith("active model switched")
     events = [event async for event in session.invoke(text="hello")]
     assert events[-1].kind == "run_completed"
-    assert transport.prompts == ["hello"]
     await session.close_agent_resources()
+    [sent] = transport.prompts
+    if prior_kind == "slash_command":
+        assert sent == "hello"
+        return
+    assert isinstance(sent, list) and sent[-1] == {"type": "text", "text": "hello"}
+    assert "synthetic audit or conversation" in "".join(block["text"] for block in sent[:-1])
 
 
 @pytest.mark.parametrize("state", ["login_required", "unsupported", "conflict", "unavailable"])
@@ -314,10 +314,10 @@ async def test_auth_failure_leaves_fresh_prompt_available(
         await session.close_agent_resources()
 
 
-def test_bridge_steering_and_manual_compaction_are_rejected(
+def test_bridge_rejects_steering_but_compacts_like_any_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unsupported follow-up controls fail before a native or history mutation."""
+    """Steering stays unsupported; manual compaction takes the shared path (nothing to compact yet)."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5"),
@@ -334,8 +334,7 @@ def test_bridge_steering_and_manual_compaction_are_rejected(
 
     result = asyncio.run(compaction_result())
     assert isinstance(result, ManualCompactionResultDAO)
-    assert result.status == "unavailable"
-    assert result.detail is not None and "compaction" in result.detail
+    assert result.status == "nothing_to_compact"
 
 
 async def test_dispose_unmounted_candidate_closes_its_bridge(

@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -166,12 +166,12 @@ async def test_cancel_resumed_turn_joins_before_host_terminal(
 
 
 @pytest.mark.parametrize("later", [False, True])
-async def test_query_write_failure_never_replays_and_requires_new_session(
+async def test_query_write_failure_never_replays_and_next_prompt_hands_off_from_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     later: bool,
 ) -> None:
-    """A write may reach native before raising; neither automatic nor explicit replay is safe."""
+    """A write may reach native before raising: no automatic replay; the next prompt starts a fresh session."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
 
     class UncertainTransport(ScriptedClaudeTransport):
@@ -208,9 +208,14 @@ async def test_query_write_failure_never_replays_and_requires_new_session(
                 _ = [event async for event in session.invoke(text="first")]
             with pytest.raises(RuntimeError, match="start a new session"):
                 _ = [event async for event in session.invoke(text="uncertain")]
-            with pytest.raises(RuntimeError, match="new session"):
-                _ = [event async for event in session.invoke(text="must not send")]
-        assert transport.prompts == (["first"] if later else []) + ["uncertain"]
-        assert transport.closed
+            recovered = [event async for event in session.invoke(text="after failure")]
+            assert recovered[-1].kind == "run_completed"
+        assert transport.prompts[: int(later) + 1] == (["first"] if later else []) + ["uncertain"]
+        sent: list[Any] = cast(Any, transport.prompts[-1])
+        *transcript, prompt = sent
+        assert prompt == {"type": "text", "text": "after failure"}
+        replayed = "".join(block["text"] for block in transcript)
+        assert "uncertain" in replayed and ("first" in replayed) is later
+        assert len(transport.prompts) == int(later) + 2
     finally:
         await session.close_agent_resources()

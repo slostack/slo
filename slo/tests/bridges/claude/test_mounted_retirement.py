@@ -215,9 +215,13 @@ async def test_mounted_new_retains_failed_parked_owner_then_explicit_retry(
                 from src.tui.app import PromptInput
 
                 old_agent = session.agent
+                before = len(app._adapter.lines) if app._adapter is not None else 0
                 app.query_one(PromptInput).text = "/model claude-bridge:claude-opus-4-8"
                 await pilot.press("enter")
                 await pilot.pause()
+                assert app._adapter is not None
+                notices = [content for content, _ in app._adapter.lines[before:] if "unconfirmed" in content]
+                assert notices == ["previous model cleanup is unconfirmed; retry /model or /new"]
                 assert session.active_model_name == "claude-bridge:claude-haiku-5-5"
                 assert session.agent is old_agent
                 await app._start_new_session(requested_name=None)

@@ -22,6 +22,10 @@ class SloBridgeProtocol(Protocol):
         """Return detached completed context for this live host session only."""
         ...
 
+    def is_retired(self) -> bool:
+        """Report whether closure completed, so the session may build a replacement."""
+        ...
+
     async def finish_host_turn(self) -> None:
         """Settle a host stop before terminal publication, cancelling unfinished native work."""
         ...

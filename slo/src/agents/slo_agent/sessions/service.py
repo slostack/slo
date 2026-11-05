@@ -34,6 +34,7 @@ import time
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from langchain_core.language_models import BaseChatModel
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional, TYPE_CHECKING
@@ -622,13 +623,11 @@ class SloAgentSession:
         self._session_id: str = session_id
         self._config: Optional[SessionConfigDAO] = config
         self._bridge_adapter_class = bridge_adapter_class
-        self._bridge_prompt_admitted = False
-        self._bridge_submission_pending = False
         self._prepared_bridge_adapter: Optional[SloBridgeAdapterProtocol] = None
         self._bridge_candidates: list[SloBridgeAdapterProtocol] = []
         self._model_selection_active = False
         self._agent_resources_closed = False
-        self._preparation_status: Literal["pending", "ready", "failed"] = (
+        self._preparation_status: Literal["pending", "ready", "failed", "unprepared"] = (
             "pending" if pending_preparation else "ready"
         )
         self._preparation_lock: asyncio.Lock = asyncio.Lock()
@@ -797,7 +796,7 @@ class SloAgentSession:
         return self._bridge_adapter_class
 
     @property
-    def preparation_status(self) -> Literal["pending", "ready", "failed"]:
+    def preparation_status(self) -> Literal["pending", "ready", "failed", "unprepared"]:
         """Return transient startup readiness, never persisted to history or preferences."""
         return self._preparation_status
 
@@ -1886,11 +1885,6 @@ class SloAgentSession:
         Returns:
             ManualCompactionResultDAO: Result before its post-operation snapshot.
         """
-        if self.active_model_name.startswith("claude-bridge:"):
-            return ManualCompactionResultDAO(
-                status="unavailable",
-                detail="Claude bridge conversations do not support Slo compaction.",
-            )
         events, history_result = await self._read_manual_compaction_history()
         if history_result is not None:
             return history_result
@@ -2824,18 +2818,51 @@ class SloAgentSession:
                 self._bridge_candidates.remove(candidate)
             raise
 
-    async def _validate_fresh_bridge_prompt(self, *, text: str, history: Optional[list[dict]]) -> None:
-        """Admit live-session follow-ups without importing an unrelated transcript."""
-        if self._bridge_submission_pending or history:
-            raise ValueError("Claude bridge does not accept externally supplied history.")
+    @asynccontextmanager
+    async def _summariser_model(self) -> AsyncIterator[BaseChatModel]:
+        """Yield the model that summarises history: the active one, or a one-shot Claude bridge.
+
+        A Claude conversation is stateful and tool-bound, so its summary runs on a separate
+        tool-free native session that is closed afterwards, leaving the conversation untouched.
+        """
+        assert self._agent is not None and self._agent.llm is not None
+        if not self.active_model_name.startswith("claude-bridge:"):
+            yield self._agent.llm
+            return
+        from src.bridges.claude.bridge import SloClaudeBridge
+
+        conversation = self._agent.llm
+        assert isinstance(conversation, SloClaudeBridge)
+        adapter = await self._prepare_bridge_candidate(model_name=self.active_model_name)
+        assert self._config is not None
+        summariser = conversation.summary_bridge(
+            bridge_adapter=adapter,
+            session_id=f"{self._session_id}-summary",
+            working_directory=Path(self._config.workdir).resolve(),
+        )
+        try:
+            yield summariser
+        finally:
+            await summariser.close()
+            if adapter in self._bridge_candidates:
+                self._bridge_candidates.remove(adapter)
+
+    def _discard_retired_bridge(self) -> None:
+        """Let the normal preparation and agent build replace a bridge closed with confirmed cleanup.
+
+        The next prompt then hands off from Slo history, as with any model after a failed turn.
+        """
+        if self._is_running or self._agent is None or not self._agent.bridge_is_retired():
+            return
+        self._agent = None
+        self._prepared_bridge_adapter = None
+        self._preparation_status = "unprepared"
+
+    async def _admit_bridge_prompt(self, *, text: str) -> None:
+        """Admit one prompt; the bridge translates any replayed history like every model."""
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Claude bridge requires nonempty text.")
-        if self._history_store is not None and not self._bridge_prompt_admitted:
-            events = await self._history_store.load_events(session_id=self.session_id)
-            if any(event.kind in {"user_message", "assistant_message", "tool_call"} for event in events):
-                raise ValueError("Claude bridge requires a fresh session without replay history.")
         await self._ensure_agent_ready()
-        self._bridge_submission_pending = True
 
     async def dispose_unmounted_session(self) -> None:
         """Dispose an inactive candidate's model, reporting and capability owners."""
@@ -3372,12 +3399,6 @@ class SloAgentSession:
             return []
         return list(self._config.extra_tools or [])
 
-    def _commit_bridge_prompt_submission(self) -> None:
-        """Remember live-session admission so its own history can support follow-ups."""
-        if self._bridge_submission_pending:
-            self._bridge_prompt_admitted = True
-            self._bridge_submission_pending = False
-
     def steer(self, *, message: str | BaseMessage) -> None:
         """Reject steering before this tool-free slice can admit another turn."""
         if self.active_model_name.startswith("claude-bridge:"):
@@ -3454,12 +3475,6 @@ class SloAgentSession:
                 model_names=(model_name,)
             )
             if model_name.startswith("claude-bridge:"):
-                if self._history_store is not None:
-                    events = await self._history_store.load_events(session_id=self.session_id)
-                    if any(
-                        event.kind in {"user_message", "assistant_message", "tool_call"} for event in events
-                    ):
-                        raise ValueError("Claude bridge requires a fresh session without replay history.")
                 self._validate_bridge_extensions()
                 candidate = await self._prepare_bridge_candidate(model_name=model_name)
         except ModelPreparationRequiredError:
@@ -3480,7 +3495,12 @@ class SloAgentSession:
                 self._validate_model_selection_credential(model_name=model_name, snapshot=snapshot)
             except ValueError as error:
                 return str(error)
-            await self._close_current_agent_resources()
+            from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
+
+            try:
+                await self._close_current_agent_resources()
+            except ClaudeBridgeError:
+                return "previous model cleanup is unconfirmed; retry /model or /new"
             if candidate is not None:
                 await self._retire_automatic_orchestrator()
             async with self._lock:
@@ -3759,6 +3779,8 @@ class SloAgentSession:
         """
         if self._model_selection_active or self._agent_resources_closed:
             raise RuntimeError("Session transition or closure blocks prompt admission.")
+        if self.active_model_name.startswith("claude-bridge:"):
+            self._discard_retired_bridge()
         if self.active_model_name.startswith("claude-bridge:") and self._preparation_status != "ready":
             await self.prepare_startup()
         if self._preparation_status != "ready":
@@ -3767,8 +3789,7 @@ class SloAgentSession:
             raise ModelPreparationRequiredError("Model preparation required; use /auth or /model refresh.")
         self._assert_no_prompt_in_flight()
         if self.active_model_name.startswith("claude-bridge:"):
-            await self._validate_fresh_bridge_prompt(text=text, history=history)
-            self._commit_bridge_prompt_submission()
+            await self._admit_bridge_prompt(text=text)
         async with self._session_run_scope():
             plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
                 text=text,
@@ -6049,10 +6070,6 @@ class SloAgentSession:
         if self._agent is None or self._agent.llm is None:
             return False
 
-        # Native resume owns its transcript; host summaries invalidate its exact prefix.
-        if self.active_model_name.startswith("claude-bridge:"):
-            return False
-
         compaction_events: list[SessionHistoryEventDAO]
         if events is not None:
             compaction_events = events
@@ -6077,12 +6094,13 @@ class SloAgentSession:
             force=force,
         )
 
-        result = await Compacter.compact(
-            events=compaction_events,
-            model_name=model_name,
-            llm=self._agent.llm,
-            snapshot=self.catalog_snapshot,
-        )
+        async with self._summariser_model() as summariser:
+            result = await Compacter.compact(
+                events=compaction_events,
+                model_name=model_name,
+                llm=summariser,
+                snapshot=self.catalog_snapshot,
+            )
         await self._history_store.compact_to_boundary(
             session_id=self._session_id,
             events=compaction_events,

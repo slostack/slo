@@ -6,12 +6,21 @@ from dataclasses import asdict
 from claude_agent_sdk import AssistantMessage, TextBlock, ThinkingBlock, ToolUseBlock
 
 # Native JSON payloads and SDK dataclass serialization are heterogeneous at this boundary.
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .dao import ClaudeToolCallDAO
 from .exceptions import ClaudeBridgeError
+
+
+class NativeFragment(NamedTuple):
+    """New answer text, new thinking text for one native block, and boundary status."""
+
+    text: str
+    boundary: bool
+    thinking: str = ""
+    thinking_index: int = 0
 
 
 class NativeBlock(BaseModel):
@@ -126,13 +135,16 @@ class NativeResponseAssembly:
             raise protocol_error()
         self._native_session_id = session_id
 
-    def consume(self, *, event: dict[str, Any]) -> tuple[str, bool]:
-        """Return new text and a validated boundary; never return partial calls."""
+    def consume(self, *, event: dict[str, Any]) -> NativeFragment:
+        """Return new text, new thinking and a validated boundary; never partial calls.
+
+        Thinking is a separate field so it is never mistaken for answer text.
+        """
         self._admit(value=event)
         kind = event.get("type")
         if kind == "message_start":
             self._start(event=event)
-            return "", False
+            return NativeFragment(text="", boundary=False)
         if not self._open:
             raise protocol_error()
         if kind == "message_delta":
@@ -142,32 +154,40 @@ class NativeResponseAssembly:
             if not isinstance(delta, dict) or not isinstance(delta.get("stop_reason"), str):
                 raise protocol_error()
             self._stop_reason = delta["stop_reason"]
-            return "", False
+            return NativeFragment(text="", boundary=False)
         if kind == "message_stop":
             self._complete()
-            return "", True
+            return NativeFragment(text="", boundary=True)
         index = event.get("index")
         if not isinstance(index, int) or index < 0:
             raise protocol_error()
         if kind == "content_block_start":
             self._start_block(index=index, event=event)
-            fragment = self._blocks[index].text if self._blocks[index].type == "text" else ""
+            started = self._blocks[index]
+            fragment = started.text if started.type == "text" else ""
             self.text += fragment
-            return fragment, False
+            return NativeFragment(
+                text=fragment,
+                boundary=False,
+                thinking=started.thinking if started.type == "thinking" else "",
+                thinking_index=index,
+            )
         block = self._blocks.get(index)
         if block is None or block.stopped:
             raise protocol_error()
         if kind == "content_block_stop":
             block.stopped = True
-            return "", False
+            return NativeFragment(text="", boundary=False)
         if kind == "content_block_delta":
+            thinking_before = block.thinking
             fragment = block.append(delta=event.get("delta", {}))
+            thinking = block.thinking[len(thinking_before) :]
             self.text += fragment
             if len(self.text.encode()) > 8 * 1024 * 1024:
                 raise ClaudeBridgeError(
                     code="buffer_limit_exceeded", safe_message="Claude response exceeded its limit."
                 )
-            return fragment, False
+            return NativeFragment(text=fragment, boundary=False, thinking=thinking, thinking_index=index)
         raise protocol_error()
 
     def _start(self, *, event: dict[str, Any]) -> None:

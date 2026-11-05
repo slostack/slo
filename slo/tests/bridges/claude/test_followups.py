@@ -3,7 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -115,7 +115,14 @@ async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
             assert transport.prompts == (["first"] if later else [])
             result = [event async for event in session.invoke(text="explicit retry")]
             assert result[-1].kind == "run_completed"
-            assert transport.prompts == (["first"] if later else []) + ["explicit retry"]
+            # Parity with the host: whatever the graph replays reaches Claude, and only once.
+            assert transport.prompts[: int(later)] == (["first"] if later else [])
+            sent: list[Any] = cast(Any, transport.prompts[-1])
+            *transcript, prompt = sent
+            assert prompt == {"type": "text", "text": "explicit retry"}
+            replayed = "".join(block["text"] for block in transcript)
+            assert "failed prompt" in replayed and "first" not in replayed
+            assert len(transport.prompts) == 1 + int(later)
             assert resumes == ([None] if later else []) + ["native-test" if later else None] * (
                 2 if failure == "connect" else 1
             )
@@ -231,12 +238,11 @@ async def test_host_stop_joins_native_tools_before_terminal(
         await session.close_agent_resources()
 
 
-@pytest.mark.parametrize("enable_history,cross_threshold", [(True, False), (True, True), (False, False)])
+@pytest.mark.parametrize("enable_history", [True, False])
 async def test_followup_retains_native_tool_context_without_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     enable_history: bool,
-    cross_threshold: bool,
 ) -> None:
     """FU01–03/06: real session entry, SDK/MCP/tools and durable two-turn history."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -274,28 +280,6 @@ async def test_followup_retains_native_tool_context_without_replay(
         async with asyncio.timeout(10):
             first = [event async for event in session.invoke(text="Read answer.txt")]
             assert any(event.kind == "run_completed" for event in first)
-            if cross_threshold:
-                from src.agents.slo_agent.history.dao import (
-                    SessionHistoryEventDAO,
-                    SessionHistoryEventPayloadDAO,
-                )
-                from src.agents.slo_agent.compaction.compaction_checker import CompactionChecker
-
-                store = FilesystemSessionHistoryStore(root=tmp_path / "history")
-                await store.append_event(
-                    event=SessionHistoryEventDAO(
-                        session_id="followups",
-                        kind="slash_command",
-                        payload=SessionHistoryEventPayloadDAO(token_usage=10_000_000),
-                    )
-                )
-                stored = await store.load_events(session_id="followups")
-                assert await CompactionChecker.should_compact(
-                    events=stored,
-                    model_name=session.active_model_name,
-                    snapshot=session.catalog_snapshot,
-                )
-                assert not await session._run_compaction_if_needed(turn_id="threshold")
             # A rerun of read cannot recover the original value after this mutation.
             project.write_text("changed", encoding="utf-8")
             second = [event async for event in session.invoke(text="What did that tool find?")]
@@ -311,7 +295,6 @@ async def test_followup_retains_native_tool_context_without_replay(
     if not enable_history:
         assert events == []
         return
-    assert not any(event.kind == "compaction_summary" for event in events)
     assert sum(event.kind == "run_completed" for event in events) == 2
     assert sum(event.kind == "tool_call" for event in events) == 1
     assert sum(event.kind == "tool_result" for event in events) == 1

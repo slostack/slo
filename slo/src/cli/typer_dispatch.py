@@ -537,9 +537,6 @@ class TyperDispatch:
         Returns:
             SessionConfigDAO: A validated session-config DAO.
         """
-        cls._reject_bridge_resume(
-            resume_session_id=resume_session_id, model_names=(model, resumed_model_name)
-        )
         prefs: UserPreferencesDAO
         try:
             prefs = UserPreferencesStore.load()
@@ -563,8 +560,6 @@ class TyperDispatch:
 
         model_pool_dao = parse_model_pool_config(preference_value=prefs.default_model_pool)
         default_model_name: str = prefs.default_model_name or cfg("DEFAULT_MODEL_NAME") or "gpt-5.4"
-        if resumed_model_name is None:
-            cls._reject_bridge_resume(resume_session_id=resume_session_id, model_names=(default_model_name,))
         resumable_model_name: Optional[str] = cls._resumable_model_name(resumed_model_name=resumed_model_name)
         resolved_model_name: str
         fallback_notice: Optional[str]
@@ -595,24 +590,6 @@ class TyperDispatch:
             plugin_paths=list(plugin_paths or []),
         )
 
-    @staticmethod
-    def _reject_bridge_resume(
-        *, resume_session_id: Optional[str], model_names: tuple[Optional[str], ...]
-    ) -> None:
-        """Reject native resume before configuration fallback or session mutation.
-
-        Args:
-            resume_session_id: Existing host session, or None for a fresh session.
-            model_names: Explicit, saved or default routes participating in assembly.
-
-        Raises:
-            ValueError: A bridge route would resume an existing host session.
-        """
-        if resume_session_id is not None and any(
-            name is not None and name.startswith("claude-bridge:") for name in model_names
-        ):
-            raise ValueError("Claude bridge cannot resume a session; start a fresh session.")
-
     @classmethod
     def _resumable_model_name(cls, *, resumed_model_name: Optional[str]) -> Optional[str]:
         """Keep a saved route that this version can build or prepare.
@@ -627,9 +604,7 @@ class TyperDispatch:
         Returns:
             Optional[str]: Saved route to keep, or None to use the default.
         """
-        if resumed_model_name is not None and resumed_model_name.startswith("claude-bridge:"):
-            raise ValueError("Claude bridge cannot resume a session; start a fresh session.")
-        if resumed_model_name is None or resumed_model_name.startswith(OPENROUTER_PREFIX):
+        if resumed_model_name is None or resumed_model_name.startswith((OPENROUTER_PREFIX, "claude-bridge:")):
             return resumed_model_name
         if cls._is_catalog_model(model_name=resumed_model_name):
             return resumed_model_name

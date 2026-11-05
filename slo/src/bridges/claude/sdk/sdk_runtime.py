@@ -5,7 +5,7 @@ import json
 
 import anyio
 from collections.abc import AsyncIterator
-from typing import Optional
+from typing import Any, Optional
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -30,7 +30,13 @@ from .tool_bridge import ClaudeToolBridge
 from .inventory import ClaudeToolInventory
 from .response import NativeResponseAssembly
 from .transport import ValidatedClaudeTransport
-from .events import ClaudeBridgeEvent, ClaudeResponseEventDAO, ClaudeResponseCompletedDAO, ClaudeTextEventDAO
+from .events import (
+    ClaudeBridgeEvent,
+    ClaudeResponseEventDAO,
+    ClaudeResponseCompletedDAO,
+    ClaudeTextEventDAO,
+    ClaudeThinkingEventDAO,
+)
 from .exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
 
 
@@ -194,7 +200,7 @@ class ClaudeSDKRuntime:
                 )
             validated_transport = ValidatedClaudeTransport(transport=self._transport)
             client = ClaudeSDKClient(options=options, transport=validated_transport)
-            await self._connect_and_query(client=client, text=invocation_options.text)
+            await self._connect_and_query(client=client, prompt=invocation_options.native_prompt())
             completion = await self._read_native_response(client=client, transport=validated_transport)
         except asyncio.CancelledError:
             failure = ClaudeBridgeError(code="cancelled", safe_message="Claude bridge invocation cancelled.")
@@ -211,7 +217,18 @@ class ClaudeSDKRuntime:
                 await self._tool_bridge.close()
             await self._disconnect_until_settled(client=client, failure=failure, completion=completion)
 
-    async def _connect_and_query(self, *, client: ClaudeSDKClient, text: str) -> None:
+    @staticmethod
+    async def _user_message(*, content: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+        """Yield one user message carrying ordered content blocks."""
+        yield {
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "parent_tool_use_id": None,
+        }
+
+    async def _connect_and_query(
+        self, *, client: ClaudeSDKClient, prompt: str | list[dict[str, Any]]
+    ) -> None:
         """Cancel blocked SDK startup in its owning anyio context, without another send."""
         owner = asyncio.current_task()
         assert owner is not None
@@ -222,7 +239,9 @@ class ClaudeSDKRuntime:
                 self._connected = True
                 if not self._cancel_requested.is_set():
                     self._query_attempted = True
-                    await client.query(prompt=text)
+                    await client.query(
+                        prompt=prompt if isinstance(prompt, str) else self._user_message(content=prompt)
+                    )
                     monitor.cancel()
             finally:
                 monitor.cancel()
@@ -407,7 +426,16 @@ class ClaudeSDKRuntime:
                     assembly.validate_scope(
                         session_id=message.session_id, parent_tool_use_id=message.parent_tool_use_id
                     )
-                    fragment, boundary = assembly.consume(event=message.event)
+                    consumed = assembly.consume(event=message.event)
+                    fragment, boundary = consumed.text, consumed.boundary
+                    if consumed.thinking:
+                        self._queue_event(
+                            event=ClaudeThinkingEventDAO(
+                                text=consumed.thinking,
+                                block_index=consumed.thinking_index,
+                                **self._event_binding(response_id=assembly.response_id).model_dump(),
+                            )
+                        )
                     if fragment:
                         self._queue_event(
                             event=ClaudeTextEventDAO(
@@ -466,7 +494,7 @@ class ClaudeSDKRuntime:
 
     def _release_event(self, *, event: ClaudeBridgeEvent | BaseException | None) -> None:
         """Release aggregate byte capacity when a reader consumes an event."""
-        if isinstance(event, (ClaudeTextEventDAO, ClaudeResponseCompletedDAO)):
+        if isinstance(event, (ClaudeTextEventDAO, ClaudeThinkingEventDAO, ClaudeResponseCompletedDAO)):
             self._queued_bytes -= len(event.model_dump_json().encode())
 
     def _event_binding(self, *, response_id: str) -> ClaudeResponseEventDAO:

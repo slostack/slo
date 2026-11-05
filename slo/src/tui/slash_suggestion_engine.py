@@ -460,8 +460,7 @@ class SlashSuggestionEngine:
         """
         return SlashSuggestionRowDAO(
             insert_text=entry.model_name,
-            label=entry.model_name,
-            detail=cls._model_detail(entry=entry),
+            label=cls._model_label(entry=entry),
         )
 
     @staticmethod
@@ -484,6 +483,21 @@ class SlashSuggestionEngine:
         if display_name.startswith(query):
             return (2, entry.model_name)
         return (3, entry.model_name)
+
+    @staticmethod
+    def _model_label(*, entry: ModelSuggestionEntryDAO) -> str:
+        """Render the model name with its context window, when one is known.
+
+        Args:
+            entry (ModelSuggestionEntryDAO): Model suggestion entry from the
+                generation-backed catalog read view.
+
+        Returns:
+            str: ``<model> (Ctx: <tokens>)``, or just the model name.
+        """
+        if not entry.context_window:
+            return entry.model_name
+        return f"{entry.model_name} (Ctx: {entry.context_window})"
 
     @staticmethod
     def _model_detail(*, entry: ModelSuggestionEntryDAO) -> str:
@@ -538,7 +552,7 @@ class SlashSuggestionEngine:
         """
         if not rows or not query:
             return ""
-        best_label: str = rows[0].label
+        best_label: str = rows[0].insert_text
         if not best_label.startswith(query):
             return ""
         return best_label[len(query) :]

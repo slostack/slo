@@ -172,10 +172,6 @@ class TestSloTUISlashSuggestions:
                 rendered_labels: list[str] = [
                     row.label for row in prompt_input._slash_suggestion_state.rows[:8]
                 ]
-                assert all(
-                    "; provider default" not in (row.detail or "")
-                    for row in prompt_input._slash_suggestion_state.rows[:8]
-                ), [(row.label, row.detail) for row in prompt_input._slash_suggestion_state.rows[:8]]
                 assert all(label in rendered_text for label in rendered_labels), (
                     rendered_text,
                     [(row.label, row.detail) for row in prompt_input._slash_suggestion_state.rows],
@@ -185,11 +181,11 @@ class TestSloTUISlashSuggestions:
                     f"Showing {len(rendered_labels)} of {prompt_input._slash_suggestion_state.total_matches}"
                     in rendered_text
                 )
-                assert "gpt-5.4" in rendered_labels
-                assert "gpt-5-codex" not in rendered_labels
-                assert "gpt-5.3-codex" not in rendered_labels
-                assert "gpt-5.2-codex" not in rendered_labels
-                assert "gpt-5.3-codex-spark" not in rendered_labels
+                assert any(label.startswith("gpt-5.4 ") for label in rendered_labels)
+                assert not any(label.startswith("gpt-5-codex ") for label in rendered_labels)
+                assert not any(label.startswith("gpt-5.3-codex ") for label in rendered_labels)
+                assert not any(label.startswith("gpt-5.2-codex ") for label in rendered_labels)
+                assert not any(label.startswith("gpt-5.3-codex-spark ") for label in rendered_labels)
                 from tests.tui.authentication._painted_output import assert_widget_painted
 
                 widget = app._suggestion_menu.query_one(".slash-suggestion-lines", Static)

@@ -34,6 +34,7 @@ Use the reusable template below as the presentation model: status callout, compa
 - [`solution-design`](../../coding/solution-design/SKILL.md)
 - [`coding-rules`](../../coding/coding-rules/SKILL.md)
 - [`naming-and-clarity`](../../coding/naming-and-clarity/SKILL.md)
+- [`test-verification-policy`](../../coding/test-verification-policy/SKILL.md)
 - [`ubiquitous-language`](../ubiquitous-language/SKILL.md)
 
 ## Guidance
@@ -64,7 +65,7 @@ Resolve:
 - Overview path and explicit user corrections.
 - Existing sub-specifications and their numbering.
 - Implementation repository/worktree and relevant application roots.
-- Output directory and repository document conventions.
+- Output directory and repository document conventions. Store `task-list.md` and all sub-specs in the same feature folder as the generated `overview.md`; preserve existing filenames when refining a family.
 - Referenced designs, decisions and relevant evidence.
 
 Do not confuse a specifications repository with the implementation repository. Infer reliable paths from context; ask for material missing inputs rather than inventing them.
@@ -91,7 +92,9 @@ The knowledge base is a **source of truth** for documented project context, term
 
 - Resolve `SLO_SKILL_DIR` or `SLO_SKILLS_DIR`. If both point to different locations and the active root is unclear, surface the conflict.
 - Read the active index and locate the applicable skills. Do not hard-code home directories or installed package versions.
-- Read coding rules, code-design principles, naming-and-clarity, ubiquitous-language and specification-authoring guidance.
+- Use solution-design, coding-rules, naming-and-clarity and test-verification-policy as overarching guidelines. Read ubiquitous-language and applicable specification-authoring guidance.
+- Apply tell-don’t-ask, declarative code, test-first development, no regressions, named arguments and type hints to the implementation details as well as eventual code. Locate their guidance in the active skills index and language conventions; do not invent standalone skill paths. Use language-native equivalents where keyword arguments are not supported.
+- Make these rules concrete: domain owners enforce their own invariants, orchestration reads as named intentions, contracts name typed inputs and return types, and acceptance tests are written before production changes with existing behavior preserved.
 - Read applicable application structure, domain, application-service, controller, worker, migration and configuration conventions.
 - Read test-verification-policy and the relevant language/component test recipes.
 - Read repository instructions, README, local rules and test setup.
@@ -260,10 +263,10 @@ Use existing sub-steps when possible. Split or combine them only to improve cohe
 
 A good sub-spec owns **one meaningful outcome**, its production changes and its verification. It may span a migration, domain and application service when these are needed to deliver that outcome.
 
-- Each sub-spec groups one vertical piece of functionality end to end; too many unrelated components in one sub-spec make it hard to read, validate and implement.
+- Each sub-spec delivers a runnable vertical slice: a real entry point, core behavior and an observable result with its tests. State how to run or invoke it after its prerequisites are implemented and where it fits in the larger feature. Do not create isolated horizontal implementations.
 - Keep core rules and their tests together.
 - Prefer a small vertical behavior over one document per architectural layer.
-- A shared foundation is appropriate when it has a concrete reusable contract and database-level proof.
+- Include necessary schema, migration and shared-contract work in the first runnable slice that needs it. A schema-only, DAO-only or service-only task is not a runnable slice; database-level proof alone does not replace the end-to-end outcome.
 - Separate independent collaborators only when their inputs, outputs and ownership are clear.
 - Do not produce one sub-spec per file or method.
 - Do not defer all tests or unresolved core logic to a final integration sub-spec.
@@ -271,6 +274,15 @@ A good sub-spec owns **one meaningful outcome**, its production changes and its 
 **Limited-context test:** An implementing agent should be able to work from one sub-spec, a short code-reading list, applicable conventions and the relevant prerequisite contract excerpts. It should not need chat history, the whole feature family or another agent's assumptions.
 
 Each behavior in the overview needs an owning sub-spec and a verification scenario. Preserve exact names, state values and architecture decisions across documents.
+
+#### Confirmation gates: core first, operational detail later
+
+1. **Runnable-core pass (default):** Specify the smallest runnable outcome, interfaces, DAO guards, ordered core logic and behavior-first tests. Preserve operational contracts already supplied by the overview, verified code or user; cite them rather than asking to reauthorize them.
+2. **After the core:** Add a short **Operational follow-up — pending confirmation** outline in each affected sub-spec. Identify transaction boundaries, locks, concurrency behavior and concurrency counts that need elaboration, or link to details already supplied in the core. State the affected owner, why each matters and any unresolved decision. Ask permission before expanding this outline; do not invent lock strategies or worker counts.
+3. **Confirmed operational pass:** Expand only the approved transaction, locking and concurrency topics, including ownership, atomicity, rollback, contention and concurrency limits/counts with their scope and source. Use “not applicable” with a reason when appropriate. Then ask separately whether to detail retries and backoffs.
+4. **Separately confirmed retry pass:** Add eligible failures, attempt-count semantics, retry counts, backoff/jitter, exhaustion and recovery tests. Do not treat approval of operational details as approval of retry tuning. Retain supplied retry contracts in every pass, but do not invent numeric policy.
+
+If correctness of the runnable core depends on an unresolved operational or retry decision, identify the blocker immediately and keep the affected sub-spec DRAFT or BLOCKED. A deferred optional enhancement does not block core readiness; explicitly label readiness as **runnable-core scope** and keep pending follow-up visible. Confirmation is permission to author details, not permission to choose unresolved product policy or execute work.
 
 ### 5. Write a standalone sub-spec for each sub-step
 
@@ -301,7 +313,8 @@ Use the numbered document shape below, not an unnumbered generic template. Apply
 
 ## 1. Outcome
 
-<Why this sub-step exists and its observable result.>
+<Why this slice exists, where it fits in the feature and its observable runnable result.
+Name the entry point, prerequisites and invocation/run command.>
 
 > [!important] Invariant
 > <The central guarantee this sub-step must preserve.>
@@ -339,10 +352,11 @@ extension or consolidation and the current-to-proposed change.>
 
 | Owner / path | Input → output | Contract |
 |---|---|---|
-| **NEW / CHANGED / EXISTING** `<path>` · `<symbol>` | <named typed inputs and outputs> | <concise responsibility and guarantee> |
+| **NEW / CHANGED / EXISTING** `<path>` · `<symbol>` | <named typed inputs and outputs> | <domain responsibility, owned invariant and guarantee> |
 
 **Boundaries**
 
+- <Domains and their responsibilities; domain services, application services, DAOs, models and entities involved. Explain each role; do not invent layers the project does not use.>
 - <Authoritative versus derived state and which owner may write each.>
 - <Collaborator/caller boundaries, consumed prerequisite semantics and compatibility.>
 - <Link to detailed contracts below when the summary cannot hold the full interface.>
@@ -372,7 +386,18 @@ extension or consolidation and the current-to-proposed change.>
 
 ## 5. Core logic
 
-### 5.1 <Concrete behavior>
+### 5.1 Journey
+
+<Concise ASCII control-flow path using actual owners; include the important rejection branch.
+Adapt to the project, rather than forcing every layer shown here.>
+
+~~~text
+Entry -> Application service -> Domain service -> DAO / persistence -> Result
+                                      |
+                                 Guard fails -> Typed rejection; no write
+~~~
+
+### 5.2 <Concrete behavior>
 
 <Preconditions, trigger and initial state.>
 
@@ -380,9 +405,9 @@ extension or consolidation and the current-to-proposed change.>
 2. <Ordered writes and external effects, transaction and rollback boundaries.>
 3. <Observable result and effects that must never occur.>
 
-- <Failure, retry, dedupe, concurrency, cancellation and restart rules as relevant.>
+- <Core failure and dedupe rules; retain supplied operational/retry contracts. Gate new operational and retry detail on the separate confirmations above.>
 - <Use further named subsections for distinct algorithms and migration sequencing.>
-- <Add a small state/flow diagram only when it clarifies the behavior.>
+- <After the runnable core, add the operational follow-up outline, approval state and affected blockers; link to existing details instead of repeating them.>
 
 ---
 
@@ -396,7 +421,8 @@ extension or consolidation and the current-to-proposed change.>
 |---|---|---|
 | `<name>` | <type and optional semantics> | <contract> |
 
-- <Validation, defaults, errors, provenance and ownership guarantees.>
+- <DAO guards: field/type/range validation, cross-field rules, identity/existence and authorization checks where applicable. State which DAO/schema, domain service or database constraint enforces each rule, when it runs, the rejection/error type and the guarantee that invalid input causes no write or external effect.>
+- <Defaults, provenance and ownership guarantees. Distinguish DAO input validation from domain-owned business invariants; do not duplicate them.>
 - <Precise prerequisite contract excerpts, linked to their authoritative owner.>
 
 ### 6.2 `<Guarded operation>`
@@ -477,7 +503,7 @@ Cite reusable fixtures as references, not as executed evidence.>
 
 ### 6. Detail core logic completely; leave surroundings as interfaces
 
-**Core logic must be specified, not delegated to the implementer's imagination.**
+**Core logic must be specified, not delegated to the implementer's imagination.** Apply the confirmation gates in §4: the list below is a completeness checklist for the authorized scope, not permission to add unapproved operational or retry policy.
 
 For each relevant behavior, define:
 
@@ -487,8 +513,8 @@ For each relevant behavior, define:
 - What is created immediately, enriched later, merged, replaced or retained.
 - Transaction owner and writes that commit or roll back together.
 - External side effects and recovery when they cannot be atomic with storage.
-- Deduplication keys, attempt identity, finite retry rules and exhaustion.
-- Concurrent branch start/join, stale-result rejection and cancellation ownership.
+- Deduplication keys and attempt identity needed by the core. Preserve supplied retry rules; add new retry counts, backoffs and exhaustion policy only in the separately confirmed retry pass.
+- Concurrent branch start/join, stale-result rejection and cancellation ownership where required by the core or already specified. Outline additional operational detail and seek confirmation before expanding it.
 - Partial-failure persistence, restart recovery and cleanup.
 - Privacy and authorization boundaries.
 
@@ -504,7 +530,7 @@ Every interface identifies:
 |---|---|
 | Caller and trigger | Who invokes it and when |
 | Input | Names, types, validation, defaults and optional semantics |
-| Result | Returned value and observable state change |
+| Result | Explicit return type (including async/optional semantics), returned value and observable state change |
 | Errors | Rejection, unavailable dependency and retry behavior |
 | Ownership | Transactions, sessions, resources and cleanup |
 | Guarantees | Ordering, idempotency, concurrency and forbidden effects |
@@ -513,7 +539,7 @@ Use project naming and typed keyword-argument conventions. Put the target file p
 
 #### Example of the required detailing
 
-**Overview statement:** “Retry failed processing a finite number of times.”
+**After separate retry-pass confirmation**, consider the overview statement: “Retry failed processing a finite number of times.”
 
 **Sub-spec must establish:**
 
@@ -633,7 +659,7 @@ For a thin worker, an application-service test with the worker's exact inputs pl
 - Await bounded completion conditions; use controlled clocks/synchronization instead of arbitrary sleeps.
 - Obey owned-database, synthetic-data and cleanup safeguards.
 
-Cover meaningful outcomes: success, rejection, missing or ambiguous data, failure cutoff, rollback, duplicates, retry exhaustion, stale results and cancellation where relevant. Assert what must happen **and what must not happen**.
+Cover meaningful outcomes in the authorized scope: success, rejection, missing or ambiguous data, failure cutoff, rollback, duplicates, retry exhaustion, stale results and cancellation where relevant. Mark tests for unapproved operational/retry follow-up as pending rather than inventing policy; never defer tests of supplied or correctness-critical core contracts. Assert what must happen **and what must not happen**.
 
 Do not generate a test per method, duplicate every assertion across layers or use fewer lines as a reason to weaken coverage.
 
@@ -641,7 +667,7 @@ Each sub-spec includes its own verification requirements. A final cross-sub-spec
 
 ### 9. Add a concise sub-spec index and implementation order
 
-**Schema first:** Always place migrations and schema development before the sub-steps that consume the affected data. Where storage changes are required, the first implementation sub-spec or group must cover the schema, migrations, constraints, defaults and any required backfill, together with their verification. Make dependent application services, controllers and workers explicitly depend on this foundation. Do not defer schema work to an integration sub-spec. If no schema change is needed, state that briefly rather than inventing migration work. Preserve safe expand/backfill/contract deployment sequencing; destructive cleanup migrations must wait until old consumers have been migrated.
+**Schema before use, within a runnable slice:** Where storage changes are required, include schema, migrations, constraints, defaults, any required backfill and their verification in the earliest runnable slice that consumes them. Order migration work before dependent code within that slice; later slices depend on its exported schema contract. Do not create a horizontal schema-only foundation task or defer schema work to final integration. If no schema change is needed, say so briefly. Preserve safe expand/backfill/contract deployment sequencing; destructive cleanup waits until old consumers are migrated.
 
 After fleshing out the sub-specs, summarize their dependencies. This list is secondary to the specifications.
 
@@ -687,7 +713,9 @@ Before saving, check:
 - [ ] Acceptance scenarios have stable A-numbered IDs, meaningful actions, observable results and forbidden effects. Each names its behaviour test (or a justified unit test for complex computation) and run command; no elaborate harness is required.
 - [ ] Implementation acceptance checkboxes remain unchecked unless supported by actual implementation evidence; authoring completeness is reported separately.
 - [ ] Every sub-step explains current behavior, proposed behavior and the reason for the change.
-- [ ] Each includes entities, backing data, interfaces, complete core logic and behavioral verification.
+- [ ] Each delivers a runnable vertical slice with an invocation, larger-feature context, domain responsibilities, DAO guards, typed inputs/return types, an ASCII journey, complete authorized core logic and behavioral verification. No isolated horizontal task remains.
+- [ ] Operational follow-up is outlined after the core; new transaction, locking and concurrency details/counts have confirmation, and new retry/backoff details have separate confirmation. Supplied contracts are retained, optional deferrals are visible and correctness-critical gaps block readiness.
+- [ ] Implementation details honor tell-don’t-ask, declarative code, test-first development, no regressions and language-appropriate named arguments/type hints from the active skills root.
 - [ ] Existing owners are reused or deliberately consolidated; caller migration/removal is assigned.
 - [ ] Each sub-spec has a duplicate-code table covering every proposed artefact, with "No existing owner found" stated explicitly; no sub-spec with an unresolved duplicate is marked READY.
 - [ ] Tightly coupled steps (query and flush, open and close, validate then write) stay in one method; nothing trivial was extracted only to avoid repetition.
@@ -699,7 +727,7 @@ Before saving, check:
 - [ ] Snippets identify status and target path, reuse known repository types, and clearly label pseudocode; no types or defaults were invented for presentation.
 - [ ] Editorial simplification retained all guards, errors, provenance, ownership, blockers and complete core logic; reviewers check meaning as well as layout.
 - [ ] Every overview behavior maps to an owning sub-spec and an observable verification scenario.
-- [ ] Migrations and schema development are placed first when required; consumers depend on the verified schema foundation, and destructive cleanup respects compatibility.
+- [ ] Required migrations precede their consuming code within runnable slices; later consumers depend on the exported schema contract, and destructive cleanup respects compatibility.
 - [ ] Dependency ordering is acyclic and proposed parallel work has no ownership conflicts.
 - [ ] Material unknowns are explicit; affected sub-specs are not marked READY.
 - [ ] `$SLO_KB_DIR` was resolved (a file value used as the entry point, a directory value searched for `Welcome.md` / `index.md` / `README.md`) and project context consulted before detailing, or its unavailability and affected blockers are explicit; relevant KB facts and decisions are cited, with conflicts surfaced.
@@ -716,6 +744,7 @@ Report:
 - The supporting index and implementation dependency order.
 - Important core decisions clarified and existing owners consolidated.
 - Blocking questions and document checks performed.
+- The authorized scope completed, pending operational/retry passes and the specific permission needed next. Ask for operational expansion after the core, then request separate retry/backoff confirmation after that pass; do not start either automatically.
 
 Then hand the whole family (`overview.md`, sub-specs, `task-list.md`) to [`feature-specification-verification`](../feature-specification-verification/SKILL.md). Its REVISE findings on a sub-spec or the task list return to this skill; findings on `overview.md` return to `feature-specifications`. Material contract changes require renewed verification of the affected documents.
 

@@ -1,6 +1,11 @@
 """First runnable Feature 98 journey; real app/service/coordinator, no execution."""
 
 from pathlib import Path
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import AsyncIterator, Any
+from textual.pilot import Pilot
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 
 import pytest
 from collections.abc import Callable
@@ -92,12 +97,64 @@ class RunningBatchFactory:
         return self.service
 
 
-@pytest.mark.parametrize("theme", ["slo-dark", "slo-default"])
-@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
-async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
-    tmp_path: Path, theme: str, size: tuple[int, int]
-) -> None:
-    """Enter commands through the real editor; hiding never alters the running batch."""
+@pytest.fixture(autouse=True)
+def workflow_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unrelated authentication UI out of workflow visibility scenarios."""
+
+    def resolve(*, provider: ProviderName) -> CredentialDAO:
+        return CredentialDAO(provider=provider, auth_type=AuthType.API_KEY, access_token="workflow-test")
+
+    monkeypatch.setattr("src.tui.app.CredentialResolver.resolve", resolve)
+
+
+@dataclass
+class RunningVisibility:
+    app: SloTUI
+    pilot: Pilot
+    factory: RunningBatchFactory
+    root: Path
+
+    @property
+    def panel(self) -> SubAgentFleetPanel:
+        return self.app.query_one(SubAgentFleetPanel)
+
+    @property
+    def rows(self) -> tuple:
+        return tuple(row.row for row in self.panel.query(SubAgentFleetRow))
+
+    async def command(self, text: str) -> None:
+        editor = self.app.query_one(PromptInputComponent)
+        editor.focus()
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: self.app.focused is editor,
+            description="workflow editor owns focus",
+        )
+        editor.text = text
+        await self.pilot.press("enter")
+
+    async def hide(self) -> None:
+        await self.command("/workflows tui dismiss")
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: not self.rows and self.panel.size.height == 0,
+            description="hidden fleet releases layout space",
+        )
+
+    async def show(self) -> None:
+        await self.command("/workflows tui show")
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: len(self.rows) == 6,
+            description="six cached fleet rows are restored",
+        )
+
+
+@asynccontextmanager
+async def running_visibility(
+    tmp_path: Path, *, theme: str = "slo-dark", size: tuple[int, int] = (120, 40)
+) -> AsyncIterator[RunningVisibility]:
+    """Create fresh real workflow service state for each independently collected test."""
     root = tmp_path / "detached-history"
     files = _Files(root=root)
     await files.handle(
@@ -124,7 +181,6 @@ async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
         entries=[_entry(session_id="completed-child", status="completed", execution_id="")],
         run_id=None,
     )
-    original_files = tree_state(root)
     session = SloAgentSession(
         agent=SloAgent(
             llm=FauxChatModel(responses=[AIMessage(content="ok")]),
@@ -147,21 +203,118 @@ async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
             predicate=lambda: len(panel.query(SubAgentFleetRow)) == 6,
             description="six running fleet rows are mounted",
         )
-        assert app.focused is editor
-        original = tuple(row.row for row in panel.query(SubAgentFleetRow))
-        assert len(original) == 6
-        # Painting trails mounting by a frame under parallel worker load; poll
-        # the compositor instead of asserting a single immediate render.
-        await wait_until_painted(pilot=pilot, widget=panel, text="Ongoing workflow tasks")
-        assert panel.size.height > 0
-        transcript_height = app.query_one("#transcript-scroll").size.height
-        import sys
-        from types import FrameType
+        yield RunningVisibility(app, pilot, factory, root)
 
+
+@pytest.mark.parametrize("theme", ["slo-dark", "slo-default"])
+@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
+async def test_running_fleet_is_painted_and_editor_focused(
+    tmp_path: Path, theme: str, size: tuple[int, int]
+) -> None:
+    async with running_visibility(tmp_path, theme=theme, size=size) as ui:
+        painted = await wait_until_painted(pilot=ui.pilot, widget=ui.panel, text="Ongoing workflow tasks")
+        assert "Ongoingworkflowtasks" in painted
+        assert ui.app.focused is ui.app.query_one(PromptInputComponent)
+
+
+@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
+async def test_dismiss_reclaims_transcript_space(tmp_path: Path, size: tuple[int, int]) -> None:
+    async with running_visibility(tmp_path, size=size) as ui:
+        await wait_for_condition(
+            pilot=ui.pilot,
+            predicate=lambda: ui.panel.size.height > 0,
+            description="visible fleet occupies layout space",
+        )
+        height = ui.app.query_one("#transcript-scroll").size.height
+        await ui.hide()
+        await wait_for_condition(
+            pilot=ui.pilot,
+            predicate=lambda: ui.app.query_one("#transcript-scroll").size.height > height,
+            description="transcript reclaims hidden fleet space",
+        )
+        assert ui.app.query_one("#transcript-scroll").size.height > height
+        assert ui.app.focused is ui.app.query_one(PromptInputComponent)
+
+
+async def test_hidden_fleet_stays_collapsed_after_resize(tmp_path: Path) -> None:
+    async with running_visibility(tmp_path) as ui:
+        await ui.hide()
+        await ui.pilot.resize_terminal(width=50, height=18)
+        await ui.pilot.pause()
+        assert ui.panel.size.height == 0
+        assert "Resize" not in "".join(strip.text for strip in ui.app.screen._compositor.render_strips())
+
+
+async def test_clear_preserves_hidden_fleet(tmp_path: Path) -> None:
+    async with running_visibility(tmp_path) as ui:
+        await ui.hide()
+        await ui.command("/clear")
+        await ui.pilot.pause()
+        assert ui.panel.size.height == 0
+        service = ui.factory.service
+        assert service is not None and service.current_list_snapshot().rows == ()
+
+
+async def test_show_restores_cached_identity_and_text_when_file_disappears(tmp_path: Path) -> None:
+    async with running_visibility(tmp_path) as ui:
+        original = ui.rows
+        await ui.hide()
+        await ui.command("/clear")
+        (ui.root / "detached-parent/fleet.json").unlink()
+        await ui.show()
+        assert [row.key for row in ui.rows] == [row.key for row in original]
+        assert [row.task_text for row in ui.rows] == [row.task_text for row in original]
+
+
+async def test_show_restores_layout_and_keeps_editor_focus(tmp_path: Path) -> None:
+    async with running_visibility(tmp_path) as ui:
+        await ui.hide()
+        await ui.show()
+        await wait_for_condition(
+            pilot=ui.pilot,
+            predicate=lambda: ui.panel.size.height > 0,
+            description="shown fleet occupies layout space",
+        )
+        assert ui.panel.size.height > 0
+        assert ui.app.focused is ui.app.query_one(PromptInputComponent)
+
+
+@pytest.mark.parametrize("operation", ["dismiss", "clear", "offline-show"])
+async def test_visibility_commands_preserve_durable_files(tmp_path: Path, operation: str) -> None:
+    async with running_visibility(tmp_path) as ui:
+        if operation != "dismiss":
+            await ui.hide()
+        if operation == "offline-show":
+            await ui.command("/clear")
+            (ui.root / "detached-parent/fleet.json").unlink()
+        before = tree_state(ui.root)
+        if operation == "dismiss":
+            await ui.hide()
+        elif operation == "clear":
+            await ui.command("/clear")
+        else:
+            await ui.show()
+        assert tree_state(ui.root) == before
+
+
+async def test_visibility_commands_do_not_change_execution(tmp_path: Path) -> None:
+    async with running_visibility(tmp_path) as ui:
+        before = ui.factory.snapshot()
+        await ui.hide()
+        await ui.command("/clear")
+        await ui.show()
+        assert ui.factory.snapshot() == before
+        assert ui.factory.abort_calls == []
+
+
+async def test_visibility_commands_do_not_cross_launch_or_auth_boundaries(tmp_path: Path) -> None:
+    import sys
+    from types import FrameType
+
+    async with running_visibility(tmp_path) as ui:
         forbidden_calls: list[str] = []
 
         def record_forbidden(frame: FrameType, event: str, arg: object) -> None:
-            """Observe forbidden boundaries without replacing any dependency."""
             module = str(frame.f_globals.get("__name__", ""))
             if event == "call" and (
                 module == "src.auth.credential_resolver"
@@ -170,50 +323,15 @@ async def test_running_group_dismiss_show_reclaims_and_restores_mounted_rows(
             ):
                 forbidden_calls.append(f"{module}.{frame.f_code.co_name}")
 
-        previous_profile = sys.getprofile()
+        previous = sys.getprofile()
         sys.setprofile(record_forbidden)
         try:
-            editor.text = "/workflows tui dismiss"
-            await pilot.press("enter")
-            await pilot.pause()
-            assert panel.size.height == 0
-            await pilot.resize_terminal(width=50, height=18)
-            await pilot.pause()
-            assert panel.size.height == 0
-            assert "Resize" not in "".join(strip.text for strip in app.screen._compositor.render_strips())
-            await pilot.resize_terminal(width=size[0], height=size[1])
-            await pilot.pause()
-            assert app.query_one("#transcript-scroll").size.height > transcript_height
-            assert app.focused is editor
-            assert factory.snapshot().entries[0].status == "running"
-            assert tree_state(root) == original_files
-            editor.text = "/clear"
-            await pilot.press("enter")
-            await pilot.pause()
-            assert panel.size.height == 0
-            assert factory.service is not None
-            assert factory.service.current_list_snapshot().rows == ()
-            assert tree_state(root) == original_files
-            (root / "detached-parent" / "fleet.json").unlink()
-            offline_files = tree_state(root)
-            editor.text = "/workflows tui show"
-            await pilot.press("enter")
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: len(panel.query(SubAgentFleetRow)) == 6,
-                description="re-shown fleet rows are restored",
-            )
-            restored = tuple(row.row for row in panel.query(SubAgentFleetRow))
-            assert [row.key for row in restored] == [row.key for row in original]
-            assert [row.task_text for row in restored] == [row.task_text for row in original]
-            assert tree_state(root) == offline_files
+            await ui.hide()
+            await ui.command("/clear")
+            await ui.show()
         finally:
-            sys.setprofile(previous_profile)
+            sys.setprofile(previous)
         assert forbidden_calls == []
-        assert factory.abort_calls == []
-        assert panel.size.height > 0
-        assert app.focused is editor
-        assert factory.snapshot().entries[0].status == "running"
 
 
 async def test_new_waits_for_old_service_disposal_before_session_assignment(tmp_path: Path) -> None:
@@ -284,7 +402,8 @@ async def test_new_waits_for_old_service_disposal_before_session_assignment(tmp_
         assert owners[1] == app._session.session_id
 
 
-async def test_new_joins_observation_then_accepted_abort_before_retiring_sink(tmp_path: Path) -> None:
+@asynccontextmanager
+async def replacement_barrier(tmp_path: Path, *, phase: str) -> AsyncIterator[dict[str, Any]]:
     """Cancellation cannot retire the mounted view or reset rows while old operations remain."""
     import asyncio
     from tests.tui.workflows.test_child_abort_confirmation import _Attached, _capability
@@ -362,9 +481,12 @@ async def test_new_joins_observation_then_accepted_abort_before_retiring_sink(tm
         rows = service.current_list_snapshot().rows
         key = rows[1].key
         app.post_message(SubAgentFleetPanel.SessionSelected(key=key))
-        await pilot.pause()
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: isinstance(app.screen, SessionProgressScreen),
+            description="child progress screen is mounted",
+        )
         screen = app.screen
-        assert isinstance(screen, SessionProgressScreen)
         progress = await service.load_session_progress(key=key)
         assert isinstance(progress.abort_target, ChildAbortTargetDAO)
         world.abort.gate.clear()
@@ -384,29 +506,68 @@ async def test_new_joins_observation_then_accepted_abort_before_retiring_sink(tm
         command.cancel()
         await checkpoint()
         command.cancel()
+        state = dict(
+            app=app,
+            session=session,
+            screen=screen,
+            services=services,
+            order=order,
+            command=command,
+            world=world,
+        )
         try:
-            assert order == []
-            assert app.screen is screen
-            assert app._session is session
+            if phase == "observation":
+                yield state
             release.set()
             await asyncio.wait_for(close_entered.wait(), timeout=5)
-            assert order == ["observation-joined", "service-close"]
-            assert not command.done()
-            assert app.screen is screen
-            assert len(app.query(SubAgentFleetRow)) == 2
+            if phase == "abort":
+                yield state
         finally:
             release.set()
             world.abort.gate.set()
             result = await asyncio.wait_for(asyncio.gather(command, return_exceptions=True), timeout=5)
         await pilot.pause()
-        assert isinstance(result[0], asyncio.CancelledError)
-        assert order == ["observation-joined", "service-close", "abort-joined"]
-        assert app._session is not session
-        assert len(services) == 2
-        assert services[0]._closed
-        assert not services[1]._closed
-        assert screen not in app.screen_stack
+        state["result"] = result
+        if phase == "retired":
+            yield state
+
+
+async def test_new_keeps_owner_and_screen_until_observation_joins(tmp_path: Path) -> None:
+    async with replacement_barrier(tmp_path, phase="observation") as state:
+        assert state["order"] == []
+        assert state["app"].screen is state["screen"] and state["app"]._session is state["session"]
+
+
+async def test_new_keeps_view_until_accepted_abort_joins(tmp_path: Path) -> None:
+    async with replacement_barrier(tmp_path, phase="abort") as state:
+        assert state["order"] == ["observation-joined", "service-close"] and not state["command"].done()
+        assert state["app"].screen is state["screen"] and len(state["app"].query(SubAgentFleetRow)) == 2
+
+
+async def test_new_cancellation_preserves_join_order(tmp_path: Path) -> None:
+    import asyncio
+
+    async with replacement_barrier(tmp_path, phase="retired") as state:
+        assert isinstance(state["result"][0], asyncio.CancelledError)
+        assert state["order"] == ["observation-joined", "service-close", "abort-joined"]
+
+
+async def test_new_replaces_service_after_owned_work_joins(tmp_path: Path) -> None:
+    async with replacement_barrier(tmp_path, phase="retired") as state:
+        assert state["app"]._session is not state["session"]
+        services = state["services"]
+        assert len(services) == 2 and services[0]._closed and not services[1]._closed
+
+
+async def test_new_retires_old_screen_and_rows(tmp_path: Path) -> None:
+    async with replacement_barrier(tmp_path, phase="retired") as state:
+        assert state["screen"] not in state["app"].screen_stack
         assert all(
-            row.row.key.orchestrator_session_id != session.session_id for row in app.query(SubAgentFleetRow)
+            row.row.key.orchestrator_session_id != state["session"].session_id
+            for row in state["app"].query(SubAgentFleetRow)
         )
-        assert len(world.abort.calls) == 1
+
+
+async def test_new_does_not_duplicate_accepted_abort(tmp_path: Path) -> None:
+    async with replacement_barrier(tmp_path, phase="retired") as state:
+        assert len(state["world"].abort.calls) == 1

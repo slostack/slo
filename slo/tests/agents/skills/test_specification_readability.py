@@ -30,13 +30,16 @@ def test_active_specification_guidance_has_no_expansion_mandates(relative: str) 
 
 
 def test_overview_keeps_interfaces_and_sub_specs_keep_complete_contracts() -> None:
-    """The overview agrees interfaces; sub-specs carry complete contracts and core logic."""
+    """The full overview defines design contracts; sub-specs add build-level detail."""
     overview = (SKILLS / AUTHOR).read_text(encoding="utf-8")
     for requirement in (
-        "**Interfaces, not implementations.**",
-        "keyword arguments, type hints, no bodies",
+        "**Implementation-ready design, not copied method bodies.**",
+        "named typed inputs, explicit return types and error outcomes, no bodies",
         "**Unknowns are information.**",
-        "Write clearly and present well",
+        "Use simple language, short sections and one idea per block",
+        "**The overview must describe the full feature**",
+        "**DAO guards:**",
+        "**One ASCII control-flow path**",
     ):
         assert requirement in overview
     breakdown = (SKILLS / BREAKDOWN).read_text(encoding="utf-8")

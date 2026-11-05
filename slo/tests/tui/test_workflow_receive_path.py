@@ -912,3 +912,80 @@ class TestLaunchResultSeedsExitHint:
                 "Live workflows: wf-9a1b (launching). "
                 "They keep running — list with /workflows after resume."
             )
+
+
+@pytest.mark.parametrize("with_evidence", [True, False])
+async def test_run_aborted_marks_handle_aborted_through_inbox(tmp_path: Path, with_evidence: bool) -> None:
+    """Real abort inbox delivery converges even when terminal evidence is withheld."""
+    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+    from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+    root = tmp_path / "history"
+    assert root.resolve().is_relative_to(tmp_path.resolve())
+    store = _build_store(history_root=root)
+    await _write_handle(store=store, state="running")
+    if with_evidence:
+        OrchestratorStatusStore(
+            history_root=root, orchestrator_session_id="orch-1", workflow_id="wf-1"
+        ).write_terminal(state="aborted", exit_code=2, phase="done")
+    inbox = SessionInboxStore(history_root=root)
+    notifier = WorkflowNotifier(
+        target_session_id="session-1234",
+        orchestrator_session_id="orch-1",
+        workflow_id="wf-1",
+        inbox_store=inbox,
+    )
+    await notifier.aborted(reason="run_aborted: <aborted>")
+    message = await inbox.claim_next(session_id="session-1234")
+    assert message is not None
+    assert message.kind == "workflow_aborted" and message.delivery_mode == "chat_turn"
+    service = DetachedWorkflowAppService(
+        workflow_handle_store=store,
+        owner_session_id="session-1234",
+        attached_snapshot=AttachedDispatchSnapshotDAO.empty,
+    )
+    outcome = await service.advance_from_inbox_message(kind=message.kind, payload=message.payload)
+    assert outcome.advanced_state == "aborted"
+    assert [effect.effect for effect in outcome.effects] == ["reset_launch_guard"]
+    assert await inbox.ack(session_id="session-1234", message_id=message.message_id) is True
+    assert list(root.rglob("done/*.json"))
+    path = root / "session-1234" / "workflows" / "wf-1.json"
+    before = path.read_bytes()
+    assert (await store.reconcile(owner_session_id="session-1234"))[0].state == "aborted"
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("state", ["launching", "running", "aborted", "stalled", "failed", "completed"])
+async def test_aborted_note_then_reconcile_converges_each_handle_state(
+    tmp_path: Path, state: WorkflowState
+) -> None:
+    """Legal notes advance; illegal notes defer to matching evidence without overriding finality."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+    root = tmp_path / "history"
+    assert root.resolve().is_relative_to(tmp_path.resolve())
+    store = _build_store(history_root=root)
+    await _write_handle(store=store, state=state)
+    OrchestratorStatusStore(
+        history_root=root, orchestrator_session_id="orch-1", workflow_id="wf-1"
+    ).write_terminal(state="aborted", exit_code=2, phase="done")
+    path = root / "session-1234" / "workflows" / "wf-1.json"
+    before = path.read_bytes()
+    service = DetachedWorkflowAppService(
+        workflow_handle_store=store,
+        owner_session_id="session-1234",
+        attached_snapshot=AttachedDispatchSnapshotDAO.empty,
+    )
+    outcome = await service.advance_from_inbox_message(
+        kind="workflow_aborted", payload={"workflow_id": "wf-1", "orchestrator_session_id": "orch-1"}
+    )
+    legal = state in {"launching", "running", "aborted"}
+    assert outcome.advanced_handle is legal
+    assert outcome.workflow_id == "wf-1"
+    assert outcome.advanced_state == ("aborted" if legal else None)
+    assert [effect.effect for effect in outcome.effects] == (["reset_launch_guard"] if legal else [])
+    result = await store.reconcile(owner_session_id="session-1234")
+    assert result[0].state == ("completed" if state == "completed" else "aborted")
+    if state in {"completed", "aborted"}:
+        assert path.read_bytes() == before

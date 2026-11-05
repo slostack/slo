@@ -975,6 +975,7 @@ class SloAgent:
                 stream_decision = StreamRecoveryService.classify(
                     exc=exc,
                     partial_output_committed=partial_output_committed,
+                    attempt_number=attempt,
                 )
                 if stream_decision.action.value != "propagate":
                     raise ProviderStreamFailure(

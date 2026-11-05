@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -683,8 +684,15 @@ async def test_layout_and_packaged_styles(tmp_path: Path) -> None:
             await _wait_for_app_idle(app=app, pilot=pilot)
 
 
-async def test_submission_lifetime_guards(tmp_path: Path) -> None:
-    """A shutdown cutoff refuses late admission and never invokes or records it."""
+@asynccontextmanager
+async def closing_submission(
+    tmp_path: Path,
+) -> AsyncIterator[tuple[SloTUI, PromptInputComponent, list[str], SloAgentSession]]:
+    """Reject a late prompt while a real accepted invocation is held busy.
+
+    Running state is not a durable-history barrier. Always release and join the
+    accepted invocation before tests inspect its persisted user-message record.
+    """
     session: SloAgentSession = _build_session(
         workdir=tmp_path, responses=[AIMessage(content="one")], enable_history=True
     )
@@ -702,19 +710,36 @@ async def test_submission_lifetime_guards(tmp_path: Path) -> None:
             await pilot.pause()
             editor: PromptInputComponent = _require_prompt_input(app=app)
             await _submit_prompt(app=app, pilot=pilot, text="first")
-            await pump_until(pilot=pilot, predicate=lambda: session.is_running)
+            await pump_until(pilot=pilot, predicate=lambda: session.is_running and invoke_log == ["first"])
 
-            app._app_closing = True
-            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="late"))
-            assert invoke_log == ["first"]
-            assert app._queued_prompt_text is None
-            assert list(editor._prompt_history._entries) == ["first"]
-            assert await _history_user_texts(session=session) == ["first"]
+            try:
+                app._app_closing = True
+                await app.on_prompt_input_component_submitted(
+                    event=PromptInputComponent.Submitted(text="late")
+                )
+                yield app, editor, invoke_log, session
+            finally:
+                gate.set()
+                await pump_until(pilot=pilot, predicate=lambda: app._in_flight_task is None)
 
-            gate.set()
-            await pump_until(pilot=pilot, predicate=lambda: app._in_flight_task is None)
-            assert invoke_log == ["first"]
-            assert list(editor._prompt_history._entries) == ["first"]
+
+async def test_shutdown_refuses_late_invocation_and_queue(tmp_path: Path) -> None:
+    async with closing_submission(tmp_path) as (app, _, invoke_log, _):
+        assert invoke_log == ["first"]
+        assert app._queued_prompt_text is None
+    assert invoke_log == ["first"]
+
+
+async def test_shutdown_refuses_late_editor_history(tmp_path: Path) -> None:
+    async with closing_submission(tmp_path) as (_, editor, _, _):
+        assert list(editor._prompt_history._entries) == ["first"]
+    assert list(editor._prompt_history._entries) == ["first"]
+
+
+async def test_shutdown_persists_only_accepted_prompt(tmp_path: Path) -> None:
+    async with closing_submission(tmp_path) as (_, _, _, session):
+        pass
+    assert await _history_user_texts(session=session) == ["first"]
 
 
 async def test_model_context_publication_paths(tmp_path: Path) -> None:

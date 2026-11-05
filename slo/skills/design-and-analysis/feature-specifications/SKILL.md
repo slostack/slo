@@ -53,13 +53,13 @@ Work in this order. Each step has its own section below.
 - The behaviour that must be tested, not the individual test cases.
 - The order in which the feature should be built.
 
-**It does not need** granular implementation detail. It does need the interfaces of each application service, controller and worker.
+**The overview must describe the full feature**, not only its first runnable slice. Include clear implementation-level ownership, interfaces, DAO guards and ordered core decisions for every journey. Keep exact method bodies, line-level wiring and per-slice acceptance scenarios in the subsequent sub-specs; this boundary is not permission to omit core logic or a feature requirement.
 
 | | This skill | `breakdown-feature-spec-to-tasks` (next step) |
 |---|---|---|
 | Purpose | Agree the shape, expose the unknowns | Detail each slice so an agent can build and test it with limited context |
 | Output | One `overview.md` | One standalone sub-spec per cohesive slice (`NN.a.n-<slice>.md`) plus `task-list.md` in dependency order |
-| Detail | Entities, interfaces, interactions | Exact files, symbols, call sites, core logic, error rules and acceptance scenarios |
+| Detail | Domains, entities, typed interfaces, DAO guards and ordered core logic | Exact files, symbols, call sites, core logic, error rules and acceptance scenarios |
 | Unknowns | Allowed, listed as open decisions | A sub-spec with material ambiguity is not READY |
 | Review | Checklist below, then family review | Sub-spec checklist, then family review |
 | After it | The operator reviews and decides | `feature-specification-verification` reviews the whole family |
@@ -75,7 +75,7 @@ Resolve artifact roots in this order: explicit operator instruction → reposito
 <feature-specifications-root> = <SLO_FEATURE_SPECIFICATIONS_DIR or resolved-Slo-home/projects/<project_name>/feature-specifications>
 ```
 
-One folder per feature. Never name a specification `request.md`; that name belongs to incoming requests.
+One folder per feature. Store `overview.md`, later sub-specs and `task-list.md` together in that feature folder; do not create a separate competing output family. Never name a specification `request.md`; that name belongs to incoming requests.
 
 ```text
 <feature-specifications-root>/
@@ -122,7 +122,7 @@ Before design analysis, resolve `$SLO_KB_DIR` following [`locate-knowledge-base`
 ## Read before writing
 
 1. The repository rules and project instructions (`AGENTS.md`, `SLO.md`, `CLAUDE.md`, `RESEARCH.md` when present).
-2. The design rules: [`solution-design`](../../coding/solution-design/SKILL.md), [`code-design-principles`](../../coding/code-design-principles/SKILL.md) and [`coding-rules`](../../coding/coding-rules/SKILL.md), plus the convention skills in **Convention skills to read**.
+2. The overarching guidelines: [`solution-design`](../../coding/solution-design/SKILL.md), [`coding-rules`](../../coding/coding-rules/SKILL.md), [`naming-and-clarity`](../../coding/naming-and-clarity/SKILL.md) and [`test-verification-policy`](../../coding/test-verification-policy/SKILL.md). Also read [`code-design-principles`](../../coding/code-design-principles/SKILL.md) and the applicable language/layer skills in **Convention skills to read**. Honor conventions from the resolved `SLO_SKILLS_DIR` and active catalog, including user overrides.
 3. The knowledge base, as above.
 4. **The code itself.**
    - For every responsibility the feature needs, search by behaviour, not by the feature's name.
@@ -153,6 +153,17 @@ Paths are relative to the skills library root. Start with the language gateway; 
 - **Vue:** `frontend-vue/vue-coding-conventions/SKILL.md`, `frontend-vue/build-vue-components/SKILL.md`
 
 The full per-layer list (middleware, events, clients, tests by layer, always-on style) is in [`breakdown-feature-spec-to-tasks`](../breakdown-feature-spec-to-tasks/SKILL.md#convention-skills-by-language-and-layer).
+
+### Always-on design constraints
+
+Apply these to the specification's implementation details and examples, not only to eventual code:
+
+- **Tell-don’t-ask:** ask domain owners to perform behavior and enforce invariants; do not move business decisions into callers that inspect their state.
+- **Declarative code:** describe orchestration as named intentions, keeping core decisions cohesive within their owner.
+- **Test-first development and no regressions:** specify behavior tests to write before production changes, the observable outcomes they prove and existing behavior that must remain unchanged. Specification authoring does not execute those tests.
+- **Named arguments and type hints:** show named, typed inputs and explicit return types, including optional/async semantics. Follow language-native equivalents where keyword arguments are unsupported.
+
+Resolve the relevant guidance through the active skills catalog and language conventions. Carry concrete consequences into the design instead of merely saying “follow conventions.” Surface conflicts rather than silently waiving these constraints.
 
 ## Duplicate-code check
 
@@ -229,7 +240,7 @@ async def apply_access_projection(
 
 Write for a reader who is technical and business-savvy but has **no context on this application**. They know what a queue, a transaction or a foreign key is. They do not know this product's internal terms, how its pieces fit, or why a past decision was made.
 
-- Write clearly and present well: short sections, one idea each, no large blocks of prose.
+- Use simple language, short sections and one idea per block; avoid huge chunks of text. Prefer bullets for responsibilities, guards and explanations, numbered steps for logic and compact tables for contracts. Stay concise without dropping necessary explanation.
 - Define each internal term once, in one plain sentence, where it first appears. Spell out acronyms on first use.
 - Lead with the point, then the detail. Short sentences, concrete verbs, no jargon where an everyday word works.
 - Do not explain what any engineer already knows, and do not talk down.
@@ -237,7 +248,7 @@ Write for a reader who is technical and business-savvy but has **no context on t
 
 ## Visual aids
 
-Pick the diagram by what it has to show. A diagram **adds to** the attribute tables and prose; it never replaces them. Use Mermaid fenced blocks so they render in Markdown viewers, and fall back to ASCII where the target cannot render Mermaid.
+Pick the diagram by what it has to show. A diagram **adds to** the attribute tables and prose; it never replaces them. Include a concise ASCII control-flow path for the full journey near the top, using actual owner names and key rejection branches. Use Mermaid fenced blocks for additional relationships or cross-system sequences when they add information; do not duplicate the same flow just to change its format.
 
 | What you need to show | Use | Notes |
 |---|---|---|
@@ -246,7 +257,7 @@ Pick the diagram by what it has to show. A diagram **adds to** the attribute tab
 | Folder or file layout, nested JSON, light hierarchies | **ASCII tree** | Mark each entry new, changed or removed |
 | Who calls whom, in what order, across systems | **Sequence diagram** (`sequenceDiagram`) | One per journey that crosses two or more systems or processes |
 | The states of one record and what moves it | **State diagram** (`stateDiagram-v2`) | Label every edge with its trigger and guard |
-| The whole journey and its branches | **Flowchart** or a short ASCII overview | One per document, near the top |
+| The whole journey and its branches | **ASCII control-flow path** | Required near the top; show actual owners and important branches |
 
 Name things following [`naming-and-clarity`](../../coding/naming-and-clarity/SKILL.md) and [`ubiquitous-language`](../ubiquitous-language/SKILL.md). For every diagram:
 
@@ -262,25 +273,26 @@ Name things following [`naming-and-clarity`](../../coding/naming-and-clarity/SKI
 
 The order follows the reader's questions: what is it, what do I need, how does it fit today, what does it manage, how do things move, what are the interfaces, what changes, and what is undecided. **Journeys come after the domains**, because a reader cannot follow a flow through things they have not met.
 
-1. **What this feature does.** Three to six sentences on the problem, then a short numbered list of what the feature does end to end. Note any step not yet designed and where it is tracked in the open decisions.
+1. **What this feature does.** Three to six sentences on the problem and where the capability fits in the larger system, then a short numbered list covering the full feature end to end—not only the runnable core or first delivery slice. Include entry points, downstream consumers and important system boundaries. Note any step not yet designed and where it is tracked in the open decisions.
 2. **Prerequisites.** What the developer must obtain before starting: access, accounts, credentials, environments. For each, who grants it and where it comes from. Name secrets by their config key; never include a value.
 3. **Approach.**
    - **Problem** and **Recommendation**, each a short paragraph.
    - **Current state:** verified facts with `path:symbol`, what will be reused and what is missing, and the duplicate-code table. Say plainly when the area is greenfield.
-   - **One overview diagram** of the whole journey, showing which module owns each step and the states a record passes through.
+   - **One ASCII control-flow path** of the whole journey, showing entry point → application service → domain/service → DAO or external boundary → observable result, adapted to actual project layers. Label key guards, rejection branches and state changes; do not invent layers to fit the example.
 4. **Domains and data.** A domain is a cohesive responsibility that owns state, defined by its concept and rules, not by a table or a screen.
-   - For each domain: what it owns, what it does not own, and its tables.
+   - For each domain: its responsibility, owned invariants, what it does not own and its tables. Identify the domain services, application services, DAOs, models and entities involved in each planned slice; explain their roles and collaboration without inventing unused layers.
+   - **DAO guards:** identify field/type/range, cross-field, identity/existence and authorization validations where applicable. State the enforcing DAO/schema, domain service or database constraint, when it runs, its typed rejection and the guarantee against invalid writes or side effects. Keep domain business invariants with their owner rather than duplicating them across callers.
    - **Entity-relationship diagram**, then an **attribute table** per table: name, type, required, meaning and constraint. Say which record is the authority and which are derived copies.
    - **State diagram** for every record with a lifecycle, with the guard on each transition.
    - **Class diagram** where encapsulation or hierarchy is worth seeing.
    - **ASCII tree** for nested data inside a column or any hierarchy where UML would be heavy.
-5. **Journeys and workflows.** The two or three journeys that matter: the normal path, the empty or no-match path, and the failure and recovery path. For each: trigger, ordered steps, state changes, observable outcome and recovery. Add a **sequence diagram** for journeys that cross systems or processes, and a flowchart where the path branches.
+5. **Journeys and workflows.** The two or three journeys that matter: the normal path, the empty or no-match path, and the failure and recovery path. For each: trigger, preconditions, ordered core decisions and guards, branch outcomes, state changes, observable outcome and recovery. Explain control flow as a sequence of steps, with a focused diagram where it clarifies the logic. Add a **sequence diagram** for journeys that cross systems or processes, and a flowchart where the path branches.
 6. **Modules, interfaces and caller use.**
-   - **Modules table:** module, interface and callers, what it hides, leverage and locality.
+   - **Modules table:** domain service, application service, DAO or other participating object; its owner/path, named typed inputs, explicit return type, callers, responsibility, what it hides, leverage and locality. Mark verified existing interfaces versus new/proposed changes.
    - **The governing question,** stated once: how much useful behaviour can callers and tests exercise through the interface, and how much change can stay inside it?
    - **The deletion test, verbatim:** "If this module disappeared, would complexity disappear too, or would its work have to be repeated across callers?" Answer it for each module, and name the weakest one honestly.
    - **Rules the design decides** (matching precedence, retention, ordering), each inside the module that owns it.
-   - **Caller use:** how each entry point is called, and the signatures of the key interfaces (keyword arguments, type hints, no bodies). Put the target file before every snippet as ``**File:** `path` (new|changed)``, one file per snippet.
+   - **Caller use:** how each entry point is called, and signatures for each participating domain service, application service, DAO and other relevant method/object (named typed inputs, explicit return types and error outcomes, no bodies). Put the target file before every snippet as ``**File:** `path` (new|changed)``, one file per snippet.
    - **Promises:** ordering, transaction boundaries, idempotency, ownership, failure and recovery.
 7. **Existing code changes.** What is reused, extended and new, and the configuration keys. Show the files as an **ASCII tree** marked new, changed or removed. Describe database changes as operations (create, add column, constraint, index) with deployment order, backfill and rollback limit. End with **the strongest alternative** and why it was or was not chosen.
 8. **Tests, limits and next steps.**
@@ -290,12 +302,18 @@ The order follows the reader's questions: what is it, what do I need, how does i
    - **Delivery order** in which each step is runnable. Each step is one vertical piece of functionality end to end, so it becomes one sub-spec.
    - End with a one-paragraph takeaway.
 
+## Retry detail requires a separate confirmed pass
+
+Describe the full feature and its failure/recovery behavior in the initial overview, but ask for confirmation before a separate pass adds new retry counts, attempt-limit semantics, backoffs, jitter and exhaustion policy. Preserve already supplied contracts and cite their source; do not invent numeric defaults. Keep unresolved correctness-critical decisions explicit with their owner and affected journey. Permission to detail retries is not permission to choose unresolved product policy or implement code.
+
+Save confirmed additions in the same feature folder, updating the owning overview/contracts rather than creating a competing specification family. Carry their approval state and authoritative contracts into the breakdown handoff.
+
 ## Rules that decide quality
 
 - **One owner per state change.** Every transition, record and rule has exactly one owning module. Where the code already has an owner, reuse or extend it.
 - **Facts, proposals, assumptions and open decisions stay separate.** Mark each so a reader can tell what was verified. Mark any departure from the operator's request and say why.
 - **Unknowns are information.** If a decision blocks a step, say so and leave it open. Do not invent an answer.
-- **Interfaces, not implementations.** Name inputs, outputs, errors and guarantees. Method bodies and line-level wiring belong in the sub-specs.
+- **Implementation-ready design, not copied method bodies.** Specify owners, typed interfaces, validations and ordered core logic. Exact method bodies and line-level wiring belong in the sub-specs; references to later detailing must not hide a material design decision.
 - **Be honest about side effects and atomicity.** A database write plus a message to a queue is never atomic unless a mechanism makes it so. Say what happens if the process stops between them.
 - **Sensitive data.** Say where personal or secret data may live, and where it must not (tables, logs, durable workflow outputs).
 - **One name per concept** across tables, interfaces, diagrams and prose.
@@ -311,17 +329,20 @@ The order follows the reader's questions: what is it, what do I need, how does i
 - [ ] Every state change has one owning domain; no second owner of an existing responsibility.
 - [ ] The duplicate-code table covers every proposed artefact, "No existing owner found" is explicit, call sites to repoint and code to delete are named, and no duplicate is unresolved.
 - [ ] Tightly coupled steps (query and flush, open and close, validate then write) stay together; nothing trivial was extracted only to avoid repetition.
-- [ ] The matching convention skills were read.
+- [ ] The overarching guidelines and matching language/layer conventions from the active skills root were read and applied, including tell-don’t-ask, declarative design, test-first development, no regressions and language-appropriate named arguments/type hints.
+- [ ] The overview covers the full feature and its place in the larger system, with every planned slice’s domains, services, application services, DAOs, models and entities identified as applicable.
+- [ ] Domain responsibilities and invariants are explicit; DAO guards identify enforcement owner, timing, typed rejection and forbidden effects.
+- [ ] A clear ASCII journey shows the full control-flow path and key branches; ordered steps explain the core logic without hiding decisions behind later detailing.
 - [ ] Every table has its attributes, and an entity-relationship diagram shows how the tables relate.
 - [ ] Every record with a lifecycle has a state diagram with guards.
 - [ ] Journeys come after the domains, each with trigger, steps, outcome and recovery, and a sequence diagram where systems interact.
 - [ ] Every diagram has one idea, a one-sentence introduction and the same names as the tables.
-- [ ] Every interface lists inputs, outputs, errors and promises, and a file path precedes each snippet.
+- [ ] Every participating interface lists named typed inputs, explicit return types, errors and promises, and a file path precedes each snippet.
 - [ ] The governing question and the verbatim deletion test are answered.
 - [ ] Database changes are operations, with order and rollback limits.
 - [ ] Behaviour to prove leads with end-to-end behaviour tests; unit tests are limited to complex computation.
 - [ ] Failure and recovery are covered, including the crash between a commit and a queue message.
-- [ ] Open decisions are numbered, blocking ones first.
+- [ ] Open decisions are numbered, blocking ones first. New retry counts/backoffs are reserved for a separately confirmed pass; supplied policy is retained and correctness-critical unknowns are explicit.
 - [ ] The delivery order has one vertical slice per step.
 - [ ] No claim of approval, implementation, independent review or test execution.
 - [ ] Clear and well presented for a reader with no context on the application.

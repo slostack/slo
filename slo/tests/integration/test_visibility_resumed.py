@@ -2,7 +2,9 @@
 
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
+from textual.pilot import Pilot
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from dataclasses import dataclass
 
 import pytest
@@ -38,136 +40,6 @@ def resumed_session(*, root: Path) -> SloAgentSession:
             workdir=root, model_name="claude-sonnet-4-6", enable_history=True, history_root=root / "history"
         ),
     )
-
-
-async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_path: Path) -> None:
-    """Replay old history, dismiss durably, restore locally, restart and /new without leaked flags."""
-    seed = resumed_session(root=tmp_path)
-    async for _ in seed.invoke(text="persisted legacy prompt"):
-        pass
-    root = tmp_path / "history"
-    files = _Files(root=root)
-    await files.handle(
-        handle=_handle(
-            workflow_id="wf-legacy",
-            owner_session_id="legacy-owner",
-            orchestrator_session_id="legacy-parent",
-            state="stalled",
-        )
-    )
-    files.fleet(
-        parent="legacy-parent", entries=[_entry(session_id="legacy-child", execution_id="")], run_id=None
-    )
-    store = WorkflowHandleStore(history_root=root)
-    app = SloTUI(session=resumed_session(root=tmp_path))
-    async with app.run_test(size=(120, 40)) as pilot:
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: len(app.query(SubAgentFleetRow)) == 2,
-            description="resumed owner fleet rows are mounted",
-        )
-        assert app.query_one(UserMessageBlock).text == "persisted legacy prompt"
-        assert len(app.query(SubAgentFleetRow)) == 2
-        editor = app.query_one(PromptInputComponent)
-        editor.focus()
-        editor.text = "/workflows dismiss wf-legacy"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: app._chat_transcript._adapter is not None
-            and any(
-                text == "workflow wf-legacy dismissed (stalled → failed)"
-                for text, _ in app._chat_transcript._adapter.lines
-            ),
-            description="durable dismissal success is acknowledged",
-        )
-        handle = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
-        assert handle is not None and handle.state == "failed"
-        # The durable command requests a background refresh; persistence is not its paint barrier.
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: not list(app.query(SubAgentFleetRow)),
-            description="durably dismissed workflow rows are unmounted",
-        )
-        assert list(app.query(SubAgentFleetRow)) == []
-        editor.focus()
-        editor.text = "/workflows tui show"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: len(app.query(SubAgentFleetRow)) == 2,
-            description="both resumed fleet rows are mounted",
-        )
-        assert len(app.query(SubAgentFleetRow)) == 2
-        handle = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
-        assert handle is not None and handle.state == "failed"
-        editor.focus()
-        editor.text = "/workflows tui dismiss"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: not list(app.query(SubAgentFleetRow)),
-            description="locally dismissed workflow rows are unmounted",
-        )
-        assert list(app.query(SubAgentFleetRow)) == []
-    restarted = SloTUI(session=resumed_session(root=tmp_path))
-    async with restarted.run_test(size=(120, 40)) as pilot:
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: len(restarted.query(SubAgentFleetRow)) == 2,
-            description="restarted owner does not inherit hidden workflow groups",
-        )
-        assert len(restarted.query(SubAgentFleetRow)) == 2
-        editor = restarted.query_one(PromptInputComponent)
-        editor.focus()
-        editor.text = "/workflows tui dismiss"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: not list(restarted.query(SubAgentFleetRow)),
-            description="restarted owner workflow rows are hidden before replacement",
-        )
-        editor.focus()
-        editor.text = "/new"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: restarted._session.session_id != "legacy-owner"
-            and restarted._workflow_observation_session_id == restarted._session.session_id
-            and restarted._workflow_progress_coordinator is not None
-            and restarted._workflow_progress_coordinator._task is not None
-            and restarted._workflow_progress_coordinator._task.done(),
-            description="successor observation is bound and its first refresh is complete",
-        )
-        assert list(restarted.query(SubAgentFleetRow)) == []
-        editor.focus()
-        editor.text = "/workflows tui show"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: restarted._chat_transcript._adapter is not None
-            and any(
-                text == "No hidden workflow groups to show."
-                for text, _ in restarted._chat_transcript._adapter.lines
-            ),
-            description="empty-show notice is published",
-        )
-        assert restarted._chat_transcript._adapter is not None
-        assert any(
-            text == "No hidden workflow groups to show."
-            for text, _ in restarted._chat_transcript._adapter.lines
-        )
-        # The notice precedes request_refresh; join that read/paint before checking owner isolation.
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: restarted._workflow_progress_coordinator is not None
-            and restarted._workflow_progress_coordinator._task is not None
-            and restarted._workflow_progress_coordinator._task.done(),
-            description="successor show refresh is complete without legacy rows",
-        )
-        assert list(restarted.query(SubAgentFleetRow)) == []
-        handle = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
-        assert handle is not None and handle.state == "failed"
 
 
 @dataclass
@@ -222,217 +94,310 @@ class FiniteLauncher:
             self.closed = True
 
 
-@pytest.mark.parametrize("fail", [False, True])
-async def test_durable_resume_reveals_same_mounted_visibility_group(tmp_path: Path, fail: bool) -> None:
-    """Successful adoption reveals hidden rows; launch failure rolls back and stays hidden."""
-    root = tmp_path / "history"
-    files = _Files(root=root)
-    await files.handle(
-        handle=_handle(
-            workflow_id="wf-legacy",
-            owner_session_id="legacy-owner",
-            orchestrator_session_id="legacy-parent",
-            state="failed",
-        )
-    )
-    files.fleet(
-        parent="legacy-parent", entries=[_entry(session_id="legacy-child", execution_id="")], run_id=None
-    )
-    store = WorkflowHandleStore(history_root=root, pid_alive=lambda pid: False)
-    launcher = FiniteLauncher(store=store, fail=fail)
-    app = SloTUI(session=resumed_session(root=tmp_path), workflow_resume_launcher=launcher)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: len(app.query(SubAgentFleetRow)) == 2,
-            description="resumable workflow fleet rows are mounted",
-        )
-        keys = tuple(row.row.key for row in app.query(SubAgentFleetRow))
-        assert len(keys) == 2
-        editor = app.query_one(PromptInputComponent)
-        editor.focus()
-        editor.text = "/workflows tui dismiss"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: not list(app.query(SubAgentFleetRow)),
-            description="workflow rows are locally hidden before resume",
-        )
-        assert not list(app.query(SubAgentFleetRow))
-        editor.focus()
-        editor.text = "/workflows resume wf-legacy"
-        await pilot.press("enter")
-        acknowledgment = (
-            "workflow wf-legacy resume failed"
-            if fail
-            else f"workflow wf-legacy resumed (pid {launcher.adoption.process.pid}); "
-            "history replaying — state advances to running on the first heartbeat"
-        )
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: app._chat_transcript._adapter is not None
-            and any(text == acknowledgment for text, _ in app._chat_transcript._adapter.lines),
-            description="durable resume outcome is acknowledged",
-        )
-        persisted = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
-        assert persisted is not None
-        assert launcher.calls == 1 and launcher.closed
-        assert launcher.adoption.activated is (not fail)
-        assert persisted.state == ("failed" if fail else "launching")
-        if fail:
-            assert not list(app.query(SubAgentFleetRow))
-        else:
-            assert persisted.pid == launcher.adoption.process.pid
-            # Durable adoption requests observation; it does not join the background row application.
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: tuple(row.row.key for row in app.query(SubAgentFleetRow)) == keys,
-                description="successful resume restores the same mounted workflow keys",
-            )
-            assert tuple(row.row.key for row in app.query(SubAgentFleetRow)) == keys
-            editor.focus()
-            editor.text = "/workflows tui dismiss"
-            await pilot.press("enter")
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: not list(app.query(SubAgentFleetRow)),
-                description="resumed workflow rows are locally hidden",
-            )
-            assert not list(app.query(SubAgentFleetRow))
-            editor.focus()
-            editor.text = "/workflows tui show"
-            await pilot.press("enter")
-            await wait_for_condition(
-                pilot=pilot,
-                predicate=lambda: len(app.query(SubAgentFleetRow)) == 2,
-                description="re-shown resumed fleet rows are mounted",
-            )
-            assert tuple(row.row.key for row in app.query(SubAgentFleetRow)) == keys
-            assert launcher.calls == 1
-            assert await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy") == persisted
+@pytest.fixture(autouse=True)
+def workflow_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide authentication prerequisites without changing workflow behavior."""
+
+    def resolve(*, provider: ProviderName) -> CredentialDAO:
+        return CredentialDAO(provider=provider, auth_type=AuthType.API_KEY, access_token="workflow-test")
+
+    monkeypatch.setattr("src.tui.app.CredentialResolver.resolve", resolve)
 
 
-async def test_current_format_resume_restores_same_mounted_group_without_relaunch_on_show(
-    tmp_path: Path,
+@dataclass
+class VisibilityUI:
+    """One mounted lifetime with real command handling and bounded readiness."""
+
+    app: SloTUI
+    pilot: Pilot
+
+    @property
+    def keys(self) -> tuple:
+        return tuple(row.row.key for row in self.app.query(SubAgentFleetRow))
+
+    async def command(self, text: str) -> None:
+        editor = self.app.query_one(PromptInputComponent)
+        editor.focus()
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: self.app.focused is editor,
+            description="workflow editor owns keyboard focus",
+        )
+        editor.text = text
+        await self.pilot.press("enter")
+
+    async def rows(self, count: int) -> None:
+        await wait_for_condition(
+            pilot=self.pilot,
+            predicate=lambda: len(self.app.query(SubAgentFleetRow)) == count,
+            description=f"fleet has {count} rows",
+        )
+
+    def notice(self, text: str) -> bool:
+        adapter = self.app._chat_transcript._adapter
+        return adapter is not None and any(line == text for line, _ in adapter.lines)
+
+    async def acknowledged(self, text: str) -> None:
+        await wait_for_condition(
+            pilot=self.pilot, predicate=lambda: self.notice(text), description=f"command acknowledged: {text}"
+        )
+
+    async def hide(self) -> None:
+        await self.command("/workflows tui dismiss")
+        await self.rows(0)
+
+
+async def seed_workflow(
+    root: Path,
+    *,
+    current: bool = False,
+    owner: str = "legacy-owner",
+    workflow: str = "wf-legacy",
+    parent: str = "legacy-parent",
+    state: Literal["launching", "running", "completed", "failed", "aborted", "stalled"] = "failed",
 ) -> None:
-    """Resume a run-bound fleet through Enter; local re-show retains its keys and durable adoption."""
-    root = tmp_path / "history"
+    """Write a real durable workflow and its fleet into this test's private tree."""
     files = _Files(root=root)
     await files.handle(
         handle=_handle(
-            workflow_id="wf-legacy",
-            owner_session_id="legacy-owner",
-            orchestrator_session_id="legacy-parent",
-            state="failed",
+            workflow_id=workflow, owner_session_id=owner, orchestrator_session_id=parent, state=state
         )
     )
-    files.fleet(parent="legacy-parent", entries=[_entry(session_id="current-child", execution_id=_EXEC_A)])
-    store = WorkflowHandleStore(history_root=root, pid_alive=lambda pid: False)
-    launcher = FiniteLauncher(store=store, fail=False)
-    app = SloTUI(session=resumed_session(root=tmp_path), workflow_resume_launcher=launcher)
+    if current:
+        files.fleet(parent=parent, entries=[_entry(session_id="current-child", execution_id=_EXEC_A)])
+    else:
+        files.fleet(parent=parent, entries=[_entry(session_id="legacy-child", execution_id="")], run_id=None)
+
+
+@asynccontextmanager
+async def mounted(root: Path, launcher: FiniteLauncher | None = None) -> AsyncIterator[VisibilityUI]:
+    app = SloTUI(session=resumed_session(root=root), workflow_resume_launcher=launcher)
     async with app.run_test(size=(120, 40)) as pilot:
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: len(app.query(SubAgentFleetRow)) == 2,
-            description="current-format fleet rows are mounted",
-        )
-        workflow_rows = tuple(fleet_row.row for fleet_row in app.query(SubAgentFleetRow))
-        keys = tuple(workflow_row.key for workflow_row in workflow_rows)
-        assert len(keys) == 2
-        assert workflow_rows[1].execution_id == _EXEC_A
-        editor = app.query_one(PromptInputComponent)
-        editor.focus()
-        editor.text = "/workflows tui dismiss"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: not list(app.query(SubAgentFleetRow)),
-            description="current-format fleet is hidden before resume",
-        )
-        editor.focus()
-        editor.text = "/workflows resume wf-legacy"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: app._chat_transcript._adapter is not None
-            and any(
-                text == f"workflow wf-legacy resumed (pid {launcher.adoption.process.pid}); "
-                "history replaying — state advances to running on the first heartbeat"
-                for text, _ in app._chat_transcript._adapter.lines
-            ),
-            description="current-format durable resume is acknowledged",
-        )
-        persisted: WorkflowHandleDAO | None = await store.read(
+        yield VisibilityUI(app, pilot)
+
+
+@pytest.fixture
+async def legacy_history(tmp_path: Path) -> Path:
+    """Persist the old-session prompt and stalled workflow, without mounting a UI."""
+    seed = resumed_session(root=tmp_path)
+    async for _ in seed.invoke(text="persisted legacy prompt"):
+        pass
+    await seed_workflow(tmp_path / "history", state="stalled")
+    return tmp_path
+
+
+async def dismiss_durably(ui: VisibilityUI) -> None:
+    await ui.command("/workflows dismiss wf-legacy")
+    await ui.acknowledged("workflow wf-legacy dismissed (stalled → failed)")
+    await ui.rows(0)
+
+
+async def test_legacy_replay_restores_prompt_and_fleet(legacy_history: Path) -> None:
+    async with mounted(legacy_history) as ui:
+        await ui.rows(2)
+        assert ui.app.query_one(UserMessageBlock).text == "persisted legacy prompt"
+        assert len(ui.keys) == 2
+
+
+async def test_durable_dismiss_marks_handle_failed(legacy_history: Path) -> None:
+    async with mounted(legacy_history) as ui:
+        await ui.rows(2)
+        await ui.command("/workflows dismiss wf-legacy")
+        await ui.acknowledged("workflow wf-legacy dismissed (stalled → failed)")
+        handle = await WorkflowHandleStore(history_root=legacy_history / "history").read(
             owner_session_id="legacy-owner", workflow_id="wf-legacy"
         )
-        assert persisted is not None and persisted.state == "launching"
-        assert persisted.pid == launcher.adoption.process.pid
-        assert launcher.calls == 1 and launcher.closed and launcher.adoption.activated
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: tuple(fleet_row.row.key for fleet_row in app.query(SubAgentFleetRow)) == keys,
-            description="current-format resume restores original ordered keys",
-        )
-        assert tuple(fleet_row.row.key for fleet_row in app.query(SubAgentFleetRow)) == keys
-        durable_files = tree_state(root)
-        editor.focus()
-        editor.text = "/workflows tui dismiss"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: not list(app.query(SubAgentFleetRow)),
-            description="resumed current-format fleet is locally hidden",
-        )
-        editor.focus()
-        editor.text = "/workflows tui show"
-        await pilot.press("enter")
-        await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: tuple(fleet_row.row.key for fleet_row in app.query(SubAgentFleetRow)) == keys,
-            description="current-format local show restores original ordered keys",
-        )
-        assert tuple(fleet_row.row.key for fleet_row in app.query(SubAgentFleetRow)) == keys
-        assert tuple(fleet_row.row.execution_id for fleet_row in app.query(SubAgentFleetRow))[1] == _EXEC_A
-        assert launcher.calls == 1
+        assert handle is not None and handle.state == "failed"
+
+
+async def test_durable_dismiss_unmounts_fleet(legacy_history: Path) -> None:
+    async with mounted(legacy_history) as ui:
+        await ui.rows(2)
+        await dismiss_durably(ui)
+        assert ui.keys == ()
+
+
+async def test_local_show_does_not_reverse_durable_dismiss(legacy_history: Path) -> None:
+    store = WorkflowHandleStore(history_root=legacy_history / "history")
+    async with mounted(legacy_history) as ui:
+        await ui.rows(2)
+        keys = ui.keys
+        await dismiss_durably(ui)
+        persisted = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        await ui.command("/workflows tui show")
+        await ui.rows(2)
+        assert ui.keys == keys
         assert await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy") == persisted
-        assert tree_state(root) == durable_files
 
 
-async def test_resume_refuses_foreign_owner_without_launch_or_foreign_mutation(tmp_path: Path) -> None:
-    """Enter cannot resume another owner's workflow, even when its ID is known."""
-    root = tmp_path / "history"
-    files = _Files(root=root)
-    await files.handle(
-        handle=_handle(
-            workflow_id="wf-foreign",
-            owner_session_id="foreign-owner",
-            orchestrator_session_id="foreign-parent",
-            state="failed",
-        )
-    )
-    files.fleet(
-        parent="foreign-parent", entries=[_entry(session_id="foreign-child", execution_id="")], run_id=None
-    )
-    store = WorkflowHandleStore(history_root=root, pid_alive=lambda pid: False)
-    foreign_handle: WorkflowHandleDAO | None = await store.read(
-        owner_session_id="foreign-owner", workflow_id="wf-foreign"
-    )
-    assert foreign_handle is not None
-    foreign_files = (tree_state(root / "foreign-owner"), tree_state(root / "foreign-parent"))
-    launcher = FiniteLauncher(store=store, fail=False)
-    app = SloTUI(session=resumed_session(root=tmp_path), workflow_resume_launcher=launcher)
-    async with app.run_test(size=(120, 40)) as pilot:
-        editor = app.query_one(PromptInputComponent)
-        editor.focus()
-        editor.text = "/workflows resume wf-foreign"
-        await pilot.press("enter")
+async def test_restart_does_not_inherit_hidden_groups(legacy_history: Path) -> None:
+    async with mounted(legacy_history) as ui:
+        await ui.rows(2)
+        await dismiss_durably(ui)
+        await ui.command("/workflows tui show")
+        await ui.rows(2)
+        keys = ui.keys
+        await ui.hide()
+    async with mounted(legacy_history) as restarted:
+        await restarted.rows(2)
+        assert restarted.keys == keys
+
+
+async def test_new_session_does_not_inherit_hidden_legacy_groups(legacy_history: Path) -> None:
+    store = WorkflowHandleStore(history_root=legacy_history / "history")
+    async with mounted(legacy_history) as ui:
+        await ui.rows(2)
+        await dismiss_durably(ui)
+        await ui.command("/workflows tui show")
+        await ui.rows(2)
+        await ui.hide()
+        persisted = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        await ui.command("/new")
         await wait_for_condition(
-            pilot=pilot,
-            predicate=lambda: app._chat_transcript._adapter is not None
-            and any(text == "no workflow wf-foreign" for text, _ in app._chat_transcript._adapter.lines),
-            description="foreign-owner resume refusal is acknowledged",
+            pilot=ui.pilot,
+            predicate=lambda: ui.app._session.session_id != "legacy-owner"
+            and ui.app._workflow_observation_session_id == ui.app._session.session_id
+            and ui.app._workflow_progress_coordinator is not None
+            and ui.app._workflow_progress_coordinator._task is not None
+            and ui.app._workflow_progress_coordinator._task.done(),
+            description="replacement owner observation is complete",
         )
+        await ui.command("/workflows tui show")
+        await ui.acknowledged("No hidden workflow groups to show.")
+        await wait_for_condition(
+            pilot=ui.pilot,
+            predicate=lambda: ui.app._workflow_progress_coordinator is not None
+            and ui.app._workflow_progress_coordinator._task is not None
+            and ui.app._workflow_progress_coordinator._task.done(),
+            description="replacement show observation is complete",
+        )
+        assert ui.keys == ()
+        assert await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy") == persisted
+
+
+@dataclass
+class ResumeUI:
+    ui: VisibilityUI
+    store: WorkflowHandleStore
+    launcher: FiniteLauncher
+    keys: tuple
+
+    async def resume(self) -> None:
+        await self.ui.command("/workflows resume wf-legacy")
+        text = (
+            "workflow wf-legacy resume failed"
+            if self.launcher.fail
+            else f"workflow wf-legacy resumed (pid {self.launcher.adoption.process.pid}); "
+            "history replaying — state advances to running on the first heartbeat"
+        )
+        await self.ui.acknowledged(text)
+
+
+@asynccontextmanager
+async def hidden_resume(root: Path, *, current: bool, fail: bool = False) -> AsyncIterator[ResumeUI]:
+    await seed_workflow(root / "history", current=current)
+    store = WorkflowHandleStore(history_root=root / "history", pid_alive=lambda pid: False)
+    launcher = FiniteLauncher(store=store, fail=fail)
+    async with mounted(root, launcher) as ui:
+        await ui.rows(2)
+        keys = ui.keys
+        await ui.hide()
+        yield ResumeUI(ui, store, launcher, keys)
+
+
+formats = pytest.mark.parametrize("current", [False, True], ids=["legacy", "current"])
+
+
+@formats
+async def test_resume_adopts_pid_before_activation(tmp_path: Path, current: bool) -> None:
+    async with hidden_resume(tmp_path, current=current) as case:
+        await case.resume()
+        handle = await case.store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        assert handle is not None and (handle.state, handle.pid) == (
+            "launching",
+            case.launcher.adoption.process.pid,
+        )
+        assert case.launcher.calls == 1 and case.launcher.closed and case.launcher.adoption.activated
+
+
+@formats
+async def test_resume_restores_original_row_identity(tmp_path: Path, current: bool) -> None:
+    async with hidden_resume(tmp_path, current=current) as case:
+        await case.resume()
+        await case.ui.rows(2)
+        assert case.ui.keys == case.keys
+        assert list(case.ui.app.query(SubAgentFleetRow))[1].row.execution_id == (_EXEC_A if current else "")
+
+
+@formats
+async def test_failed_resume_rolls_back_without_activation(tmp_path: Path, current: bool) -> None:
+    async with hidden_resume(tmp_path, current=current, fail=True) as case:
+        await case.resume()
+        handle = await case.store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        assert handle is not None and handle.state == "failed"
+        assert case.launcher.calls == 1 and case.launcher.closed and not case.launcher.adoption.activated
+
+
+@formats
+async def test_failed_resume_keeps_fleet_hidden(tmp_path: Path, current: bool) -> None:
+    async with hidden_resume(tmp_path, current=current, fail=True) as case:
+        await case.resume()
+        assert case.ui.keys == ()
+
+
+@formats
+async def test_show_after_resume_restores_same_rows(tmp_path: Path, current: bool) -> None:
+    async with hidden_resume(tmp_path, current=current) as case:
+        await case.resume()
+        await case.ui.rows(2)
+        await case.ui.hide()
+        await case.ui.command("/workflows tui show")
+        await case.ui.rows(2)
+        assert case.ui.keys == case.keys
+        assert list(case.ui.app.query(SubAgentFleetRow))[1].row.execution_id == (_EXEC_A if current else "")
+
+
+@formats
+async def test_show_after_resume_neither_relaunches_nor_writes(tmp_path: Path, current: bool) -> None:
+    async with hidden_resume(tmp_path, current=current) as case:
+        await case.resume()
+        await case.ui.rows(2)
+        persisted = tree_state(tmp_path / "history")
+        await case.ui.hide()
+        await case.ui.command("/workflows tui show")
+        await case.ui.rows(2)
+        assert case.launcher.calls == 1
+        assert tree_state(tmp_path / "history") == persisted
+
+
+@asynccontextmanager
+async def refused_foreign_resume(root: Path) -> AsyncIterator[tuple[VisibilityUI, FiniteLauncher, tuple]]:
+    await seed_workflow(
+        root / "history", owner="foreign-owner", workflow="wf-foreign", parent="foreign-parent"
+    )
+    store = WorkflowHandleStore(history_root=root / "history", pid_alive=lambda pid: False)
+    launcher = FiniteLauncher(store=store, fail=False)
+    original = (tree_state(root / "history/foreign-owner"), tree_state(root / "history/foreign-parent"))
+    async with mounted(root, launcher) as ui:
+        await ui.command("/workflows resume wf-foreign")
+        await ui.acknowledged("no workflow wf-foreign")
+        yield ui, launcher, original
+
+
+async def test_foreign_resume_is_refused_without_launch(tmp_path: Path) -> None:
+    async with refused_foreign_resume(tmp_path) as (ui, launcher, _):
+        assert ui.notice("no workflow wf-foreign")
         assert launcher.calls == 0 and not launcher.adoption.activated
-        assert await store.read(owner_session_id="foreign-owner", workflow_id="wf-foreign") == foreign_handle
-        assert (tree_state(root / "foreign-owner"), tree_state(root / "foreign-parent")) == foreign_files
-        assert not list(app.query(SubAgentFleetRow))
+
+
+async def test_foreign_resume_preserves_foreign_files(tmp_path: Path) -> None:
+    async with refused_foreign_resume(tmp_path) as (_, _, original):
+        assert (
+            tree_state(tmp_path / "history/foreign-owner"),
+            tree_state(tmp_path / "history/foreign-parent"),
+        ) == original
+
+
+async def test_foreign_resume_does_not_mount_foreign_rows(tmp_path: Path) -> None:
+    async with refused_foreign_resume(tmp_path) as (ui, _, _):
+        assert ui.keys == ()

@@ -108,21 +108,30 @@ class TestStreamRecoveryService:
         assert decision.action is StreamRecoveryAction.PROPAGATE
 
     @pytest.mark.parametrize(
-        ("sample", "expected"),
-        ((0.5, 0.5), (1.5, 1.5)),
+        ("attempt_number", "expected"),
+        ((1, 1.0), (2, 2.0), (3, 4.0), (4, 8.0), (5, 16.0), (6, 32.0), (7, 64.0), (10**100, 64.0)),
     )
-    def test_classify_uses_bounded_reconnect_jitter(
-        self, sample: float, expected: float, monkeypatch: pytest.MonkeyPatch
+    def test_reconnect_schedule_is_deterministic_and_capped(
+        self, attempt_number: int, expected: float
     ) -> None:
-        """Reconnect delay remains within the locked half-to-one-and-a-half range."""
-        monkeypatch.setattr("random.uniform", lambda _low, _high: sample)
+        """Approved S103 pacing replaces the former jitter policy, including huge ordinals."""
+        assert StreamRecoveryService.retry_delay_seconds(attempt_number=attempt_number) == expected
+        assert StreamRecoveryService.retry_delay_seconds(attempt_number=attempt_number) == expected
 
+    @pytest.mark.parametrize("attempt_number", (0, -1))
+    def test_reconnect_schedule_rejects_non_positive_ordinals(self, attempt_number: int) -> None:
+        """Invalid programmatic ordinals do not silently create zero-wait retries."""
+        with pytest.raises(ValueError):
+            StreamRecoveryService.retry_delay_seconds(attempt_number=attempt_number)
+
+    def test_classification_uses_explicit_ordinal(self) -> None:
+        """The classifier retains ordinal input without owning session reconnect accounting."""
         decision: StreamRecoveryDecisionDAO = StreamRecoveryService.classify(
             exc=httpx.RemoteProtocolError("closed"),
             partial_output_committed=False,
+            attempt_number=3,
         )
-
-        assert decision.retry_delay_seconds == expected
+        assert decision.retry_delay_seconds == 4.0
 
     def test_timeout_resolvers_fall_back_for_invalid_or_non_positive_values(
         self, monkeypatch: pytest.MonkeyPatch
@@ -154,4 +163,4 @@ class TestStreamRecoveryService:
         """An invalid configured continuation limit retains the safe default."""
         monkeypatch.setenv("SLO_PROVIDER_STREAM_CONTINUATION_MAX_ATTEMPTS", value)
 
-        assert provider_stream_continuation_max_attempts() == 5
+        assert provider_stream_continuation_max_attempts() == 10

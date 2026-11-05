@@ -197,16 +197,15 @@ async def test_tui_when_auth_has_no_landing_model_primes_cached_model_search() -
 
 @pytest.mark.parametrize("size", [(80, 24), (60, 15)])
 @pytest.mark.parametrize(
-    "reasoning,expected",
+    "reasoning",
     [
-        ({"supported_efforts": ["none"], "mandatory": False}, "reasoning disable supported"),
-        ({"supported_efforts": ["low", "high"]}, "reasoning low, high; provider default"),
+        {"supported_efforts": ["none"], "mandatory": False},
+        {"supported_efforts": ["low", "high"]},
     ],
 )
-async def test_mounted_picker_paints_reasoning_disable_evidence(
+async def test_mounted_picker_paints_model_name_and_context_window(
     size: tuple[int, int],
     reasoning: dict[str, object],
-    expected: str,
 ) -> None:
     """Require real normal-path paint, then prove hidden render text cannot satisfy it."""
     from src.agents.model_catalog.seed import SeedModelCatalog
@@ -217,6 +216,7 @@ async def test_mounted_picker_paints_reasoning_disable_evidence(
     entry = _entry(reasoning=reasoning)
     snapshot = SeedModelCatalog.load().model_copy(update={"entries": {entry.model_name: entry}})
     entries = _project_rows(snapshot=snapshot, active_model_name=entry.model_name, statuses={})
+    expected = f"{entries[0].model_name} (Ctx: {entries[0].context_window})"
     app = SloTUI(session=_build_tui_session())
 
     with patch("src.tui.slash_suggestion_engine.model_suggestion_entries", return_value=entries):

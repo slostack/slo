@@ -24,7 +24,12 @@ class AIAgentResponseAdapter:
 
     Native fragment/echo validation remains in the SDK parser. This owner rejects
     stale portable events and never allows a late event to update another response.
+    Only the latest accepted event is remembered: sequences strictly increase, so
+    an exact repeat of it is inert and anything older is rejected. A long answer
+    may stream any number of fragments; only response identities are bounded.
     """
+
+    RESPONSE_LIMIT = 10_000
 
     @classmethod
     def register(
@@ -46,11 +51,11 @@ class AIAgentResponseAdapter:
         response_receiver: Callable[[ClaudeResponseTranslationDAO], Awaitable[None]],
         tool_call_receiver: Callable[[ClaudeResponseTranslationDAO], Awaitable[None]],
     ) -> None:
-        """Keep one assembly, bounded identity digests and serialized delivery."""
+        """Keep one assembly, the latest accepted digest and serialized delivery."""
         self._binding = binding
         self._response_receiver = response_receiver
         self._tool_call_receiver = tool_call_receiver
-        self._accepted: dict[int, bytes] = {}
+        self._latest_digest: bytes | None = None
         self._completed: set[str] = set()
         self._response_id: str | None = None
         self._text = ""
@@ -69,7 +74,7 @@ class AIAgentResponseAdapter:
             if self._validate_event(event=event, digest=digest):
                 return
             self._assemble(event=event)
-            self._accepted[event.sequence] = digest
+            self._latest_digest = digest
             self._sequence = event.sequence
             translated = ClaudeResponseTranslationDAO(event=event.model_copy(deep=True), text=self._text)
             self._delivery = asyncio.create_task(coro=self._deliver(translation=translated))
@@ -79,15 +84,15 @@ class AIAgentResponseAdapter:
         """Return exact-repeat status or reject changed binding/order before mutation."""
         if event.session_id != self._binding.session_id or event.invocation_id != self._binding.invocation_id:
             raise ValueError("Claude response binding changed.")
-        if event.sequence in self._accepted:
-            if self._accepted[event.sequence] != digest:
+        if self._latest_digest is not None and event.sequence == self._sequence:
+            if self._latest_digest != digest:
                 raise ValueError("Claude response echo contradicts accepted event.")
             return True
         if event.sequence <= self._sequence or event.response_id in self._completed:
             raise ValueError("Claude response sequence or completion order changed.")
         if self._response_id is not None and event.response_id != self._response_id:
             raise ValueError("Claude response overlaps unfinished assembly.")
-        if len(self._accepted) >= 10000:
+        if self._response_id is None and len(self._completed) >= self.RESPONSE_LIMIT:
             raise ValueError("Claude response identity limit exceeded.")
         return False
 

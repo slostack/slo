@@ -308,3 +308,29 @@ async def test_call_adapter_rejects_entire_invalid_batch_before_delivery(change:
         await adapter.handle(event=event)
     await adapter.close()
     assert not accepted
+
+
+async def test_response_adapter_accepts_long_streams_and_bounds_response_identities() -> None:
+    """A long answer streams any number of fragments; only response identities are capped."""
+    binding = ClaudeInteractionBindingDAO(session_id="s", invocation_id="i", binding_version=0)
+
+    async def receive(event: ClaudeResponseTranslationDAO) -> None:
+        """Accept every translated event."""
+
+    adapter = AIAgentResponseAdapter.register(binding=binding, response_receiver=receive, tool_call_receiver=receive)
+    for sequence in range(1, 10_003):
+        await adapter.handle(
+            event=ClaudeTextEventDAO(session_id="s", invocation_id="i", response_id="r", sequence=sequence, text="x")
+        )
+    sequence = 10_002
+    for response in ["r", *(f"r{n}" for n in range(1, AIAgentResponseAdapter.RESPONSE_LIMIT))]:
+        sequence += 1
+        await adapter.handle(
+            event=ClaudeResponseCompletedDAO(
+                session_id="s", invocation_id="i", response_id=response, sequence=sequence, stop_reason="stop"
+            )
+        )
+    with pytest.raises(ValueError, match="identity limit"):
+        await adapter.handle(
+            event=ClaudeTextEventDAO(session_id="s", invocation_id="i", response_id="over", sequence=sequence + 1, text="x")
+        )

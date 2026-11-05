@@ -15,7 +15,6 @@ WORKSPACE_ROOT: Path = REPOSITORY_ROOT.parent
 MAKEFILE: Path = REPOSITORY_ROOT / "Makefile"
 GITLAB_CI: Path = WORKSPACE_ROOT / ".gitlab-ci.yml"
 MACOS_WORKFLOW: Path = REPOSITORY_ROOT / ".github" / "workflows" / "release-installer.yml"
-RELEASE_EVIDENCE_DIRECTORY: Path = REPOSITORY_ROOT / "release-evidence"
 
 
 def _dry_run_make(*, target: str, variables: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -403,25 +402,21 @@ class TestReleaseAutomation:
         assert "make lint" not in content
         assert "- job: pytest" in publish_job
 
-    def test_repo_local_release_evidence_template_is_explicitly_non_evidence(self) -> None:
-        """A read-only canonical spec target has a local template and exact operator destination."""
-        readme: str = (RELEASE_EVIDENCE_DIRECTORY / "README.md").read_text()
-        template: str = (RELEASE_EVIDENCE_DIRECTORY / "template.md").read_text()
-
-        assert "canonical specifications directory" in readme
-        assert "readlink -f specifications" in readme
-        assert "not release results" in readme
-        assert "TEMPLATE: not evidence" in template
-        for heading in ("Identity", "Build and local pipx recovery", "Required CI release gates"):
-            assert heading in template
+    def test_release_guidance_keeps_receipts_external_and_requires_real_release_proof(self) -> None:
+        """Portable guidance requires actual release results, not a local template or KB mount."""
+        readme: str = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        assert not (REPOSITORY_ROOT / "release-evidence").exists()
+        guidance: str = readme.split("### Release proof", maxsplit=1)[1].split("### ", maxsplit=1)[0]
+        assert "outside the codebase" in guidance
+        assert "not release results" in guidance
         for required_field in (
             "Wheel SHA-256",
             "Linux non-E2E matrix",
             "macOS hosted installer",
             "Hosted installer URL/hash",
+            "Redacted failures",
         ):
-            assert required_field in template
-        assert "Redacted failures" in template
+            assert required_field in guidance
 
     def test_github_workflow_is_not_release_authority(self) -> None:
         """An optional GitHub workflow has no independent release trigger or authority claim."""

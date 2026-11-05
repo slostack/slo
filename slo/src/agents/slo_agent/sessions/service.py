@@ -5201,7 +5201,7 @@ class SloAgentSession:
         )
         await self._dispatch_event(event=retry_event)
         yield retry_event
-        await self._recovery_wait(decision.wait_seconds)
+        await asyncio.sleep(delay=decision.wait_seconds)
         self._clear_retry_cooldown()
         self._record_preflight_attempt(decision=decision)
 

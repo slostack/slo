@@ -4610,7 +4610,8 @@ class SloAgentSession:
         result: PromptAttemptResultDAO,
     ) -> Optional[PromptAttemptPlanDAO]:
         """Audit and pace a new inspect-first submission, independent of reconnect bounds."""
-        if self._recovery_abort_requested:
+        # An already-aborted attempt owns its terminal event; only recovery needs settlement.
+        if self._recovery_abort_requested and not result.aborted:
             raise asyncio.CancelledError()
         if not self._is_stream_continuation_eligible(plan=plan, result=result):
             return None

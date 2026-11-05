@@ -15,7 +15,7 @@ from .exceptions import ClaudeBridgeError
 class ClaudeNativeTransport(Transport):
     """Own native pipes/process, leaving protocol routing entirely to the SDK.
 
-    Only the fixed read-only runtime option profile is encoded here. No SDK
+    Only the fixed native-tools-off runtime option profile is encoded here. No SDK
     process fields or command-builder methods are read or patched. The custom
     Transport owns the child handle needed for forced termination and reap.
     """

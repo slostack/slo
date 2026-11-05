@@ -432,17 +432,26 @@ class SloAgent:
     def _usage_from_completed_message(self, *, message: AIMessage) -> TokenUsageTotalsDAO:
         """Extract provider-supplied totals without estimating missing fields."""
         usage_metadata: dict[str, object] = dict(message.usage_metadata or {})
+        raw_details: object = usage_metadata.get("input_token_details")
+        details: dict[str, object] = raw_details if isinstance(raw_details, dict) else {}
+        # Flat keys keep priority; LangChain's standard ``input_token_details``
+        # (Anthropic, OpenAI, OpenRouter, Codex, Claude bridge) fills the gap.
         return TokenUsageTotalsDAO(
             input_tokens=int_or_none(value=usage_metadata.get("input_tokens")),
             output_tokens=int_or_none(value=usage_metadata.get("output_tokens")),
             total_tokens=int_or_none(value=usage_metadata.get("total_tokens")),
-            cache_creation_input_tokens=int_or_none(
-                value=usage_metadata.get("cache_creation_input_tokens"),
+            cache_creation_input_tokens=self._first_known_count(
+                values=(usage_metadata.get("cache_creation_input_tokens"), details.get("cache_creation"))
             ),
-            cache_read_input_tokens=int_or_none(
-                value=usage_metadata.get("cache_read_input_tokens"),
+            cache_read_input_tokens=self._first_known_count(
+                values=(usage_metadata.get("cache_read_input_tokens"), details.get("cache_read"))
             ),
         )
+
+    @staticmethod
+    def _first_known_count(*, values: tuple[object, ...]) -> Optional[int]:
+        """Return the first value that is a known token count, else None."""
+        return next((count for value in values if (count := int_or_none(value=value)) is not None), None)
 
     # ---- Run-lifecycle helpers (extracted from invoke) -------------------------
 

@@ -6,6 +6,7 @@ from typing import Self
 
 import pytest
 
+from src.agents.tools.bundles import create_local_tools
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO, SessionHistoryEventPayloadDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
@@ -15,6 +16,8 @@ from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
 from src.bridges.claude.sdk.dao import ClaudeAuthenticationStatusDAO, ClaudeBridgeConfigurationDAO
 from tests.bridges.claude.test_lifecycle import ready_status
 from tests.cli.test_claude_bridge import ScriptedClaudeTransport
+
+LOCAL_TOOL_NAMES: tuple[str, ...] = tuple(tool.name for tool in create_local_tools())
 
 
 async def test_close_during_native_startup_cannot_publish_ready(
@@ -293,7 +296,7 @@ async def test_auth_failure_leaves_fresh_prompt_available(
             return cls(
                 configuration=configuration,
                 transport=ScriptedClaudeTransport(
-                    initialized_tools=tuple(f"mcp__slo__{name}" for name in ("read", "grep", "find", "ls"))
+                    initialized_tools=tuple(f"mcp__slo__{name}" for name in LOCAL_TOOL_NAMES)
                 ),
                 authentication_check=status,
             )

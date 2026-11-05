@@ -3,7 +3,7 @@
 import base64
 import binascii
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, ClassVar, Literal, Optional
 
 from pydantic import field_validator
 
@@ -26,6 +26,53 @@ class ClaudeToolDefinitionDAO(BaseModel):
     name: str
     description: str
     input_schema: dict[str, JsonValue]
+
+
+class ClaudeUsageDAO(BaseModel):
+    """Token counts Claude reported for one response; ``None`` means unknown, never zero."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    input_tokens: Optional[int] = Field(default=None, ge=0, description="Fresh input, cache excluded.")
+    output_tokens: Optional[int] = Field(default=None, ge=0, description="Output, cumulative in a response.")
+    cache_read_tokens: Optional[int] = Field(default=None, ge=0, description="cache_read_input_tokens.")
+    cache_write_tokens: Optional[int] = Field(default=None, ge=0, description="cache_creation_input_tokens.")
+
+    _NATIVE_KEYS: ClassVar[dict[str, str]] = {
+        "input_tokens": "input_tokens",
+        "output_tokens": "output_tokens",
+        "cache_read_input_tokens": "cache_read_tokens",
+        "cache_creation_input_tokens": "cache_write_tokens",
+    }
+
+    @classmethod
+    def from_native(cls, *, payload: object) -> "ClaudeUsageDAO":
+        """Read native usage leniently: a missing or malformed value is unknown, never an error.
+
+        Usage is telemetry and must not fail a coding task, so anything that is not
+        a non-negative ``int`` (bools included) leaves that field ``None``.
+        """
+        return cls().overwritten_by_native(payload=payload)
+
+    def overwritten_by_native(self, *, payload: object) -> "ClaudeUsageDAO":
+        """Apply cumulative native counts: a present key replaces the field, an absent key keeps it.
+
+        A present but malformed value makes the field unknown (``None``) rather than
+        leaving a stale earlier count to be reported as real.
+        """
+        if not isinstance(payload, dict):
+            return self
+        return self.model_copy(
+            update={
+                field: self._valid_count(value=payload[native])
+                for native, field in self._NATIVE_KEYS.items()
+                if native in payload
+            }
+        )
+
+    @staticmethod
+    def _valid_count(*, value: object) -> Optional[int]:
+        """Return ``value`` only when it is a non-negative int (bools excluded)."""
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 class ClaudeToolCallDAO(BaseModel):

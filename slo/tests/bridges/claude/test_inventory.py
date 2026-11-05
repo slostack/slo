@@ -1,4 +1,4 @@
-"""Read-only binding and schema admission without native accounts."""
+"""Canonical-subset binding and schema admission without native accounts."""
 
 import asyncio
 from copy import deepcopy
@@ -8,16 +8,20 @@ import pytest
 from pydantic import JsonValue
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from src.agents.tools.bundles import create_read_only_tools
+from src.agents.tools.bundles import create_local_tools, create_read_only_tools
 from src.bridges.claude.bridge import SloClaudeBridge
 from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
 from src.bridges.claude.sdk.dao import (
     ClaudeAuthenticationStatusDAO,
     ClaudeBridgeConfigurationDAO,
+    ClaudeInteractionBindingDAO,
     ClaudeInvocationOptionsDAO,
     ClaudeSessionOptionsDAO,
     ClaudeToolDefinitionDAO,
 )
+from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
+from src.bridges.claude.sdk.inventory import ClaudeToolInventory
+from src.bridges.claude.sdk.tool_bridge import ClaudeToolBridge
 from src.bridges.dao import SloBridgeSessionOptionsDAO
 from tests.bridges.claude.test_lifecycle import ready_status
 from tests.cli.test_claude_bridge import ScriptedClaudeTransport, ToolRoundTransport, scripted_adapter_class
@@ -40,14 +44,76 @@ def definition(*, schema: dict[str, JsonValue], name: str = "read") -> ClaudeToo
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
-def test_canonical_subset_is_rejected_before_configuration(count: int) -> None:
-    """A6: canonical names alone do not authorize a partial host bundle."""
+def test_canonical_subset_is_accepted_before_configuration(count: int) -> None:
+    """101.a.3: the per-definition init check makes any canonical subset safe to bind."""
     model = SloClaudeBridge(
         model_name="claude-bridge:claude-haiku-5-5",
         bridge_adapter=SloClaudeBridgeAdapter(configuration=ClaudeBridgeConfigurationDAO()),
     )
-    with pytest.raises(ValueError, match="bundle|inventory"):
-        model.bind_tools(tools=create_read_only_tools()[:count])
+    subset = create_read_only_tools()[:count]
+    assert model.bind_tools(tools=subset) is model
+    assert sorted(tool.name for tool in subset) == [tool.name for tool in model._tools]
+
+
+def test_full_local_bundle_binds_and_every_schema_passes_freeze() -> None:
+    """101.a.3: all ten local tools (incl. nested edit $defs and bash Optional[float]) freeze."""
+    model = SloClaudeBridge(
+        model_name="claude-bridge:claude-haiku-5-5",
+        bridge_adapter=SloClaudeBridgeAdapter(configuration=ClaudeBridgeConfigurationDAO()),
+    )
+    tools = create_local_tools()
+    assert model.bind_tools(tools=tools) is model
+    assert [tool.name for tool in model._tools] == sorted(tool.name for tool in tools)
+    assert len(model._tools) == 10
+    edit = next(tool for tool in model._tools if tool.name == "edit")
+    assert "$ref" not in str(edit.input_schema)
+
+
+async def test_every_listed_tool_lifts_the_native_result_size_limit(tmp_path: Path) -> None:
+    """The CLI stubs MCP results over 50,000 chars unless the tool's _meta raises the limit."""
+    model = SloClaudeBridge(
+        model_name="claude-bridge:claude-haiku-5-5",
+        bridge_adapter=SloClaudeBridgeAdapter(configuration=ClaudeBridgeConfigurationDAO()),
+    )
+    model.bind_tools(tools=create_local_tools())
+    bridge = ClaudeToolBridge.register(
+        binding=ClaudeInteractionBindingDAO(session_id="s", invocation_id="i", binding_version=0),
+        tools=model._tools,
+    )
+    async with create_connected_server_and_client_session(
+        server=bridge.build_mcp_server()["instance"]
+    ) as client:
+        listed = (await client.list_tools()).tools
+    assert [tool.name for tool in listed] == [tool.name for tool in model._tools]
+    assert len(listed) == 10
+    assert all(tool.meta == {"anthropic/maxResultSizeChars": 500_000} for tool in listed)
+
+
+def test_unknown_tool_name_is_rejected_by_freeze() -> None:
+    """101.a.3: only the ten canonical names are portable."""
+    with pytest.raises(ValueError, match="inventory"):
+        ClaudeToolInventory.freeze(tools=(definition(schema={"type": "object"}, name="delete_everything"),))
+
+
+def test_initialization_requires_the_exact_ten_mcp_names(tmp_path: Path) -> None:
+    """101.a.3: init validation follows the advertised definitions, now ten of them."""
+    model = SloClaudeBridge(
+        model_name="claude-bridge:claude-haiku-5-5",
+        bridge_adapter=SloClaudeBridgeAdapter(configuration=ClaudeBridgeConfigurationDAO()),
+    )
+    model.bind_tools(tools=create_local_tools())
+    names = [f"mcp__slo__{tool.name}" for tool in model._tools]
+    metadata: dict[str, object] = {
+        "session_id": "native",
+        "tools": names,
+        "mcp_servers": [{"name": "slo", "status": "connected", "source": "sdk"}],
+        "plugins": [],
+    }
+    assert ClaudeToolInventory.validate_initialization(metadata=metadata, tools=model._tools) == "native"
+    with pytest.raises(ClaudeBridgeError, match="inventory"):
+        ClaudeToolInventory.validate_initialization(
+            metadata={**metadata, "tools": names[:-1]}, tools=model._tools
+        )
 
 
 @pytest.mark.parametrize("binding", ["duplicate", "foreign", "choice"])
@@ -89,6 +155,8 @@ async def test_identical_rebinding_and_explicit_empty_graph_preserve_inventory(t
     assert model.bind_tools(tools=list(reversed(tools))) is model
     with pytest.raises(ValueError):
         model.bind_tools(tools=[])
+    with pytest.raises(ValueError):
+        model.bind_tools(tools=tools[:2])
     await model.close()
 
     empty_adapter = SloClaudeBridgeAdapter(
@@ -132,7 +200,8 @@ async def test_invalid_portable_inventory_is_rejected_before_authentication(
     }
     tools: tuple[ClaudeToolDefinitionDAO, ...] = (
         definition(
-            schema=schemas.get(fault, {"type": "object"}), name="bash" if fault == "foreign" else "read"
+            schema=schemas.get(fault, {"type": "object"}),
+            name="delete_everything" if fault == "foreign" else "read",
         ),
     )
     if fault == "duplicate":
@@ -200,6 +269,7 @@ async def test_schema_snapshot_resolves_references_without_weakening_constraints
         ) as client:
             inventory = await client.list_tools()
             advertised = inventory.tools[0].inputSchema
+            assert inventory.tools[0].meta == {"anthropic/maxResultSizeChars": 500_000}
             assert "$ref" not in str(advertised)
             from jsonschema import Draft202012Validator
 

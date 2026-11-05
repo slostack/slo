@@ -17,7 +17,8 @@ from langchain_core.messages import AIMessage, SystemMessage
 from src.agents.base import LLMBuildResult
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.graph import SloAgentBuildResult, build_slo_agent
-from src.agents.slo_agent.sessions.usage import TokenUsageTotalsDAO
+from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO, TokenUsageTotalsDAO
+from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.agents.providers.faux import FauxChatModel
 
 # ---------------------------------------------------------------------------
@@ -114,6 +115,69 @@ class TestPromptCachingFlag:
                 "total_tokens": 120,
                 "cache_creation_input_tokens": 6000,
                 "cache_read_input_tokens": 0,
+            },
+        )
+        agent: SloAgent = SloAgent(llm=FauxChatModel(responses=[faux_response]))
+
+        agent._capture_completed_usage(message=faux_response)
+
+        totals: TokenUsageTotalsDAO = agent._last_usage_totals
+        assert totals.cache_creation_input_tokens == 6000
+        assert totals.cache_read_input_tokens == 0
+
+    @pytest.mark.parametrize(
+        "details, expected_write, expected_read",
+        [
+            ({"cache_read": 70}, None, 70),
+            ({"cache_creation": 20, "cache_read": 10}, 20, 10),
+            ({"cache_creation": 0, "cache_read": 0}, 0, 0),
+        ],
+        ids=["openai-shape", "anthropic-shape", "zeros"],
+    )
+    def test_cache_fields_captured_from_input_token_details(
+        self, details: dict[str, int], expected_write: int | None, expected_read: int
+    ) -> None:
+        """LangChain's standard ``input_token_details`` reaches the totals for every provider."""
+        faux_response: AIMessage = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "input_token_details": details,
+            },
+        )
+        agent: SloAgent = SloAgent(llm=FauxChatModel(responses=[faux_response]))
+
+        agent._capture_completed_usage(message=faux_response)
+
+        totals: TokenUsageTotalsDAO = agent._last_usage_totals
+        assert totals.cache_creation_input_tokens == expected_write
+        assert totals.cache_read_input_tokens == expected_read
+        # Public surface: the status bar shows cache read/write only for the known counts.
+        rendered: str = UsageStatusBar._usage_text(
+            snapshot=SessionUsageSnapshotDAO(
+                active_model_name="gpt-5.4",
+                active_reasoning_level="off",
+                latest_turn=totals,
+                session_totals=totals,
+                usage_available=True,
+            )
+        )
+        assert f"cache read {expected_read}" in rendered
+        assert ("cache write" in rendered) == (expected_write is not None)
+
+    def test_flat_cache_keys_win_over_input_token_details(self) -> None:
+        """Existing flat keys keep priority, so current providers are unaffected."""
+        faux_response: AIMessage = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "cache_creation_input_tokens": 6000,
+                "cache_read_input_tokens": 0,
+                "input_token_details": {"cache_creation": 1, "cache_read": 2},
             },
         )
         agent: SloAgent = SloAgent(llm=FauxChatModel(responses=[faux_response]))

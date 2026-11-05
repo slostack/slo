@@ -75,7 +75,9 @@ class _InitializedInventoryDAO(BaseModel):
 class ClaudeToolInventory:
     """Own raw-schema admission without importing host tool implementations."""
 
-    NAMES: ClassVar[frozenset[str]] = frozenset({"read", "grep", "find", "ls"})
+    NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"read", "write", "edit", "bash", "grep", "find", "ls", "read_pdf", "now", "show_git_diff"}
+    )
     _SCHEMA_MAPS: ClassVar[frozenset[str]] = frozenset(
         {"$defs", "definitions", "properties", "patternProperties", "dependentSchemas"}
     )
@@ -100,8 +102,9 @@ class ClaudeToolInventory:
     def freeze(cls, *, tools: tuple[ClaudeToolDefinitionDAO, ...]) -> tuple[ClaudeToolDefinitionDAO, ...]:
         """Return independently owned definitions or reject invalid names/schemas.
 
-        Portable callers may offer a read-only subset; the host additionally
-        requires its complete canonical bundle. No I/O or reference fetching occurs.
+        Portable callers may offer any subset of the ten canonical local tools;
+        the host additionally requires canonical tool objects. No I/O or
+        reference fetching occurs.
         """
         names = [tool.name for tool in tools]
         if len(set(names)) != len(names) or not set(names).issubset(cls.NAMES):

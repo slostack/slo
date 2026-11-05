@@ -1,9 +1,9 @@
 """Correlated response events independent of host frameworks."""
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .dao import ClaudeToolCallDAO
+from .dao import ClaudeToolCallDAO, ClaudeUsageDAO
 
 
 class ClaudeResponseEventDAO(BaseModel):
@@ -37,6 +37,9 @@ class ClaudeResponseCompletedDAO(ClaudeResponseEventDAO):
     kind: Literal["response_completed"] = "response_completed"
     stop_reason: Literal["stop", "length", "tool_calls"]
     tool_calls: tuple[ClaudeToolCallDAO, ...] = ()
+    usage: Optional[ClaudeUsageDAO] = Field(
+        default=None, description="Counts for this response; None when Claude reported none."
+    )
 
     @model_validator(mode="after")
     def validate_call_reason(self) -> "ClaudeResponseCompletedDAO":

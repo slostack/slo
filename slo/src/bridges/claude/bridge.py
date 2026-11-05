@@ -18,7 +18,7 @@ from langchain_core.messages import (
     AIMessage,
     ToolMessage,
 )
-from src.agents.tools.bundles import create_read_only_tools
+from src.agents.tools.bundles import create_local_tools
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
 from langchain_core.language_models.chat_models import agenerate_from_stream
@@ -43,6 +43,7 @@ from .sdk.exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
 from .sdk.inventory import ClaudeToolInventory
 from .history_transcript import ClaudeHistoryTranscript
 from .host_content import ClaudeHostContent
+from .host_usage import ClaudeHostUsage
 from .tool_result import ToolCallResponseAdapter
 from .response import AIAgentResponseAdapter, ClaudeResponseTranslationDAO
 from .tool_call import ToolCallAdapter, ClaudeCompletedCallBatchDAO
@@ -102,20 +103,22 @@ class SloClaudeBridge(BaseChatModel):
         self._session_options = session_options
 
     def bind_tools(self, tools: Sequence[object], **kwargs: Any) -> BaseChatModel:
-        """Freeze only canonical read-only definitions without starting native work."""
-        canonical = {t.name: t for t in create_read_only_tools()}
+        """Freeze canonical local-tool definitions without starting native work.
+
+        Accepts an empty inventory or any subset of the canonical local tools:
+        native initialization is checked per advertised definition, so a subset
+        is safe. Unknown, copied or duplicated tools, extra keyword options and
+        a binding change after configuration raise ``ValueError`` before native work.
+        """
+        canonical = {t.name: t for t in create_local_tools()}
         if kwargs or len({getattr(t, "name", None) for t in tools}) != len(tools):
             raise ValueError("Unsupported Claude tool binding.")
-        if tools and {getattr(tool, "name", None) for tool in tools} != set(canonical):
-            raise ValueError(
-                "Claude bridge requires the full canonical tool bundle or explicit empty inventory."
-            )
         definitions: list[ClaudeToolDefinitionDAO] = []
         for tool in sorted(tools, key=lambda tool: getattr(tool, "name", "")):
             if not isinstance(tool, BaseTool) or not any(
                 tool is candidate for candidate in canonical.values()
             ):
-                raise ValueError("Claude bridge requires canonical read-only tools.")
+                raise ValueError("Claude bridge requires canonical local tools.")
             schema = tool.args_schema
             if schema is None or isinstance(schema, dict):
                 raise ValueError("Claude tool requires a typed argument schema.")
@@ -280,6 +283,7 @@ class SloClaudeBridge(BaseChatModel):
                 message=AIMessageChunk(
                     content="",
                     response_metadata={"stop_reason": event.stop_reason},
+                    usage_metadata=ClaudeHostUsage.translate(usage=event.usage),
                 )
             )
         )
@@ -322,6 +326,7 @@ class SloClaudeBridge(BaseChatModel):
                         for index, call in enumerate(batch.calls)
                     ],
                     response_metadata={"stop_reason": batch.completion.stop_reason},
+                    usage_metadata=ClaudeHostUsage.translate(usage=batch.completion.usage),
                 )
             )
         )

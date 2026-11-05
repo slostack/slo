@@ -106,6 +106,7 @@ def test_legacy_echo_identity_falls_back_to_current_response(response_id: Any) -
     assembly.consume(event={"type": "content_block_start", "index": 0, "content_block": block})
     assembly.reconcile_echo(message=echo(response_id=response_id, content=[block]))
     assembly.consume(event={"type": "content_block_stop", "index": 0})
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "end_turn"}})
     assert assembly.consume(event={"type": "message_stop"}) == ("", True, "", 0)
     assert assembly.text == "hello"
 
@@ -296,6 +297,7 @@ def test_retention_budget_rejects_before_publication(source: str) -> None:
                     }
                 )
                 assembly.consume(event={"type": "content_block_stop", "index": 0})
+                assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "end_turn"}})
                 assembly.consume(event={"type": "message_stop"})
                 assembly.consume(event={"type": "message_start", "message": {"id": str(index)}})
         else:
@@ -379,7 +381,7 @@ def test_fragment_conflict_matrix(fault: str) -> None:
 
 def test_completed_snapshots_share_budget_across_responses() -> None:
     """CF06: two individually admissible snapshots exhaust one invocation budget."""
-    assembly = NativeResponseAssembly(max_retained_bytes=6000)
+    assembly = NativeResponseAssembly(max_retained_bytes=7000)
     for identity in ("one", "two"):
         assembly.consume(event={"type": "message_start", "message": {"id": identity}})
         assembly.consume(
@@ -390,6 +392,7 @@ def test_completed_snapshots_share_budget_across_responses() -> None:
             }
         )
         assembly.consume(event={"type": "content_block_stop", "index": 0})
+        assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "end_turn"}})
         assert assembly.consume(event={"type": "message_stop"}) == ("", True, "", 0)
     # Old snapshots still corroborate after the second response, without eviction.
     assembly.reconcile_echo(

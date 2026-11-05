@@ -49,6 +49,9 @@ class ScriptedClaudeTransport(Transport):
         self.close_calls = 0
         self.initialized_tools: list[str] = list(initialized_tools)
         self._emit_initialization = False
+        # Optional native usage for the scripted text-only response (message_start / message_delta).
+        self.start_usage: Any = None
+        self.delta_usage: Any = None
 
     async def connect(self) -> None:
         """Acknowledge SDK startup without launching a native executable."""
@@ -95,7 +98,14 @@ class ScriptedClaudeTransport(Transport):
                 "type": "stream_event",
                 "uuid": "message-start",
                 "session_id": "native-test",
-                "event": {"type": "message_start", "message": {"id": "response-test", "role": "assistant"}},
+                "event": {
+                    "type": "message_start",
+                    "message": {
+                        "id": "response-test",
+                        "role": "assistant",
+                        **({} if self.start_usage is None else {"usage": self.start_usage}),
+                    },
+                },
             }
         )
         await self.messages.put(
@@ -129,6 +139,18 @@ class ScriptedClaudeTransport(Transport):
                 "uuid": "block-stop",
                 "session_id": "native-test",
                 "event": {"type": "content_block_stop", "index": 0},
+            }
+        )
+        await self.messages.put(
+            {
+                "type": "stream_event",
+                "uuid": "message-delta",
+                "session_id": "native-test",
+                "event": {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    **({} if self.delta_usage is None else {"usage": self.delta_usage}),
+                },
             }
         )
         await self.messages.put(

@@ -10,7 +10,7 @@ from typing import Any, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .dao import ClaudeToolCallDAO
+from .dao import ClaudeToolCallDAO, ClaudeUsageDAO
 from .exceptions import ClaudeBridgeError
 
 
@@ -97,6 +97,7 @@ class NativeResponseAssembly:
         self._blocks: dict[int, NativeBlock] = {}
         self._open = False
         self._stop_reason: str | None = None
+        self.usage = ClaudeUsageDAO()
         self._response_ids: set[str] = set()
         self._snapshots: dict[str, tuple[NativeBlock, ...]] = {}
         self._echoes: list[tuple[NativeBlock, ...]] = []
@@ -142,6 +143,8 @@ class NativeResponseAssembly:
         """
         self._admit(value=event)
         kind = event.get("type")
+        if kind == "ping":
+            return NativeFragment(text="", boundary=False)
         if kind == "message_start":
             self._start(event=event)
             return NativeFragment(text="", boundary=False)
@@ -154,6 +157,7 @@ class NativeResponseAssembly:
             if not isinstance(delta, dict) or not isinstance(delta.get("stop_reason"), str):
                 raise protocol_error()
             self._stop_reason = delta["stop_reason"]
+            self.usage = self.usage.overwritten_by_native(payload=event.get("usage"))
             return NativeFragment(text="", boundary=False)
         if kind == "message_stop":
             self._complete()
@@ -211,6 +215,7 @@ class NativeResponseAssembly:
         self._blocks = {}
         self._echoes = []
         self._stop_reason = None
+        self.usage = ClaudeUsageDAO.from_native(payload=event["message"].get("usage"))
         self._open = True
 
     def _start_block(self, *, index: int, event: dict[str, Any]) -> None:
@@ -232,10 +237,13 @@ class NativeResponseAssembly:
         """Commit calls only for a complete, nontruncated tool-use response."""
         if any(not b.stopped for b in self._blocks.values()):
             raise protocol_error()
+        # No message_delta means the response was cut off (abort or interrupt).
+        if self._stop_reason is None:
+            raise protocol_error()
         tools = [b for b in self._blocks.values() if b.type == "tool_use"]
         if tools and self._stop_reason != "tool_use":
             raise protocol_error()
-        if not tools and self._stop_reason not in {None, "end_turn", "stop_sequence", "max_tokens"}:
+        if not tools and self._stop_reason not in {"end_turn", "stop_sequence", "max_tokens"}:
             raise protocol_error()
         calls = tuple(b.complete_call() for b in tools)
         if len({call.tool_call_id for call in calls}) != len(calls):

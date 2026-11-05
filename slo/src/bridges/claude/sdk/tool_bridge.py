@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from typing import Any, Self, NoReturn
+from typing import Any, ClassVar, Self, NoReturn
 
 from claude_agent_sdk import McpSdkServerConfig
 from mcp.server import Server
@@ -24,6 +24,15 @@ from .response import json_identity
 
 class ClaudeToolBridge:
     """Own exact-ID callbacks, early results and retained duplicate protection."""
+
+    RESULT_LIMIT: ClassVar[int] = 32 * 1024 * 1024
+    """Byte bound for one accepted result batch handed to Claude."""
+    RESULT_INLINE_CHARS: ClassVar[int] = 500_000
+    """Per-result chars the CLI may keep inline. It clamps ``maxResultSizeChars`` to this
+    ceiling (default 50,000), observed in the CLI bundled with claude_agent_sdk 0.2.176;
+    a larger value is silently reduced, so none is advertised."""
+    RESULT_SIZE_META_KEY: ClassVar[str] = "anthropic/maxResultSizeChars"
+    """The ``_meta`` key claude_agent_sdk emits for ``ToolAnnotations(maxResultSizeChars=...)``."""
 
     def __init__(
         self, *, binding: ClaudeInteractionBindingDAO, tools: tuple[ClaudeToolDefinitionDAO, ...]
@@ -74,9 +83,20 @@ class ClaudeToolBridge:
         return McpSdkServerConfig(type="sdk", name="slo", instance=self._server)
 
     async def _list_tools(self) -> list[Tool]:
-        """Advertise only the fixed raw host inventory."""
+        """Advertise only the fixed raw host inventory.
+
+        Each tool raises the CLI's inline result limit from its 50,000-character
+        default to the CLI's own 500,000-character ceiling. Larger results (and
+        possibly a round's results beyond a per-message budget) may still be
+        replaced by a stub; see the spec limits.
+        """
         return [
-            Tool(name=t.name, description=t.description, inputSchema=t.model_copy(deep=True).input_schema)
+            Tool(
+                name=t.name,
+                description=t.description,
+                inputSchema=t.model_copy(deep=True).input_schema,
+                _meta={self.RESULT_SIZE_META_KEY: self.RESULT_INLINE_CHARS},
+            )
             for t in self.tools
         ]
 
@@ -208,7 +228,7 @@ class ClaudeToolBridge:
             raise ClaudeBridgeError(
                 code="tool_result_mismatch", safe_message="Expected the complete Claude tool result set."
             )
-        if len(tool_result_batch.model_dump_json().encode()) > 32 * 1024 * 1024:
+        if len(tool_result_batch.model_dump_json().encode()) > self.RESULT_LIMIT:
             self._fail(code="buffer_limit_exceeded")
         for identity, result in results.items():
             if identity in self._accepted and self._accepted[identity] != result:

@@ -154,7 +154,8 @@ from src.agents.reasoning_capabilities import (
     default_reasoning_level_for_model,
     resolve_reasoning_config,
 )
-from src.agents.tools.bundles import create_extended_tools, create_read_only_tools
+from src.agents.slo_agent.graph.service import default_tools_for_model
+from src.agents.tools.bundles import create_extended_tools
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.integrations.openrouter.dao import credential_fingerprint
 from src.auth.credential_refresher import refresh_if_stale
@@ -1012,7 +1013,7 @@ class SloAgentSession:
 
         When ``config.extra_tools`` is non-empty, merges those tools into the
         standard extended bundle so orchestrator sessions carry the
-        ``spawn_sub_agents`` tool alongside the default 9-tool set.
+        ``spawn_sub_agents`` tool alongside the default tool set.
         """
         if self._config is None:
             raise RuntimeError("SloAgentSession has no config to build a SloAgent from.")
@@ -1023,9 +1024,7 @@ class SloAgentSession:
             raise ValueError("Claude bridge does not support orchestration, plugin, or extension tools.")
         extension_tools: list[BaseTool] = extra_tools + plugin_tools
         all_tools: list[BaseTool] | None = (
-            create_read_only_tools()
-            if self.active_model_name.startswith("claude-bridge:")
-            else create_extended_tools() + extension_tools if extension_tools else None
+            create_extended_tools() + extension_tools if extension_tools else None
         )
         return SloAgent(
             model_name=self.active_model_name,
@@ -1232,7 +1231,9 @@ class SloAgentSession:
         WHEN: A consumer needs a current read-only tool inventory.
         """
         built_tools: list[BaseTool] = (
-            self._agent.tools if self._agent is not None else create_extended_tools()
+            self._agent.tools
+            if self._agent is not None
+            else default_tools_for_model(model_name=self.active_model_name)
         )
         plugin_tools: list[BaseTool] = self._plugin_registry.all_tools() if self._plugin_registry else []
         return [tool.name for tool in built_tools + plugin_tools]

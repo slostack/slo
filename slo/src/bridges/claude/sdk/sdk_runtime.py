@@ -25,6 +25,7 @@ from .dao import (
     ClaudeSessionOptionsDAO,
     ClaudeInteractionBindingDAO,
     ClaudeToolResultBatchDAO,
+    ClaudeUsageDAO,
 )
 from .tool_bridge import ClaudeToolBridge
 from .inventory import ClaudeToolInventory
@@ -420,7 +421,10 @@ class ClaudeSDKRuntime:
                     if self._tool_bridge is not None:
                         self._tool_bridge.validate_terminal()
                     return self._validate_result(
-                        message=message, text=assembly.text, response_id=assembly.response_id
+                        message=message,
+                        text=assembly.text,
+                        response_id=assembly.response_id,
+                        usage=assembly.usage,
                     )
                 if isinstance(message, StreamEvent):
                     assembly.validate_scope(
@@ -453,6 +457,7 @@ class ClaudeSDKRuntime:
                                 stop_reason="tool_calls",
                                 **self._event_binding(response_id=assembly.response_id).model_dump(),
                                 tool_calls=assembly.calls,
+                                usage=assembly.usage,
                             )
                         )
                     continue
@@ -509,7 +514,7 @@ class ClaudeSDKRuntime:
         )
 
     def _validate_result(
-        self, *, message: ResultMessage, text: str, response_id: str
+        self, *, message: ResultMessage, text: str, response_id: str, usage: ClaudeUsageDAO
     ) -> ClaudeResponseCompletedDAO:
         """Require explicit successful native result and consistent final echo."""
         if message.is_error or message.subtype != "success":
@@ -540,5 +545,6 @@ class ClaudeSDKRuntime:
             )
         return ClaudeResponseCompletedDAO(
             stop_reason="length" if message.stop_reason == "max_tokens" else "stop",
+            usage=usage,
             **self._event_binding(response_id=response_id).model_dump(),
         )

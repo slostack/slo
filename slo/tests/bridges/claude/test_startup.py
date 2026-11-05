@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from src.agents.tools.bundles import create_local_tools
 from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
 from src.bridges.claude.sdk.dao import (
     ClaudeAuthenticationStatusDAO,
@@ -16,6 +17,8 @@ from tests.bridges.claude.test_lifecycle import ready_status
 from src.bridges.claude.sdk.events import ClaudeResponseCompletedDAO, ClaudeTextEventDAO
 from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
 from tests.cli.test_claude_bridge import ScriptedClaudeTransport
+
+LOCAL_TOOL_NAMES: tuple[str, ...] = tuple(tool.name for tool in create_local_tools())
 
 
 class BlockedStartupTransport(ScriptedClaudeTransport):
@@ -205,7 +208,7 @@ async def test_native_startup_failure_does_not_consume_prompt_allowance(
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     checks: list[str] = []
     transport = ScriptedClaudeTransport(
-        initialized_tools=tuple(f"mcp__slo__{name}" for name in ("read", "grep", "find", "ls"))
+        initialized_tools=tuple(f"mcp__slo__{name}" for name in LOCAL_TOOL_NAMES)
     )
 
     async def rejected_once() -> ClaudeAuthenticationStatusDAO:

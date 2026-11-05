@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pytest
 
+from src.agents.tools.bundles import create_local_tools
 from src.bridges.claude.bridge import SloClaudeBridge
 from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
 from claude_agent_sdk import ClaudeSDKClient
@@ -20,6 +21,8 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from tests.cli.test_claude_bridge import ToolRoundTransport, ScriptedClaudeTransport, scripted_adapter_class
 from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
 from src.bridges.claude.sdk.dao import ClaudeAuthenticationStatusDAO, ClaudeBridgeConfigurationDAO
+
+LOCAL_TOOL_NAMES: tuple[str, ...] = tuple(tool.name for tool in create_local_tools())
 
 
 @pytest.mark.parametrize("later,enable_history", [(False, True), (True, True), (True, False)])
@@ -62,9 +65,7 @@ async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
 
         def __init__(self) -> None:
             """Track failure independently of completed connection closure."""
-            super().__init__(
-                initialized_tools=tuple(f"mcp__slo__{name}" for name in ("read", "grep", "find", "ls"))
-            )
+            super().__init__(initialized_tools=tuple(f"mcp__slo__{name}" for name in LOCAL_TOOL_NAMES))
             self.failed: bool = False
 
         async def connect(self) -> None:
@@ -170,6 +171,7 @@ class FollowupTransport(ToolRoundTransport):
             {"type": "message_start", "message": {"id": "response-test", "role": "assistant"}},
             {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": answer}},
             {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
             {"type": "message_stop"},
         ]:
             await self.messages.put(

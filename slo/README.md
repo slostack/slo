@@ -4255,6 +4255,23 @@ The suite rules (FauxChatModel only, the `not e2e` default gate,
 `asyncio_mode = "auto"`) are in [§8.5](#85-suite-rules); the
 one-test-per-decision policy is in [§8.4](#84-coverage-discipline).
 
+### Release proof
+
+Keep operator receipts and templates **outside the codebase**, in the team's
+external knowledge base or canonical specifications store. A blank template and
+local test logs are not release results. Do not create a repository-local
+`release-evidence/` folder; CI and portable contract tests do not require an
+external knowledge-base mount.
+
+Record the immutable tag/commit, timestamps, exact commands and exit statuses,
+Wheel SHA-256, build and local pipx recovery results, Linux non-E2E matrix,
+and Hosted installer URL/hash. Link retained GitLab job artifacts for the required
+Linux recovery, Docker installer matrix and hosted installer gates. Record the
+macOS hosted installer gate as operator-waived while its runner is unavailable,
+not as passing. Redacted failures and unverified checks remain explicit; never
+copy credentials. GitLab's tag pipeline is the release authority and creates the
+release only after its required jobs succeed.
+
 ### Commit and branch conventions
 
 - **One feature per branch** from `main`. Branch name:

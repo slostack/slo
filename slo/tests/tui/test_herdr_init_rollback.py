@@ -1,5 +1,7 @@
 """Mounted delivery rollback with real temporary lease and inbox storage."""
 
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 from pathlib import Path
 from collections.abc import Callable
 from typing import Optional, cast
@@ -14,7 +16,8 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import SloTUI, _WorkflowProgressSink
+from src.tui.app import SloTUI
+from src.tui.components.workflow_progress.adapters.workflow_progress import WorkflowProgressUpdatesAdapter
 from src.tui.workflows.progress_coordinator import WorkflowProgressCoordinator
 from src.tui.workflows.service import DetachedWorkflowAppService
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
@@ -251,7 +254,7 @@ async def test_failed_stops_retain_handles_until_later_cleanup(
             with (
                 patch.object(Timer, "stop", new=stop),
                 patch.object(app._lease_store, "release", side_effect=release),
-                patch.object(app, "_write_adapter_line", side_effect=RuntimeError("notice failure")),
+                patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice failure")),
             ):
                 await app._rollback_session_delivery(session=session, owner_id=app._session_owner_id)
             assert calls == ["lease", "inbox", "release"]
@@ -335,7 +338,7 @@ async def test_rollback_closes_captured_observation_owner(tmp_path: Path) -> Non
         """Capture the real observation owner, then fail real inbox initialization."""
         captured["service"] = app._workflow_app_service
         captured["coordinator"] = app._workflow_progress_coordinator
-        captured["sink"] = app._workflow_progress_sink
+        captured["sink"] = app._workflow_progress_updates_adapter
         await original_inbox(self, session_id=session_id)
         raise RuntimeError("injected inbox failure")
 
@@ -355,7 +358,7 @@ async def test_rollback_closes_captured_observation_owner(tmp_path: Path) -> Non
             coordinator: WorkflowProgressCoordinator = cast(
                 WorkflowProgressCoordinator, captured["coordinator"]
             )
-            sink: _WorkflowProgressSink = cast(_WorkflowProgressSink, captured["sink"])
+            sink: WorkflowProgressUpdatesAdapter = cast(WorkflowProgressUpdatesAdapter, captured["sink"])
             # The rollback retired the captured owner through its full close path.
             assert coordinator._closed is True and coordinator._task is None and coordinator._timer is None
             assert service._closed is True
@@ -363,10 +366,10 @@ async def test_rollback_closes_captured_observation_owner(tmp_path: Path) -> Non
             # The failed delivery keeps its app slots absent.
             assert app._workflow_app_service is None
             assert app._workflow_progress_coordinator is None
-            assert app._workflow_progress_sink is None
+            assert app._workflow_progress_updates_adapter is None
             assert app._workflow_observation_session_id is None
             assert app._delivery_quiescing and not app._replacement_delivery_safe
-            panel: Optional[SubAgentFleetPanel] = app._fleet_panel
+            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
             assert panel is not None
             with patch.object(panel, "reset") as reset:
                 await app._close_workflow_observation()

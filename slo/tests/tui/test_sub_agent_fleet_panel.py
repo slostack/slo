@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 from textual import events, on
 from textual.app import App, ComposeResult
+from textual.containers import Vertical
 from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Static, TextArea
@@ -29,7 +30,13 @@ from src.tui.workflows.dao import WorkflowSessionKeyDAO, WorkflowSessionRowDAO, 
 from tests.tui.authentication._painted_output import painted_widget_strips
 
 APP_TCSS: Path = Path(__file__).resolve().parents[2] / "src" / "tui" / "app.tcss"
-"""Production stylesheet, loaded by the host so layout rules are the real ones."""
+"""Production app stylesheet, loaded by the host for shared layout rules."""
+
+FLEET_TCSS: Path = (
+    Path(__file__).resolve().parents[2] / "src" / "tui" / "components" / "workflow_progress" / "css.tcss"
+)
+"""Production fleet stylesheet (feature 96.f.1); scoped under WorkflowProgressComponent, so
+the standalone host wraps the panel in the same selector ancestor."""
 
 ORCHESTRATOR_ID: str = "orch-1"
 """Parent session id shared by every row built in this module."""
@@ -74,9 +81,9 @@ def _row(
 
 
 class _ThemedHost(App[None]):
-    """Load ``app.tcss`` with both Slo themes registered, as ``SloTUI`` does."""
+    """Load the production stylesheets with both Slo themes registered, as ``SloTUI`` does."""
 
-    CSS_PATH = str(APP_TCSS)
+    CSS_PATH = [str(APP_TCSS), str(FLEET_TCSS)]
 
     def __init__(self) -> None:
         """Register the Slo themes before the stylesheet resolves theme variables."""
@@ -263,6 +270,16 @@ def _key(*, session_id: str) -> WorkflowSessionKeyDAO:
     return WorkflowSessionKeyDAO(orchestrator_session_id=ORCHESTRATOR_ID, session_id=session_id)
 
 
+class WorkflowProgressComponent(Vertical):
+    """Stand-in carrying the component's type name so fleet selectors match.
+
+    The production fleet stylesheet scopes its selectors under the
+    ``WorkflowProgressComponent`` component type; Textual matches type selectors by the
+    node's class name, so the standalone host wraps the panel in a same-named
+    container rather than importing the real component (which needs an app).
+    """
+
+
 class _PanelHost(_ThemedHost):
     """Editor above one panel, recording every ``SessionSelected`` key."""
 
@@ -274,9 +291,16 @@ class _PanelHost(_ThemedHost):
         self.selected: list[WorkflowSessionKeyDAO] = []
 
     def compose(self) -> ComposeResult:
-        """Yield the editor first so Tab moves from it into the list."""
+        """Yield the editor first so Tab moves from it into the list.
+
+        The panel stands in for the one a real ``WorkflowProgressComponent`` composes in
+        ``SloTUI``; a bare container carries the wrapper type as a class so the
+        production fleet selectors (scoped under ``WorkflowProgressComponent``) apply
+        exactly as they do to the real composition.
+        """
         yield self.editor
-        yield self.panel
+        with WorkflowProgressComponent():
+            yield self.panel
 
     @on(SubAgentFleetPanel.SessionSelected)
     def _record_selection(self, event: SubAgentFleetPanel.SessionSelected) -> None:

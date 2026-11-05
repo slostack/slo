@@ -1059,6 +1059,12 @@ class HeadlessRunner:
                 cleanup_summary=cleanup_summary,
             )
             return
+        if self._terminal_kind == "run_aborted":
+            await self._notifier.aborted(
+                reason=f"{self._terminal_kind}: {self._terminal_content or 'no terminal output'}",
+                cleanup_summary=cleanup_summary,
+            )
+            return
         await self._notifier.failed(
             error=f"{self._terminal_kind}: {self._terminal_content or 'no terminal output'}",
             cleanup_summary=cleanup_summary,

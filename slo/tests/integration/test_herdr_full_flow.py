@@ -5,6 +5,7 @@ import difflib
 import json
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from contextlib import ExitStack
@@ -349,7 +350,7 @@ async def test_prompt_tool_usage_completes_while_report_cli_is_stalled(
                     await asyncio.wait_for(entered.wait(), timeout=30)
                 except TimeoutError:
                     pytest.fail(
-                        f"Tool not reached: factory={native_factory.call_count}; events={events}; screen={type(app.screen)} focus={app.focused} input={app._input.text!r} disabled={app._input.disabled}; lines={app._adapter.lines if app._adapter else None}"
+                        f"Tool not reached: factory={native_factory.call_count}; events={events}; screen={type(app.screen)} focus={app.focused} input={app._input.text!r} disabled={app._input.disabled}; lines={app._chat_transcript._adapter.lines if app._chat_transcript._adapter else None}"
                     )
                 assert session.is_running
                 if mode == "enabled":
@@ -1054,7 +1055,7 @@ async def test_high_level_viewer_public_outcome_privacy(
     from tests.tui.workflows.test_workflow_renderer import _build_renderer
 
     renderer, sink, _ = _build_renderer()
-    renderer.write_launch_outcome(parent_session_id=session.session_id, outcome=outcome)
+    await renderer.write_launch_outcome(parent_session_id=session.session_id, outcome=outcome)
     assert len(sink.lines) == 1
     assert secret not in str(sink.lines)
     assert str(tmp_path) not in str(sink.lines)
@@ -1156,10 +1157,10 @@ async def test_mounted_viewer_destination_privacy(
         )
         assert len(spawned) == int(mode.startswith("platform"))
         assert commands(fake_herdr) == []
-        assert app._adapter is not None
+        assert app._chat_transcript._adapter is not None
         notices = [
             str(content)
-            for content, _ in app._adapter.lines
+            for content, _ in app._chat_transcript._adapter.lines
             if "workflow vi" in str(content).lower() or "workflow view" in str(content).lower()
         ]
         expected = {
@@ -1387,10 +1388,11 @@ async def test_pilot_configuration_and_typed_viewer_journey(
                 if child_mode in ("success", "reject")
                 else ["failed", "failed"]
             )
-            assert app._adapter is not None
-            assert sum("Submitted workflow viewer command" in str(line) for line in app._adapter.lines) == (
-                1 if child_mode == "success" else 0
-            )
+            assert app._chat_transcript._adapter is not None
+            assert sum(
+                "Submitted workflow viewer command" in str(line)
+                for line in app._chat_transcript._adapter.lines
+            ) == (1 if child_mode == "success" else 0)
             hold_report = True
             # The real two-second refresh queues the next report; do not synthesize cancellation.
             await asyncio.wait_for(fut=report_entered.wait(), timeout=5.0)
@@ -1452,8 +1454,8 @@ async def test_pilot_configuration_and_typed_viewer_journey(
                 or record.pathname.endswith("visualizer_launcher.py")
             ]
         )
-        assert app._adapter is not None
-        public += str([line for line in app._adapter.lines if "workflow view" in str(line)])
+        assert app._chat_transcript._adapter is not None
+        public += str([line for line in app._chat_transcript._adapter.lines if "workflow view" in str(line)])
         public += json.dumps(commands(fake_herdr))
         for result in viewer_results:
             assert set(result.model_dump()) == {"status", "pane_id"}
@@ -1461,7 +1463,7 @@ async def test_pilot_configuration_and_typed_viewer_journey(
 
         renderer, sink, _ = _build_renderer()
         for result in viewer_results:
-            renderer.write_launch_outcome(parent_session_id=parent.session_id, outcome=result)
+            await renderer.write_launch_outcome(parent_session_id=parent.session_id, outcome=result)
         public += str(sink.lines)
         for owner in (session, successor):
             reporter = owner._herdr_reporter

@@ -250,7 +250,7 @@ class TestAssistantChunkNormalizer:
     ) -> None:
         """finalize_open_blocks emits a content-carrying thinking_end for the implicitly closed block.
 
-        The repair event lets TranscriptProjector replace the malformed
+        The repair event lets TranscriptProjectionAdapter replace the malformed
         concatenated thinking text with the provider's final formatted text.
         """
         normalizer: AssistantChunkNormalizer = AssistantChunkNormalizer(iteration=0)

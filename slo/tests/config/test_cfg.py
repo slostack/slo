@@ -284,16 +284,16 @@ class TestDetachedWorkflowConfig:
         assert cfg_module.DETACHED_WORKFLOWS is False
         assert cfg_module.cfg("DETACHED_WORKFLOWS") == "0"
 
-    def test_max_detached_workflows_defaults_to_two(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Detached workflow cap defaults to two live workflows."""
+    def test_max_detached_workflows_defaults_to_twenty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Detached workflow cap defaults to twenty live workflows."""
         monkeypatch.delenv("SLO_MAX_DETACHED_WORKFLOWS", raising=False)
         import config.cfg as cfg_module
 
         importlib.reload(cfg_module)
-        assert cfg_module.MAX_DETACHED_WORKFLOWS == 2
-        assert cfg_module.cfg("MAX_DETACHED_WORKFLOWS") == "2"
+        assert cfg_module.MAX_DETACHED_WORKFLOWS == 20
+        assert cfg_module.cfg("MAX_DETACHED_WORKFLOWS") == "20"
 
-    def test_invalid_max_detached_workflows_falls_back_to_two(
+    def test_invalid_max_detached_workflows_falls_back_to_twenty(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -302,7 +302,21 @@ class TestDetachedWorkflowConfig:
         import config.cfg as cfg_module
 
         importlib.reload(cfg_module)
-        assert cfg_module.MAX_DETACHED_WORKFLOWS == 2
+        assert cfg_module.MAX_DETACHED_WORKFLOWS == 20
+
+    @pytest.mark.parametrize("raw, expected", [(" 7 ", 7), (" 0 ", 1), (" -9 ", 1)])
+    def test_max_detached_workflows_preserves_override_and_minimum(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        raw: str,
+        expected: int,
+    ) -> None:
+        """Explicit integers preserve positive caps and clamp nonpositive values."""
+        with monkeypatch.context() as scoped:
+            scoped.setenv(name="SLO_MAX_DETACHED_WORKFLOWS", value=raw)
+            importlib.reload(cfg_module)
+            assert cfg_module.MAX_DETACHED_WORKFLOWS == expected
+        importlib.reload(cfg_module)
 
 
 class TestUserSkillsDirConstants:

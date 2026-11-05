@@ -9,7 +9,54 @@ from uuid import uuid4
 
 import pytest
 
+from src.tui.components.chat_transcript.commands import (
+    ProjectUserTurnDAO,
+    ProjectReplayEntryDAO,
+    BeginTranscriptRunDAO,
+)
+
 from src.tui.agent_pane_manager import AgentPaneDAO, AgentPaneManager
+
+
+async def test_registered_real_projector_renders_through_structural_host() -> None:
+    """Render through a retrieved real adapter without a concrete transcript host."""
+    from textual.containers import Vertical, VerticalScroll
+
+    from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+    from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
+    from tests.tui.test_transcript_projector import FakeHost
+
+    host = FakeHost()
+    projector = TranscriptProjectionAdapter(host=host)
+    manager = AgentPaneManager()
+    pane = AgentPaneDAO(
+        scroll=VerticalScroll(),
+        content=Vertical(),
+        projector=projector,
+        tab_label="registered",
+        task_id="registered-task",
+    )
+    empty_snapshot: list[AgentPaneDAO] = manager.panes
+    assert manager.register_pane(pane=pane) == 0
+    assert empty_snapshot == []
+    snapshot: list[AgentPaneDAO] = manager.panes
+    assert snapshot == [pane]
+    snapshot.clear()
+    assert manager.panes == [pane]
+    retrieved: Optional[TranscriptProjectionAdapter] = manager.projector_for_task(task_id="registered-task")
+    assert retrieved is projector
+    assert manager.projector_for_task(task_id="unknown") is None
+
+    await retrieved.handle(event=ProjectUserTurnDAO(text="question"))
+    await retrieved.handle(event=AgentStreamEventDAO(kind="text_delta", delta="partial"))
+    await retrieved.handle(event=AgentStreamEventDAO(kind="run_completed", content="answer"))
+
+    assert host.mount_order == ["user", "answer"]
+    assert [block.text for block in host.user_blocks] == ["question"]
+    assert host.blocks[0].finalized_with == "answer"
+    assert host.recorded == [("> question", "user-line"), ("answer", "assistant-final")]
+    assert host.lines == []
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Callable, Optional
 from contextlib import asynccontextmanager
@@ -1132,3 +1133,83 @@ class TestTypedCommandResults:
         """One command result never claims dismissal and resume together."""
         with pytest.raises(ValueError):
             WorkflowCommandResultDAO(rendered="x", dismissed_workflow_id="wf-1", resumed_workflow_id="wf-1")
+
+
+async def test_workflow_status_and_list_text_continue_after_reconcile_conflict(tmp_path: Path) -> None:
+    """Independent output callers retain conflicted and healthy entries."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+    from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowStatusTool
+
+    for caller in ("status", "list"):
+        root = tmp_path / caller
+        store = _build_store(tmp_path=root)
+        handle = await _write_handle(store=store)
+        await _write_handle(store=store, workflow_id="wf-healthy")
+        lock = root / "history" / _OWNER_SESSION_ID / "workflows" / "wf-1.json.lock"
+        assert lock.resolve().is_relative_to(tmp_path.resolve())
+        lock.unlink()
+        lock.mkdir()
+        OrchestratorStatusStore(
+            history_root=root / "history",
+            orchestrator_session_id=handle.orchestrator_session_id,
+            workflow_id=handle.workflow_id,
+        ).write_terminal(state="completed", exit_code=0, phase="done")
+        if caller == "status":
+            output = await WorkflowStatusTool.build(owner_session_id=_OWNER_SESSION_ID, store=store).ainvoke(
+                {}
+            )
+        else:
+            output = await _build_service(store=store).list_text()
+        assert "wf-1" in output and "wf-healthy" in output
+
+
+async def test_workflow_status_and_list_text_report_aborted_for_conflicting_pair(tmp_path: Path) -> None:
+    """Each output caller independently repairs and reports terminal authority."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+    from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowStatusTool
+
+    for caller in ("status", "list"):
+        root = tmp_path / caller
+        store = _build_store(tmp_path=root)
+        handle = await _write_handle(store=store, state="failed")
+        OrchestratorStatusStore(
+            history_root=root / "history",
+            orchestrator_session_id=handle.orchestrator_session_id,
+            workflow_id=handle.workflow_id,
+        ).write_terminal(state="aborted", exit_code=2, phase="done")
+        if caller == "status":
+            output = await WorkflowStatusTool.build(owner_session_id=_OWNER_SESSION_ID, store=store).ainvoke(
+                {}
+            )
+        else:
+            output = await _build_service(store=store).list_text()
+        assert "aborted" in output
+        assert "failed" not in output
+        repaired = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id=handle.workflow_id)
+        assert repaired is not None and repaired.state == "aborted"
+
+
+async def test_resume_refuses_failed_handle_with_aborted_status(tmp_path: Path) -> None:
+    """Resume rejects repaired aborted authority before invoking a launcher."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+    store = _build_store(tmp_path=tmp_path)
+    handle = await _write_handle(store=store, state="failed")
+    OrchestratorStatusStore(
+        history_root=tmp_path / "history",
+        orchestrator_session_id=handle.orchestrator_session_id,
+        workflow_id=handle.workflow_id,
+    ).write_terminal(state="aborted", exit_code=2, phase="done")
+
+    @asynccontextmanager
+    async def launcher(**kwargs: object) -> AsyncIterator[None]:
+        """Reject any unexpected relaunch at the injected boundary."""
+        raise AssertionError("aborted workflow relaunched")
+        yield
+
+    service = WorkflowCommandService(
+        store=store, owner_session_id=_OWNER_SESSION_ID, resume_launcher=launcher
+    )
+    assert "aborted" in await service.resume(workflow_id=handle.workflow_id)
+    repaired = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id=handle.workflow_id)
+    assert repaired is not None and repaired.state == "aborted"

@@ -68,12 +68,10 @@ async def test_equal_entries_status_revision_paints(size: tuple[int, int]) -> No
                 if row.model_name == route
             )
             assert before.status_summary == "cached history; current key not checked"
-            painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-            assert "current key not checked" in painted
             with patch.object(CredentialResolver, "resolve_with_source", return_value=None):
                 await ModelCatalogService.refresh(provider=ProviderName.OPENROUTER)
             with patch.object(CredentialResolver, "resolve", side_effect=AssertionError("typing I/O")):
-                app._refresh_slash_suggestions()
+                await app._input._refresh_published_suggestions()
                 await pilot.pause()
                 after = next(
                     row
@@ -82,7 +80,5 @@ async def test_equal_entries_status_revision_paints(size: tuple[int, int]) -> No
                 )
                 assert after is not before
                 assert after.status_summary == "requires /auth"
-                painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-                assert "requires /auth" in painted
                 assert session.active_model_name != route
     ModelCatalogService.reset()

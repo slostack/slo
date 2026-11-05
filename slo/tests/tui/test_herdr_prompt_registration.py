@@ -4,6 +4,8 @@ import asyncio
 import ast
 import inspect
 import textwrap
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 from pathlib import Path
 from unittest.mock import patch
 from collections.abc import AsyncIterator
@@ -16,7 +18,8 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 
 
 def test_prompt_registration_shutdown_atomic_commit() -> None:
@@ -75,12 +78,17 @@ async def test_ordinary_entry_closed(tmp_path: Path, entry: str) -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
             await app.on_unmount()
+            assert app._input is not None
             with (
-                patch.object(app, "_echo_user_line", wraps=app._echo_user_line) as echo,
-                patch.object(app._prompt_history, "record", wraps=app._prompt_history.record) as record,
+                patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
+                patch.object(
+                    app._input._prompt_history, "record", wraps=app._input._prompt_history.record
+                ) as record,
             ):
                 if entry == "manual":
-                    await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="late"))
+                    await app.on_prompt_input_component_submitted(
+                        event=PromptInputComponent.Submitted(text="late")
+                    )
                 else:
                     async with app._prompt_submission_lock:
                         await app._start_accepted_prompt(text="late")
@@ -96,7 +104,7 @@ async def test_prompt_registration_shutdown(mounted_app: SloTUI, cutoff: str) ->
     app = mounted_app
     entered, release = asyncio.Event(), asyncio.Event()
     seam = "_remove_queued_prompt_block" if cutoff == "queue_remove_pending" else "_echo_user_line"
-    original_echo = app._echo_user_line
+    original_echo = app._chat_transcript.echo_user
     original_remove = app._remove_queued_prompt_block
 
     async def echo(*, text: str) -> None:
@@ -122,15 +130,21 @@ async def test_prompt_registration_shutdown(mounted_app: SloTUI, cutoff: str) ->
 
     with patch.object(app, "_refresh_context_window_after_prompt", side_effect=refresh):
         if cutoff != "local_echo_pending":
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="first"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="first"))
             await asyncio.wait_for(finished.wait(), timeout=5)
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="late"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="late"))
         # The registered run has already entered the original finalizer wrapper.
-    with patch.object(app, seam, side_effect=remove if cutoff == "queue_remove_pending" else echo):
+    with patch.object(
+        app if cutoff == "queue_remove_pending" else app._chat_transcript,
+        "_remove_queued_prompt_block" if cutoff == "queue_remove_pending" else "echo_user",
+        side_effect=remove if cutoff == "queue_remove_pending" else echo,
+    ):
         submission = app._in_flight_task
         if cutoff == "local_echo_pending":
             submission = asyncio.create_task(
-                coro=app.on_prompt_input_submitted(event=PromptInput.Submitted(text="late"))
+                coro=app.on_prompt_input_component_submitted(
+                    event=PromptInputComponent.Submitted(text="late")
+                )
             )
         assert submission is not None
         drain.set()
@@ -168,15 +182,15 @@ async def test_prompt_registration_shutdown_submission_gate(mounted_app: SloTUI,
     task = None
     with patch.object(app, "_refresh_context_window_after_prompt", side_effect=refresh):
         if entry != "lock_wait_idle":
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="first"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="first"))
             task = app._in_flight_task
             await asyncio.wait_for(entered.wait(), timeout=5)
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="held"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="held"))
         held = app._queued_prompt_text
         block = app._queued_prompt_block
         await app._prompt_submission_lock.acquire()
         submission = asyncio.create_task(
-            coro=app.on_prompt_input_submitted(event=PromptInput.Submitted(text="late"))
+            coro=app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="late"))
         )
         shutdown = None
         try:
@@ -190,7 +204,9 @@ async def test_prompt_registration_shutdown_submission_gate(mounted_app: SloTUI,
                 await asyncio.gather(submission, return_exceptions=True)
                 await asyncio.sleep(0)
                 submission = asyncio.create_task(
-                    coro=app.on_prompt_input_submitted(event=PromptInput.Submitted(text="late"))
+                    coro=app.on_prompt_input_component_submitted(
+                        event=PromptInputComponent.Submitted(text="late")
+                    )
                 )
             await asyncio.sleep(0)
             assert app._app_closing
@@ -200,7 +216,8 @@ async def test_prompt_registration_shutdown_submission_gate(mounted_app: SloTUI,
             assert app._in_flight_task is task
             assert app._queued_prompt_text == held
             assert app._queued_prompt_block is block
-            assert app._prompt_history._entries == ([] if task is None else ["first"])
+            assert app._input is not None
+            assert app._input._prompt_history._entries == ([] if task is None else ["first"])
         finally:
             if app._prompt_submission_lock.locked():
                 app._prompt_submission_lock.release()
@@ -242,7 +259,10 @@ async def test_prompt_registration_shutdown_entry_matrix(
         if task is not None:
             await asyncio.wait_for(task, timeout=5)
         assert app._queued_prompt_text is None
-        assert app._prompt_history._entries == (["selected"] if entry == "manual" and not closing else [])
+        assert app._input is not None
+        assert app._input._prompt_history._entries == (
+            ["selected"] if entry == "manual" and not closing else []
+        )
 
 
 @pytest.mark.parametrize("entry", ["submitted_slash", "direct_slash"])
@@ -254,9 +274,10 @@ async def test_prompt_registration_shutdown_slash(mounted_app: SloTUI, entry: st
         if entry == "direct_slash":
             await app._dispatch_slash_command(line="/help")
         else:
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="/help"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="/help"))
         run.assert_not_called()
-    assert app._prompt_history._entries == []
+    assert app._input is not None
+    assert app._input._prompt_history._entries == []
     assert app._in_flight_task is None
     assert app._queued_prompt_text is None
 
@@ -283,7 +304,7 @@ async def test_prompt_registration_shutdown_preexecution(
         patch.object(app._session, "abort", wraps=app._session.abort) as abort,
     ):
         if entry == "manual":
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="first"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="first"))
         else:
             assert app._inbox_timer is not None
             app._inbox_timer.stop()
@@ -300,13 +321,14 @@ async def test_prompt_registration_shutdown_preexecution(
             await store.enqueue(message=message)
             await app._poll_session_inbox()
             assert await store.claim_next(session_id=app._session.session_id) is None
-            assert app._prompt_history._entries == []
+            assert app._input is not None
+            assert app._input._prompt_history._entries == []
         task = app._in_flight_task
         assert task is not None
         try:
             await asyncio.wait_for(entered.wait(), timeout=5)
             invoke.assert_not_called()
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="held"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="held"))
             await app.on_unmount()
             assert app._in_flight_task is task
             assert task.cancelling() == 0
@@ -339,20 +361,20 @@ async def test_prompt_registration_open_queue_and_new(mounted_app: SloTUI) -> No
         await release.wait()
 
     with patch.object(app, "_refresh_context_window_after_prompt", side_effect=refresh):
-        await app.on_prompt_input_submitted(event=PromptInput.Submitted(text=" first "))
+        await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text=" first "))
         first = app._in_flight_task
         assert first is not None
         try:
             await asyncio.wait_for(entered.wait(), timeout=5)
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="older"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="older"))
             block = app._queued_prompt_block
             assert app._input is not None
             app._input.load_text("latest")
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="latest"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="latest"))
             assert app._input.text == ""
             assert app._queued_prompt_block is block
             assert app._queued_prompt_text == "latest"
-            assert app._prompt_history._entries == ["first"]
+            assert app._input._prompt_history._entries == ["first"]
             session = app._session
             await app._dispatch_slash_command(line="/new")
             assert app._session is session
@@ -362,7 +384,7 @@ async def test_prompt_registration_open_queue_and_new(mounted_app: SloTUI) -> No
             successor = app._in_flight_task
             assert successor is not None and successor is not first
             await asyncio.wait_for(successor, timeout=5)
-            assert app._prompt_history._entries == ["first", "latest"]
+            assert app._input._prompt_history._entries == ["first", "latest"]
             assert app._queued_prompt_text is None
             assert app._queued_prompt_block is None
             await app._dispatch_slash_command(line="/new")
@@ -386,17 +408,19 @@ async def test_prompt_registration_shutdown_registered_completion(mounted_app: S
         await release.wait()
 
     with patch.object(app, "_refresh_context_window_after_prompt", side_effect=refresh):
-        await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="first"))
+        await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="first"))
         task = app._in_flight_task
         assert task is not None
         try:
             await asyncio.wait_for(entered.wait(), timeout=5)
-            await app.on_prompt_input_submitted(event=PromptInput.Submitted(text="held"))
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="held"))
             assert app._queued_prompt_text == "held"
             await app.on_unmount()
             assert app._in_flight_task is task
             assert not task.cancelled()
-            with patch.object(app, "_echo_user_line", wraps=app._echo_user_line) as echo:
+            with patch.object(
+                app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user
+            ) as echo:
                 release.set()
                 await asyncio.wait_for(task, timeout=5)
                 echo.assert_not_called()

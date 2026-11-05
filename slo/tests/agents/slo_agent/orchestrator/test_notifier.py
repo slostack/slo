@@ -171,7 +171,33 @@ class TestFleetUpdate:
 
 
 class TestTerminal:
-    """``completed()`` / ``failed()`` — the terminal chat_turn messages."""
+    """``completed()`` / ``failed()`` / ``aborted()`` terminal chat_turn messages."""
+
+    @pytest.mark.parametrize("cleanup_summary", ["", "fleet: 1 completed · 0 live"])
+    async def test_aborted_enqueues_final_chat_turn_with_no_retry_instruction(
+        self,
+        tmp_path: Path,
+        cleanup_summary: str,
+    ) -> None:
+        """The abort note carries the exact finality instruction and identity."""
+        notifier, store = _build_notifier(tmp_path=tmp_path)
+        await notifier.aborted(reason="run_aborted: stopped", cleanup_summary=cleanup_summary)
+        pending = await _pending(store=store)
+        assert len(pending) == 1
+        message = pending[0]
+        assert message.kind == "workflow_aborted"
+        assert message.delivery_mode == "chat_turn"
+        assert message.title == "wf-3f2a aborted"
+        assert message.payload == {"workflow_id": _WORKFLOW_ID, "orchestrator_session_id": _ORCH_SESSION_ID}
+        suffix = "\n\n" + cleanup_summary if cleanup_summary else ""
+        assert message.text == (
+            "Workflow wf-3f2a was aborted. Reason: run_aborted: stopped. An aborted workflow is final: "
+            "do not retry, resume or relaunch it. Tell the user it was aborted and suggest /workflows "
+            "for its final state." + suffix
+        )
+        assert message.priority == "normal"
+        assert message.schedule_id == "workflow:wf-3f2a"
+        assert message.coalesce_key is None
 
     async def test_completed_enqueues_chat_turn_with_synthesis_and_json(self, tmp_path: Path) -> None:
         """The completion message carries the synthesis and result JSON."""
@@ -245,14 +271,14 @@ class TestTerminalCredentialRedaction:
 class TestTerminalCredentialRotation:
     """Notifier output protection during an admitted-key rotation."""
 
-    @pytest.mark.parametrize("terminal", ["completed", "failed"])
+    @pytest.mark.parametrize("terminal", ["completed", "failed", "aborted"])
     async def test_terminal_redacts_admitted_key_after_effective_key_rotates(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         terminal: str,
     ) -> None:
-        """Completed and failed notifications retain no old or newly effective credential."""
+        """Completed, failed and aborted notifications retain no old or newly effective credential."""
         admitted_key: str = "openrouter-notifier-admitted-key-a"
         rotated_key: str = "openrouter-notifier-effective-key-b"
         credential_a: CredentialDAO = CredentialDAO(
@@ -270,6 +296,8 @@ class TestTerminalCredentialRotation:
                     synthesis=f"completed after {admitted_key}",
                     result_json=f'{{"next":"{admitted_key}"}}',
                 )
+            elif terminal == "aborted":
+                await notifier.aborted(reason=f"aborted after {admitted_key}")
             else:
                 await notifier.failed(error=f"failed after {admitted_key}")
 
@@ -324,4 +352,6 @@ class TestFailureSwallowing:
         await notifier.completed(synthesis="s", result_json="{}")
         await notifier.failed(error="e")
 
-        assert exploding.enqueue_attempts == 4
+        await notifier.aborted(reason="stopped")
+
+        assert exploding.enqueue_attempts == 5

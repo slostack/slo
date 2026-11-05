@@ -1,6 +1,6 @@
 [project]
 name = "slo"
-version = "0.30.1"
+version = "0.30.2"
 description = "Python ReAct agent harness, modelled on pi.dev"
 authors = [{ name = "Siddharth Ravichandran", email = "sid@core27.co" }]
 license = "GPL-2.0-only"
@@ -103,6 +103,9 @@ build-backend = "poetry.core.masonry.api"
   # ``--finalize-environment`` step. The installer is the only wrapper and
   # managed-shell-environment writer.
   include = [
+      { path = "src/tui/components/chat_transcript/css.tcss", format = ["sdist", "wheel"] },
+      { path = "src/tui/components/workflow_progress/css.tcss", format = ["sdist", "wheel"] },
+      { path = "src/tui/components/prompt_input/css.tcss", format = ["sdist", "wheel"] },
       { path = "skills/**/*", format = ["sdist", "wheel"] },
       { path = "plugins/**/*", format = ["sdist", "wheel"] },
       { path = "install.sh", format = ["sdist", "wheel"] },

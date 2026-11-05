@@ -76,7 +76,7 @@ async def test_menu_windows_literal_rows_and_retains_highlight_on_resize() -> No
         painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         assert "model-0020" in painted
         assert "model-0000" not in painted
-        assert "context " in painted
+        assert "(Ctx: " in painted
 
 
 def test_empty_order_cache_and_revision() -> None:
@@ -96,7 +96,7 @@ def test_empty_order_cache_and_revision() -> None:
             assert first[0] is second[0]
             state = engine.evaluate(buffer_text="/model ", active_model_name="kimi-k3")
             assert [row.insert_text for row in state.rows[:2]] == ["kimi-k3", "kimi-for-coding"]
-            assert "requires /auth" in (state.rows[0].detail or "")
+            assert state.rows[0].label.startswith("kimi-k3 (Ctx: ")
         with patch.object(
             CredentialResolver,
             "resolve",
@@ -155,11 +155,11 @@ async def test_app_paints_real_projection_inserts_and_handles_empty_search() -> 
                 app._input.load_text("  /model literal")
                 await pilot.pause()
                 painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-                assert "context " in painted
+                assert "(Ctx: " in painted
                 await pilot.press("down", "down")
                 await pilot.resize_terminal(width=60, height=15)
                 await pilot.pause()
-                assert app._slash_suggestion_state.highlighted_index == 2
+                assert app._input._slash_suggestion_state.highlighted_index == 2
                 await pilot.press("tab")
                 assert app._input.text == "  /model model-0002"
                 app._input.load_text("/model missing")

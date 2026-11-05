@@ -147,11 +147,14 @@ DETACHED_WORKFLOWS: bool = os.environ.get("SLO_DETACHED_WORKFLOWS", "1").strip()
     "no",
     "",
 )
-_MAX_DETACHED_WORKFLOWS_RAW: str = os.environ.get("SLO_MAX_DETACHED_WORKFLOWS", "2").strip()
+_DEFAULT_MAX_DETACHED_WORKFLOWS: int = 20
+_MAX_DETACHED_WORKFLOWS_RAW: str = os.environ.get(
+    "SLO_MAX_DETACHED_WORKFLOWS", str(_DEFAULT_MAX_DETACHED_WORKFLOWS)
+).strip()
 try:
     MAX_DETACHED_WORKFLOWS: int = max(1, int(_MAX_DETACHED_WORKFLOWS_RAW))
 except ValueError:
-    MAX_DETACHED_WORKFLOWS = 2
+    MAX_DETACHED_WORKFLOWS = _DEFAULT_MAX_DETACHED_WORKFLOWS
 
 # Optional terminal-emulator override for the auto-launched visualizer window.
 # macOS accepts an application name (``Terminal`` or ``iTerm``); Linux accepts

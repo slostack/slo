@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
@@ -11,25 +10,20 @@ from pathlib import Path
 from time import monotonic
 from typing import Optional, Protocol, cast
 
-from rich.markdown import Markdown
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
-from textual.document._wrapped_document import WrappedDocument
-from textual.document._document_navigator import DocumentNavigator
-from textual.message import Message
+from textual.containers import Vertical
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.worker import Worker, WorkerCancelled, WorkerFailed
-from textual.widgets import Footer, Header, Static, TextArea
+from textual.widgets import Footer, Header, Static
 
 from config.ai_model_config import default_model_for_provider
 from config.cfg import cfg
 from config.logger import log_error
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO, VisualizerLaunchOutcomeDAO
 from src.agents.slo_agent.herdr.service import HerdrTaskJoin
-from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore, WorkflowResumeLauncher
 from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
@@ -43,26 +37,49 @@ from src.auth.browser_host import BrowserHost
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+from src.tui.components.chat_transcript.commands import (
+    SetTranscriptVisibilityDAO,
+    ScrollTranscriptBottomDAO,
+    ToggleTranscriptDetailsDAO,
+    TranscriptNoticeDAO,
+    EchoUserDAO,
+    PresentAgentEventDAO,
+    HydrateTranscriptDAO,
+    BindHistoryDAO,
+    ClearTranscriptDAO,
+    BeginTranscriptRunDAO,
+    ShowPendingSteeringDAO,
+    MountTreeOutputDAO,
+)
+from src.tui.components.workflow_progress.component import WorkflowProgressComponent
+from src.tui.components.workflow_progress.events import ConfirmAbortDAO
+from src.tui.components.prompt_input.component import PromptInputComponent
+from src.tui.components.prompt_input.commands import (
+    ClearSubmissionDAO,
+    ReplacePromptDAO,
+    HideSuggestionsDAO,
+    RecordAcceptedPromptDAO,
+    SetModelContextDAO,
+    RecordModelSelectionDAO,
+    RefreshPublishedSuggestionsDAO,
+    PublishSuggestionsDAO,
+    ReplacePathSpanDAO,
+)
 from src.tui.authentication import AuthenticationScreen
 from src.tui.path_suggestion_engine import PathSuggestionReader
 from src.tui.path_suggestion_controller import PathPromptSnapshotDAO, PathSuggestionController
-from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
 from src.tui.model_catalog import ModelSuggestionProjection
-from src.tui.slash_suggestion_engine import (
-    SlashSuggestionEngine,
-    SlashSuggestionStateDAO,
-)
+from src.tui.slash_suggestion_engine import SlashSuggestionEngine, SlashSuggestionStateDAO
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.thinking_spinner import ThinkingSpinner
-from src.tui.transcript_projector import TranscriptProjector
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.editor_launcher import EditorLauncher
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
-from src.tui.widgets.prompt_document import PromptDocument
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
@@ -72,7 +89,6 @@ from src.tui.widgets.tree_markdown_exporter import TreeMarkdownExporter
 from src.tui.widgets.tree_viewer import SessionTreeViewer
 from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.tui.widgets.user_message_block import UserMessageBlock
-from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.dao import (
     ChildAbortTargetDAO,
     HandleAdvanceOutcomeDAO,
@@ -93,6 +109,7 @@ from src.tui.workflows.renderer import DetachedWorkflowRenderer
 from src.tui.workflows.service import AttachedChildAbort, DetachedWorkflowAppService
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
 from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, ChildControlCapabilityDAO
+from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.session_progress_screen import SessionProgressScreen
 
 
@@ -148,7 +165,7 @@ class WorkflowAppServiceFactory(Protocol):
         ...
 
 
-__all__ = ["SloTUI", "PromptInput"]
+__all__ = ["SloTUI"]
 
 
 @dataclass(frozen=True)
@@ -193,338 +210,13 @@ its child streams. The stream-only ``sub_agent_dispatch_started`` event (no
 ``sub_agent_id``) also requests a refresh; see ``_render_event``.
 """
 
-PROGRESS_VIEWPORT_CACHE_LIMIT: int = 64
-"""Most recently visited session keys whose reading position the progress sink keeps."""
 
-PROGRESS_DIALOG_CONFLICT_NOTICE: str = "Close the current dialog before inspecting progress."
-"""Shown when a list selection arrives while an unrelated modal is open."""
+class SessionFactory(Protocol):
+    """Build an unsubscribed replacement session; the application owns its adoption."""
 
-PROGRESS_MEMBERSHIP_REMOVED_NOTICE: str = "This session is no longer in the current workflow list."
-"""Shown when the selected session left the owner's list."""
-
-PROGRESS_REFRESH_FAILED_NOTICE: str = "Progress refresh unavailable; retrying on the next tick."
-"""Shown once per failure streak when an observation refresh fails unexpectedly."""
-
-TRANSCRIPT_WINDOW_SIZE: int = 500
-"""Maximum children kept mounted in #transcript-content.
-
-A 500-block window retains substantially more recent transcript context before
-history-backed recovery is needed. Tune against the reflow-slope measurement in
-the manual smoke step (7.6) if needed; a follow-up may make it adaptive to
-viewport height."""
-
-TRANSCRIPT_PROTECTED_TAIL_SIZE: int = 10
-"""Newest transcript children the window enforcer may never evict, structurally.
-
-This is a starvation guard, independent of per-block liveness bookkeeping
-(_is_block_live). _run_window_enforcement_pass walks candidates oldest-first
-and stops once it has removed `overflow` children — but skipping a live child
-costs nothing against that budget, so a transcript saturated with
-permanently-live blocks lets the walk reach all the way to the newest child,
-including one mounted this very frame (the user's own prompt). Excluding the
-newest TRANSCRIPT_PROTECTED_TAIL_SIZE children from the candidate set entirely
-converts that failure mode from "the user's message disappears" into "the
-window temporarily holds a few more children than TRANSCRIPT_WINDOW_SIZE" —
-the correct failure direction.
-
-Invariant: this value must stay strictly below TRANSCRIPT_WINDOW_SIZE. At or
-above it, _eviction_candidates returns an empty list for every transcript of
-TRANSCRIPT_PROTECTED_TAIL_SIZE children or fewer and window enforcement stops
-converging altogether. Any test that patches
-`src.tui.app.TRANSCRIPT_WINDOW_SIZE` to a value at or below this one MUST
-either patch `src.tui.app.TRANSCRIPT_PROTECTED_TAIL_SIZE` in the same `with`
-block, or state in its docstring that it deliberately relies on the
-non-converging regime and assert nothing that depends on eviction making
-progress.
-
-10 is chosen to comfortably exceed the mounted-widget count of a small
-tool-calling turn while remaining a small fraction of TRANSCRIPT_WINDOW_SIZE
-(500), so it does not meaningfully weaken the windowing budget in the common
-case where liveness bookkeeping (D1/D2, spec 61) is working correctly."""
-
-LOAD_OLDER_BATCH_SIZE: int = 30
-"""Number of older transcript entries to prepend per scroll-to-top trigger."""
-
-TRANSCRIPT_HYDRATION_ENTRY_LIMIT: int = 30
-"""Newest logical entries a resumed session mounts during replay hydration.
-
-Hydration used to project *every* entry on disk and let the transcript window
-evict the excess back down. That made `_load_older_cursor` — which the
-load-older path reads as "how many entries sit above the oldest mounted one" —
-unrecoverable: it was assigned `len(entries)`, the total, even though eviction
-had already put most of those entries on screen. The first scroll-to-top pass
-then re-fetched `all_entries[-LOAD_OLDER_BATCH_SIZE:]`, the batch already
-mounted, and prepended it above itself, duplicated and out of order.
-
-Bounding hydration to the newest entries makes the cursor exact by
-construction: whatever this slice leaves behind is precisely what is not on
-screen. There is no widget-to-entry attribution anywhere in this calculation,
-which matters because that mapping is not derivable — one entry mounts a
-variable number of widgets (a user turn mounts a separator *and* a block), and
-a single tool call can mount more than one `ToolExecutionBlock`.
-
-The cursor may still *under*-report once live eviction starts trimming entries
-this slice did mount, since nothing advances it during a live session. That
-failure direction is deliberate: under-reporting leaves a gap in what
-scroll-to-top can reach, while over-reporting reintroduces the duplicate
-prepend. Never raise this cursor past the count of entries hydration declined
-to mount."""
-
-_NEAR_TOP_THRESHOLD: float = 2.0
-"""Scroll-y threshold that counts as reaching the transcript top."""
-
-
-class TranscriptScroll(VerticalScroll):
-    """VerticalScroll that emits a typed message when scrolled to the top."""
-
-    class ReachedTop(Message):
-        """Posted when ``scroll_y`` crosses down to the near-top threshold."""
-
-    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
-        """React to scroll position changes and post ``ReachedTop``.
-
-        Args:
-            old_value (float): Previous ``scroll_y`` value.
-            new_value (float): New ``scroll_y`` value.
-        """
-        super().watch_scroll_y(old_value=old_value, new_value=new_value)
-        if new_value <= _NEAR_TOP_THRESHOLD < old_value:
-            self.post_message(self.ReachedTop())
-
-
-@dataclass
-class _LoadOlderAnchorDAO:
-    """Snapshot of the scroll anchor captured before a prepend pass.
-
-    Attributes:
-        widget: The first pre-existing non-summary child, or ``None``.
-        offset_before: The widget's ``virtual_region.y`` before prepend.
-        scroll_y_before: Transcript ``scroll_y`` before prepend.
-    """
-
-    widget: Optional[Widget]
-    offset_before: float
-    scroll_y_before: float
-
-
-class PromptInput(TextArea):
-    """``TextArea`` that posts prompt-specific intent messages.
-
-    ``TextArea`` has no ``Submitted`` message of its own (that belongs to
-    ``Input``), so we synthesise one. Bare Enter submits; modified Enter
-    chords such as Shift+Enter, Cmd+Enter, and Ctrl+Enter insert a literal
-    newline instead. When slash suggestions are visible, ``Tab`` / ``Up`` /
-    ``Down`` / ``Esc`` are translated into suggestion intent messages so the
-    app can keep command composition keyboard-first.
-    """
-
-    def __init__(self) -> None:
-        """Construct the prompt input with explicit soft wrapping enabled."""
-        super().__init__(soft_wrap=True)
-        self._suggestion_navigation_enabled: bool = False
-        self._prompt_history_navigation_enabled: bool = False
-
-    def _set_document(self, text: str, language: Optional[str]) -> None:
-        """Build the plain prompt document without normalizing literal path characters.
-
-        TextArea calls this on initialization and load_text; retain its normal
-        wrapping/navigation setup and edit history machinery.
-
-        Args:
-            text: Literal prompt buffer.
-            language: Optional syntax language; non-prompt syntax uses TextArea's setup.
-        """
-        if language:
-            super()._set_document(text=text, language=language)
-            return
-        self._highlight_query = None
-        self.document = PromptDocument(text=text)
-        self.wrapped_document = WrappedDocument(self.document, tab_width=self.indent_width)
-        self.navigator = DocumentNavigator(self.wrapped_document)
-        self._build_highlight_map()
-        self.move_cursor(location=(0, 0))
-        self._rewrap_and_refresh_virtual_size()
-
-    class Submitted(Message):
-        """Posted when the user presses Enter to submit the buffer."""
-
-        def __init__(self, *, text: str) -> None:
-            """Carry the submitted text.
-
-            Args:
-                text (str): The full multi-line buffer at submit time.
-            """
-            self.text: str = text
-            super().__init__()
-
-    class SuggestionAccepted(Message):
-        """Posted when the prompt accepts the highlighted suggestion."""
-
-    class PathSuggestionsRequested(Message):
-        """Posted when Tab requests filesystem discovery without a visible menu."""
-
-    class SuggestionMoved(Message):
-        """Posted when the prompt moves the highlighted suggestion row."""
-
-        def __init__(self, *, delta: int) -> None:
-            """Carry the row movement request.
-
-            Args:
-                delta (int): Positive or negative row movement.
-            """
-            self.delta: int = delta
-            super().__init__()
-
-    class SuggestionDismissed(Message):
-        """Posted when the prompt dismisses slash suggestions."""
-
-    class PromptHistoryOlderRequested(Message):
-        """Posted when the prompt requests the next older prompt."""
-
-    class PromptHistoryNewerRequested(Message):
-        """Posted when the prompt requests the next newer prompt."""
-
-    def set_suggestion_navigation_enabled(self, *, enabled: bool) -> None:
-        """Enable or disable suggestion-specific key interception.
-
-        Args:
-            enabled (bool): True when slash suggestions are visible.
-        """
-        self._suggestion_navigation_enabled = enabled
-
-    def set_prompt_history_navigation_enabled(self, *, enabled: bool) -> None:
-        """Enable or disable prompt-history navigation mode.
-
-        Args:
-            enabled (bool): True when the prompt is browsing recalled history.
-        """
-        self._prompt_history_navigation_enabled = enabled
-
-    async def _on_key(self, event: events.Key) -> None:
-        """Intercept Enter chords for submit/newline semantics.
-
-        Args:
-            event (events.Key): The key event from Textual.
-        """
-        if self._should_accept_suggestion(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.SuggestionAccepted())
-            return
-        if event.key == "tab":
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.PathSuggestionsRequested())
-            return
-        if self._should_move_suggestion(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.SuggestionMoved(delta=self._suggestion_delta(event=event)))
-            return
-        if self._should_request_older_prompt(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.PromptHistoryOlderRequested())
-            return
-        if self._should_request_newer_prompt(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.PromptHistoryNewerRequested())
-            return
-        if self._should_dismiss_suggestions(event=event):
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.SuggestionDismissed())
-            return
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.Submitted(text=self.text))
-            return
-        if event.key in {"shift+enter", "ctrl+enter", "meta+enter"}:
-            event.prevent_default()
-            event.stop()
-            self.insert("\n")
-            return
-        await super()._on_key(event)
-
-    def _should_accept_suggestion(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should accept a suggestion.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when the suggestion menu should accept the current row.
-        """
-        return self._suggestion_navigation_enabled and event.key == "tab"
-
-    def _should_move_suggestion(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should move the highlight.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when the highlighted suggestion should move.
-        """
-        return self._suggestion_navigation_enabled and event.key in {"up", "down"}
-
-    def _should_request_older_prompt(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should request older prompt recall.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when history recall should move older.
-        """
-        return (
-            not self._suggestion_navigation_enabled
-            and event.key == "up"
-            and (not self.text or self._prompt_history_navigation_enabled)
-        )
-
-    def _should_request_newer_prompt(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should request newer prompt recall.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when history recall should move newer.
-        """
-        return (
-            not self._suggestion_navigation_enabled
-            and event.key == "down"
-            and self._prompt_history_navigation_enabled
-        )
-
-    def _should_dismiss_suggestions(self, *, event: events.Key) -> bool:
-        """Return True when ``event`` should dismiss suggestions.
-
-        Args:
-            event (events.Key): Key event under inspection.
-
-        Returns:
-            bool: True when the suggestion menu should close.
-        """
-        # Escape also revokes an in-progress, not-yet-visible filesystem read.
-        return event.key == "escape"
-
-    @staticmethod
-    def _suggestion_delta(*, event: events.Key) -> int:
-        """Return the row movement implied by ``event``.
-
-        Args:
-            event (events.Key): Up/down key event.
-
-        Returns:
-            int: ``1`` for down and ``-1`` for up.
-        """
-        if event.key == "down":
-            return 1
-        return -1
+    def __call__(self, *, config: SessionConfigDAO, allow_pending_preparation: bool) -> SloAgentSession:
+        """Return a session or propagate construction errors to the caller."""
+        ...
 
 
 class SloTUI(App):
@@ -586,6 +278,8 @@ class SloTUI(App):
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
         workflow_handle_store: Optional[WorkflowHandleStore] = None,
         browser_host: Optional[BrowserHost] = None,
+        session_factory: Optional[SessionFactory] = None,
+        visualizer_launcher: Optional[Callable[..., bool]] = None,
         workflow_service_factory: Optional[WorkflowAppServiceFactory] = None,
         workflow_coordinator_factory: Optional[WorkflowCoordinatorFactory] = None,
         workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
@@ -620,6 +314,8 @@ class SloTUI(App):
                 defaults to the production coordinator with the app-owned sink.
         """
         super().__init__()
+        self._session_factory = session_factory
+        self._visualizer_launcher = visualizer_launcher
         self._workflow_resume_launcher = workflow_resume_launcher
         self._escape_deadline: float = 0.0
         self._editor_launcher = editor_launcher or EditorLauncher()
@@ -642,6 +338,7 @@ class SloTUI(App):
         self._mount_runtime_task: Optional[asyncio.Task[None]] = None
         self._app_closing: bool = False
         self._app_shutdown_task: Optional[asyncio.Task[None]] = None
+        self._shutdown_started: bool = False
         self._session_replacement_task: Optional[asyncio.Task[None]] = None
         self._session_transitioning: bool = False
         self._retired_herdr_session: Optional[SloAgentSession] = None
@@ -651,28 +348,16 @@ class SloTUI(App):
         self._replacement_delivery_safe: bool = True
         self._delivery_quiescing: bool = False
         self._attach_pool_to_session(session=self._session)
-        self._transcript_scroll: Optional[TranscriptScroll] = None
-        self._transcript_content: Optional[Vertical] = None
+        self._chat_transcript: ChatTranscriptComponent = ChatTranscriptComponent(
+            history_reader=self._session.hydrate_transcript_entries
+        )
         self._chat_shell: Optional[Vertical] = None
-        self._hidden_block_count: int = 0
-        self._load_older_cursor: int = 0
-        self._load_older_running: bool = False
-        self._back_scroll_mode: bool = False
-        self._force_following_until_layout: bool = False
-        self._earlier_summary: Optional[Static] = None
-        self._window_enforcement_running: bool = False
-        self._window_enforcement_rerun: bool = False
         self._status_region: Optional[Vertical] = None
-        self._input: Optional[PromptInput] = None
+        self._input: Optional[PromptInputComponent] = None
         self._suggestion_menu: Optional[SlashSuggestionMenu] = None
+        self._suggestions_bound: bool = False
+        """True once the mounted editor has adopted its suggestion collaborators."""
         self._usage_status_bar: Optional[UsageStatusBar] = None
-        self._active_expandable_tool_block: Optional[ToolExecutionBlock] = None
-        # Global expand-all state for the Ctrl+O toggle. None = natural default
-        # (full user text, visible reasoning, compact tool blocks); True =
-        # expand all; False = collapse all. Assistant and tool blocks inherit
-        # this state; user turns intentionally remain expanded.
-        self._global_expand_all: Optional[bool] = None
-        self._adapter: Optional[_TranscriptAdapter] = None
         self._in_flight_task: Optional[asyncio.Task[None]] = None
         self._prompt_submission_lock: asyncio.Lock = asyncio.Lock()
         """Serializes ordinary-prompt acceptance and run-completion handoff only."""
@@ -681,23 +366,11 @@ class SloTUI(App):
         self._queued_prompt_block: Optional[QueuedPromptBlock] = None
         """Mounted visual counterpart of ``_queued_prompt_text``, when mounted."""
         self._spinner: Optional[ThinkingSpinner] = None
-        # Pending steering blocks awaiting consumption, oldest first. Each
-        # ``steering_applied`` event drains one (FIFO), matching the agent's
-        # drain order.
-        self._pending_steer_blocks: list[SteeringPendingBlock] = []
         self._path_suggestions = PathSuggestionController(
             view=self, reader=path_reader, run_worker=self.run_worker
         )
-        self._slash_suggestion_state: SlashSuggestionStateDAO = SlashSuggestionStateDAO(visible=False)
-        self._picker_catalog_revision: tuple[int, int] = ModelSuggestionProjection.current_revision()
-        self._suggestion_engine: SlashSuggestionEngine = SlashSuggestionEngine(
-            registry=SlashRouter.registry(),
-        )
-        self._projector: TranscriptProjector = TranscriptProjector(host=self)
-        self._prompt_history: PromptHistoryNavigator = PromptHistoryNavigator()
-        self._setting_prompt_from_history: bool = False
-        # Fleet panel reference for sub-agent status display.
-        self._fleet_panel: Optional[SubAgentFleetPanel] = None
+        # Workflow progress owns the fleet panel and its observation-lifetime adapter.
+        self._workflow_progress: Optional[WorkflowProgressComponent] = None
         # Guards one-per-run auto-launch of the workflow visualizer window.
         self._visualizer_launched_for_run: bool = False
         self._visualizer_launch_tasks: dict[str, asyncio.Task[None]] = {}
@@ -711,7 +384,7 @@ class SloTUI(App):
         # Feature 94 a.3: the sole observation refresh owner and its presentation
         # adapter, rebuilt together with the service for every owning session.
         self._workflow_progress_coordinator: Optional[WorkflowProgressCoordinator] = None
-        self._workflow_progress_sink: Optional[_WorkflowProgressSink] = None
+        self._workflow_progress_updates_adapter: Optional[WorkflowProgressSink] = None
         # Session the observation trio is bound to; None while unbound. Recorded
         # only after the coordinator's no-await start completes, and cleared first
         # on close, so a matching session ID alone never proves a healthy binding:
@@ -735,24 +408,36 @@ class SloTUI(App):
         yield Header(show_clock=False)
         self._chat_shell = Vertical(id="chat-shell")
         with self._chat_shell:
-            self._transcript_scroll = TranscriptScroll(id="transcript-scroll")
-            self._transcript_content = Vertical(id="transcript-content")
-            with self._transcript_scroll:
-                yield self._transcript_content
+            yield self._chat_transcript
             self._status_region = Vertical(id="status-region")
             self._suggestion_menu = SlashSuggestionMenu()
             with self._status_region:
                 yield self._suggestion_menu
-            self._adapter = _TranscriptAdapter(tui=self)
-            self._input = PromptInput()
+            self._input = PromptInputComponent()
             yield self._input
-            # Workflow session list: below PromptInput, hidden while it has no
-            # rows. The orchestrator transcript always stays in the foreground.
-            self._fleet_panel = SubAgentFleetPanel()
-            yield self._fleet_panel
+            # Workflow progress: below PromptInputComponent, hidden while it has no rows.
+            # The orchestrator transcript always stays in the foreground.
+            self._workflow_progress = WorkflowProgressComponent(host=self)
+            yield self._workflow_progress
             self._usage_status_bar = UsageStatusBar()
             yield self._usage_status_bar
         yield Footer()
+
+    async def set_transcript_visible(self, *, visible: bool) -> None:
+        """Choose visibility without stealing modal focus or changing execution."""
+        transcript = self._chat_transcript
+        if transcript is None:
+            return
+        focused = self.focused
+        if (
+            not visible
+            and self._input is not None
+            and self.screen is self._input.screen
+            and focused is not None
+            and (focused is transcript or transcript in focused.ancestors)
+        ):
+            self._input.focus()
+        await transcript.handle(command=SetTranscriptVisibilityDAO(visible=visible))
 
     def open_url(self, url: str, *, new_tab: bool = True) -> None:
         """Open a URL in a graphical browser off the event loop, or do nothing on a headless host.
@@ -801,7 +486,17 @@ class SloTUI(App):
         if not self._runtime_may_start(session=session):
             return
         ModelSuggestionProjection.refresh_authentication()
-        await self._hydrate_transcript_from_history()
+        if self._input is not None and self._suggestion_menu is not None and not self._suggestions_bound:
+            await self._input.replace_suggestion_binding(
+                path_controller=self._path_suggestions,
+                menu=self._suggestion_menu,
+                engine=SlashSuggestionEngine(registry=SlashRouter.registry()),
+                active_model_name=session.active_model_name,
+            )
+            self._suggestions_bound = True
+        await self._chat_transcript.handle(
+            command=HydrateTranscriptDAO(is_current=lambda: self._runtime_may_start(session=session))
+        )
         if not self._runtime_may_start(session=session):
             return
         try:
@@ -810,7 +505,7 @@ class SloTUI(App):
             # A closed or displaced owner must not repaint even a fixed failure
             # notice; revalidate the captured owner before rendering (C7.13).
             if self._runtime_may_start(session=session):
-                self._write_lifecycle_notice(
+                await self._write_lifecycle_notice(
                     content="Session startup notice unavailable.", classes="tool-result"
                 )
         if not self._runtime_may_start(session=session):
@@ -856,9 +551,6 @@ class SloTUI(App):
         if self._session.preparation_status == "ready":
             return
         session: SloAgentSession = self._session
-        self._write_lifecycle_notice(
-            content="Preparing model catalog; limits unknown.", classes="tool-result"
-        )
         self._preparation_task = asyncio.create_task(self._prepare_mounted_session(session=session))
 
     async def _prepare_mounted_session(self, *, session: SloAgentSession) -> None:
@@ -867,6 +559,9 @@ class SloTUI(App):
         Capturing the target session prevents a worker superseded by ``/new`` from
         preparing or repainting the replacement session after its cancellation.
         """
+        await self._write_lifecycle_notice(
+            content="Preparing model catalog; limits unknown.", classes="tool-result"
+        )
         try:
             await session.prepare_startup()
         except asyncio.CancelledError:
@@ -878,13 +573,17 @@ class SloTUI(App):
                     if session.active_model_name.startswith("claude-bridge:")
                     else "Model preparation failed; use /auth or /model refresh to retry."
                 )
-                self._write_lifecycle_notice(
+                await self._write_lifecycle_notice(
                     content=guidance,
                     classes="tool-result",
                 )
         else:
             if self._runtime_may_start(session=session):
-                self._write_lifecycle_notice(content="Model catalog ready.", classes="tool-result")
+                await self._write_lifecycle_notice(content="Model catalog ready.", classes="tool-result")
+                if self._input is not None:
+                    await self._input.handle(
+                        command=SetModelContextDAO(active_model_name=session.active_model_name)
+                    )
         if self._runtime_may_start(session=session):
             self._refresh_title_bar()
             self._refresh_usage_status_bar()
@@ -897,72 +596,6 @@ class SloTUI(App):
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-
-    async def _hydrate_transcript_from_history(self) -> None:
-        """Replay-derived transcript bootstrap for resumed sessions (05.e).
-
-        No-ops when the session has no persisted events or history is
-        disabled. Replay entries are mounted through the same
-        ``TranscriptProjector`` (and therefore the same component widgets)
-        as live events, so a resumed session renders identically to the
-        live session that produced it. No canonical write happens here —
-        replay is a pure read path. Runs before the live renderer
-        subscribes so replay and live events cannot interleave.
-
-        The session is captured at entry and revalidated after the real
-        replay read, after each real replay mount, and after the real
-        summary mount: ``on_mount`` is not yet registered as
-        ``_mount_runtime_task`` while it awaits this helper, so public
-        ``on_unmount`` may complete first. A closed or displaced owner must
-        not mount the next replay entry, update the summary, or scroll after
-        that cutoff (C7.13). Replay mounts and the summary mount already
-        admitted before the cutoff remain owned and are never cancelled; the
-        final scroll is a new effect initiated after the summary await, so
-        it is gated by its own revalidation.
-        """
-        self._load_older_cursor = 0
-        session = self._session
-        try:
-            entries: list[TranscriptEntryDAO] = await session.hydrate_transcript_entries()
-        except Exception:  # noqa: BLE001 — replay must never crash boot
-            return
-        if not self._runtime_may_start(session=session):
-            return
-        mountable: list[TranscriptEntryDAO] = self._newest_hydration_entries(entries=entries)
-        self._load_older_cursor = len(entries) - len(mountable)
-        for entry in mountable:
-            await self._projector.project_replay_entry(entry=entry)
-            if not self._runtime_may_start(session=session):
-                return
-        await self._update_earlier_summary()
-        if not self._runtime_may_start(session=session):
-            return
-        self._scroll_transcript_to_end()
-
-    @staticmethod
-    def _newest_hydration_entries(
-        *,
-        entries: list[TranscriptEntryDAO],
-    ) -> list[TranscriptEntryDAO]:
-        """Return the newest entries replay hydration should mount.
-
-        Bounding the mounted slice is what keeps ``_load_older_cursor`` exact:
-        the entries this method declines to return are precisely the ones the
-        load-older path may still fetch (see
-        ``TRANSCRIPT_HYDRATION_ENTRY_LIMIT``).
-
-        Args:
-            entries (list[TranscriptEntryDAO]): Chronological entries read from
-                the session's on-disk history.
-
-        Returns:
-            list[TranscriptEntryDAO]: The newest
-                ``TRANSCRIPT_HYDRATION_ENTRY_LIMIT`` entries, or every entry
-                when history is shorter than that limit.
-        """
-        if len(entries) <= TRANSCRIPT_HYDRATION_ENTRY_LIMIT:
-            return entries
-        return entries[-TRANSCRIPT_HYDRATION_ENTRY_LIMIT:]
 
     async def _maybe_render_startup_notice(self) -> None:
         """Render the one-time startup notice for new sessions only.
@@ -985,10 +618,13 @@ class SloTUI(App):
             return
         fallback_notice: Optional[str] = session.startup_fallback_notice
         if fallback_notice:
-            self._write_adapter_line(
-                content=fallback_notice,
-                classes="tool-result",
-            )
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content=fallback_notice,
+                        classes="tool-result",
+                    )
+                )
         resolved_reasoning = resolve_reasoning_config(
             model_name=session.active_model_name,
             requested_level=session.active_reasoning_level,
@@ -998,23 +634,27 @@ class SloTUI(App):
             provider_effort=resolved_reasoning.provider_effort,
             provider_budget_tokens=resolved_reasoning.provider_budget_tokens,
         )
-        self._write_adapter_line(
-            content=(
-                "slo, Copyright (C) 2026 Siddharth Ravichandran. "
-                "This program comes with ABSOLUTELY NO WARRANTY; see LICENSE. "
-                "This is free software, and you are welcome to redistribute it under GPLv2."
-            ),
-            classes="tool-result",
+        await self._chat_transcript.handle(
+            command=TranscriptNoticeDAO(
+                content=(
+                    "slo, Copyright (C) 2026 Siddharth Ravichandran. "
+                    "This program comes with ABSOLUTELY NO WARRANTY; see LICENSE. "
+                    "This is free software, and you are welcome to redistribute it under GPLv2."
+                ),
+                classes="tool-result",
+            )
         )
-        self._write_adapter_line(
-            content=(
-                "Tip: use /help to see available commands. "
-                f"Session: {session.session_id}. "
-                f"Initialized model: {session.active_model_name}. "
-                f"Reasoning: {session.active_reasoning_level}. "
-                f"Provider detail: {reasoning_detail}."
-            ),
-            classes="tool-result",
+        await self._chat_transcript.handle(
+            command=TranscriptNoticeDAO(
+                content=(
+                    "Tip: use /help to see available commands. "
+                    f"Session: {session.session_id}. "
+                    f"Initialized model: {session.active_model_name}. "
+                    f"Reasoning: {session.active_reasoning_level}. "
+                    f"Provider detail: {reasoning_detail}."
+                ),
+                classes="tool-result",
+            )
         )
         await session.mark_startup_notice_shown()
 
@@ -1056,7 +696,7 @@ class SloTUI(App):
             return True
         return CredentialResolver.resolve(provider=provider) is not None
 
-    def _toggle_theme(self) -> None:
+    async def _toggle_theme(self) -> None:
         """Toggle the active theme between slo-default and slo-dark.
 
         If the current theme is neither of the two, switches to slo-default.
@@ -1065,7 +705,10 @@ class SloTUI(App):
             SLO_DARK_THEME.name if self.theme == SLO_DEFAULT_THEME.name else SLO_DEFAULT_THEME.name
         )
         self.theme = next_theme
-        self._write_adapter_line(content=f"theme: {next_theme}", classes="tool-result")
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(content=f"theme: {next_theme}", classes="tool-result")
+            )
 
     def _push_auth_modal(self) -> None:
         """Push ``AuthenticationScreen`` only while the app lifetime is open."""
@@ -1074,17 +717,17 @@ class SloTUI(App):
         session = self._session
         token = session.set_operator_attention(reason="Authentication required")
 
-        def dismiss(value: Optional[CredentialDAO]) -> None:
+        async def dismiss(value: Optional[CredentialDAO]) -> None:
             """Complete only the auth request owned by this captured session."""
             if not self._runtime_may_start(session=session):
                 return
             if value is not None or self._has_credential_for_active_model():
                 session.clear_operator_attention(token=token)
-            self._on_auth_dismissed(value)
+            await self._on_auth_dismissed(value)
 
         self.push_screen(AuthenticationScreen(), callback=dismiss)
 
-    def _on_auth_dismissed(self, value: Optional[CredentialDAO]) -> None:
+    async def _on_auth_dismissed(self, value: Optional[CredentialDAO]) -> None:
         """Refresh the active model and title state after auth success.
 
         Args:
@@ -1094,7 +737,10 @@ class SloTUI(App):
         if getattr(self, "_app_closing", False):
             return
         ModelSuggestionProjection.refresh_authentication(verified_credential=value)
-        self._refresh_slash_suggestions()
+        if self._input is not None:
+            await self._input.handle(
+                command=SetModelContextDAO(active_model_name=self._session.active_model_name)
+            )
         if value is None:
             return
         if self._session.preparation_status != "ready":
@@ -1106,25 +752,33 @@ class SloTUI(App):
         if value.provider is not current_provider:
             new_model_name: Optional[str] = default_model_for_provider(provider=value.provider)
             if new_model_name is None:
-                self._write_adapter_line(
-                    content="Key verified; choose a model with /model.", classes="tool-result"
-                )
-                self._prime_model_picker_after_auth()
+                if self._chat_transcript is not None:
+                    await self._chat_transcript.handle(
+                        command=TranscriptNoticeDAO(
+                            content="Key verified; choose a model with /model.", classes="tool-result"
+                        )
+                    )
+                await self._prime_model_picker_after_auth()
                 return
             try:
                 self._session.switch_model(model_name=new_model_name)
             except RuntimeError:
                 pass
             else:
-                self._write_adapter_line(
-                    content=f"active model switched to {new_model_name}",
-                    classes="tool-result",
-                )
+                if self._input is not None:
+                    await self._input.handle(command=SetModelContextDAO(active_model_name=new_model_name))
+                if self._chat_transcript is not None:
+                    await self._chat_transcript.handle(
+                        command=TranscriptNoticeDAO(
+                            content=f"active model switched to {new_model_name}",
+                            classes="tool-result",
+                        )
+                    )
         self._refresh_title_bar(subject=value.subject)
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
 
-    def _prime_model_picker_after_auth(self) -> None:
+    async def _prime_model_picker_after_auth(self) -> None:
         """Focus and seed the local model picker after authentication has no landing route.
 
         WHAT: Gives API-key-only providers a direct path to cached ``/model``
@@ -1135,9 +789,7 @@ class SloTUI(App):
         """
         if self._input is None:
             return
-        self._input.load_text("/model ")
-        self._move_prompt_cursor_to_end()
-        self._refresh_slash_suggestions()
+        await self._input.handle(command=ReplacePromptDAO(text="/model "))
         self._input.focus()
 
     @staticmethod
@@ -1184,6 +836,52 @@ class SloTUI(App):
             snapshot=self._session.usage_snapshot(),
             plugin_statuses=self._session.plugin_status_map(),
         )
+
+    async def _shutdown(self) -> None:
+        """Join the observation barrier before Textual prunes the presentation tree.
+
+        WHAT: Seals application admission, joins in-flight mount/replacement
+            runtime work outside the prompt-submission lock, then joins the one
+            retained observation close task (coordinator → service → component
+            retirement) before delegating to the superclass's actual shutdown
+            batch (screen pruning, message close, driver close). Reentrant calls
+            (``run_test`` exit and ``run_async`` finally can both dispatch this)
+            return at once: the first call owns the full sequence.
+        WHO: Installed Textual dispatches this on the SloTUI subclass from both
+            ``run_async`` (shielded, normal exit/error/cancellation) and
+            ``run_test`` context exit; it is application lifecycle integration,
+            not framework modification. The private seam keeps the installed
+            no-argument async signature and delegates exactly once.
+        WHEN: Before any superclass pruning: ``App._shutdown`` closes screens
+            and unmounts widgets *before* dispatching app Unmount, so the
+            observation join must already have happened here. The superclass
+            call lives in ``finally`` so a pre-close failure or cancellation
+            can never skip real framework cleanup.
+        """
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+        try:
+            await self._join_observation_before_superclass_pruning()
+        finally:
+            await super()._shutdown()
+
+    async def _join_observation_before_superclass_pruning(self) -> None:
+        """Seal admission, join runtime work, then join the observation close.
+
+        The cutoff mirrors ``on_unmount`` so no prompt, delivery or external
+        report is admitted after shutdown begins; the joins reuse the retained
+        mount/replacement tasks outside ``_prompt_submission_lock`` and the one
+        shielded observation close task — no second shutdown owner is created.
+        """
+        self._app_closing = True
+        self._delivery_quiescing = True
+        self._session.begin_external_reporting_close()
+        if self._mount_runtime_task is not None:
+            await HerdrTaskJoin.wait(task=self._mount_runtime_task)
+        if self._session_replacement_task is not None:
+            await HerdrTaskJoin.wait(task=self._session_replacement_task)
+        await self._close_workflow_observation()
 
     async def on_unmount(self) -> None:
         """Seal admission before awaiting the single retained shutdown task."""
@@ -1257,7 +955,7 @@ class SloTUI(App):
             if outcome.resources == "drained":
                 return
         except Exception:
-            self._write_lifecycle_notice(content="Session cleanup incomplete.", classes="tool-result")
+            await self._write_lifecycle_notice(content="Session cleanup incomplete.", classes="tool-result")
         await asyncio.Future()
 
     async def _shutdown_step(self, *, cleanup: Callable[[], Awaitable[object]]) -> None:
@@ -1269,7 +967,7 @@ class SloTUI(App):
         try:
             await cleanup()
         except Exception:
-            self._write_lifecycle_notice(content="Session cleanup incomplete.", classes="tool-result")
+            await self._write_lifecycle_notice(content="Session cleanup incomplete.", classes="tool-result")
 
     async def _close_selected_delivery(self) -> None:
         """Release the captured binding even if subscription removal fails."""
@@ -1316,7 +1014,7 @@ class SloTUI(App):
             self._build_session_delivery(session=session)
         except Exception:
             await self._rollback_session_delivery(session=session, owner_id=owner_id, timers=())
-            self._write_lifecycle_notice(
+            await self._write_lifecycle_notice(
                 content="Session inbox unavailable; local prompts remain available.", classes="tool-result"
             )
             return
@@ -1341,7 +1039,7 @@ class SloTUI(App):
                 binding=binding,
                 timers=tuple(timers),
             )
-            self._write_lifecycle_notice(
+            await self._write_lifecycle_notice(
                 content="Session inbox unavailable; local prompts remain available.",
                 classes="tool-result",
             )
@@ -1405,7 +1103,7 @@ class SloTUI(App):
         """
         coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
         service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
-        sink: Optional[_WorkflowProgressSink] = self._workflow_progress_sink
+        sink: Optional[WorkflowProgressSink] = self._workflow_progress_updates_adapter
         if not (
             self._workflow_observation_session_id == binding.session_id
             and self._session is binding.session
@@ -1414,14 +1112,7 @@ class SloTUI(App):
             and sink is not None
         ):
             return
-        self._workflow_observation_session_id = None
-        self._workflow_progress_coordinator = None
-        self._workflow_app_service = None
-        self._workflow_progress_sink = None
-        await coordinator.close()
-        await service.close()
-        sink.dispose()
-        await self._reset_session_list()
+        await self._close_workflow_observation()
 
     def _build_session_delivery(self, *, session: SloAgentSession) -> None:
         """Build inert delivery collaborators before initialization captures ownership.
@@ -1519,7 +1210,7 @@ class SloTUI(App):
         """Bind workflow observation to the current session, replacing any prior owner.
 
         WHAT: Tears the previous owner down (``_close_workflow_observation``), then
-            builds the service for the current session, the progress sink and the
+            builds the service for the current session, the progress updates adapter and the
             single refresh coordinator, and starts it (five-second timer plus an
             immediate read). Every session observes its attached batch, with or
             without history; history-backed sessions also get the durable handle
@@ -1533,13 +1224,34 @@ class SloTUI(App):
         await self._close_workflow_observation()
         self._workflow_observation_close_task = None
         self._workflow_app_service = self._build_workflow_service()
-        self._workflow_progress_sink = _WorkflowProgressSink(tui=self)
-        self._workflow_progress_coordinator = self._workflow_coordinator_factory(
-            service=self._workflow_app_service,
-            sink=self._workflow_progress_sink,
-            schedule=self._schedule_workflow_refresh,
-        )
-        self._workflow_progress_coordinator.start()
+        if self._workflow_progress is None:
+            # Unmounted (pre-mount) callers build the service but cannot bind the
+            # component; leave the sink unbound so a later mounted bind succeeds.
+            return
+        try:
+            self._workflow_progress_updates_adapter = self._workflow_progress.bind_observation()
+            self._workflow_progress_coordinator = self._workflow_coordinator_factory(
+                service=self._workflow_app_service,
+                sink=self._workflow_progress_updates_adapter,
+                schedule=self._schedule_workflow_refresh,
+            )
+            self._workflow_progress_coordinator.start()
+        except BaseException as startup_error:
+            # The initiating startup error is the one the caller must see. Join the
+            # shared close barrier so the partially acquired owner (service, sink
+            # and any started coordinator) is retired. A cleanup failure is
+            # reported through the fixed lifecycle diagnostic and chained as the
+            # startup error's context; it never replaces the original exception,
+            # and the failed close task stays published, permanently blocking
+            # reuse because a completed failed task is never retried.
+            try:
+                await self._close_workflow_observation()
+            except BaseException as cleanup_error:
+                await self._write_lifecycle_notice(
+                    content="Session cleanup incomplete.", classes="tool-result"
+                )
+                raise startup_error from cleanup_error
+            raise
         self._workflow_observation_session_id = self._session.session_id
 
     async def _ensure_workflow_observation_bound(self) -> None:
@@ -1558,7 +1270,7 @@ class SloTUI(App):
             self._workflow_observation_session_id == self._session.session_id
             and self._workflow_progress_coordinator is not None
             and self._workflow_app_service is not None
-            and self._workflow_progress_sink is not None
+            and self._workflow_progress_updates_adapter is not None
         ):
             return
         await self._bind_workflow_observation()
@@ -1567,7 +1279,7 @@ class SloTUI(App):
         """Join the current owner's observation in the fixed teardown order.
 
         WHAT: ``coordinator.close`` (no read task survives) → ``service.close``
-            (caches cleared, later reads empty) → ``sink.dispose`` (owned screens
+            (caches cleared, later reads empty) → ``adapter.close`` (owned screens
             dismissed, viewports forgotten) → panel reset, which joins any
             shielded row application before clearing. Never cancels execution.
         WHO: ``_bind_workflow_observation`` before adopting a new owner, and
@@ -1599,10 +1311,10 @@ class SloTUI(App):
         self._workflow_observation_session_id = None
         coordinator: Optional[WorkflowProgressCoordinator] = self._workflow_progress_coordinator
         service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
-        sink: Optional[_WorkflowProgressSink] = self._workflow_progress_sink
+        sink: Optional[WorkflowProgressSink] = self._workflow_progress_updates_adapter
         self._workflow_progress_coordinator = None
         self._workflow_app_service = None
-        self._workflow_progress_sink = None
+        self._workflow_progress_updates_adapter = None
         if coordinator is None and service is None and sink is None:
             return
         try:
@@ -1613,9 +1325,8 @@ class SloTUI(App):
                 if service is not None:
                     await service.close()
             finally:
-                if sink is not None:
-                    sink.dispose()
-                await self._reset_session_list()
+                if sink is not None and self._workflow_progress is not None:
+                    await self._workflow_progress.retire_observation(sink=sink)
 
     def _build_workflow_service(self) -> DetachedWorkflowAppService:
         """Build the owner-scoped workflow service for the current session.
@@ -1760,16 +1471,16 @@ class SloTUI(App):
         if message is None:
             return
         if self._session is not session or not self._inbox_delivery_may_start():
-            self._notice_retained_inbox_claim()
+            await self._notice_retained_inbox_claim()
             return
         if not await self._handle_inbox_message(message=message):
-            self._notice_retained_inbox_claim()
+            await self._notice_retained_inbox_claim()
             return
         await store.ack(session_id=session.session_id, message_id=message.message_id)
 
-    def _notice_retained_inbox_claim(self) -> None:
+    async def _notice_retained_inbox_claim(self) -> None:
         """Report deferred admission without private content or disposition changes."""
-        self._write_lifecycle_notice(
+        await self._write_lifecycle_notice(
             content="Inbox delivery deferred during shutdown; claimed item retained.",
             classes="tool-result",
         )
@@ -1801,15 +1512,19 @@ class SloTUI(App):
         if self._session is not session or not self._inbox_delivery_may_start():
             return False
         if message.delivery_mode == "ui_notice":
-            self._write_adapter_line(
-                content=self._format_inbox_notice(message=message),
-                classes="tool-result",
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=self._format_inbox_notice(message=message),
+                    classes="tool-result",
+                )
             )
             return True
         if message.delivery_mode == "transcript_note":
-            self._write_adapter_line(
-                content=self._format_inbox_note(message=message),
-                classes="tool-result",
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=self._format_inbox_note(message=message),
+                    classes="tool-result",
+                )
             )
             return True
         if message.delivery_mode == "context_note":
@@ -1829,10 +1544,13 @@ class SloTUI(App):
         Args:
             message (SessionInboxMessageDAO): Claimed ``context_note`` item.
         """
-        self._write_adapter_line(
-            content=f"⊛ {message.title or message.kind}: {message.text}",
-            classes="sub-agent-notice",
-        )
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=f"⊛ {message.title or message.kind}: {message.text}",
+                    classes="sub-agent-notice",
+                )
+            )
         await self._session.record_workflow_update(
             text=message.text,
             message_id=message.message_id,
@@ -1872,16 +1590,18 @@ class SloTUI(App):
         ``_claim_and_handle_idle_inbox_message``), so the machine turn's task
         creation is atomic with local prompt acceptance. A machine turn never
         enters the user queue: it must not call ``_queue_prompt``,
-        ``_prompt_history.record``, or ``_echo_user_line``.
+        the component's accepted-prompt recall, or ``_echo_user_line``.
 
         Args:
             message (SessionInboxMessageDAO): Claimed inbox item.
         """
         if not self._inbox_delivery_may_start():
             return False
-        self._write_adapter_line(
-            content=self._format_inbox_note(message=message),
-            classes="tool-result",
+        await self._chat_transcript.handle(
+            command=TranscriptNoticeDAO(
+                content=self._format_inbox_note(message=message),
+                classes="tool-result",
+            )
         )
         return self._register_prompt_task(text=message.text)
 
@@ -1912,17 +1632,17 @@ class SloTUI(App):
     def _ensure_workflow_renderer(self) -> DetachedWorkflowRenderer:
         """Return the workflow renderer, composing it lazily on first use.
 
-        The adapter is only available after ``compose`` runs, so the renderer
-        cannot be built in ``__init__``; the notice sink adapter forwards to
-        ``self._write_adapter_line`` which itself no-ops until the adapter
-        exists.
+        On first use, create the renderer with a registered notice adapter.
+        The adapter sends the renderer's notices through the app's normal
+        transcript-writing method.
 
         Returns:
             DetachedWorkflowRenderer: The composed renderer.
         """
+        assert self._chat_transcript is not None
         if self._workflow_renderer is None:
             self._workflow_renderer = DetachedWorkflowRenderer(
-                notice_sink=_WorkflowNoticeAdapter(tui=self),
+                notice_sink=self._chat_transcript.workflow_notice,
                 schedule=self._schedule_visualizer_launch,
             )
         return self._workflow_renderer
@@ -1945,50 +1665,6 @@ class SloTUI(App):
             return
         outcome = service.advance_from_launch_result(result_text=result_text)
         self._ensure_workflow_renderer().apply_effects(effects=outcome.effects)
-
-    # ---- Input handling ---------------------------------------------------
-
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """Refresh slash suggestions when the prompt buffer changes.
-
-        Args:
-            event (TextArea.Changed): Prompt buffer change event.
-        """
-        if event.text_area is not self._input:
-            return
-        self._reset_escape_sequence()
-        if self._setting_prompt_from_history:
-            self._setting_prompt_from_history = False
-        elif self._prompt_history.is_navigating:
-            self._prompt_history.clear_navigation()
-            if self._input is not None:
-                self._input.set_prompt_history_navigation_enabled(enabled=False)
-        self._refresh_slash_suggestions()
-
-    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
-        """Invalidate cursor-local completions when the prompt insertion point moves."""
-        if event.text_area is self._input:
-            self._reset_escape_sequence()
-            self._refresh_slash_suggestions()
-
-    def on_assistant_stream_block_rendered(self, event: AssistantStreamBlock.Rendered) -> None:
-        """Re-check scroll-follow after an answer or thinking flush renders a block.
-
-        The coalescing timer in ``AssistantStreamBlock`` (answer) or
-        ``AssistantStreamThinkingBlock`` (reasoning) fires after
-        ``_restore_follow_after_mutation`` has already run for the mount event,
-        so the ``Static.update`` inside the widget's render expands
-        ``max_scroll_y`` without a matching ``scroll_end`` call. This
-        handler re-schedules ``scroll_end`` when the transcript was already
-        following before the flush, so streaming text keeps the viewport pinned
-        at the bottom.
-
-        Args:
-            event (AssistantStreamBlock.Rendered): Post-flush notification
-                carrying the pre-flush follow state.
-        """
-        if event.was_following:
-            self._scroll_transcript_to_end()
 
     async def on_event(self, event: events.Event) -> None:
         """Observe original input before Textual forwards it to consuming widgets.
@@ -2017,7 +1693,12 @@ class SloTUI(App):
         Returns:
             True when the second Escape was consumed by /abort.
         """
-        if event.key != "escape" or self._input is None or self.focused is not self._input:
+        if (
+            event.key != "escape"
+            or self._input is None
+            or not self._input.is_prompt_input_open
+            or self.focused is not self._input
+        ):
             self._reset_escape_sequence()
             return False
         if self._input.screen is not self.screen:
@@ -2028,9 +1709,74 @@ class SloTUI(App):
             self._escape_deadline = now + 0.5
             return False
         self._reset_escape_sequence()
-        self._hide_slash_suggestions()
+        if self._input is not None:
+            await self._input.handle(command=HideSuggestionsDAO())
         await self._dispatch_slash_command(line="/abort")
         return True
+
+    def capture_path_prompt(self) -> Optional[PathPromptSnapshotDAO]:
+        """Adapt mounted TextArea state and selected cwd to immutable completion input.
+
+        Returns:
+            Current prompt authority, or None after closing/before composition.
+        """
+        if self._input is None or self._app_closing or not self._input.is_prompt_input_open:
+            return None
+        return PathPromptSnapshotDAO(
+            text=self._input.text,
+            cursor=self._input.cursor_location,
+            workdir=self._session.workdir,
+            selection_empty=self._input.selection.is_empty,
+            prompt_version=self._input.prompt_version,
+        )
+
+    async def publish_path_suggestions(
+        self,
+        *,
+        state: SlashSuggestionStateDAO,
+        controller: PathSuggestionController,
+        snapshot: PathPromptSnapshotDAO,
+    ) -> None:
+        """Await path publication only while the captured app/prompt is current."""
+        if self._input is not None and snapshot == self.capture_path_prompt():
+            await self._input.handle(
+                command=PublishSuggestionsDAO(
+                    state=state,
+                    controller=controller,
+                    snapshot=snapshot,
+                )
+            )
+
+    async def replace_path_span(
+        self,
+        *,
+        insert_text: str,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        cursor_inside_quote: bool,
+        controller: PathSuggestionController,
+        snapshot: PathPromptSnapshotDAO,
+    ) -> None:
+        """Await an undo-aware edit without admitting a stale controller callback."""
+        if self._input is not None and snapshot == self.capture_path_prompt():
+            await self._input.handle(
+                command=ReplacePathSpanDAO(
+                    insert_text=insert_text,
+                    start=start,
+                    end=end,
+                    cursor_inside_quote=cursor_inside_quote,
+                    controller=controller,
+                    snapshot=snapshot,
+                )
+            )
+
+    def on_prompt_input_component_edited(self, event: PromptInputComponent.Edited) -> None:
+        """Revoke double-Escape when the prompt buffer or selection changes."""
+        event.stop()
+        if self._input is not None and self._input.is_prompt_intent_current(event=event):
+            self._reset_escape_sequence()
+
+    # ---- Input handling ---------------------------------------------------
 
     async def on_key(self, event: events.Key) -> None:
         """Redirect a printable keystroke back to the prompt input.
@@ -2039,7 +1785,7 @@ class SloTUI(App):
         application. When the prompt editor has lost focus (the user scrolled
         the transcript, or focus moved to ``VerticalScroll#transcript-scroll``),
         a printable keystroke means "I want to start typing", so we move focus
-        back to ``PromptInput`` and replay the character into its buffer.
+        back to ``PromptInputComponent`` and replay the character into its buffer.
         Navigation and chord keys are not printable and fall through untouched.
 
         Args:
@@ -2068,7 +1814,7 @@ class SloTUI(App):
         Returns:
             bool: True when focus should jump to the prompt and replay ``event``.
         """
-        if self._input is None:
+        if self._input is None or not self._input.is_prompt_input_open:
             return False
         if self._input.screen is not self.screen:
             return False
@@ -2084,7 +1830,7 @@ class SloTUI(App):
         string. Focus moves first so the editor renders its cursor; then the
         character is inserted at the cursor so the first keystroke is never
         dropped. The resulting ``TextArea.Changed`` event drives the normal
-        slash-suggestion refresh via ``on_text_area_changed``.
+        slash-suggestion refresh via ``PromptInputComponent.on_text_area_changed``.
 
         Args:
             event (events.Key): The printable key event to replay.
@@ -2094,98 +1840,24 @@ class SloTUI(App):
         self._input.focus()
         self._input.insert(text=event.character or "")
 
-    def on_prompt_input_suggestion_moved(self, event: PromptInput.SuggestionMoved) -> None:
-        """Move the highlighted slash suggestion row.
-
-        Args:
-            event (PromptInput.SuggestionMoved): Requested row movement.
-        """
-        if not self._slash_suggestion_state.visible:
-            return
-        self._slash_suggestion_state = self._slash_suggestion_state.with_highlight_delta(
-            delta=event.delta,
-        )
-        self._render_slash_suggestion_state(state=self._slash_suggestion_state)
-
-    def on_prompt_input_suggestion_dismissed(self, event: PromptInput.SuggestionDismissed) -> None:
-        """Dismiss visible slash suggestions.
-
-        Args:
-            event (PromptInput.SuggestionDismissed): Dismissal request.
-        """
-        del event
-        self._hide_slash_suggestions()
-
-    def on_prompt_input_suggestion_accepted(self, event: PromptInput.SuggestionAccepted) -> None:
-        """Accept the highlighted slash suggestion when visible.
-
-        Args:
-            event (PromptInput.SuggestionAccepted): Acceptance request.
-        """
-        del event
-        row = self._slash_suggestion_state.highlighted_row
-        if row is None or self._input is None:
-            return
-        if self._slash_suggestion_state.kind == "path":
-            self._path_suggestions.accept(insert_text=row.insert_text)
-            return
-        updated_text: str = self._replace_prompt_text(
-            insert_text=row.insert_text,
-            state=self._slash_suggestion_state,
-        )
-        self._input.load_text(updated_text)
-        self._move_prompt_cursor_to_end()
-        self._refresh_slash_suggestions()
-
-    def on_prompt_input_prompt_history_older_requested(
-        self,
-        event: PromptInput.PromptHistoryOlderRequested,
-    ) -> None:
-        """Load the next older prompt into the editor when available.
-
-        Args:
-            event (PromptInput.PromptHistoryOlderRequested): History request.
-        """
-        del event
-        if self._input is None:
-            return
-        recalled_text: Optional[str] = self._prompt_history.older(current_buffer=self._input.text)
-        if recalled_text is None:
-            return
-        self._load_prompt_history_text(text=recalled_text)
-
-    def on_prompt_input_prompt_history_newer_requested(
-        self,
-        event: PromptInput.PromptHistoryNewerRequested,
-    ) -> None:
-        """Load the next newer prompt into the editor when available.
-
-        Args:
-            event (PromptInput.PromptHistoryNewerRequested): History request.
-        """
-        del event
-        if self._input is None:
-            return
-        recalled_text: Optional[str] = self._prompt_history.newer()
-        if recalled_text is None:
-            return
-        self._load_prompt_history_text(text=recalled_text)
-
-    async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+    async def on_prompt_input_component_submitted(self, event: PromptInputComponent.Submitted) -> None:
         """Route a submitted input line as a slash command, new turn, or held prompt.
 
         WHAT: Preserves immediate slash dispatch, then serializes normal-prompt
         acceptance with the active-run completion handoff.
-        WHO: ``PromptInput`` posts this event after the operator submits text.
+        WHO: ``PromptInputComponent`` posts this event after the operator submits text.
         WHEN: Runs once per Enter submission while the TUI is mounted.
 
         Args:
-            event (PromptInput.Submitted): Custom input submission message.
+            event (PromptInputComponent.Submitted): Custom input submission message.
         """
+        if self._input is not None and not self._input.is_prompt_intent_current(event=event):
+            return
         text: str = (event.text or "").strip()
-        self._hide_slash_suggestions()
         if self._input is not None:
-            self._input.load_text("")
+            await self._input.handle(command=ClearSubmissionDAO())
+            if not self._input.is_prompt_intent_current(event=event):
+                return
         if not text:
             return
         if text.startswith("/"):
@@ -2201,7 +1873,7 @@ class SloTUI(App):
         """Accept an idle ordinary prompt or replace the one held behind a run.
 
         WHAT: Makes the app's task check and its consequent state transition atomic.
-        WHO: ``on_prompt_input_submitted`` calls it for non-slash non-empty input.
+        WHO: ``on_prompt_input_component_submitted`` calls it for non-slash non-empty input.
         WHEN: Runs at operator submission time; it does not hold the lock during a run.
 
         Args:
@@ -2210,9 +1882,13 @@ class SloTUI(App):
         if self._app_closing or self._session_transitioning:
             return
         if self._session.preparation_status != "ready":
-            self._write_adapter_line(
-                content="Model preparation required; use /auth or /model refresh.", classes="tool-result"
-            )
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="Model preparation required; use /auth or /model refresh.",
+                        classes="tool-result",
+                    )
+                )
             return
         async with self._prompt_submission_lock:
             if self._app_closing or self._session_transitioning:
@@ -2236,8 +1912,9 @@ class SloTUI(App):
         """
         if self._app_closing or self._session_transitioning:
             return
-        self._prompt_history.record(text=text)
-        await self._echo_user_line(text=text)
+        if self._input is not None:
+            await self._input.handle(command=RecordAcceptedPromptDAO(text=text))
+        await self._chat_transcript.handle(command=EchoUserDAO(text=text))
         self._register_prompt_task(text=text)
 
     def _register_prompt_task(self, *, text: str) -> bool:
@@ -2279,7 +1956,7 @@ class SloTUI(App):
         """Mount the visible held-prompt block directly above the prompt input.
 
         WHAT: Anchors the block as a ``#chat-shell`` child immediately before
-        ``PromptInput`` — outside the scroll region, so it stays visible while
+        ``PromptInputComponent`` — outside the scroll region, so it stays visible while
         the transcript scrolls and window eviction can never reach it.
         WHO: ``_queue_prompt`` calls it only for an empty visual slot.
         WHEN: The first ordinary busy submission fills the one-deep queue.
@@ -2325,10 +2002,15 @@ class SloTUI(App):
             return
         self._session.abort()
         self._escalate_abort()
-        self._announce_queued_prompt_survival()
-        self._write_adapter_line(content="(aborting…)", classes="tool-result")
+        if self._app_closing:
+            return
+        await self._announce_queued_prompt_survival()
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(content="(aborting…)", classes="tool-result")
+            )
 
-    def _announce_queued_prompt_survival(self) -> None:
+    async def _announce_queued_prompt_survival(self) -> None:
         """Explain that an abort retains the held prompt when one exists.
 
         WHAT: Writes one operator-facing notice without changing queue/task state.
@@ -2338,10 +2020,16 @@ class SloTUI(App):
         """
         if self._queued_prompt_text is None:
             return
-        self._write_adapter_line(
-            content=("(queued prompt held — it will run next; resubmit to replace it, " "/clear to drop it)"),
-            classes="tool-result",
-        )
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=(
+                        "(queued prompt held — it will run next; resubmit to replace it, "
+                        "/clear to drop it)"
+                    ),
+                    classes="tool-result",
+                )
+            )
 
     def _escalate_abort(self) -> None:
         """Schedule a hard cancel of the in-flight task after the abort grace.
@@ -2406,41 +2094,6 @@ class SloTUI(App):
             message=cast(Optional[str], resolved_message),
         )
 
-    async def _render_steer_pending(self, *, message: str) -> None:
-        """Mount a pending ``SteeringPendingBlock`` for a freshly queued steer.
-
-        Shown the moment ``/steer`` is accepted. The steer sits in the
-        agent's queue until the run reaches a turn boundary; until then the
-        muted pending block is visibly distinct from a consumed user message.
-        When the agent folds it into the model context it emits
-        ``steering_applied``; ``_consume_pending_steer_block`` then removes the
-        block and ``_render_event`` re-renders it as a regular user message.
-
-        Args:
-            message (str): The verbatim steering text awaiting consumption.
-        """
-        if self._transcript_content is None:
-            return
-        follow_snapshot: bool = self._capture_follow_snapshot()
-        block: SteeringPendingBlock = SteeringPendingBlock(message=message)
-        await self._transcript_content.mount(block)
-        self._pending_steer_blocks.append(block)
-        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
-        if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
-            await self._enforce_transcript_window()
-
-    async def _consume_pending_steer_block(self) -> None:
-        """Remove the oldest pending steer block when its steer is consumed.
-
-        Called from the ``steering_applied`` path (FIFO, matching the agent's
-        drain order) just before the steer is re-rendered as a user message.
-        A no-op when no pending block is tracked.
-        """
-        if not self._pending_steer_blocks:
-            return
-        block: SteeringPendingBlock = self._pending_steer_blocks.pop(0)
-        await block.remove()
-
     async def _mount_tree_viewer(self, *, tree: object, tree_format: Optional[str] = None) -> None:
         """Mount the tree viewer widget for /tree command results.
 
@@ -2448,7 +2101,7 @@ class SloTUI(App):
             tree: The SessionTreeNode root from SessionTreeBuilder.
             tree_format: Optional format string ("textual", "markdown", "html").
         """
-        if self._transcript_scroll is None:
+        if self._chat_transcript is None:
             return
         if tree_format is None:
             tree_format = TreeExportFormat.TEXTUAL.value
@@ -2458,13 +2111,13 @@ class SloTUI(App):
 
             if isinstance(tree, SessionTreeNode):
                 viewer = SessionTreeViewer(tree=tree)
-                await self._transcript_scroll.mount(viewer)
+                await self._chat_transcript.handle(command=MountTreeOutputDAO(widget=viewer))
         elif tree_format == TreeExportFormat.MARKDOWN.value:
             from src.agents.slo_agent.history.tree_builder import SessionTreeNode
 
             if isinstance(tree, SessionTreeNode):
                 md = TreeMarkdownExporter.export(tree=tree)
-                await self._transcript_scroll.mount(LiteralTextStatic(md))
+                await self._chat_transcript.handle(command=MountTreeOutputDAO(widget=LiteralTextStatic(md)))
         elif tree_format == TreeExportFormat.HTML.value:
             from src.agents.slo_agent.history.tree_builder import SessionTreeNode
 
@@ -2473,7 +2126,9 @@ class SloTUI(App):
                     tree=tree,
                     session_name=self._session.session_name or "unnamed",
                 )
-                await self._transcript_scroll.mount(LiteralTextStatic(f"HTML tree written to: {path}"))
+                await self._chat_transcript.handle(
+                    command=MountTreeOutputDAO(widget=LiteralTextStatic(f"HTML tree written to: {path}"))
+                )
 
     def _resume_command_hint(self) -> str:
         """Return the copy-paste command that resumes the active session.
@@ -2529,38 +2184,23 @@ class SloTUI(App):
         """
         self._queued_prompt_text = None
         await self._remove_queued_prompt_block()
-        if self._adapter is not None:
-            self._adapter.lines.clear()
-        if self._transcript_content is not None:
-            for child in list(self._transcript_content.children):
-                await child.remove()
-        self._active_expandable_tool_block = None
-        # Pending steer widgets were just removed with the transcript; drop the
-        # tracked references so a later ``steering_applied`` does not try to
-        # remove an already-detached widget.
-        self._pending_steer_blocks.clear()
-        self._projector.reset_for_new_run()
-        # Reset window and load-older state so a cleared transcript starts
-        # fresh with no dangling summary, cursor, or forced-follow flag.
-        self._hidden_block_count = 0
-        self._load_older_cursor = 0
-        self._load_older_running = False
-        self._back_scroll_mode = False
-        self._force_following_until_layout = False
-        self._earlier_summary = None
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(command=ClearTranscriptDAO())
 
     async def action_copy_visible_text(self) -> None:
         """Copy the focused block text, selected prompt text, or visible transcript.
 
         Resolution priority:
         1. Text from the focused transcript block via ``get_copyable_text()``.
-        2. Selected text from the ``PromptInput`` editor.
+        2. Selected text from the ``PromptInputComponent`` editor.
         3. Full transcript as plain text via ``_adapter.lines``.
 
         The first non-empty result wins. A no-op when all three are empty.
         """
         text: str = (
-            self._focused_block_text() or self._selected_prompt_text() or self._copyable_transcript_text()
+            self._focused_block_text()
+            or self._selected_prompt_text()
+            or (self._chat_transcript.logical_copy_text() if self._chat_transcript is not None else "")
         )
         if not text:
             return
@@ -2637,7 +2277,8 @@ class SloTUI(App):
         Delegates to ``_scroll_transcript_to_end``. Idempotent when the
         transcript is already at the bottom.
         """
-        self._scroll_transcript_to_end()
+        if self._chat_transcript is not None and self._chat_transcript.is_attached:
+            await self._chat_transcript.handle(command=ScrollTranscriptBottomDAO())
 
     async def action_toggle_expandable_details(self) -> None:
         """Toggle global expand-all mode for every transcript block.
@@ -2646,194 +2287,16 @@ class SloTUI(App):
         The first press always expands; subsequent presses alternate. The new
         state is pushed onto every existing block and inherited by new ones.
         """
-        self._global_expand_all = not bool(self._global_expand_all)
-        self._apply_global_expand_state()
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(command=ToggleTranscriptDetailsDAO())
         self.refresh_bindings()
-
-    def _apply_global_expand_state(self) -> None:
-        """Push the current global expand state onto every transcript block.
-
-        Widgets without a ``set_expanded`` method (separators, plain statics,
-        steering and tree blocks) are skipped.
-        """
-        if self._transcript_content is None:
-            return
-        expanded: bool = bool(self._global_expand_all)
-        for widget in self._transcript_content.children:
-            set_expanded = getattr(widget, "set_expanded", None)
-            if set_expanded is not None:
-                set_expanded(expanded=expanded)
-
-    def on_transcript_scroll_reached_top(self, event: "TranscriptScroll.ReachedTop") -> None:
-        """Start a load-older pass when the transcript reaches the top.
-
-        Args:
-            event (TranscriptScroll.ReachedTop): Typed top-reached message.
-        """
-        del event
-        self.run_worker(
-            self._load_older_entries(),
-            group="load-older",
-            exit_on_error=False,
-        )
 
     # ---- Private helpers --------------------------------------------------
 
-    def _refresh_slash_suggestions(self) -> None:
-        """Recompute slash suggestions from the current prompt buffer."""
-        if self._input is None:
-            return
-        if self._suggestion_engine.owns_arguments(buffer_text=self._input.text):
-            self._path_suggestions.invalidate()
-        elif self._path_suggestions.request():
-            return
-        self._picker_catalog_revision = ModelSuggestionProjection.current_revision()
-        state: SlashSuggestionStateDAO = self._suggestion_engine.evaluate(
-            buffer_text=self._input.text,
-            active_model_name=self._session.active_model_name,
-        )
-        previous = self._slash_suggestion_state.highlighted_row
-        if previous is not None:
-            index = next(
-                (index for index, row in enumerate(state.rows) if row.insert_text == previous.insert_text), 0
-            )
-            state = state.model_copy(update={"highlighted_index": index})
-        self._slash_suggestion_state = state
-        self._render_slash_suggestion_state(state=state)
-
-    def on_prompt_input_path_suggestions_requested(self, event: PromptInput.PathSuggestionsRequested) -> None:
-        """Forward Tab discovery unless enumerated slash arguments own input.
-
-        Args:
-            event: Prompt-local path discovery intent.
-        """
-        del event
-        if self._input is not None and not self._suggestion_engine.owns_arguments(
-            buffer_text=self._input.text
-        ):
-            self._path_suggestions.request(explicit=True)
-
-    def capture_path_prompt(self) -> Optional[PathPromptSnapshotDAO]:
-        """Adapt mounted TextArea state and selected cwd to immutable completion input.
-
-        Returns:
-            Current prompt authority, or None after closing/before composition.
-        """
-        if self._input is None or self._app_closing:
-            return None
-        return PathPromptSnapshotDAO(
-            text=self._input.text,
-            cursor=self._input.cursor_location,
-            workdir=self._session.workdir,
-            selection_empty=self._input.selection.is_empty,
-        )
-
-    def publish_path_suggestions(self, *, state: SlashSuggestionStateDAO) -> None:
-        """Adapt controller output to the existing shared menu/navigation state.
-
-        Args:
-            state: Completion presentation, containing no file contents.
-        """
-        self._slash_suggestion_state = state
-        self._render_slash_suggestion_state(state=state)
-
-    def replace_path_span(
-        self, *, insert_text: str, start: tuple[int, int], end: tuple[int, int], cursor_inside_quote: bool
-    ) -> None:
-        """Apply the controller's range edit as one undoable TextArea transaction.
-
-        Args:
-            insert_text: Encoded literal replacement including any closing quote.
-            start: Inclusive range location.
-            end: Exclusive range location.
-            cursor_inside_quote: Keep navigation before a retained closing quote.
-        """
-        if self._input is None:
-            return
-        self._input.history.checkpoint()
-        self._input.replace(insert=insert_text, start=start, end=end, maintain_selection_offset=False)
-        if cursor_inside_quote:
-            row, column = self._input.cursor_location
-            self._input.move_cursor(location=(row, column - 1))
-        self._input.history.checkpoint()
-
-    def _refresh_visible_slash_suggestions_when_catalog_changed(self) -> None:
-        """Refresh an open picker after a public catalog-status publication.
-
-        WHAT: Observes the presentation revision and reuses the normal engine
-            evaluation path without invoking credential, client, or catalog I/O.
-        WHO: The mounted app calls this from Textual's idle loop.
-        WHEN: Only while a visible ``/model`` suggestion menu is on screen.
-        """
-        if not self._slash_suggestion_state.visible or self._slash_suggestion_state.kind != "slash":
-            return
-        revision = ModelSuggestionProjection.current_revision()
-        if revision == self._picker_catalog_revision:
-            return
-        self._refresh_slash_suggestions()
-
-    def on_idle(self) -> None:
+    async def on_idle(self) -> None:
         """Adopt a published picker status revision without waiting for a keystroke."""
-        self._refresh_visible_slash_suggestions_when_catalog_changed()
-
-    def _render_slash_suggestion_state(self, *, state: SlashSuggestionStateDAO) -> None:
-        """Render one suggestion state into the prompt-adjacent menu.
-
-        Args:
-            state (SlashSuggestionStateDAO): Suggestion state to render.
-        """
-        if self._suggestion_menu is not None:
-            self._suggestion_menu.update_state(state=state)
-        if self._input is not None:
-            self._input.set_suggestion_navigation_enabled(enabled=state.visible)
-
-    def _hide_slash_suggestions(self) -> None:
-        """Dismiss current completion work as well as its visible menu."""
-        self._path_suggestions.dismiss()
-
-    def _replace_prompt_text(
-        self,
-        *,
-        insert_text: str,
-        state: SlashSuggestionStateDAO,
-    ) -> str:
-        """Return the prompt text after accepting one suggestion.
-
-        Args:
-            insert_text (str): Accepted suggestion text.
-            state (SlashSuggestionStateDAO): Suggestion state describing the replacement span.
-
-        Returns:
-            str: Updated prompt text.
-        """
-        if self._input is None:
-            return insert_text
-        before: str = self._input.text[: state.replacement_start]
-        after: str = self._input.text[state.replacement_end :]
-        return f"{before}{insert_text}{after}"
-
-    def _move_prompt_cursor_to_end(self) -> None:
-        """Move the prompt cursor to the end of the current buffer."""
-        if self._input is None:
-            return
-        line_count: int = self._input.text.count("\n")
-        final_line: str = self._input.text.split("\n")[-1]
-        self._input.move_cursor(location=(line_count, len(final_line)))
-
-    def _load_prompt_history_text(self, *, text: str) -> None:
-        """Load recalled prompt-history text into the editor.
-
-        Args:
-            text (str): Prompt text recalled from navigator history.
-        """
-        if self._input is None:
-            return
-        self._setting_prompt_from_history = True
-        self._input.set_prompt_history_navigation_enabled(
-            enabled=self._prompt_history.is_navigating,
-        )
-        self._input.load_text(text)
-        self._move_prompt_cursor_to_end()
+        if self._input is not None and self._input.is_prompt_input_open:
+            await self._input.handle(command=RefreshPublishedSuggestionsDAO())
 
     async def _dispatch_slash_command(self, *, line: str) -> None:
         """Hand a slash command to ``SlashRouter`` and render the result.
@@ -2845,26 +2308,43 @@ class SloTUI(App):
         Args:
             line (str): The full input line including the leading slash.
         """
+        if self._input is not None:
+            await self._input.handle(command=HideSuggestionsDAO())
         self._reset_escape_sequence()
-        self._hide_slash_suggestions()
         if self._session.preparation_status != "ready":
             command = line.strip().split(maxsplit=1)[0]
             if line.strip() == "/model refresh":
                 self._start_session_preparation()
                 return
             if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model", "/code"}:
-                self._write_adapter_line(content="Model preparation required.", classes="tool-result")
+                if self._chat_transcript is not None:
+                    await self._chat_transcript.handle(
+                        command=TranscriptNoticeDAO(
+                            content="Model preparation required.", classes="tool-result"
+                        )
+                    )
                 return
         mounted_activity: bool = await self._mount_slash_activity(line=line)
-        previous_model = self._session.active_model_name
+        session = self._session
+        previous_model = session.active_model_name
         try:
             result = await SlashRouter.dispatch(
-                line=line, session=self._session, workflow_resume_launcher=self._workflow_resume_launcher
+                line=line, session=session, workflow_resume_launcher=self._workflow_resume_launcher
             )
-            if self._session.active_model_name != previous_model:
-                self._suggestion_engine.record_selection(model_name=self._session.active_model_name)
             if line.strip() == "/model refresh":
                 ModelSuggestionProjection.refresh_authentication()
+            if self._runtime_may_start(session=session) and self._input is not None:
+                if session.active_model_name != previous_model:
+                    await self._input.handle(
+                        command=RecordModelSelectionDAO(model_name=session.active_model_name)
+                    )
+                    await self._input.handle(
+                        command=SetModelContextDAO(active_model_name=session.active_model_name)
+                    )
+                elif line.strip() == "/model refresh":
+                    await self._input.handle(
+                        command=SetModelContextDAO(active_model_name=session.active_model_name)
+                    )
         finally:
             if mounted_activity:
                 await self._unmount_spinner()
@@ -2881,9 +2361,12 @@ class SloTUI(App):
             return
         if result.abort_run:
             self._escalate_abort()
-            self._announce_queued_prompt_survival()
+            await self._announce_queued_prompt_survival()
         if result.steer_pending_message is not None:
-            await self._render_steer_pending(message=result.steer_pending_message)
+            assert self._chat_transcript is not None
+            await self._chat_transcript.handle(
+                command=ShowPendingSteeringDAO(message=result.steer_pending_message)
+            )
         if result.render_tree is not None:
             await self._mount_tree_viewer(tree=result.render_tree, tree_format=result.tree_format)
         git_diff_path: Optional[str] = result.git_diff_path if isinstance(result.git_diff_path, str) else None
@@ -2899,7 +2382,10 @@ class SloTUI(App):
             await self._apply_workflow_list_visibility(request=tui_visibility)
             return
         if result.rendered is not None:
-            self._write_adapter_line(content=result.rendered, classes="tool-result")
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(content=result.rendered, classes="tool-result")
+                )
         self._apply_workflow_command_result(result=result)
         if result.refresh_title:
             self._refresh_title_bar()
@@ -2913,7 +2399,7 @@ class SloTUI(App):
         if result.refresh_usage_status:
             self._refresh_usage_status_bar()
         if result.toggle_theme:
-            self._toggle_theme()
+            await self._toggle_theme()
         if result.open_auth_modal:
             self._push_auth_modal()
         if result.should_exit:
@@ -2945,7 +2431,10 @@ class SloTUI(App):
         """
         notice = await self._editor_launcher.invoke(argument=argument, session=session)
         if not self._app_closing and not self._session_transitioning and session is self._session:
-            self._write_adapter_line(content=notice, classes="tool-result")
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(content=notice, classes="tool-result")
+                )
 
     async def _drain_editor_launches(self) -> None:
         """Cancel/join request mechanics, never close user-owned editor panes."""
@@ -3000,7 +2489,10 @@ class SloTUI(App):
                 workdir=self._session.workdir,
             )
         except GitDiffContentError as exception:
-            self._write_adapter_line(content=exception.operator_message, classes="tool-result")
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(content=exception.operator_message, classes="tool-result")
+                )
             return
         self.push_screen(GitDiffScreen(content=content))
 
@@ -3021,10 +2513,13 @@ class SloTUI(App):
             if self._app_closing or self._session_transitioning:
                 return
             if self._in_flight_task is not None or self._session.is_running:
-                self._write_adapter_line(
-                    content="cannot start a new session while a prompt is in flight; run /abort first",
-                    classes="tool-result",
-                )
+                if self._chat_transcript is not None:
+                    await self._chat_transcript.handle(
+                        command=TranscriptNoticeDAO(
+                            content="cannot start a new session while a prompt is in flight; run /abort first",
+                            classes="tool-result",
+                        )
+                    )
                 return
             replacement = await self._replace_idle_session_and_clear_queue(requested_name=requested_name)
         if replacement is None:
@@ -3085,7 +2580,7 @@ class SloTUI(App):
             await self._cancel_visualizer_launches()
         except Exception:
             self._replacement_delivery_safe = False
-            self._write_lifecycle_notice(content="Viewer cleanup incomplete.", classes="tool-result")
+            await self._write_lifecycle_notice(content="Viewer cleanup incomplete.", classes="tool-result")
         async with self._prompt_submission_lock:
             await self._finish_replacement_commit(old_session=old_session, candidate=candidate)
             self._session_transitioning = False
@@ -3103,7 +2598,7 @@ class SloTUI(App):
         except Exception:
             await self._discard_replacement_session(candidate=candidate)
             self._delivery_quiescing = False
-            self._write_lifecycle_notice(
+            await self._write_lifecycle_notice(
                 content="Current session resources could not close; retry resource cleanup.",
                 classes="tool-result",
             )
@@ -3114,7 +2609,13 @@ class SloTUI(App):
         except Exception:
             outcome = HerdrReporterCloseOutcomeDAO(replacement="uncertain", resources="retained")
         await self._close_workflow_observation()
-        self._adopt_replacement_session(old_session=old_session, candidate=candidate, outcome=outcome)
+        subscription_retired = self._adopt_replacement_session(
+            old_session=old_session, candidate=candidate, outcome=outcome
+        )
+        if not subscription_retired:
+            await self._write_lifecycle_notice(
+                content="Previous subscription cleanup incomplete.", classes="tool-result"
+            )
         await self._finish_replacement_ui()
 
     async def _transfer_replacement_delivery(self, *, old_session: SloAgentSession) -> None:
@@ -3200,7 +2701,7 @@ class SloTUI(App):
             self._replacement_delivery_safe &= release_task.result()
         except Exception:
             self._replacement_delivery_safe = False
-            self._write_lifecycle_notice(
+            await self._write_lifecycle_notice(
                 content="Previous inbox lease could not be released; new inbox disabled.",
                 classes="tool-result",
             )
@@ -3213,7 +2714,7 @@ class SloTUI(App):
         old_session: SloAgentSession,
         candidate: SloAgentSession,
         outcome: HerdrReporterCloseOutcomeDAO,
-    ) -> None:
+    ) -> bool:
         """Publish the successor subscription without yielding after irreversible close.
 
         Args:
@@ -3228,16 +2729,16 @@ class SloTUI(App):
         self._herdr_successor_suppressed |= outcome.replacement == "uncertain"
         if self._herdr_successor_suppressed or self._app_closing:
             candidate.suppress_external_reporting()
+        subscription_retired = True
         try:
             old_session.unsubscribe(handler=self._render_event)
         except Exception:
-            self._write_lifecycle_notice(
-                content="Previous subscription cleanup incomplete.", classes="tool-result"
-            )
+            subscription_retired = False
         self._reset_escape_sequence()
-        self._path_suggestions.dismiss()
+        self._path_suggestions.invalidate()
         self._session = candidate
         candidate.subscribe(handler=self._render_event)
+        return subscription_retired
 
     async def _finish_replacement_ui(self) -> None:
         """Refresh only the adopted session; never reinstall its closed predecessor."""
@@ -3247,7 +2748,7 @@ class SloTUI(App):
         try:
             await self._refresh_replacement_ui()
         except Exception:
-            self._write_lifecycle_notice(
+            await self._write_lifecycle_notice(
                 content="New session selected; some UI state could not refresh.", classes="tool-result"
             )
         if self._runtime_may_start(session=session):
@@ -3270,7 +2771,9 @@ class SloTUI(App):
         try:
             await session.start_external_reporting(interactive=True)
         except Exception:
-            self._write_lifecycle_notice(content="External reporting unavailable.", classes="tool-result")
+            await self._write_lifecycle_notice(
+                content="External reporting unavailable.", classes="tool-result"
+            )
         if not self._runtime_may_start(session=session):
             return
         try:
@@ -3280,7 +2783,7 @@ class SloTUI(App):
             self._refresh_title_bar()
             self._refresh_usage_status_bar()
         except Exception:
-            self._write_lifecycle_notice(
+            await self._write_lifecycle_notice(
                 content="Session selected; usage refresh unavailable.", classes="tool-result"
             )
         if self._runtime_may_start(session=session) and session.preparation_status != "ready":
@@ -3288,12 +2791,16 @@ class SloTUI(App):
 
     async def _refresh_replacement_ui(self) -> None:
         """Clear the adopted transcript and input independently of runtime refresh."""
+        session = self._session
         await self._clear_transcript_and_prompt_queue()
-        self._prompt_history.clear_navigation()
-        self._prompt_history = PromptHistoryNavigator()
+        await self._chat_transcript.handle(
+            command=BindHistoryDAO(history_reader=session.hydrate_transcript_entries)
+        )
+        if not self._runtime_may_start(session=session):
+            return
         if self._input is not None:
-            self._input.load_text("")
-            self._input.set_prompt_history_navigation_enabled(enabled=False)
+            await self._input.reset()
+            await self._input.handle(command=SetModelContextDAO(active_model_name=session.active_model_name))
         await self._maybe_render_startup_notice()
 
     async def _prepare_replacement_session(
@@ -3312,10 +2819,16 @@ class SloTUI(App):
         """
         candidate: Optional[SloAgentSession] = None
         try:
-            candidate = SloAgentSession.build(
-                config=self._build_replacement_session_config(old_session=self._session),
-                allow_pending_preparation=True,
-                bridge_adapter_class=self._session.bridge_adapter_class,
+            config = self._build_replacement_session_config(old_session=self._session)
+            # An injected factory owns its construction; the default keeps the bridge transport.
+            candidate = (
+                self._session_factory(config=config, allow_pending_preparation=True)
+                if self._session_factory is not None
+                else SloAgentSession.build(
+                    config=config,
+                    allow_pending_preparation=True,
+                    bridge_adapter_class=self._session.bridge_adapter_class,
+                )
             )
             if candidate.history_root != self._session.history_root:
                 raise ValueError("Replacement history root must remain unchanged")
@@ -3328,7 +2841,7 @@ class SloTUI(App):
             raise
         except Exception:
             await self._discard_replacement_session(candidate=candidate)
-            self._write_lifecycle_notice(
+            await self._write_lifecycle_notice(
                 content="New session could not be prepared; current session retained.", classes="tool-result"
             )
             return None
@@ -3351,7 +2864,7 @@ class SloTUI(App):
         if cancelled:
             raise asyncio.CancelledError
 
-    def _write_lifecycle_notice(self, *, content: str, classes: str) -> None:
+    async def _write_lifecycle_notice(self, *, content: str, classes: str) -> None:
         """Render fixed lifecycle copy without making cleanup depend on the sink.
 
         Args:
@@ -3359,7 +2872,7 @@ class SloTUI(App):
             classes (str): Existing transcript presentation class.
         """
         try:
-            self._write_adapter_line(content=content, classes=classes)
+            await self._chat_transcript.handle(command=TranscriptNoticeDAO(content=content, classes=classes))
         except Exception:
             return
 
@@ -3372,10 +2885,18 @@ class SloTUI(App):
         try:
             await self._session.rename_session(session_name=session_name)
         except Exception as exc:  # noqa: BLE001 - inline operator feedback required
-            self._write_adapter_line(content=f"(rename failed: {exc})", classes="tool-result")
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(content=f"(rename failed: {exc})", classes="tool-result")
+                )
             return
         self._refresh_title_bar()
-        self._write_adapter_line(content=f"session renamed to {session_name}", classes="tool-result")
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=f"session renamed to {session_name}", classes="tool-result"
+                )
+            )
 
     # ---- Sub-agent routing and fleet panel --------------------------------
 
@@ -3394,23 +2915,28 @@ class SloTUI(App):
         Args:
             event (AgentStreamEventDAO): Event carrying a non-``None`` ``sub_agent_id``.
         """
-        self._write_sub_agent_notice(event=event)
+        await self._write_sub_agent_notice(event=event)
         if event.kind == "sub_agent_spawned":
             self._maybe_launch_visualizer()
         if event.kind not in _SUB_AGENT_LIST_REFRESH_KINDS:
             return
         self._request_workflow_refresh()
 
-    def _write_sub_agent_notice(self, *, event: AgentStreamEventDAO) -> None:
+    async def _write_sub_agent_notice(self, *, event: AgentStreamEventDAO) -> None:
         """Write the ``⊇ task: status`` transcript notice for a noticed lifecycle kind.
 
         Args:
             event (AgentStreamEventDAO): Child event; other kinds write nothing.
         """
         status: Optional[str] = _SUB_AGENT_NOTICE_STATUSES.get(event.kind)
-        if status is None or self._adapter is None:
+        if status is None or self._chat_transcript is None:
             return
-        self._adapter.write(content=f"⊇ {event.task_id or ''}: {status}", classes="sub-agent-notice")
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=f"⊇ {event.task_id or ''}: {status}", classes="sub-agent-notice"
+                )
+            )
 
     def _request_workflow_refresh(self) -> None:
         """Ask the observation coordinator for one coalesced refresh, if bound.
@@ -3434,17 +2960,21 @@ class SloTUI(App):
             return
         self._workflow_progress_coordinator.select(key=message.key)
 
-    def on_session_progress_screen_minimized(self, message: SessionProgressScreen.Minimized) -> None:
+    async def on_session_progress_screen_minimized(self, message: SessionProgressScreen.Minimized) -> None:
         """Close progress observation on Escape/Minimize without touching execution.
 
         Args:
             message (SessionProgressScreen.Minimized): Minimize intent.
         """
-        if self._workflow_progress_coordinator is None:
+        if (
+            self._workflow_progress_coordinator is None
+            or not message.screen.is_live
+            or self.screen is not message.screen
+        ):
             return
-        self._workflow_progress_coordinator.minimize()
+        await self._workflow_progress_coordinator.minimize()
 
-    def on_session_progress_screen_abort_requested(
+    async def on_session_progress_screen_abort_requested(
         self, message: SessionProgressScreen.AbortRequested
     ) -> None:
         """Ask the sink to confirm the exact target the progress view displayed.
@@ -3452,41 +2982,9 @@ class SloTUI(App):
         Args:
             message (SessionProgressScreen.AbortRequested): Captured confirmation target.
         """
-        if self._workflow_progress_sink is None:
+        if self._workflow_progress is None or not message.screen.is_live or self.screen is not message.screen:
             return
-        self._workflow_progress_sink.confirm_abort(target=message.target)
-
-    def _on_child_abort_confirmed(self, *, target: ChildAbortTargetDAO) -> None:
-        """Hand an explicitly confirmed target to the service and refresh at once.
-
-        WHAT: The service owns the submission (minimizing never withdraws it);
-            the immediate refresh paints the pending notice and disabled Abort.
-        WHO: ``_WorkflowProgressSink`` from its confirmation callback, only on True.
-        WHEN: Once per explicit Abort child choice.
-
-        Args:
-            target (ChildAbortTargetDAO): Identity captured when confirmation opened.
-        """
-        if self._workflow_app_service is None:
-            return
-        self._workflow_app_service.begin_child_abort(target=target)
-        self._request_workflow_refresh()
-
-    def _on_progress_incarnation_changed(self, *, key: WorkflowSessionKeyDAO) -> None:
-        """Close the old execution view when the sink observes same-key reuse.
-
-        WHAT: The coordinator invalidates its generation first, then asks the sink
-            to dismiss the view; the reader must select the session again.
-        WHO: ``_WorkflowProgressSink.apply_sessions`` only, while reconciling the
-            selected identity against fresh rows.
-        WHEN: When the open view's key now names a different execution or dispatch.
-
-        Args:
-            key (WorkflowSessionKeyDAO): Selected key whose incarnation changed.
-        """
-        if self._workflow_progress_coordinator is not None:
-            self._workflow_progress_coordinator.minimize()
-        self.notify(message=f"Session execution changed; select {key.session_id} again.", markup=False)
+        await self._workflow_progress.handle(command=ConfirmAbortDAO(target=message.target))
 
     def _apply_workflow_command_result(self, *, result: SlashCommandResultDAO) -> None:
         """Route typed ``/workflows dismiss|resume`` outcomes to observation.
@@ -3519,8 +3017,10 @@ class SloTUI(App):
             service = self._workflow_app_service
             coordinator = self._workflow_progress_coordinator
             if service is None or coordinator is None:
-                self._write_adapter_line(
-                    content="Workflow list unavailable in this session.", classes="tool-result"
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="Workflow list unavailable in this session.", classes="tool-result"
+                    )
                 )
                 return
             outcome = service.apply_list_visibility(request=request)
@@ -3538,75 +3038,116 @@ class SloTUI(App):
                 if not painted and outcome.outcome == "changed"
                 else outcome.rendered
             )
-            self._write_adapter_line(content=content, classes="tool-result")
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(content=content, classes="tool-result")
+            )
             coordinator.request_refresh()
 
-    async def _apply_session_snapshot(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
-        """Apply a snapshot to the panel and return focus if its list vanished.
-
-        WHAT: The panel never focuses anything itself. When an empty snapshot hides
-            a list that held focus, focus returns to the prompt editor, but only on
-            the base screen (never behind a modal).
-        WHO: ``_WorkflowProgressSink.apply_sessions`` for every coordinator refresh.
-        WHEN: Whenever a fresh session snapshot is available.
+    def may_open_progress(self, *, current: Optional[SessionProgressScreen]) -> bool:
+        """Allow a progress view to open unless an unrelated modal is active.
 
         Args:
-            snapshot (WorkflowSessionSnapshotDAO): Ordered rows to display.
-        """
-        if self._fleet_panel is None:
-            return
-        list_focused: bool = self._session_list_holds_focus()
-        await self._fleet_panel.apply_snapshot(snapshot=snapshot)
-        if snapshot.rows:
-            return
-        self._return_focus_from_hidden_list(list_focused=list_focused)
-
-    async def _reset_session_list(self) -> None:
-        """Empty and hide the session list, returning focus if the list held it.
-
-        WHAT: The single app-owned reset path, so every emptying of the panel
-            carries the same base-screen focus-return rule as an empty snapshot.
-        WHO: ``_close_workflow_observation`` on owner replacement and unmount.
-        WHEN: After the coordinator, service and sink of the old owner are closed.
-        """
-        if self._fleet_panel is None:
-            return
-        list_focused: bool = self._session_list_holds_focus()
-        await self._fleet_panel.reset()
-        self._return_focus_from_hidden_list(list_focused=list_focused)
-
-    def _session_list_holds_focus(self) -> bool:
-        """Return whether the session list (or one of its rows) holds focus.
+            current (Optional[SessionProgressScreen]): The adapter's already open
+                view; it never blocks its own replacement.
 
         Returns:
-            bool: True when the mounted panel or a descendant is focused.
+            bool: False while another modal covers the base screen.
         """
-        if self._fleet_panel is None:
-            return False
-        return self._fleet_panel.has_focus or self._fleet_panel.has_focus_within
+        return not (len(self.screen_stack) > 1 and self.screen is not current)
 
-    def _focus_after_progress(self) -> None:
-        """Return focus to the list, or to the prompt when the list is empty, on the base screen.
-
-        WHO: ``_WorkflowProgressSink`` once its progress view has left the stack.
-        WHEN: Only when no other modal remains above the base screen.
-        """
-        if len(self.screen_stack) > 1 or self._fleet_panel is None or self._input is None:
-            return
-        if self._fleet_panel.display:
-            self._fleet_panel.focus_sessions()
-            return
-        self._input.focus()
-
-    def _return_focus_from_hidden_list(self, *, list_focused: bool) -> None:
-        """Focus the prompt editor after a focused list was hidden on the base screen.
+    def is_active_progress(self, *, screen: SessionProgressScreen) -> bool:
+        """Return whether the owned progress view is the active screen.
 
         Args:
-            list_focused (bool): Whether the list held focus before it was emptied.
+            screen (SessionProgressScreen): View to compare with the stack top.
         """
-        if not list_focused or len(self.screen_stack) > 1 or self._input is None:
+        return self.screen is screen
+
+    def present_progress(
+        self, *, screen: SessionProgressScreen, on_closed: Callable[[None], None]
+    ) -> Awaitable[None]:
+        """Push one owned progress view with its dismissal callback.
+
+        Args:
+            screen (SessionProgressScreen): Fresh view to present.
+            on_closed (Callable[[None], None]): Callback after the view leaves the stack.
+        """
+        return self.push_screen(screen=screen, callback=on_closed)
+
+    def present_confirmation(
+        self, *, screen: AbortConfirmationScreen, on_closed: Callable[[Optional[bool]], None]
+    ) -> None:
+        """Push one owned abort confirmation with its result callback.
+
+        Args:
+            screen (AbortConfirmationScreen): Confirmation to present.
+            on_closed (Callable[[Optional[bool]], None]): Result callback.
+        """
+        self.push_screen(screen=screen, callback=on_closed)
+
+    def notify_progress(self, *, message: str, warning: bool = False) -> None:
+        """Show one fixed workflow-progress notice.
+
+        Args:
+            message (str): Literal notice text.
+            warning (bool, optional): Whether to use warning severity. Defaults to False.
+        """
+        if warning:
+            self.notify(message=message, markup=False, severity="warning")
+            return
+        self.notify(message=message, markup=False)
+
+    def return_prompt_focus(self) -> None:
+        """Focus the prompt editor on the base screen only, never behind a modal."""
+        if len(self.screen_stack) > 1 or self._input is None:
             return
         self._input.focus()
+
+    def progress_closed(self) -> None:
+        """Return focus to the visible session list, or to the prompt when empty.
+
+        WHO: The bound adapter once its progress view has left the stack.
+        WHEN: Only when no other modal remains above the base screen.
+        """
+        if len(self.screen_stack) > 1 or self._workflow_progress is None or self._input is None:
+            return
+        if self._workflow_progress.is_session_list_visible():
+            self._workflow_progress.focus_sessions()
+            return
+        self._input.focus()
+
+    def progress_incarnation_changed(self, *, key: WorkflowSessionKeyDAO) -> None:
+        """Close the old execution view when the sink observes same-key reuse.
+
+        WHAT: Invalidate the coordinator first; the calling adapter then releases
+            its view without reentering its delivery lock. Runs
+            synchronously so invalidation precedes any further paint.
+        WHO: The bound adapter's typed list delivery, while reconciling the
+            selected identity against fresh rows.
+        WHEN: When the open view's key now names a different execution or dispatch.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Selected key whose incarnation changed.
+        """
+        if self._workflow_progress_coordinator is not None:
+            self._workflow_progress_coordinator.invalidate_selection()
+        self.notify(message=f"Session execution changed; select {key.session_id} again.", markup=False)
+
+    def child_abort_confirmed(self, *, target: ChildAbortTargetDAO) -> None:
+        """Hand an explicitly confirmed target to the service and refresh at once.
+
+        WHAT: The service owns the submission (minimizing never withdraws it);
+            the immediate refresh paints the pending notice and disabled Abort.
+        WHO: The bound adapter from its confirmation callback, only on True.
+        WHEN: Once per explicit Abort child choice.
+
+        Args:
+            target (ChildAbortTargetDAO): Identity captured when confirmation opened.
+        """
+        if self._workflow_app_service is None:
+            return
+        self._workflow_app_service.begin_child_abort(target=target)
+        self._request_workflow_refresh()
 
     def _schedule_visualizer_launch(self, *, parent_session_id: str) -> None:
         """Capture the selected owner and register one pending request per parent.
@@ -3680,9 +3221,13 @@ class SloTUI(App):
         ):
             return
         try:
-            outcome = await VisualizerLauncher.launch_async(
-                parent_session_id=parent_session_id, session=session
-            )
+            if self._visualizer_launcher is not None:
+                launched = self._visualizer_launcher(parent_session_id=parent_session_id)
+                outcome = VisualizerLaunchOutcomeDAO(status="opened" if launched else "failed")
+            else:
+                outcome = await VisualizerLauncher.launch_async(
+                    parent_session_id=parent_session_id, session=session
+                )
         except Exception:
             outcome = VisualizerLaunchOutcomeDAO(status="failed")
         if (
@@ -3693,7 +3238,7 @@ class SloTUI(App):
         ):
             return
         try:
-            self._ensure_workflow_renderer().write_launch_outcome(
+            await self._ensure_workflow_renderer().write_launch_outcome(
                 parent_session_id=parent_session_id, outcome=outcome
             )
         except Exception:
@@ -3768,414 +3313,6 @@ class SloTUI(App):
             enable_history=old_session.history_enabled,
         )
 
-    def _is_block_live(self, *, child: Widget) -> bool:
-        """Return True when a transcript child is still being written to.
-
-        WHAT: Classifies each transcript block type by its owner-tracked
-        liveness rule. ``QueuedPromptBlock`` never appears here: it mounts
-        above ``PromptInput`` outside the scroll region, so window eviction
-        cannot reach it and it needs no liveness classification.
-        WHO: ``_eviction_candidates`` calls it for every transcript child.
-        WHEN: During transcript-window enforcement, before any eviction.
-
-        Live children must never be evicted by the window: the projector or the
-        steer-drain still holds a reference and will update or remove them later.
-        Evicting one would drop content or double-remove (the hazard action_clear
-        guards against).
-
-        Args:
-            child (Widget): A child widget from ``#transcript-content``.
-
-        Returns:
-            bool: True when the child is still receiving updates.
-        """
-        if isinstance(child, AssistantStreamThinkingBlock):
-            # An unsealed thinking segment may still receive its matching
-            # repair ``thinking_end``; a sealed one is settled and evictable.
-            return not child.finalized
-        if isinstance(child, AssistantStreamBlock):
-            return not child.finalized
-        if isinstance(child, ToolExecutionBlock):
-            # A block awaiting its result is live; one explicitly marked
-            # incomplete is terminal (its result will never arrive) and settled.
-            return child.result_output is None and not child.is_incomplete
-        if isinstance(child, SteeringPendingBlock):
-            return child in self._pending_steer_blocks
-        return False
-
-    def _eviction_candidates(self, *, children: list[Widget]) -> list[Widget]:
-        """Return the prefix of ``children`` eligible for window eviction.
-
-        Excludes the newest ``TRANSCRIPT_PROTECTED_TAIL_SIZE`` children
-        structurally, regardless of liveness — this is the starvation guard
-        that keeps ``_run_window_enforcement_pass`` from ever walking into the
-        newest content, even when every older child (incorrectly) reports
-        itself live (spec 61, D3).
-
-        Args:
-            children (list[Widget]): Non-summary transcript children, oldest
-                first.
-
-        Returns:
-            list[Widget]: The oldest-first prefix outside the protected tail;
-                empty when ``children`` does not exceed the tail size.
-        """
-        if len(children) <= TRANSCRIPT_PROTECTED_TAIL_SIZE:
-            return []
-        return children[:-TRANSCRIPT_PROTECTED_TAIL_SIZE]
-
-    async def _enforce_transcript_window(self) -> None:
-        """Keep the transcript within the window; single-flight and coalescing.
-
-        Called after every transcript mount (all five sites). Only one pass runs
-        at a time: a call arriving while a pass is in flight sets a rerun flag and
-        returns, so two removal loops never interleave (which would double-remove
-        a child and — under a worker — could crash the app). After the active pass
-        finishes it runs one more pass if any request arrived meanwhile, so the
-        window always converges regardless of how the call was scheduled.
-
-        A fast-path check returns immediately when the child count cannot yet
-        exceed the window, so normal short sessions pay no event-loop overhead.
-        """
-        if self._transcript_content is None:
-            return
-        children_count: int = len(list(self._transcript_content.children))
-        if children_count <= TRANSCRIPT_WINDOW_SIZE:
-            return
-        if self._window_enforcement_running:
-            self._window_enforcement_rerun = True
-            return
-        self._window_enforcement_running = True
-        try:
-            await self._run_window_enforcement_pass()
-            while self._window_enforcement_rerun:
-                self._window_enforcement_rerun = False
-                await self._run_window_enforcement_pass()
-        finally:
-            self._window_enforcement_running = False
-
-    async def _run_window_enforcement_pass(self) -> None:
-        """Remove the oldest settled children until the window holds.
-
-        Runs only under the single-flight guard in ``_enforce_transcript_window``,
-        so it is never concurrent with another pass. Walks only children outside
-        the protected tail (``_eviction_candidates``, spec 61 D3), skips live
-        blocks within that set, folds removals into the summary, and wraps the
-        mutation in the scroll idiom so the viewport does not jump. The hidden
-        count is incremented before the ``await`` so a mid-flight interruption
-        cannot under-count. N may briefly exceed the window during a single turn
-        holding many in-flight blocks, or when the protected tail structurally
-        prevents convergence (see ``TRANSCRIPT_PROTECTED_TAIL_SIZE``) — that
-        over-budget state is the intended, safe failure direction.
-        """
-        if self._back_scroll_mode:
-            return
-        if self._transcript_content is None:
-            return
-        children: list[Widget] = [
-            child for child in self._transcript_content.children if child is not self._earlier_summary
-        ]
-        overflow: int = len(children) - TRANSCRIPT_WINDOW_SIZE
-        if overflow <= 0:
-            return
-        candidates: list[Widget] = self._eviction_candidates(children=children)
-        follow_snapshot: bool = self._capture_follow_snapshot()
-        removed: int = 0
-        for child in candidates:
-            if removed >= overflow:
-                break
-            if self._is_block_live(child=child):
-                continue
-            self._hidden_block_count += 1
-            removed += 1
-            await child.remove()
-        if removed > 0:
-            await self._update_earlier_summary()
-        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
-
-    async def _update_earlier_summary(self) -> None:
-        """Render (mounting first if needed) the earlier-messages summary line.
-
-        A single pinned Static at the top of the transcript naming how many
-        settled blocks were collapsed out of the window and how to recover them,
-        so windowing is never a silent scrollback loss.
-        """
-        if self._transcript_content is None:
-            return
-        hidden_count: int = self._hidden_entry_count()
-        if hidden_count == 0:
-            if self._hidden_block_count == 0 or self._back_scroll_mode:
-                await self._remove_earlier_summary()
-                return
-        text: str = self._earlier_summary_text(hidden_count=hidden_count)
-        if self._earlier_summary is None:
-            self._earlier_summary = LiteralTextStatic(text, id="transcript-earlier-summary")
-            await self._transcript_content.mount(self._earlier_summary, before=0)
-            return
-        self._earlier_summary.update(text)
-
-    @staticmethod
-    def _earlier_summary_text(*, hidden_count: int) -> str:
-        """Return the earlier-messages summary line for ``hidden_count``.
-
-        Args:
-            hidden_count (int): Older logical entries a scroll-to-top pass can
-                still load.
-
-        Returns:
-            str: The summary line. When no entry is reachable the line names
-                the collapse without a count and without the scroll-to-top
-                hint, so the banner never advertises a recovery pass
-                ``_has_older_entries_to_load`` would refuse — the state a live,
-                never-resumed session sits in once the window starts evicting.
-        """
-        if hidden_count == 0:
-            return "▲ earlier messages collapsed — resume this session to recover them"
-        return f"▲ {hidden_count} earlier messages hidden " f"— scroll to the top to load older messages"
-
-    async def _remove_earlier_summary(self) -> None:
-        """Remove and dereference the earlier-messages summary widget."""
-        if self._earlier_summary is None:
-            return
-        summary: Static = self._earlier_summary
-        self._earlier_summary = None
-        await summary.remove()
-
-    def _enforce_window_soon(self) -> None:
-        """Schedule window enforcement from a synchronous mount site.
-
-        Used by the adapter line-writer and the steering mount, which are not
-        async. Coalescing and mutual exclusion are handled by the enforcer's own
-        single-flight guard — not by worker exclusivity — so a plain worker is
-        safe even while a block helper is awaiting the enforcer directly.
-        ``exit_on_error=False`` ensures a stray enforcement error can never tear
-        down the whole TUI (Textual's ``run_worker`` default would otherwise exit
-        the app on an unhandled worker error).
-
-        A cheap threshold pre-check skips the worker entirely when the child
-        count cannot yet exceed the window, keeping the no-op fast path free of
-        event-loop overhead during normal short sessions.
-        """
-        if self._transcript_content is None:
-            return
-        child_count: int = len(list(self._transcript_content.children))
-        if child_count <= TRANSCRIPT_WINDOW_SIZE:
-            return
-        self.run_worker(
-            self._enforce_transcript_window(),
-            group="transcript-window",
-            exit_on_error=False,
-        )
-
-    async def mount_user_message_block(
-        self,
-        *,
-        text: str,
-        before: Optional[int] = None,
-    ) -> UserMessageBlock:
-        """Mount a fresh user message block into the transcript flow.
-
-        Args:
-            text (str): The raw user prompt text.
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-
-        Returns:
-            UserMessageBlock: The mounted block.
-        """
-        block: UserMessageBlock = UserMessageBlock(text=text)
-        if self._transcript_content is None:
-            return block
-        if before is None:
-            await self._transcript_content.mount(block)
-            if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
-                await self._enforce_transcript_window()
-            return block
-        await self._transcript_content.mount(block, before=before)
-        return block
-
-    def mount_turn_separator_if_needed(self, *, before: Optional[int] = None) -> bool:
-        """Mount and record a turn separator when prior content exists.
-
-        Idempotent in effect: a no-op on the first turn (nothing to
-        separate). Writing through ``_write_adapter_line`` both mounts the
-        visible ``───`` rule and records its logical line.
-
-        Args:
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-
-        Returns:
-            bool: True when a separator was mounted.
-        """
-        if self._adapter is None or not self._adapter.has_prior_turn_content():
-            return False
-        self._write_adapter_line(
-            content=_TranscriptAdapter.TURN_SEPARATOR,
-            classes="turn-separator",
-            before=before,
-        )
-        return True
-
-    async def _mount_transcript_widget(
-        self,
-        *,
-        block: Widget,
-        before: Optional[int] = None,
-    ) -> None:
-        """Mount one transcript widget using the shared window policy.
-
-        WHAT: Applies the append follow/window behavior, or a pure prepend
-            insertion when replay is inserting history.
-        WHO: The ``mount_assistant_block`` and ``mount_thinking_block`` host
-            methods call it after constructing their typed block.
-        WHEN: ``TranscriptProjector`` requests a new transcript child.
-
-        Args:
-            block (Widget): Newly constructed transcript child.
-            before (Optional[int]): Prepend index, if replay is inserting
-                history. ``None`` appends at the end.
-        """
-        if self._transcript_content is None:
-            return
-        if before is not None:
-            await self._transcript_content.mount(block, before=before)
-            return
-        follow_snapshot: bool = self._capture_follow_snapshot()
-        await self._transcript_content.mount(block)
-        if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
-            await self._enforce_transcript_window()
-        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
-
-    async def mount_assistant_block(
-        self,
-        *,
-        title_prefix: Optional[str] = None,
-        before: Optional[int] = None,
-    ) -> AssistantStreamBlock:
-        """Mount a fresh answer-only assistant streaming block into the transcript flow.
-
-        Args:
-            title_prefix (Optional[str]): Optional dim label shown above the
-                block's answer surface. No current caller sets it: child
-                sub-agent events route to the fleet panel only and never mount
-                a foreground transcript block. ``None`` (default) produces a
-                label-free block identical to the pre-feature behaviour.
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-
-        Returns:
-            AssistantStreamBlock: The mounted block.
-        """
-        block: AssistantStreamBlock = AssistantStreamBlock(
-            title_prefix=title_prefix,
-        )
-        await self._mount_transcript_widget(block=block, before=before)
-        return block
-
-    async def mount_thinking_block(
-        self,
-        *,
-        before: Optional[int] = None,
-    ) -> AssistantStreamThinkingBlock:
-        """Construct and mount one thinking segment for the projector.
-
-        The projector's only seam for mounting a thinking widget; the shared
-        mount/window policy lives in ``_mount_transcript_widget``.
-
-        Args:
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-
-        Returns:
-            AssistantStreamThinkingBlock: The constructed thinking segment.
-        """
-        block: AssistantStreamThinkingBlock = AssistantStreamThinkingBlock(
-            force_expanded=self._global_expand_all,
-        )
-        await self._mount_transcript_widget(block=block, before=before)
-        return block
-
-    async def mount_tool_execution_block(
-        self,
-        *,
-        tool_call_id: str,
-        tool_name: Optional[str],
-        before: Optional[int] = None,
-    ) -> ToolExecutionBlock:
-        """Mount a fresh tool execution block above the prompt input.
-
-        Args:
-            tool_call_id (str): Stable tool call id.
-            tool_name (Optional[str]): Tool name when known; ``None`` before
-                the streamed name resolves.
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-
-        Returns:
-            ToolExecutionBlock: The mounted block.
-        """
-        block: ToolExecutionBlock = ToolExecutionBlock(
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
-            force_expanded=self._global_expand_all,
-        )
-        if self._transcript_content is None:
-            self._set_active_expandable_tool_block(block=block)
-            return block
-        follow_snapshot: bool = self._capture_follow_snapshot()
-        if before is None:
-            await self._transcript_content.mount(block)
-            self._set_active_expandable_tool_block(block=block)
-            if len(list(self._transcript_content.children)) > TRANSCRIPT_WINDOW_SIZE:
-                await self._enforce_transcript_window()
-            self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
-            return block
-        await self._transcript_content.mount(block, before=before)
-        self._set_active_expandable_tool_block(block=block)
-        return block
-
-    def _set_active_expandable_tool_block(self, *, block: ToolExecutionBlock) -> None:
-        """Mark ``block`` as the active expandable tool block.
-
-        Args:
-            block (ToolExecutionBlock): Newly active tool block.
-        """
-        if self._active_expandable_tool_block is block:
-            return
-        if self._active_expandable_tool_block is not None:
-            self._active_expandable_tool_block.set_active(active=False)
-        self._active_expandable_tool_block = block
-        self._active_expandable_tool_block.set_active(active=True)
-
-    def write_transcript_line(
-        self,
-        *,
-        content: str,
-        classes: str,
-        before: Optional[int] = None,
-    ) -> None:
-        """Write and record an append-only or prepended transcript line.
-
-        Args:
-            content (str): Transcript line content.
-            classes (str): Semantic transcript class.
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-        """
-        self._write_adapter_line(content=content, classes=classes, before=before)
-
-    def record_transcript_line(self, *, content: str, classes: str) -> None:
-        """Record a logical transcript line without rendering a duplicate.
-
-        Args:
-            content (str): Logical transcript content.
-            classes (str): Semantic transcript class.
-        """
-        if self._adapter is None:
-            return
-        self._adapter.record(content=content, classes=classes)
-
     async def _run_prompt(self, *, text: str) -> None:
         """Drain ``session.invoke`` to completion.
 
@@ -4190,8 +3327,9 @@ class SloTUI(App):
         Args:
             text (str): The user prompt.
         """
+        assert self._chat_transcript is not None
+        await self._chat_transcript.handle(command=BeginTranscriptRunDAO())
         self._reset_escape_sequence()
-        self._projector.reset_for_new_run()
         await self._mount_spinner()
         saw_failed_event: bool = False
         try:
@@ -4201,15 +3339,21 @@ class SloTUI(App):
         except asyncio.CancelledError:
             # Hard-cancel escalation from /abort or ^C landed on a run that
             # would not wind down cooperatively (e.g. a hung tool call).
-            self._write_adapter_line(content="(aborted)", classes="assistant-aborted")
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(content="(aborted)", classes="assistant-aborted")
+                )
         except ValueError as exc:
-            self._write_adapter_line(
-                content=f"(configuration error: {exc})",
-                classes="tool-result",
-            )
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content=f"(configuration error: {exc})",
+                        classes="tool-result",
+                    )
+                )
         except Exception as exc:  # noqa: BLE001 — surface every failure to the user
             if not saw_failed_event:
-                self._render_run_error(exc=exc)
+                await self._render_run_error(exc=exc)
         finally:
             self._reset_escape_sequence()
             await self._refresh_context_window_after_prompt()
@@ -4274,7 +3418,7 @@ class SloTUI(App):
         except Exception as exc:  # noqa: BLE001
             log_error(msg="context_window_prompt_refresh_failed", error=str(exc))
 
-    def _render_run_error(self, *, exc: BaseException) -> None:
+    async def _render_run_error(self, *, exc: BaseException) -> None:
         """Render a run-level error into the transcript.
 
         The provider exception type is the most useful signal for the
@@ -4287,10 +3431,13 @@ class SloTUI(App):
             exc (BaseException): The exception that terminated the run.
         """
         message: str = self._format_exception_for_transcript(exc=exc)
-        self._write_adapter_line(
-            content=f"(error: {message})",
-            classes="assistant-aborted",
-        )
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=f"(error: {message})",
+                    classes="assistant-aborted",
+                )
+            )
 
     @staticmethod
     def _format_exception_for_transcript(*, exc: BaseException) -> str:
@@ -4366,16 +3513,19 @@ class SloTUI(App):
             self._refresh_usage_status_bar()
             return
         if event.kind == "stream_reconnecting":
-            self._render_stream_reconnecting_event(event=event)
+            await self._render_stream_reconnecting_event(event=event)
             return
         if event.kind == "preflight_bypassed":
-            self._render_preflight_bypassed_event()
+            await self._render_preflight_bypassed_event()
             return
         if event.kind == "compaction_advised":
-            self._write_adapter_line(
-                content=event.content or "Run /compact to help latency.",
-                classes="tool-result",
-            )
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content=event.content or "Run /compact to help latency.",
+                        classes="tool-result",
+                    )
+                )
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
             return
@@ -4402,31 +3552,26 @@ class SloTUI(App):
             # Stream-only batch start (no sub_agent_id): the list shows the new group.
             self._request_workflow_refresh()
             return
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(command=PresentAgentEventDAO(event=event))
         if event.kind == "steering_applied":
-            # The queued steer has now been folded into the model context —
-            # drop its pending block and render it as a regular user message
-            # in its place.
-            follow_snapshot: bool = self._capture_follow_snapshot()
-            await self._consume_pending_steer_block()
-            await self._projector.project_user_turn(text=event.content or "")
-            self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
             return
-        follow_snapshot = self._capture_follow_snapshot()
-        await self._projector.project(event=event)
-        self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
 
-    def _render_preflight_bypassed_event(self) -> None:
+    async def _render_preflight_bypassed_event(self) -> None:
         """Render the fixed local TPM bypass note without diagnostic metadata."""
-        self._write_adapter_line(
-            content="(local token preflight bypassed; request sent to provider)",
-            classes="tool-result",
-        )
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content="(local token preflight bypassed; request sent to provider)",
+                    classes="tool-result",
+                )
+            )
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
 
-    def _render_stream_reconnecting_event(self, *, event: AgentStreamEventDAO) -> None:
+    async def _render_stream_reconnecting_event(self, *, event: AgentStreamEventDAO) -> None:
         """Render the public pre-commit reconnect boundary without raw provider text.
 
         ``_render_event`` calls this for the session-owned audit event before the
@@ -4439,10 +3584,13 @@ class SloTUI(App):
         family: str = exception_family if isinstance(exception_family, str) else "transport error"
         if self._spinner is not None:
             self._spinner.set_override_status(text="Reconnecting provider stream…")
-        self._write_adapter_line(
-            content=f"(reconnecting after {reason}: {family})",
-            classes="tool-result",
-        )
+        if self._chat_transcript is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(
+                    content=f"(reconnecting after {reason}: {family})",
+                    classes="tool-result",
+                )
+            )
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
 
@@ -4539,49 +3687,13 @@ class SloTUI(App):
         self._spinner = None
         await spinner.remove()
 
-    async def _echo_user_line(self, *, text: str) -> None:
-        """Echo one user turn into the transcript and unconditionally reveal it.
-
-        Args:
-            text (str): The user prompt text to echo.
-        """
-        self._back_scroll_mode = False
-        await self._projector.project_user_turn(text=text)
-        self._force_reveal_and_rearm()
-
-    def _write_adapter_line(
-        self,
-        *,
-        content: str,
-        classes: str,
-        before: Optional[int] = None,
-    ) -> None:
-        """Funnel non-event transcript writes through the adapter.
-
-        The adapter is the single test seam — every line that lands in the
-        transcript also lands in ``self._adapter.lines``. Slash output, the
-        ``> <text>`` echo, the queued-survival notice, and the ``(aborting…)``
-        marker all go through here; the streaming event path goes through
-        ``EventRenderer.render`` and reaches the same adapter on its own.
-
-        Args:
-            content (str): The line content.
-            classes (str): The semantic render class.
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-        """
-        if self._adapter is None:
-            self._transcript_write(line=content, style_class=classes, before=before)
-            return
-        self._adapter.write(content=content, classes=classes, before=before)
-
     def _focused_block_text(self) -> str:
         """Return the copyable text of the focused transcript block, or ``""``.
 
         Inspects ``self.focused`` for a ``get_copyable_text`` method. Used
         by ``action_copy_visible_text`` to implement the focused-block-first
         resolution tier. A no-op (returns ``""``) for any focused widget that
-        does not implement the protocol (e.g. ``PromptInput``,
+        does not implement the protocol (e.g. ``PromptInputComponent``,
         ``VerticalScroll``, ``Footer``).
 
         Returns:
@@ -4619,609 +3731,3 @@ class SloTUI(App):
         if self._input is None:
             return ""
         return self._input.selected_text or ""
-
-    def _copyable_transcript_text(self) -> str:
-        """Return the transcript as plain text suitable for clipboard copy."""
-        if self._adapter is None:
-            return ""
-        return "\n".join(content for content, classes in self._adapter.lines if classes != "turn-separator")
-
-    def _capture_follow_snapshot(self) -> bool:
-        """Snapshot whether the transcript is currently following the bottom.
-
-        Returns:
-            bool: True when the transcript viewport was already at the bottom.
-        """
-        return self._transcript_is_at_bottom()
-
-    def _has_older_entries_to_load(self) -> bool:
-        """Return whether older transcript entries remain above the cursor.
-
-        Returns:
-            bool: True when ``_load_older_cursor`` is greater than zero.
-        """
-        return self._load_older_cursor > 0
-
-    def _hidden_entry_count(self) -> int:
-        """Return how many older logical entries remain unloaded.
-
-        Returns:
-            int: The canonical ordered-entry cursor.
-        """
-        return self._load_older_cursor
-
-    def _transcript_is_at_bottom(self) -> bool:
-        """Return True when the transcript viewport is effectively at bottom.
-
-        Returns:
-            bool: True when the scroll position is within one line of the bottom.
-        """
-        if self._transcript_scroll is None:
-            return True
-        if self._force_following_until_layout:
-            return True
-        return (self._transcript_scroll.max_scroll_y - self._transcript_scroll.scroll_y) <= 1.0
-
-    def _restore_follow_after_mutation(self, *, follow_snapshot: bool) -> None:
-        """Restore follow mode after a transcript mutation when appropriate.
-
-        Args:
-            follow_snapshot (bool): Pre-mutation follow state.
-        """
-        if not follow_snapshot:
-            return
-        self._scroll_transcript_to_end()
-
-    def _scroll_transcript_to_end(self) -> None:
-        """Keep the transcript viewport pinned to the latest content.
-
-        Latches ``_force_following_until_layout`` until the deferred scroll
-        actually lands. The scroll is deferred to ``call_after_refresh``, so
-        between scheduling and landing the viewport is transiently *not* at the
-        bottom. An ``AssistantStreamBlock`` coalescing flush that interleaves in
-        that window calls ``_check_app_at_bottom`` → ``_transcript_is_at_bottom``,
-        reads that transient state as ``False``, and posts
-        ``Rendered(was_following=False)`` — so
-        ``on_assistant_stream_block_rendered`` skips its re-pin. The queued
-        ``scroll_end`` then pins to the *pre-flush* bottom while the flush has
-        already expanded ``max_scroll_y``, leaving the transcript permanently
-        short of the bottom with nothing left to re-pin it. The latch makes the
-        in-flight intent visible to that flush so the re-pin still happens.
-        """
-        if self._transcript_scroll is None:
-            return
-        self._force_following_until_layout = True
-        self.call_after_refresh(self._pin_transcript_to_end_after_refresh)
-
-    def _pin_transcript_to_end_after_refresh(self) -> None:
-        """Perform the deferred pin, then release the follow latch."""
-        if self._transcript_scroll is None:
-            self._force_following_until_layout = False
-            return
-        self._transcript_scroll.scroll_end(animate=False)
-        self.call_after_refresh(self._clear_force_following_after_scroll_end)
-
-    def _enable_back_scroll_mode(self) -> None:
-        """Suspend top eviction so prepended history is not immediately removed."""
-        self._back_scroll_mode = True
-
-    async def _load_older_entries(self) -> None:
-        """Prepend the next batch of older transcript entries at the top."""
-        if self._load_older_running:
-            return
-        if not self._has_older_entries_to_load():
-            return
-        self._load_older_running = True
-        try:
-            await self._run_load_older_pass()
-        finally:
-            self._load_older_running = False
-
-    async def _run_load_older_pass(self) -> None:
-        """Execute one load-older prepend pass."""
-        entries: list[TranscriptEntryDAO] = await self._fetch_older_batch()
-        if not entries:
-            return
-        self._enable_back_scroll_mode()
-        anchor: _LoadOlderAnchorDAO = self._capture_load_older_anchor()
-        await self._prepend_older_entries(entries=entries)
-        self._load_older_cursor = max(0, self._load_older_cursor - len(entries))
-        self._schedule_anchor_restore(anchor=anchor)
-        await self._update_earlier_summary()
-
-    async def _read_all_entries(self) -> list[TranscriptEntryDAO]:
-        """Return all hydrated transcript entries from the session.
-
-        Returns:
-            list[TranscriptEntryDAO]: Chronological entries, or an empty list
-                when history cannot be read.
-        """
-        try:
-            return await self._session.hydrate_transcript_entries()
-        except Exception:  # noqa: BLE001 — loading history must not crash the TUI
-            return []
-
-    async def _fetch_older_batch(self) -> list[TranscriptEntryDAO]:
-        """Return the chronological batch immediately before the cursor.
-
-        Returns:
-            list[TranscriptEntryDAO]: The next older batch, or an empty list
-                when the cursor is exhausted or history is unavailable.
-        """
-        if self._load_older_cursor <= 0:
-            return []
-        all_entries: list[TranscriptEntryDAO] = await self._read_all_entries()
-        batch_start: int = max(0, self._load_older_cursor - LOAD_OLDER_BATCH_SIZE)
-        return all_entries[batch_start : self._load_older_cursor]
-
-    async def _prepend_older_entries(self, *, entries: list[TranscriptEntryDAO]) -> None:
-        """Project and prepend entries in chronological order below the summary."""
-        if self._transcript_content is None:
-            return
-        insert_index: int = 1
-        for entry in entries:
-            children_before: int = len(list(self._transcript_content.children))
-            await self._projector.project_replay_entry(entry=entry, before=insert_index)
-            children_after: int = len(list(self._transcript_content.children))
-            insert_index += children_after - children_before
-
-    def _first_live_child(self) -> Optional[Widget]:
-        """Return the first non-summary child in the transcript container."""
-        if self._transcript_content is None:
-            return None
-        for child in self._transcript_content.children:
-            if child is self._earlier_summary:
-                continue
-            return child
-        return None
-
-    def _child_offset_y(self, *, child: Widget) -> float:
-        """Return the virtual y-offset of ``child``."""
-        return float(child.virtual_region.y)
-
-    def _capture_scroll_anchor(self) -> float:
-        """Return the current transcript scroll offset."""
-        if self._transcript_scroll is None:
-            return 0.0
-        return self._transcript_scroll.scroll_y
-
-    def _capture_load_older_anchor(self) -> _LoadOlderAnchorDAO:
-        """Capture the scroll anchor before a prepend pass."""
-        anchor_widget: Optional[Widget] = self._first_live_child()
-        anchor_offset_before: float = (
-            self._child_offset_y(child=anchor_widget) if anchor_widget is not None else 0.0
-        )
-        scroll_y_before: float = self._capture_scroll_anchor()
-        return _LoadOlderAnchorDAO(
-            widget=anchor_widget,
-            offset_before=anchor_offset_before,
-            scroll_y_before=scroll_y_before,
-        )
-
-    def _schedule_anchor_restore(self, *, anchor: _LoadOlderAnchorDAO) -> None:
-        """Schedule post-layout scroll restoration using the captured anchor."""
-        self.call_after_refresh(
-            self._restore_scroll_after_layout,
-            anchor_widget=anchor.widget,
-            anchor_offset_before=anchor.offset_before,
-            scroll_y_before=anchor.scroll_y_before,
-        )
-
-    def _restore_scroll_after_layout(
-        self,
-        *,
-        anchor_widget: Optional[Widget],
-        anchor_offset_before: float,
-        scroll_y_before: float,
-    ) -> None:
-        """Restore the scroll position after a prepend using anchor offset."""
-        if self._transcript_scroll is None:
-            return
-        if anchor_widget is None:
-            return
-        anchor_offset_after: float = self._child_offset_y(child=anchor_widget)
-        delta: float = anchor_offset_after - anchor_offset_before
-        self._transcript_scroll.scroll_to(y=scroll_y_before + delta, animate=False)
-
-    def _force_reveal_and_rearm(self) -> None:
-        """Snap the transcript to the bottom and re-arm follow mode."""
-        if self._transcript_scroll is None:
-            return
-        self._force_following_until_layout = True
-        self._transcript_scroll.scroll_y = self._transcript_scroll.max_scroll_y
-        self.call_after_refresh(self._complete_force_reveal_after_layout)
-
-    def _complete_force_reveal_after_layout(self) -> None:
-        """Perform the authoritative post-layout scroll and then release the latch."""
-        if self._transcript_scroll is None:
-            self._force_following_until_layout = False
-            return
-        self._transcript_scroll.scroll_end(animate=False)
-        self.call_after_refresh(self._clear_force_following_after_scroll_end)
-
-    def _clear_force_following_after_scroll_end(self) -> None:
-        """Release force-follow only after the deferred authoritative pin completes."""
-        self._force_following_until_layout = False
-
-    def _transcript_write(
-        self,
-        *,
-        line: str,
-        style_class: str,
-        before: Optional[int] = None,
-    ) -> None:
-        """Append or insert one visible line widget into the transcript.
-
-        Args:
-            line (str): The line to write.
-            style_class (str): Semantic render class from the TUI renderer.
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-        """
-        if self._transcript_content is None:
-            return
-        follow_snapshot: bool = self._capture_follow_snapshot()
-        widget: Static
-        if style_class == "assistant-final":
-            widget = Static(Markdown(line), classes=style_class)
-        else:
-            widget = LiteralTextStatic(line, classes=style_class)
-        if before is None:
-            self._transcript_content.mount(widget)
-            self._restore_follow_after_mutation(follow_snapshot=follow_snapshot)
-            self._enforce_window_soon()
-            return
-        self._transcript_content.mount(widget, before=before)
-
-
-class _TranscriptAdapter:
-    """Transcript shim that records logical lines and appends visible widgets.
-
-    ``EventRenderer`` and the slash-command path both speak in
-    ``(content, classes)`` pairs. This adapter preserves that single
-    semantic seam for tests/copy/replay while delegating visible writes
-    to the widget-based transcript container.
-
-    For readability in a compact transcript, each new user turn after the
-    first gets a subtle separator line inserted ahead of it. That separator
-    is now driven by ``SloTUI.mount_turn_separator_if_needed`` (called from
-    the projector's user-turn path) rather than implicitly inside ``write``,
-    because user turns are mounted as ``UserMessageBlock`` components and no
-    longer flow through ``write`` as ``user-line`` entries.
-    """
-
-    TURN_SEPARATOR: str = "─" * 18
-
-    def __init__(self, *, tui: SloTUI) -> None:
-        """Wrap the owning ``SloTUI``.
-
-        Args:
-            tui (SloTUI): The app whose transcript surface we write into.
-        """
-        self._tui: SloTUI = tui
-        self.lines: list[tuple[str, str]] = []
-
-    def write(
-        self,
-        *,
-        content: str,
-        classes: str = "",
-        before: Optional[int] = None,
-    ) -> None:
-        """Record the line and delegate to the visible transcript writer.
-
-        Args:
-            content (str): The text to append.
-            classes (str): The semantic render class (default ``""``).
-            before (Optional[int]): Child index to insert before. ``None``
-                appends at the end.
-        """
-        self._append_line(content=content, classes=classes, before=before)
-
-    def _append_line(
-        self,
-        *,
-        content: str,
-        classes: str,
-        before: Optional[int] = None,
-    ) -> None:
-        """Persist one transcript line and write it to the transcript surface."""
-        self.lines.append((content, classes))
-        self._tui._transcript_write(line=content, style_class=classes, before=before)
-
-    def record(self, *, content: str, classes: str) -> None:
-        """Persist one logical transcript line without rendering it again.
-
-        Args:
-            content (str): Logical transcript content.
-            classes (str): Semantic transcript class.
-        """
-        self.lines.append((content, classes))
-
-    def has_prior_turn_content(self) -> bool:
-        """Return True when a user turn separator should be inserted.
-
-        Returns:
-            bool: True when any non-separator line has already been recorded.
-        """
-        return any(classes != "turn-separator" for _content, classes in self.lines)
-
-
-class _WorkflowNoticeAdapter:
-    """Thin adapter satisfying the workflow renderer's notice-sink protocol.
-
-    The renderer must not know about ``SloTUI`` or the transcript adapter;
-    this shim forwards its typed notice writes to the app's single
-    ``_write_adapter_line`` funnel so notices render (and are recorded for
-    tests/copy) exactly like every other transcript line.
-    """
-
-    def __init__(self, *, tui: SloTUI) -> None:
-        """Bind the adapter to the owning app.
-
-        Args:
-            tui (SloTUI): The app whose transcript surface receives notices.
-        """
-        self._tui: SloTUI = tui
-
-    def write(self, *, content: str, classes: str = "") -> None:
-        """Forward one notice line to the app's transcript funnel.
-
-        Args:
-            content (str): Notice text.
-            classes (str): Semantic render class (default ``""``).
-        """
-        self._tui._write_adapter_line(content=content, classes=classes)
-
-
-class _WorkflowProgressSink:
-    """App adapter implementing ``WorkflowProgressSink`` for one owning session (feature 94 a.3).
-
-    Owns only presentation state: the single progress screen reference, the
-    selected row identity captured at open, the latest list identities and the
-    bounded LRU of saved viewports. It never builds services, never touches the
-    coordinator's state and never cancels execution; lifecycle intents go back
-    through the app (``_on_progress_incarnation_changed``). Unrelated modals are
-    never dismissed: only a screen this sink pushed is ever closed.
-    """
-
-    def __init__(self, *, tui: SloTUI) -> None:
-        """Bind the sink to the owning app with empty presentation state.
-
-        Args:
-            tui (SloTUI): App whose screens, panel and prompt the sink drives.
-        """
-        self._tui: SloTUI = tui
-        self._screen: Optional[SessionProgressScreen] = None
-        # Most recently visited last; at most PROGRESS_VIEWPORT_CACHE_LIMIT keys.
-        self._viewports: OrderedDict[WorkflowSessionKeyDAO, ProgressViewportDAO] = OrderedDict()
-        # (execution_id, dispatch_id) per key from the latest applied list.
-        self._identities: dict[WorkflowSessionKeyDAO, tuple[str, str]] = {}
-        # Identity of the open view's row when it was opened; None when unknown.
-        self._selected_identity: Optional[tuple[str, str]] = None
-        self._failure_notified: bool = False
-        # The one confirmation this sink pushed above its progress view, if open.
-        self._confirmation: Optional[AbortConfirmationScreen] = None
-
-    def open_progress(self, *, key: WorkflowSessionKeyDAO) -> bool:
-        """Open one owned view, refusing to stack behind unrelated modals.
-
-        WHAT: Keeps an already open view of the same key (double click never
-            stacks), refuses while another modal is active, otherwise replaces any
-            previous view with a new screen opened at the key's saved viewport.
-        WHO: ``WorkflowProgressCoordinator.select``.
-        WHEN: On each list activation.
-
-        Args:
-            key (WorkflowSessionKeyDAO): Exact selected session.
-
-        Returns:
-            bool: Whether the coordinator may adopt this selection.
-        """
-        if self._screen is not None and self._screen.key == key:
-            return True
-        if len(self._tui.screen_stack) > 1 and self._tui.screen is not self._screen:
-            self._tui.notify(message=PROGRESS_DIALOG_CONFLICT_NOTICE, markup=False)
-            return False
-        self.minimize_progress()
-        self._screen = SessionProgressScreen(
-            key=key, viewport=self._viewports.get(key, ProgressViewportDAO())
-        )
-        self._selected_identity = self._identities.get(key)
-        self._tui.push_screen(screen=self._screen, callback=self._progress_closed)
-        return True
-
-    def minimize_progress(self) -> None:
-        """Save the current viewport and give up this sink's progress screen.
-
-        WHAT: Withdraws an owned confirmation first (answering False, so no
-            abort is submitted), then retires the view: it closes at once when it
-            is on top, or as soon as the modal above it closes; an unrelated
-            modal is never popped. Focus returns when the view leaves the stack.
-        WHO: The coordinator's ``minimize`` (Escape, removal, incarnation change),
-            ``open_progress`` when replacing a view, and ``dispose``.
-        WHEN: After the coordinator invalidated its generation.
-        """
-        screen: Optional[SessionProgressScreen] = self._screen
-        if screen is None:
-            return
-        self._withdraw_confirmation()
-        self._remember_viewport(screen=screen)
-        self._screen = None
-        self._selected_identity = None
-        screen.retire()
-
-    async def apply_sessions(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
-        """Paint rows without stealing focus and invalidate obsolete saved positions.
-
-        WHAT: Routes a same-key incarnation change of the open view through the
-            app before overwriting identities, prunes viewports of removed or
-            reused keys, then paints the panel (which returns focus only from an
-            emptied, focused base list).
-        WHO: The coordinator after every list read.
-        WHEN: Before the selected progress read of the same refresh.
-
-        Args:
-            snapshot (WorkflowSessionSnapshotDAO): Current or explicitly retained rows.
-        """
-        self._failure_notified = False
-        self._close_reused_selection(snapshot=snapshot)
-        self._prune_viewports(snapshot=snapshot)
-        await self._tui._apply_session_snapshot(snapshot=snapshot)
-
-    def confirm_abort(self, *, target: ChildAbortTargetDAO) -> None:
-        """Open one owned confirmation for the exact target the active view displayed.
-
-        WHAT: Ignores targets of another key and requests while the view is not
-            the active screen, which includes repeats while a confirmation is open. The target is
-            retained in the callback closure, never replaced by refreshed rows.
-        WHO: SloTUI's ``AbortRequested`` handler.
-        WHEN: When the operator activates Abort child on the progress view.
-
-        Args:
-            target (ChildAbortTargetDAO): Identity captured from the displayed snapshot.
-        """
-        screen: Optional[SessionProgressScreen] = self._screen
-        # An open confirmation is the active screen, so this also absorbs repeats.
-        if screen is None or screen.key != target.key or self._tui.screen is not screen:
-            return
-        confirmation: AbortConfirmationScreen = AbortConfirmationScreen(target=target)
-        self._confirmation = confirmation
-        self._tui.push_screen(
-            screen=confirmation,
-            callback=partial(self._confirmed, confirmation=confirmation, target=target),
-        )
-
-    def apply_progress(self, *, snapshot: SessionProgressSnapshotDAO) -> None:
-        """Deliver bounded public content only to the still-selected screen object.
-
-        Args:
-            snapshot (SessionProgressSnapshotDAO): Service-validated observation.
-        """
-        screen: Optional[SessionProgressScreen] = self._screen
-        if screen is None or screen.key != snapshot.key:
-            return
-        if not screen.is_live:
-            self._tui.call_after_refresh(self._deliver_progress, screen=screen, snapshot=snapshot)
-            return
-        self._deliver_progress(screen=screen, snapshot=snapshot)
-
-    def membership_removed(self, *, key: WorkflowSessionKeyDAO) -> None:
-        """Forget a removed view after the coordinator invalidated its generation.
-
-        Args:
-            key (WorkflowSessionKeyDAO): Former selected identity.
-        """
-        self._viewports.pop(key, None)
-        self._tui.notify(message=PROGRESS_MEMBERSHIP_REMOVED_NOTICE, markup=False)
-
-    def observation_failed(self) -> None:
-        """Keep last-good paint and notify once per failure streak (reset by a good list)."""
-        if self._failure_notified:
-            return
-        self._failure_notified = True
-        self._tui.notify(message=PROGRESS_REFRESH_FAILED_NOTICE, markup=False, severity="warning")
-
-    def dispose(self) -> None:
-        """Discard observation UI only after coordinator and service work are joined.
-
-        WHO: ``SloTUI._close_workflow_observation``.
-        WHEN: On owner replacement and unmount, after ``coordinator.close``.
-        """
-        self.minimize_progress()
-        self._viewports.clear()
-        self._identities.clear()
-        self._selected_identity = None
-
-    def _confirmed(
-        self,
-        confirmed: Optional[bool],
-        *,
-        confirmation: AbortConfirmationScreen,
-        target: ChildAbortTargetDAO,
-    ) -> None:
-        """Forget the closed confirmation; submit only on an explicit True.
-
-        Args:
-            confirmed (Optional[bool]): Confirmation result; False/None submit nothing.
-            confirmation (AbortConfirmationScreen): Screen this callback belongs to.
-            target (ChildAbortTargetDAO): Target captured when it opened.
-        """
-        if self._confirmation is confirmation:
-            self._confirmation = None
-        if confirmed is True:
-            self._tui._on_child_abort_confirmed(target=target)
-
-    def _withdraw_confirmation(self) -> None:
-        """Close only the owned confirmation (answering False) before its view goes."""
-        confirmation: Optional[AbortConfirmationScreen] = self._confirmation
-        self._confirmation = None
-        if confirmation is not None:
-            confirmation.withdraw()
-
-    def _progress_closed(self, _result: None) -> None:
-        """Return focus once an owned view has actually left the screen stack.
-
-        Args:
-            _result (None): Unused dismissal result of the progress screen.
-        """
-        self._tui._focus_after_progress()
-
-    def _remember_viewport(self, *, screen: SessionProgressScreen) -> None:
-        """Bound saved positions whenever the sink minimizes or replaces a view.
-
-        Args:
-            screen (SessionProgressScreen): Owned screen being dismissed.
-        """
-        if not screen.is_live:
-            return
-        self._viewports[screen.key] = screen.capture_viewport()
-        self._viewports.move_to_end(screen.key)
-        while len(self._viewports) > PROGRESS_VIEWPORT_CACHE_LIMIT:
-            self._viewports.popitem(last=False)
-
-    def _close_reused_selection(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
-        """Route an incarnation change of the open view through the app, before pruning.
-
-        A key absent from the rows is left to the coordinator's removal path. Any
-        other identity mismatch, including a view opened before its identity was
-        known, closes the view so a reader is never silently retargeted to
-        another execution. The old viewport is purged by the pruning that follows.
-
-        Args:
-            snapshot (WorkflowSessionSnapshotDAO): Fresh or retained list evidence.
-        """
-        if self._screen is None:
-            return
-        key: WorkflowSessionKeyDAO = self._screen.key
-        row = next((row for row in snapshot.rows if row.key == key), None)
-        identity: tuple[str, str] = (row.execution_id, row.dispatch_id) if row is not None else ("", "")
-        if row is None or self._selected_identity == identity:
-            return
-        self._tui._on_progress_incarnation_changed(key=key)
-
-    def _prune_viewports(self, *, snapshot: WorkflowSessionSnapshotDAO) -> None:
-        """Forget removed or reused keys after authoritative service reconciliation.
-
-        Args:
-            snapshot (WorkflowSessionSnapshotDAO): Retains rows on transient failures.
-        """
-        identities: dict[WorkflowSessionKeyDAO, tuple[str, str]] = {
-            row.key: (row.execution_id, row.dispatch_id) for row in snapshot.rows
-        }
-        for key in tuple(self._viewports):
-            if key not in identities or self._identities.get(key) != identities[key]:
-                self._viewports.pop(key, None)
-        self._identities = identities
-
-    def _deliver_progress(
-        self, *, screen: SessionProgressScreen, snapshot: SessionProgressSnapshotDAO
-    ) -> None:
-        """Reject deferred paint addressed to a dismissed instance with the same key.
-
-        Args:
-            screen (SessionProgressScreen): Object captured when scheduling delivery.
-            snapshot (SessionProgressSnapshotDAO): Validated progress to paint.
-        """
-        if self._screen is screen and screen.is_live:
-            screen.apply_snapshot(snapshot=snapshot)

@@ -7,7 +7,8 @@ from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Input
 
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 from tests.tui.test_code_command import transcript_lines
 from tests.tui.test_path_suggestions_app import build_path_session
 
@@ -45,7 +46,7 @@ async def test_intervening_input_or_context_requires_two_fresh_escapes(
     """Consumed keys, programmatic input, focus and modal changes revoke the pair."""
     app = SloTUI(session=build_path_session(workdir=tmp_path))
     async with app.run_test() as pilot:
-        prompt = app.query_one(PromptInput)
+        prompt = app.query_one(PromptInputComponent)
         await pilot.press("escape")
         if transition == "session":
             from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,8 +104,8 @@ class TestSlashSuggestionEngine:
         assert state.replacement_start == len("/model ")
         assert state.rows[0].label.startswith("g")
 
-    def test_model_rows_include_provider_and_auth_detail(self) -> None:
-        """Model suggestion rows explain provider and auth readiness."""
+    def test_model_rows_show_only_name_and_context_window(self) -> None:
+        """Model suggestion rows show `<name> (Ctx: <tokens>)` with no detail line."""
         engine: SlashSuggestionEngine = SlashSuggestionEngine(
             registry=SlashRouter.registry(),
         )
@@ -122,8 +123,10 @@ class TestSlashSuggestionEngine:
             )
 
         assert state.visible is True
-        assert "anthropic" in (state.rows[0].detail or "")
-        assert "requires /auth" in (state.rows[0].detail or "")
+        row = state.rows[0]
+        assert re.fullmatch(r"claude\S* \(Ctx: \d+\)", row.label)
+        assert row.insert_text == row.label.split(" ")[0]
+        assert row.detail is None
 
     def test_model_argument_mode_includes_astra_without_catalog_discovery(self) -> None:
         """Real autocomplete projects Astra from the static catalog without discovery."""
@@ -148,7 +151,7 @@ class TestSlashSuggestionEngine:
             )
 
         assert state.visible is True
-        assert [row.label for row in state.rows] == ["gpt-6-astra"]
+        assert [row.insert_text for row in state.rows] == ["gpt-6-astra"]
         forbidden_discovery.assert_not_called()
 
     def test_model_argument_mode_includes_codex_models(self) -> None:
@@ -167,7 +170,7 @@ class TestSlashSuggestionEngine:
             )
 
         assert state.visible is True
-        labels: list[str] = [row.label for row in state.rows]
+        labels: list[str] = [row.insert_text for row in state.rows]
         assert "gpt-5-codex" in labels
         assert "gpt-5.3-codex" in labels
         assert "gpt-5.2-codex" in labels

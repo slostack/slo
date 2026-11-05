@@ -1,7 +1,7 @@
 """SubAgentProcess — manage one headless child ``slo run`` process.
 
 One process wrapper is created per task by ``SubAgentPool._run_one``. It
-spawns ``sys.executable -I -m src.cli run --json -p <prompt>`` via
+spawns the shared launch-policy command (isolated unless explicitly opted into development) via
 ``asyncio.create_subprocess_exec`` (venv-portable), reads its JSONL stdout
 line by line, re-hydrates each line into an ``AgentStreamEventDAO``, tags it
 with identity fields, updates the ``ProcessRegistry``, enforces the per-task
@@ -21,12 +21,11 @@ import base64
 import hashlib
 import json
 import os
-import sys
 import tempfile
 import time
 from collections import deque
 from pathlib import Path
-from typing import IO, Optional
+from typing import IO, Optional, Protocol
 from urllib.parse import quote_from_bytes
 
 _STDOUT_STREAM_LIMIT: int = 16 * 1024 * 1024  # 16 MB
@@ -59,7 +58,7 @@ from src.agents.slo_agent.orchestrator.dao import (
     terminal_reason_for_status,
 )
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
-from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env
+from src.agents.slo_agent.orchestrator.spawn_env import AgentLaunchPolicy
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.auth.credential_dao import ProviderName
 from src.auth.credential_resolver import CredentialResolver
@@ -136,6 +135,22 @@ Overridable via ``SLO_SUBAGENT_INACTIVITY_TIMEOUT_SECONDS``
 """
 
 
+class ManagedAgentSpawn(Protocol):
+    """Create a managed child; its process owner retains drain/cancel/reap ownership."""
+
+    async def __call__(
+        self,
+        *argv: str,
+        stdout: int,
+        stderr: int,
+        limit: int,
+        cwd: Optional[str],
+        env: dict[str, str],
+    ) -> asyncio.subprocess.Process:
+        """Start the supplied command with pipes and task working directory."""
+        ...
+
+
 class SubAgentProcess:
     """Runs one ``slo run --json`` child process and relays its tagged event stream.
 
@@ -187,6 +202,7 @@ class SubAgentProcess:
         parent_session_id: Optional[str] = None,
         slo_home: Optional[Path] = None,
         history_root: Optional[Path] = None,
+        spawn: Optional[ManagedAgentSpawn] = None,
     ) -> None:
         """Bind the process wrapper to its task, identity, relay, and registry.
 
@@ -208,7 +224,10 @@ class SubAgentProcess:
             history_root (Optional[Path]): Session history root shared with the
                 pool's fleet projection. Takes precedence over ``slo_home`` so child
                 files and execution evidence always live under one root.
+            spawn (Optional[ManagedAgentSpawn]): Process boundary override; defaults
+                to asyncio process creation. The wrapper retains process ownership.
         """
+        self._spawn = spawn
         self._task: SubAgentTaskDAO = task
         self._session_id: str = session_id
         self._model: Optional[str] = model
@@ -315,15 +334,19 @@ class SubAgentProcess:
             return None
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    def _build_argv(self) -> list[str]:
+    def _build_argv(self, *, launch_policy: Optional[AgentLaunchPolicy] = None) -> list[str]:
         """Build the headless child command line.
 
-        Uses ``sys.executable -I -m src.cli`` rather than a bare ``slo`` on PATH
+        Uses the shared policy (default ``sys.executable -I -m src.cli``) rather than a bare ``slo`` on PATH
         so the child always runs under the same interpreter and virtualenv as
         the orchestrator in installed and editable-install layouts, isolated from
         project import paths. The pool-assigned session id and history flag are
         unconditional so child captures,
         heartbeats, and history share one identity.
+
+        Args:
+            launch_policy (Optional[AgentLaunchPolicy]): Snapshot shared with environment
+                construction; omitted only for standalone command construction.
 
         Returns:
             list[str]: Argv for ``create_subprocess_exec``.
@@ -333,10 +356,6 @@ class SubAgentProcess:
             model_name=self._model or "",
         )
         argv: list[str] = [
-            sys.executable,
-            "-I",
-            "-m",
-            "src.cli",
             "run",
             "--json",
             "-p",
@@ -356,7 +375,7 @@ class SubAgentProcess:
         if self._task.system_prompt is not None:
             encoded: str = base64.b64encode(self._task.system_prompt.encode()).decode()
             argv += ["--system-prompt-b64", encoded]
-        return argv
+        return (launch_policy or AgentLaunchPolicy()).build_argv(arguments=argv)
 
     def _capture_dir(self) -> Optional[Path]:
         """Return the capture directory for this child, or ``None`` when not configured.
@@ -471,13 +490,16 @@ class SubAgentProcess:
         except OSError:
             return None
 
-    def _build_child_spawn_env(self) -> dict[str, str]:
+    def _build_child_spawn_env(self, *, launch_policy: Optional[AgentLaunchPolicy] = None) -> dict[str, str]:
         """Build the allowlisted environment for this pool-owned child.
 
         WHAT: Adds the current orchestrator PID and this child's canonical
             capture directory to the shared non-secret child environment.
         WHO: Called by run before it creates the headless child process.
         WHEN: Once for each SubAgentProcess spawn.
+
+        Args:
+            launch_policy (Optional[AgentLaunchPolicy]): Snapshot shared with argv.
 
         Returns:
             dict[str, str]: Allowlisted child environment with watchdog identity.
@@ -486,7 +508,7 @@ class SubAgentProcess:
         extra: dict[str, str] = {"SLO_PARENT_PID": str(os.getpid())}
         if capture_dir is not None:
             extra["SLO_CAPTURE_DIR"] = str(capture_dir)
-        return build_headless_child_env(extra=extra)
+        return (launch_policy or AgentLaunchPolicy()).build_environment(extra=extra)
 
     async def run(self) -> SubAgentResultDAO:
         """Spawn the child, stream its events, and return the canonical terminal winner.
@@ -534,13 +556,14 @@ class SubAgentProcess:
             # Spawn entry is latched at run entry; every pre-spawn exit must release
             # cancellers waiting on it, or a later cancel waits forever.
             try:
-                child_env = self._build_child_spawn_env()
+                launch_policy = AgentLaunchPolicy()
+                child_env = self._build_child_spawn_env(launch_policy=launch_policy)
                 credential = CredentialResolver.resolve(provider=ProviderName.OPENROUTER)
                 self._child_credential = credential.access_token.encode("utf-8") if credential else b""
                 spawn_context_sha256: Optional[str] = self._write_spawn_context()
                 stdout_identity: Optional[StdoutCaptureIdentityDAO] = self._open_stdout_capture()
-                self._proc = await asyncio.create_subprocess_exec(
-                    *self._build_argv(),
+                self._proc = await (self._spawn or asyncio.create_subprocess_exec)(
+                    *self._build_argv(launch_policy=launch_policy),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     limit=_STDOUT_STREAM_LIMIT,

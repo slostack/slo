@@ -1,6 +1,8 @@
 """Finite INIT branch evidence, separate from enabled reporting acceptance."""
 
 import asyncio
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
@@ -8,7 +10,8 @@ import pytest
 
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 
 
 def test_delivery_construction_is_inert_and_reuses_stores(tmp_path: Path) -> None:
@@ -81,14 +84,14 @@ async def test_mount_phase_order_and_preparation_branch(tmp_path: Path, history:
     )
     app = SloTUI(session=session)
     calls: list[str] = []
-    hydrate = app._hydrate_transcript_from_history
+    hydrate = ChatTranscriptComponent.hydrate
     subscribe = session.subscribe
     delivery = app._initialize_session_delivery
 
-    async def record_hydration() -> None:
+    async def record_hydration(transcript: ChatTranscriptComponent, **kwargs) -> None:
         """Retain real replay loading before any subscription."""
         calls.append("hydrate")
-        await hydrate()
+        await hydrate(transcript, **kwargs)
 
     async def notice() -> None:
         """Record the optional startup notice without unrelated UI refreshes."""
@@ -130,7 +133,7 @@ async def test_mount_phase_order_and_preparation_branch(tmp_path: Path, history:
             new_callable=PropertyMock,
             return_value="pending" if pending else "ready",
         ),
-        patch.object(app, "_hydrate_transcript_from_history", side_effect=record_hydration),
+        patch.object(ChatTranscriptComponent, "hydrate", new=record_hydration),
         patch.object(app, "_maybe_render_startup_notice", side_effect=notice),
         patch.object(session, "subscribe", side_effect=record_subscription),
         patch.object(app, "_initialize_session_delivery", side_effect=record_delivery),
@@ -140,7 +143,7 @@ async def test_mount_phase_order_and_preparation_branch(tmp_path: Path, history:
         patch.object(app, "_refresh_usage_status_bar", side_effect=lambda: calls.append("usage")),
         patch.object(app, "_start_session_preparation", side_effect=lambda: calls.append("prepare")),
         patch.object(app, "_has_credential_for_active_model", side_effect=credential),
-        patch.object(PromptInput, "focus", autospec=True) as focus,
+        patch.object(PromptInputComponent, "focus", autospec=True) as focus,
     ):
         async with app.run_test() as pilot:
             await pilot.pause()

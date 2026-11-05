@@ -1,6 +1,7 @@
 """Attached viewer scheduling contracts; no real windows or providers."""
 
 import asyncio
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -50,13 +51,15 @@ async def test_worker_renders_typed_outcome_once(status: str, tmp_path: Path) ->
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history", model_name="gpt-5.4")
     )
     app = SloTUI(session=session)
-    app._adapter = Mock()
+    sink = Mock()
+    sink.handle = AsyncMock()
+    app._chat_transcript.workflow_notice = sink
     app._visualizer_launched_for_run = True
     outcome = VisualizerLaunchOutcomeDAO.model_validate({"status": status, "pane_id": "viewer"})
     with patch.object(VisualizerLauncher, "launch_async", new_callable=AsyncMock, return_value=outcome):
         await app._run_visualizer_launch(parent_session_id="parent", session=session)
-    app._adapter.write.assert_called_once()
-    text = app._adapter.write.call_args.kwargs["content"]
+    sink.handle.assert_called_once()
+    text = sink.handle.call_args.kwargs["event"].content
     expected = {
         "opened": "Opened",
         "submitted": "Submitted",
@@ -84,7 +87,8 @@ async def test_completion_lifetime_and_failure_isolation(cutoff: str, tmp_path: 
     )
     app = SloTUI(session=session)
     sink = Mock()
-    app._adapter = sink
+    sink.handle = AsyncMock()
+    app._chat_transcript.workflow_notice = sink
     app._visualizer_launched_for_run = True
 
     async def launch(**kwargs: object) -> VisualizerLaunchOutcomeDAO:
@@ -104,10 +108,10 @@ async def test_completion_lifetime_and_failure_isolation(cutoff: str, tmp_path: 
         return VisualizerLaunchOutcomeDAO(status="failed", pane_id="known-pane")
 
     if cutoff == "notice_error":
-        sink.write.side_effect = RuntimeError("private-sentinel")
+        sink.handle.side_effect = RuntimeError("private-sentinel")
     with patch.object(VisualizerLauncher, "launch_async", side_effect=launch):
         await app._run_visualizer_launch(parent_session_id="parent", session=session)
     late = cutoff in ("replacement", "closing", "quiescing")
-    assert sink.write.call_count == (0 if late else 1)
+    assert sink.handle.call_count == (0 if late else 1)
     assert app._visualizer_launched_for_run is late
-    assert "private-sentinel" not in str(sink.write.call_args)
+    assert "private-sentinel" not in str(sink.handle.call_args)

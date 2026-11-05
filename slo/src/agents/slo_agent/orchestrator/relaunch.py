@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from contextlib import asynccontextmanager
-import sys
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, IO, Optional, Protocol
 
@@ -17,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from src.agents.slo_agent.orchestrator.capture_writer import WorkflowCaptureCompletionContext
 from src.agents.slo_agent.orchestrator.spawn_env import (
-    build_headless_child_env,
+    AgentLaunchPolicy,
     open_capture_file_append,
 )
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDAO
@@ -29,6 +28,21 @@ class _ProcessLike(Protocol):
     """Minimal subprocess result surface used by the relauncher."""
 
     pid: int
+
+
+class RelaunchSpawn(Protocol):
+    """Process creation boundary; capture ownership stays with the relauncher."""
+
+    async def __call__(
+        self,
+        *argv: str,
+        start_new_session: bool,
+        stdout: IO[bytes],
+        stderr: IO[bytes],
+        env: dict[str, str],
+    ) -> asyncio.subprocess.Process:
+        """Create a workload with the supplied command and owned capture endpoints."""
+        ...
 
 
 class RelaunchOutcomeDAO(BaseModel):
@@ -86,9 +100,20 @@ class WorkflowRelauncher:
         *,
         handle: WorkflowHandleDAO,
         history_root: Path,
+        spawn: Optional[RelaunchSpawn] = None,
     ) -> AsyncIterator[_RelaunchCaptureOwnership]:
-        """Yield a spawned workload and private capture lifetime for command-owned adoption."""
-        child_env = build_headless_child_env(workflow_id=handle.workflow_id)
+        """Yield a workload with capture lifetime retained until command-owned adoption.
+
+        Args:
+            handle (WorkflowHandleDAO): Original workflow identity and resume inputs.
+            history_root (Path): Existing capture root.
+            spawn (Optional[RelaunchSpawn]): Process boundary override; defaults to asyncio.
+
+        Yields:
+            _RelaunchCaptureOwnership: Workload and endpoints closed on context exit.
+        """
+        launch_policy = AgentLaunchPolicy()
+        child_env = launch_policy.build_environment(workflow_id=handle.workflow_id)
         capture_files = contextlib.ExitStack()
         try:
             stdout_file = await cls._open_capture_for_adoption(
@@ -105,8 +130,8 @@ class WorkflowRelauncher:
                 credential=child_env.get("SLO_OPENROUTER_API_KEY", ""),
                 capture_files=capture_files,
             )
-            process = await asyncio.create_subprocess_exec(
-                *cls._build_argv(handle=handle),
+            process = await (spawn or asyncio.create_subprocess_exec)(
+                *cls._build_argv(handle=handle, launch_policy=launch_policy),
                 start_new_session=True,
                 stdout=stdout_file,
                 stderr=stderr_file,
@@ -239,6 +264,7 @@ class WorkflowRelauncher:
         handle: WorkflowHandleDAO,
         history_root: Path,
         completion_context: Optional[WorkflowCaptureCompletionContext] = None,
+        spawn: Optional[RelaunchSpawn] = None,
     ) -> RelaunchOutcomeDAO:
         """Spawn a fresh process that resumes the handle's orchestrator session.
 
@@ -252,11 +278,13 @@ class WorkflowRelauncher:
             history_root (Path): Root directory containing orchestrator captures.
             completion_context (Optional[WorkflowCaptureCompletionContext]): Private
                 adoption identity supplied after the resume reservation.
+            spawn (Optional[RelaunchSpawn]): Process boundary override; defaults to asyncio.
 
         Returns:
             RelaunchOutcomeDAO: New pid on success or safe error text on failure.
         """
-        child_env = build_headless_child_env(workflow_id=handle.workflow_id)
+        launch_policy = AgentLaunchPolicy()
+        child_env = launch_policy.build_environment(workflow_id=handle.workflow_id)
         process: _ProcessLike | None = None
         try:
             capture_files = contextlib.ExitStack()
@@ -279,8 +307,8 @@ class WorkflowRelauncher:
                         completion_context=completion_context,
                     )
                 )
-                process = await asyncio.create_subprocess_exec(
-                    *cls._build_argv(handle=handle),
+                process = await (spawn or asyncio.create_subprocess_exec)(
+                    *cls._build_argv(handle=handle, launch_policy=launch_policy),
                     start_new_session=True,
                     stdout=stdout_file,
                     stderr=stderr_file,
@@ -296,26 +324,25 @@ class WorkflowRelauncher:
         return RelaunchOutcomeDAO(pid=process.pid)
 
     @staticmethod
-    def _build_argv(*, handle: WorkflowHandleDAO) -> list[str]:
+    def _build_argv(
+        *, handle: WorkflowHandleDAO, launch_policy: Optional[AgentLaunchPolicy] = None
+    ) -> list[str]:
         """Build a resumed orchestrator argv from the durable workflow handle.
 
         WHAT: Keeps the original brief, owner notification target, and working
-            directory while using --resume instead of --session-id. Python isolated
-            mode prevents project import paths from selecting agent modules.
+            directory while using --resume instead of --session-id. The shared
+            policy owns default isolation and explicit development imports.
         WHO: WorkflowRelauncher.invoke passes this argv to the subprocess API.
         WHEN: Immediately before a resumed orchestrator is spawned.
 
         Args:
             handle (WorkflowHandleDAO): Handle carrying the original launch inputs.
+            launch_policy (Optional[AgentLaunchPolicy]): Snapshot paired with child env.
 
         Returns:
             list[str]: Argument vector for the resumed headless orchestrator.
         """
-        return [
-            sys.executable,
-            "-I",
-            "-m",
-            "src.cli",
+        arguments: list[str] = [
             "run",
             "--orchestrator",
             "--json",
@@ -329,3 +356,4 @@ class WorkflowRelauncher:
             "--cwd",
             handle.cwd,
         ]
+        return (launch_policy or AgentLaunchPolicy()).build_argv(arguments=arguments)

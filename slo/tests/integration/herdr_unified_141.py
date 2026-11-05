@@ -1,6 +1,7 @@
 """Assertions for the same mounted prompt/configuration/both-viewer continuation."""
 
 import json
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from pathlib import Path
 
 from textual.pilot import Pilot
@@ -75,7 +76,7 @@ class UnifiedMountedJourney:
 
     @staticmethod
     async def submit(*, app: SloTUI, pilot: Pilot[None], text: str) -> None:
-        """Use the actual PromptInput key handler rather than invoking a slash handler."""
+        """Use the actual PromptInputComponent key handler rather than invoking a slash handler."""
         await pilot.pause()
         assert app._input is not None
         app._input.focus()
@@ -199,10 +200,11 @@ class UnifiedMountedJourney:
                 for row in commands(self.fake)
                 if row[:2] in [["pane", op] for op in ("split", "rename", "run")]
             ] == expected
-        assert app._adapter is not None
-        assert sum("Submitted workflow viewer command" in str(line) for line in app._adapter.lines) == (
-            1 if self.uncertain else 2
-        )
+        assert app.query_one(ChatTranscriptComponent)._adapter is not None
+        assert sum(
+            "Submitted workflow viewer command" in str(line)
+            for line in app.query_one(ChatTranscriptComponent)._adapter.lines
+        ) == (1 if self.uncertain else 2)
         assert not any(
             row[:2] in [["pane", op] for op in ("focus", "get", "close")] for row in commands(self.fake)
         )

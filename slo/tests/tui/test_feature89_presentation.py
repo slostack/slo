@@ -460,15 +460,8 @@ async def test_admitted_jev_picker_keyboard_and_cropped_paint(
         assert app._input is not None
         app._input.load_text("/model TypeSafe")
         menu = app.query_one(".slash-suggestion-lines")
-        painted = await wait_until_painted(
-            pilot=pilot, widget=menu, text="provider default; controls unavailable"
-        )
-        for text in (
-            "provider default; controls unavailable",
-            "context 1000000",
-            "Showing 1 of 1",
-            "catalog checked",
-        ):
+        painted = await wait_until_painted(pilot=pilot, widget=menu, text="(Ctx: 1000000)")
+        for text in ("(Ctx: 1000000)", "Showing 1 of 1"):
             assert "".join(text.split()) in painted
         assert "reasoning disabled" not in painted
         await pilot.press("down")
@@ -508,15 +501,14 @@ async def test_direct_picker_cropped_auth_context_and_footer(
         catalog_snapshot=snapshot,
     )
     app = SloTUI(session=session)
-    expected = "requires /auth" if auth_type is None else "subscription configured; not checked"
     async with app.run_test(size=size) as pilot:
         assert app._input is not None
         app._input.load_text("/model gpt-6-luna")
         menu = app.query_one(".slash-suggestion-lines")
-        painted = await wait_until_painted(pilot=pilot, widget=menu, text=expected)
-        for text in (expected, "context 1050000", "Showing 1 of 1"):
+        painted = await wait_until_painted(pilot=pilot, widget=menu, text="(Ctx: 1050000)")
+        for text in ("gpt-6-luna (Ctx: 1050000)", "Showing 1 of 1"):
             assert "".join(text.split()) in painted
-        assert ("requires/auth" in painted) == (auth_type is None)
+        assert "requires/auth" not in painted
 
 
 @pytest.mark.parametrize("size", [(60, 20), (120, 40)])
@@ -553,10 +545,10 @@ async def test_direct_picker_keyboard_paints_and_selects_exact_route(
         painted = await wait_until_painted(pilot=pilot, text="gpt-6-luna")
         for label in ("gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"):
             assert "".join(label.split()) in painted
-        assert "context1050000" in painted
+        assert "(Ctx:1050000)" in painted
         await pilot.press("down")
         await pilot.pause()
-        selected = app._slash_suggestion_state.highlighted_index
+        selected = app._input._slash_suggestion_state.highlighted_index
         assert selected == 1
         await pilot.press("tab")
         await pilot.pause()

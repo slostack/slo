@@ -249,8 +249,8 @@ async def test_pool_when_openrouter_gateway_error_follows_committed_chunk_does_n
     assert pool.drain_route_switch_log() == []
 
 
-def test_session_when_openrouter_stream_failure_is_committed_does_not_create_continuation() -> None:
-    """Reject committed OpenRouter continuation before another provider call is planned."""
+def test_session_when_openrouter_stream_failure_is_committed_allows_continuation() -> None:
+    """Allow committed OpenRouter continuation subject to the common safety guards."""
     from src.agents.providers.stream_recovery.dao import (
         ProviderStreamFailure,
         StreamRecoveryAction,
@@ -278,7 +278,7 @@ def test_session_when_openrouter_stream_failure_is_committed_does_not_create_con
         originating_provider=ProviderName.OPENROUTER,
     )
 
-    assert SloAgentSession._is_stream_continuation_eligible(plan=plan, result=result) is False
+    assert SloAgentSession._is_stream_continuation_eligible(plan=plan, result=result) is True
 
 
 def test_recovery_when_openrouter_policy_rejection_is_terminal_does_not_create_llm_observation() -> None:
@@ -292,3 +292,39 @@ def test_recovery_when_openrouter_policy_rejection_is_terminal_does_not_create_l
     assert ProviderErrorKind.POLICY_REJECTED is not ProviderErrorKind.OTHER
     assert decision.recovery_class is RecoveryClass.FATAL
     assert decision.observation_hint is None
+
+
+@pytest.mark.parametrize("guard", ["missing", "wrong_action", "uncommitted", "budget", "abort"])
+def test_openrouter_continuation_preserves_common_safety_guards(guard: str) -> None:
+    """Provider-neutral eligibility never bypasses commit, action, budget or abort."""
+    from src.agents.providers.stream_recovery.dao import (
+        ProviderStreamFailure,
+        StreamRecoveryAction,
+        StreamRecoveryDecisionDAO,
+    )
+
+    failure = ProviderStreamFailure(
+        decision=StreamRecoveryDecisionDAO(
+            action=(
+                StreamRecoveryAction.RETRY_FRESH_CONNECTION
+                if guard == "wrong_action"
+                else StreamRecoveryAction.DO_NOT_REPLAY
+            ),
+            reason_code="provider_stream_interrupted",
+        ),
+        partial_output_committed=guard != "uncommitted",
+        attempt_number=1,
+    )
+    plan = PromptAttemptPlanDAO(
+        attempt_kind="initial", text="hello", max_submission_attempts=1 if guard == "budget" else 10
+    )
+    result = PromptAttemptResultDAO(
+        turn_id="guard",
+        terminal_kind="run_failed",
+        final_response="partial",
+        aborted=guard == "abort",
+        committed_visible_output=True,
+        stream_failure=None if guard == "missing" else failure,
+        originating_provider=ProviderName.OPENROUTER,
+    )
+    assert not SloAgentSession._is_stream_continuation_eligible(plan=plan, result=result)

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Literal, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
+from src.agents.providers.faux import FauxChatModel
+from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.tui.workflows.dao import WorkflowListVisibilityRequestDAO
 
 
@@ -45,9 +49,21 @@ async def test_visibility_grammar_in_busy_and_history_states(
 ) -> None:
     """Visibility grammar needs neither inference idleness nor a history root."""
 
-    session = _build_session_stub(workdir=tmp_path)
-    session.is_running = busy
-    session.history_root = tmp_path / "history" if history else None
+    class VisibilitySession(SloAgentSession):
+        """Expose a controlled busy state on the real router-facing session contract."""
+
+        @property
+        def is_running(self) -> bool:
+            """Report the scenario's admission state without starting inference."""
+            return busy
+
+    session = VisibilitySession(
+        session_id="visibility-grammar",
+        agent=SloAgent(llm=FauxChatModel(responses=[]), cwd=str(tmp_path), tools=[]),
+        workdir=tmp_path,
+        history_store=FilesystemSessionHistoryStore(root=tmp_path / "history") if history else None,
+        enable_history=history,
+    )
     cases: tuple[tuple[str, Literal["dismiss", "show"], str | None], ...] = (
         ("/workflows tui dismiss", "dismiss", None),
         ("/wf\ttui\tdismiss\tparent", "dismiss", "parent"),

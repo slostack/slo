@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.30.2] — 2026-11-02
+
+### Fixed
+
+- Isolate per-workflow reconciliation conflicts so one inconsistent handle cannot block subsequent detached workflow launches. Retain conflicted snapshots and their capacity accounting, with safe diagnostic logging.
+- Repair inferred failed or stalled workflow states from matching authoritative terminal status while preserving identity checks and terminal finality.
+- Report orchestrator aborts as `workflow_aborted` through the inbox and TUI instead of presenting them as resumable failures.
+
+### Changed
+
+- Raise the default detached-workflow cap from 2 to 20, including the invalid-environment fallback; explicit overrides remain supported.
+
+### Verification
+
+- Add real-file regression journeys for launch recovery, conflict isolation, abort notification delivery, state identity/finality, and cap configuration.
+
 ## [0.30.1] — 2026-10-31
 
 ### Changed

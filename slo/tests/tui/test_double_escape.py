@@ -12,7 +12,8 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 from tests.tui._scroll_settle import pump_until
 from tests.tui.test_code_command import transcript_lines
 
@@ -49,17 +50,20 @@ async def test_two_escapes_cancel_real_run_and_persist_aborted_history(
     )
     app = SloTUI(session=session)
     async with app.run_test() as pilot:
-        prompt = app.query_one(PromptInput)
+        prompt = app.query_one(PromptInputComponent)
         prompt.load_text("hold this run")
         await pilot.press("enter")
         await pump_until(pilot=pilot, predicate=entered.is_set)
         if suggestions:
             prompt.load_text("/he")
-            await pump_until(pilot=pilot, predicate=lambda: app._slash_suggestion_state.visible)
+            await pump_until(
+                pilot=pilot,
+                predicate=lambda: app.query_one(PromptInputComponent)._slash_suggestion_state.visible,
+            )
         await pilot.press("escape")
         await pilot.pause()
         assert session.is_running
-        assert not app._slash_suggestion_state.visible
+        assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         assert not any("(aborting" in text for text, _ in transcript_lines(app=app))
         await pilot.press("escape")
         await pump_until(pilot=pilot, predicate=lambda: app._in_flight_task is None, max_cycles=100)

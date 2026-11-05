@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import random
+import math
 
 import httpcore
 import httpx
@@ -21,7 +21,7 @@ __all__ = [
 _FIRST_PROGRESS_TIMEOUT_SECONDS: float = 300.0
 _IDLE_TIMEOUT_SECONDS: float = 300.0
 _RECONNECT_DELAY_SECONDS: float = 1.0
-_CONTINUATION_MAX_ATTEMPTS: int = 5
+_CONTINUATION_MAX_ATTEMPTS: int = 10
 _STREAM_DISCONNECTION_TYPES: tuple[type[BaseException], ...] = (
     httpx.RemoteProtocolError,
     httpcore.RemoteProtocolError,
@@ -55,7 +55,7 @@ def provider_stream_idle_timeout_seconds() -> float:
 
 
 def provider_stream_reconnect_delay_seconds() -> float:
-    """Resolve the base delay used for the one fresh-connection reconnect."""
+    """Resolve the base delay used for bounded fresh-connection recovery."""
     return positive_float_env(
         primary_name="SLO_PROVIDER_STREAM_RECONNECT_DELAY_SECONDS",
         default=_RECONNECT_DELAY_SECONDS,
@@ -79,6 +79,7 @@ class StreamRecoveryService:
         *,
         exc: BaseException,
         partial_output_committed: bool,
+        attempt_number: int = 1,
     ) -> StreamRecoveryDecisionDAO:
         """Return the replay-safe decision for one escaped provider stream error.
 
@@ -90,7 +91,7 @@ class StreamRecoveryService:
             return cls._propagate_decision()
         if partial_output_committed:
             return cls._interrupted_decision(exc=exc)
-        return cls._reconnect_decision(exc=exc)
+        return cls._reconnect_decision(exc=exc, attempt_number=attempt_number)
 
     @classmethod
     def is_stream_disconnection(cls, *, exc: BaseException) -> bool:
@@ -134,12 +135,12 @@ class StreamRecoveryService:
         )
 
     @classmethod
-    def _reconnect_decision(cls, *, exc: BaseException) -> StreamRecoveryDecisionDAO:
-        """Build the one-shot fresh-connection decision before committed output."""
+    def _reconnect_decision(cls, *, exc: BaseException, attempt_number: int) -> StreamRecoveryDecisionDAO:
+        """Build the fresh-connection decision before committed output."""
         return StreamRecoveryDecisionDAO(
             action=StreamRecoveryAction.RETRY_FRESH_CONNECTION,
             reason_code="provider_stream_disconnected",
-            retry_delay_seconds=cls._retry_delay_seconds(),
+            retry_delay_seconds=cls.retry_delay_seconds(attempt_number=attempt_number),
             exception_family=cls._exception_family(exc=exc),
         )
 
@@ -149,6 +150,23 @@ class StreamRecoveryService:
         return f"{type(exc).__module__}.{type(exc).__name__}"
 
     @classmethod
-    def _retry_delay_seconds(cls) -> float:
-        """Return jittered bounded reconnect backoff from call-time configuration."""
-        return provider_stream_reconnect_delay_seconds() * random.uniform(0.5, 1.5)
+    def retry_delay_seconds(cls, *, attempt_number: int) -> float:
+        """Return deterministic exponential pacing, capped at 64 seconds.
+
+        Args:
+            attempt_number (int): One-indexed recovery ordinal.
+
+        Returns:
+            float: Configured base doubled per ordinal, never above 64 seconds.
+
+        Raises:
+            ValueError: If the ordinal is less than one.
+        """
+        if attempt_number < 1:
+            raise ValueError("Recovery attempt number must be positive")
+        base: float = provider_stream_reconnect_delay_seconds()
+        # Compare logarithms before exponentiation, including subnormal bases.
+        exponent: int = attempt_number - 1
+        if exponent >= 6 - math.log2(base):
+            return 64.0
+        return min(64.0, math.ldexp(base, exponent))

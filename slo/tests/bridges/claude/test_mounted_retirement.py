@@ -20,7 +20,7 @@ async def test_mounted_parked_waiter_cancel_or_unmount_joins_before_terminal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
 ) -> None:
     """Enter-driven native wait is joined on Ctrl+C or mounted shutdown."""
-    from src.tui.app import PromptInput
+    from src.tui.components.prompt_input.component import PromptInputComponent
     from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
@@ -72,7 +72,7 @@ async def test_mounted_parked_waiter_cancel_or_unmount_joins_before_terminal(
         async with asyncio.timeout(10):
             async with app.run_test() as pilot:
                 await pilot.pause()
-                app.query_one(PromptInput).text = "Read unused.txt"
+                app.query_one(PromptInputComponent).text = "Read unused.txt"
                 await pilot.press("enter")
                 await transport.receipt.wait()
                 # Provider is still reading after the exact-ID callback receipt.
@@ -212,15 +212,15 @@ async def test_mounted_new_retains_failed_parked_owner_then_explicit_retry(
                 runtime = model.bridge_adapter._runtime
                 assert runtime._owner is not None and runtime._tool_bridge is not None
                 assert not runtime._owner.done()
-                from src.tui.app import PromptInput
+                from src.tui.components.prompt_input.component import PromptInputComponent
 
                 old_agent = session.agent
-                before = len(app._adapter.lines) if app._adapter is not None else 0
-                app.query_one(PromptInput).text = "/model claude-bridge:claude-opus-4-8"
+                before = len(app._chat_transcript._adapter.lines) if app._chat_transcript._adapter is not None else 0
+                app.query_one(PromptInputComponent).text = "/model claude-bridge:claude-opus-4-8"
                 await pilot.press("enter")
                 await pilot.pause()
-                assert app._adapter is not None
-                notices = [content for content, _ in app._adapter.lines[before:] if "unconfirmed" in content]
+                assert app._chat_transcript._adapter is not None
+                notices = [content for content, _ in app._chat_transcript._adapter.lines[before:] if "unconfirmed" in content]
                 assert notices == ["previous model cleanup is unconfirmed; retry /model or /new"]
                 assert session.active_model_name == "claude-bridge:claude-haiku-5-5"
                 assert session.agent is old_agent

@@ -907,3 +907,110 @@ class TestLaunchNeverRaisesIntoGraph:
 
         assert "handle update failed" in json.loads(result)["error"]
         assert killed == [(6002, signal_module.SIGTERM)]
+
+
+async def test_launch_workflow_spawns_when_one_handle_cannot_be_reconciled(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A real lock-directory conflict cannot block a below-cap launch."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+    store = _build_store(tmp_path=tmp_path)
+    handle = WorkflowHandleDAO(
+        workflow_id="wf-conflict",
+        owner_session_id=_OWNER_SESSION_ID,
+        orchestrator_session_id="orch-conflict",
+        pid=999,
+        brief="private brief",
+        cwd="/repo",
+        state="running",
+    )
+    await store.write(handle=handle)
+    path = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / "wf-conflict.json"
+    assert path.resolve().is_relative_to(tmp_path.resolve())
+    before = path.read_bytes()
+    lock = path.with_suffix(".json.lock")
+    lock.unlink()
+    lock.mkdir()
+    OrchestratorStatusStore(
+        history_root=tmp_path / "history", orchestrator_session_id="orch-conflict", workflow_id="wf-conflict"
+    ).write_terminal(state="completed", exit_code=0, phase="done")
+    spawn = _FakeSpawn()
+    result = json.loads(
+        await _build_tool(tmp_path=tmp_path, spawn=spawn, store=store).ainvoke({"brief": "next"})
+    )
+    assert "error" not in result
+    assert spawn.call_count == 1
+    assert await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id=result["workflow_id"]) is not None
+    assert path.read_bytes() == before
+    records = [record for record in caplog.records if record.msg == "workflow_reconcile_conflict"]
+    assert len(records) == 1
+    assert records[0].workflow_id == "wf-conflict"
+    assert records[0].handle_state == "running"
+    assert records[0].error == "IsADirectoryError"
+    assert "private brief" not in caplog.text
+
+
+async def test_launch_workflow_counts_conflicted_live_handle_at_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conflicted running snapshot still consumes capacity."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+    monkeypatch.setattr(target=cfg_module, name="MAX_DETACHED_WORKFLOWS", value=1)
+    store = _build_store(tmp_path=tmp_path)
+    await store.write(
+        handle=WorkflowHandleDAO(
+            workflow_id="wf-conflict",
+            owner_session_id=_OWNER_SESSION_ID,
+            orchestrator_session_id="orch-conflict",
+            pid=999,
+            brief="running",
+            cwd="/repo",
+            state="running",
+        )
+    )
+    lock = tmp_path / "history" / _OWNER_SESSION_ID / "workflows" / "wf-conflict.json.lock"
+    assert lock.resolve().is_relative_to(tmp_path.resolve())
+    lock.unlink()
+    lock.mkdir()
+    OrchestratorStatusStore(
+        history_root=tmp_path / "history", orchestrator_session_id="orch-conflict", workflow_id="wf-conflict"
+    ).write_terminal(state="completed", exit_code=0, phase="done")
+    spawn = _FakeSpawn()
+    result = json.loads(
+        await _build_tool(tmp_path=tmp_path, spawn=spawn, store=store).ainvoke({"brief": "next"})
+    )
+    assert "workflow cap reached" in result["error"]
+    assert spawn.call_count == 0
+
+
+async def test_launch_workflow_spawns_when_failed_handle_has_aborted_status(tmp_path: Path) -> None:
+    """Launching repairs the historical failed/aborted pair durably."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+    store = _build_store(tmp_path=tmp_path)
+    await store.write(
+        handle=WorkflowHandleDAO(
+            workflow_id="wf-b64c",
+            owner_session_id=_OWNER_SESSION_ID,
+            orchestrator_session_id="orch-aborted",
+            pid=999,
+            brief="old",
+            cwd="/repo",
+            state="failed",
+        )
+    )
+    OrchestratorStatusStore(
+        history_root=tmp_path / "history", orchestrator_session_id="orch-aborted", workflow_id="wf-b64c"
+    ).write_terminal(state="aborted", exit_code=2, phase="done")
+    spawn = _FakeSpawn()
+    result = json.loads(
+        await _build_tool(tmp_path=tmp_path, spawn=spawn, store=store).ainvoke({"brief": "next"})
+    )
+    assert "error" not in result
+    assert spawn.call_count == 1
+    repaired = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-b64c")
+    assert repaired is not None and repaired.state == "aborted"

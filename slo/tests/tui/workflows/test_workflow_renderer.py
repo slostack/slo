@@ -9,6 +9,7 @@ from src.agents.slo_agent.herdr.dao import VisualizerLaunchOutcomeDAO
 
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowState
 from src.tui.workflows.dao import DetachedWorkflowUiEffectDAO
+from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from src.tui.workflows.renderer import DetachedWorkflowRenderer
 
 
@@ -19,14 +20,9 @@ class _FakeNoticeSink:
         """Start with an empty notice log."""
         self.lines: List[Tuple[str, str]] = []
 
-    def write(self, content: str, classes: str = "") -> None:
-        """Record one notice line.
-
-        Args:
-            content (str): Notice text.
-            classes (str): Semantic render class.
-        """
-        self.lines.append((content, classes))
+    async def handle(self, *, event: TranscriptNoticeDAO) -> None:
+        """Record a formatted notice at the renderer boundary."""
+        self.lines.append((event.content, event.classes))
 
 
 class _FakeScheduler:
@@ -134,12 +130,12 @@ class TestLaunchOutcomes:
     """Only completed typed results produce notices."""
 
     @pytest.mark.parametrize("status", ["opened", "submitted", "reused", "failed", "skipped"])
-    def test_typed_outcomes(
+    async def test_typed_outcomes(
         self, status: Literal["opened", "submitted", "reused", "skipped", "failed"]
     ) -> None:
         renderer, sink, scheduler = _build_renderer()
         renderer.apply_effects(effects=[_launch_effect()])
-        renderer.write_launch_outcome(
+        await renderer.write_launch_outcome(
             parent_session_id="orch-1",
             outcome=VisualizerLaunchOutcomeDAO(status=status, pane_id="pane-1"),
         )
@@ -161,12 +157,12 @@ class TestLaunchOutcomes:
         renderer.apply_effects(effects=[_launch_effect()])
         assert len(scheduler.calls) == (2 if status == "failed" else 1)
 
-    def test_failed_notice_still_releases_guard(self) -> None:
+    async def test_failed_notice_still_releases_guard(self) -> None:
         renderer, sink, scheduler = _build_renderer()
         renderer.apply_effects(effects=[_launch_effect()])
-        with patch.object(sink, "write", side_effect=RuntimeError("notice")):
+        with patch.object(sink, "handle", side_effect=RuntimeError("notice")):
             with pytest.raises(RuntimeError):
-                renderer.write_launch_outcome(
+                await renderer.write_launch_outcome(
                     parent_session_id="orch-1",
                     outcome=VisualizerLaunchOutcomeDAO(status="failed"),
                 )

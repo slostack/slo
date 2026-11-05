@@ -231,7 +231,7 @@ class ToolExecutionBlock(Vertical):
         """Render one in-progress output snapshot without settling this call.
 
         WHAT: Stores display-only partial content separately from terminal state.
-        WHO: ``TranscriptProjector`` calls it for tool-output update events.
+        WHO: ``TranscriptProjectionAdapter`` calls it for tool-output update events.
         WHEN: A streaming-capable tool is still running.
         """
         self._tool_name = snapshot.tool_name or self._tool_name
@@ -250,7 +250,7 @@ class ToolExecutionBlock(Vertical):
     ) -> None:
         """Store a recorded tool result and select its completed visual state.
 
-        Called by ``TranscriptProjector`` when a tool-result event arrives. The
+        Called by ``TranscriptProjectionAdapter`` when a tool-result event arrives. The
         method preserves result formatting and expansion behavior; the classes
         are CSS hooks only and do not replace ``_result_output`` as lifecycle
         truth.

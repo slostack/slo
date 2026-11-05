@@ -3,7 +3,10 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import ExitStack, asynccontextmanager
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
+
 from pathlib import Path
+from src.tui.components.chat_transcript.commands import TranscriptCommand, TranscriptNoticeDAO
 from unittest.mock import patch
 
 import pytest
@@ -152,14 +155,17 @@ async def test_inbox_delivery_disposition(tmp_path: Path, case: str) -> None:
             return await original_ack(session_id=session_id, message_id=message_id)
 
         app._app_closing = case == "closed_entry"
+        assert app._input is not None
         with (
             patch.object(store, "claim_next", side_effect=claim),
             patch.object(store, "ack", side_effect=ack) as ack_spy,
             patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
             patch.object(session, "invoke", wraps=session.invoke) as invoke,
-            patch.object(app, "_echo_user_line", wraps=app._echo_user_line) as echo,
+            patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
             patch.object(app, "_queue_prompt", wraps=app._queue_prompt) as queue,
-            patch.object(app._prompt_history, "record", wraps=app._prompt_history.record) as history,
+            patch.object(
+                app._input._prompt_history, "record", wraps=app._input._prompt_history.record
+            ) as history,
         ):
             if case in {"claim_error", "advance_error", "ack_error"}:
                 with pytest.raises(OSError, match="sentinel"):
@@ -201,7 +207,7 @@ async def test_inbox_delivery_disposition(tmp_path: Path, case: str) -> None:
                 fresh = SessionInboxStore(history_root=tmp_path / "history")
                 assert await fresh.claim_next(session_id=session.session_id) is None
             if delivered:
-                assert app._adapter is not None
+                assert app._chat_transcript._adapter is not None
                 prefixes = {
                     "ui_notice": "[scheduled notice]",
                     "transcript_note": "[scheduled update]",
@@ -210,7 +216,7 @@ async def test_inbox_delivery_disposition(tmp_path: Path, case: str) -> None:
                 }
                 assert any(
                     text.startswith(prefixes[message.delivery_mode]) and message.text in text
-                    for text, _ in app._adapter.lines
+                    for text, _ in app._chat_transcript._adapter.lines
                 )
             if case == "context_open":
                 assert (
@@ -382,27 +388,34 @@ async def test_durable_advance_then_shutdown(tmp_path: Path, throwing_notice: bo
                 entered.set()
                 await release.wait()
 
-        original_write = app._write_adapter_line
+        original_write = app._chat_transcript.handle
 
-        def write(*, content: str, classes: str) -> None:
+        async def write(*, command: TranscriptCommand) -> None:
             """Fault only the diagnostic, not the actual lifecycle service."""
+            if not isinstance(command, TranscriptNoticeDAO):
+                await original_write(command=command)
+                return
+            content, classes = command.content, command.classes
             if (
                 throwing_notice
                 and content == "Inbox delivery deferred during shutdown; claimed item retained."
             ):
                 raise RuntimeError("private diagnostic sentinel")
-            original_write(content=content, classes=classes)
+            await original_write(command=command)
             if cutoff == "before_chat_registration" and content.startswith("[scheduled update]"):
                 app._app_closing = True
                 entered.set()
 
+        assert app._input is not None
         with (
             patch.object(store, "claim_next", side_effect=claim),
-            patch.object(app._prompt_history, "record", wraps=app._prompt_history.record) as history,
-            patch.object(app, "_echo_user_line", wraps=app._echo_user_line) as echo,
+            patch.object(
+                app._input._prompt_history, "record", wraps=app._input._prompt_history.record
+            ) as history,
+            patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
             patch.object(app, "_queue_prompt", wraps=app._queue_prompt) as queue,
             patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
-            patch.object(app, "_write_adapter_line", side_effect=write),
+            patch.object(app._chat_transcript, "handle", side_effect=write),
             patch.object(store, "ack", wraps=store.ack) as ack,
             patch.object(session, "invoke", wraps=session.invoke) as invoke,
         ):
@@ -435,10 +448,14 @@ async def test_durable_advance_then_shutdown(tmp_path: Path, throwing_notice: bo
                 )
                 retained = await handles.read(owner_session_id=session.session_id, workflow_id="wf-inbox")
                 assert retained == handle
-                assert app._adapter is not None
+                assert app._chat_transcript._adapter is not None
                 if cutoff != "before_chat_registration":
-                    assert not any("private lifecycle" in text for text, _ in app._adapter.lines)
-                assert not any("private diagnostic sentinel" in text for text, _ in app._adapter.lines)
+                    assert not any(
+                        "private lifecycle" in text for text, _ in app._chat_transcript._adapter.lines
+                    )
+                assert not any(
+                    "private diagnostic sentinel" in text for text, _ in app._chat_transcript._adapter.lines
+                )
             finally:
                 release.set()
                 await asyncio.wait_for(poll, timeout=5)
@@ -456,11 +473,12 @@ async def assert_restart_retains_claim(
     before_events = await history.load_events(session_id=message.session_id)
     assert not any(event.kind in {"user_message", "tool_call"} for event in before_events)
     async with mounted_inbox(root=root, session_id=message.session_id) as restarted:
+        assert restarted._input is not None
         with patch.object(restarted._session, "invoke", wraps=restarted._session.invoke) as invoke:
             await restarted._poll_session_inbox()
             invoke.assert_not_called()
             assert restarted._in_flight_task is None
-            assert restarted._prompt_history.older(current_buffer="") is None
+            assert restarted._input._prompt_history.older(current_buffer="") is None
             assert await history.load_events(session_id=message.session_id) == before_events
             path = inbox_file(root=root, message=message)
             assert path.parent.name == "claimed" and path.read_bytes() == original_bytes

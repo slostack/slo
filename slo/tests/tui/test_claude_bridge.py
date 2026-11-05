@@ -14,7 +14,8 @@ from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHisto
 from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
-from src.tui.app import PromptInput, SloTUI
+from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from tests.cli.test_claude_bridge import ScriptedClaudeTransport, scripted_adapter_class
 
@@ -49,7 +50,7 @@ async def test_fresh_prompt_streams_and_persists_answer(
     async with app.run_test() as pilot:
         await pilot.pause()
         original_id = session.session_id
-        app.query_one(PromptInput).text = "/new"
+        app.query_one(PromptInputComponent).text = "/new"
         await pilot.press("enter")
         await pilot.pause()
         session = app._session
@@ -59,19 +60,19 @@ async def test_fresh_prompt_streams_and_persists_answer(
             event.kind in {"user_message", "assistant_message", "tool_call"}
             for event in await store.load_events(session_id=session.session_id)
         )
-        app.query_one(PromptInput).text = "/model claude-bridge:claude-opus-4-8"
+        app.query_one(PromptInputComponent).text = "/model claude-bridge:claude-opus-4-8"
         await pilot.pause()
-        assert app._slash_suggestion_state.visible
-        assert [row.insert_text for row in app._slash_suggestion_state.rows] == [
+        assert app.query_one(PromptInputComponent)._slash_suggestion_state.visible
+        assert [row.insert_text for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows] == [
             "claude-bridge:claude-opus-4-8"
         ]
         await pilot.press("tab")
-        assert app.query_one(PromptInput).text.strip() == "/model claude-bridge:claude-opus-4-8"
+        assert app.query_one(PromptInputComponent).text.strip() == "/model claude-bridge:claude-opus-4-8"
         await pilot.press("enter")
         await pilot.pause()
         assert session.active_model_name == "claude-bridge:claude-opus-4-8"
         assert not transport.connected
-        app.query_one(PromptInput).text = "/reasoning high"
+        app.query_one(PromptInputComponent).text = "/reasoning high"
         await pilot.press("enter")
         await pilot.pause()
         assert session.active_reasoning_level == "high"
@@ -80,7 +81,7 @@ async def test_fresh_prompt_streams_and_persists_answer(
             event.kind in {"user_message", "assistant_message", "tool_call"}
             for event in await store.load_events(session_id=session.session_id)
         )
-        app.query_one(PromptInput).text = "hello"
+        app.query_one(PromptInputComponent).text = "hello"
         await pilot.press("enter")
         await pilot.pause()
         async with asyncio.timeout(10):
@@ -103,17 +104,17 @@ async def test_fresh_prompt_streams_and_persists_answer(
         blocks = list(app.query(AssistantStreamBlock))
         assert len(blocks) == 1
         assert blocks[0].get_copyable_text() == "Hello bridge"
-        assert app._adapter is not None
-        before = len(app._adapter.lines)
-        app.query_one(PromptInput).text = "/model claude-bridge:claude-haiku-5-5"
+        assert app._chat_transcript._adapter is not None
+        before = len(app._chat_transcript._adapter.lines)
+        app.query_one(PromptInputComponent).text = "/model claude-bridge:claude-haiku-5-5"
         await pilot.press("enter")
         await pilot.pause()
-        rejections = [content for content, _ in app._adapter.lines[before:] if "fresh session" in content]
+        rejections = [content for content, _ in app._chat_transcript._adapter.lines[before:] if "fresh session" in content]
         assert rejections == []
         assert session.active_model_name == "claude-bridge:claude-haiku-5-5"
         assert transport.prompts == ["hello"]
         finished_session = session
-        app.query_one(PromptInput).text = "/new"
+        app.query_one(PromptInputComponent).text = "/new"
         await pilot.press("enter")
         await pilot.pause()
         assert app._session is not finished_session
@@ -169,7 +170,7 @@ async def test_project_question_three_rounds_uses_real_tools(
     app = SloTUI(session=session)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one(PromptInput).text = "Locate and read default model"
+        app.query_one(PromptInputComponent).text = "Locate and read default model"
         await pilot.press("enter")
         async with asyncio.timeout(10):
             while not transport.closed or session.is_running:

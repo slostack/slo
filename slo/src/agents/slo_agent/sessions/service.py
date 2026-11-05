@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import tempfile
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,7 +56,11 @@ from src.agents.providers.stream_recovery.dao import (
     StreamRecoveryAction,
     StreamRecoveryDecisionDAO,
 )
-from src.agents.providers.stream_recovery.service import provider_stream_continuation_max_attempts
+from src.agents.providers.stream_recovery.clock import RecoveryElapsedClock
+from src.agents.providers.stream_recovery.service import (
+    StreamRecoveryService,
+    provider_stream_continuation_max_attempts,
+)
 from src.agents.providers.credit_exhaustion_policy import (
     AllModelsExhaustedError,
     ProviderErrorClassifier,
@@ -338,7 +343,7 @@ class PromptAttemptPlanDAO(BaseModel):
         description="One-indexed session attempt number for the original prompt.",
     )
     max_submission_attempts: int = Field(
-        default=5,
+        default=10,
         ge=1,
         description="Maximum total session attempts for the original prompt.",
     )
@@ -411,6 +416,10 @@ class PromptAttemptTrackerDAO(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     turn_id: str = Field(description="Turn id this tracker is watching.")
+    interrupted_text_blocks: dict[str, str] = Field(
+        default_factory=dict,
+        description="Unfinished visible text, retained only after committed interruption.",
+    )
     final_response: str = Field(default="", description="Final assistant response text.")
     aborted: bool = Field(default=False, description="True when the attempt ended in run_aborted.")
     terminal_kind: Optional[Literal["run_completed", "run_aborted", "run_failed"]] = Field(
@@ -446,7 +455,7 @@ class PromptAttemptTrackerDAO(BaseModel):
     )
     stream_failure: Optional[ProviderStreamFailure] = Field(
         default=None,
-        description="Typed redacted provider stream failure eligible for one reconnect.",
+        description="Typed redacted provider stream failure eligible for bounded reconnect recovery.",
     )
 
 
@@ -561,6 +570,13 @@ class HerdrPolicySourcesDAO(BaseModel):
         )
 
 
+class ReconnectRecoveryEpisodeDAO(BaseModel):
+    """Transient session-owned bounds for one logical submission's recovery."""
+
+    started_at_seconds: float = Field(allow_inf_nan=False)
+    reconnect_attempts_used: int = Field(default=0, ge=0, le=30)
+
+
 class SloAgentSession:
     """One ``SloAgent`` per process, one in-flight prompt at a time."""
 
@@ -578,10 +594,16 @@ class SloAgentSession:
         plugin_loader_kwargs: Optional[dict[str, Path]] = None,
         catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = None,
         pending_preparation: bool = False,
+        recovery_clock: Optional[Callable[[], float]] = None,
+        recovery_wait: Optional[Callable[[float], Awaitable[None]]] = None,
     ) -> None:
         """Compose a session around a config (lazy) or a pre-built agent.
 
         Args:
+            recovery_clock (Optional[Callable[[], float]]): Recovery-only elapsed
+                clock. Defaults to BOOTTIME with conservative portable fallback.
+            recovery_wait (Optional[Callable[[float], Awaitable[None]]]): Recovery
+                wait collaborator. Defaults to asyncio.sleep.
             pending_preparation (bool): Defer capabilities and expose unknown usage
                 until the mounted TUI completes catalog preparation.
             catalog_snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied
@@ -614,6 +636,11 @@ class SloAgentSession:
                 "SloAgentSession requires either a SessionConfigDAO (for lazy "
                 "agent construction) or a pre-built SloAgent."
             )
+        self._recovery_clock = recovery_clock or RecoveryElapsedClock()
+        self._recovery_wait = recovery_wait or asyncio.sleep
+        self._reconnect_episode: Optional[ReconnectRecoveryEpisodeDAO] = None
+        self._reconnect_failure: Optional[ProviderStreamFailure] = None
+        self._recovery_abort_requested: bool = False
         self._workdir: Path = workdir.resolve()
         self._session_id: str = session_id
         self._config: Optional[SessionConfigDAO] = config
@@ -3262,6 +3289,7 @@ class SloAgentSession:
         Aborts the active ``SloAgent`` turn and schedules the pool's ordered
         seal-and-drain shutdown when an orchestrator pool is active.
         """
+        self._recovery_abort_requested = True
         if self._agent is not None:
             self._agent.abort()
         if self._sub_agent_pool is not None:
@@ -3580,10 +3608,16 @@ class SloAgentSession:
                 result: PromptAttemptResultDAO = self._build_attempt_result(
                     tracker=tracker,
                 )
-                next_plan: PromptAttemptPlanDAO | None = await self._derive_next_attempt_plan(
-                    plan=plan,
-                    result=result,
-                )
+                try:
+                    next_plan: PromptAttemptPlanDAO | None = await self._derive_next_attempt_plan(
+                        plan=plan,
+                        result=result,
+                    )
+                except asyncio.CancelledError:
+                    tracker.aborted = True
+                    await self._finalize_successful_attempt(tracker=tracker, turn_id=prepared.turn_id)
+                    yield AgentStreamEventDAO(kind="run_aborted", content="<aborted>")
+                    return
                 if next_plan is not None:
                     if next_plan.attempt_kind == "stream_reconnect":
                         pending_session_events.append(self._build_stream_reconnecting_event(result=result))
@@ -3633,6 +3667,9 @@ class SloAgentSession:
         """
         async with self._lock:
             self._is_running = True
+            self._recovery_abort_requested = False
+            self._reconnect_episode = None
+            self._reconnect_failure = None
             self._clear_terminal_reporting_attention()
             token = self._begin_reporting_operation()
             try:
@@ -3652,6 +3689,8 @@ class SloAgentSession:
                 self._admitted_run_snapshot = None
                 self._admitted_openrouter_credential = None
                 self._is_running = False
+                self._reconnect_episode = None
+                self._reconnect_failure = None
                 self._end_reporting_operation(token=token)
 
     def _set_terminal_reporting_failure(self) -> None:
@@ -3902,6 +3941,7 @@ class SloAgentSession:
                     runtime_handler=prepared.runtime_handler,
                     policy=prepared.policy,
                     tracker=tracker,
+                    plan=prepared.plan,
                 ):
                     self._record_attempt_stream_event(
                         tracker=tracker,
@@ -4071,9 +4111,9 @@ class SloAgentSession:
     ) -> None:
         """Update the tracker when a terminal stream event is observed.
 
-        Only ``run_completed`` and ``run_aborted`` terminal outcomes are
-        mirrored here. Other events (thinking deltas, text deltas, tool calls)
-        pass through without mutating the tracker.
+        Track terminal outcomes and unfinished visible text. On committed failure,
+        unfinished text becomes a durable assistant message for continuation;
+        completed text blocks are already owned by the canonical runtime trace.
 
         Args:
             tracker (PromptAttemptTrackerDAO): Tracker to update.
@@ -4082,6 +4122,13 @@ class SloAgentSession:
         Returns:
             None: The tracker is mutated in place.
         """
+        if event.kind == "text_delta":
+            block = event.block_id or "text"
+            tracker.interrupted_text_blocks[block] = tracker.interrupted_text_blocks.get(block, "") + (
+                event.delta or ""
+            )
+        elif event.kind == "text_end":
+            tracker.interrupted_text_blocks.pop(event.block_id or "text", None)
         if SloAgent._is_committed_output_event(event=event):
             tracker.committed_visible_output = True
         if event.kind == "run_completed":
@@ -4182,6 +4229,16 @@ class SloAgentSession:
             turn_id=turn_id,
         )
         await self._persist_routed_model_if_changed()
+        if isinstance(error, ProviderStreamFailure) and error.partial_output_committed:
+            partial_text = "".join(tracker.interrupted_text_blocks.values())
+            if partial_text:
+                await self._append_history_event(
+                    event=self._build_event(
+                        kind="assistant_message",
+                        turn_id=turn_id,
+                        payload=SessionHistoryEventPayloadDAO(role="assistant", content=partial_text),
+                    )
+                )
         signal: ProviderErrorSignalDAO | None = self._inspect_provider_error(error=error)
         if signal is not None and tracker.preflight_decision is not None:
             await self._persist_provider_limit_observation(
@@ -4448,29 +4505,45 @@ class SloAgentSession:
         plan: PromptAttemptPlanDAO,
         result: PromptAttemptResultDAO,
     ) -> Optional[PromptAttemptPlanDAO]:
-        """Build and audit the one permitted fresh-connection attempt.
+        """Plan repeated pre-commit reconnects within the session-owned episode.
 
-        Called by the submission attempt planner after a failed initial attempt.
-        It never sleeps or replays committed output; the agent owns the typed
-        commit-state decision and this session owns durable audit state.
+        The episode begins before audit. Waits and preparation consume elapsed
+        time; only the final admission immediately before streaming charges count.
         """
         failure: Optional[ProviderStreamFailure] = result.stream_failure
-        if plan.attempt_kind != "initial" or failure is None:
+        if plan.attempt_kind not in {"initial", "stream_reconnect", "stream_continuation"}:
             return None
-        if failure.partial_output_committed:
+        if failure is None or failure.partial_output_committed:
+            self._reconnect_episode = None
+            self._reconnect_failure = None
             return None
-        if failure.decision.action.value != "retry_fresh_connection":
+        if failure.decision.action is not StreamRecoveryAction.RETRY_FRESH_CONNECTION:
             return None
+        if self._reconnect_episode is None and isinstance(self._recovery_clock, RecoveryElapsedClock):
+            self._recovery_clock.start_episode()
+        now: float | None = self._read_recovery_clock()
+        if now is None:
+            return None
+        if self._reconnect_episode is None:
+            self._reconnect_episode = ReconnectRecoveryEpisodeDAO(started_at_seconds=now)
+        self._reconnect_failure = failure
+        episode: ReconnectRecoveryEpisodeDAO = self._reconnect_episode
+        if not self._can_admit_reconnect(now=now):
+            return None
+        delay: float = StreamRecoveryService.retry_delay_seconds(
+            attempt_number=episode.reconnect_attempts_used + 1
+        )
         await self._persist_stream_reconnecting_event(
             failed_turn_id=result.turn_id,
-            decision=failure.decision,
+            decision=failure.decision.model_copy(update={"retry_delay_seconds": delay}),
         )
-        await asyncio.sleep(failure.decision.retry_delay_seconds)
+        if not await self._wait_for_reconnect(delay=delay):
+            return None
         return PromptAttemptPlanDAO(
             attempt_kind="stream_reconnect",
             text=plan.text,
             persist_user_message=False,
-            excluded_turn_ids=frozenset({result.turn_id}),
+            excluded_turn_ids=plan.excluded_turn_ids | frozenset({result.turn_id}),
             preflight_compaction_mode="skip",
             source_failed_turn_id=result.turn_id,
             submission_attempt_number=plan.submission_attempt_number,
@@ -4478,13 +4551,67 @@ class SloAgentSession:
             original_text=plan.original_text,
         )
 
+    def _read_recovery_clock(self) -> float | None:
+        """Fail recovery closed on a failed or non-finite clock, without changing epochs."""
+        try:
+            now: float = self._recovery_clock()
+            return now if math.isfinite(now) else None
+        except (OSError, ValueError, OverflowError):
+            return None
+
+    def _can_admit_reconnect(self, *, now: float | None) -> bool:
+        """Check the session's independent count, strict deadline and abort guards."""
+        episode = self._reconnect_episode
+        if episode is None or now is None or self._recovery_abort_requested:
+            return False
+        return episode.reconnect_attempts_used < 30 and now < episode.started_at_seconds + 300.0
+
+    async def _wait_for_reconnect(self, *, delay: float) -> bool:
+        """Finish the required elapsed delay despite early wakes, never past the window."""
+        episode = self._reconnect_episode
+        now: float | None = self._read_recovery_clock()
+        if episode is None or not self._can_admit_reconnect(now=now) or now is None:
+            return False
+        ready_at: float = now + delay
+        deadline: float = episode.started_at_seconds + 300.0
+        while self._can_admit_reconnect(now=now):
+            if now >= ready_at:
+                return True
+            await self._recovery_wait(min(ready_at, deadline) - now)
+            now = self._read_recovery_clock()
+            if now is None:
+                return False
+        if self._recovery_abort_requested:
+            raise asyncio.CancelledError()
+        return False
+
+    def _admit_reconnect_submission(self, *, plan: PromptAttemptPlanDAO) -> None:
+        """Charge a reconnect after preparation, opening history and rate preflight.
+
+        Raises:
+            asyncio.CancelledError: When an operator abort was observed.
+            ProviderStreamFailure: When preparation exhausted recovery admission.
+        """
+        if self._recovery_abort_requested:
+            raise asyncio.CancelledError()
+        if plan.attempt_kind != "stream_reconnect":
+            return
+        if not self._can_admit_reconnect(now=self._read_recovery_clock()):
+            if self._reconnect_failure is None:
+                raise RuntimeError("Reconnect requires an originating stream failure")
+            raise self._reconnect_failure
+        assert self._reconnect_episode is not None
+        self._reconnect_episode.reconnect_attempts_used += 1
+
     async def _derive_stream_continuation_attempt_plan(
         self,
         *,
         plan: PromptAttemptPlanDAO,
         result: PromptAttemptResultDAO,
     ) -> Optional[PromptAttemptPlanDAO]:
-        """Build a safe continuation plan for one committed stream interruption."""
+        """Audit and pace a new inspect-first submission, independent of reconnect bounds."""
+        if self._recovery_abort_requested:
+            raise asyncio.CancelledError()
         if not self._is_stream_continuation_eligible(plan=plan, result=result):
             return None
         continuation_plan: PromptAttemptPlanDAO = self._build_stream_continuation_attempt_plan(
@@ -4496,6 +4623,10 @@ class SloAgentSession:
             plan=continuation_plan,
             failure=result.stream_failure,
         )
+        delay = StreamRecoveryService.retry_delay_seconds(attempt_number=plan.submission_attempt_number)
+        await self._recovery_wait(delay)
+        if self._recovery_abort_requested:
+            raise asyncio.CancelledError()
         return continuation_plan
 
     @staticmethod
@@ -4506,9 +4637,7 @@ class SloAgentSession:
     ) -> bool:
         """Return whether a committed stream interruption may continue safely."""
         failure: ProviderStreamFailure | None = result.stream_failure
-        if result.originating_provider is ProviderName.OPENROUTER:
-            return False
-        if failure is None:
+        if failure is None or result.aborted:
             return False
         if failure.decision.action is not StreamRecoveryAction.DO_NOT_REPLAY:
             return False
@@ -4536,7 +4665,7 @@ class SloAgentSession:
             attempt_kind="stream_continuation",
             text=continuation_text,
             persist_user_message=True,
-            excluded_turn_ids=frozenset(),
+            excluded_turn_ids=plan.excluded_turn_ids,
             preflight_compaction_mode="respect_dirty_flag",
             source_failed_turn_id=failed_turn_id,
             submission_attempt_number=attempt_number,
@@ -4600,13 +4729,14 @@ class SloAgentSession:
     ) -> None:
         """Persist and render the redacted reconnect audit before the fresh request.
 
-        WHAT: Writes the diagnostic boundary event for the one permitted retry.
+        WHAT: Writes the planned retry ordinal and effective session delay.
         WHO: Called by the session attempt planner before it sleeps and re-invokes.
-        WHEN: Only after an initial pre-commit typed provider failure.
+        WHEN: After an eligible pre-commit failure, before waiting; not proof of dispatch.
         """
         metadata: dict[str, object] = {
             "reason_code": decision.reason_code,
-            "attempt": 1,
+            "attempt": self._reconnect_episode.reconnect_attempts_used + 1 if self._reconnect_episode else 1,
+            "retry_delay_seconds": decision.retry_delay_seconds,
             "exception_family": decision.exception_family,
         }
         await self._append_history_event(
@@ -4620,8 +4750,8 @@ class SloAgentSession:
             event=AgentStreamEventDAO(kind="stream_reconnecting", metadata=metadata),
         )
 
-    @staticmethod
     def _build_stream_reconnecting_event(
+        self,
         *,
         result: PromptAttemptResultDAO,
     ) -> AgentStreamEventDAO:
@@ -4638,7 +4768,14 @@ class SloAgentSession:
             kind="stream_reconnecting",
             metadata={
                 "reason_code": failure.decision.reason_code,
-                "attempt": 1,
+                "attempt": (
+                    self._reconnect_episode.reconnect_attempts_used + 1 if self._reconnect_episode else 1
+                ),
+                "retry_delay_seconds": StreamRecoveryService.retry_delay_seconds(
+                    attempt_number=(
+                        self._reconnect_episode.reconnect_attempts_used + 1 if self._reconnect_episode else 1
+                    )
+                ),
                 "exception_family": failure.decision.exception_family,
             },
         )
@@ -4831,6 +4968,7 @@ class SloAgentSession:
         runtime_handler: Optional[AgentRuntimeHandler],
         policy: ModelRateLimitPolicyDAO,
         tracker: PromptAttemptTrackerDAO,
+        plan: PromptAttemptPlanDAO,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Run the prompt with local rate governance and bounded retries.
 
@@ -4842,6 +4980,8 @@ class SloAgentSession:
             policy (ModelRateLimitPolicyDAO): Active model rate policy.
             tracker (PromptAttemptTrackerDAO): Attempt tracker receiving the
                 successful preflight decision.
+            plan (PromptAttemptPlanDAO): Submission whose recovery admission is
+                checked after preflight and immediately before agent dispatch.
 
         Yields:
             AgentStreamEventDAO: Streamed prompt events plus retry-status events.
@@ -4868,6 +5008,7 @@ class SloAgentSession:
         iteration_recovery_policy: IterationRecoveryPolicy = self._build_iteration_recovery_policy()
         stream_timeout_seconds: float = _stream_inactivity_timeout_seconds()
         self.agent._plugin_dispatcher = self._plugin_dispatcher
+        self._admit_reconnect_submission(plan=plan)
         stream = self.agent.invoke(
             query=text,
             history=history if not message_history else None,
@@ -5059,7 +5200,7 @@ class SloAgentSession:
         )
         await self._dispatch_event(event=retry_event)
         yield retry_event
-        await asyncio.sleep(decision.wait_seconds)
+        await self._recovery_wait(decision.wait_seconds)
         self._clear_retry_cooldown()
         self._record_preflight_attempt(decision=decision)
 

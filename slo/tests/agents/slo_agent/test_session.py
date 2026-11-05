@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -57,6 +57,7 @@ def _build_faux_session(
     *,
     workdir: Path,
     responses: list,
+    recovery_wait: Callable[[float], Awaitable[None]] | None = None,
 ) -> SloAgentSession:
     """Build a session whose agent is wired to a scripted ``FauxChatModel``.
 
@@ -73,6 +74,7 @@ def _build_faux_session(
         agent=agent,
         workdir=workdir,
         session_id=str(uuid4()),
+        recovery_wait=recovery_wait,
     )
 
 
@@ -265,23 +267,29 @@ class TestSloAgentSessionPromptStreaming:
 
         assert [event.kind for event in events] == ["run_retrying", "run_completed"]
         assert invocation_texts[0] == "finish the task"
-        assert "Continuation attempt 2/5." in invocation_texts[1]
+        assert "Continuation attempt 2/10." in invocation_texts[1]
         assert "finish the task" in invocation_texts[1]
         assert "httpx.ReadTimeout" not in invocation_texts[1]
 
     @pytest.mark.asyncio
-    async def test_invoke_stops_after_five_committed_stream_interruptions(self, tmp_path: Path) -> None:
-        """A stream continuation cannot start a sixth submission attempt."""
+    async def test_invoke_stops_after_ten_committed_stream_interruptions(self, tmp_path: Path) -> None:
+        """A stream continuation cannot start an eleventh submission attempt."""
         from src.agents.providers.stream_recovery.dao import (
             ProviderStreamFailure,
             StreamRecoveryAction,
             StreamRecoveryDecisionDAO,
         )
 
+        async def immediate_wait(delay: float) -> None:
+            """Avoid wall sleeps in this submission-budget regression; journey tests verify pacing."""
+            return None
+
         session: SloAgentSession = _build_faux_session(
             workdir=tmp_path,
             responses=[FauxChatModel.assistant_message(content="unused")],
+            recovery_wait=immediate_wait,
         )
+
         invocation_count: int = 0
 
         async def _always_interrupt(*, query: str, **_: object):
@@ -305,13 +313,8 @@ class TestSloAgentSessionPromptStreaming:
                 async for event in session.invoke(text="finish the task"):
                     events.append(event)
 
-        assert invocation_count == 5
-        assert [event.kind for event in events] == [
-            "run_retrying",
-            "run_retrying",
-            "run_retrying",
-            "run_retrying",
-        ]
+        assert invocation_count == 10
+        assert [event.kind for event in events] == ["run_retrying"] * 9
 
     @pytest.mark.asyncio
     async def test_invoke_times_out_when_main_stream_goes_silent(self, tmp_path: Path) -> None:
@@ -2323,7 +2326,7 @@ class TestAstraBoundedSessionContracts:
         ]
         assert invocation_texts[0] == "finish the task"
         assert len(invocation_texts) == 2
-        assert "Continuation attempt 2/5." in invocation_texts[1]
+        assert "Continuation attempt 2/10." in invocation_texts[1]
         assert "finish the task" in invocation_texts[1]
         assert "httpx.ReadTimeout" not in invocation_texts[1]
         expected_tuple = ("gpt-6-astra", "api_key", "high", "high", True, True)

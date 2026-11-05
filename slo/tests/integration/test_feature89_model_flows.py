@@ -698,7 +698,7 @@ async def test_committed_pool_failure_boundaries(
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Distinguish agent no-replay from the unchanged session semantic continuation."""
+    """Distinguish agent no-replay from the session's ten-submission continuation budget."""
     root = tmp_path.resolve()
     assert isolated_catalog.path.resolve().is_relative_to(root)
     isolated_catalog.persist(
@@ -820,7 +820,7 @@ async def test_committed_pool_failure_boundaries(
     assert failed[0]["payload"]["metadata"]["partial_output_committed"] is True
     assert len(users) == 2 and users[0]["turn_id"] != users[1]["turn_id"]
     continuation = users[1]["payload"]["content"]
-    assert continuation.startswith("Continuation attempt 2/5.")
+    assert continuation.startswith("Continuation attempt 2/10.")
     assert "Original task:\nrun echo-89" in continuation
     assert "inspect the current worktree, git diff, and task artifacts" in continuation
     assert "Do not repeat a completed or side-effecting operation" in continuation

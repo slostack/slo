@@ -95,7 +95,9 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
             description="both resumed fleet rows are mounted",
         )
         assert len(app.query(SubAgentFleetRow)) == 2
-        assert (await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")).state == "failed"
+        handle = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        assert handle is not None
+        assert handle.state == "failed"
         editor.text = "/workflows tui dismiss"
         await pilot.press("enter")
         await wait_for_condition(
@@ -151,7 +153,9 @@ async def test_resumed_legacy_visibility_durable_dismiss_and_lifetime_reset(tmp_
             description="successor show refresh is complete without legacy rows",
         )
         assert list(restarted.query(SubAgentFleetRow)) == []
-        assert (await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")).state == "failed"
+        handle = await store.read(owner_session_id="legacy-owner", workflow_id="wf-legacy")
+        assert handle is not None
+        assert handle.state == "failed"
 
 
 @dataclass

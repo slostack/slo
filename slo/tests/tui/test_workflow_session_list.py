@@ -117,7 +117,7 @@ def _build_session(*, workdir: Path, supplier: Optional[_AttachedSupplier] = Non
 class _ListApp(SloTUI):
     """Mount a real visibility owner through the public service factory."""
 
-    CSS_PATH = Path(__file__).resolve().parents[2] / "src/tui/app.tcss"
+    CSS_PATH = str(Path(__file__).resolve().parents[2] / "src/tui/app.tcss")
 
     def __init__(self, *, workdir: Path) -> None:
         """Bind the controlled registry without replacing session methods."""

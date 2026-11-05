@@ -283,6 +283,86 @@ A passing test suite does not waive a failing static or live-acceptance gate.
 
 ---
 
+## Experimental fresh Claude SDK bridge
+
+Explicit `claude-bridge:<model-name>` routes run through
+`SloAgentSession → SloAgent / existing graph → SloClaudeBridge(BaseChatModel) →
+SloClaudeBridgeAdapter → official ClaudeSDKClient → Claude Code`. Direct
+Anthropic routes are unchanged. The same bridge instance is retained separately
+through `SloBridgeProtocol` for final-context configuration, cancellation and close.
+The portable boundary lives in `src/bridges/claude/sdk`; it does not import Slo,
+LangChain or Textual.
+
+Native fragment reconciliation lives in `sdk/response.py`: streamed blocks are
+corroborated by response-scoped assistant fragments before tool publication.
+`sdk/transport.py` guards raw assistant block kinds before the official SDK can
+discard unknown kinds; supported blocks' extra vendor metadata is ignored.
+Only text, thinking and tool_use blocks are accepted. A per-invocation admission
+budget rejects excessive retained evidence rather than evicting late-conflict
+snapshots. This is not an exact heap or transient SDK allocation bound.
+
+Set `SLO_CLAUDE_BRIDGE_ENABLED=1` to opt in. In the TUI, use `/new`, type
+`/model claude-bridge:` and narrow the autocomplete, Tab to select, then Enter.
+Successive text prompts in the same live host session resume the completed native
+conversation without replaying host prompts or previous tool results. Each turn
+has a fresh SDK runtime and disconnects before success; the next uses the native
+result's session ID through the SDK `resume` option. Restoring a different host
+session's transcript remains unsupported. Commands and startup notices are not
+conversation replay. Multi-turn failure/cancellation hardening and live-native
+resume parity are still under verification; uncertain failures require `/new`.
+For headless use an explicit qualified route, for example:
+
+```bash
+SLO_CLAUDE_BRIDGE_ENABLED=1 slo run --model claude-bridge:claude-haiku-5-5 -p 'Hello'
+```
+
+Exact local route families are `claude-bridge:claude-{haiku,sonnet,opus,fable}-<version>`.
+The inclusive requested range is interpreted as `4-8`, `4-9`, `5-0`, `5-1`, `5-2`,
+`5-3`, `5-4`, `5-5`, not every imaginable decimal version. For example,
+`claude-bridge:claude-opus-4-8` and `claude-bridge:claude-haiku-5-5` are selectable.
+Existing catalog identifiers `claude-bridge:claude-sonnet-4-6`,
+`claude-bridge:claude-haiku-4-5`, `claude-bridge:claude-fable` and
+`claude-bridge:claude-fable-5` are retained. These are **local routes**, not a claim
+that each name exists upstream or is available to your native account. Existing
+names come from Slo's committed catalog; the family/version expansion is explicit
+operator-requested routing. No discovery or entitlement inference is performed.
+Upstream rejection remains a failure (safe native subtype/HTTP status when supplied),
+with no silent fallback. Unqualified `claude-*` names still use normal Anthropic.
+
+All route IDs remain qualified through configuration, picker, factory and portable
+session options; only the native SDK model argument removes `claude-bridge:`.
+The existing catalog shape requires numeric host planning values: 200K context,
+4096 output and 60 local RPM, no host retries or known TPM.
+Slo's `/reasoning` controls native effort: `minimal` maps to `low`;
+`low`, `medium`, `high`, `xhigh`, and `max` pass through to SDK `effort`
+with adaptive thinking. `off` disables extended thinking and omits effort.
+The default reasoning level is `high`; the native model may reject unsupported effort values.
+These are Slo planning policy, **not measured provider capacity, reasoning support,
+entitlement, availability, rate limits or billing guarantees**. Unknown native
+properties remain unchecked. Local rows are derived for presentation/admission and
+never inserted into shared catalog snapshots or cache serialization.
+`SLO_CLAUDE_BRIDGE_EXECUTABLE` optionally selects a trusted absolute Claude Code
+executable; otherwise the pinned SDK bundle is used. No PATH probing, token copy
+or Slo OAuth refresh is part of this route. Sign in using Claude Code `/login`
+outside Slo before selecting the route. Changing that login affects shared native
+account state. **Native transcripts may persist even when Slo history is off.**
+
+Supported Python SDK pin: 0.2.176, declared bundled CLI 2.1.316, Python 3.11.
+SDK disconnect acknowledgement is not guaranteed process reap. No stronger
+sandbox, zero-native-retry, billing or account-access guarantee is made.
+Inherited native API-key/token/gateway/cloud overrides are rejected; supported
+empty tools/MCP/settings/skills/plugins controls and bare mode are requested.
+
+This implementation is **not acceptance-ready**: native startup preparation,
+submission commitment, the complete response/protocol contracts, capability and
+retirement matrices, extraction/compatibility evidence and full gates remain open.
+The intended first slice is one fresh text prompt per host session (next prompt
+requires `/new`), TUI or standalone headless, optional real Slo history, incremental
+answer and supported cancellation/closure. Tools, images, continuation, native
+resume/import, pools/fallback, compaction, steering and bridge children are not
+supported. Deterministic SDK-transport tests are not native/account verification;
+no live account test has been authorized or run.
+
 ## Optional Herdr integration
 
 This checkout adds optional status reporting, private native restore, and workflow

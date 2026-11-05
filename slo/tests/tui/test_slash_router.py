@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -45,19 +45,16 @@ async def test_visibility_grammar_in_busy_and_history_states(
 ) -> None:
     """Visibility grammar needs neither inference idleness nor a history root."""
 
-    class VisibilitySession:
-        """Expose only the state needed for local routing; all execution is absent."""
-
-        is_running: bool = busy
-        history_root: Optional[Path] = tmp_path / "history" if history else None
-
-    session = VisibilitySession()
-    for line, action, target in (
+    session = _build_session_stub(workdir=tmp_path)
+    session.is_running = busy
+    session.history_root = tmp_path / "history" if history else None
+    cases: tuple[tuple[str, Literal["dismiss", "show"], str | None], ...] = (
         ("/workflows tui dismiss", "dismiss", None),
         ("/wf\ttui\tdismiss\tparent", "dismiss", "parent"),
         ("/workflows  tui  show  ", "show", None),
         ("/wf\ttui\tshow", "show", None),
-    ):
+    )
+    for line, action, target in cases:
         result = await SlashRouter.dispatch(line=line, session=session)
         assert result.tui_visibility == WorkflowListVisibilityRequestDAO(action=action, target_id=target)
         assert result.rendered == ""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -915,6 +916,162 @@ class TestSloAgentSessionLazyBuild:
 
         mock_refresh.assert_awaited_once()
         assert response == "hi"
+
+    async def test_invoke_refreshes_stale_oauth_via_controlled_vendor_boundary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordinary OAuth refresh flows through real seams and mocked vendor I/O only.
+
+        Complements ``test_invoke_refreshes_stale_openai_oauth_before_lazy_build``
+        (which patches the refresh helper itself): this case runs the real
+        lazy config-backed session with the real ``CredentialResolver``,
+        ``CredentialStore``, ``refresh_if_stale``, ``OAuthProvider.refresh``
+        and ``LLMFactory`` against a persisted synthetic stale credential.
+        Only third-party vendor boundaries are doubled: the OAuth token
+        endpoint HTTP call (aiohttp) and the ``httpx.AsyncClient.send``
+        transport underneath the OpenAI SDK Responses request. No internal
+        resolver, refresher, provider class or factory is patched; the real
+        ``LLMFactory`` and session build path run unchanged. No operator or
+        native credential file, account or network is touched; the synthetic
+        credential lives only in the test-owned store.
+
+        Asserts the refresh POST reached the token endpoint URL with the
+        registered client id, grant type and stale refresh token, the
+        inference request carried the refreshed bearer token, the run
+        completed with the synthetic reply, and the persisted credential is
+        fresh.
+        """
+        import base64
+        import json
+        from datetime import timedelta
+        from typing import Any
+
+        import httpx
+        import openai
+        from src.auth.credential_store import CredentialStore
+        from tests.bridges.claude.test_session_credentials import remove_all_slo_credentials
+
+        remove_all_slo_credentials(monkeypatch=monkeypatch)
+
+        def _jwt(*, claims: dict[str, Any]) -> str:
+            """Build a fake three-segment JWT whose payload carries ``claims``."""
+            header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
+            payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+            return f"{header}.{payload}.signature"
+
+        stale_token = _jwt(claims={"https://api.openai.com/auth": {"chatgpt_account_id": "acct-stale"}})
+        fresh_token = _jwt(claims={"https://api.openai.com/auth": {"chatgpt_account_id": "acct-fresh"}})
+        # Persisted with a usable future expiry so the real resolver admits it;
+        # the real refresher still considers it stale (inside its 60s buffer)
+        # and performs exactly one refresh through the mocked token endpoint.
+        store = CredentialStore()
+        store.persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENAI,
+                auth_type=AuthType.OAUTH,
+                access_token=stale_token,
+                refresh_token="rt-stale",
+                expires_at=datetime.now(timezone.utc) + timedelta(seconds=30),
+            )
+        )
+
+        refresh_posts: list[dict[str, str]] = []
+
+        class ControlledTokenSession:
+            """aiohttp boundary double: records and answers the token POST only."""
+
+            async def __aenter__(self) -> "ControlledTokenSession":
+                """Return the session double; no socket is opened."""
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                """Close the session double."""
+                return None
+
+            def post(self, *, url: str, data: dict[str, str]) -> "_ControlledTokenResponse":
+                """Record the refresh POST and answer with a fresh token payload."""
+                refresh_posts.append({"url": url, **data})
+                return _ControlledTokenResponse()
+
+        class _ControlledTokenResponse:
+            """Synthetic successful token-endpoint response."""
+
+            status: int = 200
+
+            async def __aenter__(self) -> "_ControlledTokenResponse":
+                """Return the response double."""
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                """Release the response double."""
+                return None
+
+            async def text(self) -> str:
+                """Return the synthetic fresh token payload."""
+                return json.dumps(
+                    {
+                        "access_token": fresh_token,
+                        "refresh_token": "rt-fresh",
+                        "expires_in": 3600,
+                    }
+                )
+
+        monkeypatch.setattr("src.auth.oauth_provider.ClientSession", ControlledTokenSession)
+
+        sse_body = (
+            "event: response.output_text.delta\n"
+            'data: {"type": "response.output_text.delta", "delta": "hi"}\n\n'
+            "event: response.completed\n"
+            'data: {"type": "response.completed", "response": {"id": "resp_test", '
+            '"status": "completed", "output": [{"type": "message", "role": "assistant", '
+            '"content": [{"type": "output_text", "text": "hi"}]}]}}\n\n'
+        )
+        # Vendor transport seam only: replace ``httpx.AsyncClient.send`` so
+        # the OpenAI SDK request never leaves the process. The double records
+        # the vendor request and answers only the Codex Responses endpoint;
+        # every other request raises instead of touching the network.
+        inference_requests: list[httpx.Request] = []
+
+        async def controlled_send(
+            self: httpx.AsyncClient,
+            request: httpx.Request,
+            **kwargs: Any,
+        ) -> httpx.Response:
+            if request.url.host != "chatgpt.com" or not request.url.path.endswith("/responses"):
+                raise AssertionError(f"Unexpected vendor request: {request.method} {request.url}")
+            inference_requests.append(request)
+            return httpx.Response(
+                status_code=200,
+                headers={"content-type": "text/event-stream"},
+                content=sse_body,
+                request=request,
+            )
+
+        monkeypatch.setattr(httpx.AsyncClient, "send", controlled_send)
+        session: SloAgentSession = SloAgentSession.build(
+            config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5", enable_history=False)
+        )
+        try:
+            response, _iterations, _aborted = await _collect_result(session=session, text="hello")
+        finally:
+            built_llm: object | None = session._agent.llm if session._agent is not None else None
+            sdk_client: object | None = getattr(built_llm, "root_async_client", None)
+            if isinstance(sdk_client, openai.AsyncOpenAI):
+                await sdk_client.close()
+
+        assert response == "hi"
+        assert len(refresh_posts) == 1
+        assert refresh_posts[0]["url"] == "https://auth.openai.com/oauth/token"
+        assert refresh_posts[0]["grant_type"] == "refresh_token"
+        assert refresh_posts[0]["refresh_token"] == "rt-stale"
+        assert refresh_posts[0]["client_id"] == "app_EMoamEEZ73f0CkXaXp7hrann"
+        assert len(inference_requests) == 1
+        assert inference_requests[0].method == "POST"
+        assert inference_requests[0].headers.get("authorization") == f"Bearer {fresh_token}"
+        persisted = store.load().providers[ProviderName.OPENAI]
+        assert persisted.access_token == fresh_token
+        assert persisted.refresh_token == "rt-fresh"
+        assert persisted.expires_at is not None and persisted.expires_at > datetime.now(timezone.utc)
 
 
 def _build_pool_mock():

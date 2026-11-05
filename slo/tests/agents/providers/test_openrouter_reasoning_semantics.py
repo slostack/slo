@@ -139,7 +139,9 @@ async def test_default_effort_without_disable_permission_transmits_advertised_ef
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         with patch("src.agents.base.CredentialResolver.require", return_value=credential):
             model = LLMFactory.create(
-                model_name=entry.model_name, snapshot=snapshot, http_async_client=client,
+                model_name=entry.model_name,
+                snapshot=snapshot,
+                http_async_client=client,
                 reasoning_level=entry.reasoning_profile.default_level,
             ).llm
         await model.ainvoke(input="hello")

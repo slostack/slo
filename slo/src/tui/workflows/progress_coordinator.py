@@ -19,7 +19,6 @@ import asyncio
 from collections.abc import Callable
 from typing import Optional, Protocol
 
-from textual.timer import Timer
 
 from config.logger import log_error
 from src.tui.workflows.dao import (
@@ -81,6 +80,14 @@ class WorkflowProgressSink(Protocol):
         ...
 
 
+class WorkflowRefreshTimer(Protocol):
+    """Consumer-owned cancellation surface for an observation timer."""
+
+    def stop(self) -> None:
+        """Stop future refresh callbacks."""
+        ...
+
+
 class WorkflowProgressCoordinator:
     """Coalesce owner-scoped observation; never cancel agent execution.
 
@@ -94,7 +101,7 @@ class WorkflowProgressCoordinator:
         *,
         service: WorkflowProgressSource,
         sink: WorkflowProgressSink,
-        schedule: Callable[[float, Callable[[], None]], Timer],
+        schedule: Callable[[float, Callable[[], None]], WorkflowRefreshTimer],
     ) -> None:
         """Bind one owner and its mounted presentation boundary without starting work.
 
@@ -105,13 +112,13 @@ class WorkflowProgressCoordinator:
         Args:
             service (WorkflowProgressSource): Current owner-scoped service.
             sink (WorkflowProgressSink): App adapter for panel/modal presentation.
-            schedule (Callable[[float, Callable[[], None]], Timer]): Textual interval
+            schedule (Callable[[float, Callable[[], None]], WorkflowRefreshTimer]): Textual interval
                 timer factory, invoked positionally as ``schedule(seconds, callback)``.
         """
         self._service: WorkflowProgressSource = service
         self._sink: WorkflowProgressSink = sink
-        self._schedule: Callable[[float, Callable[[], None]], Timer] = schedule
-        self._timer: Optional[Timer] = None
+        self._schedule: Callable[[float, Callable[[], None]], WorkflowRefreshTimer] = schedule
+        self._timer: Optional[WorkflowRefreshTimer] = None
         self._task: Optional[asyncio.Task[None]] = None
         self._selected: Optional[WorkflowSessionKeyDAO] = None
         # Bumped on every select/minimize/close; a read applies only if unchanged.

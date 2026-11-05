@@ -1,11 +1,5 @@
 # Claude follow-ups — independent completion assessment
 
-> Commit excerpt: recorded phase evidence, not a new verification run.
-> Superseded dispatch histories are omitted from this commit and preserved
-> in the local working copies. References to historical sections or mappings
-> "below" refer to those originals. The completion document contains the
-> consolidated acceptance mapping; handoff verdicts describe their own phase.
-
 ## Verdict: COMPLETE / READY (authorized feature scope only)
 
 Date: 2026-11-03. Workflow accounting: turn 2 / dispatch 3; no nested dispatch performed. This is the completion gate, not implementation authorship or a repetition of the review verdict.

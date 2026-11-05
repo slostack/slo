@@ -106,6 +106,7 @@ class CleanDrainScenario:
                 "import pytest\n"
                 "from tests.agents.slo_agent.orchestrator.capture_test_safety import CaptureLaunchContainment\n"
                 f"root = Path({str(root)!r})\n"
+                "from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool\n"
                 "guard = CaptureLaunchContainment(root=root, monkeypatch=pytest.MonkeyPatch())\n"
                 f"guard.allow_script(path=Path({str(workload)!r}), pass_fds=({barrier_read},))\n"
                 f"guard._assert_child_descriptor_tuple(expected_fds=({barrier_read}, {identity_write}))\n"

@@ -113,6 +113,7 @@ def test_feature_specification_references_canonical_design_prerequisites() -> No
     assert "(../../coding/solution-design/SKILL.md)" in text
     assert "is the rule source this skill specializes" in text
 
+
 def test_solution_design_requires_consent_and_forbids_implicit_implementation() -> None:
     """Solution design remains a design-only skill unless the user separately authorizes implementation."""
     text = SOLUTION_DESIGN_PATH.read_text(encoding="utf-8")

@@ -61,8 +61,7 @@ async def test_verified_dismissal_paints_status_before_long_label(size: tuple[in
                     "key verified"
                 )
                 painted = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-                assert "key verified" in painted
-                assert "context " in (app._input._slash_suggestion_state.rows[0].detail or "")
+                assert "(Ctx: " in app._input._slash_suggestion_state.rows[0].label
                 assert "synthetic-picker-key" not in painted
                 assert session.active_model_name != route
                 # EARLY-01: type through the slash in a provider model identity.

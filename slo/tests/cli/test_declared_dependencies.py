@@ -166,6 +166,28 @@ class TestDeclaredDependencies:
             )
         )
 
+    def test_claude_sdk_pin_and_bundled_cli_are_available(self) -> None:
+        """A17: prove installed packaging facts without executing the bundled binary."""
+        import os
+        from importlib.metadata import version
+        from claude_agent_sdk._cli_version import __cli_version__
+        from packaging.requirements import Requirement
+        from src.bridges.claude.sdk.authentication import ClaudeNativeAuthentication
+        from src.bridges.claude.sdk.dao import ClaudeBridgeConfigurationDAO
+
+        project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        requirement = next(
+            Requirement(value)
+            for value in project["project"]["dependencies"]
+            if _requirement_name(value) == "claude-agent-sdk"
+        )
+        assert str(requirement.specifier) == "==0.2.176"
+        assert version("claude-agent-sdk") in requirement.specifier
+        executable = ClaudeNativeAuthentication(configuration=ClaudeBridgeConfigurationDAO()).get_executable()
+        assert executable.exists() and executable.is_file()
+        assert os.access(executable, os.X_OK)
+        assert __cli_version__ == "2.1.316"
+
     def test_click_is_not_imported_by_shipped_code(self) -> None:
         """``click`` must reach the code only as Typer's vendored ``typer._click``.
 

@@ -525,12 +525,6 @@ class SloAgent:
         """Report whether this agent's bridge closed with confirmed cleanup."""
         return self._bridge_owner is not None and self._bridge_owner.is_retired()
 
-    def live_bridge_message_history(self) -> list[BaseMessage]:
-        """Supply only this live bridge's completed context to a nonpersistent session."""
-        if self._bridge_owner is None:
-            return []
-        return self._bridge_owner.live_message_history()
-
     def _build_initial_run_context(
         self,
         *,

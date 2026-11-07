@@ -193,6 +193,25 @@ class ClaudeSubmissionPlanDAO(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     fresh_native_session: bool = Field(description="True when Claude has seen none of the history.")
+    abandon_parked_round: bool = Field(
+        default=False,
+        description="True when a parked round must be cancelled before the fresh session starts.",
+    )
+
+    @model_validator(mode="after")
+    def _abandon_implies_fresh(self) -> "ClaudeSubmissionPlanDAO":
+        """Reject contradictory admission instructions before native work.
+
+        Returns:
+            ClaudeSubmissionPlanDAO: The consistent submission plan.
+
+        Raises:
+            ValueError: Abandon was requested without a fresh native session.
+        """
+        if self.abandon_parked_round and not self.fresh_native_session:
+            raise ValueError("Abandoning a parked round requires a fresh native session.")
+        return self
+
     content: tuple[ClaudeTextDAO | ClaudeImageDAO, ...] = Field(
         min_length=1, description="Ordered transcript blocks followed by the new prompt blocks."
     )

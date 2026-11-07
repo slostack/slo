@@ -14,7 +14,6 @@ from langchain_core.messages import (
     AIMessageChunk,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     AIMessage,
     ToolMessage,
 )
@@ -68,7 +67,6 @@ class SloClaudeBridge(BaseChatModel):
     _tools: tuple[ClaudeToolDefinitionDAO, ...] = PrivateAttr(default=())
     _pending: Optional[ClaudeResponseCompletedDAO] = PrivateAttr(default=None)
     _consumed: list[dict[str, object]] = PrivateAttr(default_factory=list)
-    _completed_history: list[BaseMessage] = PrivateAttr(default_factory=list)
     _tool_result_adapter: Optional[ToolCallResponseAdapter] = PrivateAttr(default=None)
     _response_adapter: Optional[AIAgentResponseAdapter] = PrivateAttr(default=None)
     _call_adapter: Optional[ToolCallAdapter] = PrivateAttr(default=None)
@@ -103,22 +101,50 @@ class SloClaudeBridge(BaseChatModel):
         self._session_options = session_options
 
     def bind_tools(self, tools: Sequence[object], **kwargs: Any) -> BaseChatModel:
-        """Freeze canonical local-tool definitions without starting native work.
+        """Freeze local or typed orchestration definitions without starting native work.
 
-        Accepts an empty inventory or any subset of the canonical local tools:
+        Accepts typed named orchestration tools, an empty inventory or canonical local subsets:
         native initialization is checked per advertised definition, so a subset
         is safe. Unknown, copied or duplicated tools, extra keyword options and
         a binding change after configuration raise ``ValueError`` before native work.
         """
-        canonical = {t.name: t for t in create_local_tools()}
-        if kwargs or len({getattr(t, "name", None) for t in tools}) != len(tools):
+        if kwargs:
+            raise ValueError("Unsupported Claude tool binding.")
+        frozen = self.freeze_tool_binding(tools=tools)
+        if self._session_options is not None and self._tools != frozen:
+            raise ValueError("Claude bridge tool binding cannot change.")
+        self._tools = frozen
+        return self
+
+    @classmethod
+    def freeze_tool_binding(cls, *, tools: Sequence[object]) -> tuple[ClaudeToolDefinitionDAO, ...]:
+        """Validate and detach the complete proposed host binding without native work.
+
+        Session preparation calls this before retiring its current agent; bind_tools
+        uses the same policy before publishing definitions. No adapter is constructed.
+
+        Args:
+            tools (Sequence[object]): Complete proposed local and orchestration bundle.
+
+        Returns:
+            tuple[ClaudeToolDefinitionDAO, ...]: Independently owned portable definitions.
+
+        Raises:
+            ValueError: Names, identities, duplicates or schemas are unsupported.
+        """
+        canonical: dict[str, BaseTool] = {tool.name: tool for tool in create_local_tools()}
+        if len({getattr(tool, "name", None) for tool in tools}) != len(tools):
             raise ValueError("Unsupported Claude tool binding.")
         definitions: list[ClaudeToolDefinitionDAO] = []
         for tool in sorted(tools, key=lambda tool: getattr(tool, "name", "")):
-            if not isinstance(tool, BaseTool) or not any(
-                tool is candidate for candidate in canonical.values()
+            if not isinstance(tool, BaseTool) or not (
+                tool.name in ClaudeToolInventory.ORCHESTRATION_NAMES
+                or any(tool is candidate for candidate in canonical.values())
             ):
-                raise ValueError("Claude bridge requires canonical local tools.")
+                raise ValueError(
+                    "Claude bridge requires canonical local or typed orchestration tools; "
+                    "unsupported extension tools."
+                )
             schema = tool.args_schema
             if schema is None or isinstance(schema, dict):
                 raise ValueError("Claude tool requires a typed argument schema.")
@@ -127,11 +153,7 @@ class SloClaudeBridge(BaseChatModel):
                     name=tool.name, description=tool.description, input_schema=schema.model_json_schema()
                 )
             )
-        frozen = ClaudeToolInventory.freeze(tools=tuple(definitions))
-        if self._session_options is not None and self._tools != frozen:
-            raise ValueError("Claude bridge tool binding cannot change.")
-        self._tools = frozen
-        return self
+        return ClaudeToolInventory.freeze(tools=tuple(definitions))
 
     async def _astream(
         self,
@@ -143,16 +165,12 @@ class SloClaudeBridge(BaseChatModel):
         """Stream one new text answer; the final chunk follows SDK closure."""
         if self._closed or self._session_options is None:
             raise RuntimeError("Claude bridge is closed or unconfigured; start a new session.")
-        plan = (
-            None
-            if self._pending is not None
-            else self._validated_plan(messages=messages, stop=stop, kwargs=kwargs)
-        )
+        plan = self._validated_plan(messages=messages, stop=stop, kwargs=kwargs)
         boundary = False
         proven_unsent = False
         self._startup_active = True
         try:
-            await self._admit_response(messages=messages, plan=plan, stop=stop, kwargs=kwargs)
+            await self._admit_response(messages=messages, plan=plan)
             self._startup_active = False
             assert self._invocation_id is not None
             assert self._response_adapter is not None
@@ -165,7 +183,7 @@ class SloClaudeBridge(BaseChatModel):
                     yield chunk
         except ClaudeSubmissionNotStartedError:
             proven_unsent = True
-            self._retain_unsent_audit_prefix(
+            self._forget_unsent_submission(
                 messages=messages, native_session_dropped=bool(plan and plan.fresh_native_session)
             )
             raise
@@ -183,17 +201,13 @@ class SloClaudeBridge(BaseChatModel):
         *,
         messages: list[BaseMessage],
         plan: Optional[ClaudeSubmissionPlanDAO],
-        stop: Optional[list[str]],
-        kwargs: dict[str, Any],
     ) -> None:
         """Submit a validated continuation or one planned prompt with its unseen transcript.
 
         Called by the stream while startup cancellation is active. Validation or
         submission errors propagate to its existing unsent/uncertain failure policy.
         """
-        if self._pending is not None:
-            if stop or kwargs:
-                raise ValueError("Unsupported continuation options.")
+        if plan is None:
             assert self._tool_result_adapter is not None
             await self._tool_result_adapter.handle(
                 event=self._build_tool_result_submission(messages=messages),
@@ -201,10 +215,35 @@ class SloClaudeBridge(BaseChatModel):
             await self._tool_result_adapter.close()
             self._tool_result_adapter = None
             return
-        assert self._session_options is not None and plan is not None
+        assert self._session_options is not None
+        if plan.abandon_parked_round:
+            await self._abandon_parked_round()
         if plan.fresh_native_session:
             self.bridge_adapter.start_fresh_conversation()
         await self._start_invocation(content=plan.content, options=self._session_options)
+
+    async def _abandon_parked_round(self) -> None:
+        """Join the parked native invocation before discarding its translators.
+
+        Admission calls this with startup cancellation active. Cancellation needs
+        the old invocation identity and releases native waiters before translator
+        closure. A cleanup failure propagates to the stream's retained-owner
+        failure policy; no successor is started until every close succeeds.
+        """
+        assert self._invocation_id is not None
+        await self.bridge_adapter.cancel_invocation(invocation_id=self._invocation_id)
+        if self._tool_result_adapter is not None:
+            await self._tool_result_adapter.close()
+            self._tool_result_adapter = None
+        if self._call_adapter is not None:
+            await self._call_adapter.close()
+            self._call_adapter = None
+        if self._response_adapter is not None:
+            await self._response_adapter.close()
+            self._response_adapter = None
+        self._pending = None
+        self._consumed = []
+        self._invocation_id = None
 
     def _record_tool_boundary(
         self,
@@ -239,30 +278,20 @@ class SloClaudeBridge(BaseChatModel):
         )
 
     def _record_terminal_context(self, *, messages: list[BaseMessage], response_text: str) -> None:
-        """Save completed live context only after native terminal cleanup has settled."""
+        """Record what Claude consumed after native terminal cleanup has settled."""
         self._pending = None
-        self._record_live_context(messages=[*messages, AIMessage(content=response_text)])
+        self._consumed = self._semantic_messages(messages=[*messages, AIMessage(content=response_text)])
 
-    def _retain_unsent_audit_prefix(
-        self, *, messages: list[BaseMessage], native_session_dropped: bool
-    ) -> None:
-        """Keep unsent input as host audit context; Claude has seen none of it.
+    def _forget_unsent_submission(self, *, messages: list[BaseMessage], native_session_dropped: bool) -> None:
+        """Forget unsent admission identity; Claude has seen none of the new input.
 
         ``_consumed`` only ever means what Claude saw, so it never advances here.
         A fresh plan already dropped the native session, so nothing remains seen.
         Clearing invocation identity allows an explicit retry with the retained session.
         """
-        self._completed_history = deepcopy([m for m in messages if not isinstance(m, SystemMessage)])
         if native_session_dropped:
             self._consumed = []
         self._invocation_id = None
-
-    def _record_live_context(self, *, messages: list[BaseMessage]) -> None:
-        """Detach semantic admission history and system-free history-off host context."""
-        self._consumed = self._semantic_messages(messages=messages)
-        self._completed_history = deepcopy(
-            [message for message in messages if not isinstance(message, SystemMessage)]
-        )
 
     async def _accept_response(self, translation: ClaudeResponseTranslationDAO) -> None:
         """Build host thinking/text/terminal chunks from the sole portable response assembly."""
@@ -455,7 +484,7 @@ class SloClaudeBridge(BaseChatModel):
 
     def _validated_plan(
         self, *, messages: list[BaseMessage], stop: Optional[list[str]], kwargs: dict[str, Any]
-    ) -> ClaudeSubmissionPlanDAO:
+    ) -> Optional[ClaudeSubmissionPlanDAO]:
         """Reject generation options and closed bridges, then plan the submission."""
         if self._closed or self._session_options is None:
             raise RuntimeError("Claude bridge is closed or unconfigured.")
@@ -463,32 +492,43 @@ class SloClaudeBridge(BaseChatModel):
             raise ValueError("Claude bridge does not support generation options.")
         return self.plan_submission(messages=messages)
 
-    def plan_submission(self, *, messages: list[BaseMessage]) -> ClaudeSubmissionPlanDAO:
+    def plan_submission(self, *, messages: list[BaseMessage]) -> Optional[ClaudeSubmissionPlanDAO]:
         """Choose the native session and order the content Claude has not seen.
 
         When the messages Claude already saw still prefix the incoming history,
         the live native session continues and only the unseen messages are sent
         as a transcript. Otherwise a fresh native session receives all prior
-        messages. The new prompt always follows the transcript.
+        messages. A parked round with nonempty tool-only suffix returns None
+        before prompt validation; every other parked submission must end in a
+        valid human prompt and requests abandon before fresh admission.
 
         Args:
             messages: Replayed Slo messages ending with the new prompt.
 
         Returns:
-            ClaudeSubmissionPlanDAO: Native session choice and ordered content.
+            Optional[ClaudeSubmissionPlanDAO]: Native choice and ordered content,
+                or None for a nonempty tool-result suffix; submission validates its prefix.
 
         Raises:
             ValueError: The last message is not a nonempty HumanMessage.
         """
+        suffix = messages[len(self._consumed) :]
+        if self._pending is not None and suffix and all(isinstance(m, ToolMessage) for m in suffix):
+            return None
         prompt = self._build_prompt(message=messages[-1] if messages else None)
         prior = messages[:-1]
         continues = (
-            bool(self._consumed)
+            self._pending is None
+            and bool(self._consumed)
             and self._semantic_messages(messages=messages[: len(self._consumed)]) == self._consumed
         )
         unseen = prior[len(self._consumed) :] if continues else prior
         transcript = ClaudeHistoryTranscript.render(messages=unseen)
-        return ClaudeSubmissionPlanDAO(fresh_native_session=not continues, content=(*transcript, *prompt))
+        return ClaudeSubmissionPlanDAO(
+            fresh_native_session=not continues,
+            abandon_parked_round=self._pending is not None,
+            content=(*transcript, *prompt),
+        )
 
     @staticmethod
     def _build_prompt(*, message: Optional[BaseMessage]) -> tuple[ClaudeTextDAO | ClaudeImageDAO, ...]:
@@ -532,10 +572,6 @@ class SloClaudeBridge(BaseChatModel):
             self._cancellation_task = asyncio.create_task(
                 coro=self.bridge_adapter.cancel_invocation(invocation_id=self._invocation_id)
             )
-
-    def live_message_history(self) -> list[BaseMessage]:
-        """Return detached completed live context when the host disables persistence."""
-        return deepcopy(self._completed_history)
 
     async def finish_host_turn(self) -> None:
         """Join parked native work when a host hook stops before native completion.

@@ -17,7 +17,6 @@ from src.bridges.claude.sdk.dao import ClaudeBridgeConfigurationDAO
         "human-content",
         "assistant-content",
         "assistant-arguments",
-        "new-user",
         "closed",
         "unsupported-block",
         "unsupported-source",
@@ -52,8 +51,6 @@ async def test_mutated_consumed_prefix_never_delivers_results(mutation: str, tmp
             assistant.content = "changed"
         elif mutation == "assistant-arguments":
             assistant.tool_calls[0]["args"]["path"] = "changed"
-        elif mutation == "new-user":
-            messages.append(HumanMessage(content="Another prompt"))
         elif mutation == "unknown-result":
             messages.append(ToolMessage(content="foreign", tool_call_id="unknown"))
         elif mutation == "duplicate-result":
@@ -117,7 +114,6 @@ async def test_nested_earlier_result_mutation_rejects_next_round_without_deliver
 async def test_missing_host_results_remain_parked_until_complete_submission(tmp_path: Path) -> None:
     """A8: a correctable missing set does not close or advance the retained invocation."""
     from src.agents.tools.bundles import create_read_only_tools
-    from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
 
     transport = ToolRoundTransport(path=tmp_path / "model.txt")
     model = SloClaudeBridge(
@@ -137,9 +133,10 @@ async def test_missing_host_results_remain_parked_until_complete_submission(tmp_
     human = HumanMessage(content="Read project")
     try:
         assistant = await model.ainvoke(input=[human])
-        with pytest.raises(ClaudeBridgeError) as failure:
+        # The ordered planner rejects an empty suffix as an invalid prompt,
+        # before native admission; the parked round remains correctable.
+        with pytest.raises(ValueError, match="human prompt"):
             await model.ainvoke(input=[human, assistant])
-        assert failure.value.code == "tool_result_mismatch"
         assert not transport.closed and transport.tool_results == []
         final = await model.ainvoke(
             input=[

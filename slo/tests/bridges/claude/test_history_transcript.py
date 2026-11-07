@@ -8,7 +8,14 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from src.bridges.claude.bridge import SloClaudeBridge
 from src.bridges.claude.history_transcript import ClaudeHistoryTranscript
-from src.bridges.claude.sdk.dao import ClaudeImageDAO, ClaudeTextDAO
+from src.bridges.claude.sdk.dao import (
+    ClaudeImageDAO,
+    ClaudeTextDAO,
+    ClaudeSubmissionPlanDAO,
+    ClaudeToolCallDAO,
+)
+from src.bridges.claude.sdk.events import ClaudeResponseCompletedDAO
+from pydantic import ValidationError
 
 PIXEL = base64.b64encode(b"\x89PNG-synthetic").decode()
 
@@ -88,9 +95,11 @@ def _bridge() -> SloClaudeBridge:
     return SloClaudeBridge.model_construct(model_name="claude-bridge:claude-haiku-5-5", bridge_adapter=None)
 
 
-def _plan(*, bridge: SloClaudeBridge, messages: list[BaseMessage]):  # type: ignore[no-untyped-def]
-    """Plan a submission, keeping the call site keyword-only."""
-    return bridge.plan_submission(messages=messages)
+def _plan(*, bridge: SloClaudeBridge, messages: list[BaseMessage]) -> ClaudeSubmissionPlanDAO:
+    """Require a prompt plan for the non-result planner examples."""
+    plan = bridge.plan_submission(messages=messages)
+    assert plan is not None
+    return plan
 
 
 def test_plan_without_native_session_hands_off_all_prior_messages() -> None:
@@ -116,7 +125,7 @@ def test_plan_continues_natively_when_consumed_prefix_matches() -> None:
     """Only messages after the consumed prefix are transcribed."""
     bridge = _bridge()
     seen = [HumanMessage(content="first"), AIMessage(content="answer")]
-    bridge._record_live_context(messages=seen)
+    bridge._record_terminal_context(messages=[seen[0]], response_text="answer")
     plan = _plan(
         bridge=bridge,
         messages=[
@@ -138,7 +147,7 @@ def test_plan_continuation_without_unseen_messages_is_only_the_prompt() -> None:
     """A plain follow-up keeps the plain-text prompt."""
     bridge = _bridge()
     seen = [HumanMessage(content="first"), AIMessage(content="answer")]
-    bridge._record_live_context(messages=seen)
+    bridge._record_terminal_context(messages=[seen[0]], response_text="answer")
     plan = _plan(bridge=bridge, messages=[*seen, HumanMessage(content="again")])
     assert not plan.fresh_native_session
     assert plan.content == (ClaudeTextDAO(text="again"),)
@@ -147,7 +156,7 @@ def test_plan_continuation_without_unseen_messages_is_only_the_prompt() -> None:
 def test_plan_changed_prefix_starts_fresh_native_session_with_full_history() -> None:
     """A changed prefix (compaction, edit) is never patched."""
     bridge = _bridge()
-    bridge._record_live_context(messages=[HumanMessage(content="first"), AIMessage(content="answer")])
+    bridge._record_terminal_context(messages=[HumanMessage(content="first")], response_text="answer")
     plan = _plan(
         bridge=bridge,
         messages=[HumanMessage(content="[summary]"), AIMessage(content="kept"), HumanMessage(content="now")],
@@ -201,3 +210,65 @@ def test_render_of_only_system_or_no_messages_is_empty() -> None:
     """Nothing to say means no block at all."""
     assert ClaudeHistoryTranscript.render(messages=[]) == ()
     assert ClaudeHistoryTranscript.render(messages=[SystemMessage(content="s")]) == ()
+
+
+@pytest.mark.parametrize(
+    "parked,changed,suffix,expected",
+    [
+        (True, False, "tool", None),
+        (True, True, "tool", None),
+        (True, False, "human", (True, True)),
+        (True, True, "human", (True, True)),
+        (False, False, "human", (False, False)),
+        (False, True, "human", (True, False)),
+        (True, False, "empty", "invalid"),
+        (True, False, "bad", "invalid"),
+    ],
+)
+def test_plan_submission_three_way_table(
+    *, parked: bool, changed: bool, suffix: str, expected: tuple[bool, bool] | str | None
+) -> None:
+    """A18: result detection precedes prompt checking but never prefix admission."""
+    bridge = _bridge()
+    human = HumanMessage(content="original")
+    assistant = AIMessage(content="", tool_calls=[{"name": "read", "args": {}, "id": "call"}])
+    bridge._consumed = bridge._semantic_messages(messages=[human, assistant])
+    bridge._invocation_id = "invocation"
+    if parked:
+        bridge._pending = ClaudeResponseCompletedDAO(
+            session_id="host",
+            invocation_id="invocation",
+            response_id="response",
+            sequence=1,
+            stop_reason="tool_calls",
+            tool_calls=(ClaudeToolCallDAO(tool_call_id="call", name="read", arguments={}),),
+        )
+    messages: list[BaseMessage] = [HumanMessage(content="changed") if changed else human, assistant]
+    messages.append(ToolMessage(content="result", tool_call_id="call"))
+    if suffix != "tool":
+        messages.append(
+            HumanMessage(content="" if suffix == "empty" else "steer")
+            if suffix != "bad"
+            else AIMessage(content="bad")
+        )
+    if expected == "invalid":
+        with pytest.raises(ValueError):
+            bridge.plan_submission(messages=messages)
+        return
+    plan = bridge.plan_submission(messages=messages)
+    if expected is None:
+        assert plan is None
+        if changed:
+            with pytest.raises(ValueError, match="prefix changed"):
+                bridge._build_tool_result_submission(messages=messages)
+        return
+    assert plan is not None
+    assert (plan.fresh_native_session, plan.abandon_parked_round) == expected
+
+
+def test_abandon_plan_requires_fresh_native_session() -> None:
+    """A18: contradictory restart instructions cannot cross the DAO boundary."""
+    with pytest.raises(ValidationError):
+        ClaudeSubmissionPlanDAO(
+            fresh_native_session=False, abandon_parked_round=True, content=(ClaudeTextDAO(text="steer"),)
+        )

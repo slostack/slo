@@ -64,54 +64,6 @@ async def test_close_during_native_startup_cannot_publish_ready(
         await session.close_agent_resources()
 
 
-async def test_failed_automatic_pool_drain_cannot_adopt_bridge(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A failed retained drain blocks selection and never drops standard capability ownership."""
-    from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
-    from src.agents.slo_agent.orchestrator.pool import SubAgentPool
-
-    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
-    transport = ScriptedClaudeTransport()
-    session = SloAgentSession.build(
-        config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4", enable_history=False),
-        bridge_adapter_class=scripted_adapter_class(transport=transport),
-    )
-
-    class FailedDrainPool(SubAgentPool):
-        """Inject one failed capability boundary through standard bootstrap construction."""
-
-        async def abort_and_drain(self) -> None:
-            """Report failed drainage, never a successful retirement."""
-            raise RuntimeError("synthetic drain failure")
-
-    class FailedDrainBootstrap(OrchestratorSessionBootstrap):
-        """Use canonical standard attachment with an injected pool implementation."""
-
-        @classmethod
-        def _build_pool(cls, *, session: SloAgentSession, owner_session_id: str) -> SubAgentPool:
-            """Construct the fail-on-drain capability using the normal pool contract."""
-            return FailedDrainPool(
-                orchestrator_session_id=session.session_id,
-                default_model=session.active_model_name,
-                relay=session.event_relay,
-                owner_session_id=owner_session_id,
-                run_id="synthetic",
-                history_root=tmp_path / "history",
-            )
-
-    FailedDrainBootstrap.attach(session=session)
-    tools = session.orchestration_tools
-    try:
-        with pytest.raises(RuntimeError, match="drain|cleanup"):
-            await session.prepare_model_selection(model_name="claude-bridge:claude-haiku-5-5")
-        assert session.active_model_name == "gpt-5.4"
-        assert session.orchestration_tools == tools
-        assert not transport.connected
-    finally:
-        await session.close_agent_resources()
-
-
 async def test_selection_reserves_admission_before_awaited_auth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -317,17 +269,13 @@ async def test_auth_failure_leaves_fresh_prompt_available(
         await session.close_agent_resources()
 
 
-def test_bridge_rejects_steering_but_compacts_like_any_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Steering stays unsupported; manual compaction takes the shared path (nothing to compact yet)."""
+def test_bridge_compacts_like_any_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Manual compaction takes the shared path (nothing to compact yet)."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, model_name="claude-bridge:claude-haiku-5-5"),
         bridge_adapter_class=scripted_adapter_class(transport=ScriptedClaudeTransport()),
     )
-    with pytest.raises(ValueError, match="steering"):
-        session.steer(message="later")
 
     async def compaction_result() -> object:
         """Invoke the real manual operation inside the session's running loop."""

@@ -78,6 +78,9 @@ class ClaudeToolInventory:
     NAMES: ClassVar[frozenset[str]] = frozenset(
         {"read", "write", "edit", "bash", "grep", "find", "ls", "read_pdf", "now", "show_git_diff"}
     )
+    ORCHESTRATION_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"spawn_sub_agents", "launch_workflow", "workflow_status"}
+    )
     _SCHEMA_MAPS: ClassVar[frozenset[str]] = frozenset(
         {"$defs", "definitions", "properties", "patternProperties", "dependentSchemas"}
     )
@@ -107,7 +110,7 @@ class ClaudeToolInventory:
         reference fetching occurs.
         """
         names = [tool.name for tool in tools]
-        if len(set(names)) != len(names) or not set(names).issubset(cls.NAMES):
+        if len(set(names)) != len(names) or not set(names).issubset(cls.NAMES | cls.ORCHESTRATION_NAMES):
             raise ValueError("Invalid Claude tool inventory.")
         return tuple(
             ClaudeToolDefinitionDAO(

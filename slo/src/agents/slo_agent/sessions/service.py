@@ -858,7 +858,7 @@ class SloAgentSession:
         self._preparation_status = "pending"
         try:
             self._validate_model_selection_credential(model_name=self.active_model_name)
-            self._validate_bridge_extensions()
+            self._reject_unsupported_bridge_extensions(model_name=self.active_model_name)
             candidate = await self._prepare_bridge_candidate(model_name=self.active_model_name)
             if self._agent_resources_closed or self._config is not startup_config:
                 await candidate.close()
@@ -1047,11 +1047,13 @@ class SloAgentSession:
         resolved_workspace_file: Optional[Path] = self._resolve_workspace_file_for_agent()
         extra_tools: list[BaseTool] = list(self._config.extra_tools or [])
         plugin_tools: list[BaseTool] = self._plugin_registry.all_tools() if self._plugin_registry else []
-        if self.active_model_name.startswith("claude-bridge:") and (extra_tools or plugin_tools):
-            raise ValueError("Claude bridge does not support orchestration, plugin, or extension tools.")
+        if self.active_model_name.startswith("claude-bridge:"):
+            self._reject_unsupported_bridge_extensions(model_name=self.active_model_name)
         extension_tools: list[BaseTool] = extra_tools + plugin_tools
         all_tools: list[BaseTool] | None = (
-            create_extended_tools() + extension_tools if extension_tools else None
+            [*default_tools_for_model(model_name=self.active_model_name), *extension_tools]
+            if extension_tools
+            else None
         )
         return SloAgent(
             model_name=self.active_model_name,
@@ -3428,9 +3430,11 @@ class SloAgentSession:
         return list(self._config.extra_tools or [])
 
     def steer(self, *, message: str | BaseMessage) -> None:
-        """Reject steering before this tool-free slice can admit another turn."""
-        if self.active_model_name.startswith("claude-bridge:"):
-            raise ValueError("Claude bridge does not support steering or follow-up messages.")
+        """Queue a message for the agent to apply before its next graph turn.
+
+        Args:
+            message (str | BaseMessage): Instruction injected by the shared steering queue.
+        """
         self.agent.steer(message=message)
 
     def abort(self) -> None:
@@ -3504,7 +3508,7 @@ class SloAgentSession:
                 model_names=(model_name,)
             )
             if model_name.startswith("claude-bridge:"):
-                self._validate_bridge_extensions()
+                self._reject_unsupported_bridge_extensions(model_name=model_name)
                 candidate = await self._prepare_bridge_candidate(model_name=model_name)
         except ModelPreparationRequiredError:
             return f"model '{model_name}' is unavailable; run /model refresh or /auth"
@@ -3530,8 +3534,6 @@ class SloAgentSession:
                 await self._close_current_agent_resources()
             except ClaudeBridgeError:
                 return "previous model cleanup is unconfirmed; retry /model or /new"
-            if candidate is not None:
-                await self._retire_automatic_orchestrator()
             async with self._lock:
                 if self.is_running or self._config is not selection_config:
                     return "model selection changed during preparation; retry while idle"
@@ -3558,28 +3560,28 @@ class SloAgentSession:
         notice = " Native transcripts may persist even with Slo history off." if candidate is not None else ""
         return f"active model switched to {model_name}. Preference saved.{notice}"
 
-    def _validate_bridge_extensions(self) -> None:
-        """Reject explicit tools while allowing retirement of the TUI's standard bundle."""
+    def _reject_unsupported_bridge_extensions(self, *, model_name: str) -> None:
+        """Reject unsupported extensions before startup or model replacement commits.
+
+        Delegate the complete proposed binding to the bridge's inert policy so
+        schema and duplicate rejection also retain the previous usable agent.
+
+        Args:
+            model_name (str): Proposed bridge route whose default tools will be bound.
+
+        Raises:
+            ValueError: Plugins or unsupported tool bindings are configured.
+        """
+        from src.bridges.claude.bridge import SloClaudeBridge
+
         if self._plugin_registry is not None and self._plugin_registry.all_tools():
             raise ValueError("Claude bridge does not support plugin tools.")
-        if self._config is None or not self._config.extra_tools:
-            return
-        if self._standard_orchestrator_attachment is None or not self._herdr_policy_is_reproducible():
-            raise ValueError("Claude bridge does not support explicit orchestration or extension tools.")
-
-    async def _retire_automatic_orchestrator(self) -> None:
-        """Drain automatic TUI capabilities before publishing a tool-free bridge route."""
-        if self._standard_orchestrator_attachment is None:
-            return
-        await self._drain_unmounted_pool()
-        if self._candidate_pool_cleanup_task is not None:
-            try:
-                self._candidate_pool_cleanup_task.result()
-            except Exception:
-                self._agent_resources_closed = True
-                raise RuntimeError(
-                    "Automatic orchestration cleanup failed; session retirement is pending."
-                ) from None
+        SloClaudeBridge.freeze_tool_binding(
+            tools=[
+                *default_tools_for_model(model_name=model_name),
+                *((self._config.extra_tools or []) if self._config is not None else []),
+            ]
+        )
 
     def _validate_model_selection_credential(
         self, *, model_name: str, snapshot: Optional[ModelCatalogSnapshotDAO] = None
@@ -3654,10 +3656,6 @@ class SloAgentSession:
             "model_pool_dao": None,
             "fallback_notice": None,
         }
-        if model_name.startswith("claude-bridge:") and self._standard_orchestrator_attachment is not None:
-            selection_update.update(extra_tools=[], system_prompt=None, append_system_prompt=None)
-            self._sub_agent_pool = None
-            self._standard_orchestrator_attachment = None
         self._config = self._config.model_copy(update=selection_update)
         self._active_model_name = model_name
         self._catalog_snapshot = snapshot
@@ -6130,8 +6128,6 @@ class SloAgentSession:
                 session has no completed turns yet.
         """
         if not self._enable_history or self._history_store is None:
-            if self.active_model_name.startswith("claude-bridge:") and self._agent is not None:
-                return self._agent.live_bridge_message_history()
             return []
         events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
             session_id=self._session_id,

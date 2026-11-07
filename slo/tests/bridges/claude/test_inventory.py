@@ -530,3 +530,77 @@ def test_initialization_failure_identifies_safe_rejection_reason(
         ClaudeToolInventory.validate_initialization(metadata=metadata, tools=())
     assert failure.value.code == "stream_protocol_failed"
     assert "unexpected" not in str(failure.value)
+
+
+@pytest.mark.parametrize("headless", [False, True])
+async def test_typed_orchestrator_inventory_is_exact(tmp_path: Path, headless: bool) -> None:
+    """A7: real per-session orchestration schemas advertise exactly 13 or 11 tools."""
+    from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
+    from src.agents.slo_agent.sessions.dao import SessionConfigDAO
+    from src.agents.slo_agent.sessions.service import SloAgentSession
+
+    session = SloAgentSession(
+        workdir=tmp_path,
+        session_id="inventory",
+        config=SessionConfigDAO(
+            workdir=tmp_path, model_name="gpt-5.4", session_id="inventory", history_root=tmp_path / "history"
+        ),
+    )
+    OrchestratorSessionBootstrap.attach(session=session, headless=headless)
+    model = SloClaudeBridge(
+        model_name="claude-bridge:claude-haiku-5-5",
+        bridge_adapter=SloClaudeBridgeAdapter(configuration=ClaudeBridgeConfigurationDAO()),
+    )
+    try:
+        assert session._config is not None
+        tools = [*create_local_tools(), *(session._config.extra_tools or [])]
+        assert model.bind_tools(tools=tools) is model
+        assert len(model._tools) == (11 if headless else 13)
+        names = [f"mcp__slo__{tool.name}" for tool in model._tools]
+        metadata: dict[str, object] = {
+            "session_id": "native",
+            "tools": names,
+            "mcp_servers": [{"name": "slo", "status": "connected", "source": "sdk"}],
+            "plugins": [],
+        }
+        assert ClaudeToolInventory.validate_initialization(metadata=metadata, tools=model._tools) == "native"
+        for advertised in (names[:-1], [*names, "mcp__slo__foreign"]):
+            with pytest.raises(ClaudeBridgeError):
+                ClaudeToolInventory.validate_initialization(
+                    metadata={**metadata, "tools": advertised}, tools=model._tools
+                )
+    finally:
+        await model.close()
+        await session.close_agent_resources()
+
+
+@pytest.mark.parametrize(
+    "name", ["spawn_sub_agents", "launch_workflow", "workflow_status", "connector", "plugin", "unknown"]
+)
+@pytest.mark.parametrize("typed", [False, True])
+def test_orchestration_binding_requires_typed_named_base_tool(name: str, typed: bool) -> None:
+    """A7: only named orchestration tools with typed schemas extend canonical identity."""
+    from langchain_core.tools import StructuredTool
+    from pydantic import BaseModel
+
+    class InputDAO(BaseModel):
+        """Typed arguments for a boundary-only inventory check."""
+
+        prompt: str
+
+    def answer(*, prompt: str) -> str:
+        """Return an inert value; binding never executes this tool."""
+        return prompt
+
+    tool = StructuredTool.from_function(
+        func=answer, name=name, description="boundary", args_schema=InputDAO if typed else {"type": "object"}
+    )
+    model = SloClaudeBridge(
+        model_name="claude-bridge:claude-haiku-5-5",
+        bridge_adapter=SloClaudeBridgeAdapter(configuration=ClaudeBridgeConfigurationDAO()),
+    )
+    if typed and name in {"spawn_sub_agents", "launch_workflow", "workflow_status"}:
+        assert model.bind_tools(tools=[tool]) is model
+    else:
+        with pytest.raises(ValueError):
+            model.bind_tools(tools=[tool])

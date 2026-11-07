@@ -25,7 +25,7 @@ from src.bridges.claude.sdk.dao import ClaudeAuthenticationStatusDAO, ClaudeBrid
 LOCAL_TOOL_NAMES: tuple[str, ...] = tuple(tool.name for tool in create_local_tools())
 
 
-@pytest.mark.parametrize("later,enable_history", [(False, True), (True, True), (True, False)])
+@pytest.mark.parametrize("later,enable_history", [(False, True), (True, True)])
 @pytest.mark.parametrize("failure", ["session_auth", "invoke_auth", "connect"])
 async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
     tmp_path: Path,
@@ -130,9 +130,6 @@ async def test_proven_unsent_failure_allows_explicit_retry_without_replay(
             events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
                 session_id="retry",
             )
-            if not enable_history:
-                assert events == []
-                return
             assert sum(event.kind == "run_failed" for event in events) == 1
             assert sum(event.kind == "run_completed" for event in events) == 1 + int(later)
             assert [event.payload.content for event in events if event.kind == "user_message"] == (
@@ -240,7 +237,7 @@ async def test_host_stop_joins_native_tools_before_terminal(
         await session.close_agent_resources()
 
 
-@pytest.mark.parametrize("enable_history", [True, False])
+@pytest.mark.parametrize("enable_history", [True])
 async def test_followup_retains_native_tool_context_without_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -294,9 +291,6 @@ async def test_followup_retains_native_tool_context_without_replay(
     events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
         session_id="followups",
     )
-    if not enable_history:
-        assert events == []
-        return
     assert sum(event.kind == "run_completed" for event in events) == 2
     assert sum(event.kind == "tool_call" for event in events) == 1
     assert sum(event.kind == "tool_result" for event in events) == 1

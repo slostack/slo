@@ -290,16 +290,6 @@ class HeadlessRunner:
         finally:
             await self._cancel_preparation_task_if_needed(preparation_task=preparation_task)
         if self._orchestrator_mode:
-            if self._config.model_name and self._config.model_name.startswith("claude-bridge:"):
-                await self._emit(
-                    AgentStreamEventDAO(
-                        kind="run_failed",
-                        content="Claude bridge does not support child agents or orchestrator mode.",
-                        metadata={"failure_scope": "unsupported_option"},
-                    )
-                )
-                self._terminal_kind = "run_failed"
-                return exit_code_for_terminal_kind(kind="run_failed")
             self._attach_orchestrator(session=session)
             self._fleet_entries_supplier = self._resolve_fleet_entries_supplier(session=session)
             self._fleet_snapshot_supplier = self._build_fleet_snapshot_supplier()

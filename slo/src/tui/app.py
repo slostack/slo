@@ -3286,8 +3286,6 @@ class SloTUI(App):
             OrchestratorSessionBootstrap,
         )
 
-        if session.active_model_name.startswith("claude-bridge:"):
-            return
         OrchestratorSessionBootstrap.attach(session=session)
 
     @staticmethod

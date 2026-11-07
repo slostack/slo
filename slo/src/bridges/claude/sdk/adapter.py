@@ -239,7 +239,10 @@ class SloClaudeBridgeAdapter:
         await self.invoke_agent(invocation_options=event)
 
     async def reset(self) -> None:
-        """Refuse transcript reset after admission; serial turns use invoke_agent instead.
+        """Refuse transcript reset after admission.
+
+        To replace a parked conversation, cancel_invocation first, then call
+        start_fresh_conversation before invoke_agent. Reset never grants replay.
 
         Raises:
             RuntimeError: The adapter is closed or a native turn was admitted.

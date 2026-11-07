@@ -2,8 +2,6 @@
 
 from typing import Protocol
 
-from langchain_core.messages import BaseMessage
-
 from .dao import SloBridgeCancellationReason, SloBridgeSessionOptionsDAO
 
 
@@ -16,10 +14,6 @@ class SloBridgeProtocol(Protocol):
 
     def request_cancellation(self, *, reason: SloBridgeCancellationReason) -> None:
         """Record intent on the owning loop; returning does not establish closure."""
-        ...
-
-    def live_message_history(self) -> list[BaseMessage]:
-        """Return detached completed context for this live host session only."""
         ...
 
     def is_retired(self) -> bool:

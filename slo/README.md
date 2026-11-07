@@ -303,7 +303,7 @@ A passing test suite does not waive a failing static or live-acceptance gate.
 
 ---
 
-## Experimental fresh Claude SDK bridge
+## Experimental Claude SDK bridge
 
 Explicit `claude-bridge:<model-name>` routes run through
 `SloAgentSession → SloAgent / existing graph → SloClaudeBridge(BaseChatModel) →
@@ -323,13 +323,35 @@ snapshots. This is not an exact heap or transient SDK allocation bound.
 
 Set `SLO_CLAUDE_BRIDGE_ENABLED=1` to opt in. In the TUI, use `/new`, type
 `/model claude-bridge:` and narrow the autocomplete, Tab to select, then Enter.
-Successive text prompts in the same live host session resume the completed native
-conversation without replaying host prompts or previous tool results. Each turn
-has a fresh SDK runtime and disconnects before success; the next uses the native
-result's session ID through the SDK `resume` option. Restoring a different host
-session's transcript remains unsupported. Commands and startup notices are not
-conversation replay. Multi-turn failure/cancellation hardening and live-native
-resume parity are still under verification; uncertain failures require `/new`.
+With Slo history enabled, successive prompts resume native context when the
+consumed prefix still matches. Resume, model replacement and compaction hand off
+Slo history as a labelled transcript when a fresh native session is needed.
+Commands and startup notices are not conversation replay. Each completed native
+invocation disconnects before success; a matching follow-up uses its result's
+session ID through the SDK `resume` option. Native resume is a cache, not history.
+
+`/steer` uses the shared agent queue. After a text answer it continues natively;
+after a tool round it cancels and joins the parked native invocation, then starts
+fresh with the call/result transcript followed by the steer. Tools execute only
+once. This costs one fresh native session and re-sent transcript, losing that
+turn's native prompt cache. `/abort` joins native cleanup before its terminal;
+the next prompt rebuilds from Slo history. `/new` starts a clean host session.
+Unconfirmed cleanup retains the old owner: retry `/model` or `/new` explicitly.
+
+`/model` in either direction retains the same orchestrator tools and sub-agent
+pool, including custom system/append prompts. Claude orchestrators use
+`spawn_sub_agents`, `launch_workflow` and `workflow_status`; headless
+`--orchestrator` exposes spawn only to prevent nested detached workflows. Claude
+children keep their qualified route and report authentication failures as failed
+tasks, without fallback; the parent can continue. Each child starts its own Claude
+process using the shared login; subscription rate limits remain the operator's
+concern and `MAX_PARALLEL_TASKS` is unchanged. Children inherit `HOME` and the
+opt-in, but not `CLAUDE_CONFIG_DIR` or `ANTHROPIC_*` secrets. The pool's default
+child model stays fixed at attach time, for every route.
+
+History off means an empty message history and fresh native session for each new
+prompt, just like direct models; the bridge keeps no alternate live history.
+Within one host turn, tool-result continuation still uses the same native round.
 For headless use an explicit qualified route, for example:
 
 ```bash
@@ -373,15 +395,19 @@ sandbox, zero-native-retry, billing or account-access guarantee is made.
 Inherited native API-key/token/gateway/cloud overrides are rejected; supported
 empty tools/MCP/settings/skills/plugins controls and bare mode are requested.
 
-This implementation is **not acceptance-ready**: native startup preparation,
-submission commitment, the complete response/protocol contracts, capability and
-retirement matrices, extraction/compatibility evidence and full gates remain open.
-The intended first slice is one fresh text prompt per host session (next prompt
-requires `/new`), TUI or standalone headless, optional real Slo history, incremental
-answer and supported cancellation/closure. Tools, images, continuation, native
-resume/import, pools/fallback, compaction, steering and bridge children are not
-supported. Deterministic SDK-transport tests are not native/account verification;
-no live account test has been authorized or run.
+Local coding tools, images, continuation, shared-history resume and compaction
+use the existing graph/executor/history owners. Plugin and connector tools remain
+unavailable on Claude routes; model pools and fallback stay refused. Tool results
+over the CLI's 500,000-character ceiling arrive as a stub.
+
+Offline tests use the real session, graph, filesystem history, SDK and sub-agent
+pool with scripted vendor transport and child-process boundaries. They never run
+a real managed child or the real Claude binary. Static packaging proofs check the
+SDK pin and bundled executable/version without executing it. These are not
+native/account verification; no live account test has been authorized or run.
+The operator's installed-build/manual checklist and D1 billing/permission sign-off
+remain separate: engineering cannot close D1 or authorize a version bump/tag.
+The opt-in remains required pending that checklist.
 
 ## Optional Herdr integration
 

@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.30.3] — 2026-11-08
+
+The first tag since v0.30.1. Version 0.30.2 was prepared but never tagged, so
+this release also ships every 0.30.2 change listed below.
+
+### Fixed
+
+- **OpenRouter runs no longer fail after a reasoning + text + tool-call turn.**
+  When a model streamed reasoning, visible text and parallel tool calls, the
+  next request replayed the assistant message with `content: ["", "text"]`.
+  OpenRouter rejects bare strings in a content list, so the run failed with
+  "OpenRouter request failed. Retry later or check /auth." Outbound assistant
+  content is now sent as typed `{"type": "text"}` parts, or `null` beside tool
+  calls when no text remains. Tool calls and `reasoning_details` replay are
+  unchanged; saved history was never affected (MR !157).
+- **No duplicate abort settlement.** Continuation planning no longer raises a
+  second cancellation when the completed attempt already reports `aborted`.
+- **Rate preflight waits use the live `asyncio.sleep` again**, so injected
+  recovery clocks cannot freeze an ordinary preflight wait.
+
+### Changed
+
+- **Bounded stream recovery owned by the session.** A recovery episode allows
+  up to 30 extra reconnect submissions inside a 300-second admission window,
+  with capped 1, 2, 4 … 64-second backoff. The continuation budget is 10 total
+  submissions (the initial one plus up to nine continuations). Admission is
+  rechecked after each wait; an admitted request is not time-limited.
+  Committed tool history and unfinished visible text are preserved, and
+  aborts during a wait cancel without another provider call.
+- **OpenRouter is always eligible for continuation**, still behind the
+  committed-output, `DO_NOT_REPLAY`, budget and abort safety gates.
+- **`/model` suggestions are compact:** each entry shows
+  `<model> (Ctx: <tokens>)`, or only the model name when the context window is
+  unknown.
+- **Specification and code-test-review skills** require full-feature
+  overviews, typed interfaces, runnable vertical-slice tasks, test-first
+  development and full-suite completion evidence.
+- **Release evidence templates moved out of the repository**; README keeps the
+  portable proof requirements. `SLO.md` now forbids implementation-tracking
+  files under `docs/` or `implementation/` and new progress folders.
+
+### Known limitations
+
+- The recovery deadline uses Linux `BOOTTIME`, which counts time spent
+  suspended. A long laptop sleep therefore uses up the recovery budget instead
+  of pausing it.
+
 ## [0.30.2] — 2026-11-02
 
 ### Fixed

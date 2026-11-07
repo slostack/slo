@@ -29,7 +29,7 @@ from .dao import (
 )
 from .tool_bridge import ClaudeToolBridge
 from .inventory import ClaudeToolInventory
-from .response import NativeResponseAssembly
+from .response import NativeFragment, NativeResponseAssembly
 from .transport import ValidatedClaudeTransport
 from .events import (
     ClaudeBridgeEvent,
@@ -188,7 +188,7 @@ class ClaudeSDKRuntime:
             options = self._build_options(session_options=session_options)
             options.resume = self._resume_session_id
             if session_options.tools:
-                options.mcp_servers = {"slo": self._tool_bridge.build_mcp_server()}
+                options.mcp_servers = {"slo": self._tool_bridge.get_or_create_mcp_server()}
             options.cli_path = str(
                 ClaudeNativeAuthentication(configuration=self._configuration).get_executable()
             )
@@ -363,10 +363,10 @@ class ClaudeSDKRuntime:
         self, *, client: ClaudeSDKClient, transport: ValidatedClaudeTransport
     ) -> ClaudeResponseCompletedDAO:
         """Race response waiting with cancellation; owner sends interrupt, not the reader task."""
-        stream = client.receive_response()
+        stream: AsyncIterator[object] = client.receive_response()
         cancelled: asyncio.Task[object] = asyncio.create_task(coro=self._cancel_requested.wait())
-        assembly = NativeResponseAssembly()
-        inventory_admitted = False
+        assembly: NativeResponseAssembly = NativeResponseAssembly()
+        inventory_admitted: bool = False
         assembly.validate_scope(session_id=self._resume_session_id, parent_tool_use_id=None)
         try:
             while True:
@@ -415,57 +415,84 @@ class ClaudeSDKRuntime:
                 ):
                     raise ClaudeToolInventory.initialization_error()
                 if isinstance(message, ResultMessage):
-                    assembly.validate_scope(session_id=message.session_id, parent_tool_use_id=None)
-                    assembly.validate_terminal()
-                    self._native_session_id = message.session_id
-                    if self._tool_bridge is not None:
-                        self._tool_bridge.validate_terminal()
-                    return self._validate_result(
-                        message=message,
-                        text=assembly.text,
-                        response_id=assembly.response_id,
-                        usage=assembly.usage,
-                    )
+                    return self._interpret_terminal_result(message=message, assembly=assembly)
                 if isinstance(message, StreamEvent):
-                    assembly.validate_scope(
-                        session_id=message.session_id, parent_tool_use_id=message.parent_tool_use_id
-                    )
-                    consumed = assembly.consume(event=message.event)
-                    fragment, boundary = consumed.text, consumed.boundary
-                    if consumed.thinking:
-                        self._queue_event(
-                            event=ClaudeThinkingEventDAO(
-                                text=consumed.thinking,
-                                block_index=consumed.thinking_index,
-                                **self._event_binding(response_id=assembly.response_id).model_dump(),
-                            )
-                        )
-                    if fragment:
-                        self._queue_event(
-                            event=ClaudeTextEventDAO(
-                                text=fragment,
-                                **self._event_binding(response_id=assembly.response_id).model_dump(),
-                            )
-                        )
-                    if boundary and assembly.calls:
-                        assert self._tool_bridge is not None
-                        self._tool_bridge.publish_tool_batch(
-                            response_id=assembly.response_id, tool_calls=assembly.calls
-                        )
-                        self._queue_event(
-                            event=ClaudeResponseCompletedDAO(
-                                stop_reason="tool_calls",
-                                **self._event_binding(response_id=assembly.response_id).model_dump(),
-                                tool_calls=assembly.calls,
-                                usage=assembly.usage,
-                            )
-                        )
+                    self._interpret_stream_event(message=message, assembly=assembly)
                     continue
                 if isinstance(message, AssistantMessage):
                     assembly.reconcile_echo(message=message)
         finally:
             cancelled.cancel()
             await asyncio.gather(cancelled, return_exceptions=True)
+
+    def _interpret_terminal_result(
+        self, *, message: ResultMessage, assembly: NativeResponseAssembly
+    ) -> ClaudeResponseCompletedDAO:
+        """Validate terminal scope and correlation after init admission in the reader.
+
+        Args:
+            message: Borrowed SDK terminal result.
+            assembly: Current response validation owner.
+
+        Returns:
+            Validated terminal event; cleanup remains with the runtime owner task.
+
+        Raises:
+            ClaudeBridgeError: Incomplete response, unmatched calls or invalid result.
+        """
+        assembly.validate_scope(session_id=message.session_id, parent_tool_use_id=None)
+        assembly.validate_terminal()
+        self._native_session_id = message.session_id
+        if self._tool_bridge is not None:
+            self._tool_bridge.validate_terminal()
+        return self._validate_result(
+            message=message,
+            text=assembly.text,
+            response_id=assembly.response_id,
+            usage=assembly.usage,
+        )
+
+    def _interpret_stream_event(self, *, message: StreamEvent, assembly: NativeResponseAssembly) -> None:
+        """Queue validated content and complete tool batches after init admission.
+
+        Args:
+            message: Borrowed SDK stream event.
+            assembly: Current response validation owner, updated by consumption.
+
+        Raises:
+            ClaudeBridgeError: Invalid scope, ordering, content or correlation.
+                No partial tool batch is published. Task/cleanup ownership stays
+                in the reader; this operation never waits or interrupts.
+        """
+        assembly.validate_scope(session_id=message.session_id, parent_tool_use_id=message.parent_tool_use_id)
+        consumed: NativeFragment = assembly.consume(event=message.event)
+        fragment, boundary = consumed.text, consumed.boundary
+        if consumed.thinking:
+            self._queue_event(
+                event=ClaudeThinkingEventDAO(
+                    text=consumed.thinking,
+                    block_index=consumed.thinking_index,
+                    **self._event_binding(response_id=assembly.response_id).model_dump(),
+                )
+            )
+        if fragment:
+            self._queue_event(
+                event=ClaudeTextEventDAO(
+                    text=fragment,
+                    **self._event_binding(response_id=assembly.response_id).model_dump(),
+                )
+            )
+        if boundary and assembly.calls:
+            assert self._tool_bridge is not None
+            self._tool_bridge.publish_tool_batch(response_id=assembly.response_id, tool_calls=assembly.calls)
+            self._queue_event(
+                event=ClaudeResponseCompletedDAO(
+                    stop_reason="tool_calls",
+                    **self._event_binding(response_id=assembly.response_id).model_dump(),
+                    tool_calls=assembly.calls,
+                    usage=assembly.usage,
+                )
+            )
 
     async def submit_tool_results(
         self, *, invocation_id: str, tool_result_batch: ClaudeToolResultBatchDAO

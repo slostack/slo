@@ -69,7 +69,8 @@ from src.tui.components.prompt_input.commands import (
 from src.tui.authentication import AuthenticationScreen
 from src.tui.path_suggestion_engine import PathSuggestionReader
 from src.tui.path_suggestion_controller import PathPromptSnapshotDAO, PathSuggestionController
-from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
+from src.tui.slash_router import SlashCommandAdmissionDAO, SlashCommandResultDAO, SlashRouter
+from src.tui.session_event_presentation import SessionEventPresentation, SessionEventPresentationDAO
 from src.tui.model_catalog import ModelSuggestionProjection
 from src.tui.slash_suggestion_engine import SlashSuggestionEngine, SlashSuggestionStateDAO
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
@@ -2311,19 +2312,18 @@ class SloTUI(App):
         if self._input is not None:
             await self._input.handle(command=HideSuggestionsDAO())
         self._reset_escape_sequence()
-        if self._session.preparation_status != "ready":
-            command = line.strip().split(maxsplit=1)[0]
-            if line.strip() == "/model refresh":
-                self._start_session_preparation()
-                return
-            if command not in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model", "/code"}:
-                if self._chat_transcript is not None:
-                    await self._chat_transcript.handle(
-                        command=TranscriptNoticeDAO(
-                            content="Model preparation required.", classes="tool-result"
-                        )
-                    )
-                return
+        admission: SlashCommandAdmissionDAO = SlashRouter.admit(
+            line=line, preparation_status=self._session.preparation_status
+        )
+        if admission.action == "prepare":
+            self._start_session_preparation()
+            return
+        if admission.action == "reject":
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(content="Model preparation required.", classes="tool-result")
+                )
+            return
         mounted_activity: bool = await self._mount_slash_activity(line=line)
         session = self._session
         previous_model = session.active_model_name
@@ -2331,7 +2331,7 @@ class SloTUI(App):
             result = await SlashRouter.dispatch(
                 line=line, session=session, workflow_resume_launcher=self._workflow_resume_launcher
             )
-            if line.strip() == "/model refresh":
+            if admission.refresh_model_context:
                 ModelSuggestionProjection.refresh_authentication()
             if self._runtime_may_start(session=session) and self._input is not None:
                 if session.active_model_name != previous_model:
@@ -2341,7 +2341,7 @@ class SloTUI(App):
                     await self._input.handle(
                         command=SetModelContextDAO(active_model_name=session.active_model_name)
                     )
-                elif line.strip() == "/model refresh":
+                elif admission.refresh_model_context:
                     await self._input.handle(
                         command=SetModelContextDAO(active_model_name=session.active_model_name)
                     )
@@ -3488,59 +3488,20 @@ class SloTUI(App):
         return isinstance(exc, RateLimitError)
 
     async def _render_event(self, event: AgentStreamEventDAO) -> None:
-        """Project one normalized stream event into transcript widgets.
-
-        Special-case handling before the generic projector path:
-
-        - ``run_retrying`` — updates the spinner and refreshes the status bar,
-          then returns early (no transcript entry written).
-        - Compaction lifecycle events (``compaction_started``, ``compaction_completed``,
-          ``compaction_failed``, ``compaction_retrying``) — update the spinner via
-          ``_apply_compaction_spinner_update``, do NOT clear the spinner override
-          to ``None``, and then fall through to the projector so a transcript notice
-          is also written.
-        - Sub-agent events route to ``_route_sub_agent_event`` and never reach the
-          orchestrator projector.
-        - Orchestrator events render into pane [0] through the normal projector path.
+        """Deliver presentation while retaining app-owned routing and usage lifetime.
 
         Args:
-            event (AgentStreamEventDAO): Normalized stream event.
+            event: Normalized event from the subscribed session.
         """
-        if event.kind == "run_retrying":
-            if self._spinner is not None:
-                self._spinner.set_override_status(text=event.content or "Retrying…")
+        presentation: SessionEventPresentationDAO = SessionEventPresentation.build(event=event)
+        if presentation.update_spinner and self._spinner is not None:
+            self._spinner.set_override_status(text=presentation.spinner_status)
+        if presentation.notice is not None and self._chat_transcript is not None:
+            await self._chat_transcript.handle(command=presentation.notice)
+        if presentation.notice_only:
             self._session.refresh_usage_snapshot()
             self._refresh_usage_status_bar()
             return
-        if event.kind == "stream_reconnecting":
-            await self._render_stream_reconnecting_event(event=event)
-            return
-        if event.kind == "preflight_bypassed":
-            await self._render_preflight_bypassed_event()
-            return
-        if event.kind == "compaction_advised":
-            if self._chat_transcript is not None:
-                await self._chat_transcript.handle(
-                    command=TranscriptNoticeDAO(
-                        content=event.content or "Run /compact to help latency.",
-                        classes="tool-result",
-                    )
-                )
-            self._session.refresh_usage_snapshot()
-            self._refresh_usage_status_bar()
-            return
-        self._apply_compaction_spinner_update(event=event)
-        self._apply_recovery_spinner_update(event=event)
-        if self._spinner is not None and event.kind not in {
-            "compaction_started",
-            "compaction_completed",
-            "compaction_failed",
-            "compaction_retrying",
-            "recovery_started",
-            "recovery_succeeded",
-            "recovery_exhausted",
-        }:
-            self._spinner.set_override_status(text=None)
         if event.kind == "tool_result" and event.tool_name == "launch_workflow":
             # Primary visualizer trigger (spec 57.a.5): the launch turn's tool
             # result carries the handle JSON with the orchestrator session id.
@@ -3558,86 +3519,6 @@ class SloTUI(App):
             return
         self._session.refresh_usage_snapshot()
         self._refresh_usage_status_bar()
-
-    async def _render_preflight_bypassed_event(self) -> None:
-        """Render the fixed local TPM bypass note without diagnostic metadata."""
-        if self._chat_transcript is not None:
-            await self._chat_transcript.handle(
-                command=TranscriptNoticeDAO(
-                    content="(local token preflight bypassed; request sent to provider)",
-                    classes="tool-result",
-                )
-            )
-        self._session.refresh_usage_snapshot()
-        self._refresh_usage_status_bar()
-
-    async def _render_stream_reconnecting_event(self, *, event: AgentStreamEventDAO) -> None:
-        """Render the public pre-commit reconnect boundary without raw provider text.
-
-        ``_render_event`` calls this for the session-owned audit event before the
-        fresh provider request begins. The copy intentionally uses only the
-        approved reason code and exception family metadata.
-        """
-        reason_code: object = event.metadata.get("reason_code")
-        exception_family: object = event.metadata.get("exception_family")
-        reason: str = reason_code if isinstance(reason_code, str) else "provider_stream_disconnected"
-        family: str = exception_family if isinstance(exception_family, str) else "transport error"
-        if self._spinner is not None:
-            self._spinner.set_override_status(text="Reconnecting provider stream…")
-        if self._chat_transcript is not None:
-            await self._chat_transcript.handle(
-                command=TranscriptNoticeDAO(
-                    content=f"(reconnecting after {reason}: {family})",
-                    classes="tool-result",
-                )
-            )
-        self._session.refresh_usage_snapshot()
-        self._refresh_usage_status_bar()
-
-    def _apply_compaction_spinner_update(self, *, event: AgentStreamEventDAO) -> None:
-        """Update spinner copy for compaction lifecycle events.
-
-        A no-op for non-compaction event kinds. Called unconditionally from
-        ``_render_event`` before the projector path so the spinner reflects
-        compaction state while the projector writes the transcript notice.
-
-        Args:
-            event (AgentStreamEventDAO): Live stream event.
-        """
-        if event.kind == "compaction_started":
-            if self._spinner is not None:
-                self._spinner.set_override_status(text="Compacting session history…")
-        elif event.kind == "compaction_completed":
-            if self._spinner is not None:
-                self._spinner.set_override_status(text="Compaction complete.")
-        elif event.kind == "compaction_retrying":
-            if self._spinner is not None:
-                self._spinner.set_override_status(text="Retrying original message…")
-        elif event.kind == "compaction_failed":
-            if self._spinner is not None:
-                self._spinner.set_override_status(
-                    text=f"Compaction failed: {event.content}" if event.content else "Compaction failed."
-                )
-
-    def _apply_recovery_spinner_update(self, *, event: AgentStreamEventDAO) -> None:
-        """Update spinner copy for recovery lifecycle events.
-
-        A no-op for non-recovery event kinds. Called unconditionally from
-        ``_render_event`` before the projector path so the spinner reflects
-        recovery state while the projector writes the transcript notice.
-
-        Args:
-            event (AgentStreamEventDAO): Live stream event.
-        """
-        if event.kind == "recovery_started":
-            if self._spinner is not None:
-                self._spinner.set_override_status(text="Recovering from error…")
-        elif event.kind == "recovery_succeeded":
-            if self._spinner is not None:
-                self._spinner.set_override_status(text="Recovered — continuing.")
-        elif event.kind == "recovery_exhausted":
-            if self._spinner is not None:
-                self._spinner.set_override_status(text="Could not recover automatically.")
 
     async def _mount_slash_activity(self, *, line: str) -> bool:
         """Mount the fixed activity spinner for a long-running slash command.

@@ -1,6 +1,9 @@
 """Metadata carrier and exact-ID delivery through the real local MCP server."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
+
+from mcp.server import Server
 
 import pytest
 from pydantic import JsonValue
@@ -11,6 +14,8 @@ from mcp.types import (
     CallToolResult,
     RequestParams,
     ClientRequest,
+    ListToolsRequest,
+    ServerResult,
     TextContent,
 )
 
@@ -47,10 +52,16 @@ def tool_bridge() -> ClaudeToolBridge:
 
 
 @pytest.mark.parametrize("results_first", [False, True])
-async def test_callback_result_order_and_exact_ids(results_first: bool) -> None:
-    """A4/A8/A17/A18: identical reads correlate by metadata, never RPC ID/order."""
-    bridge = tool_bridge()
-    server = bridge.build_mcp_server()["instance"]
+async def test_repeated_server_acquisition_preserves_handlers_and_exact_ids(results_first: bool) -> None:
+    """RF06: cached acquisition retains handlers and exact-ID results over real MCP."""
+    bridge: ClaudeToolBridge = tool_bridge()
+    server: Server = bridge.get_or_create_mcp_server()["instance"]
+    list_handler: Callable[..., Awaitable[ServerResult]] = server.request_handlers[ListToolsRequest]
+    call_handler: Callable[..., Awaitable[ServerResult]] = server.request_handlers[CallToolRequest]
+    assert bridge.get_or_create_mcp_server() == {"type": "sdk", "name": "slo", "instance": server}
+    assert bridge.get_or_create_mcp_server()["instance"] is server
+    assert server.request_handlers[ListToolsRequest] is list_handler
+    assert server.request_handlers[CallToolRequest] is call_handler
     calls = tuple(
         ClaudeToolCallDAO(tool_call_id=i, name="read", arguments={"path": "same"})
         for i in ("native-a", "native-b")
@@ -228,12 +239,14 @@ async def test_callback_identity_rejects_nonfinite_json_before_retention(callbac
 async def test_late_result_and_callback_after_retirement_never_release_success() -> None:
     """A18: a retired MCP owner cannot accept a late result or mutate a new owner."""
     bridge = tool_bridge()
-    server = bridge.build_mcp_server()["instance"]
+    server = bridge.get_or_create_mcp_server()["instance"]
     bridge.publish_tool_batch(
         response_id="response",
         tool_calls=(ClaudeToolCallDAO(tool_call_id="old", name="read", arguments={"path": "same"}),),
     )
     await bridge.close()
+    reacquired_server: Server = bridge.get_or_create_mcp_server()["instance"]
+    assert reacquired_server is server
     with pytest.raises(RuntimeError):
         await bridge.submit_tool_results(
             invocation_id="invocation",
@@ -246,7 +259,7 @@ async def test_late_result_and_callback_after_retirement_never_release_success()
                 ),
             ),
         )
-    async with create_connected_server_and_client_session(server=server) as client:
+    async with create_connected_server_and_client_session(server=reacquired_server) as client:
         result = await client.send_request(
             request=ClientRequest(
                 CallToolRequest(
@@ -270,7 +283,7 @@ async def test_mcp_native_id_metadata_is_required(metadata: dict[str, object]) -
     bridge = tool_bridge()
     try:
         async with create_connected_server_and_client_session(
-            server=bridge.build_mcp_server()["instance"]
+            server=bridge.get_or_create_mcp_server()["instance"]
         ) as client:
             result = await client.send_request(
                 request=ClientRequest(

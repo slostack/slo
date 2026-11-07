@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -63,9 +64,9 @@ async def test_fresh_prompt_streams_and_persists_answer(
         app.query_one(PromptInputComponent).text = "/model claude-bridge:claude-opus-4-8"
         await pilot.pause()
         assert app.query_one(PromptInputComponent)._slash_suggestion_state.visible
-        assert [row.insert_text for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows] == [
-            "claude-bridge:claude-opus-4-8"
-        ]
+        assert [
+            row.insert_text for row in app.query_one(PromptInputComponent)._slash_suggestion_state.rows
+        ] == ["claude-bridge:claude-opus-4-8"]
         await pilot.press("tab")
         assert app.query_one(PromptInputComponent).text.strip() == "/model claude-bridge:claude-opus-4-8"
         await pilot.press("enter")
@@ -109,10 +110,30 @@ async def test_fresh_prompt_streams_and_persists_answer(
         app.query_one(PromptInputComponent).text = "/model claude-bridge:claude-haiku-5-5"
         await pilot.press("enter")
         await pilot.pause()
-        rejections = [content for content, _ in app._chat_transcript._adapter.lines[before:] if "fresh session" in content]
+        rejections = [
+            content
+            for content, _ in app._chat_transcript._adapter.lines[before:]
+            if "fresh session" in content
+        ]
         assert rejections == []
         assert session.active_model_name == "claude-bridge:claude-haiku-5-5"
         assert transport.prompts == ["hello"]
+        history_before_clear = await store.load_events(session_id=session.session_id)
+        history_bytes_before_clear = {
+            path.relative_to(tmp_path): path.read_bytes()
+            for path in (tmp_path / "history").rglob("*")
+            if path.is_file()
+        }
+        app.query_one(PromptInputComponent).text = "/clear"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not list(app.query(AssistantStreamBlock))
+        assert await store.load_events(session_id=session.session_id) == history_before_clear
+        assert {
+            path.relative_to(tmp_path): path.read_bytes()
+            for path in (tmp_path / "history").rglob("*")
+            if path.is_file()
+        } == history_bytes_before_clear
         finished_session = session
         app.query_one(PromptInputComponent).text = "/new"
         await pilot.press("enter")
@@ -120,6 +141,12 @@ async def test_fresh_prompt_streams_and_persists_answer(
         assert app._session is not finished_session
         assert app._session.active_model_name == "claude-bridge:claude-haiku-5-5"
         assert transport.closed
+        await finished_session.event_relay(
+            AgentStreamEventDAO(kind="text_delta", block_id="stale", delta="STALE predecessor output")
+        )
+        await pilot.pause()
+        assert not list(app.query(AssistantStreamBlock))
+        assert "STALE predecessor output" not in html.unescape(app.export_screenshot())
     terminal_guard.cancel()
     await asyncio.gather(terminal_guard, return_exceptions=True)
     events = await store.load_events(session_id=session.session_id)

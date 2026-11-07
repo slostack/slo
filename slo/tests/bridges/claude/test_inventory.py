@@ -81,7 +81,7 @@ async def test_every_listed_tool_lifts_the_native_result_size_limit(tmp_path: Pa
         tools=model._tools,
     )
     async with create_connected_server_and_client_session(
-        server=bridge.build_mcp_server()["instance"]
+        server=bridge.get_or_create_mcp_server()["instance"]
     ) as client:
         listed = (await client.list_tools()).tools
     assert [tool.name for tool in listed] == [tool.name for tool in model._tools]
@@ -265,7 +265,7 @@ async def test_schema_snapshot_resolves_references_without_weakening_constraints
         bridge = adapter._runtime._tool_bridge
         assert bridge is not None
         async with create_connected_server_and_client_session(
-            server=bridge.build_mcp_server()["instance"]
+            server=bridge.get_or_create_mcp_server()["instance"]
         ) as client:
             inventory = await client.list_tools()
             advertised = inventory.tools[0].inputSchema

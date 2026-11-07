@@ -8,7 +8,6 @@ from typing import Any
 
 from claude_agent_sdk._internal.transport import Transport
 
-from .response import protocol_error
 from .exceptions import ClaudeBridgeError
 
 
@@ -72,10 +71,10 @@ class ValidatedClaudeTransport(Transport):
             return
         payload = message.get("message")
         if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
-            raise protocol_error()
+            raise ClaudeBridgeError.protocol_error()
         for block in payload["content"]:
             if not isinstance(block, dict) or block.get("type") not in ("text", "thinking", "tool_use"):
-                raise protocol_error()
+                raise ClaudeBridgeError.protocol_error()
 
     async def close(self) -> None:
         """Preserve SDK-owned underlying cleanup, without a second lifetime."""

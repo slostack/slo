@@ -317,10 +317,14 @@ async def test_response_adapter_accepts_long_streams_and_bounds_response_identit
     async def receive(event: ClaudeResponseTranslationDAO) -> None:
         """Accept every translated event."""
 
-    adapter = AIAgentResponseAdapter.register(binding=binding, response_receiver=receive, tool_call_receiver=receive)
+    adapter = AIAgentResponseAdapter.register(
+        binding=binding, response_receiver=receive, tool_call_receiver=receive
+    )
     for sequence in range(1, 10_003):
         await adapter.handle(
-            event=ClaudeTextEventDAO(session_id="s", invocation_id="i", response_id="r", sequence=sequence, text="x")
+            event=ClaudeTextEventDAO(
+                session_id="s", invocation_id="i", response_id="r", sequence=sequence, text="x"
+            )
         )
     sequence = 10_002
     for response in ["r", *(f"r{n}" for n in range(1, AIAgentResponseAdapter.RESPONSE_LIMIT))]:
@@ -332,5 +336,7 @@ async def test_response_adapter_accepts_long_streams_and_bounds_response_identit
         )
     with pytest.raises(ValueError, match="identity limit"):
         await adapter.handle(
-            event=ClaudeTextEventDAO(session_id="s", invocation_id="i", response_id="over", sequence=sequence + 1, text="x")
+            event=ClaudeTextEventDAO(
+                session_id="s", invocation_id="i", response_id="over", sequence=sequence + 1, text="x"
+            )
         )

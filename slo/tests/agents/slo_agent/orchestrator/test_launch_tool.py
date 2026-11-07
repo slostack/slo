@@ -946,9 +946,9 @@ async def test_launch_workflow_spawns_when_one_handle_cannot_be_reconciled(
     assert path.read_bytes() == before
     records = [record for record in caplog.records if record.msg == "workflow_reconcile_conflict"]
     assert len(records) == 1
-    assert records[0].workflow_id == "wf-conflict"
-    assert records[0].handle_state == "running"
-    assert records[0].error == "IsADirectoryError"
+    assert records[0].__dict__["workflow_id"] == "wf-conflict"
+    assert records[0].__dict__["handle_state"] == "running"
+    assert records[0].__dict__["error"] == "IsADirectoryError"
     assert "private brief" not in caplog.text
 
 

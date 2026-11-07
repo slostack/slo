@@ -19,7 +19,7 @@ from .dao import (
 )
 from .exceptions import ClaudeBridgeError
 from .inventory import ClaudeToolInventory
-from .response import json_identity
+from .response import NativeResponseAssembly
 
 
 class ClaudeToolBridge:
@@ -74,8 +74,16 @@ class ClaudeToolBridge:
             waiter.cancel()
         raise error
 
-    def build_mcp_server(self) -> McpSdkServerConfig:
-        """Assemble public low-level MCP handlers with unchanged JSON schemas."""
+    def get_or_create_mcp_server(self) -> McpSdkServerConfig:
+        """Return SDK configuration, creating the cached server and handlers once.
+
+        The runtime borrows this server before connecting; the SDK owns its
+        execution and shutdown. Acquisition does not reopen closed callbacks.
+
+        Returns:
+            McpSdkServerConfig: A fresh configuration referencing this bridge's
+                shared server, with unchanged wire names and JSON schemas.
+        """
         if self._server is None:
             self._server = Server(name="slo")
             self._server.list_tools()(self._list_tools)
@@ -139,9 +147,9 @@ class ClaudeToolBridge:
         if len(json.dumps(arguments).encode()) > 1024 * 1024 or len(self._callback_calls) >= 10000:
             self._fail(code="buffer_limit_exceeded")
         expected = self.expected_calls.get(tool_call_id)
-        if expected is not None and json_identity(value=expected.model_dump()) != json_identity(
-            value=call.model_dump()
-        ):
+        if expected is not None and NativeResponseAssembly.json_identity(
+            value=expected.model_dump()
+        ) != NativeResponseAssembly.json_identity(value=call.model_dump()):
             self._fail()
         if len(set(self.expected_calls) | set(self._callback_calls) | {tool_call_id}) > 10000:
             self._fail(code="buffer_limit_exceeded")
@@ -182,9 +190,9 @@ class ClaudeToolBridge:
             if len(json.dumps(call.arguments).encode()) > 1024 * 1024:
                 self._fail(code="buffer_limit_exceeded")
             callback = self._callback_calls.get(call.tool_call_id)
-            if callback is not None and json_identity(value=callback.model_dump()) != json_identity(
-                value=call.model_dump()
-            ):
+            if callback is not None and NativeResponseAssembly.json_identity(
+                value=callback.model_dump()
+            ) != NativeResponseAssembly.json_identity(value=call.model_dump()):
                 self._fail()
         self._batches[response_id] = ids
         self.expected_calls.update({c.tool_call_id: c for c in tool_calls})
@@ -205,7 +213,7 @@ class ClaudeToolBridge:
             ClaudeBridgeError: Invalid call or nonfinite JSON corrupts correlation.
         """
         try:
-            encoded = json_identity(value=call.model_dump())
+            encoded = NativeResponseAssembly.json_identity(value=call.model_dump())
             return ClaudeToolCallDAO.model_validate_json(encoded)
         except (ValidationError, ClaudeBridgeError):
             self._fail()

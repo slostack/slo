@@ -518,6 +518,16 @@ async def test_headless_project_question_uses_slo_read_tools(
     assert sum(e.kind == "tool_call" for e in events) == 1
     assert sum(e.kind == "tool_result" for e in events) == 1
     assert sum(e.kind == "run_completed" for e in events) == 1
+    assert [e.payload.content for e in events if e.kind == "user_message"] == ["Read model.txt"]
+    assert [e.payload.tool_call_id for e in events if e.kind == "tool_result"] == ["exact-native-id"]
+    assert [e.payload.content for e in events if e.kind == "assistant_message"] == ["Hello bridge"]
+    assert [e.payload.tool_output for e in events if e.kind == "tool_result"] == [
+        "default-model = synthetic-model\n"
+    ]
+    assert transport.tool_results[0]["request_id"] == "tool-rpc-1"
+    assert transport.tool_results[0]["response"]["mcp_response"]["result"]["content"] == [
+        {"type": "text", "text": "default-model = synthetic-model\n"}
+    ]
     assert any(e["kind"] == "run_completed" for e in output)
 
 

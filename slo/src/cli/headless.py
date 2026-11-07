@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 from types import FrameType
-from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional, TextIO, cast
 
 from src.auth.credential_dao import CredentialDAO
 from src.auth.credential_resolver import CredentialResolver
@@ -76,6 +76,24 @@ COOPERATIVE_ABORT_GRACE_SECONDS: float = positive_float_env(
 """Maximum time a cooperative abort may wait before cancelling the blocked stream."""
 
 
+class _HeadlessJSONLWriter:
+    """Serialize already-redacted events to a borrowed text stream."""
+
+    @classmethod
+    def write(cls, *, event: AgentStreamEventDAO, stream: TextIO) -> None:
+        """Write and flush one JSONL record after runner redaction/bookkeeping.
+
+        Args:
+            event: Already-redacted event; this writer owns no credentials.
+            stream: Borrowed output, never retained or closed.
+
+        Raises:
+            OSError: Stream write or flush fails; no retry is attempted.
+        """
+        stream.write(event.model_dump_json() + "\n")
+        stream.flush()
+
+
 class HeadlessRunner:
     """Runs a single prompt through one ``SloAgentSession`` and streams JSONL to stdout.
 
@@ -99,6 +117,7 @@ class HeadlessRunner:
         notifier: Optional[WorkflowNotifier] = None,
         session_preparer: Optional[Callable[[SessionConfigDAO], Awaitable[SloAgentSession]]] = None,
         bridge_adapter_class: Optional[type["SloBridgeAdapterProtocol"]] = None,
+        output_stream: Optional[TextIO] = None,
     ) -> None:
         """Bind the runner to its session config.
 
@@ -111,9 +130,12 @@ class HeadlessRunner:
                 workflow lifecycle notifications (spec 57.a.3). ``None`` keeps
                 behaviour byte-identical to a plain headless run — no notifier
                 is constructed and nothing is enqueued.
+            output_stream: Borrowed output, never closed. None uses current stdout
+                at emission time, preserving dynamic output capture.
             notifier (Optional[WorkflowNotifier]): Injectable notifier for
                 tests. Ignored when ``notify_session_id`` is ``None``.
         """
+        self._output_stream: Optional[TextIO] = output_stream
         self._session_preparer = session_preparer
         self._bridge_adapter_class = bridge_adapter_class
         self._session_id: str = config.session_id or str(uuid4())
@@ -522,8 +544,9 @@ class HeadlessRunner:
             if not event.is_sub_agent_event:
                 self._terminal_received = True
                 self._terminal_content = event.content or ""
-        sys.stdout.write(event.model_dump_json() + "\n")
-        sys.stdout.flush()
+        _HeadlessJSONLWriter.write(
+            event=event, stream=self._output_stream if self._output_stream is not None else sys.stdout
+        )
         await self._maybe_notify_phase(event=event)
         await self._maybe_notify_fleet(event=event)
 

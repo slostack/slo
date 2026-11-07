@@ -1,7 +1,5 @@
 """Translate host LangChain content blocks into portable Claude live content."""
 
-from typing import Any
-
 from .sdk.dao import ClaudeImageDAO, ClaudeTextDAO
 
 
@@ -9,66 +7,112 @@ class ClaudeHostContent:
     """Own the lossless text/base64-image block translation at the bridge entry."""
 
     @classmethod
-    def translate(cls, *, block: str | dict[Any, Any]) -> ClaudeTextDAO | ClaudeImageDAO:
-        """Translate one host block, including an empty string.
+    def translate(cls, *, block: object) -> ClaudeTextDAO | ClaudeImageDAO:
+        """Validate one borrowed LangChain block into portable live content.
 
         Args:
-            block: One LangChain content block.
+            block: Heterogeneous vendor input, including empty text.
 
         Returns:
-            ClaudeTextDAO | ClaudeImageDAO: Validated portable live content.
+            A validated text or base64 image DAO.
 
         Raises:
-            ValueError: Unknown fields, content kinds or malformed image sources occur.
+            ValueError: Unsupported fields, kinds or malformed payloads.
         """
         if isinstance(block, str):
             return ClaudeTextDAO(text=block)
-        if block.get("type") == "text" and set(block) == {"type", "text"}:
-            return ClaudeTextDAO(text=block["text"])
-        if block.get("type") != "image" or set(block) != {"type", "source"}:
+        content: dict[str, object] = cls._content_mapping(value=block)
+        if content.get("type") == "text" and set(content) == {"type", "text"}:
+            text: object = content["text"]
+            if not isinstance(text, str):
+                raise ValueError("Unsupported Claude text content.")
+            return ClaudeTextDAO(text=text)
+        if content.get("type") != "image" or set(content) != {"type", "source"}:
             raise ValueError("Unsupported Claude content block.")
-        source = block["source"]
+        source: dict[str, object] = cls._content_mapping(value=content["source"])
+        media_type: object = source.get("media_type")
+        data: object = source.get("data")
         if (
-            not isinstance(source, dict)
-            or set(source) != {"type", "media_type", "data"}
+            set(source) != {"type", "media_type", "data"}
             or source["type"] != "base64"
+            or not isinstance(media_type, str)
+            or not isinstance(data, str)
         ):
             raise ValueError("Unsupported Claude image source.")
-        return ClaudeImageDAO(media_type=source["media_type"], data=source["data"])
+        return ClaudeImageDAO.model_validate({"media_type": media_type, "data": data})
 
-    @staticmethod
-    def model_context(*, content: str | list[str | dict[Any, Any]]) -> str | list[str | dict[Any, Any]]:
-        """Reduce content to what a model is given: reasoning dropped, plain text joined.
+    @classmethod
+    def model_context(cls, *, content: object) -> str | list[str | dict[str, object]]:
+        """Reduce live/replayed content without retaining reasoning in fingerprints.
 
-        The same reduction applies to live and replayed messages, so thinking can
-        never make an unchanged conversation look edited.
+        Args:
+            content: Borrowed LangChain string or ordered block list.
+
+        Returns:
+            Joined plain text or ordered mixed blocks with string keys.
+
+        Raises:
+            ValueError: Invalid container, block keys or plain-text payload.
         """
         if isinstance(content, str):
             return content
-        kept = [
-            block
-            for block in content
-            if not (isinstance(block, dict) and block.get("type") in {"thinking", "reasoning"})
-        ]
-        texts = [
-            block if isinstance(block, str) else block["text"]
-            for block in kept
-            if isinstance(block, str)
-            or (block.get("type") == "text" and set(block) <= {"type", "text", "index"})
-        ]
+        if not isinstance(content, list):
+            raise ValueError("Unsupported Claude content list.")
+        kept: list[str | dict[str, object]] = []
+        texts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                kept.append(block)
+                texts.append(block)
+                continue
+            mapping: dict[str, object] = cls._content_mapping(value=block)
+            if mapping.get("type") in ("thinking", "reasoning"):
+                continue
+            if mapping.get("type") == "text" and set(mapping) <= {"type", "text", "index"}:
+                text: object = mapping.get("text")
+                if not isinstance(text, str):
+                    raise ValueError("Unsupported Claude text content.")
+                texts.append(text)
+            kept.append(mapping)
         return "".join(texts) if len(texts) == len(kept) else kept
 
     @classmethod
-    def translate_all(
-        cls, *, content: str | list[str | dict[Any, Any]]
-    ) -> tuple[ClaudeTextDAO | ClaudeImageDAO, ...]:
-        """Translate a whole message content in order.
+    def translate_all(cls, *, content: object) -> tuple[ClaudeTextDAO | ClaudeImageDAO, ...]:
+        """Validate the entire borrowed message before returning ordered blocks.
 
         Args:
-            content: A string or ordered LangChain block list.
+            content: Heterogeneous LangChain content.
 
         Returns:
-            tuple[ClaudeTextDAO | ClaudeImageDAO, ...]: Ordered portable blocks.
+            Complete portable content, including empty strings and lists.
+
+        Raises:
+            ValueError: Any block or the outer container is unsupported.
         """
-        blocks = [content] if isinstance(content, str) else content
-        return tuple(cls.translate(block=block) for block in blocks)
+        if isinstance(content, str):
+            return (cls.translate(block=content),)
+        if not isinstance(content, list):
+            raise ValueError("Unsupported Claude content list.")
+        return tuple(cls.translate(block=block) for block in content)
+
+    @classmethod
+    def _content_mapping(cls, *, value: object) -> dict[str, object]:
+        """Copy vendor mapping keys after validation, without coercion.
+
+        Args:
+            value: Borrowed block or image source.
+
+        Returns:
+            A string-keyed shallow copy; nested values remain untrusted.
+
+        Raises:
+            ValueError: The value is not a dictionary with only string keys.
+        """
+        if not isinstance(value, dict):
+            raise ValueError("Unsupported Claude content mapping.")
+        content: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("Unsupported Claude content key.")
+            content[key] = item
+        return content

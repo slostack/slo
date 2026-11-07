@@ -9,6 +9,17 @@ class ClaudeBridgeError(RuntimeError):
         self.code: str = code
         super().__init__(safe_message[:300])
 
+    @classmethod
+    def protocol_error(cls) -> "ClaudeBridgeError":
+        """Construct the fixed payload-free failure for malformed native responses.
+
+        Returns:
+            A new safe error; no native content or lifecycle state is retained.
+        """
+        return ClaudeBridgeError(
+            code="stream_protocol_failed", safe_message="Malformed or unfinished Claude response."
+        )
+
 
 class ClaudeSubmissionNotStartedError(ClaudeBridgeError):
     """Proven no query attempt and settled cleanup; an explicit new attempt is safe."""
